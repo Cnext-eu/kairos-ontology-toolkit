@@ -204,6 +204,41 @@ Stable/preview channel expectations:
 | `preview` | latest release including RC, e.g. `v4.4.0rc11` | used for V4 validation |
 | explicit tag | exactly that tag | reproducible testing or pinned production |
 
+### Testing an unreleased toolkit commit in a hub
+
+Maintainers can validate a branch or commit in a real hub without publishing a
+tag, release, wheel, version bump, or CHANGELOG entry:
+
+```powershell
+uv run kairos-ontology update --test-ref <branch-or-sha>
+# Test the hub, inspect the diff, then restore:
+uv run kairos-ontology update --restore
+```
+
+GitHub resolves `<branch-or-sha>` to a 40-character commit SHA before the hub is
+changed. Every toolkit dependency, including extras, is pinned to that immutable
+Git source; `uv.lock` is regenerated and toolkit-managed `.github` files are
+refreshed from the tested commit. The hub's stable/preview/explicit
+`[tool.kairos] channel` is not changed and continues to control ordinary
+`update --upgrade`.
+
+The temporary `[tool.kairos.test-ref]` table records the requested ref, resolved
+SHA, and **exact prior dependency source**. `--restore` restores that source
+without re-resolving the channel, removes the table, relocks/resyncs, and
+refreshes released managed files. Do not manually edit this table; nested test
+sessions and restore without valid metadata are rejected.
+
+Expected test-mode changes are `pyproject.toml`, `uv.lock`, and managed
+`.github/copilot-instructions.md` / `.github/skills/*/SKILL.md`; review
+`git diff` so unrelated hub edits are not mistaken for toolkit changes. On
+Windows, sync and forced refresh run in a detached console after the invoking
+process exits; wait for completion and inspect `.kairos/upgrade-refresh.log`
+(normally ignored by Git). A synchronous resolution, lock, sync, scheduling,
+or refresh failure rolls dependency files back and prints recovery guidance.
+If an already-scheduled Windows helper fails, fix the cause in a fresh shell,
+run `uv sync`, then `uv run kairos-ontology update`. After any hub test failure,
+preserve useful evidence and run `--restore`.
+
 ---
 
 ## 5. Feature releases

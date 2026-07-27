@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://kairos.eu/v5/entity-binding.schema.json",
+  "title": "Kairos v5 EntityBinding",
+  "description": "Closed document shape for a single v5 EntityBinding (DD-133). Expression node grammar is validated structurally in Python (bindings.py), not here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "source", "target", "grain", "identity", "load", "fields"],
+  "properties": {
+    "apiVersion": {"const": "kairos.eu/v5"},
+    "kind": {"const": "EntityBinding"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "domain"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "domain": {"type": "string", "minLength": 1}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "relation": {"type": "string", "minLength": 1},
+        "dbtModel": {"type": "string", "minLength": 1}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class"],
+      "properties": {
+        "class": {"type": "string", "minLength": 1}
+      }
+    },
+    "grain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns"],
+      "properties": {
+        "columns": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "sourceKey"],
+      "properties": {
+        "strategy": {"enum": ["source-natural", "surrogate"]},
+        "sourceKey": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "businessKey": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["full-refresh"]}
+      }
+    },
+    "fields": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["property", "expression"],
+        "properties": {
+          "property": {"type": "string", "minLength": 1},
+          "expression": {}
+        }
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["property", "target", "join", "cardinality", "mode", "missingParent", "ambiguousParent"],
+        "properties": {
+          "property": {"type": "string", "minLength": 1},
+          "target": {"type": "string", "minLength": 1},
+          "join": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["local", "foreign"],
+              "properties": {
+                "local": {"type": "string", "minLength": 1},
+                "foreign": {"type": "string", "minLength": 1}
+              }
+            }
+          },
+          "cardinality": {"enum": ["many-to-one", "one-to-one"]},
+          "mode": {"enum": ["non-temporal"]},
+          "missingParent": {"enum": ["error", "null"]},
+          "ambiguousParent": {"enum": ["error", "first"]}
+        }
+      }
+    },
+    "quality": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {
+          "kind": {"enum": ["not-null", "unique", "reconcile-rowcount", "referential"]},
+          "columns": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    }
+  }
+}

@@ -41,6 +41,10 @@ parquet = [
 #   "stable"  — latest GA release (default)
 #   "preview" — latest pre-release (rc/beta/alpha) for testing new features
 #   "v2.16.0" — explicit pinned version
+# To test unreleased toolkit code without changing this channel:
+#   uv run kairos-ontology update --test-ref <branch-or-sha>
+# The command pins an immutable SHA and saves exact restore metadata below temporarily.
+# Return to the prior dependency source with: uv run kairos-ontology update --restore
 channel = "stable"
 
 # Optional accelerator pack selected for scoped validation and projection. When omitted,

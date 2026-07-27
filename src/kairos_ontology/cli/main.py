@@ -6,10 +6,18 @@ import json
 import os
 import re
 import sys
+import tomllib
 import click
 import shutil
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
+
+from packaging.requirements import InvalidRequirement, Requirement
+
 from ..core.validator import run_validation, run_gdpr_validation
 from ..core.projector import (
     ProjectionRunError,
@@ -19,6 +27,8 @@ from ..core.projector import (
 from ..core.catalog_test import test_catalog_resolution
 from .. import __version__ as _toolkit_version
 from ..core._provenance import provenance_comment
+from .compile import compile_cmd as _compile_cmd
+
 # Importing the design-time MDM package registers the additive ``mdm-profile``
 # projection target with the core projector (registry pattern, MDM-DD-002).
 # The CLI is the layer that legitimately depends on both core and mdm.
@@ -223,9 +233,10 @@ def _resolve_channel(channel: str) -> str | None:
 
     try:
         result = subprocess.run(
-            ["gh", "api", f"/repos/{_TOOLKIT_REPO}/releases",
-             "--jq", ".[].tag_name"],
-            capture_output=True, text=True, timeout=15,
+            ["gh", "api", f"/repos/{_TOOLKIT_REPO}/releases", "--jq", ".[].tag_name"],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode != 0:
             return None
@@ -275,10 +286,359 @@ def _whl_url(tag: str) -> str:
     """Build the GitHub Releases download URL for the .whl artifact."""
     version = _tag_to_version(tag)
     filename = f"kairos_ontology_toolkit-{version}-py3-none-any.whl"
-    return (
-        f"https://github.com/{_TOOLKIT_REPO}/releases/download/"
-        f"{tag}/{filename}"
+    return f"https://github.com/{_TOOLKIT_REPO}/releases/download/" f"{tag}/{filename}"
+
+
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
+_TOOLKIT_NAME = "kairos-ontology-toolkit"
+_TOOLKIT_GIT_URL = f"git+https://github.com/{_TOOLKIT_REPO}.git"
+_TOOLKIT_RELEASE_URL_RE = re.compile(
+    rf"https://github\.com/{re.escape(_TOOLKIT_REPO)}/releases/download/"
+    r"[^/\s]+/kairos_ontology_toolkit-[^/\s]+\.whl"
+)
+_TOOLKIT_GIT_SOURCE_RE = re.compile(rf"{re.escape(_TOOLKIT_GIT_URL)}@[^\s]+")
+_TEST_REF_TABLE = "tool.kairos.test-ref"
+_TEST_REF_KEYS = frozenset({"requested", "sha", "restore-source"})
+_TOML_STRING_RE = re.compile(r'"(?P<double>(?:\\.|[^"\\])*)"|\'(?P<single>[^\']*)\'')
+
+
+def _resolve_toolkit_ref_sha(ref: str) -> str | None:
+    """Resolve a toolkit GitHub ref to an immutable, lowercase commit SHA."""
+    ref = ref.strip()
+    if not ref:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"/repos/{_TOOLKIT_REPO}/commits/{quote(ref, safe='')}",
+                "--jq",
+                ".sha",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip().lower()
+    return sha if _COMMIT_SHA_RE.fullmatch(sha) else None
+
+
+def _toolkit_git_sha_source(sha: str) -> str:
+    """Return the PEP 508 source URL for an immutable toolkit commit."""
+    normalized = sha.strip().lower()
+    if not _COMMIT_SHA_RE.fullmatch(normalized):
+        raise ValueError("toolkit test ref must resolve to a 40-character hexadecimal SHA")
+    return f"{_TOOLKIT_GIT_URL}@{normalized}"
+
+
+def _decode_toml_string(match: re.Match[str]) -> str:
+    """Decode one TOML basic or literal string regex match."""
+    if match.group("double") is not None:
+        return tomllib.loads(f"value = {match.group(0)}")["value"]
+    return match.group("single")
+
+
+def _toolkit_requirement_matches(content: str) -> list[tuple[re.Match[str], Requirement]]:
+    """Return direct-reference toolkit requirements and their TOML string matches."""
+    try:
+        tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"invalid pyproject.toml: {exc}") from exc
+
+    matches: list[tuple[re.Match[str], Requirement]] = []
+    for match in _TOML_STRING_RE.finditer(content):
+        line_start = content.rfind("\n", 0, match.start()) + 1
+        if "#" in content[line_start : match.start()]:
+            continue
+        value = _decode_toml_string(match)
+        try:
+            requirement = Requirement(value)
+        except InvalidRequirement:
+            continue
+        if requirement.name.lower().replace("_", "-") != _TOOLKIT_NAME:
+            continue
+        if requirement.url is None:
+            raise ValueError(
+                "kairos-ontology-toolkit dependencies must use one supported direct URL"
+            )
+        matches.append((match, requirement))
+    if not matches:
+        raise ValueError("no kairos-ontology-toolkit dependency found in pyproject.toml")
+    return matches
+
+
+def _validate_toolkit_dependency_source(source: str) -> str:
+    """Validate and return one supported release-wheel or git toolkit source."""
+    source = source.strip()
+    if _TOOLKIT_RELEASE_URL_RE.fullmatch(source) or _TOOLKIT_GIT_SOURCE_RE.fullmatch(source):
+        return source
+    raise ValueError(
+        "unsupported kairos-ontology-toolkit dependency source; expected the toolkit "
+        "GitHub release wheel or git repository"
     )
+
+
+def _single_toolkit_dependency_source(content: str) -> str:
+    """Return the one validated source shared by every toolkit requirement."""
+    sources = {
+        _validate_toolkit_dependency_source(requirement.url or "")
+        for _, requirement in _toolkit_requirement_matches(content)
+    }
+    if len(sources) != 1:
+        raise ValueError("all kairos-ontology-toolkit dependencies must use the same source")
+    return next(iter(sources))
+
+
+def _rewrite_toolkit_dependency_source(content: str, source: str) -> str:
+    """Rewrite every PEP 508 toolkit direct reference while preserving extras."""
+    source = _validate_toolkit_dependency_source(source)
+    _single_toolkit_dependency_source(content)
+    matches = _toolkit_requirement_matches(content)
+    rewritten = content
+    for match, requirement in reversed(matches):
+        value = _decode_toml_string(match)
+        url_start, url_end = requirement.url, requirement.url
+        assert url_start is not None and url_end is not None
+        start = value.index(url_start)
+        replacement = value[:start] + source + value[start + len(url_end) :]
+        quote_char = match.group(0)[0]
+        if quote_char == '"':
+            replacement = json.dumps(replacement, ensure_ascii=False)
+        else:
+            if "'" in replacement:
+                replacement = json.dumps(replacement, ensure_ascii=False)
+            else:
+                replacement = f"'{replacement}'"
+        rewritten = rewritten[: match.start()] + replacement + rewritten[match.end() :]
+    return rewritten
+
+
+@dataclass(frozen=True)
+class _ToolkitTestRefState:
+    """Temporary restore metadata persisted in ``[tool.kairos.test-ref]``."""
+
+    requested: str
+    sha: str
+    restore_source: str
+
+    def validated(self) -> "_ToolkitTestRefState":
+        requested = self.requested.strip()
+        if not requested:
+            raise ValueError("test-ref metadata requested ref must not be empty")
+        sha = self.sha.strip().lower()
+        if not _COMMIT_SHA_RE.fullmatch(sha):
+            raise ValueError("test-ref metadata SHA must be 40 hexadecimal characters")
+        restore_source = _validate_toolkit_dependency_source(self.restore_source)
+        return _ToolkitTestRefState(requested, sha, restore_source)
+
+
+def _read_toolkit_test_ref_state(content: str) -> _ToolkitTestRefState | None:
+    """Decode and validate temporary test-ref metadata from TOML content."""
+    try:
+        document = tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"invalid pyproject.toml: {exc}") from exc
+    kairos = document.get("tool", {}).get("kairos", {})
+    if not isinstance(kairos, dict):
+        raise ValueError("[tool.kairos] must be a table")
+    state_data = kairos.get("test-ref")
+    if state_data is None:
+        return None
+    if not isinstance(state_data, dict) or set(state_data) != _TEST_REF_KEYS:
+        raise ValueError(
+            "[tool.kairos.test-ref] must contain only requested, sha, and restore-source"
+        )
+    if not all(isinstance(state_data[key], str) for key in _TEST_REF_KEYS):
+        raise ValueError("[tool.kairos.test-ref] values must be strings")
+    return _ToolkitTestRefState(
+        requested=state_data["requested"],
+        sha=state_data["sha"],
+        restore_source=state_data["restore-source"],
+    ).validated()
+
+
+def _add_toolkit_test_ref_state(content: str, state: _ToolkitTestRefState) -> str:
+    """Append validated test-ref metadata without rewriting unrelated TOML."""
+    if _read_toolkit_test_ref_state(content) is not None:
+        raise ValueError("a toolkit test-ref session is already active")
+    state = state.validated()
+    separator = "\n" if content else ""
+    return (
+        content
+        + separator
+        + f"[{_TEST_REF_TABLE}]\n"
+        + f"requested = {json.dumps(state.requested)}\n"
+        + f"sha = {json.dumps(state.sha)}\n"
+        + f"restore-source = {json.dumps(state.restore_source)}\n"
+    )
+
+
+def _remove_toolkit_test_ref_state(content: str) -> tuple[str, _ToolkitTestRefState]:
+    """Remove and return valid test-ref metadata, preserving all other TOML text."""
+    state = _read_toolkit_test_ref_state(content)
+    if state is None:
+        raise ValueError("no active toolkit test-ref session to restore")
+    header = re.compile(rf"(?m)^\[{re.escape(_TEST_REF_TABLE)}\][ \t]*(?:#.*)?\r?\n")
+    match = header.search(content)
+    if match is None:
+        raise ValueError("test-ref metadata must use a dedicated table")
+    next_table = re.search(r"(?m)^\s*\[", content[match.end() :])
+    end = match.end() + next_table.start() if next_table else len(content)
+    start = match.start()
+    if start > 0 and content[start - 1] == "\n":
+        start -= 1
+    return content[:start] + content[end:], state
+
+
+@dataclass(frozen=True)
+class _DependencyFilesSnapshot:
+    """Exact dependency-file bytes captured before a transactional update."""
+
+    pyproject: Path
+    pyproject_content: bytes
+    lockfile: Path
+    lockfile_content: bytes | None
+
+
+def _snapshot_dependency_files(root: Path) -> _DependencyFilesSnapshot:
+    """Snapshot ``pyproject.toml`` and the optional ``uv.lock`` exactly."""
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        raise FileNotFoundError(f"{pyproject} does not exist")
+    lockfile = root / "uv.lock"
+    return _DependencyFilesSnapshot(
+        pyproject=pyproject,
+        pyproject_content=pyproject.read_bytes(),
+        lockfile=lockfile,
+        lockfile_content=lockfile.read_bytes() if lockfile.is_file() else None,
+    )
+
+
+def _restore_dependency_files(snapshot: _DependencyFilesSnapshot) -> None:
+    """Restore dependency files to an exact snapshot."""
+    snapshot.pyproject.write_bytes(snapshot.pyproject_content)
+    if snapshot.lockfile_content is None:
+        snapshot.lockfile.unlink(missing_ok=True)
+    else:
+        snapshot.lockfile.write_bytes(snapshot.lockfile_content)
+
+
+@contextmanager
+def _dependency_files_transaction(root: Path) -> Iterator[_DependencyFilesSnapshot]:
+    """Roll dependency files back when an update operation raises or exits."""
+    snapshot = _snapshot_dependency_files(root)
+    try:
+        yield snapshot
+    except BaseException:
+        _restore_dependency_files(snapshot)
+        raise
+
+
+@dataclass(frozen=True)
+class _ManagedFilesSnapshot:
+    """Managed-file state that a forced refresh may replace or remove."""
+
+    root: Path
+    copilot_content: bytes | None
+    skill_files: dict[str, bytes | None]
+    managed_skill_trees: dict[str, dict[str, bytes]]
+
+
+def _snapshot_managed_files(root: Path) -> _ManagedFilesSnapshot:
+    """Capture managed paths without including unrelated custom skill content."""
+    copilot = root / ".github" / "copilot-instructions.md"
+    skills_dir = root / ".github" / "skills"
+    skill_files: dict[str, bytes | None] = {}
+    managed_skill_trees: dict[str, dict[str, bytes]] = {}
+
+    if skills_dir.is_dir():
+        for skill_dir in sorted(skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_file = skill_dir / "SKILL.md"
+            content = skill_file.read_bytes() if skill_file.is_file() else None
+            skill_files[skill_dir.name] = content
+            if content is not None and _MANAGED_MARKER_RE.search(
+                content.decode("utf-8", errors="replace")
+            ):
+                managed_skill_trees[skill_dir.name] = {
+                    str(path.relative_to(skill_dir)): path.read_bytes()
+                    for path in skill_dir.rglob("*")
+                    if path.is_file()
+                }
+
+    return _ManagedFilesSnapshot(
+        root=root,
+        copilot_content=copilot.read_bytes() if copilot.is_file() else None,
+        skill_files=skill_files,
+        managed_skill_trees=managed_skill_trees,
+    )
+
+
+def _restore_managed_files(snapshot: _ManagedFilesSnapshot) -> None:
+    """Restore only paths a managed refresh is allowed to touch."""
+    copilot = snapshot.root / ".github" / "copilot-instructions.md"
+    if snapshot.copilot_content is None:
+        copilot.unlink(missing_ok=True)
+    else:
+        copilot.parent.mkdir(parents=True, exist_ok=True)
+        copilot.write_bytes(snapshot.copilot_content)
+
+    skills_dir = snapshot.root / ".github" / "skills"
+    if skills_dir.is_dir():
+        for skill_dir in sorted(skills_dir.iterdir()):
+            if not skill_dir.is_dir() or skill_dir.name in snapshot.skill_files:
+                continue
+            skill_file = skill_dir / "SKILL.md"
+            if skill_file.is_file() and _MANAGED_MARKER_RE.search(
+                skill_file.read_text(encoding="utf-8", errors="replace")
+            ):
+                shutil.rmtree(skill_dir)
+
+    for name, content in snapshot.skill_files.items():
+        skill_file = skills_dir / name / "SKILL.md"
+        if content is None:
+            skill_file.unlink(missing_ok=True)
+        else:
+            skill_file.parent.mkdir(parents=True, exist_ok=True)
+            skill_file.write_bytes(content)
+
+    for name, files in snapshot.managed_skill_trees.items():
+        skill_dir = skills_dir / name
+        for rel_path, content in files.items():
+            path = skill_dir / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+
+
+@contextmanager
+def _managed_files_transaction(root: Path) -> Iterator[_ManagedFilesSnapshot]:
+    """Roll managed paths back if a forced refresh fails after partial writes."""
+    snapshot = _snapshot_managed_files(root)
+    try:
+        yield snapshot
+    except BaseException:
+        _restore_managed_files(snapshot)
+        raise
+
+
+def _resync_restored_dependency() -> str | None:
+    """Best-effort environment repair after restoring dependency files."""
+    if sys.platform == "win32":
+        return "close the current shell and run `uv sync` to restore the prior environment"
+    try:
+        result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
+    except OSError as exc:
+        return f"could not resync the prior dependency source: {exc}"
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit status {result.returncode}"
+        return f"could not resync the prior dependency source: {detail}"
+    return None
 
 
 def _read_hub_channel() -> str:
@@ -350,15 +710,13 @@ def _warn_if_version_mismatch() -> None:
         err=True,
     )
 
+
 # ---------------------------------------------------------------------------
 # Managed-file stamping — toolkit-owned files carry a version marker so
 # ``kairos-ontology update`` can refresh them without manual diffing.
 # ---------------------------------------------------------------------------
-_MANAGED_MARKER_RE = re.compile(
-    r"<!-- kairos-ontology-toolkit:managed v([\d]+(?:\.[\d]+)*\S*) -->")
-_MANAGED_MARKER_TEMPLATE = (
-    "<!-- kairos-ontology-toolkit:managed v{version} -->"
-)
+_MANAGED_MARKER_RE = re.compile(r"<!-- kairos-ontology-toolkit:managed v([\d]+(?:\.[\d]+)*\S*) -->")
+_MANAGED_MARKER_TEMPLATE = "<!-- kairos-ontology-toolkit:managed v{version} -->"
 
 
 def _stamp_managed(content: str, version: str) -> str:
@@ -451,7 +809,7 @@ def _schedule_windows_refresh(check: bool) -> bool:
     failure (callers fall back to printing manual guidance).
     """
     pid = os.getpid()
-    update_cmd = "uv run kairos-ontology update"
+    update_cmd = "uv run kairos-ontology update --force-managed"
     if check:
         update_cmd += " --check"
 
@@ -465,7 +823,7 @@ def _schedule_windows_refresh(check: bool) -> bool:
     ps_script = (
         f"Wait-Process -Id {pid} -ErrorAction SilentlyContinue; "
         f"Start-Sleep -Milliseconds 750; "
-        f"try {{ Start-Transcript -Path '{log_path}' -Force | Out-Null }} catch {{}} ; "
+        "try { Start-Transcript -Path $env:KAIROS_REFRESH_LOG -Force | Out-Null } catch {} ; "
         f"Write-Host 'Refreshing managed files under the upgraded toolkit...'; "
         f"uv sync; "
         f"{update_cmd}; "
@@ -476,14 +834,59 @@ def _schedule_windows_refresh(check: bool) -> bool:
     # A visible console lets the user watch progress; the transcript keeps a record.
     creationflags = 0x00000010 | 0x00000200
     try:
+        child_env = os.environ.copy()
+        child_env["KAIROS_REFRESH_LOG"] = str(log_path)
         subprocess.Popen(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
             creationflags=creationflags,
             close_fds=True,
+            env=child_env,
         )
     except (OSError, ValueError):
         return False
     return True
+
+
+def _refresh_with_installed_toolkit(check: bool, ref: str) -> int:
+    """Refresh managed files using the dependency source just installed by uv."""
+    if sys.platform == "win32":
+        if not _schedule_windows_refresh(check):
+            raise RuntimeError(
+                "could not schedule the Windows managed-file refresh; close any shell "
+                "using the hub environment and retry"
+            )
+        log_path = Path.cwd() / ".kairos" / "upgrade-refresh.log"
+        print(
+            "   ↻ Managed-file refresh scheduled — it will run automatically "
+            "once this process exits.\n"
+            "     Progress opens in a new window; a transcript is written to "
+            f"{log_path}."
+        )
+        return 0
+
+    command = ["uv", "run", "kairos-ontology", "update", "--force-managed"]
+    if check:
+        command.append("--check")
+    print(f"   ↻ Refreshing managed files under {ref} (uv run) ...")
+    try:
+        return subprocess.run(command).returncode
+    except (OSError, FileNotFoundError) as exc:
+        raise RuntimeError(
+            f"could not refresh managed files under the installed toolkit: {exc}"
+        ) from exc
+
+
+def _lock_and_sync_dependency() -> None:
+    """Lock and install the current pyproject toolkit source."""
+    print("   Syncing environment with uv ...")
+    result = subprocess.run(["uv", "lock"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"uv lock failed:\n{result.stderr.strip()}")
+    if sys.platform == "win32":
+        return
+    result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"uv sync failed:\n{result.stderr.strip()}")
 
 
 def _check_not_inside_git_repo(parent: Path, name: str) -> None:
@@ -499,7 +902,9 @@ def _check_not_inside_git_repo(parent: Path, name: str) -> None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            cwd=parent, capture_output=True, text=True,
+            cwd=parent,
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             git_root = Path(result.stdout.strip()).resolve()
@@ -533,6 +938,9 @@ def cli(ctx):
     _warn_if_outside_venv()
     _warn_if_version_mismatch()
     _warn_if_no_skill_context(ctx.invoked_subcommand)
+
+
+cli.add_command(_compile_cmd)
 
 
 _LIFECYCLE_TABLE = """\
@@ -621,9 +1029,7 @@ def _resolve_projection_cli_scope(
             "(or inside ontology-hub/), pass --ontologies for a directory, or pass "
             "--ontology for one file."
         )
-    ref_models_path = (
-        Path(ref_models) if ref_models else _resolve_ref_models_dir(cwd, hub_root)
-    )
+    ref_models_path = Path(ref_models) if ref_models else _resolve_ref_models_dir(cwd, hub_root)
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
     try:
         resolved_accelerator = resolve_hub_accelerator(
@@ -853,51 +1259,76 @@ def _resolve_catalog(
 
 
 @cli.command()
-@click.option('--ontologies', type=click.Path(exists=True), default=None,
-              help='Path to ontologies directory (default: auto-detect from hub).')
-@click.option('--shapes', type=click.Path(), default=None,
-              help='Path to SHACL shapes directory (default: auto-detect from hub; '
-                   'optional — SHACL is skipped if it does not exist).')
-@click.option('--catalog', type=click.Path(exists=True),
-              default=None,
-              help='Path to catalog file for resolving imports '
-                   '(default: <hub>/catalog-v001.xml or '
-                   'ontology-reference-models/catalog-v001.xml)')
-@click.option('--ref-models', type=click.Path(), default=None,
-              help='Reference-model repository containing accelerator module profiles.')
-@click.option('--accelerator', default=None,
-              help='Accelerator pack used for managed-import completeness checks.')
-@click.option('--all', 'validate_all', is_flag=True,
-              help='Validate all: syntax + SHACL + consistency')
-@click.option('--syntax', is_flag=True, help='Validate syntax only')
-@click.option('--shacl', is_flag=True, help='Validate SHACL only')
-@click.option('--consistency', is_flag=True, help='Validate consistency only')
-@click.option('--gdpr', is_flag=True, help='Scan for PII properties without GDPR satellite protection')
-@click.option('--ddd', 'ddd', is_flag=True,
-              help='Validate DDD design overlays (*-ddd-ext.ttl) via the dedicated DDD path')
 @click.option(
-    '--degraded',
+    "--ontologies",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontologies directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--shapes",
+    type=click.Path(),
+    default=None,
+    help="Path to SHACL shapes directory (default: auto-detect from hub; "
+    "optional — SHACL is skipped if it does not exist).",
+)
+@click.option(
+    "--catalog",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to catalog file for resolving imports "
+    "(default: <hub>/catalog-v001.xml or "
+    "ontology-reference-models/catalog-v001.xml)",
+)
+@click.option(
+    "--ref-models",
+    type=click.Path(),
+    default=None,
+    help="Reference-model repository containing accelerator module profiles.",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack used for managed-import completeness checks.",
+)
+@click.option(
+    "--all", "validate_all", is_flag=True, help="Validate all: syntax + SHACL + consistency"
+)
+@click.option("--syntax", is_flag=True, help="Validate syntax only")
+@click.option("--shacl", is_flag=True, help="Validate SHACL only")
+@click.option("--consistency", is_flag=True, help="Validate consistency only")
+@click.option(
+    "--gdpr", is_flag=True, help="Scan for PII properties without GDPR satellite protection"
+)
+@click.option(
+    "--ddd",
+    "ddd",
+    is_flag=True,
+    help="Validate DDD design overlays (*-ddd-ext.ttl) via the dedicated DDD path",
+)
+@click.option(
+    "--degraded",
     is_flag=True,
     default=False,
-    help='Explicitly allow incomplete ontology imports for semantic validation; '
-         'results are marked import_complete=false.',
+    help="Explicitly allow incomplete ontology imports for semantic validation; "
+    "results are marked import_complete=false.",
 )
 @click.option(
-    '--report-format',
-    type=click.Choice(['json', 'markdown', 'both']),
-    default='json',
+    "--report-format",
+    type=click.Choice(["json", "markdown", "both"]),
+    default="json",
     show_default=True,
-    help='Validation report format(s) to write. Additive: the default preserves '
-         'the pre-existing JSON-only report contract at '
-         '<hub>/output/validation-report.json unchanged.',
+    help="Validation report format(s) to write. Additive: the default preserves "
+    "the pre-existing JSON-only report contract at "
+    "<hub>/output/validation-report.json unchanged.",
 )
 @click.option(
-    '--report-path',
+    "--report-path",
     type=click.Path(path_type=Path),
     default=None,
-    help='Explicit report output path. Only valid with a single --report-format '
-         '(json or markdown) — --report-format both always writes the default '
-         'validation-report.json and validation-report.md under <hub>/output/.',
+    help="Explicit report output path. Only valid with a single --report-format "
+    "(json or markdown) — --report-format both always writes the default "
+    "validation-report.json and validation-report.md under <hub>/output/.",
 )
 def validate(
     ontologies,
@@ -943,11 +1374,7 @@ def validate(
     else:
         shapes_path = cwd / "ontology-hub" / "model" / "shapes"
 
-    ref_models_path = (
-        Path(ref_models)
-        if ref_models
-        else _resolve_ref_models_dir(cwd, hub_root)
-    )
+    ref_models_path = Path(ref_models) if ref_models else _resolve_ref_models_dir(cwd, hub_root)
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
     from ..core.reference_modules import resolve_hub_accelerator_detailed
 
@@ -968,7 +1395,7 @@ def validate(
         if accelerator_resolution.data_domains_path is not None:
             click.echo(f"   Data domains: {accelerator_resolution.data_domains_path}")
 
-    if report_path is not None and report_format == 'both':
+    if report_path is not None and report_format == "both":
         raise click.ClickException(
             "--report-path requires --report-format json or markdown (not 'both'); "
             "'both' always writes validation-report.json and validation-report.md "
@@ -980,16 +1407,16 @@ def validate(
     output_dir = hub_root / "output" if hub_root is not None else cwd / "ontology-hub" / "output"
     json_report_path = None
     markdown_report_path = None
-    if report_format in ('json', 'both'):
+    if report_format in ("json", "both"):
         json_report_path = (
             Path(report_path)
-            if (report_path is not None and report_format == 'json')
+            if (report_path is not None and report_format == "json")
             else output_dir / "validation-report.json"
         )
-    if report_format in ('markdown', 'both'):
+    if report_format in ("markdown", "both"):
         markdown_report_path = (
             Path(report_path)
-            if (report_path is not None and report_format == 'markdown')
+            if (report_path is not None and report_format == "markdown")
             else output_dir / "validation-report.md"
         )
 
@@ -1043,59 +1470,86 @@ def validate(
 
 
 @cli.command()
-@click.option('--ontologies', type=click.Path(exists=True), default=None,
-              help='Path to ontologies directory (default: auto-detect from hub).')
-@click.option('--ontology', type=click.Path(exists=True, dir_okay=False), default=None,
-              help='Path to a single ontology file to project.')
-@click.option('--catalog', type=click.Path(exists=True),
-              default=None,
-              help='Path to catalog file for resolving imports '
-                   '(default: <hub>/catalog-v001.xml or '
-                   'ontology-reference-models/catalog-v001.xml)')
-@click.option('--ref-models', type=click.Path(), default=None,
-              help='Reference-model repository containing accelerator module profiles.')
-@click.option('--accelerator', default=None,
-              help='Accelerator pack used for managed-import projection preflight.')
-@click.option('--output', type=click.Path(), default=None,
-              help='Output directory for projections (default: <hub>/output).')
 @click.option(
-    '--target',
-    type=click.Choice(('all', *projection_target_choices())),
-    default='all',
-    help='Projection target',
+    "--ontologies",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontologies directory (default: auto-detect from hub).",
 )
 @click.option(
-    '--platform', '--adapter',
-    type=click.Choice(['fabric', 'databricks']),
-    default='fabric',
+    "--ontology",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Path to a single ontology file to project.",
+)
+@click.option(
+    "--catalog",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to catalog file for resolving imports "
+    "(default: <hub>/catalog-v001.xml or "
+    "ontology-reference-models/catalog-v001.xml)",
+)
+@click.option(
+    "--ref-models",
+    type=click.Path(),
+    default=None,
+    help="Reference-model repository containing accelerator module profiles.",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack used for managed-import projection preflight.",
+)
+@click.option(
+    "--output",
+    type=click.Path(),
+    default=None,
+    help="Output directory for projections (default: <hub>/output).",
+)
+@click.option(
+    "--target",
+    type=click.Choice(("all", *projection_target_choices())),
+    default="all",
+    help="Projection target",
+)
+@click.option(
+    "--platform",
+    "--adapter",
+    type=click.Choice(["fabric", "databricks"]),
+    default="fabric",
     show_default=True,
-    help='SQL platform for dbt projection.',
-)
-@click.option('--namespace', type=str, default=None,
-              help='Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.')
-@click.option(
-    '--emit-aspirational-stubs',
-    is_flag=True,
-    default=False,
-    help='Emit typed zero-row Silver stubs for approved, materialization-eligible '
-         'claims that have no bronze mapping yet (target-first stub → bind loop, DD-096). '
-         'Off by default; also honoured via KAIROS_EMIT_ASPIRATIONAL_STUBS.',
+    help="SQL platform for dbt projection.",
 )
 @click.option(
-    '--strict',
-    is_flag=True,
-    default=False,
-    help='Strict DD-114/DD-115 release evaluation. Requires an approved baseline, '
-         'compile evidence, complete generated artifacts, and non-blocking binding, '
-         'coverage, DQ, security, measure, and calendar status. Also honoured via '
-         'KAIROS_PROJECT_STRICT.',
+    "--namespace",
+    type=str,
+    default=None,
+    help="Base namespace to project (e.g., http://example.org/ont/). Auto-detects if not provided.",
 )
 @click.option(
-    '--degraded',
+    "--emit-aspirational-stubs",
     is_flag=True,
     default=False,
-    help='Explicitly allow projection from an incomplete import closure; reports '
-         'are marked import_complete=false.',
+    help="Emit typed zero-row Silver stubs for approved, materialization-eligible "
+    "claims that have no bronze mapping yet (target-first stub → bind loop, DD-096). "
+    "Off by default; also honoured via KAIROS_EMIT_ASPIRATIONAL_STUBS.",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Strict DD-114/DD-115 release evaluation. Requires an approved baseline, "
+    "compile evidence, complete generated artifacts, and non-blocking binding, "
+    "coverage, DQ, security, measure, and calendar status. Also honoured via "
+    "KAIROS_PROJECT_STRICT.",
+)
+@click.option(
+    "--degraded",
+    is_flag=True,
+    default=False,
+    help="Explicitly allow projection from an incomplete import closure; reports "
+    "are marked import_complete=false.",
 )
 def project(
     ontologies,
@@ -1113,16 +1567,14 @@ def project(
 ):
     """Generate projections from ontologies."""
     cwd = Path.cwd()
-    if platform != 'fabric' and target not in {'dbt', 'all'}:
+    if platform != "fabric" and target not in {"dbt", "all"}:
         raise click.UsageError("--platform applies only to --target dbt or --target all")
-    if emit_aspirational_stubs and target not in {'dbt', 'all'}:
+    if emit_aspirational_stubs and target not in {"dbt", "all"}:
         raise click.UsageError(
             "--emit-aspirational-stubs applies only to --target dbt or --target all"
         )
-    if strict and target not in {'dbt', 'all'}:
-        raise click.UsageError(
-            "--strict applies only to --target dbt or --target all"
-        )
+    if strict and target not in {"dbt", "all"}:
+        raise click.UsageError("--strict applies only to --target dbt or --target all")
 
     (
         ontologies_path,
@@ -1130,9 +1582,7 @@ def project(
         ref_models_path,
         hub_root,
         accelerator,
-    ) = _resolve_projection_cli_scope(
-        ontologies, ontology, catalog, ref_models, accelerator
-    )
+    ) = _resolve_projection_cli_scope(ontologies, ontology, catalog, ref_models, accelerator)
 
     if output is not None:
         output_path = Path(output)
@@ -1217,15 +1667,9 @@ def check_projection_cmd(
         ref_models_path,
         hub_root,
         accelerator,
-    ) = _resolve_projection_cli_scope(
-        ontologies, ontology, catalog, ref_models, accelerator
-    )
+    ) = _resolve_projection_cli_scope(ontologies, ontology, catalog, ref_models, accelerator)
     cwd = Path.cwd()
-    output_path = (
-        hub_root / "output"
-        if hub_root is not None
-        else cwd / "ontology-hub" / "output"
-    )
+    output_path = hub_root / "output" if hub_root is not None else cwd / "ontology-hub" / "output"
     from ..core.projection_readiness import check_projection
 
     report = check_projection(
@@ -1247,11 +1691,19 @@ def check_projection_cmd(
         raise SystemExit(1)
 
 
-@cli.command(name='mdm-validate')
-@click.option('--ontologies', type=click.Path(exists=True), default=None,
-              help='Path to ontologies directory (default: auto-detect from hub).')
-@click.option('--catalog', type=click.Path(exists=True), default=None,
-              help='Path to catalog file for resolving imports.')
+@cli.command(name="mdm-validate")
+@click.option(
+    "--ontologies",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontologies directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--catalog",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to catalog file for resolving imports.",
+)
 def mdm_validate(ontologies, catalog):
     """Validate MDM extension policy (``*-mdm-ext.ttl``) for each domain.
 
@@ -1288,7 +1740,8 @@ def mdm_validate(ontologies, catalog):
     catalog_path = _resolve_catalog(catalog, hub_root, cwd)
 
     onto_files = sorted(
-        p for p in ontologies_path.glob("*.ttl")
+        p
+        for p in ontologies_path.glob("*.ttl")
         if not p.stem.endswith("-ext") and not p.stem.startswith("_")
     )
     if not onto_files:
@@ -1330,11 +1783,13 @@ def mdm_validate(ontologies, catalog):
     click.echo(f"\n✅ MDM validation passed for {checked} domain(s).")
 
 
-@cli.command(name='catalog-test')
-@click.option('--catalog', type=click.Path(exists=True), required=True,
-              help='Path to catalog file to test')
-@click.option('--ontology', type=click.Path(exists=True),
-              help='Optional: test with specific ontology file')
+@cli.command(name="catalog-test")
+@click.option(
+    "--catalog", type=click.Path(exists=True), required=True, help="Path to catalog file to test"
+)
+@click.option(
+    "--ontology", type=click.Path(exists=True), help="Optional: test with specific ontology file"
+)
 def catalog_test_cmd(catalog, ontology):
     """Test catalog resolution for imports."""
     catalog_path = Path(catalog)
@@ -1344,12 +1799,21 @@ def catalog_test_cmd(catalog, ontology):
 
 
 @cli.command()
-@click.option('--domain', type=str, default=None,
-              help='Name of the first domain (e.g., "customer"). Creates a starter .ttl file.')
-@click.option('--company-domain', 'company_domain', type=str, required=True,
-              help='Company internet domain (e.g., "contoso.com"). '
-                   'Used as the namespace base: https://<domain>/ont/')
-@click.option('--force', is_flag=True, help='Overwrite existing files')
+@click.option(
+    "--domain",
+    type=str,
+    default=None,
+    help='Name of the first domain (e.g., "customer"). Creates a starter .ttl file.',
+)
+@click.option(
+    "--company-domain",
+    "company_domain",
+    type=str,
+    required=True,
+    help='Company internet domain (e.g., "contoso.com"). '
+    "Used as the namespace base: https://<domain>/ont/",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing files")
 def init(domain, company_domain, force):
     """Initialize a Kairos ontology hub in the current directory.
 
@@ -1415,8 +1879,13 @@ def init(domain, company_domain, force):
 
     # Place .gitkeep in empty output subdirs so git tracks them
     for target in [
-        "medallion/powerbi", "medallion/dbt",
-        "neo4j", "azure-search", "a2ui", "prompt", "report",
+        "medallion/powerbi",
+        "medallion/dbt",
+        "neo4j",
+        "azure-search",
+        "a2ui",
+        "prompt",
+        "report",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"
         if not gitkeep.exists():
@@ -1458,8 +1927,7 @@ def init(domain, company_domain, force):
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
-        "integration/sources/custom-transformations":
-            "integration/sources/custom-transformations",
+        "integration/sources/custom-transformations": "integration/sources/custom-transformations",
         "integration/preparation": "integration/preparation",
         "integration/transforms/dbt": "integration/transforms/dbt",
     }
@@ -1481,13 +1949,17 @@ def init(domain, company_domain, force):
             shutil.copy2(shape_src, shape_dst)
 
     # 2a. Copy the business glossary template into businessdiscovery/
-    glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
+    glossary_tpl_src = (
+        _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
+    )
     glossary_tpl_dst = hub / "businessdiscovery" / "glossary-template.ttl"
     if glossary_tpl_src.is_file() and (not glossary_tpl_dst.exists() or force):
         shutil.copy2(glossary_tpl_src, glossary_tpl_dst)
 
     # 2b. Copy source-system-template into integration/sources/
-    src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
+    src_template_src = (
+        _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
+    )
     src_template_dst = hub / "integration" / "sources" / "source-system-template"
     if src_template_src.is_dir() and (not src_template_dst.exists() or force):
         if src_template_dst.exists():
@@ -1504,13 +1976,7 @@ def init(domain, company_domain, force):
         if prep_src.is_file() and (not prep_dst.exists() or force):
             shutil.copy2(prep_src, prep_dst)
 
-    baseline_src = (
-        _SCAFFOLD_DIR
-        / "ontology-hub"
-        / "model"
-        / "governance"
-        / "release-baseline.yaml"
-    )
+    baseline_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "governance" / "release-baseline.yaml"
     baseline_dst = hub / "model" / "governance" / "release-baseline.yaml"
     if baseline_src.is_file() and (not baseline_dst.exists() or force):
         shutil.copy2(baseline_src, baseline_dst)
@@ -1598,7 +2064,9 @@ def init(domain, company_domain, force):
             if tpl_file.is_file():
                 dst_file = issue_tpl_dst / tpl_file.name
                 if dst_file.exists() and not force:
-                    print(f"  ⏭  .github/ISSUE_TEMPLATE/{tpl_file.name} already exists (use --force)")
+                    print(
+                        f"  ⏭  .github/ISSUE_TEMPLATE/{tpl_file.name} already exists (use --force)"
+                    )
                 else:
                     shutil.copy2(tpl_file, dst_file)
                     print(f"  ✓ Installed .github/ISSUE_TEMPLATE/{tpl_file.name}")
@@ -1655,11 +2123,12 @@ def init(domain, company_domain, force):
             version = _tag_to_version(ref)
             repo_name = cwd.name
             content = pyproject_src.read_text(encoding="utf-8")
-            content = (content
-                       .replace("{repo_name}", repo_name)
-                       .replace("{description}", repo_name)
-                       .replace("{toolkit_ref}", ref)
-                       .replace("{toolkit_version}", version))
+            content = (
+                content.replace("{repo_name}", repo_name)
+                .replace("{description}", repo_name)
+                .replace("{toolkit_ref}", ref)
+                .replace("{toolkit_version}", version)
+            )
             pyproject_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created pyproject.toml")
 
@@ -1674,9 +2143,9 @@ def init(domain, company_domain, force):
             print("  ⏭  ontology-hub/README.md already exists (use --force to overwrite)")
         else:
             content = hub_readme_src.read_text(encoding="utf-8")
-            content = (content
-                       .replace("{company_name}", company_name)
-                       .replace("{company_domain}", company_domain))
+            content = content.replace("{company_name}", company_name).replace(
+                "{company_domain}", company_domain
+            )
             hub_readme_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created ontology-hub/README.md (company context)")
 
@@ -1688,24 +2157,26 @@ def init(domain, company_domain, force):
             print("  ⏭  ontology-hub/model/ontologies/_master.ttl already exists (use --force)")
         else:
             content = master_src.read_text(encoding="utf-8")
-            content = (content
-                       .replace("{company_name}", company_name)
-                       .replace("{company_domain}", company_domain))
+            content = content.replace("{company_name}", company_name).replace(
+                "{company_domain}", company_domain
+            )
             content = provenance_comment("init", editable=True) + "\n" + content
             master_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created ontology-hub/model/ontologies/_master.ttl")
 
     # 7a-ii. Generate foundation ontology (shared base for thin domain ontologies)
-    foundation_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "foundation.ttl.template"
+    foundation_src = (
+        _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "foundation.ttl.template"
+    )
     foundation_dst = hub / "model" / "ontologies" / "_foundation.ttl"
     if foundation_src.is_file():
         if foundation_dst.exists() and not force:
             print("  ⏭  ontology-hub/model/ontologies/_foundation.ttl already exists (use --force)")
         else:
             content = foundation_src.read_text(encoding="utf-8")
-            content = (content
-                       .replace("{company_name}", company_name)
-                       .replace("{company_domain}", company_domain))
+            content = content.replace("{company_name}", company_name).replace(
+                "{company_domain}", company_domain
+            )
             content = provenance_comment("init", editable=True) + "\n" + content
             foundation_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created ontology-hub/model/ontologies/_foundation.ttl")
@@ -1718,25 +2189,30 @@ def init(domain, company_domain, force):
             print("  ⏭  ontology-hub/catalog-v001.xml already exists (use --force)")
         else:
             content = catalog_src.read_text(encoding="utf-8")
-            content = (content
-                       .replace("{company_name}", company_name)
-                       .replace("{company_domain}", company_domain))
+            content = content.replace("{company_name}", company_name).replace(
+                "{company_domain}", company_domain
+            )
             catalog_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created ontology-hub/catalog-v001.xml")
 
     # 8. Scaffold a starter domain ontology
     if domain:
-        template_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "starter.ttl.template"
+        template_src = (
+            _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "starter.ttl.template"
+        )
         ontology_dst = hub / "model" / "ontologies" / f"{domain}.ttl"
         if ontology_dst.exists() and not force:
-            print(f"  ⏭  ontology-hub/model/ontologies/{domain}.ttl already exists (use --force to overwrite)")
+            print(
+                f"  ⏭  ontology-hub/model/ontologies/{domain}.ttl already exists (use --force to overwrite)"
+            )
         elif template_src.is_file():
             label = domain.replace("-", " ").replace("_", " ").title()
             content = template_src.read_text(encoding="utf-8")
-            content = (content
-                       .replace("{domain}", domain)
-                       .replace("{label}", label)
-                       .replace("{company_domain}", company_domain))
+            content = (
+                content.replace("{domain}", domain)
+                .replace("{label}", label)
+                .replace("{company_domain}", company_domain)
+            )
             content = provenance_comment("init", editable=True) + "\n" + content
             ontology_dst.write_text(content, encoding="utf-8")
             print(f"  ✓ Created ontology-hub/model/ontologies/{domain}.ttl")
@@ -1746,7 +2222,9 @@ def init(domain, company_domain, force):
 
     print("\n✅ Ontology hub initialized!")
     print("\nNext steps:")
-    print("  1. Edit ontology-hub/model/ontologies/*.ttl to define your domain classes and properties")
+    print(
+        "  1. Edit ontology-hub/model/ontologies/*.ttl to define your domain classes and properties"
+    )
     print("  2. Run: kairos-ontology validate")
     print("  3. Run: kairos-ontology project --target prompt")
 
@@ -1755,10 +2233,16 @@ def init(domain, company_domain, force):
 # update — refresh toolkit-managed files to the installed version
 # ---------------------------------------------------------------------------
 
-@cli.command(name='import-tmdl')
-@click.argument('source', type=click.Path(exists=True))
-@click.option('--output', '-o', type=click.Path(), default='integration/sources/powerbi',
-              help='Output directory (default: integration/sources/powerbi/)')
+
+@cli.command(name="import-tmdl")
+@click.argument("source", type=click.Path(exists=True))
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default="integration/sources/powerbi",
+    help="Output directory (default: integration/sources/powerbi/)",
+)
 def import_tmdl(source, output):
     """Import and inventory TMDL/PBIP files for ontology modeling.
 
@@ -1833,10 +2317,7 @@ def resolve_ontology_cmd(ontology, catalog, degraded, as_json):
     click.echo(f"Profile: {loaded.profile.value}")
     click.echo(f"Import complete: {loaded.complete}")
     for entry in loaded.manifest:
-        click.echo(
-            f"  {'  ' * entry.import_depth}{entry.source_identity} "
-            f"[{entry.rdf_format}]"
-        )
+        click.echo(f"  {'  ' * entry.import_depth}{entry.source_identity} " f"[{entry.rdf_format}]")
     for diagnostic in loaded.diagnostics:
         click.echo(f"  {diagnostic.level.upper()}: {diagnostic.message}")
 
@@ -2185,9 +2666,7 @@ def show_source_schema_cmd(system, sources):
     source_root = (
         Path(sources)
         if sources
-        else hub / "integration" / "sources"
-        if hub
-        else Path("integration") / "sources"
+        else hub / "integration" / "sources" if hub else Path("integration") / "sources"
     )
     system_dir = source_root / system
     if not system_dir.is_dir():
@@ -2251,21 +2730,42 @@ def explain_term_cmd(iri, ontology, catalog, profile):
     )
 
 
-@cli.command(name='import-source')
-@click.option('--from', 'from_path', type=click.Path(exists=True), required=True,
-              help='Path to source-schema YAML file or extracted/<system>/ directory.')
-@click.option('--system', 'system_name', default=None,
-              help='Override the system name (default: from YAML).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Output directory (default: integration/sources/{system}/).')
-@click.option('--dry-run', is_flag=True,
-              help='Show changes without writing files.')
-@click.option('--enrich/--no-enrich', default=True,
-              help='Run inference enrichment (enum/format/FK detection). Default: enabled.')
-@click.option('--enum-threshold', type=int, default=25,
-              help='Max distinct values to suggest as enumeration (default: 25).')
-@click.option('--split-tables', is_flag=True, default=False,
-              help='ONLY generate per-table files (skip monolithic). By default both are written.')
+@cli.command(name="import-source")
+@click.option(
+    "--from",
+    "from_path",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to source-schema YAML file or extracted/<system>/ directory.",
+)
+@click.option(
+    "--system", "system_name", default=None, help="Override the system name (default: from YAML)."
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: integration/sources/{system}/).",
+)
+@click.option("--dry-run", is_flag=True, help="Show changes without writing files.")
+@click.option(
+    "--enrich/--no-enrich",
+    default=True,
+    help="Run inference enrichment (enum/format/FK detection). Default: enabled.",
+)
+@click.option(
+    "--enum-threshold",
+    type=int,
+    default=25,
+    help="Max distinct values to suggest as enumeration (default: 25).",
+)
+@click.option(
+    "--split-tables",
+    is_flag=True,
+    default=False,
+    help="ONLY generate per-table files (skip monolithic). By default both are written.",
+)
 def import_source(from_path, system_name, output, dry_run, enrich, enum_threshold, split_tables):
     """Import source schema YAML and generate/refresh bronze vocabulary TTL.
 
@@ -2317,6 +2817,7 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         # Write a temporary combined YAML for run_import_source
         import tempfile
         import yaml as _yaml
+
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".yaml", delete=False, encoding="utf-8"
         ) as tmp:
@@ -2547,7 +3048,13 @@ def source_privacy_cmd(sources, fix):
     help="Keep auto-detected technical/metadata columns (volume, subfolder, etc.).",
 )
 def import_flatfile(
-    from_path, system_name, output, sample_size, max_rows, exclude_columns, keep_technical,
+    from_path,
+    system_name,
+    output,
+    sample_size,
+    max_rows,
+    exclude_columns,
+    keep_technical,
 ):
     """Import CSV/Excel/Parquet flat files as source schema documentation.
 
@@ -2609,31 +3116,46 @@ def import_flatfile(
     click.echo(f"   📊 {yaml_count} table(s) documented")
     if samples_count:
         click.echo(f"   📋 {samples_count} sample file(s) created")
-    click.echo(
-        f"\n💡 Next step: kairos-ontology import-source --from {result_dir}"
-    )
+    click.echo(f"\n💡 Next step: kairos-ontology import-source --from {result_dir}")
 
 
-
-@click.option('--profile', 'profile_name', required=True,
-              help='dbt profile name (from profiles.yml).')
-@click.option('--target', default='dev',
-              help='dbt target name (default: dev).')
-@click.option('--schema', 'schema_name', required=True,
-              help='Database schema to introspect.')
-@click.option('--system', 'system_name', required=True,
-              help='Logical source system name (used for output directory).')
-@click.option('--output', '-o', type=click.Path(), default='extracted',
-              help='Output base directory (default: extracted/).')
-@click.option('--profiles-dir', 'profiles_dir', type=click.Path(exists=True),
-              default='.dbt',
-              help='Directory containing profiles.yml (default: .dbt/).')
-@click.option('--tables', 'table_list', default=None,
-              help='Comma-separated list of tables to introspect (default: all).')
-@click.option('--sample-size', default=5, type=int,
-              help='Number of sample rows per table (default: 5).')
-def extract_schema(profile_name, target, schema_name, system_name, output,
-                   profiles_dir, table_list, sample_size):
+@click.option(
+    "--profile", "profile_name", required=True, help="dbt profile name (from profiles.yml)."
+)
+@click.option("--target", default="dev", help="dbt target name (default: dev).")
+@click.option("--schema", "schema_name", required=True, help="Database schema to introspect.")
+@click.option(
+    "--system",
+    "system_name",
+    required=True,
+    help="Logical source system name (used for output directory).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default="extracted",
+    help="Output base directory (default: extracted/).",
+)
+@click.option(
+    "--profiles-dir",
+    "profiles_dir",
+    type=click.Path(exists=True),
+    default=".dbt",
+    help="Directory containing profiles.yml (default: .dbt/).",
+)
+@click.option(
+    "--tables",
+    "table_list",
+    default=None,
+    help="Comma-separated list of tables to introspect (default: all).",
+)
+@click.option(
+    "--sample-size", default=5, type=int, help="Number of sample rows per table (default: 5)."
+)
+def extract_schema(
+    profile_name, target, schema_name, system_name, output, profiles_dir, table_list, sample_size
+):
     """Introspect live warehouse/lakehouse schema and produce per-table YAML.
 
     Connects to the database using dbt profile credentials and extracts:
@@ -2698,45 +3220,119 @@ def extract_schema(profile_name, target, schema_name, system_name, output,
         click.echo(f"   📄 {f.name}")
 
 
-@cli.command(name='analyse-sources')
-@click.option('--sources', type=click.Path(exists=True), default=None,
-              help='Path to integration/sources/ directory (default: auto-detect from hub).')
-@click.option('--ref-models', type=click.Path(exists=True), default=None,
-              help='Path to ontology-reference-models/ directory (default: auto-detect).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Output directory (default: integration/sources/_analysis/).')
-@click.option('--threshold', type=float, default=0.3,
-              help='Deprecated; ignored in table-centric (schema_version 2) analysis.')
-@click.option('--model', 'llm_model', default='gpt-5.4-mini',
-              help='LLM model for semantic matching (default: gpt-5.4-mini).')
-@click.option('--max-domains', type=int, default=None,
-              help='Maximum reference domains to analyse (rate limit protection).')
-@click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names — OUTPUT filter only (issue #189): '
-                   'tables are always classified against the full domain set, then '
-                   'only matching primary domains are written (case-insensitive '
-                   'substring match).')
-@click.option('--materialize', 'materialize_dir', type=click.Path(), default=None,
-              help='Write the resolved analysis context (manifest + per-domain YAML) '
-                   'to this directory for inspection.')
-@click.option('--exclude', 'exclude_patterns', multiple=True, default=('archive/**',),
-              help='Glob patterns to exclude from reference models (default: archive/**).')
-@click.option('--accelerator', default=None,
-              help='Accelerator pack name (e.g. logistics) — classify against its '
-                   'data domains (party, commercial, ...) instead of raw reference models.')
-@click.option('--shallow', is_flag=True, default=False,
-              help='Skip owl:imports resolution in the reference-model fallback (faster).')
-@click.option('--max-workers', type=int, default=8,
-              help='Max concurrent per-table LLM calls (default: 8; use 1 for serial).')
-@click.option('--force', is_flag=True, default=False,
-              help='Bypass the per-table cache and re-classify every table.')
-@click.option('--verbose', '-v', is_flag=True, default=False,
-              help='Show per-table classification lines.')
-@click.option('--quiet', '-q', is_flag=True, default=False,
-              help='Suppress progress output (errors still shown).')
-def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_domains,
-                        domains_filter, materialize_dir, exclude_patterns,
-                        accelerator, shallow, max_workers, force, verbose, quiet):
+@cli.command(name="analyse-sources")
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--ref-models",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontology-reference-models/ directory (default: auto-detect).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: integration/sources/_analysis/).",
+)
+@click.option(
+    "--threshold",
+    type=float,
+    default=0.3,
+    help="Deprecated; ignored in table-centric (schema_version 2) analysis.",
+)
+@click.option(
+    "--model",
+    "llm_model",
+    default="gpt-5.4-mini",
+    help="LLM model for semantic matching (default: gpt-5.4-mini).",
+)
+@click.option(
+    "--max-domains",
+    type=int,
+    default=None,
+    help="Maximum reference domains to analyse (rate limit protection).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names — OUTPUT filter only (issue #189): "
+    "tables are always classified against the full domain set, then "
+    "only matching primary domains are written (case-insensitive "
+    "substring match).",
+)
+@click.option(
+    "--materialize",
+    "materialize_dir",
+    type=click.Path(),
+    default=None,
+    help="Write the resolved analysis context (manifest + per-domain YAML) "
+    "to this directory for inspection.",
+)
+@click.option(
+    "--exclude",
+    "exclude_patterns",
+    multiple=True,
+    default=("archive/**",),
+    help="Glob patterns to exclude from reference models (default: archive/**).",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack name (e.g. logistics) — classify against its "
+    "data domains (party, commercial, ...) instead of raw reference models.",
+)
+@click.option(
+    "--shallow",
+    is_flag=True,
+    default=False,
+    help="Skip owl:imports resolution in the reference-model fallback (faster).",
+)
+@click.option(
+    "--max-workers",
+    type=int,
+    default=8,
+    help="Max concurrent per-table LLM calls (default: 8; use 1 for serial).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Bypass the per-table cache and re-classify every table.",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False, help="Show per-table classification lines."
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress progress output (errors still shown).",
+)
+def analyse_sources_cmd(
+    sources,
+    ref_models,
+    output,
+    threshold,
+    llm_model,
+    max_domains,
+    domains_filter,
+    materialize_dir,
+    exclude_patterns,
+    accelerator,
+    shallow,
+    max_workers,
+    force,
+    verbose,
+    quiet,
+):
     """Analyse source vocabularies against reference model domains (LLM-powered).
 
     Classifies each source table by domain affinity. Two strategies:
@@ -2765,8 +3361,11 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
       kairos-ontology analyse-sources --sources path/to/sources/ --ref-models path/to/refs/
     """
     from ..core.analyse_sources import (
-        run_analyse_sources, resolve_reference_models,
-        build_data_domain_targets, load_data_domains, list_accelerator_packs,
+        run_analyse_sources,
+        resolve_reference_models,
+        build_data_domain_targets,
+        load_data_domains,
+        list_accelerator_packs,
         make_reporter,
     )
     from ..core.ai_provider import DEFAULT_MODEL, ROLE_AFFINITY, resolve_role_model
@@ -2792,8 +3391,11 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
     if ref_models is None:
         ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
         if ref_models_path is None:
-            click.echo("❌ Cannot find ontology-reference-models/ directory. "
-                       "Use --ref-models to specify.", err=True)
+            click.echo(
+                "❌ Cannot find ontology-reference-models/ directory. "
+                "Use --ref-models to specify.",
+                err=True,
+            )
             raise SystemExit(1)
     else:
         ref_models_path = Path(ref_models)
@@ -2814,8 +3416,10 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         if accelerator:
             click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
         if domains_filter:
-            click.echo(f"   Domain filter: {domains_filter} "
-                       f"(output focus only — full set is classified)")
+            click.echo(
+                f"   Domain filter: {domains_filter} "
+                f"(output focus only — full set is classified)"
+            )
         click.echo()
 
     # Detect catalog for owl:imports resolution
@@ -2836,7 +3440,8 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
                 available = list_accelerator_packs(ref_models_path)
                 click.echo(
                     f"❌ No data-domains.yaml for accelerator '{accelerator}'. "
-                    f"Available: {available or '(none)'}", err=True,
+                    f"Available: {available or '(none)'}",
+                    err=True,
                 )
                 raise SystemExit(1)
             targets = build_data_domain_targets(data_domains)
@@ -2857,14 +3462,14 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
                     sum(len(c.get("properties", [])) for c in d.get("classes", []))
                     for d in ref_domains
                 )
-                click.echo(f"📊 Resolved {len(ref_domains)} domain(s) "
-                           f"({total_cls} classes, {total_props} properties):")
+                click.echo(
+                    f"📊 Resolved {len(ref_domains)} domain(s) "
+                    f"({total_cls} classes, {total_props} properties):"
+                )
                 for d in ref_domains:
                     n_cls = len(d.get("classes", []))
                     n_props = sum(len(c.get("properties", [])) for c in d.get("classes", []))
-                    click.echo(
-                        f"   • {d['domain_name']} ({n_cls} classes, {n_props} properties)"
-                    )
+                    click.echo(f"   • {d['domain_name']} ({n_cls} classes, {n_props} properties)")
                 click.echo()
 
     # Parse domains filter
@@ -2897,8 +3502,7 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         )
         if not quiet:
             click.echo(
-                f"\n✅ Analysis complete! Written {len(output_files)} file(s) "
-                f"to: {output_path}"
+                f"\n✅ Analysis complete! Written {len(output_files)} file(s) " f"to: {output_path}"
             )
             for f in output_files:
                 click.echo(f"   📄 {f.name}")
@@ -2910,17 +3514,38 @@ def analyse_sources_cmd(sources, ref_models, output, threshold, llm_model, max_d
         raise SystemExit(1)
 
 
-@cli.command(name='audit-silver-samples')
-@click.option('--sources', type=click.Path(exists=True), default=None,
-              help='Path to integration/sources/ directory (default: auto-detect).')
-@click.option('--mappings', type=click.Path(exists=True), default=None,
-              help='Path to model/mappings/ directory (default: auto-detect).')
-@click.option('--dbt-output', type=click.Path(exists=True), default=None,
-              help='Path to generated dbt output directory (default: output/medallion/dbt).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Report output directory (default: output/reports/silver-sample-audit).')
-@click.option('--fail-on', type=click.Choice(['none', 'warning', 'error']), default='none',
-              help='Exit non-zero when findings at this severity exist (default: none).')
+@cli.command(name="audit-silver-samples")
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect).",
+)
+@click.option(
+    "--mappings",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/mappings/ directory (default: auto-detect).",
+)
+@click.option(
+    "--dbt-output",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to generated dbt output directory (default: output/medallion/dbt).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Report output directory (default: output/reports/silver-sample-audit).",
+)
+@click.option(
+    "--fail-on",
+    type=click.Choice(["none", "warning", "error"]),
+    default="none",
+    help="Exit non-zero when findings at this severity exist (default: none).",
+)
 def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
     """Offline advisory audit of generated silver dbt mappings using source samples.
 
@@ -2967,79 +3592,175 @@ def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
     click.echo(f"   📄 {output_path / 'silver-sample-audit.yaml'}")
     click.echo(f"   📄 {output_path / 'silver-sample-audit.md'}")
 
-    should_fail = (
-        (fail_on == 'error' and counts['error'] > 0)
-        or (fail_on == 'warning' and (counts['error'] > 0 or counts['warning'] > 0))
+    should_fail = (fail_on == "error" and counts["error"] > 0) or (
+        fail_on == "warning" and (counts["error"] > 0 or counts["warning"] > 0)
     )
     if should_fail:
         raise SystemExit(1)
 
 
-@cli.command(name='propose-alignment')
-@click.option('--analysis', type=click.Path(exists=True), default=None,
-              help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
-@click.option('--sources', type=click.Path(exists=True), default=None,
-              help='Path to integration/sources/ directory (default: auto-detect).')
-@click.option('--catalog', type=click.Path(exists=True), default=None,
-              help='Path to catalog-v001.xml (default: auto-detect from hub).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Claim registry output directory (default: hub model/claims/).')
-@click.option('--model', 'llm_model', default='gpt-5.4-mini',
-              help='LLM model for semantic alignment (default: gpt-5.4-mini).')
-@click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names to include (case-insensitive substring match).')
-@click.option('--verbose', '-v', is_flag=True, default=False,
-              help='Show per-table alignment details.')
-@click.option('--quiet', '-q', is_flag=True, default=False,
-              help='Suppress progress output (errors still shown).')
-@click.option('--include-mapping-hints', is_flag=True, default=False,
-              help='DD-045: add deterministic transform + structural mapping hints '
-                   '(advisory, human-confirmed). Default output is unchanged.')
-@click.option('--no-sample-values', 'no_sample_values', is_flag=True, default=False,
-              help='DD-075: suppress masked sample example_values in the output '
-                   '(values are included by default; PII is always masked).')
-@click.option('--max-prompt-classes', type=int, default=12,
-              help='Max reference classes in first-pass table prompt (default: 12).')
-@click.option('--retry-min-confidence', type=click.FloatRange(0.0, 1.0), default=0.6,
-              help='Retry with full reference inventory when ref_class confidence is below this '
-                   'threshold (default: 0.6).')
-@click.option('--retry-min-mapped-ratio', type=click.FloatRange(0.0, 1.0), default=0.4,
-              help='Retry with full reference inventory when non-custom mapped column ratio is '
-                   'below this threshold (default: 0.4).')
-@click.option('--max-workers', type=int, default=8,
-              help='Max concurrent per-table LLM calls (default: 8; use 1 for serial).')
-@click.option('--force', is_flag=True, default=False,
-              help='Bypass caches (domain affinity skip + per-table cache) and re-align all.')
-@click.option('--cross-module', 'cross_module', is_flag=True, default=False,
-              help='DD-070 (issue #166): widen the property candidate pool to the whole '
-                   'accelerator so columns can match sibling/shared-module properties '
-                   '(e.g. a shared Address class). Requires --accelerator. Default output '
-                   'is unchanged.')
-@click.option('--accelerator', default=None,
-              help='Accelerator pack name whose data-domains.yaml defines the cross-module '
-                   'property pool (required with --cross-module).')
-@click.option('--custom-confidence-floor', type=click.FloatRange(0.0, 1.0), default=0.5,
-              help='Issue #182: below this confidence an unmatched column emits no '
-                   'suggested property (null) instead of a confident-but-wrong guess '
-                   '(default: 0.5).')
-@click.option('--high-accuracy', 'high_accuracy', is_flag=True, default=False,
-              help='Issue #182: use the preferred non-reasoning accuracy tier '
-                   '(gpt-5.4) for this accuracy-sensitive alignment step '
-                   '(overrides the default model unless --model was set '
-                   'explicitly). Costs more per run than the mini default.')
-@click.option('--allow-fallback-registry', 'allow_fallback_registry',
-              is_flag=True, default=False,
-              help='Alignment-reliability: write a domain claims file even when '
-                   'every one of its tables is fallback-only (no reference model '
-                   'to align against — the LLM was never called). Without this '
-                   'flag such a domain is skipped as incomplete so a placeholder '
-                   'never masquerades as a real proposal.')
-def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
-                          domains_filter, verbose, quiet, include_mapping_hints,
-                          no_sample_values,
-                          max_prompt_classes, retry_min_confidence, retry_min_mapped_ratio,
-                          max_workers, force, cross_module, accelerator,
-                          custom_confidence_floor, high_accuracy, allow_fallback_registry):
+@cli.command(name="propose-alignment")
+@click.option(
+    "--analysis",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to _analysis/ directory with affinity reports (default: auto-detect).",
+)
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect).",
+)
+@click.option(
+    "--catalog",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to catalog-v001.xml (default: auto-detect from hub).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Claim registry output directory (default: hub model/claims/).",
+)
+@click.option(
+    "--model",
+    "llm_model",
+    default="gpt-5.4-mini",
+    help="LLM model for semantic alignment (default: gpt-5.4-mini).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names to include (case-insensitive substring match).",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False, help="Show per-table alignment details."
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress progress output (errors still shown).",
+)
+@click.option(
+    "--include-mapping-hints",
+    is_flag=True,
+    default=False,
+    help="DD-045: add deterministic transform + structural mapping hints "
+    "(advisory, human-confirmed). Default output is unchanged.",
+)
+@click.option(
+    "--no-sample-values",
+    "no_sample_values",
+    is_flag=True,
+    default=False,
+    help="DD-075: suppress masked sample example_values in the output "
+    "(values are included by default; PII is always masked).",
+)
+@click.option(
+    "--max-prompt-classes",
+    type=int,
+    default=12,
+    help="Max reference classes in first-pass table prompt (default: 12).",
+)
+@click.option(
+    "--retry-min-confidence",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.6,
+    help="Retry with full reference inventory when ref_class confidence is below this "
+    "threshold (default: 0.6).",
+)
+@click.option(
+    "--retry-min-mapped-ratio",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.4,
+    help="Retry with full reference inventory when non-custom mapped column ratio is "
+    "below this threshold (default: 0.4).",
+)
+@click.option(
+    "--max-workers",
+    type=int,
+    default=8,
+    help="Max concurrent per-table LLM calls (default: 8; use 1 for serial).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Bypass caches (domain affinity skip + per-table cache) and re-align all.",
+)
+@click.option(
+    "--cross-module",
+    "cross_module",
+    is_flag=True,
+    default=False,
+    help="DD-070 (issue #166): widen the property candidate pool to the whole "
+    "accelerator so columns can match sibling/shared-module properties "
+    "(e.g. a shared Address class). Requires --accelerator. Default output "
+    "is unchanged.",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack name whose data-domains.yaml defines the cross-module "
+    "property pool (required with --cross-module).",
+)
+@click.option(
+    "--custom-confidence-floor",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.5,
+    help="Issue #182: below this confidence an unmatched column emits no "
+    "suggested property (null) instead of a confident-but-wrong guess "
+    "(default: 0.5).",
+)
+@click.option(
+    "--high-accuracy",
+    "high_accuracy",
+    is_flag=True,
+    default=False,
+    help="Issue #182: use the preferred non-reasoning accuracy tier "
+    "(gpt-5.4) for this accuracy-sensitive alignment step "
+    "(overrides the default model unless --model was set "
+    "explicitly). Costs more per run than the mini default.",
+)
+@click.option(
+    "--allow-fallback-registry",
+    "allow_fallback_registry",
+    is_flag=True,
+    default=False,
+    help="Alignment-reliability: write a domain claims file even when "
+    "every one of its tables is fallback-only (no reference model "
+    "to align against — the LLM was never called). Without this "
+    "flag such a domain is skipped as incomplete so a placeholder "
+    "never masquerades as a real proposal.",
+)
+def propose_alignment_cmd(
+    analysis,
+    sources,
+    catalog,
+    output,
+    llm_model,
+    domains_filter,
+    verbose,
+    quiet,
+    include_mapping_hints,
+    no_sample_values,
+    max_prompt_classes,
+    retry_min_confidence,
+    retry_min_mapped_ratio,
+    max_workers,
+    force,
+    cross_module,
+    accelerator,
+    custom_confidence_floor,
+    high_accuracy,
+    allow_fallback_registry,
+):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
     Pre-modeling step that analyses how source columns map to reference model
@@ -3245,20 +3966,43 @@ def propose_alignment_cmd(analysis, sources, catalog, output, llm_model,
         raise SystemExit(1)
 
 
-@cli.command('suggest-shapes')
-@click.option('--source', type=click.Path(exists=True), default=None,
-              help='Path to a bronze source vocabulary TTL (e.g. '
-                   '<system>.vocabulary.ttl). Default: auto-detect single vocabulary.')
-@click.option('--mappings', type=click.Path(exists=True), default=None,
-              help='Optional SKOS mappings TTL (reserved for domain-targeted shapes).')
-@click.option('--out', '-o', type=click.Path(), default=None,
-              help='Output draft TTL path (default: output/shapes-draft/<name>.ttl).')
-@click.option('--enum-distinct-max', type=int, default=12,
-              help='Max distinct values to emit an sh:in enum (default: 12).')
-@click.option('--no-sample-values', 'no_sample_values', is_flag=True, default=False,
-              help='Suppress masked example values in shape comments (PII is always masked).')
-@click.option('--force', is_flag=True, default=False,
-              help='Overwrite an existing draft shapes file.')
+@cli.command("suggest-shapes")
+@click.option(
+    "--source",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to a bronze source vocabulary TTL (e.g. "
+    "<system>.vocabulary.ttl). Default: auto-detect single vocabulary.",
+)
+@click.option(
+    "--mappings",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional SKOS mappings TTL (reserved for domain-targeted shapes).",
+)
+@click.option(
+    "--out",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output draft TTL path (default: output/shapes-draft/<name>.ttl).",
+)
+@click.option(
+    "--enum-distinct-max",
+    type=int,
+    default=12,
+    help="Max distinct values to emit an sh:in enum (default: 12).",
+)
+@click.option(
+    "--no-sample-values",
+    "no_sample_values",
+    is_flag=True,
+    default=False,
+    help="Suppress masked example values in shape comments (PII is always masked).",
+)
+@click.option(
+    "--force", is_flag=True, default=False, help="Overwrite an existing draft shapes file."
+)
 def suggest_shapes_cmd(source, mappings, out, enum_distinct_max, no_sample_values, force):
     """DD-076: generate a DRAFT SHACL file from bronze source profiling metadata.
 
@@ -3334,17 +4078,39 @@ def suggest_shapes_cmd(source, mappings, out, enum_distinct_max, no_sample_value
     )
 
 
-@cli.command('coverage-report')
-@click.option('--ontology', type=click.Path(exists=True), default=None,
-              help='Path to model/ontologies/ directory (default: auto-detect from hub).')
-@click.option('--ref-models', type=click.Path(exists=True), default=None,
-              help='Path to ontology-reference-models/ directory (default: auto-detect).')
-@click.option('--sources', type=click.Path(exists=True), default=None,
-              help='Path to integration/sources/ (for evidence tracing).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Output directory (default: output/reports/).')
-@click.option('--format', 'out_format', type=click.Choice(['yaml', 'markdown', 'both']),
-              default='both', help='Output format (default: both).')
+@cli.command("coverage-report")
+@click.option(
+    "--ontology",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--ref-models",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontology-reference-models/ directory (default: auto-detect).",
+)
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ (for evidence tracing).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: output/reports/).",
+)
+@click.option(
+    "--format",
+    "out_format",
+    type=click.Choice(["yaml", "markdown", "both"]),
+    default="both",
+    help="Output format (default: both).",
+)
 def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
     """Generate ontology-to-reference-model coverage report.
 
@@ -3374,8 +4140,10 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
         if hub_root:
             ont_path = hub_root / "model" / "ontologies"
         else:
-            click.echo("❌ Cannot find model/ontologies/ directory. "
-                       "Use --ontology to specify.", err=True)
+            click.echo(
+                "❌ Cannot find model/ontologies/ directory. " "Use --ontology to specify.",
+                err=True,
+            )
             raise SystemExit(1)
     else:
         ont_path = Path(ontology)
@@ -3383,8 +4151,11 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
     if ref_models is None:
         ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
         if ref_models_path is None:
-            click.echo("❌ Cannot find ontology-reference-models/ directory. "
-                       "Use --ref-models to specify.", err=True)
+            click.echo(
+                "❌ Cannot find ontology-reference-models/ directory. "
+                "Use --ref-models to specify.",
+                err=True,
+            )
             raise SystemExit(1)
     else:
         ref_models_path = Path(ref_models)
@@ -3429,10 +4200,14 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
             output_files.append(md_path)
 
         click.echo("\n✅ Coverage report generated!")
-        click.echo(f"   Classes: {report.aligned_classes}/{report.total_classes} "
-                   f"({report.class_coverage_pct}%)")
-        click.echo(f"   Properties: {report.aligned_properties}/{report.total_properties} "
-                   f"({report.property_coverage_pct}%)")
+        click.echo(
+            f"   Classes: {report.aligned_classes}/{report.total_classes} "
+            f"({report.class_coverage_pct}%)"
+        )
+        click.echo(
+            f"   Properties: {report.aligned_properties}/{report.total_properties} "
+            f"({report.property_coverage_pct}%)"
+        )
         click.echo()
         for f in output_files:
             click.echo(f"   📄 {f}")
@@ -3445,16 +4220,32 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
         raise SystemExit(1)
 
 
-@cli.command(name='generate-inventory')
-@click.option('--ontology-dir', type=click.Path(exists=True), default=None,
-              help='Path to model/ontologies/ directory (default: auto-detect from hub).')
-@click.option('--ref-models-dir', type=click.Path(exists=True), default=None,
-              help='Path to ontology-reference-models/ directory (default: auto-detect).')
-@click.option('--output-dir', '-o', type=click.Path(), default=None,
-              help='Output directory (default: referencemodels-unpacked/).')
-@click.option('--prune/--no-prune', default=True,
-              help='Remove orphaned inventory files no longer produced by any '
-                   'source (default: prune). Retired stem-named files require migrate.')
+@cli.command(name="generate-inventory")
+@click.option(
+    "--ontology-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--ref-models-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontology-reference-models/ directory (default: auto-detect).",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: referencemodels-unpacked/).",
+)
+@click.option(
+    "--prune/--no-prune",
+    default=True,
+    help="Remove orphaned inventory files no longer produced by any "
+    "source (default: prune). Retired stem-named files require migrate.",
+)
 def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
     """Generate materialized YAML inventories for ontologies and reference models.
 
@@ -3502,8 +4293,11 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
         ref_path = _resolve_ref_models_dir(cwd, hub_root)
 
     if not ont_path and not ref_path:
-        click.echo("❌ No ontology or reference model directories found. "
-                    "Use --ontology-dir or --ref-models-dir.", err=True)
+        click.echo(
+            "❌ No ontology or reference model directories found. "
+            "Use --ontology-dir or --ref-models-dir.",
+            err=True,
+        )
         raise SystemExit(1)
 
     # Resolve output directory
@@ -3520,7 +4314,9 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
         ontology_dir=ont_path,
     )
     if legacy_inventories:
-        click.echo("❌ Legacy inventory format detected; generation will not overwrite it.", err=True)
+        click.echo(
+            "❌ Legacy inventory format detected; generation will not overwrite it.", err=True
+        )
         for finding in legacy_inventories:
             click.echo(f"   - {legacy_inventory_error(finding)}", err=True)
         raise SystemExit(1)
@@ -3558,13 +4354,8 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
                 write_inventory(inv, yaml_path)
                 written.append(yaml_path)
                 n_classes = len(inv["classes"])
-                n_specs = sum(
-                    len(c.get("specializations", []))
-                    for c in inv["classes"]
-                )
-                click.echo(
-                    f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations"
-                )
+                n_specs = sum(len(c.get("specializations", [])) for c in inv["classes"])
+                click.echo(f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations")
             except Exception as e:
                 click.echo(f"   ⚠ Failed to process {ttl_file.name}: {e}", err=True)
 
@@ -3604,31 +4395,72 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
     click.echo(f"\n✅ Generated {len(written)} inventory file(s) in {out_path}")
 
 
-@cli.command(name='check-inventory')
-@click.option('--ontology-dir', type=click.Path(exists=True), default=None,
-              help='Path to model/ontologies/ directory (default: auto-detect from hub).')
-@click.option('--ref-models-dir', type=click.Path(exists=True), default=None,
-              help='Path to ontology-reference-models/ directory (default: auto-detect).')
-@click.option('--inventory-dir', type=click.Path(), default=None,
-              help='Path to referencemodels-unpacked/ directory (default: auto-detect).')
-@click.option('--accelerator', default=None,
-              help='Accelerator pack whose data-domains.yaml resolves --domains to '
-                   'inventory keys (default: [tool.kairos].accelerator, else inferred).')
-@click.option('--domains', 'domains_filter', default=None,
-              help='F5: comma-separated data-domains to scope readiness to '
-                   '(case-insensitive substring). Repository-wide check still runs and '
-                   'global failures are shown, but the exit code reflects only the '
-                   'selected domains'"'"' inventories.')
-@click.option('--explain-scope', is_flag=True, default=False,
-              help='F5: print the domain→inventory-file mapping so it is clear which '
-                   'inventories belong to the selected --domains (and which global '
-                   'failures are out of scope).')
-@click.option('--strict', is_flag=True, default=False,
-              help='Also fail when an inventory cannot be verified (no stored hash).')
-@click.option('--warn-only', is_flag=True, default=False,
-              help='Report problems but always exit 0 (never block).')
-def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, accelerator,
-                        domains_filter, explain_scope, strict, warn_only):
+@cli.command(name="check-inventory")
+@click.option(
+    "--ontology-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--ref-models-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontology-reference-models/ directory (default: auto-detect).",
+)
+@click.option(
+    "--inventory-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to referencemodels-unpacked/ directory (default: auto-detect).",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack whose data-domains.yaml resolves --domains to "
+    "inventory keys (default: [tool.kairos].accelerator, else inferred).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="F5: comma-separated data-domains to scope readiness to "
+    "(case-insensitive substring). Repository-wide check still runs and "
+    "global failures are shown, but the exit code reflects only the "
+    "selected domains"
+    "'"
+    " inventories.",
+)
+@click.option(
+    "--explain-scope",
+    is_flag=True,
+    default=False,
+    help="F5: print the domain→inventory-file mapping so it is clear which "
+    "inventories belong to the selected --domains (and which global "
+    "failures are out of scope).",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Also fail when an inventory cannot be verified (no stored hash).",
+)
+@click.option(
+    "--warn-only",
+    is_flag=True,
+    default=False,
+    help="Report problems but always exit 0 (never block).",
+)
+def check_inventory_cmd(
+    ontology_dir,
+    ref_models_dir,
+    inventory_dir,
+    accelerator,
+    domains_filter,
+    explain_scope,
+    strict,
+    warn_only,
+):
     """Verify that materialized inventories exist and are up to date (DD-047).
 
     Deterministic pre-flight gate for ``design-domain``: confirms that every source
@@ -3685,8 +4517,11 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, accelerator
         inv_path = Path("referencemodels-unpacked")
 
     if not ont_path and not ref_path:
-        click.echo("❌ No ontology or reference model directories found. "
-                   "Use --ontology-dir or --ref-models-dir.", err=True)
+        click.echo(
+            "❌ No ontology or reference model directories found. "
+            "Use --ontology-dir or --ref-models-dir.",
+            err=True,
+        )
         raise SystemExit(1)
 
     report = check_inventories(
@@ -3770,9 +4605,7 @@ def check_inventory_cmd(ontology_dir, ref_models_dir, inventory_dir, accelerator
             for domain in scope.domains:
                 keys = sorted(keys_by_domain.get(domain, set()))
                 click.echo(f"   • {domain}: {', '.join(keys) if keys else '(no inventories)'}")
-            out_of_scope = sorted(
-                (set(report.missing) | set(report.stale)) - scope.keys
-            )
+            out_of_scope = sorted((set(report.missing) | set(report.stale)) - scope.keys)
             if out_of_scope:
                 click.echo(
                     f"   ↪ out-of-scope global failures (not blocking here): "
@@ -3864,21 +4697,42 @@ def _resolve_model_path(
     return cwd / "model" / subdir
 
 
-@cli.command(name='migrate-claims')
-@click.option('--analysis-dir', type=click.Path(exists=True), default=None,
-              help='Directory holding the legacy {domain}-alignment.yaml files '
-                   '(default: auto-detect _analysis/).')
-@click.option('--domain', 'domain_filter', default=None,
-              help='Migrate only this domain (default: every *-alignment.yaml found).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Output directory for {domain}-claims.yaml (default: model/claims/).')
-@click.option('--inventory-dir', type=click.Path(), default=None,
-              help='Path to referencemodels-unpacked/ for URI back-fill '
-                   '(default: auto-detect).')
-@click.option('--no-resolve-uris', is_flag=True, default=False,
-              help='Do not back-fill class_uri/property_uri from the inventory.')
-@click.option('--force', is_flag=True, default=False,
-              help='Overwrite an existing {domain}-claims.yaml.')
+@cli.command(name="migrate-claims")
+@click.option(
+    "--analysis-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Directory holding the legacy {domain}-alignment.yaml files "
+    "(default: auto-detect _analysis/).",
+)
+@click.option(
+    "--domain",
+    "domain_filter",
+    default=None,
+    help="Migrate only this domain (default: every *-alignment.yaml found).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory for {domain}-claims.yaml (default: model/claims/).",
+)
+@click.option(
+    "--inventory-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to referencemodels-unpacked/ for URI back-fill " "(default: auto-detect).",
+)
+@click.option(
+    "--no-resolve-uris",
+    is_flag=True,
+    default=False,
+    help="Do not back-fill class_uri/property_uri from the inventory.",
+)
+@click.option(
+    "--force", is_flag=True, default=False, help="Overwrite an existing {domain}-claims.yaml."
+)
 def migrate_claims_cmd(analysis_dir, domain_filter, output, inventory_dir, no_resolve_uris, force):
     """One-way migrate legacy alignment YAML → Claim Registry (DD-094).
 
@@ -3913,8 +4767,7 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, inventory_dir, no_re
     src_dir = Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
     if not src_dir:
         click.echo(
-            "❌ Cannot find an _analysis/ directory with alignment files. "
-            "Use --analysis-dir.",
+            "❌ Cannot find an _analysis/ directory with alignment files. " "Use --analysis-dir.",
             err=True,
         )
         raise SystemExit(1)
@@ -3955,8 +4808,10 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, inventory_dir, no_re
         domain = align_file.name.replace("-alignment.yaml", "")
         target = registry_path(out_dir, domain)
         if target.exists() and not force:
-            click.echo(f"   ⚠ {domain}: {target.name} exists; use --force to overwrite "
-                       "(skipped)", err=True)
+            click.echo(
+                f"   ⚠ {domain}: {target.name} exists; use --force to overwrite " "(skipped)",
+                err=True,
+            )
             exit_code = 1
             continue
         try:
@@ -3973,47 +4828,100 @@ def migrate_claims_cmd(analysis_dir, domain_filter, output, inventory_dir, no_re
             exit_code = 1
             continue
         write_registry(registry, target)
-        anchored = [c for c in registry.claims if c.disposition in ("claim", "specialize")
-                    and c.type in ("class", "property", "reference_data", "measure")]
+        anchored = [
+            c
+            for c in registry.claims
+            if c.disposition in ("claim", "specialize")
+            and c.type in ("class", "property", "reference_data", "measure")
+        ]
         resolved = sum(1 for c in anchored if c.identifying_uri())
-        uri_note = (
-            f" ({resolved}/{len(anchored)} anchored URIs resolved)" if anchored else ""
-        )
+        uri_note = f" ({resolved}/{len(anchored)} anchored URIs resolved)" if anchored else ""
         click.echo(f"   ✓ {domain}: {len(registry.claims)} claim(s) → {target.name}{uri_note}")
 
     raise SystemExit(exit_code)
 
 
-@cli.command(name='decide-claims')
-@click.option('--claims-dir', type=click.Path(), default=None,
-              help='Path to model/claims/ directory (default: auto-detect).')
-@click.option('--domains', 'domains', default=None,
-              help='Comma-separated domains to curate (default: every *-claims.yaml).')
-@click.option('--status', 'status_filter', default=None,
-              help='Only select claims with this status (repeatable via comma).')
-@click.option('--disposition', 'disposition_filter', default=None,
-              help='Only select claims with this disposition (comma-separated).')
-@click.option('--type', 'type_filter', default=None,
-              help='Only select claims of this type (comma-separated).')
-@click.option('--origin', 'origin_filter', default=None,
-              help='Only select claims with this origin (comma-separated).')
-@click.option('--id', 'id_globs', multiple=True,
-              help='Select claims whose id matches this glob (repeatable).')
-@click.option('--column', 'column_globs', multiple=True,
-              help='Select claims with an evidence source column matching this glob '
-                   '(case-insensitive, repeatable).')
-@click.option('--set-status', 'set_status', default=None,
-              help='Set every selected claim to this status.')
-@click.option('--by-disposition', 'by_disposition', default=None,
-              help='Map dispositions to statuses, e.g. '
-                   '"claim=approved,passthrough=approved,skip=rejected".')
-@click.option('--list', 'list_only', is_flag=True, default=False,
-              help='List the selected claims without changing anything.')
-@click.option('--dry-run', is_flag=True, default=False,
-              help='Show what would change without writing the registry.')
-def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, type_filter,
-                      origin_filter, id_globs, column_globs, set_status, by_disposition,
-                      list_only, dry_run):
+@cli.command(name="decide-claims")
+@click.option(
+    "--claims-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to model/claims/ directory (default: auto-detect).",
+)
+@click.option(
+    "--domains",
+    "domains",
+    default=None,
+    help="Comma-separated domains to curate (default: every *-claims.yaml).",
+)
+@click.option(
+    "--status",
+    "status_filter",
+    default=None,
+    help="Only select claims with this status (repeatable via comma).",
+)
+@click.option(
+    "--disposition",
+    "disposition_filter",
+    default=None,
+    help="Only select claims with this disposition (comma-separated).",
+)
+@click.option(
+    "--type", "type_filter", default=None, help="Only select claims of this type (comma-separated)."
+)
+@click.option(
+    "--origin",
+    "origin_filter",
+    default=None,
+    help="Only select claims with this origin (comma-separated).",
+)
+@click.option(
+    "--id", "id_globs", multiple=True, help="Select claims whose id matches this glob (repeatable)."
+)
+@click.option(
+    "--column",
+    "column_globs",
+    multiple=True,
+    help="Select claims with an evidence source column matching this glob "
+    "(case-insensitive, repeatable).",
+)
+@click.option(
+    "--set-status", "set_status", default=None, help="Set every selected claim to this status."
+)
+@click.option(
+    "--by-disposition",
+    "by_disposition",
+    default=None,
+    help="Map dispositions to statuses, e.g. "
+    '"claim=approved,passthrough=approved,skip=rejected".',
+)
+@click.option(
+    "--list",
+    "list_only",
+    is_flag=True,
+    default=False,
+    help="List the selected claims without changing anything.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would change without writing the registry.",
+)
+def decide_claims_cmd(
+    claims_dir,
+    domains,
+    status_filter,
+    disposition_filter,
+    type_filter,
+    origin_filter,
+    id_globs,
+    column_globs,
+    set_status,
+    by_disposition,
+    list_only,
+    dry_run,
+):
     """Query and bulk-curate claim ``status`` decisions (issue #190).
 
     The Claim Registry stays the single git-tracked source of truth — this command
@@ -4109,9 +5017,7 @@ def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, ty
         skipped = summary.skipped
         blocked = summary.blocked
         block_note = f", {len(blocked)} blocker(s)" if blocked else ""
-        click.echo(
-            f"   • {domain}: {len(applied)} change(s), {len(skipped)} skipped{block_note}"
-        )
+        click.echo(f"   • {domain}: {len(applied)} change(s), {len(skipped)} skipped{block_note}")
         for result in applied:
             click.echo(f"      ✓ {result.claim_id}: {result.from_status} → {result.to_status}")
         for result in skipped:
@@ -4175,44 +5081,111 @@ def decide_claims_cmd(claims_dir, domains, status_filter, disposition_filter, ty
         click.echo("ℹ️  No changes applied.")
 
 
-@cli.command(name='check-claims')
-@click.option('--claims-dir', type=click.Path(), default=None,
-              help='Path to model/claims/ directory (default: auto-detect).')
-@click.option('--analysis-dir', type=click.Path(), default=None,
-              help='Path to _analysis/ directory with affinity reports '
-                   '(default: auto-detect).')
-@click.option('--sources', type=click.Path(), default=None,
-              help='Path to integration/sources/ directory (default: auto-detect).')
-@click.option('--mappings', type=click.Path(), default=None,
-              help='Path to model/mappings/ directory (default: auto-detect).')
-@click.option('--accelerator', default=None,
-              help='Accelerator pack whose data-domains.yaml defines domain '
-                   'ownership (default: first pack found).')
-@click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names to include (case-insensitive substring match).')
-@click.option('--no-source-coverage', is_flag=True, default=False,
-              help='Skip the pre-silver mapping-coverage check (registry checks only).')
-@click.option('--no-extension-sync', is_flag=True, default=False,
-              help='Skip Claim Registry ↔ ontology/extension sync checks.')
-@click.option('--no-mdm-anchor', is_flag=True, default=False,
-              help='Skip the MDM-anchor gate (broad claims need known reference anchors).')
-@click.option('--no-ownership', is_flag=True, default=False,
-              help='Skip the data-domains.yaml ownership-boundary check.')
-@click.option('--strict', is_flag=True, default=False,
-              help='Also block when any registry still carries an undecided '
-                   '(proposed) claim — i.e. require a fully curated registry.')
-@click.option('--require-mapping', is_flag=True, default=False,
-              help='Also block on pre-silver mapping-coverage gaps. Opt-in for the '
-                   'owning silver/dbt projection pre-flight (DD-094) — not part of '
-                   'ordinary curation, so it never affects the default exit code.')
-@click.option('--warn-only', is_flag=True, default=False,
-              help='Report problems but always exit 0 (never block).')
-@click.option('--format', 'output_format', type=click.Choice(['text', 'json']),
-              default='text', help='Output format.')
-def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
-                     domains_filter, no_source_coverage, no_extension_sync,
-                     no_mdm_anchor, no_ownership, strict, require_mapping, warn_only,
-                     output_format):
+@cli.command(name="check-claims")
+@click.option(
+    "--claims-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to model/claims/ directory (default: auto-detect).",
+)
+@click.option(
+    "--analysis-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to _analysis/ directory with affinity reports " "(default: auto-detect).",
+)
+@click.option(
+    "--sources",
+    type=click.Path(),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect).",
+)
+@click.option(
+    "--mappings",
+    type=click.Path(),
+    default=None,
+    help="Path to model/mappings/ directory (default: auto-detect).",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack whose data-domains.yaml defines domain "
+    "ownership (default: first pack found).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names to include (case-insensitive substring match).",
+)
+@click.option(
+    "--no-source-coverage",
+    is_flag=True,
+    default=False,
+    help="Skip the pre-silver mapping-coverage check (registry checks only).",
+)
+@click.option(
+    "--no-extension-sync",
+    is_flag=True,
+    default=False,
+    help="Skip Claim Registry ↔ ontology/extension sync checks.",
+)
+@click.option(
+    "--no-mdm-anchor",
+    is_flag=True,
+    default=False,
+    help="Skip the MDM-anchor gate (broad claims need known reference anchors).",
+)
+@click.option(
+    "--no-ownership",
+    is_flag=True,
+    default=False,
+    help="Skip the data-domains.yaml ownership-boundary check.",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Also block when any registry still carries an undecided "
+    "(proposed) claim — i.e. require a fully curated registry.",
+)
+@click.option(
+    "--require-mapping",
+    is_flag=True,
+    default=False,
+    help="Also block on pre-silver mapping-coverage gaps. Opt-in for the "
+    "owning silver/dbt projection pre-flight (DD-094) — not part of "
+    "ordinary curation, so it never affects the default exit code.",
+)
+@click.option(
+    "--warn-only",
+    is_flag=True,
+    default=False,
+    help="Report problems but always exit 0 (never block).",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+def check_claims_cmd(
+    claims_dir,
+    analysis_dir,
+    sources,
+    mappings,
+    accelerator,
+    domains_filter,
+    no_source_coverage,
+    no_extension_sync,
+    no_mdm_anchor,
+    no_ownership,
+    strict,
+    require_mapping,
+    warn_only,
+    output_format,
+):
     """Verify every domain's Claim Registry is valid, complete, and fresh (DD-094).
 
     The single governance gate (replaces the retired ``check-alignment`` and
@@ -4272,9 +5245,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
     if analysis_dir:
         analysis_path: Path | None = resolve_override(analysis_dir)
         if not analysis_path.is_dir():
-            raise click.ClickException(
-                f"Analysis directory does not exist: {analysis_path}"
-            )
+            raise click.ClickException(f"Analysis directory does not exist: {analysis_path}")
     else:
         analysis_path = _autodetect_analysis_dir(cwd, hub_root)
 
@@ -4299,11 +5270,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             click.echo(f"   • {legacy_alignment_error(path)}", err=True)
         raise SystemExit(1)
 
-    claims_path = (
-        resolve_override(claims_dir)
-        if claims_dir
-        else _resolve_claims_dir(cwd, hub_root)
-    )
+    claims_path = resolve_override(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
 
     if sources:
         sources_path = resolve_override(sources)
@@ -4377,7 +5344,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         strict=strict,
     )
 
-    if output_format == 'json':
+    if output_format == "json":
         click.echo(json.dumps(result.to_dict(), indent=2))
         mapping_block = (
             require_mapping and result.mapping is not None and result.mapping.is_blocking
@@ -4403,8 +5370,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         click.echo(f"   ✓ {domain}: valid, complete, and up to date")
     for domain in report.missing:
         gaps = report.uncovered_tables.get(domain, [])
-        click.echo(f"   ❌ {domain}: MISSING claims ({len(gaps)} table(s) "
-                   "unclaimed)", err=True)
+        click.echo(f"   ❌ {domain}: MISSING claims ({len(gaps)} table(s) " "unclaimed)", err=True)
     for domain in sorted(report.invalid):
         click.echo(f"   ❌ {domain}: INVALID registry:", err=True)
         for msg in report.invalid[domain][:10]:
@@ -4413,18 +5379,24 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             click.echo(f"        … and {len(report.invalid[domain]) - 10} more", err=True)
     for domain in report.incomplete:
         gaps = report.uncovered_tables.get(domain, [])
-        click.echo(f"   ❌ {domain}: INCOMPLETE — {len(gaps)} affinity table(s) "
-                   "not in coverage", err=True)
+        click.echo(
+            f"   ❌ {domain}: INCOMPLETE — {len(gaps)} affinity table(s) " "not in coverage",
+            err=True,
+        )
         for tbl in gaps[:10]:
             click.echo(f"        • {tbl}", err=True)
         if len(gaps) > 10:
             click.echo(f"        … and {len(gaps) - 10} more", err=True)
     for domain in report.stale:
-        click.echo(f"   ❌ {domain}: STALE (affinity tables changed since the "
-                   "registry was generated)", err=True)
+        click.echo(
+            f"   ❌ {domain}: STALE (affinity tables changed since the " "registry was generated)",
+            err=True,
+        )
     for domain in report.unverifiable:
-        click.echo(f"   ⚠ {domain}: cannot verify freshness (no stored hash — "
-                   "regenerate with propose-alignment)")
+        click.echo(
+            f"   ⚠ {domain}: cannot verify freshness (no stored hash — "
+            "regenerate with propose-alignment)"
+        )
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan registry (no matching affinity domain)")
     for name in report.unowned:
@@ -4433,8 +5405,10 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             if accelerator_resolution is not None and accelerator_resolution.data_domains_path
             else ""
         )
-        click.echo(f"   ⚠ {name}: registry domain not found in data-domains.yaml"
-                   f"{registry_note} (ownership unverified)")
+        click.echo(
+            f"   ⚠ {name}: registry domain not found in data-domains.yaml"
+            f"{registry_note} (ownership unverified)"
+        )
 
     if report.duplicate_approved:
         click.echo(
@@ -4442,9 +5416,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             err=True,
         )
         for dup in report.duplicate_approved[:15]:
-            click.echo(
-                f"   • {dup.uri}: {dup.first} and {dup.second}", err=True
-            )
+            click.echo(f"   • {dup.uri}: {dup.first} and {dup.second}", err=True)
         click.echo(
             "   → Two domains approved the same URI. Deduplicate before modeling.",
             err=True,
@@ -4459,7 +5431,8 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             ids = report.anchor_pending[domain]
             click.echo(
                 f"   • {domain}: {len(ids)} anchor(s) still proposed "
-                f"while broad claims are approved", err=True,
+                f"while broad claims are approved",
+                err=True,
             )
             for cid in ids[:10]:
                 click.echo(f"        - {cid}", err=True)
@@ -4471,20 +5444,21 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
 
     if report.deviation_missing:
         click.echo(
-            f"\n⛔ Deviation log incomplete ({len(report.deviation_missing)} "
-            "domain(s)):", err=True,
+            f"\n⛔ Deviation log incomplete ({len(report.deviation_missing)} " "domain(s)):",
+            err=True,
         )
         for domain in sorted(report.deviation_missing):
             ids = report.deviation_missing[domain]
             click.echo(
                 f"   • {domain}: {len(ids)} approved gap (client-native) claim(s) "
-                "lack a deviation record", err=True,
+                "lack a deviation record",
+                err=True,
             )
             for cid in ids[:10]:
                 click.echo(f"        - {cid}", err=True)
         click.echo(
-            "   → Add a deviation (owner + reason) to every client-native gap "
-            "claim (§12).", err=True,
+            "   → Add a deviation (owner + reason) to every client-native gap " "claim (§12).",
+            err=True,
         )
 
     if report.ownership_conflicts:
@@ -4495,7 +5469,8 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         for conf in report.ownership_conflicts[:15]:
             click.echo(
                 f"   • {conf.domain}:{conf.claim_id} approves {conf.uri} "
-                f"owned by {', '.join(conf.owners)}", err=True,
+                f"owned by {', '.join(conf.owners)}",
+                err=True,
             )
         click.echo(
             "   → Move the claim to its owning domain, or add an "
@@ -4512,7 +5487,8 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             entries = report.grain_conflicts[domain]
             click.echo(
                 f"   • {domain}: {len(entries)} reference class(es) fuse source "
-                "tables with different candidate business entities", err=True,
+                "tables with different candidate business entities",
+                err=True,
             )
             for entry in entries[:10]:
                 click.echo(f"        - {entry}", err=True)
@@ -4521,7 +5497,8 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         click.echo(
             "   → Tables with distinct grains collapsed onto one class "
             "(merge-by-nearest-anchor). Confirm they share a grain or split the "
-            "model before approving the class claim.", err=True,
+            "model before approving the class claim.",
+            err=True,
         )
 
     if report.column_omissions:
@@ -4533,7 +5510,8 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             entries = report.column_omissions[domain]
             click.echo(
                 f"   • {domain}: {len(entries)} table(s) reached the registry with "
-                "fewer columns than the source has", err=True,
+                "fewer columns than the source has",
+                err=True,
             )
             for entry in entries[:10]:
                 click.echo(f"        - {entry}", err=True)
@@ -4542,7 +5520,8 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         click.echo(
             "   → Columns were dropped before the Claim Registry (e.g. prompt "
             "truncation). Re-run propose-alignment so every source column is "
-            "reconciled into the registry.", err=True,
+            "reconciled into the registry.",
+            err=True,
         )
 
     if report.unresolved_anchor_tables:
@@ -4568,9 +5547,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         )
 
     if report.anchor_missing:
-        click.echo(
-            f"\n⚠ MDM anchors not declared ({len(report.anchor_missing)} domain(s)):"
-        )
+        click.echo(f"\n⚠ MDM anchors not declared ({len(report.anchor_missing)} domain(s)):")
         for domain in sorted(report.anchor_missing):
             click.echo(
                 f"   • {domain}: broad class claims approved but no mdm_anchor "
@@ -4602,9 +5579,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
 
     if report.passthrough_review:
         total = sum(len(v) for v in report.passthrough_review.values())
-        click.echo(
-            f"\n⚠ Passthrough fields awaiting promotion review ({total}):"
-        )
+        click.echo(f"\n⚠ Passthrough fields awaiting promotion review ({total}):")
         for domain in sorted(report.passthrough_review):
             ids = report.passthrough_review[domain]
             click.echo(f"   • {domain}: {len(ids)} high-use passthrough claim(s)")
@@ -4632,10 +5607,7 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         )
 
     if report.proposed_counts:
-        click.echo(
-            f"\n🧩 Undecided claims ({report.total_proposed}) — awaiting human "
-            "decision:"
-        )
+        click.echo(f"\n🧩 Undecided claims ({report.total_proposed}) — awaiting human " "decision:")
         for domain in sorted(report.proposed_counts):
             click.echo(f"   • {domain}: {report.proposed_counts[domain]} proposed claim(s)")
         click.echo(
@@ -4649,8 +5621,9 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
     source_blocking = False
     if not no_source_coverage:
         src_report = result.mapping
-        click.echo("\n🔎 Checking source-to-domain mapping coverage "
-                   f"(owner: {src_report.owner_skill})")
+        click.echo(
+            "\n🔎 Checking source-to-domain mapping coverage " f"(owner: {src_report.owner_skill})"
+        )
         click.echo(f"   Sources:  {sources_path}")
         click.echo(f"   Mappings: {mappings_path}")
         for domain in sorted(src_report.domain_counts):
@@ -4670,9 +5643,12 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
                         f"({src_report.coverage_pct(domain):.0f}%)"
                     )
             else:
-                click.echo(f"   ❌ {domain}: {covered}/{total} tables mapped "
-                           f"({src_report.coverage_pct(domain):.0f}%) — "
-                           f"{len(gaps)} unmapped", err=True)
+                click.echo(
+                    f"   ❌ {domain}: {covered}/{total} tables mapped "
+                    f"({src_report.coverage_pct(domain):.0f}%) — "
+                    f"{len(gaps)} unmapped",
+                    err=True,
+                )
                 for tbl in gaps[:10]:
                     click.echo(f"        • {tbl}", err=True)
                 if len(gaps) > 10:
@@ -4758,36 +5734,94 @@ def check_claims_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         click.echo("\n✅ Claims are valid, complete, and up to date.")
 
 
-@cli.command(name='check-release')
-@click.option('--claims-dir', type=click.Path(), default=None,
-              help='Path to model/claims/ directory (default: auto-detect).')
-@click.option('--analysis-dir', type=click.Path(), default=None,
-              help='Path to _analysis/ directory with affinity reports '
-                   '(default: auto-detect).')
-@click.option('--sources', type=click.Path(), default=None,
-              help='Path to integration/sources/ directory (default: auto-detect).')
-@click.option('--mappings', type=click.Path(), default=None,
-              help='Path to model/mappings/ directory (default: auto-detect).')
-@click.option('--accelerator', default=None,
-              help='Accelerator pack whose data-domains.yaml defines domain '
-                   'ownership (default: first pack found).')
-@click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names to include (case-insensitive substring match).')
-@click.option('--no-source-coverage', is_flag=True, default=False,
-              help='Skip the pre-silver mapping-coverage check.')
-@click.option('--no-extension-sync', is_flag=True, default=False,
-              help='Skip Claim Registry <-> ontology/extension sync checks.')
-@click.option('--no-mdm-anchor', is_flag=True, default=False,
-              help='Skip the MDM-anchor gate (broad claims need known reference anchors).')
-@click.option('--no-ownership', is_flag=True, default=False,
-              help='Skip the data-domains.yaml ownership-boundary check.')
-@click.option('--warn-only', is_flag=True, default=False,
-              help='Report problems but always exit 0 (never block).')
-@click.option('--format', 'output_format', type=click.Choice(['text', 'json']),
-              default='text', help='Output format.')
-def check_release_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
-                       domains_filter, no_source_coverage, no_extension_sync,
-                       no_mdm_anchor, no_ownership, warn_only, output_format):
+@cli.command(name="check-release")
+@click.option(
+    "--claims-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to model/claims/ directory (default: auto-detect).",
+)
+@click.option(
+    "--analysis-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to _analysis/ directory with affinity reports " "(default: auto-detect).",
+)
+@click.option(
+    "--sources",
+    type=click.Path(),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect).",
+)
+@click.option(
+    "--mappings",
+    type=click.Path(),
+    default=None,
+    help="Path to model/mappings/ directory (default: auto-detect).",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack whose data-domains.yaml defines domain "
+    "ownership (default: first pack found).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names to include (case-insensitive substring match).",
+)
+@click.option(
+    "--no-source-coverage",
+    is_flag=True,
+    default=False,
+    help="Skip the pre-silver mapping-coverage check.",
+)
+@click.option(
+    "--no-extension-sync",
+    is_flag=True,
+    default=False,
+    help="Skip Claim Registry <-> ontology/extension sync checks.",
+)
+@click.option(
+    "--no-mdm-anchor",
+    is_flag=True,
+    default=False,
+    help="Skip the MDM-anchor gate (broad claims need known reference anchors).",
+)
+@click.option(
+    "--no-ownership",
+    is_flag=True,
+    default=False,
+    help="Skip the data-domains.yaml ownership-boundary check.",
+)
+@click.option(
+    "--warn-only",
+    is_flag=True,
+    default=False,
+    help="Report problems but always exit 0 (never block).",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format.",
+)
+def check_release_cmd(
+    claims_dir,
+    analysis_dir,
+    sources,
+    mappings,
+    accelerator,
+    domains_filter,
+    no_source_coverage,
+    no_extension_sync,
+    no_mdm_anchor,
+    no_ownership,
+    warn_only,
+    output_format,
+):
     """One deterministic release-readiness gate (DD-100).
 
     Composes the existing orthogonal, deterministic evaluators — Claim Registry
@@ -4829,9 +5863,7 @@ def check_release_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
     if analysis_dir:
         analysis_path: Path | None = resolve_override(analysis_dir)
         if not analysis_path.is_dir():
-            raise click.ClickException(
-                f"Analysis directory does not exist: {analysis_path}"
-            )
+            raise click.ClickException(f"Analysis directory does not exist: {analysis_path}")
     else:
         analysis_path = _autodetect_analysis_dir(cwd, hub_root)
 
@@ -4854,11 +5886,7 @@ def check_release_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             click.echo(f"   • {legacy_alignment_error(path)}", err=True)
         raise SystemExit(1)
 
-    claims_path = (
-        resolve_override(claims_dir)
-        if claims_dir
-        else _resolve_claims_dir(cwd, hub_root)
-    )
+    claims_path = resolve_override(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
 
     if sources:
         sources_path = resolve_override(sources)
@@ -4909,7 +5937,7 @@ def check_release_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         toolkit_version=_toolkit_version,
     )
 
-    if output_format == 'json':
+    if output_format == "json":
         click.echo(json.dumps(report.to_dict(), indent=2))
         if report.is_blocking and not warn_only:
             raise SystemExit(1)
@@ -4930,7 +5958,7 @@ def check_release_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
 
     if report.source_coverage is not None:
         src = report.source_coverage
-        state = '❌ blocking' if src.is_blocking else '✅ clear'
+        state = "❌ blocking" if src.is_blocking else "✅ clear"
         click.echo(f"\n📦 Source coverage: {src.total_uncovered} uncovered table(s) — {state}")
 
     sync = report.projection_sync
@@ -4947,8 +5975,10 @@ def check_release_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
             click.echo(f"   ✓ {fact.domain}: no claims authority (vacuously eligible)")
             continue
         if fact.release_eligible:
-            click.echo(f"   ✓ {fact.domain}: release-eligible "
-                       f"({len(fact.bound_classes)} bound class(es))")
+            click.echo(
+                f"   ✓ {fact.domain}: release-eligible "
+                f"({len(fact.bound_classes)} bound class(es))"
+            )
         else:
             names = ", ".join(fact.aspirational_classes)
             click.echo(
@@ -4985,27 +6015,66 @@ def check_release_cmd(claims_dir, analysis_dir, sources, mappings, accelerator,
         click.echo("\n✅ Release-eligible: every composed gate is clear.")
 
 
-@cli.command(name='claims-to-silver-ext')
-@click.option('--claims-dir', type=click.Path(), default=None,
-              help='Path to model/claims/ directory (default: auto-detect).')
-@click.option('--ontologies', type=click.Path(), default=None,
-              help='Path to model/ontologies/ directory (default: auto-detect).')
-@click.option('--extensions', type=click.Path(), default=None,
-              help='Path to model/extensions/ directory (default: auto-detect).')
-@click.option('--ref-models', type=click.Path(), default=None,
-              help='Reference-model repository containing accelerator module profiles.')
-@click.option('--catalog', type=click.Path(exists=True), default=None,
-              help='Catalog used to resolve and verify reference-module profiles.')
-@click.option('--accelerator', default=None,
-              help='Accelerator pack whose data-domains/module profiles are activated.')
-@click.option('--activation-inventory-dir', type=click.Path(), default=None,
-              help='Output directory for deterministic module activation inventories.')
-@click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names to include (case-insensitive substring match).')
-@click.option('--check-only', is_flag=True, default=False,
-              help='Report drift only (exit 1 when out of sync, no writes).')
-@click.option('--no-scaffold', is_flag=True, default=False,
-              help='Do not bootstrap missing {domain}.ttl / *-silver-ext.ttl skeletons.')
+@cli.command(name="claims-to-silver-ext")
+@click.option(
+    "--claims-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to model/claims/ directory (default: auto-detect).",
+)
+@click.option(
+    "--ontologies",
+    type=click.Path(),
+    default=None,
+    help="Path to model/ontologies/ directory (default: auto-detect).",
+)
+@click.option(
+    "--extensions",
+    type=click.Path(),
+    default=None,
+    help="Path to model/extensions/ directory (default: auto-detect).",
+)
+@click.option(
+    "--ref-models",
+    type=click.Path(),
+    default=None,
+    help="Reference-model repository containing accelerator module profiles.",
+)
+@click.option(
+    "--catalog",
+    type=click.Path(exists=True),
+    default=None,
+    help="Catalog used to resolve and verify reference-module profiles.",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack whose data-domains/module profiles are activated.",
+)
+@click.option(
+    "--activation-inventory-dir",
+    type=click.Path(),
+    default=None,
+    help="Output directory for deterministic module activation inventories.",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names to include (case-insensitive substring match).",
+)
+@click.option(
+    "--check-only",
+    is_flag=True,
+    default=False,
+    help="Report drift only (exit 1 when out of sync, no writes).",
+)
+@click.option(
+    "--no-scaffold",
+    is_flag=True,
+    default=False,
+    help="Do not bootstrap missing {domain}.ttl / *-silver-ext.ttl skeletons.",
+)
 def claims_to_silver_ext_cmd(
     claims_dir,
     ontologies,
@@ -5049,11 +6118,7 @@ def claims_to_silver_ext_cmd(
         if extensions
         else _resolve_model_path(cwd, hub_root, subdir="extensions", claims_path=claims_path)
     )
-    ref_models_path = (
-        Path(ref_models)
-        if ref_models
-        else _resolve_ref_models_dir(cwd, hub_root)
-    )
+    ref_models_path = Path(ref_models) if ref_models else _resolve_ref_models_dir(cwd, hub_root)
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
     filter_list = None
     if domains_filter:
@@ -5178,30 +6243,76 @@ def claims_to_silver_ext_cmd(
     click.echo("✅ Claim-driven projection surfaces are in sync.")
 
 
-@cli.command(name='derive-claims')
-@click.option('--claims-dir', type=click.Path(), default=None,
-              help='Path to model/claims/ directory (default: auto-detect).')
-@click.option('--analysis-dir', type=click.Path(), default=None,
-              help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
-@click.option('--mappings', type=click.Path(), default=None,
-              help='Path to model/mappings/ directory with SKOS mappings (default: auto-detect).')
-@click.option('--tmdl-dir', type=click.Path(), default=None,
-              help='Path to import-tmdl concept-mapping output '
-                   '(default: integration/sources/powerbi/).')
-@click.option('--conformance', '--conformance-artifact', 'conformance_file',
-              type=click.Path(), default=None,
-              help='Core Concepts Conformance artifact (default: '
-                   'integration/discovery/core-concepts-conformance.yaml when present).')
-@click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names to include (case-insensitive substring match).')
-@click.option('--max-workers', type=int, default=8,
-              help='Max concurrent per-domain aggregations (default: 8; use 1 for serial).')
-@click.option('--force', is_flag=True, default=False,
-              help='Bypass the sidecar cache and re-aggregate every domain.')
-@click.option('--quiet', '-q', is_flag=True, default=False,
-              help='Suppress per-domain progress output (errors still shown).')
-def derive_claims_cmd(claims_dir, analysis_dir, mappings, tmdl_dir, conformance_file,
-                      domains_filter, max_workers, force, quiet):
+@cli.command(name="derive-claims")
+@click.option(
+    "--claims-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to model/claims/ directory (default: auto-detect).",
+)
+@click.option(
+    "--analysis-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to _analysis/ directory with affinity reports (default: auto-detect).",
+)
+@click.option(
+    "--mappings",
+    type=click.Path(),
+    default=None,
+    help="Path to model/mappings/ directory with SKOS mappings (default: auto-detect).",
+)
+@click.option(
+    "--tmdl-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to import-tmdl concept-mapping output " "(default: integration/sources/powerbi/).",
+)
+@click.option(
+    "--conformance",
+    "--conformance-artifact",
+    "conformance_file",
+    type=click.Path(),
+    default=None,
+    help="Core Concepts Conformance artifact (default: "
+    "integration/discovery/core-concepts-conformance.yaml when present).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names to include (case-insensitive substring match).",
+)
+@click.option(
+    "--max-workers",
+    type=int,
+    default=8,
+    help="Max concurrent per-domain aggregations (default: 8; use 1 for serial).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Bypass the sidecar cache and re-aggregate every domain.",
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress per-domain progress output (errors still shown).",
+)
+def derive_claims_cmd(
+    claims_dir,
+    analysis_dir,
+    mappings,
+    tmdl_dir,
+    conformance_file,
+    domains_filter,
+    max_workers,
+    force,
+    quiet,
+):
     """Aggregate multi-source evidence into candidate claims (DD-095).
 
     Deterministic and **AI-free**: the semantic LLM work already happened upstream
@@ -5242,11 +6353,10 @@ def derive_claims_cmd(claims_dir, analysis_dir, mappings, tmdl_dir, conformance_
         )
         raise SystemExit(1)
 
-    analysis_path = (
-        Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
-    )
+    analysis_path = Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
     mappings_path = (
-        Path(mappings) if mappings
+        Path(mappings)
+        if mappings
         else _resolve_model_path(cwd, hub_root, subdir="mappings", claims_path=claims_path)
     )
     if tmdl_dir:
@@ -5331,25 +6441,61 @@ def derive_claims_cmd(claims_dir, analysis_dir, mappings, tmdl_dir, conformance_
     )
 
 
-@cli.command(name='draft-model-report')
-@click.option('--claims-dir', type=click.Path(), default=None,
-              help='Path to model/claims/ directory (default: auto-detect when present).')
-@click.option('--analysis-dir', type=click.Path(), default=None,
-              help='Path to _analysis/ directory with affinity reports (default: auto-detect).')
-@click.option('--mappings', type=click.Path(), default=None,
-              help='Path to model/mappings/ directory with SKOS mappings (default: auto-detect).')
-@click.option('--tmdl-dir', type=click.Path(), default=None,
-              help='Path to import-tmdl output (default: integration/sources/powerbi/).')
-@click.option('--glossary-dir', type=click.Path(), default=None,
-              help='Path to business-discovery glossary TTL directory (default: businessdiscovery/).')
-@click.option('--output', '-o', type=click.Path(), default=None,
-              help='Output directory (default: model/planning/draft-model/).')
-@click.option('--domains', 'domains_filter', default=None,
-              help='Comma-separated domain names to include (case-insensitive substring match).')
-@click.option('--contract', type=click.Path(), default=None,
-              help='Planning-only data-product contract YAML to scope the report.')
-@click.option('--data-product', default=None,
-              help='Data product name; loads model/planning/data-products/<name>/contract.yaml.')
+@cli.command(name="draft-model-report")
+@click.option(
+    "--claims-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to model/claims/ directory (default: auto-detect when present).",
+)
+@click.option(
+    "--analysis-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to _analysis/ directory with affinity reports (default: auto-detect).",
+)
+@click.option(
+    "--mappings",
+    type=click.Path(),
+    default=None,
+    help="Path to model/mappings/ directory with SKOS mappings (default: auto-detect).",
+)
+@click.option(
+    "--tmdl-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to import-tmdl output (default: integration/sources/powerbi/).",
+)
+@click.option(
+    "--glossary-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to business-discovery glossary TTL directory (default: businessdiscovery/).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: model/planning/draft-model/).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names to include (case-insensitive substring match).",
+)
+@click.option(
+    "--contract",
+    type=click.Path(),
+    default=None,
+    help="Planning-only data-product contract YAML to scope the report.",
+)
+@click.option(
+    "--data-product",
+    default=None,
+    help="Data product name; loads model/planning/data-products/<name>/contract.yaml.",
+)
 def draft_model_report_cmd(
     claims_dir,
     analysis_dir,
@@ -5377,9 +6523,7 @@ def draft_model_report_cmd(
     base = hub_root if hub_root else cwd
 
     claims_path = Path(claims_dir) if claims_dir else _resolve_claims_dir(cwd, hub_root)
-    analysis_path = (
-        Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
-    )
+    analysis_path = Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
     mappings_path = (
         Path(mappings)
         if mappings
@@ -5437,15 +6581,31 @@ def draft_model_report_cmd(
         click.echo(f"✅ Draft model evidence packs for {report['summary']['domains']} domain(s).")
 
 
-@cli.command(name='discovery-status')
-@click.option('--import-dir', type=click.Path(), default=None,
-              help='Path to .import/businessdiscovery/ (default: auto-detect from hub).')
-@click.option('--extraction-dir', type=click.Path(), default=None,
-              help='Path to businessdiscovery/_extractions/ (default: auto-detect from hub).')
-@click.option('--strict', is_flag=True, default=False,
-              help='Exit non-zero when documents are new (unprocessed) or changed.')
-@click.option('--warn-only', is_flag=True, default=False,
-              help='Report status but always exit 0 (never block).')
+@cli.command(name="discovery-status")
+@click.option(
+    "--import-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to .import/businessdiscovery/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--extraction-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to businessdiscovery/_extractions/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Exit non-zero when documents are new (unprocessed) or changed.",
+)
+@click.option(
+    "--warn-only",
+    is_flag=True,
+    default=False,
+    help="Report status but always exit 0 (never block).",
+)
 def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
     """Report which business-discovery documents are unprocessed or changed (DD-060).
 
@@ -5488,8 +6648,7 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
     click.echo(f"   Extraction dir: {ext_path}")
 
     if not imp_path.is_dir():
-        click.echo(
-            "   ⚠ No .import/businessdiscovery/ directory found — nothing to process.")
+        click.echo("   ⚠ No .import/businessdiscovery/ directory found — nothing to process.")
         return
 
     for name in report.ok:
@@ -5522,7 +6681,7 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
         click.echo("\n✅ All discovery documents are processed and up to date.")
 
 
-@cli.group(name='discovery-conformance')
+@cli.group(name="discovery-conformance")
 def discovery_conformance():
     """Core Concepts Conformance helpers for the design-discovery skill (DD-090).
 
@@ -5559,14 +6718,22 @@ def _emit(payload, output_format):
 
 
 _FORMAT_OPTION = click.option(
-    '--format', 'output_format', type=click.Choice(['json', 'yaml']), default='json',
-    help='Machine-output format on stdout (default: json).')
+    "--format",
+    "output_format",
+    type=click.Choice(["json", "yaml"]),
+    default="json",
+    help="Machine-output format on stdout (default: json).",
+)
 _REFMODELS_OPTION = click.option(
-    '--refmodels-root', 'refmodels_root', type=click.Path(), default=None,
-    help='Reference-models checkout (default: $KAIROS_REFMODELS_ROOT or sibling scan).')
+    "--refmodels-root",
+    "refmodels_root",
+    type=click.Path(),
+    default=None,
+    help="Reference-models checkout (default: $KAIROS_REFMODELS_ROOT or sibling scan).",
+)
 
 
-@discovery_conformance.command(name='list-archetypes')
+@discovery_conformance.command(name="list-archetypes")
 @_REFMODELS_OPTION
 @_FORMAT_OPTION
 def conformance_list(refmodels_root, output_format):
@@ -5585,8 +6752,8 @@ def conformance_list(refmodels_root, output_format):
     )
 
 
-@discovery_conformance.command(name='load')
-@click.option('--archetype', 'archetype_id', required=True, help='Archetype id to load.')
+@discovery_conformance.command(name="load")
+@click.option("--archetype", "archetype_id", required=True, help="Archetype id to load.")
 @_REFMODELS_OPTION
 @_FORMAT_OPTION
 def conformance_load(archetype_id, refmodels_root, output_format):
@@ -5642,9 +6809,7 @@ def conformance_load(archetype_id, refmodels_root, output_format):
         },
         "refmodels_version": _refmodels_version(root),
         "discovery_doc": str(discovery_doc) if discovery_doc else None,
-        "ref_model_modules": [
-            {"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules
-        ],
+        "ref_model_modules": [{"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules],
         "core_concepts": [
             {"uri": c.uri, "label": c.label, "tier": c.tier} for c in archetype.core_concepts
         ],
@@ -5673,10 +6838,15 @@ def conformance_load(archetype_id, refmodels_root, output_format):
     _emit(payload, output_format)
 
 
-@discovery_conformance.command(name='validate')
-@click.option('--file', 'artifact_file', type=click.Path(), default=None,
-              help='Conformance artifact (default: <hub>/integration/discovery/'
-                   'core-concepts-conformance.yaml).')
+@discovery_conformance.command(name="validate")
+@click.option(
+    "--file",
+    "artifact_file",
+    type=click.Path(),
+    default=None,
+    help="Conformance artifact (default: <hub>/integration/discovery/"
+    "core-concepts-conformance.yaml).",
+)
 @_REFMODELS_OPTION
 def conformance_validate(artifact_file, refmodels_root):
     """Validate a conformance artifact against the shared outcome-codes enum."""
@@ -5764,9 +6934,7 @@ def inventory_transformation_candidates_cmd(artifact_roots, hub_path, repository
         output = write_candidate_inventory(hub_root, inventory)
     except TransformationCandidateError as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(
-        f"✓ Inventoried {len(inventory.candidates)} transformation candidate(s): {output}"
-    )
+    click.echo(f"✓ Inventoried {len(inventory.candidates)} transformation candidate(s): {output}")
 
 
 @cli.command(name="check-transformation-readiness")
@@ -5792,9 +6960,7 @@ def check_transformation_readiness_cmd(stage, table_scope, hub_path, output_form
     from ..core.projection_readiness import check_projection
 
     hub_root = (
-        Path(hub_path).resolve()
-        if hub_path
-        else find_hub_root(Path.cwd(), require_model=False)
+        Path(hub_path).resolve() if hub_path else find_hub_root(Path.cwd(), require_model=False)
     )
     if hub_root is None:
         raise click.ClickException("Could not locate an ontology-hub root; pass --hub.")
@@ -5834,11 +7000,7 @@ def check_transformation_readiness_cmd(stage, table_scope, hub_path, output_form
         if not details.get("inventory_exists", False):
             click.echo("   No candidate inventory; evaluating discovered synchronized contracts.")
         for candidate in details.get("candidates", []):
-            marker = (
-                "❌"
-                if candidate["is_blocking"]
-                else ("⚠" if candidate["reasons"] else "✓")
-            )
+            marker = "❌" if candidate["is_blocking"] else ("⚠" if candidate["reasons"] else "✓")
             click.echo(f"   {marker} {candidate['id']}: {candidate['status']}")
             for reason in candidate["reasons"]:
                 click.echo(f"      - {reason}")
@@ -5849,13 +7011,21 @@ def check_transformation_readiness_cmd(stage, table_scope, hub_path, output_form
         raise SystemExit(1)
 
 
-@cli.command(name='status')
-@click.option('--hub', 'hub_path', type=click.Path(), default=None,
-              help='Path to the ontology-hub root (default: auto-detect).')
-@click.option('--format', 'output_format',
-              type=click.Choice(['text', 'json', 'markdown']), default='text',
-              help='Output format. `markdown` emits the scan-derived block for '
-                   '.kairos-state/status.md.')
+@cli.command(name="status")
+@click.option(
+    "--hub",
+    "hub_path",
+    type=click.Path(),
+    default=None,
+    help="Path to the ontology-hub root (default: auto-detect).",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json", "markdown"]),
+    default="text",
+    help="Output format. `markdown` emits the scan-derived block for " ".kairos-state/status.md.",
+)
 def status_cmd(hub_path, output_format):
     """Report the deterministic lifecycle status of an ontology hub (DD-080).
 
@@ -5887,12 +7057,12 @@ def status_cmd(hub_path, output_format):
 
     status = scan_hub_status(hub_root, toolkit_version=_toolkit_version)
 
-    if output_format == 'json':
+    if output_format == "json":
         click.echo(json.dumps(status.to_dict(), indent=2))
         return
 
-    if output_format == 'markdown':
-        stamped = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec='seconds')
+    if output_format == "markdown":
+        stamped = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
         click.echo(render_markdown(status, last_scanned_at=stamped))
         return
 
@@ -5900,12 +7070,12 @@ def status_cmd(hub_path, output_format):
     click.echo(f"🔎 Hub lifecycle status: {hub_root}")
     for p in status.phases:
         icon = icons.get(p.state, "")
-        done = sum(1 for i in p.instances if i.state == 'done')
+        done = sum(1 for i in p.instances if i.state == "done")
         total = len(p.instances)
         suffix = f" ({done}/{total})" if total else ""
         click.echo(f"   {icon} {p.phase:<10} {p.state}{suffix}")
         for inst in p.instances:
-            if inst.state != 'done':
+            if inst.state != "done":
                 click.echo(f"        - {inst.name}: {inst.state} ({inst.detail})")
     if status.lifecycle_drift:
         click.echo("\n⚠️  Phase-log drift:")
@@ -5918,21 +7088,55 @@ def status_cmd(hub_path, output_format):
         click.echo("\n✅ All lifecycle phases complete.")
 
 
-@cli.command(name='build-glossary')
-@click.option('--extraction-dir', type=click.Path(), default=None,
-              help='Path to businessdiscovery/_extractions/ (default: auto-detect from hub).')
-@click.option('--output', 'output_path', type=click.Path(), default=None,
-              help='Output glossary TTL path (default: businessdiscovery/{company}-glossary.ttl).')
-@click.option('--company-domain', 'company_domain', type=str, default=None,
-              help='Company domain (e.g. acme.com). Default: auto-detect from hub README.')
-@click.option('--company-name', 'company_name', type=str, default=None,
-              help='Company display name for the scheme label. Default: auto-detect from hub README.')
-@click.option('--glossary-namespace', 'glossary_namespace', type=str, default=None,
-              help='Glossary namespace IRI. Default: https://{company-domain}/glossary#.')
-@click.option('--company-specific-only', is_flag=True, default=False,
-              help='Only include terms flagged company_specific in the extractions.')
-def build_glossary_cmd(extraction_dir, output_path, company_domain, company_name,
-                       glossary_namespace, company_specific_only):
+@cli.command(name="build-glossary")
+@click.option(
+    "--extraction-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to businessdiscovery/_extractions/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(),
+    default=None,
+    help="Output glossary TTL path (default: businessdiscovery/{company}-glossary.ttl).",
+)
+@click.option(
+    "--company-domain",
+    "company_domain",
+    type=str,
+    default=None,
+    help="Company domain (e.g. acme.com). Default: auto-detect from hub README.",
+)
+@click.option(
+    "--company-name",
+    "company_name",
+    type=str,
+    default=None,
+    help="Company display name for the scheme label. Default: auto-detect from hub README.",
+)
+@click.option(
+    "--glossary-namespace",
+    "glossary_namespace",
+    type=str,
+    default=None,
+    help="Glossary namespace IRI. Default: https://{company-domain}/glossary#.",
+)
+@click.option(
+    "--company-specific-only",
+    is_flag=True,
+    default=False,
+    help="Only include terms flagged company_specific in the extractions.",
+)
+def build_glossary_cmd(
+    extraction_dir,
+    output_path,
+    company_domain,
+    company_name,
+    glossary_namespace,
+    company_specific_only,
+):
     """Build the SKOS company glossary TTL from confirmed extractions (DD-062).
 
     Deterministic, AI-free serializer for the ``kairos-design-discovery`` skill:
@@ -6025,11 +7229,26 @@ def build_glossary_cmd(extraction_dir, output_path, company_domain, company_name
 
 
 @cli.command()
-@click.option("--check", is_flag=True,
-              help="Report outdated files without modifying anything (exit 1 on drift).")
-@click.option("--upgrade", is_flag=True,
-              help="Upgrade the toolkit dependency to the channel's latest version.")
-def update(check, upgrade):
+@click.option(
+    "--check",
+    is_flag=True,
+    help="Report outdated files without modifying anything (exit 1 on drift).",
+)
+@click.option(
+    "--upgrade",
+    is_flag=True,
+    help="Upgrade the toolkit dependency to the channel's latest version.",
+)
+@click.option(
+    "--test-ref",
+    metavar="BRANCH-OR-SHA",
+    help="Resolve an unreleased Git ref to an immutable SHA and install it.",
+)
+@click.option(
+    "--restore", is_flag=True, help="Restore the exact dependency source saved by --test-ref."
+)
+@click.option("--force-managed", is_flag=True, hidden=True)
+def update(check, upgrade, test_ref, restore, force_managed):
     """Update toolkit-managed files to the installed toolkit version.
 
     Scans .github/ for files stamped by kairos-ontology-toolkit and refreshes
@@ -6041,6 +7260,10 @@ def update(check, upgrade):
 
     Use --upgrade to upgrade the toolkit dependency based on the channel
     configured in [tool.kairos] of pyproject.toml (stable or preview).
+    Use --test-ref to resolve a branch or SHA to an immutable Git commit, lock,
+    sync, and force a managed-file refresh without changing the configured
+    release channel.  Then use --restore to return to the exact dependency
+    source saved before the test.
 
     \b
     Exit codes (with --check):
@@ -6052,6 +7275,12 @@ def update(check, upgrade):
       .github/copilot-instructions.md
       .github/skills/*/SKILL.md
     """
+    selected_modes = sum((bool(upgrade), test_ref is not None, bool(restore)))
+    if selected_modes > 1:
+        raise click.UsageError("--upgrade, --test-ref, and --restore are mutually exclusive")
+    if check and (test_ref is not None or restore):
+        raise click.UsageError("--check cannot be combined with --test-ref or --restore")
+
     # --- Re-root to the real managed hub root (DD-062) -----------------------
     # `update` only ever touches the toolkit pin + managed .github/ files, which
     # live at the managed root.  Running from a content subdirectory (e.g. the
@@ -6067,13 +7296,80 @@ def update(check, upgrade):
         )
         os.chdir(managed_root)
 
+    # --- Temporarily test or restore an exact toolkit dependency source --------
+    if test_ref is not None or restore:
+        if managed_root is None:
+            print(
+                f"❌ No ontology hub found at {Path.cwd()} or any parent directory.\n"
+                "   Run this command from a hub root containing pyproject.toml."
+            )
+            raise SystemExit(1)
+
+        action = "restore" if restore else "test-ref"
+        snapshot: _DependencyFilesSnapshot | None = None
+        try:
+            with (
+                _dependency_files_transaction(Path.cwd()) as snapshot,
+                _managed_files_transaction(Path.cwd()),
+            ):
+                content = snapshot.pyproject_content.decode("utf-8")
+                if restore:
+                    without_state, state = _remove_toolkit_test_ref_state(content)
+                    new_content = _rewrite_toolkit_dependency_source(
+                        without_state, state.restore_source
+                    )
+                    installed_ref = state.restore_source
+                else:
+                    if _read_toolkit_test_ref_state(content) is not None:
+                        raise ValueError(
+                            "a toolkit test-ref session is already active; run "
+                            "`kairos-ontology update --restore` first"
+                        )
+                    sha = _resolve_toolkit_ref_sha(test_ref)
+                    if sha is None:
+                        raise ValueError(
+                            f"could not resolve toolkit ref {test_ref!r} to an immutable "
+                            "commit SHA; verify the ref and `gh auth status`, then retry"
+                        )
+                    prior_source = _single_toolkit_dependency_source(content)
+                    state = _ToolkitTestRefState(test_ref, sha, prior_source)
+                    new_content = _rewrite_toolkit_dependency_source(
+                        content, _toolkit_git_sha_source(sha)
+                    )
+                    new_content = _add_toolkit_test_ref_state(new_content, state)
+                    installed_ref = sha
+
+                snapshot.pyproject.write_bytes(new_content.encode("utf-8"))
+                _lock_and_sync_dependency()
+                refresh_code = _refresh_with_installed_toolkit(False, installed_ref)
+                if refresh_code != 0:
+                    raise RuntimeError(f"managed-file refresh exited with status {refresh_code}")
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+            resync_error = _resync_restored_dependency()
+            if snapshot is not None:
+                _restore_dependency_files(snapshot)
+            resync_guidance = f"\n   ⚠ {resync_error}" if resync_error else ""
+            print(
+                f"❌ Toolkit {action} failed; dependency and managed files were rolled back.\n"
+                f"   {exc}{resync_guidance}"
+            )
+            raise SystemExit(1)
+
+        if restore:
+            print("   ✓ Restored the exact prior toolkit dependency source")
+        else:
+            print(f"   ✓ Toolkit test ref {test_ref!r} pinned to {installed_ref}")
+        raise SystemExit(0)
+
     # --- Upgrade toolkit dependency via uv ------------------------------------
     if upgrade:
         channel = _read_hub_channel()
         ref = _resolve_channel(channel)
         if ref is None:
-            print(f"⚠  Could not resolve channel '{channel}' — is 'gh' installed and "
-                  f"authenticated?")
+            print(
+                f"⚠  Could not resolve channel '{channel}' — is 'gh' installed and "
+                f"authenticated?"
+            )
             raise SystemExit(1)
         print(f"📦 Channel: {channel} → {ref}")
 
@@ -6113,10 +7409,10 @@ def update(check, upgrade):
             # so optional-dependencies pins are rewritten too — otherwise they
             # stay on the old version and `uv lock` fails with conflicting URLs.
             new_content = re.sub(
-                r'kairos-ontology-toolkit(\[[^\]]*\])?\s*@\s*(?:'
+                r"kairos-ontology-toolkit(\[[^\]]*\])?\s*@\s*(?:"
                 r'git\+https://github\.com/Cnext-eu/kairos-ontology-toolkit\.git@[^\s"]*'
                 r'|https://github\.com/Cnext-eu/kairos-ontology-toolkit/releases/download/[^\s"]*'
-                r')',
+                r")",
                 lambda m: f"kairos-ontology-toolkit{m.group(1) or ''} @ {whl_url}",
                 content,
             )
@@ -6146,40 +7442,15 @@ def update(check, upgrade):
         # to the previously-imported module).  If the version actually changed,
         # refresh under the NEW version's scaffold and version stamp.
         if version != _toolkit_version:
-            if sys.platform == "win32":
-                # The running kairos-ontology.exe locks its own executable, so a
-                # synchronous re-exec (uv sync) here would fail to replace it.
-                # Schedule a detached helper that waits for this process to exit
-                # — releasing the lock — then syncs and refreshes on its own.
-                if _schedule_windows_refresh(check):
-                    log_path = Path.cwd() / ".kairos" / "upgrade-refresh.log"
-                    print(
-                        f"   ↻ Managed-file refresh scheduled — it will run automatically "
-                        f"once this process exits.\n"
-                        f"     Progress opens in a new window; a transcript is written to "
-                        f"{log_path}."
-                    )
-                    raise SystemExit(0)
-                print(
-                    "⚠  Could not schedule the automatic managed-file refresh.\n"
-                    "   Run `uv run kairos-ontology update` in a fresh shell to finish "
-                    "the upgrade."
-                )
-                raise SystemExit(1)
-
-            reexec_cmd = ["uv", "run", "kairos-ontology", "update"]
-            if check:
-                reexec_cmd.append("--check")
-            print(f"   ↻ Refreshing managed files under {ref} (uv run) ...")
             try:
-                reexec = subprocess.run(reexec_cmd)
-            except (OSError, FileNotFoundError) as exc:
+                refresh_code = _refresh_with_installed_toolkit(check, ref)
+            except RuntimeError as exc:
                 print(
                     f"⚠  Could not auto-refresh managed files ({exc}).\n"
                     f"   Run `uv run kairos-ontology update` to finish the upgrade."
                 )
                 raise SystemExit(1)
-            raise SystemExit(reexec.returncode)
+            raise SystemExit(refresh_code)
 
     # Detect repo type: dataplatform (has dbt_project.yml) vs ontology-hub
     repo_root = Path.cwd()
@@ -6207,12 +7478,15 @@ def update(check, upgrade):
         local_content = local_file.read_text(encoding="utf-8")
         local_ver = _get_managed_version(local_content)
 
-        if local_ver == _toolkit_version:
+        if local_ver == _toolkit_version and not force_managed:
             current.append(rel_path)
             continue
 
         scaffold_content = scaffold_src.read_text(encoding="utf-8")
         new_content = _stamp_managed(scaffold_content, _toolkit_version)
+        if local_content == new_content:
+            current.append(rel_path)
+            continue
 
         if check:
             outdated.append((rel_path, local_ver or "unmanaged"))
@@ -6227,7 +7501,8 @@ def update(check, upgrade):
     scaffold_skills_dir = _SCAFFOLD_DIR / "skills"
     if skills_dir.is_dir() and scaffold_skills_dir.is_dir():
         scaffold_skill_names = {
-            d.name for d in scaffold_skills_dir.iterdir()
+            d.name
+            for d in scaffold_skills_dir.iterdir()
             if d.is_dir() and (d / "SKILL.md").is_file()
         }
         for skill_dir in sorted(skills_dir.iterdir()):
@@ -6440,15 +7715,20 @@ def _run_legacy_format_migration(hub: Path, *, check: bool) -> bool:
 
 
 @cli.command()
-@click.option("--check", is_flag=True,
-              help="Preview what would change without modifying anything.")
-@click.option("--dry-run", "dry_run", is_flag=True,
-              help="Alias for --check.")
-@click.option("--legacy-formats/--no-legacy-formats", default=True,
-              help="Also migrate retired inventory and claim-sync formats (default: enabled).")
-@click.option("--hub", "hub_path", type=click.Path(exists=True),
-              default="ontology-hub",
-              help="Path to the ontology-hub directory (default: ontology-hub).")
+@click.option("--check", is_flag=True, help="Preview what would change without modifying anything.")
+@click.option("--dry-run", "dry_run", is_flag=True, help="Alias for --check.")
+@click.option(
+    "--legacy-formats/--no-legacy-formats",
+    default=True,
+    help="Also migrate retired inventory and claim-sync formats (default: enabled).",
+)
+@click.option(
+    "--hub",
+    "hub_path",
+    type=click.Path(exists=True),
+    default="ontology-hub",
+    help="Path to the ontology-hub directory (default: ontology-hub).",
+)
 def migrate(check, dry_run, legacy_formats, hub_path):
     """Migrate an existing ontology hub from the flat layout to the grouped layout.
 
@@ -6517,11 +7797,7 @@ def migrate(check, dry_run, legacy_formats, hub_path):
                 for item in items:
                     # In check mode, skip silver-ext files from ontologies/
                     # — they'll be shown in step 3 with correct final destination.
-                    if (
-                        check
-                        and old_name == "ontologies"
-                        and item.name.endswith("-silver-ext.ttl")
-                    ):
+                    if check and old_name == "ontologies" and item.name.endswith("-silver-ext.ttl"):
                         continue
                     dst = new_dir / item.name
                     if check:
@@ -6563,7 +7839,9 @@ def migrate(check, dry_run, legacy_formats, hub_path):
                     for item in items:
                         dst = new_target_dir / item.name
                         if check:
-                            print(f"  MOVE  output/{old_target}/{item.name}  →  output/{new_rel}/{item.name}")
+                            print(
+                                f"  MOVE  output/{old_target}/{item.name}  →  output/{new_rel}/{item.name}"
+                            )
                         else:
                             if dst.exists():
                                 if dst.is_dir():
@@ -6577,7 +7855,9 @@ def migrate(check, dry_run, legacy_formats, hub_path):
     app_models = hub.parent / "application-models"
     if app_models.is_dir():
         if check:
-            print("  DELETE  application-models/  (ERDs now in output/medallion/dbt/docs/diagrams/)")
+            print(
+                "  DELETE  application-models/  (ERDs now in output/medallion/dbt/docs/diagrams/)"
+            )
         else:
             shutil.rmtree(app_models)
             print("  ✓ Removed application-models/")
@@ -6594,8 +7874,10 @@ def migrate(check, dry_run, legacy_formats, hub_path):
                 else:
                     old_dir.rmdir()
             else:
-                print(f"  ⚠  {old_name}/ still has files — not removed: "
-                      f"{[f.name for f in remaining]}")
+                print(
+                    f"  ⚠  {old_name}/ still has files — not removed: "
+                    f"{[f.name for f in remaining]}"
+                )
 
     # Clean up old output subdirs
     for old_target in _MIGRATE_OUTPUT_MAP:
@@ -6625,10 +7907,10 @@ def migrate(check, dry_run, legacy_formats, hub_path):
         print("  4. git add -A && git commit -m 'refactor: migrate hub to new layout'")
 
 
-
 # ---------------------------------------------------------------------------
 # Repo naming helper
 # ---------------------------------------------------------------------------
+
 
 def _slugify(name: str) -> str:
     """Turn a human name into a GitHub-friendly repo slug.
@@ -6637,6 +7919,7 @@ def _slugify(name: str) -> str:
     Examples:    contoso-ontology-hub, acme-logistics-ontology-hub
     """
     import re
+
     slug = name.lower().strip()
     slug = re.sub(r"[^a-z0-9]+", "-", slug)
     slug = slug.strip("-")
@@ -6647,26 +7930,65 @@ def _slugify(name: str) -> str:
 
 @cli.command(name="new-repo")
 @click.argument("name")
-@click.option("--description", "desc", type=str, default=None,
-              help="Short repo description for README / pyproject.")
-@click.option("--path", "dest", type=click.Path(), default=None,
-              help="Parent directory to create the repo in (default: current dir).")
-@click.option("--org", type=str, default="Cnext-eu",
-              help="GitHub organisation for the remote repo (default: Cnext-eu).")
-@click.option("--private/--public", "is_private", default=True,
-              help="Create a private (default) or public GitHub repo.")
-@click.option("--ref-models-version", "ref_models_version", type=str, default=None,
-              help="Git ref (tag/branch) for reference models (default: latest).")
-@click.option("--template", "template", type=str, default="kairos-app-template",
-              help="GitHub repo template to use (default: kairos-app-template). "
-                   "Pass empty string to skip.")
-@click.option("--company-domain", "company_domain", type=str, default=None,
-              help="Company internet domain (e.g., \"contoso.com\"). "
-                   "Defaults to <name>.com if not provided.")
-@click.option("--skip-protection", "skip_protection", is_flag=True, default=False,
-              help="Skip configuring branch protection on main (useful if no admin rights).")
-def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
-             company_domain, skip_protection):
+@click.option(
+    "--description",
+    "desc",
+    type=str,
+    default=None,
+    help="Short repo description for README / pyproject.",
+)
+@click.option(
+    "--path",
+    "dest",
+    type=click.Path(),
+    default=None,
+    help="Parent directory to create the repo in (default: current dir).",
+)
+@click.option(
+    "--org",
+    type=str,
+    default="Cnext-eu",
+    help="GitHub organisation for the remote repo (default: Cnext-eu).",
+)
+@click.option(
+    "--private/--public",
+    "is_private",
+    default=True,
+    help="Create a private (default) or public GitHub repo.",
+)
+@click.option(
+    "--ref-models-version",
+    "ref_models_version",
+    type=str,
+    default=None,
+    help="Git ref (tag/branch) for reference models (default: latest).",
+)
+@click.option(
+    "--template",
+    "template",
+    type=str,
+    default="kairos-app-template",
+    help="GitHub repo template to use (default: kairos-app-template). "
+    "Pass empty string to skip.",
+)
+@click.option(
+    "--company-domain",
+    "company_domain",
+    type=str,
+    default=None,
+    help='Company internet domain (e.g., "contoso.com"). '
+    "Defaults to <name>.com if not provided.",
+)
+@click.option(
+    "--skip-protection",
+    "skip_protection",
+    is_flag=True,
+    default=False,
+    help="Skip configuring branch protection on main (useful if no admin rights).",
+)
+def new_repo(
+    name, desc, dest, org, is_private, ref_models_version, template, company_domain, skip_protection
+):
     """Create a new ontology hub GitHub repository.
 
     NAME is the client or project identifier (e.g., "contoso" or
@@ -6709,7 +8031,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         base = name.lower().strip()
         for suffix in ["-ontology-hub", "-ontology"]:
             if base.endswith(suffix):
-                base = base[:-len(suffix)]
+                base = base[: -len(suffix)]
                 break
         company_domain_val = f"{base}.com"
     else:
@@ -6729,8 +8051,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     # Otherwise, create the local directory from scratch.
     use_template = bool(template)
     if use_template:
-        _create_repo_from_template(repo_dir, repo_slug, org, template,
-                                   description, is_private)
+        _create_repo_from_template(repo_dir, repo_slug, org, template, description, is_private)
     else:
         repo_dir.mkdir(parents=True)
 
@@ -6787,8 +8108,13 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
 
     # Place .gitkeep in output subdirs so git tracks them
     for target in [
-        "medallion/powerbi", "medallion/dbt",
-        "neo4j", "azure-search", "a2ui", "prompt", "report",
+        "medallion/powerbi",
+        "medallion/dbt",
+        "neo4j",
+        "azure-search",
+        "a2ui",
+        "prompt",
+        "report",
     ]:
         gitkeep = hub / "output" / target / ".gitkeep"
         if not gitkeep.exists():
@@ -6830,8 +8156,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/sources": "integration/sources",
-        "integration/sources/custom-transformations":
-            "integration/sources/custom-transformations",
+        "integration/sources/custom-transformations": "integration/sources/custom-transformations",
         "integration/preparation": "integration/preparation",
         "integration/transforms/dbt": "integration/transforms/dbt",
     }
@@ -6852,12 +8177,16 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
             shutil.copy2(shape_src, hub / "model" / "shapes" / shape_name)
 
     # Business glossary template into businessdiscovery/
-    glossary_tpl_src = _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
+    glossary_tpl_src = (
+        _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
+    )
     if glossary_tpl_src.is_file():
         shutil.copy2(glossary_tpl_src, hub / "businessdiscovery" / "glossary-template.ttl")
 
     # Source-system-template into integration/sources/
-    src_template_src = _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
+    src_template_src = (
+        _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
+    )
     src_template_dst = hub / "integration" / "sources" / "source-system-template"
     if src_template_src.is_dir() and not src_template_dst.exists():
         shutil.copytree(src_template_src, src_template_dst)
@@ -6870,13 +8199,7 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         if prep_src.is_file():
             shutil.copy2(prep_src, prep_destination / prep_name)
 
-    baseline_src = (
-        _SCAFFOLD_DIR
-        / "ontology-hub"
-        / "model"
-        / "governance"
-        / "release-baseline.yaml"
-    )
+    baseline_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "governance" / "release-baseline.yaml"
     if baseline_src.is_file():
         shutil.copy2(
             baseline_src,
@@ -6887,9 +8210,9 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
     if hub_readme_src.is_file():
         content = hub_readme_src.read_text(encoding="utf-8")
-        content = (content
-                   .replace("{company_name}", company_name)
-                   .replace("{company_domain}", company_domain_val))
+        content = content.replace("{company_name}", company_name).replace(
+            "{company_domain}", company_domain_val
+        )
         (hub / "README.md").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/README.md (company context)")
 
@@ -6897,20 +8220,22 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     master_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "master.ttl.template"
     if master_src.is_file():
         content = master_src.read_text(encoding="utf-8")
-        content = (content
-                   .replace("{company_name}", company_name)
-                   .replace("{company_domain}", company_domain_val))
+        content = content.replace("{company_name}", company_name).replace(
+            "{company_domain}", company_domain_val
+        )
         content = provenance_comment("new-repo", editable=True) + "\n" + content
         (hub / "model" / "ontologies" / "_master.ttl").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/model/ontologies/_master.ttl")
 
     # Foundation ontology (shared base for thin domain ontologies)
-    foundation_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "foundation.ttl.template"
+    foundation_src = (
+        _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "foundation.ttl.template"
+    )
     if foundation_src.is_file():
         content = foundation_src.read_text(encoding="utf-8")
-        content = (content
-                   .replace("{company_name}", company_name)
-                   .replace("{company_domain}", company_domain_val))
+        content = content.replace("{company_name}", company_name).replace(
+            "{company_domain}", company_domain_val
+        )
         content = provenance_comment("new-repo", editable=True) + "\n" + content
         (hub / "model" / "ontologies" / "_foundation.ttl").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/model/ontologies/_foundation.ttl")
@@ -6919,9 +8244,9 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     catalog_src = _SCAFFOLD_DIR / "ontology-hub" / "catalog-v001.xml.template"
     if catalog_src.is_file():
         content = catalog_src.read_text(encoding="utf-8")
-        content = (content
-                   .replace("{company_name}", company_name)
-                   .replace("{company_domain}", company_domain_val))
+        content = content.replace("{company_name}", company_name).replace(
+            "{company_domain}", company_domain_val
+        )
         (hub / "catalog-v001.xml").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/catalog-v001.xml")
 
@@ -6991,11 +8316,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
     pyproject_src = _SCAFFOLD_DIR / "pyproject.toml.template"
     if pyproject_src.is_file():
         content = pyproject_src.read_text(encoding="utf-8")
-        content = (content
-                   .replace("{repo_name}", repo_slug)
-                   .replace("{description}", description)
-                   .replace("{toolkit_version}", _toolkit_version)
-                   .replace("{toolkit_ref}", f"v{_toolkit_version}"))
+        content = (
+            content.replace("{repo_name}", repo_slug)
+            .replace("{description}", description)
+            .replace("{toolkit_version}", _toolkit_version)
+            .replace("{toolkit_ref}", f"v{_toolkit_version}")
+        )
         (repo_dir / "pyproject.toml").write_text(content, encoding="utf-8")
         print("  ✓ pyproject.toml")
 
@@ -7049,28 +8375,30 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
         if not use_template:
             subprocess.run(
                 ["git", "init", "-b", "main"],
-                cwd=repo_dir, capture_output=True, check=True,
+                cwd=repo_dir,
+                capture_output=True,
+                check=True,
             )
         subprocess.run(["git", "add", "."], cwd=repo_dir, capture_output=True, check=True)
         subprocess.run(
             ["git", "commit", "-m", "Initial ontology hub scaffold"],
-            cwd=repo_dir, capture_output=True, check=True,
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
         )
         print("  ✓ git repo initialised with initial commit")
         if use_template:
             subprocess.run(
                 ["git", "push"],
-                cwd=repo_dir, capture_output=True, check=True,
+                cwd=repo_dir,
+                capture_output=True,
+                check=True,
             )
             print("  ✓ Pushed scaffold to remote")
     except FileNotFoundError:
-        raise click.ClickException(
-            "git not found — install git before using new-repo"
-        )
+        raise click.ClickException("git not found — install git before using new-repo")
     except subprocess.CalledProcessError as exc:
-        raise click.ClickException(
-            f"git command failed: {exc.stderr.decode().strip()}"
-        )
+        raise click.ClickException(f"git command failed: {exc.stderr.decode().strip()}")
 
     # --- GitHub repo creation (non-template flow) ----------------------------
     if not use_template:
@@ -7097,8 +8425,12 @@ def new_repo(name, desc, dest, org, is_private, ref_models_version, template,
 
 
 def _create_repo_from_template(
-    repo_dir: Path, repo_slug: str, org: str,
-    template: str, description: str, is_private: bool,
+    repo_dir: Path,
+    repo_slug: str,
+    org: str,
+    template: str,
+    description: str,
+    is_private: bool,
 ):
     """Create a GitHub repo from a template, then clone it to *repo_dir*."""
     visibility = "--private" if is_private else "--public"
@@ -7109,28 +8441,34 @@ def _create_repo_from_template(
         subprocess.run(["gh", "--version"], capture_output=True, check=True)
     except FileNotFoundError:
         raise click.ClickException(
-            "gh CLI is required for --template. "
-            "Install from https://cli.github.com"
+            "gh CLI is required for --template. " "Install from https://cli.github.com"
         )
 
     # --clone tells gh to clone the new repo into the current directory
     # after creating it on GitHub from the template.
     try:
         subprocess.run(
-            ["gh", "repo", "create", full_name,
-             "--template", template_ref,
-             visibility,
-             "--description", description,
-             "--clone"],
-            cwd=repo_dir.parent, capture_output=True, check=True,
+            [
+                "gh",
+                "repo",
+                "create",
+                full_name,
+                "--template",
+                template_ref,
+                visibility,
+                "--description",
+                description,
+                "--clone",
+            ],
+            cwd=repo_dir.parent,
+            capture_output=True,
+            check=True,
         )
         print(f"  ✓ GitHub repo created from template {template_ref}")
         print(f"  ✓ Cloned {full_name} to {repo_dir.name}")
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode().strip() if exc.stderr else str(exc)
-        raise click.ClickException(
-            f"Failed to create repo from template: {stderr}"
-        )
+        raise click.ClickException(f"Failed to create repo from template: {stderr}")
 
 
 _SMARTCODING_SCRIPT = "update-smartcoding-latest.ps1"
@@ -7145,9 +8483,17 @@ def _run_smartcoding_update(repo_dir: Path):
     print(f"  ▶ Running {_SMARTCODING_SCRIPT} …")
     try:
         subprocess.run(
-            ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", str(script), "-SkipSelfUpdateCheck"],
-            cwd=repo_dir, check=True,
+            [
+                "pwsh",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+                "-SkipSelfUpdateCheck",
+            ],
+            cwd=repo_dir,
+            check=True,
         )
         print("  ✓ SmartCoding updated to latest")
     except FileNotFoundError:
@@ -7188,11 +8534,21 @@ def _detect_refmodels_dest() -> Path:
 
 
 @cli.command(name="update-refmodels")
-@click.option("--ref", "git_ref", type=str, default="main",
-              help="Branch, tag, or SHA to fetch (default: main).")
-@click.option("--dest", "dest_path", type=click.Path(), default=None,
-              help="Destination path for reference models "
-                   "(default: auto-detect ontology-reference-models/).")
+@click.option(
+    "--ref",
+    "git_ref",
+    type=str,
+    default="main",
+    help="Branch, tag, or SHA to fetch (default: main).",
+)
+@click.option(
+    "--dest",
+    "dest_path",
+    type=click.Path(),
+    default=None,
+    help="Destination path for reference models "
+    "(default: auto-detect ontology-reference-models/).",
+)
 def update_refmodels(git_ref, dest_path):
     """Fetch reference models from the upstream repository.
 
@@ -7213,12 +8569,13 @@ def update_refmodels(git_ref, dest_path):
     # Verify git is available
     try:
         subprocess.run(
-            ["git", "--version"], capture_output=True, check=True,
+            ["git", "--version"],
+            capture_output=True,
+            check=True,
         )
     except FileNotFoundError:
         raise click.ClickException(
-            "git is not installed or not on PATH. "
-            "Install git and try again."
+            "git is not installed or not on PATH. " "Install git and try again."
         )
 
     click.echo(f"  ▶ Fetching ref '{git_ref}' from upstream reference models…")
@@ -7228,10 +8585,20 @@ def update_refmodels(git_ref, dest_path):
     try:
         # Sparse shallow clone
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", "--filter=blob:none",
-             "--sparse", "--branch", git_ref,
-             _REFMODELS_REMOTE, str(tmp_dir)],
-            capture_output=True, text=True,
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--filter=blob:none",
+                "--sparse",
+                "--branch",
+                git_ref,
+                _REFMODELS_REMOTE,
+                str(tmp_dir),
+            ],
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             raise click.ClickException(
@@ -7241,12 +8608,11 @@ def update_refmodels(git_ref, dest_path):
         # Set sparse-checkout to only the reference models folder
         result = subprocess.run(
             ["git", "-C", str(tmp_dir), "sparse-checkout", "set", _REFMODELS_REMOTE_DIR],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
-            raise click.ClickException(
-                f"git sparse-checkout failed:\n{result.stderr.strip()}"
-            )
+            raise click.ClickException(f"git sparse-checkout failed:\n{result.stderr.strip()}")
 
         src = tmp_dir / _REFMODELS_REMOTE_DIR
         if not src.exists():
@@ -7258,7 +8624,8 @@ def update_refmodels(git_ref, dest_path):
         # Get commit SHA for reporting
         sha_result = subprocess.run(
             ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         sha = sha_result.stdout.strip() if sha_result.returncode == 0 else "unknown"
 
@@ -7283,6 +8650,7 @@ def update_refmodels(git_ref, dest_path):
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+
 def _run_reference_models_update(repo_dir: Path, version: str | None = None):
     """Populate ontology-reference-models/ via sparse clone (no submodule).
 
@@ -7305,10 +8673,20 @@ def _run_reference_models_update(repo_dir: Path, version: str | None = None):
 
     try:
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", "--filter=blob:none",
-             "--sparse", "--branch", git_ref,
-             _REFMODELS_REMOTE, str(tmp_dir)],
-            capture_output=True, text=True,
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--filter=blob:none",
+                "--sparse",
+                "--branch",
+                git_ref,
+                _REFMODELS_REMOTE,
+                str(tmp_dir),
+            ],
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             print(f"  ⚠  git clone failed: {result.stderr.strip()}")
@@ -7316,7 +8694,9 @@ def _run_reference_models_update(repo_dir: Path, version: str | None = None):
 
         subprocess.run(
             ["git", "-C", str(tmp_dir), "sparse-checkout", "set", _REFMODELS_REMOTE_DIR],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
 
         src = tmp_dir / _REFMODELS_REMOTE_DIR
@@ -7331,27 +8711,35 @@ def _run_reference_models_update(repo_dir: Path, version: str | None = None):
         # Commit the populated reference-models content
         result = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=repo_dir, capture_output=True, text=True,
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
         )
         if result.stdout.strip():
-            subprocess.run(["git", "add", _REF_MODELS_PATH], cwd=repo_dir,
-                           capture_output=True, check=True)
+            subprocess.run(
+                ["git", "add", _REF_MODELS_PATH], cwd=repo_dir, capture_output=True, check=True
+            )
             subprocess.run(
                 ["git", "commit", "-m", "chore: populate ontology-reference-models"],
-                cwd=repo_dir, capture_output=True, check=True,
+                cwd=repo_dir,
+                capture_output=True,
+                check=True,
             )
             subprocess.run(["git", "push"], cwd=repo_dir, capture_output=True, check=True)
             print("  ✓ Reference models populated and committed")
         else:
             print("  ✓ Reference models already up to date")
     except subprocess.CalledProcessError as exc:
-        print("  ⚠  Reference models update failed — run 'kairos-ontology update-refmodels' manually")
+        print(
+            "  ⚠  Reference models update failed — run 'kairos-ontology update-refmodels' manually"
+        )
         if hasattr(exc, "stderr") and exc.stderr:
-            print(f"       {exc.stderr.decode().strip() if isinstance(exc.stderr, bytes) else exc.stderr}")
+            print(
+                f"       {exc.stderr.decode().strip() if isinstance(exc.stderr, bytes) else exc.stderr}"
+            )
     finally:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
-
 
 
 def _configure_branch_protection(repo_dir: Path, full_name: str):
@@ -7369,9 +8757,18 @@ def _configure_branch_protection(repo_dir: Path, full_name: str):
     # 1. Enable delete_branch_on_merge
     try:
         subprocess.run(
-            ["gh", "api", "--method", "PATCH", f"/repos/{full_name}",
-             "-f", "delete_branch_on_merge=true"],
-            cwd=repo_dir, capture_output=True, check=True,
+            [
+                "gh",
+                "api",
+                "--method",
+                "PATCH",
+                f"/repos/{full_name}",
+                "-f",
+                "delete_branch_on_merge=true",
+            ],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
         )
         print("  ✓ Enabled delete_branch_on_merge")
     except subprocess.CalledProcessError as exc:
@@ -7379,31 +8776,41 @@ def _configure_branch_protection(repo_dir: Path, full_name: str):
         print(f"  ⚠ Could not enable delete_branch_on_merge: {stderr}")
 
     # 2. Create branch protection on main
-    protection_payload = json.dumps({
-        "required_status_checks": {
-            "strict": True,
-            "contexts": [],
-        },
-        "enforce_admins": False,
-        "required_pull_request_reviews": {
-            "required_approving_review_count": 1,
-            "dismiss_stale_reviews": True,
-            "require_code_owner_reviews": False,
-        },
-        "restrictions": None,
-        "allow_force_pushes": False,
-        "allow_deletions": False,
-        "required_linear_history": False,
-        "required_conversation_resolution": False,
-    })
+    protection_payload = json.dumps(
+        {
+            "required_status_checks": {
+                "strict": True,
+                "contexts": [],
+            },
+            "enforce_admins": False,
+            "required_pull_request_reviews": {
+                "required_approving_review_count": 1,
+                "dismiss_stale_reviews": True,
+                "require_code_owner_reviews": False,
+            },
+            "restrictions": None,
+            "allow_force_pushes": False,
+            "allow_deletions": False,
+            "required_linear_history": False,
+            "required_conversation_resolution": False,
+        }
+    )
 
     try:
         subprocess.run(
-            ["gh", "api", "--method", "PUT",
-             f"/repos/{full_name}/branches/main/protection",
-             "--input", "-"],
+            [
+                "gh",
+                "api",
+                "--method",
+                "PUT",
+                f"/repos/{full_name}/branches/main/protection",
+                "--input",
+                "-",
+            ],
             input=protection_payload.encode(),
-            cwd=repo_dir, capture_output=True, check=True,
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
         )
         print("  ✓ Branch protection enabled on main:")
         print("      • Require PR with 1 reviewer")
@@ -7421,7 +8828,9 @@ def _configure_branch_protection(repo_dir: Path, full_name: str):
     try:
         result = subprocess.run(
             ["gh", "api", f"/repos/{full_name}/branches/main/protection"],
-            cwd=repo_dir, capture_output=True, check=True,
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
         )
         raw = result.stdout
         text = raw.decode() if isinstance(raw, bytes) else str(raw)
@@ -7430,13 +8839,19 @@ def _configure_branch_protection(repo_dir: Path, full_name: str):
             print("  ✓ Protection verified: main branch is protected")
         else:
             print("  ⚠ Protection set but could not verify PR requirement")
-    except (subprocess.CalledProcessError, json.JSONDecodeError, TypeError,
-            UnicodeDecodeError, AttributeError):
+    except (
+        subprocess.CalledProcessError,
+        json.JSONDecodeError,
+        TypeError,
+        UnicodeDecodeError,
+        AttributeError,
+    ):
         print("  ⚠ Could not verify branch protection (may still be active)")
 
 
-def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,
-                         description: str, is_private: bool):
+def _create_github_repo(
+    repo_dir: Path, repo_slug: str, org: str, description: str, is_private: bool
+):
     """Create a GitHub remote repo via `gh` CLI and push the initial commit."""
     visibility = "--private" if is_private else "--public"
     full_name = f"{org}/{repo_slug}"
@@ -7453,12 +8868,21 @@ def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,
     # Create the remote repo — hard-fail so repos are never local-only
     try:
         subprocess.run(
-            ["gh", "repo", "create", full_name,
-             visibility,
-             "--description", description,
-             "--source", ".",
-             "--push"],
-            cwd=repo_dir, capture_output=True, check=True,
+            [
+                "gh",
+                "repo",
+                "create",
+                full_name,
+                visibility,
+                "--description",
+                description,
+                "--source",
+                ".",
+                "--push",
+            ],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
         )
         print(f"  ✓ GitHub repo created: {full_name}")
     except subprocess.CalledProcessError as exc:
@@ -7471,7 +8895,7 @@ def _create_github_repo(repo_dir: Path, repo_slug: str, org: str,
         )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     cli()
 
 
@@ -7509,14 +8933,17 @@ def _detect_hub_context() -> dict:
     try:
         result = subprocess.run(
             ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
             cwd=hub_root.parent if hub_root.name == "ontology-hub" else hub_root,
         )
         if result.returncode == 0:
             repo_url = result.stdout.strip()
             # Parse org/repo from URL (https or ssh)
             import re as _re
-            m = _re.search(r'[/:]([^/]+)/([^/]+?)(?:\.git)?$', repo_url)
+
+            m = _re.search(r"[/:]([^/]+)/([^/]+?)(?:\.git)?$", repo_url)
             if m:
                 org = m.group(1)
                 repo_name = m.group(2)
@@ -7525,7 +8952,7 @@ def _detect_hub_context() -> dict:
 
     # Detect version from VERSION.json
     version = "v0.1.0"
-    version_file = (hub_root.parent if hub_root.name == "ontology-hub" else hub_root)
+    version_file = hub_root.parent if hub_root.name == "ontology-hub" else hub_root
     version_json = version_file / "VERSION.json"
     if version_json.exists():
         try:
@@ -7555,14 +8982,26 @@ def _detect_hub_context() -> dict:
 
 @cli.command(name="init-dataplatform")
 @click.argument("name", required=False, default=None)
-@click.option("--path", "dest", type=click.Path(), default=None,
-              help="Parent directory to create the dataplatform repo in (default: sibling of hub).")
-@click.option("--platform", type=click.Choice(
-    ["fabric-lakehouse", "fabric-warehouse", "databricks"]),
+@click.option(
+    "--path",
+    "dest",
+    type=click.Path(),
+    default=None,
+    help="Parent directory to create the dataplatform repo in (default: sibling of hub).",
+)
+@click.option(
+    "--platform",
+    type=click.Choice(["fabric-lakehouse", "fabric-warehouse", "databricks"]),
     default="fabric-lakehouse",
-    help="Target platform for dbt adapter configuration.")
-@click.option("--org", "org_override", type=str, default=None,
-              help="GitHub organisation (default: same as hub repo).")
+    help="Target platform for dbt adapter configuration.",
+)
+@click.option(
+    "--org",
+    "org_override",
+    type=str,
+    default=None,
+    help="GitHub organisation (default: same as hub repo).",
+)
 def init_dataplatform(name, dest, platform, org_override):
     """Scaffold a dataplatform dbt project linked to this ontology hub.
 
@@ -7609,7 +9048,9 @@ def init_dataplatform(name, dest, platform, org_override):
         parent = Path(dest)
     else:
         # Place sibling to the hub repo
-        hub_git_root = ctx["hub_root"].parent if ctx["hub_root"].name == "ontology-hub" else ctx["hub_root"]
+        hub_git_root = (
+            ctx["hub_root"].parent if ctx["hub_root"].name == "ontology-hub" else ctx["hub_root"]
+        )
         parent = hub_git_root.parent
 
     repo_dir = parent / name
@@ -7700,6 +9141,7 @@ def init_dataplatform(name, dest, platform, org_override):
             if vocab_dir.is_dir():
                 from rdflib import Graph as RdfGraph, Namespace as RdfNamespace
                 from rdflib.namespace import RDF as RDF_NS
+
                 bronze_ns = RdfNamespace("https://kairos.cnext.eu/bronze#")
                 g = RdfGraph()
                 for ttl in vocab_dir.glob("*.ttl"):
@@ -7772,10 +9214,7 @@ def init_dataplatform(name, dest, platform, org_override):
         click.echo("  ✓ .github/workflows/deploy-powerbi-semantic-model.yml")
 
     deploy_cfg_src = (
-        _DATAPLATFORM_SCAFFOLD
-        / ".github"
-        / "fabric"
-        / "deployment-settings.json.example.template"
+        _DATAPLATFORM_SCAFFOLD / ".github" / "fabric" / "deployment-settings.json.example.template"
     )
     deploy_cfg_dst = github_dir / "fabric" / "deployment-settings.json.example"
     if deploy_cfg_src.is_file():
@@ -7803,20 +9242,33 @@ def init_dataplatform(name, dest, platform, org_override):
     # Initialize git repo
     try:
         subprocess.run(
-            ["git", "init", "-b", "main"], cwd=repo_dir,
-            capture_output=True, check=True, timeout=10,
+            ["git", "init", "-b", "main"],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
+            timeout=10,
         )
         subprocess.run(
-            ["git", "add", "."], cwd=repo_dir,
-            capture_output=True, check=True, timeout=10,
+            ["git", "add", "."],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
+            timeout=10,
         )
         subprocess.run(
-            ["git", "commit", "-m",
-             f"chore: scaffold dataplatform from {hub_org}/{hub_repo}\n\n"
-             f"Hub version: {hub_version}\n"
-             f"Platform: {platform}\n\n"
-             "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"],
-            cwd=repo_dir, capture_output=True, check=True, timeout=10,
+            [
+                "git",
+                "commit",
+                "-m",
+                f"chore: scaffold dataplatform from {hub_org}/{hub_repo}\n\n"
+                f"Hub version: {hub_version}\n"
+                f"Platform: {platform}\n\n"
+                "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+            ],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
+            timeout=10,
         )
         click.echo("  ✓ git init + initial commit")
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
@@ -7830,4 +9282,6 @@ def init_dataplatform(name, dest, platform, org_override):
     click.echo("   # Edit models/_sources.yml with actual database/schema")
     click.echo("   dbt deps")
     click.echo("   dbt build")
-    click.echo("   # Configure Fabric secrets and run .github/workflows/deploy-powerbi-semantic-model.yml")
+    click.echo(
+        "   # Configure Fabric secrets and run .github/workflows/deploy-powerbi-semantic-model.yml"
+    )

@@ -180,6 +180,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-130](#dd-130-silver-ext-shape-discovery-with-packaged-fallback-and-windows-safe-loading) | Silver-ext Shape Discovery with Packaged Fallback and Windows-Safe Loading | Accepted | 2026-07-26 |
 | [DD-131](#dd-131-multi-class-property-domains-via-a-single-effective-domain-resolver) | Multi-Class Property Domains via a Single Effective-Domain Resolver | Accepted | 2026-07-26 |
 | [DD-132](#dd-132-fact-extraction-decomposition-guarded-by-a-full-artifact-characterization-baseline) | Fact-Extraction Decomposition Guarded by a Full-Artifact Characterization Baseline | Accepted | 2026-07-27 |
+| [DD-133](#dd-133-v5-authoring-break--yaml-entitybinding--stateless-compile) | V5 Authoring Break — YAML EntityBinding + Stateless `compile` | Accepted | 2026-07-27 |
+| [DD-134](#dd-134-immutable-reversible-unreleased-toolkit-testing) | Immutable, Reversible Unreleased Toolkit Testing | Accepted | 2026-07-27 |
 
 ---
 
@@ -8903,6 +8905,148 @@ splitting into separate lists would silently discard.
 - Interoperates with DD-131: the `effective_domain_classes` domain resolution is
   behaviour-preserving for the single-domain acme-hub properties, so the baseline is
   unchanged by that logic.
+
+---
+
+## DD-133: V5 Authoring Break — YAML EntityBinding + Stateless `compile`
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** new `src/kairos_ontology/core/compiler/`, new
+`src/kairos_ontology/cli/compile.py`, existing
+`core/projections/dbt/` (reused phases), `kairos-design-domain` +
+`kairos-design-mapping` skills, `tests/scenarios/v5-hub/`
+**Implementation:** first vertical slice tracked in the session plan
+(`v5-decision-contract` → `v5-skill-scenario`); full contract in the companion doc
+[`dd-133-v5-entity-binding-compile.md`](dd-133-v5-entity-binding-compile.md); broader
+migration roadmap in `docs/draft/plan.md`.
+
+### Context
+
+The v4 authoring/operating experience accumulated too many overlapping authorities —
+claims, mapping TTL, preparation TTL, Silver-extension TTL, transformation contracts,
+virtual sources, readiness reports, lifecycle/phase state, and release evidence — layered
+on top of an otherwise capable immutable dbt projection pipeline. Authoring a single
+canonical entity required editing several TTL authorities and passing multiple gates.
+
+V5 collapses this to **one** authoring authority and **one** execution path. Because this
+is a clean break, **no v4 hub compatibility, dual-format authoring, migration command, or
+upgrade path is provided** — existing client hubs are **rebuilt from fresh** as v5 hubs.
+
+### Decision
+
+1. **One authoring authority:** a concise, closed **YAML `EntityBinding`** is the single
+   source-to-canonical execution authority. OWL/TTL remains authoritative for the canonical
+   Silver model; source vocabularies remain authoritative for Bronze; hand-authored dbt
+   remains authoritative for complex relational transforms. The binding *references* these;
+   it never copies or replaces them, and it is validated by a packaged JSON Schema then
+   converted directly into frozen dataclasses and the existing graph-free mapping AST —
+   **never** serialized to intermediate RDF.
+2. **One execution path:** a **stateless `compile`** command with mutually exclusive
+   `--check` / `--explain` / `--emit` modes. `--check`/`--explain` never write hub files;
+   `--emit` builds a complete in-memory plan then writes atomically via same-volume
+   stage-then-swap over a manifest-owned target subtree. Kairos persists **no** lifecycle,
+   readiness, proposal, claim, or verification state.
+3. **Reuse, don't rebuild:** the new `core/compiler/` package adapts the existing immutable
+   `bind → normalize → shape → materialize → render` dbt phases via graph-free authored
+   facts — there is no second renderer. `core/compiler` must never import
+   `kairos_ontology.mdm` (layering rule).
+4. **Minimal non-suppressible safety kernel** gates emission; focused data-quality checks
+   are evidence emitted as ordinary dbt tests, not a Kairos runtime-result contract.
+5. **Superseded-for-the-v5-path** (deprecated-but-operative, not deleted): the
+   lifecycle/readiness/release, claims/synchronization, and mandatory-preparation/
+   virtual-source/contract-identity decisions listed in the companion doc §9. Their v4
+   command paths keep working until stages 4–5 remove them. DD-107's graph-free scalar AST
+   is **retained and reused**; only its RDF-authored, preparation-routed acquisition path is
+   superseded.
+
+The full normative contract — hub layout, closed YAML schema, scalar-expression grammar,
+safety kernel, atomic-emission contract, scope/provenance rules, and a canonical example —
+lives in the companion doc.
+
+### Rationale
+
+- A single closed binding removes the multi-authority coordination cost and the classes of
+  bug that came from claims/preparation/virtual-source drift, while the closed grammar and
+  allow-list keep it from becoming a new dumping ground.
+- Reusing the already-immutable, already-graph-free mapping AST (`AuthoredExpressionFact` is
+  a "graph-free structural copy") means v5 inherits the tested typed/deterministic rendering
+  behavior instead of forking a second pipeline.
+- Statelessness makes builds reproducible and eliminates the readiness/lifecycle/evidence
+  persistence that coupled authoring to operational state.
+- A clean break (no compatibility) is acceptable because client hubs are rebuilt from fresh,
+  so migration machinery would be pure cost.
+
+### Consequences
+
+- **First slice only** is implemented now (YAML → compile → deterministic Fabric dbt, proven
+  by `tests/scenarios/v5-hub/`). Stages 2–8 (strict incremental/SCD kernel, projection
+  cutover, v4 retirement, CLI/scaffold simplification, skill rewrite, test replacement,
+  docs/release) are **documented but deferred** (session plan + `docs/draft/plan.md`).
+- v4 machinery remains live and authoritative for its own command paths during the slice;
+  DD-133 does not make it dead-but-live. v4↔v5 output-collision rules are defined in the
+  emission contract.
+- The riskiest step is the adapter seam into the existing phases; it is de-risked first by
+  `v5-seam-spike` before the YAML schema is locked.
+- Skills become thin LLM loops over deterministic primitives — no second proposal DB or
+  session-state subsystem is introduced.
+
+---
+
+## DD-134: Immutable, Reversible Unreleased Toolkit Testing
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** `update` CLI, hub `pyproject.toml` / `uv.lock`, managed-file refresh,
+toolkit operations and release guidance
+**Implementation:** `src/kairos_ontology/cli/main.py` (`update --test-ref`,
+`update --restore`, test-ref state and dependency transaction helpers)
+
+### Context
+
+Testing toolkit work in a real hub previously required publishing a formal
+pre-release or manually editing dependency pins. A mutable branch pin was not
+reproducible, while manual restoration could resolve to a different release or
+lose the exact prior source. Same-version test commits also risked skipping the
+managed-file refresh, especially around Windows executable locking.
+
+### Decision
+
+`update --test-ref <branch-or-sha>` resolves the GitHub ref before mutation and
+accepts only its immutable 40-character commit SHA. It rewrites every PEP 508
+toolkit dependency while preserving extras, locks and syncs, and forces managed
+files to refresh from the tested commit. The existing release channel remains
+unchanged; testing creates no tag, release asset, version bump, or CHANGELOG
+entry.
+
+The hub records the requested ref, resolved SHA, and exact prior dependency
+source in temporary, visible `[tool.kairos.test-ref]` metadata. `--restore`
+restores that exact source, removes the metadata, relocks/resyncs, and refreshes
+released managed files. Nested sessions and restore without valid metadata are
+rejected. `--upgrade`, `--test-ref`, and `--restore` are mutually exclusive.
+
+Dependency-file changes are transactional: failures restore the original
+`pyproject.toml` and `uv.lock` bytes. Windows reuses the detached self-update
+helper from DD-057, including forced refresh and its transcript.
+
+### Rationale
+
+Resolving mutable names once combines convenient branch testing with a
+reviewable, reproducible pin. Saving the source rather than only a channel or
+version guarantees exact restoration. Reusing the established transaction and
+Windows refresh mechanisms avoids a second, platform-specific update path.
+
+### Consequences
+
+- During a test, expected hub drift is limited to dependency files and
+  toolkit-managed `.github` files (plus the normally ignored Windows refresh
+  transcript); ordinary channel selection is unaffected.
+- Hubs retain visible restore authority until a successful `--restore`.
+- GitHub/`gh` access is required for ref resolution, and Windows users must wait
+  for the detached helper before testing or reviewing the final diff.
+- Failed synchronous resolution, locking, syncing, scheduling, or refresh does
+  not leave a partially changed dependency state. A detached Windows-helper
+  failure remains recoverable from its transcript and the saved restore state.
 
 ---
 

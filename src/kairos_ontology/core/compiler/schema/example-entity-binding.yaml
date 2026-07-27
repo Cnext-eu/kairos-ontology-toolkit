@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+# Canonical v5 EntityBinding example (DD-133 §10). Loadable via load_entity_binding().
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: crm-customer-to-party
+  domain: party
+source:
+  relation: crm.customers
+target:
+  class: party:Customer
+grain:
+  columns: [customer_id]
+identity:
+  strategy: source-natural
+  sourceKey: [customer_id]
+load:
+  mode: full-refresh
+fields:
+  - property: party:customerId
+    expression: customer_id
+  - property: party:displayName
+    expression:
+      fn: upper
+      args: [{ column: full_name }]
+  - property: party:countryCode
+    expression:
+      fn: upper
+      args: [{ column: country }]
+relationships:
+  - property: party:hasCountry
+    target: ref:Country
+    join: [{ local: country, foreign: iso2 }]
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: error
+    ambiguousParent: error
+quality:
+  - kind: not-null
+    columns: [customer_id]
+  - kind: unique
+    columns: [customer_id]

@@ -252,6 +252,64 @@ This will:
 > it will **not** scaffold a second hub. In a directory that is not a hub (no pin /
 > managed `.github` anywhere up the tree) it hard-errors instead of fabricating one.
 
+### Testing an unreleased branch or commit
+
+Use test-ref mode when a hub must validate toolkit code before any formal
+release exists:
+
+```bash
+uv run kairos-ontology update --test-ref <branch-or-sha>
+# Run the hub's validation/projection tests, then return to the prior source:
+uv run kairos-ontology update --restore
+```
+
+`--test-ref` asks GitHub to resolve the supplied branch or SHA, then persists
+only the resulting immutable 40-character commit SHA in every toolkit
+dependency pin (including pins with extras such as `[flatfile]`). It runs
+`uv lock` and `uv sync`, and refreshes all toolkit-managed files from that
+commit even when the commit has the same package version as the installed
+release.
+
+This is a test installation, **not a release**: it creates no tag, GitHub
+Release, wheel asset, version bump, or CHANGELOG entry. The configured
+`[tool.kairos] channel` (`stable`, `preview`, or an explicit release tag) is
+unchanged and still controls the next ordinary `update --upgrade`.
+
+Before changing the pin, the command saves the exact prior dependency source,
+the requested ref, and the resolved SHA in a visible temporary
+`[tool.kairos.test-ref]` table. `--restore` uses that exact saved source rather
+than resolving the channel again, removes the temporary table, relocks,
+resyncs, and refreshes the released managed files. Nested test-ref sessions
+and `--restore` without valid saved metadata are refused.
+
+On Windows, the running executable cannot replace itself. The command uses the
+same detached helper as `--upgrade`: after the original process exits, a new
+console performs sync and the forced managed-file refresh, with a transcript
+in `.kairos/upgrade-refresh.log`. Wait for that helper to finish before testing
+or inspecting the final diff. If scheduling fails, follow the printed
+instructions from a fresh shell; do not assume the refresh completed.
+
+While testing, the expected Git diff is limited to:
+
+- `pyproject.toml`: immutable Git SHA pins plus `[tool.kairos.test-ref]`
+- `uv.lock`: the matching Git commit dependency
+- toolkit-managed `.github/copilot-instructions.md` and
+  `.github/skills/*/SKILL.md` refreshed from the tested commit
+
+On Windows, `.kairos/upgrade-refresh.log` is also written (normally ignored by
+Git).
+
+Review `git diff` before testing so unrelated pre-existing edits remain
+visible. A synchronous ref-resolution, lock, sync, scheduling, or refresh
+failure rolls `pyproject.toml` and `uv.lock` back to their exact pre-command
+bytes and prints recovery guidance. A failure inside an already-scheduled
+Windows helper is reported in the transcript; in a fresh shell, fix the cause,
+run `uv sync`, then `uv run kairos-ontology update` to finish the managed-file
+refresh. If a later test fails, keep the evidence, then run
+`uv run kairos-ontology update --restore`. If restore itself fails, fix the
+reported GitHub/`uv`/file issue and rerun `--restore`; do not hand-edit or
+delete `[tool.kairos.test-ref]`, because it is the exact restore authority.
+
 ### Refreshing managed files
 
 `update --upgrade` already refreshes managed files automatically (step 6 above).

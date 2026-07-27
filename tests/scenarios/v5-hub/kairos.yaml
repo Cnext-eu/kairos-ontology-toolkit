@@ -1,0 +1,4 @@
+version: 5
+name: v5-customer-hub
+default_domain: party
+adapter: fabric

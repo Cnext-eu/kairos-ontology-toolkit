@@ -4,7 +4,6 @@
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 CORE = ROOT / "src" / "kairos_ontology" / "core"
 
@@ -20,6 +19,9 @@ ALLOWED_DIRECT_PARSE_SITES = {
     "claim_projection_sync.py": "authored managed-block mutation and validation",
     "column_iri_migration.py": "source-vocabulary and mapping-overlay migration targets",
     "completeness_model.py": "source and SKOS mapping vocabularies",
+    "compiler/kernel.py": (
+        "source vocabulary extraction only; domain ontology semantics use ontology_loader"
+    ),
     "coverage_report.py": "SKOS mappings",
     "dbt_contract_sync.py": "generated dbt contract vocabulary",
     "dbt_contracts.py": "dbt YAML artifact parsing",

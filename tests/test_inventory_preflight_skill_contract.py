@@ -32,9 +32,9 @@ def test_domain_gate_is_blocking_before_design(root):
     text = (root / "kairos-design-domain" / "SKILL.md").read_text(encoding="utf-8")
 
     gate = text.index("### Gate 0: Scoped reference-inventory freshness")
-    first_design_gate = text.index("### Gate 1: Session file prerequisite")
+    first_design_gate = text.index("### Gate 1: Source completeness")
     assert gate < first_design_gate
-    assert "Missing or stale" in text[gate:first_design_gate]
+    assert "Missing\nor stale" in text[gate:first_design_gate]
     assert "STOP" in text[gate:first_design_gate]
 
 
