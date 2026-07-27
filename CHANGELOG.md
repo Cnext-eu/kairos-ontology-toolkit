@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0rc1] — 2026-07-27
+
+### Added
+- **V5 authoring and compilation (DD-133):** introduced closed YAML
+  `EntityBinding` contracts and stateless `compile --check`, `--explain`, and
+  `--emit` workflows with deterministic Fabric/dbt output and atomic,
+  manifest-owned emission.
+- **Unreleased toolkit testing (DD-134):** added reversible
+  `update --test-ref <branch-or-sha>` and `update --restore` workflows so hubs
+  can test immutable toolkit commits without publishing a release.
+
+### Changed
+- **Intentional V5 authoring break:** canonical ontology and source vocabulary
+  remain authoritative, while one YAML binding replaces the V4 mapping,
+  preparation, lifecycle-state, and release-evidence authoring path. Existing
+  client hubs start fresh; no V4 hub compatibility or migration path is
+  provided.
+- Reworked the canonical-domain and mapping skills around bounded ontology
+  patches, source-grounded bindings, explicit review, and fail-closed privacy.
+
+### Removed
+- Removed the accidentally tracked `fabric_cicd.error.log` diagnostic artifact.
+
 ## [4.7.0rc12] — 2026-07-27
 
 ### Fixed
