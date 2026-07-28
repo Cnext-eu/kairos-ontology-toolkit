@@ -16,6 +16,7 @@ RETAINED_COMMANDS = {
     "check-inventory",
     "compile",
     "coverage-report",
+    "decision",
     "discovery-conformance",
     "discovery-status",
     "draft-model-report",

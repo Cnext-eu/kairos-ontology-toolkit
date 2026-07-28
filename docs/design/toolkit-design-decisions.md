@@ -192,6 +192,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-138](#dd-138-cross-domain-relationship-targets-via-external-references) | Cross-domain Relationship Targets via External References | Accepted | 2026-07-28 |
 | [DD-139](#dd-139-authored-passthrough-technical-columns--dd-107-amendment) | Authored Passthrough Technical Columns — DD-107 Amendment | Proposed (Parked) | 2026-07-28 |
 | [DD-140](#dd-140-canonical-emit-layout-and-dbt-package-topology) | Canonical Emit Layout and dbt-Package Topology | Accepted | 2026-07-28 |
+| [DD-141](#dd-141-adopt-okf-based-per-hub-decision-log-as-a-toolkit-capability) | Adopt OKF-based per-hub Decision Log as a toolkit capability | Accepted | 2026-07-29 |
 
 ---
 
@@ -9477,6 +9478,79 @@ relationships package-management concerns rather than local compiler refs.
 
 ---
 
+
+## DD-141: Adopt OKF-based per-hub Decision Log as a toolkit capability
+
+**Status:** Accepted
+**Date:** 2026-07-29
+**Affects:** hub scaffold decisions bundle, `decision` CLI, validation, `kairos-help`
+skill, and documentation
+**Implementation:** `kairos-ontology decision new`, decision-bundle scaffold files under
+`ontology-hub/decisions/`, and the decision-profile validation path in
+`kairos-ontology validate`
+
+### Context
+
+Material ontology-design decisions were being made during Copilot-assisted design, but their
+rationale lived only in ephemeral conversation memory. The authored TTL states *what is true*;
+it does not durably explain *why* a maintainer accepted a genuine modeling tension, real gap,
+or rejected alternative. The `kairos-design-domain` workflow even described its rationale matrix
+as ephemeral, so refreshes and later reviews could preserve classes and properties while losing
+the evidence and trade-offs that justified them.
+
+DD-080 and DD-085 previously used OKF-shaped `.kairos-state` phase logs for interactive session
+continuation, but DD-135 retired that state structure for v5. The Decision Log is intentionally
+separate from that retired session state: it is durable, human-reviewed hub documentation for
+material decisions, not a lifecycle or continuation store.
+
+### Decision
+
+Adopt a per-hub **Decision Log** as a toolkit capability. Each v5 hub may carry a Google Cloud
+Open Knowledge Format (OKF) v0.2 Markdown + YAML-frontmatter bundle at
+`<hub_root>/decisions/` (for scaffolded hubs, `ontology-hub/decisions/`). Decision records are
+named `HUB-DD-*.md`; `index.md` is generated; the README and
+`HUB-DD-template.md.template` are managed scaffold files.
+
+Authors create records with `kairos-ontology decision new`. `kairos-ontology validate` now lints
+an existing bundle with the Kairos decision profile and reports two diagnostic classes:
+OKF-conformance findings and Kairos-decision-profile findings. An absent bundle is skipped.
+
+The materiality threshold is strict: log genuine tensions, real gaps, intentional standard
+divergence, evidence conflicts, or decisions with persistent consequences and rejected
+alternatives. Never log routine confirmations, obvious field additions, or decisions whose
+rationale is already fully expressed by the authored model.
+
+### Alternatives rejected
+
+| Option | Why rejected |
+|---|---|
+| Single hand-rolled hub file like the old `docs/draft/specs.md` pattern | Does not scale beyond one or two decisions, has no machine-checkable structure, and cannot be validated as a bundle. |
+| Store rationale in TTL comments | Conflates canonical facts with review rationale, is easy to drop during ontology refresh, and cannot clearly carry rejected alternatives or lifecycle metadata. |
+| ADRs only under repository `docs/` | Documents toolkit choices, not per-hub modeling choices, and is not shipped with scaffolded hubs where future maintainers need the rationale. |
+
+### Rationale
+
+OKF gives the hub a familiar, document-oriented record format without inventing a bespoke file
+syntax. A Kairos-specific decision profile can enforce the fields that make ontology rationale
+reviewable — materiality, sources, status, accepted/rejected state, and rejected alternatives —
+while keeping the actual record readable in any Markdown viewer.
+
+Scaffolding the README and template makes the capability discoverable in every new hub. Generating
+`index.md` avoids hand-maintained navigation drift, and validating the bundle during
+`validate` puts decision quality beside ontology syntax, SHACL, binding, and compile diagnostics.
+
+### Consequences
+
+- Every hub can keep durable rationale for material ontology-design decisions beside its authored
+  inputs.
+- `kairos-ontology validate` now also lints the decision bundle when it exists; an absent bundle
+  remains a compatible skip.
+- PR review is the materiality backstop: reviewers should reject routine confirmations and require
+  records for consequential design tensions or standard divergences.
+- The Decision Log does not revive `.kairos-state`; it is a separate, durable, human-reviewed
+  artifact rather than session state.
+
+---
 
 
 ```markdown

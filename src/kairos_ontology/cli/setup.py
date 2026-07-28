@@ -11,6 +11,7 @@ from pathlib import Path
 from .. import __version__ as _toolkit_version
 from ..core._provenance import provenance_comment
 from ..core.catalog_utils import sync_domain_catalog_entry
+from ..core.decision_records import build_index_markdown
 
 # Importing the design-time MDM package registers the additive ``mdm-profile``
 # projection target with the core projector (registry pattern, MDM-DD-002).
@@ -104,7 +105,21 @@ def init(domain, company_domain, force):
         if readme_src.is_file() and (not readme_dst.exists() or force):
             shutil.copy2(readme_src, readme_dst)
 
-    # 2a. Copy the business glossary template into businessdiscovery/
+    # 2a. Install the OKF decision-log bundle.
+    decisions_src = _SCAFFOLD_DIR / "ontology-hub" / "decisions"
+    decisions_dst = hub / "decisions"
+    decisions_dst.mkdir(parents=True, exist_ok=True)
+    for filename in ("README.md", "HUB-DD-template.md.template"):
+        src = decisions_src / filename
+        dst = decisions_dst / filename
+        if src.is_file() and (not dst.exists() or force):
+            _copy_managed(src, dst)
+    index_dst = decisions_dst / "index.md"
+    if not index_dst.exists() or force:
+        index_dst.write_text(build_index_markdown([]), encoding="utf-8")
+        print("  ✓ Created ontology-hub/decisions/index.md")
+
+    # 2b. Copy the business glossary template into businessdiscovery/
     glossary_tpl_src = (
         _SCAFFOLD_DIR / "ontology-hub" / "businessdiscovery" / "glossary-template.ttl"
     )
@@ -112,7 +127,7 @@ def init(domain, company_domain, force):
     if glossary_tpl_src.is_file() and (not glossary_tpl_dst.exists() or force):
         shutil.copy2(glossary_tpl_src, glossary_tpl_dst)
 
-    # 2b. Copy source-system-template into integration/sources/
+    # 2c. Copy source-system-template into integration/sources/
     src_template_src = (
         _SCAFFOLD_DIR / "ontology-hub" / "integration" / "sources" / "source-system-template"
     )
@@ -728,6 +743,18 @@ def new_repo(
         dst = hub / hub_subdir / "README.md"
         if src.is_file():
             shutil.copy2(src, dst)
+
+    # Decision-log bundle.
+    decisions_src = _SCAFFOLD_DIR / "ontology-hub" / "decisions"
+    decisions_dst = hub / "decisions"
+    decisions_dst.mkdir(parents=True, exist_ok=True)
+    for filename in ("README.md", "HUB-DD-template.md.template"):
+        src = decisions_src / filename
+        dst = decisions_dst / filename
+        if src.is_file():
+            _copy_managed(src, dst)
+    (decisions_dst / "index.md").write_text(build_index_markdown([]), encoding="utf-8")
+    print("  ✓ ontology-hub/decisions/ (decision log)")
 
     # Business glossary template into businessdiscovery/
     glossary_tpl_src = (

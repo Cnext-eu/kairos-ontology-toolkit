@@ -218,6 +218,9 @@ def validate(
     # Report destination: always the hub's output/ dir, never the process CWD
     # (mirrors the `project` command's output_path resolution below).
     output_dir = hub_root / "output" if hub_root is not None else cwd / "ontology-hub" / "output"
+    decisions_path = (
+        hub_root / "decisions" if hub_root is not None else cwd / "ontology-hub" / "decisions"
+    )
     json_report_path = None
     markdown_report_path = None
     if report_format in ("json", "both"):
@@ -273,6 +276,7 @@ def validate(
         ref_models_dir=ref_models_path,
         accelerator=accelerator,
         markdown_report_path=markdown_report_path,
+        decisions_path=decisions_path,
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through

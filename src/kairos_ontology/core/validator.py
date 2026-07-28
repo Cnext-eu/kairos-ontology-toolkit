@@ -306,6 +306,7 @@ def propose_lifecycle_state(
         + results["imports"]["failed"]
         + results["shacl"]["failed"]
         + results["consistency"]["failed"]
+        + results.get("decisions", {}).get("failed", 0)
     )
     if total_failed:
         return LifecycleStateProposal(
@@ -405,11 +406,11 @@ def render_validation_markdown(
     lines.append("")
     lines.append("| Check | Passed | Failed |")
     lines.append("|-------|--------|--------|")
-    for section in ("syntax", "imports", "shacl", "consistency"):
+    for section in ("syntax", "imports", "shacl", "consistency", "decisions"):
         data = results.get(section, {})
         lines.append(f"| {section} | {data.get('passed', 0)} | {data.get('failed', 0)} |")
     lines.append("")
-    for section in ("syntax", "imports", "shacl", "consistency"):
+    for section in ("syntax", "imports", "shacl", "consistency", "decisions"):
         errors = results.get(section, {}).get("errors", [])
         if not errors:
             continue
@@ -445,6 +446,7 @@ def run_validation(
     ref_models_dir: Optional[Path] = None,
     accelerator: Optional[str] = None,
     markdown_report_path: Optional[Path] = None,
+    decisions_path: Optional[Path] = None,
 ):
     """Run validation pipeline.
 
@@ -467,6 +469,7 @@ def run_validation(
             command options, catalog, accelerator, scope/files, and findings — see
             ``render_validation_markdown``). Omitted by default, which preserves the
             pre-existing JSON-only report contract exactly.
+        decisions_path: Optional OKF decision bundle directory to validate when present.
     """
 
     print("🔍 Kairos Ontology Validation")
@@ -477,6 +480,7 @@ def run_validation(
         "imports": {"passed": 0, "failed": 0, "errors": [], "warnings": []},
         "shacl": {"passed": 0, "failed": 0, "errors": []},
         "consistency": {"passed": 0, "failed": 0, "errors": []},
+        "decisions": {"passed": 0, "failed": 0, "errors": [], "warnings": []},
     }
 
     # Find all ontology files. Sorted for deterministic iteration/reporting order
@@ -555,6 +559,46 @@ def run_validation(
                 else:
                     print(f"  ✓ {ontology_file.name}")
         print()
+
+    if decisions_path is not None and Path(decisions_path).is_dir():
+        from .decision_records import validate_decision_bundle
+
+        dres = validate_decision_bundle(Path(decisions_path))
+        results["decisions"]["errors"].extend(d.to_dict() for d in dres.errors)
+        results["decisions"]["warnings"].extend(d.to_dict() for d in dres.warnings)
+        results["decisions"]["failed"] = len(dres.errors)
+        results["decisions"]["passed"] = len(
+            [r for r in dres.records if not any(e.file == r.path.name for e in dres.errors)]
+        )
+
+        print("🗒️  Decision Log")
+        print("-" * 50)
+        record_names = {record.path.name for record in dres.records}
+        if not dres.records and not dres.errors and not dres.warnings:
+            print("  ✓ No decision records found")
+        for record in dres.records:
+            record_errors = [error for error in dres.errors if error.file == record.path.name]
+            record_warnings = [
+                warning for warning in dres.warnings if warning.file == record.path.name
+            ]
+            if record_errors:
+                print(f"  ✗ {record.path.name}: {len(record_errors)} error(s)")
+                for error in record_errors:
+                    print(f"    {error.message}")
+            else:
+                print(f"  ✓ {record.path.name}")
+            for warning in record_warnings:
+                print(f"    ⚠ {warning.message}")
+        for error in dres.errors:
+            if error.file not in record_names:
+                print(f"  ✗ {error.file}: {error.message}")
+        for warning in dres.warnings:
+            if warning.file not in record_names:
+                print(f"  ⚠ {warning.file}: {warning.message}")
+        print(
+            f"\n  Passed: {results['decisions']['passed']}, "
+            f"Failed: {results['decisions']['failed']}\n"
+        )
 
     # Level 1: Syntax Validation
     if do_syntax:
@@ -678,6 +722,7 @@ def run_validation(
         + results["imports"]["failed"]
         + results["shacl"]["failed"]
         + results["consistency"]["failed"]
+        + results["decisions"]["failed"]
     )
     if total_failed > 0:
         print(f"\n❌ Validation failed with {total_failed} errors")

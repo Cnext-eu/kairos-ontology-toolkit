@@ -709,6 +709,7 @@ _V5_HUB_DIRECTORIES = (
     "referencemodels-unpacked",
     "businessdiscovery",
     "businessdiscovery/_extractions",
+    "decisions",
     "integration/bindings",
     "integration/discovery",
     "integration/sources",
@@ -843,6 +844,14 @@ def _managed_scaffold_map() -> dict[str, Path]:
     ci = _SCAFFOLD_DIR / "copilot-instructions.md"
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
+
+    for rel_path in (
+        "ontology-hub/decisions/README.md",
+        "ontology-hub/decisions/HUB-DD-template.md.template",
+    ):
+        scaffold_file = _SCAFFOLD_DIR / rel_path
+        if scaffold_file.is_file():
+            result[rel_path] = scaffold_file
 
     skills = _SCAFFOLD_DIR / "skills"
     if skills.is_dir():
