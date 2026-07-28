@@ -155,6 +155,53 @@ def test_emit_can_own_one_contained_subtree_below_output_root(tmp_path: Path):
     assert unrelated.read_text(encoding="utf-8") == "outside selected target"
 
 
+def test_emit_can_own_domain_manifests_in_one_unified_target(tmp_path: Path):
+    target = tmp_path / "output" / "medallion" / "dbt"
+    party = ".kairos-compile-manifest.party.json"
+    billing = ".kairos-compile-manifest.billing.json"
+
+    emit_artifacts(
+        {
+            "models/silver/party/obsolete.sql": "old",
+            "models/silver/party/customer.sql": "select 1",
+        },
+        target,
+        manifest_name=party,
+    )
+    emit_artifacts(
+        {"models/silver/billing/account.sql": "select 2"},
+        target,
+        manifest_name=billing,
+    )
+    result = emit_artifacts(
+        {"models/silver/party/customer.sql": "select 3"},
+        target,
+        manifest_name=party,
+    )
+
+    assert result.removed == ("models/silver/party/obsolete.sql",)
+    assert (target / "models/silver/party/customer.sql").read_text() == "select 3"
+    assert (target / "models/silver/billing/account.sql").read_text() == "select 2"
+    assert (target / party).is_file()
+    assert (target / billing).is_file()
+
+
+def test_emit_can_replace_declared_shared_unowned_paths(tmp_path: Path):
+    target = tmp_path / "output" / "medallion" / "dbt"
+    target.mkdir(parents=True)
+    shared = target / "dbt_project.yml"
+    shared.write_text("name: old_project\n", encoding="utf-8")
+
+    emit_artifacts(
+        {"dbt_project.yml": "name: kairos_medallion_project\n"},
+        target,
+        manifest_name=".kairos-compile-manifest.shared.json",
+        replace_unowned_paths=("dbt_project.yml",),
+    )
+
+    assert shared.read_text(encoding="utf-8") == "name: kairos_medallion_project\n"
+
+
 @pytest.mark.parametrize("subtree", ["../party", "/party", r"C:\party", "party/../invoice"])
 def test_emit_rejects_escaping_owned_subtree(tmp_path: Path, subtree: str):
     with pytest.raises(ArtifactPathError):

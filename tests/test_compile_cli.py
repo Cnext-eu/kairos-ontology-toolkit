@@ -60,7 +60,7 @@ def test_compile_returns_nonzero_for_diagnostics(tmp_path, monkeypatch):
     assert "safety.column-unresolved" in result.output
 
 
-def test_compile_emit_writes_only_owned_domain_subtree(tmp_path, monkeypatch):
+def test_compile_emit_writes_unified_dbt_project_preserving_unowned_files(tmp_path, monkeypatch):
     hub = _hub(tmp_path / "hub")
     output = tmp_path / "generated"
     unrelated = output / "invoice" / "user.txt"
@@ -69,7 +69,8 @@ def test_compile_emit_writes_only_owned_domain_subtree(tmp_path, monkeypatch):
     monkeypatch.chdir(hub)
     result = CliRunner().invoke(cli, ["compile", "party", "--emit", str(output)])
     assert result.exit_code == 0, result.output
-    target = output / "party"
-    assert (target / "models/silver/party/customer.sql").is_file()
-    assert (target / ".kairos-compile-manifest.json").is_file()
+    assert (output / "models/silver/party/customer.sql").is_file()
+    assert (output / ".kairos-compile-manifest.party.json").is_file()
+    assert (output / ".kairos-compile-manifest.shared.json").is_file()
+    assert not (output / "party").exists()
     assert unrelated.read_text(encoding="utf-8") == "keep"

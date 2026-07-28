@@ -8,12 +8,13 @@ Kairos v5 ontology hub for **{description}**.
 uv sync
 uv run kairos-ontology compile <domain> --check
 uv run kairos-ontology compile <domain> --explain
-uv run kairos-ontology compile <domain> --emit ontology-hub/output/medallion/dbt
+uv run kairos-ontology compile <domain> --emit
 ```
 
 `--check` and `--explain` are write-free. `--emit` atomically writes only
-manifest-owned artifacts. Compilation creates one immutable `CompilePlan` used by check,
-explain, emit, and optional Gold/MDM consumers.
+manifest-owned artifacts to `ontology-hub/output/medallion/dbt` by default.
+Compilation creates one immutable `CompilePlan` used by check, explain, emit, and
+optional Gold/MDM consumers.
 
 ## Canonical authored inputs
 

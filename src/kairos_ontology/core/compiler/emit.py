@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
@@ -172,6 +172,17 @@ def _manifest_bytes(artifacts: tuple[PlannedArtifact, ...]) -> bytes:
     )
 
 
+def _manifest_file_name(raw_name: str) -> str:
+    if raw_name == EMIT_MANIFEST_NAME:
+        return raw_name
+    name = _canonical_artifact_path(raw_name)
+    if "/" in name:
+        raise ArtifactPathError(f"compiler manifest name must be a root file: {raw_name!r}")
+    if not name.startswith(".kairos-compile-manifest") or not name.endswith(".json"):
+        raise ArtifactPathError(f"compiler manifest name is not reserved for Kairos: {raw_name!r}")
+    return name
+
+
 def plan_emission(rendered: Mapping[str, object]) -> EmissionPlan:
     """Validate renderer output and build a deterministic in-memory emission plan.
 
@@ -222,8 +233,8 @@ def _contained_path(root: Path, relative: str, *, error_type: type[EmissionError
     return candidate
 
 
-def _parse_manifest(target: Path) -> dict[str, str]:
-    manifest_path = target / EMIT_MANIFEST_NAME
+def _parse_manifest(target: Path, manifest_name: str) -> dict[str, str]:
+    manifest_path = target / manifest_name
     if not manifest_path.exists() and not manifest_path.is_symlink():
         return {}
     if manifest_path.is_symlink() or not manifest_path.is_file():
@@ -280,8 +291,10 @@ def _validate_target_collisions(
     target: Path,
     artifacts: tuple[PlannedArtifact, ...],
     previously_owned: Mapping[str, str],
+    replace_unowned_paths: Collection[str],
 ) -> None:
     owned_keys = {_collision_key(path) for path in previously_owned}
+    replace_unowned_keys = {_collision_key(path) for path in replace_unowned_paths}
     for artifact in artifacts:
         parts = artifact.path.split("/")
         for index in range(1, len(parts)):
@@ -296,11 +309,12 @@ def _validate_target_collisions(
         destination = _contained_path(target, artifact.path, error_type=ArtifactPathError)
         kind = _path_kind(destination)
         is_owned = _collision_key(artifact.path) in owned_keys
+        can_replace_unowned = _collision_key(artifact.path) in replace_unowned_keys
         if kind == "directory":
             raise ArtifactCollisionError(
                 f"artifact destination collides with a directory: {artifact.path!r}"
             )
-        if kind in {"file", "symlink"} and not is_owned:
+        if kind in {"file", "symlink"} and not is_owned and not can_replace_unowned:
             raise ArtifactCollisionError(
                 f"artifact destination collides with an unowned path: {artifact.path!r}"
             )
@@ -331,11 +345,24 @@ def _write_stage(
     stage: Path,
     plan: EmissionPlan,
     previously_owned: Mapping[str, str],
+    manifest_name: str,
+    replace_unowned_paths: Collection[str],
 ) -> None:
     for relative in sorted(previously_owned, key=lambda item: (-item.count("/"), item)):
         _remove_owned_file(stage, relative)
+    previously_owned_keys = {_collision_key(path) for path in previously_owned}
+    planned_keys = {_collision_key(artifact.path) for artifact in plan.artifacts}
+    for relative in sorted(
+        replace_unowned_paths,
+        key=lambda item: (-item.count("/"), item),
+    ):
+        if _collision_key(relative) not in planned_keys:
+            continue
+        if _collision_key(relative) in previously_owned_keys:
+            continue
+        _remove_owned_file(stage, relative)
 
-    manifest_path = stage / EMIT_MANIFEST_NAME
+    manifest_path = stage / manifest_name
     if manifest_path.exists() or manifest_path.is_symlink():
         manifest_path.unlink()
 
@@ -347,8 +374,8 @@ def _write_stage(
     manifest_path.write_bytes(plan.manifest)
 
 
-def _validate_stage(stage: Path, plan: EmissionPlan) -> None:
-    if (stage / EMIT_MANIFEST_NAME).read_bytes() != plan.manifest:
+def _validate_stage(stage: Path, plan: EmissionPlan, manifest_name: str) -> None:
+    if (stage / manifest_name).read_bytes() != plan.manifest:
         raise EmissionError("staged compiler manifest does not match the in-memory plan")
     for artifact in plan.artifacts:
         destination = _contained_path(stage, artifact.path, error_type=ArtifactPathError)
@@ -476,7 +503,19 @@ def _commit_stage(stage: Path, target: Path) -> Path | None:
             raise EmissionError(f"could not move emission target to backup: {target}") from exc
 
     try:
-        os.replace(stage, target)
+        last_error: OSError | None = None
+        for attempt in range(6):
+            try:
+                os.replace(stage, target)
+                last_error = None
+                break
+            except PermissionError as exc:
+                last_error = exc
+                if os.name != "nt" or attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
     except OSError as swap_error:
         if previous_moved and backup is not None:
             try:
@@ -496,6 +535,8 @@ def emit_artifacts(
     target_dir: str | os.PathLike[str],
     *,
     owned_subtree: str | None = None,
+    manifest_name: str = EMIT_MANIFEST_NAME,
+    replace_unowned_paths: Collection[str] = (),
 ) -> EmissionResult:
     """Emit renderer artifacts into one manifest-owned target subtree.
 
@@ -506,7 +547,14 @@ def emit_artifacts(
     into place; failures restore the backup whenever the platform permits.
     """
 
+    manifest_name = _manifest_file_name(manifest_name)
+    replace_unowned_paths = tuple(_canonical_artifact_path(path) for path in replace_unowned_paths)
     plan = plan_emission(rendered)
+    for artifact in plan.artifacts:
+        if artifact.path == manifest_name:
+            raise ArtifactCollisionError(
+                f"artifact path {artifact.path!r} is reserved for the compiler manifest"
+            )
     target = _target_path(target_dir, owned_subtree)
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -516,8 +564,13 @@ def emit_artifacts(
         _recover_interrupted_emit(target)
         if target.exists() and not target.is_dir():
             raise EmissionError(f"emission target must be a directory: {target}")
-        previously_owned = _parse_manifest(target) if target.exists() else {}
-        _validate_target_collisions(target, plan.artifacts, previously_owned)
+        previously_owned = _parse_manifest(target, manifest_name) if target.exists() else {}
+        _validate_target_collisions(
+            target,
+            plan.artifacts,
+            previously_owned,
+            replace_unowned_paths,
+        )
         stale = tuple(sorted(set(previously_owned) - set(plan.paths)))
 
         try:
@@ -526,8 +579,14 @@ def emit_artifacts(
             )
             if target.exists():
                 shutil.copytree(target, stage, dirs_exist_ok=True, symlinks=True)
-            _write_stage(stage, plan, previously_owned)
-            _validate_stage(stage, plan)
+            _write_stage(
+                stage,
+                plan,
+                previously_owned,
+                manifest_name,
+                replace_unowned_paths,
+            )
+            _validate_stage(stage, plan, manifest_name)
             backup = _commit_stage(stage, target)
             stage = None
         except EmissionError:
@@ -540,7 +599,7 @@ def emit_artifacts(
         _best_effort_remove(backup)
         return EmissionResult(
             target_dir=target,
-            manifest_path=target / EMIT_MANIFEST_NAME,
+            manifest_path=target / manifest_name,
             written=plan.paths,
             removed=stale,
         )

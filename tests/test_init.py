@@ -906,7 +906,8 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             assert "powerbi-semantic-model.zip" not in content
             assert "POWERBI_PACKAGE" not in content
             assert "persist-credentials: false" in content
-            assert "rm -rf output/dbt" in content
+            assert "rm -rf output/medallion/dbt" in content
+            assert 'find "ontology-hub/output/medallion/dbt"' in content
             assert "-type l -print -quit | grep -q ." in content
             assert "rm -f dbt-artifacts.zip" in content
             assert content.index("-type l -print -quit") < content.index("-type f -print -quit")

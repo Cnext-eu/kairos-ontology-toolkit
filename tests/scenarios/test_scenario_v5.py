@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from click.testing import CliRunner
 
+from kairos_ontology.cli.main import cli
 from kairos_ontology.core.compiler import CompileMode, compile_domain
 from kairos_ontology.core.compiler.emit import emit_artifacts
 from kairos_ontology.core.compiler.quality import SAFETY_RULE_CODES
@@ -34,6 +36,44 @@ def _binding(hub: Path, name: str) -> tuple[Path, dict]:
 
 def _write_binding(path: Path, document: dict) -> None:
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
+def _add_billing_domain(hub: Path) -> None:
+    (hub / "model" / "ontologies" / "billing.ttl").write_text(
+        """@prefix billing: <https://example.test/ontology/billing#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.test/ontology/billing> a owl:Ontology ;
+  owl:versionInfo "1.0.0" ;
+  rdfs:label "Synthetic billing slice" .
+
+billing:Account a owl:Class ; rdfs:label "Account" .
+billing:account_id a owl:DatatypeProperty ;
+  rdfs:domain billing:Account ; rdfs:range xsd:string .
+billing:account_name a owl:DatatypeProperty ;
+  rdfs:domain billing:Account ; rdfs:range xsd:string .
+""",
+        encoding="utf-8",
+    )
+    _write_binding(
+        hub / "integration" / "bindings" / "account.binding.yaml",
+        {
+            "apiVersion": "kairos.eu/v5",
+            "kind": "EntityBinding",
+            "metadata": {"name": "erp-account", "domain": "billing"},
+            "source": {"relation": "erp.customers"},
+            "target": {"class": "billing:Account"},
+            "grain": {"columns": ["customer_id"]},
+            "identity": {"strategy": "source-natural", "sourceKey": ["customer_id"]},
+            "load": {"mode": "full-refresh"},
+            "fields": [
+                {"property": "billing:account_id", "expression": "customer_id"},
+                {"property": "billing:account_name", "expression": "customer_name"},
+            ],
+        },
+    )
 
 
 def _incremental(scd: int) -> dict:
@@ -209,6 +249,71 @@ def test_v5_scenario_emit_is_byte_deterministic_and_manifest_owned(tmp_path):
     assert tuple(plan.plan.artifact_paths) == tuple(sorted(plan.artifact_dict()))
     assert manifest_paths == tuple(plan.plan.artifact_paths)
     assert (second.target_dir / "models/silver/party/customer.sql").is_file()
+
+
+def test_v5_cli_bare_emit_defaults_to_unified_medallion_dbt(tmp_path, monkeypatch):
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        ["compile", "party", "--emit"],
+        env={"KAIROS_SKILL_CONTEXT": "1"},
+    )
+
+    assert result.exit_code == 0, result.output
+    target = hub / "output" / "medallion" / "dbt"
+    assert (target / "dbt_project.yml").is_file()
+    assert (target / "models/silver/party/customer.sql").is_file()
+    assert not (target / "party").exists()
+
+
+def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
+    tmp_path,
+    monkeypatch,
+):
+    hub = _copy_hub(tmp_path)
+    _add_billing_domain(hub)
+    target_ab = hub / "output" / "medallion" / "dbt"
+    target_ba = hub / "output" / "reverse" / "dbt"
+    runner = CliRunner()
+    monkeypatch.chdir(hub)
+
+    for domain in ("party", "billing"):
+        result = runner.invoke(
+            cli,
+            ["compile", domain, "--emit", str(target_ab)],
+            env={"KAIROS_SKILL_CONTEXT": "1"},
+        )
+        assert result.exit_code == 0, result.output
+    for domain in ("billing", "party"):
+        result = runner.invoke(
+            cli,
+            ["compile", domain, "--emit", str(target_ba)],
+            env={"KAIROS_SKILL_CONTEXT": "1"},
+        )
+        assert result.exit_code == 0, result.output
+
+    assert (target_ab / "models/silver/party/customer.sql").is_file()
+    assert (target_ab / "models/silver/billing/account.sql").is_file()
+    assert not (target_ab / "party").exists()
+    assert not (target_ab / "billing").exists()
+    project = (target_ab / "dbt_project.yml").read_text(encoding="utf-8")
+    assert "name: 'kairos_medallion_project'" in project
+    assert "      billing:" in project
+    assert "      party:" in project
+
+    bytes_ab = {
+        path.relative_to(target_ab).as_posix(): path.read_bytes()
+        for path in target_ab.rglob("*")
+        if path.is_file()
+    }
+    bytes_ba = {
+        path.relative_to(target_ba).as_posix(): path.read_bytes()
+        for path in target_ba.rglob("*")
+        if path.is_file()
+    }
+    assert bytes_ab == bytes_ba
 
 
 def test_v5_reemit_prunes_stale_noncanonical_manifest_artifacts(tmp_path):
