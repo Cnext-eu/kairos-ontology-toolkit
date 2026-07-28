@@ -16,5 +16,13 @@ Validation is read-only unless the user explicitly requests an output file.
 5. Distinguish ontology validity, binding compilation, and runtime dbt/platform testing.
 6. Route fixes to the owning source, ontology, mapping, Gold, or MDM skill.
 
+Passing compile diagnostics do not parse the emitted dbt project. After all domains emit
+into the unified `output/medallion/dbt`, offer the opt-in, hub-wide offline gate
+`kairos-ontology validate-dbt --platform <fabric|databricks>` (runs once for the whole
+project, not per domain). It performs offline `deps → parse → manifest → compile` against the
+adapter matching the emitted platform; `dbt deps` still needs package/network availability, but
+warehouse credentials are not required. This closes the loop between canonical compilation and a
+parseable dbt project without running warehouse tests.
+
 The canonical compiler is the authority for entity resolution, typed expressions, contracts,
 relationships, adapters, and artifact planning. Do not edit Turtle without the ontology skill.
