@@ -55,12 +55,12 @@ grain:                                # explicit materialized grain
   columns: [<source-column>, ...]
 identity:
   strategy: source-natural | surrogate   # slice-1 supports these two
-  sourceKey: [<source-column>, ...]   # strict: source identity, distinct from IRI/surrogate
-  businessKey: [<source-column>, ...] # optional; distinct from sourceKey
+  sourceKey: [<source-column>, ...]   # strict: SOURCE columns; source-record identity/conformance
+  businessKey: [<source-column>, ...] # optional; SOURCE columns; distinct from sourceKey
 load:
   mode: full-refresh | incremental    # closed discriminated union; see §3a
 fields:                               # field -> property mappings
-  - property: <prefix:propertyLocalName>   # resolved against the ontology closure
+  - property: <prefix:propertyLocalName>   # resolved against the semantic-index closure (rdfs)
     expression: <expression-node>     # see §4; may be a bare source-column shorthand
 relationships:                        # optional; zero or more
   - property: <prefix:objectPropertyLocalName>
@@ -220,7 +220,10 @@ to a contracted dbt model referenced via `source.dbtModel`.
 from authored data-quality checks:
 
 1. source relation + every referenced source column resolve;
-2. target class + every referenced property resolve in the ontology import closure;
+2. target class + every referenced property resolve in the ontology import closure **through
+   the DD-103 versioned semantic index under the `rdfs` profile, so direct and
+   subclass-inherited cross-namespace imported properties resolve; an authored field ref that
+   resolves to more than one distinct property URI is an ambiguity diagnostic**;
 3. canonical source→target type compatibility for every field;
 4. every expression is deterministic, bounded, allow-listed, with explicit null/error
    behavior;
@@ -304,6 +307,34 @@ Fabric Silver SQL with **no** RDF input. Findings that bind the v5 compiler desi
   the v5 emit contract owns only the file-path artifacts (the non-file keys are ignored/not
   persisted as hub files).
 - Layering confirmed: importing the dbt pipeline does not load `kairos_ontology.mdm`.
+
+## 8b. Amendment (2026-07-28): semantic-index resolution + output-column identity
+
+Two coupled compile-time corrections (see the DD-108 amendment 2026-07-28 and DD-103):
+
+- **Symbol resolution uses the DD-103 semantic index under the `rdfs` profile.**
+  `kernel._ontology_symbols` loads the closure with `SemanticProfile.RDFS` and resolves each
+  bound hub class's **direct and subclass-inherited** properties via
+  `SemanticIndex.class_properties`, including properties whose `rdfs:domain` is an ancestor in an
+  imported namespace. Inherited resolved properties are made applicable to the bound subclass in
+  the resolved-symbol layer (the bound class URI is added to `domain_uris`); the graph is never
+  rewritten. The exact-domain/namespace helpers in `ontology_ops`
+  (`list_classes`/`list_properties`) do **not** walk `rdfs:subClassOf` and must not be used for
+  structure-aware binding resolution — they remain for inventory/non-binding uses only. Binding
+  targets remain hub-namespace classes. An authored field ref that resolves to more than one
+  distinct property URI (a cross-namespace local-name alias collision) is a
+  `binding.ambiguous-property` diagnostic; qualify the field with the owning namespace to
+  disambiguate. Consistent with DD-103, inherited *semantic* breadth never widens *physical*
+  breadth: an inherited property is materialized only when a field explicitly binds it.
+- **Identity keys are resolved to target OUTPUT columns.** `identity.sourceKey`/`businessKey`
+  enumerate SOURCE columns, but `EntityIdentityFact.naturalKey` (which drives generated keys,
+  business grain, identity roles, and render) now carries the **mapped target OUTPUT column
+  names**, resolved from the field whose expression is exactly that source column. Emitted
+  silver/dbt column names are the snake-cased target property local name (matching the graph
+  path and `naturalKey` normalization). `sourceKey` is unchanged for `_source_record_key` and
+  conformance. An identity key with no field mapping, an ambiguous mapping, or one buried in a
+  multi-column expression is a specific diagnostic (`identity.authored-key-not-supplied`,
+  `identity.ambiguous-key-mapping`, `identity.key-column-in-expression`).
 
 ## 9. Superseded-for-v5-path decisions (historical cutover record)
 

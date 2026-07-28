@@ -115,7 +115,7 @@ def test_compile_plan_is_immutable_typed_and_graph_free(tmp_path):
     assert plan.shaped_project is not None
     assert plan.silver_registry is plan.shaped_project.silver_registry
     assert dict(plan.silver_registry.names) == {"https://example.test/party#Customer": "customer"}
-    assert "customerName" in dict(plan.silver_registry.columns)["customer"]
+    assert "customer_name" in dict(plan.silver_registry.columns)["customer"]
     assert plan.materialization_plan is not None
     assert plan.bindings == tuple(entity.binding for entity in plan.entities)
 

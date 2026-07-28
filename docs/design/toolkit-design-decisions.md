@@ -6614,6 +6614,11 @@ without breaking existing hubs.
 - Catalog/import cycles terminate deterministically and remain visible in diagnostics.
 - Structured CLI inspection and prompt slices replace raw Turtle interpretation for
   semantic decisions.
+- The v5 `EntityBinding` compiler resolves bound-class properties through this semantic
+  index under the `rdfs` profile so subclass-inherited, cross-namespace imported properties
+  are bindable without local redeclaration; see the DD-108 amendment (2026-07-28). Per the
+  breadth principle above, such inherited properties are physically materialized only when a
+  binding field explicitly binds them.
 
 ---
 
@@ -6981,6 +6986,51 @@ unreviewed row-level equivalence.
 - Multi-source schema alignment is no longer described as semantic conformance by
   itself.
 - Every composite transformation exposes complete contribution lineage.
+
+### Amendment (2026-07-28): identity keys are target OUTPUT columns; compile-time resolution uses the semantic index
+
+Two coupled compile-time defects are corrected in the v5 `EntityBinding` compiler
+(`core/compiler/adapter.py`, `core/compiler/kernel.py`).
+
+**1. Business/natural identity is decoupled from source column names.** `identity.sourceKey`
+and `identity.businessKey` enumerate **source** columns, but the identity fact (`naturalKey`,
+which drives generated surrogate/integration keys, business grain, identity roles, and render)
+previously baked those **source** names into the identity. That only compiled when
+`camel_to_snake(source_column) == camel_to_snake(target_property_local_name)` — a coincidence
+of the canonical fixture. The adapter now resolves each ordered identity key component to the
+**target OUTPUT column** it is mapped to (via the field whose expression is exactly that source
+column) *before* constructing `EntityIdentityFact`, so downstream consumers receive coherent
+output-named identity. `identity.sourceKey` is unchanged for `_source_record_key` and
+conformance. Emitted silver/dbt column names are now the snake-cased target property local name
+(`camel_to_snake(...)`), matching the graph projection path and the `naturalKey` normalization;
+this is idempotent for already-snake property names. An identity key component that maps to no
+field, to more than one target output, or only inside a multi-column expression is a specific,
+actionable diagnostic (`identity.authored-key-not-supplied`,
+`identity.ambiguous-key-mapping`, `identity.key-column-in-expression`) rather than a silent
+source-named key. The quality-column and `identity.authored-key-not-supplied` diagnostics are
+made actionable (they name the source column, the mapped target/output, or state that none
+maps).
+
+**2. Compile-time binding resolution uses the DD-103 semantic index under a non-asserted
+profile.** The kernel previously loaded the ontology under the default `ASSERTED` profile and
+resolved a bound class's properties with the exact-domain / exact-namespace helpers in
+`ontology_ops` (`list_classes`/`list_properties`), which do not walk `rdfs:subClassOf`. A hub
+subclass therefore could not bind an inherited reference property whose `rdfs:domain` is an
+ancestor class in an imported namespace without redeclaring it locally. The kernel now loads
+with `SemanticProfile.RDFS` (the minimal profile that populates subclass-inherited properties)
+and resolves each bound class's direct **and** inherited, cross-namespace properties through the
+semantic index closure (`SemanticIndex.class_properties`). Each inherited resolved property is
+made applicable to the bound subclass in the resolved-symbol layer (the bound class URI is added
+to its `domain_uris`); the ontology graph is never rewritten. The exact-domain/namespace
+`ontology_ops` helpers remain for inventory / non-binding uses only and must not be used for
+structure-aware binding resolution. Consistent with **DD-103**, imported *semantic* breadth must
+not silently widen *physical* projection breadth: inherited properties are materialized **only**
+when explicitly bound in an `EntityBinding` field, never auto-emitted. Binding targets remain
+hub-namespace classes; imported ancestor classes are not themselves binding targets. Because
+inherited cross-namespace properties can share a local name, an authored field ref that resolves
+to more than one distinct property URI is a compile diagnostic (`binding.ambiguous-property`);
+callers qualify the field with the owning namespace (full URI or a bound prefix) to disambiguate.
+Unambiguous resolution is unchanged.
 
 ---
 

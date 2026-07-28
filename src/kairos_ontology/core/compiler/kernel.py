@@ -14,8 +14,9 @@ import yaml
 
 from kairos_ontology import __version__
 
-from ..ontology_loader import load_ontology
-from ..ontology_ops import list_classes
+from ..ontology_loader import SemanticProfile, load_ontology
+from ..ontology_ops import PropertyInfo, list_classes
+from ..projections.uri_utils import camel_to_snake
 from ..projections.dbt import (
     BoundSources,
     normalize_contract,
@@ -178,13 +179,55 @@ def _binding_dbt_paths(text: str) -> tuple[str, str]:
     return str(model.get("sqlPath", "")), str(model.get("contractPath", ""))
 
 
+def _local_from_uri(uri: str) -> str:
+    return uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+
+
+def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[PropertyInfo, ...]:
+    """Return direct + subclass-inherited datatype/object properties for a bound class.
+
+    Uses the DD-103 semantic index closure (``class_properties``) so inherited and
+    cross-namespace imported properties resolve without local redeclaration. Excludes
+    annotation/rdf properties. The exact-domain/namespace helpers in ``ontology_ops`` do not
+    walk the subclass hierarchy and must not be used for structure-aware binding resolution.
+    """
+    if index is None:
+        return ()
+    resolved: list[PropertyInfo] = []
+    for row in index.class_properties(class_uri):
+        if row.get("property_type") not in {"object", "datatype"}:
+            continue
+        prop_uri = row["property_uri"]
+        record = index.property_by_uri(prop_uri)
+        ranges = tuple(row.get("ranges") or ())
+        range_uri = ranges[0] if ranges else str(XSD.string)
+        resolved.append(
+            PropertyInfo(
+                uri=prop_uri,
+                name=row["name"],
+                label=record.label if record is not None else row["name"],
+                comment=record.comment if record is not None else "",
+                range_uri=range_uri,
+                range_name=_local_from_uri(range_uri),
+                is_object_property=(row["property_type"] == "object"),
+            )
+        )
+    return tuple(resolved)
+
+
 def _ontology_symbols(
     ontology_path: Path, hub_root: Path
 ) -> tuple[
     Graph, str, str, str, tuple[ResolvedClass, ...], tuple[ResolvedProperty, ...], tuple[str, ...]
 ]:
-    loaded = load_ontology(ontology_path, identity_root=hub_root)
+    # DD-108/DD-103: resolve binding symbols against a non-asserted (RDFS) profile so that
+    # subclass-inherited and cross-namespace imported properties become bindable via the
+    # semantic index closure. ASSERTED would leave inherited_properties empty.
+    loaded = load_ontology(
+        ontology_path, identity_root=hub_root, profile=SemanticProfile.RDFS
+    )
     graph = loaded.graph
+    index = loaded.semantic_index
     first_class = next(graph.subjects(RDF.type, OWL.Class), None)
     first_class_uri = str(first_class or "")
     namespace = (
@@ -222,7 +265,7 @@ def _ontology_symbols(
                     parent_uris,
                 )
             )
-        for prop in info.properties:
+        for prop in _class_index_properties(index, info.uri, graph):
             data_type = _XSD_TYPES.get(prop.range_uri, prop.range_uri)
             property_refs = set(_qnames(graph, URIRef(prop.uri)))
             property_refs.add(f"{domain_prefix}:{prop.name}")
@@ -233,7 +276,7 @@ def _ontology_symbols(
                 properties[key] = ResolvedProperty(
                     ref=ref,
                     uri=prop.uri,
-                    column_name=prop.name,
+                    column_name=camel_to_snake(prop.name),
                     data_type=data_type,
                     description=prop.comment,
                     is_object_property=prop.is_object_property,
