@@ -90,6 +90,67 @@ def test_packaged_example_loads() -> None:
     assert binding.quality[0].kind == "not-null"
 
 
+def test_external_reference_relationship_parses_closed_key_contract() -> None:
+    doc = VALID + """\
+relationships:
+  - property: party:account
+    target: billing:Account
+    externalReference:
+      name: account
+      domain: billing
+      key:
+        - column: account_id
+          type: string
+    join:
+      - local: customer_id
+        foreign: account_id
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: error
+    ambiguousParent: error
+"""
+    binding = load_entity_binding(doc, path="external.binding.yaml")
+    relationship = binding.relationships[0]
+    assert relationship.external_reference is not None
+    assert relationship.external_reference.name == "account"
+    assert relationship.external_reference.domain == "billing"
+    assert relationship.external_reference.key[0].column == "account_id"
+    assert relationship.external_reference.key[0].type == "string"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "      unexpected: nope\n      key:",
+        "      key:\n        - column: account_id\n          unexpected: nope\n",
+        "      key:\n        - type: string\n",
+    ],
+)
+def test_external_reference_relationship_is_closed(bad: str) -> None:
+    valid_external = """\
+relationships:
+  - property: party:account
+    target: billing:Account
+    externalReference:
+      name: account
+      domain: billing
+      key:
+        - column: account_id
+          type: string
+    join:
+      - local: customer_id
+        foreign: account_id
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: error
+    ambiguousParent: error
+"""
+    bad_doc = VALID + valid_external.replace("      key:", bad, 1)
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(bad_doc, path="external.binding.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
+
+
 def test_unknown_top_level_field_rejected() -> None:
     bad = VALID + "extraneous: nope\n"
     with pytest.raises(CompileError) as excinfo:

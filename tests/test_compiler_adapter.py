@@ -150,8 +150,11 @@ def test_unknown_property_is_reported_with_location():
     broken = BINDING.replace("party:customerName", "party:doesNotExist")
     with pytest.raises(CompileError) as excinfo:
         adapt_binding(load_entity_binding(broken, path="b.yaml"), context)
-    codes = {d.code for d in excinfo.value.diagnostics}
-    assert "binding.unknown-property" in codes
+    diagnostic = next(
+        d for d in excinfo.value.diagnostics if d.code == "binding.unknown-property"
+    )
+    assert "usable property tokens" in diagnostic.message
+    assert "party:customerName" in diagnostic.message
 
 
 def test_unknown_source_column_is_reported():
@@ -264,3 +267,25 @@ def test_expression_and_quality_diagnostics_are_stable_and_source_located(
     diagnostic = next(item for item in excinfo.value.diagnostics if item.code == code)
     assert diagnostic.location.path == "strict.binding.yaml"
     assert diagnostic.location.pointer == pointer
+    if code == "binding.quality-column-unmapped":
+        assert "QUALITY" in diagnostic.message
+        assert "fields:" in diagnostic.message
+
+
+def test_ambiguous_class_diagnostic_lists_usable_tokens() -> None:
+    context = replace(
+        _context(),
+        classes=(
+            ResolvedClass("party:Customer", f"{_NS}Customer", "Customer"),
+            ResolvedClass("party:Customer", f"{_NS}alt/Customer", "Customer"),
+        ),
+    )
+
+    with pytest.raises(CompileError) as excinfo:
+        adapt_binding(load_entity_binding(BINDING, path="ambiguous.binding.yaml"), context)
+
+    diagnostic = next(
+        item for item in excinfo.value.diagnostics if item.code == "binding.ambiguous-class"
+    )
+    assert "usable tokens by URI" in diagnostic.message
+    assert f"{_NS}Customer" in diagnostic.message

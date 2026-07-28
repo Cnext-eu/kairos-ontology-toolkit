@@ -25,11 +25,12 @@ release evidence, or generated files as authored inputs.
 ```bash
 uv run kairos-ontology compile <domain> --check
 uv run kairos-ontology compile <domain> --explain --format json
-uv run kairos-ontology compile <domain> --emit output/medallion/dbt
+uv run kairos-ontology compile <domain> --emit
 ```
 
 The adapter is selected in `kairos.yaml` (`fabric` or `databricks`). Every invocation
-builds one immutable `CompilePlan`; check and explain do not write.
+builds one immutable `CompilePlan`; check and explain do not write. Bare `--emit`
+writes the unified dbt project to `output/medallion/dbt`.
 
 ## Ontology conventions
 

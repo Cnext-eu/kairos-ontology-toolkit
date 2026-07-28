@@ -13,6 +13,18 @@ from kairos_ontology.cli.main import cli
 from kairos_ontology.cli.shared import _write_refmodels_fetch_provenance
 
 
+_PARTY_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://kairos.cnext.eu/ref/party> a owl:Ontology ;
+    rdfs:label "Party" .
+
+<https://kairos.cnext.eu/ref/party#Party> a owl:Class ;
+    rdfs:label "Party" .
+"""
+
+
 def test_refmodels_provenance_writer_keeps_ref_and_commit_separate(tmp_path):
     """Fetch provenance records ref and commit without inventing a semantic VERSION."""
     dest = tmp_path / "ontology-reference-models"
@@ -119,3 +131,49 @@ def test_check_inventory_surfaces_refmodels_provenance(tmp_path):
     assert result.exit_code == 0, result.output
     assert "Reference models VERSION: 2026.07" in result.output
     assert "Reference models provenance: ref main @ abcdef123456" in result.output
+
+
+def test_check_inventory_reports_present_refmodels_version(tmp_path):
+    """A populated VERSION is reported as the local reference-model version."""
+    refmodels = tmp_path / "ontology-reference-models"
+    inventory = tmp_path / "referencemodels-unpacked"
+    refmodels.mkdir()
+    inventory.mkdir()
+    (refmodels / "VERSION").write_text("2026.08\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "check-inventory",
+            "--ref-models-dir",
+            str(refmodels),
+            "--inventory-dir",
+            str(inventory),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Reference models VERSION: 2026.08" in result.output
+
+
+def test_check_inventory_missing_refmodels_version_is_informative_and_non_blocking(
+    tmp_path, monkeypatch
+):
+    """A missing VERSION is reported separately from unreadable metadata and stays non-blocking."""
+    refmodels = tmp_path / "ontology-reference-models"
+    refmodels.mkdir()
+    (refmodels / "party.ttl").write_text(_PARTY_TTL, encoding="utf-8")
+    (tmp_path / "model" / "ontologies").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    generated = runner.invoke(cli, ["generate-inventory"])
+    assert generated.exit_code == 0, generated.output
+
+    result = runner.invoke(cli, ["check-inventory", "--domains", "party", "--explain-scope"])
+
+    assert result.exit_code == 0, result.output
+    assert "Reference models VERSION: not present" in result.output
+    assert "unknown" not in result.output
+    assert "party: matched direct inventory" in result.output
+    assert "Inventories are present and up to date" in result.output

@@ -147,6 +147,12 @@ fields:
 relationships:
   - property: <prefix:objectProperty>
     target: <prefix:Class>
+    # externalReference:          # required for a cross-domain physical parent
+    #   name: <parent_dbt_model>
+    #   domain: <owning-domain>
+    #   key:
+    #     - column: <parent-key-column>
+    #       type: <canonical-key-type>
     join:
       - local: <source-column>
         foreign: <parent-key-column>
@@ -260,6 +266,14 @@ For every relationship confirm target, join keys, cardinality, non-temporal
 mode, and both missing/ambiguous parent actions. The target must resolve to
 another materializable binding or a declared external reference with a key
 contract.
+
+For cross-domain targets, author `externalReference` explicitly. Its `name` is
+the parent dbt model in the unified medallion project, `domain` is the owning
+domain, and `key` is the ordered parent-side key contract. The ordered
+`join[].foreign` values must exactly match `externalReference.key[].column`,
+and each child `join[].local` source type must be compatible with the declared
+key type. Do not inspect or depend on peer-domain bindings to infer these
+values; the declaration is the contract.
 
 Use `quality:` only for focused evidence-backed dbt tests. It is not execution
 authority and does not replace compiler safety.

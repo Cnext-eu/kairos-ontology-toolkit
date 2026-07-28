@@ -206,6 +206,7 @@
       "properties": {
         "property": {"$ref": "#/definitions/nonEmptyString"},
         "target": {"$ref": "#/definitions/nonEmptyString"},
+        "externalReference": {"$ref": "#/definitions/externalReference"},
         "join": {
           "type": "array",
           "minItems": 1,
@@ -224,6 +225,7 @@
       "properties": {
         "property": {"$ref": "#/definitions/nonEmptyString"},
         "target": {"$ref": "#/definitions/nonEmptyString"},
+        "externalReference": {"$ref": "#/definitions/externalReference"},
         "join": {
           "type": "array",
           "minItems": 1,
@@ -247,6 +249,7 @@
           "properties": {
             "property": {"$ref": "#/definitions/nonEmptyString"},
             "target": {"$ref": "#/definitions/nonEmptyString"},
+            "externalReference": {"$ref": "#/definitions/externalReference"},
             "join": {
               "type": "array",
               "minItems": 1,
@@ -260,6 +263,29 @@
           }
         }
       ]
+    },
+    "externalReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "domain", "key"],
+      "properties": {
+        "name": {"$ref": "#/definitions/nonEmptyString"},
+        "domain": {"$ref": "#/definitions/nonEmptyString"},
+        "key": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/definitions/externalReferenceKey"}
+        }
+      }
+    },
+    "externalReferenceKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "type"],
+      "properties": {
+        "column": {"$ref": "#/definitions/nonEmptyString"},
+        "type": {"$ref": "#/definitions/nonEmptyString"}
+      }
     },
     "currentTemporal": {
       "type": "object",

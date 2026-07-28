@@ -136,6 +136,18 @@ Interactive mode requires explicit confirmation of:
 3. class boundaries and relationships;
 4. the exact bounded patch.
 
+Whenever presenting modeling options for confirmation, briefly compare the
+options side by side: how their semantics differ, what evidence supports each,
+and the trade-offs for reuse, specialization, source feasibility, downstream
+usability, and future mapping work. Include a concrete worked example when it
+would clarify the choice. Prefer a small visual such as a Mermaid class sketch,
+ERD fragment, or before/after hierarchy; alternatively use PII-safe source
+evidence already available in the design context, such as masked
+`kairos-bronze:sampleValues` or already-redacted `.samples.yaml` rows. Never
+show source-derived examples unless the sample evidence is confirmed
+PII-safe; if it is unavailable, unclear, or unredacted, use a generic synthetic
+example and keep the source privacy/redaction workflow blocking.
+
 Silence is not approval. Do not write draft TTL for review before these
 checkpoints. Fleet mode may make these decisions only under its invocation-scoped
 rules.
@@ -175,6 +187,9 @@ Run Gate 0. Read the relevant import closure and surface the specialization tree
 including SUBCLASSES of the parent and subclass-specific properties. Mark
 specializations as `(subclass)` in proposals. Prefer justified reuse over
 accidental local duplication, while keeping business meaning authoritative.
+When there are plausible reuse, subclass, or local-definition alternatives,
+show how the alternatives compare and illustrate the shape with a compact visual
+or PII-safe sample-grounded example when relevant.
 
 ### 4. Build an in-session evidence matrix
 
@@ -197,6 +212,13 @@ Present:
 - terms deliberately excluded from this slice;
 - unresolved questions and confidence.
 
+If more than one bounded-slice option is viable, present an options comparison
+instead of a bare list. Explain the meaning and trade-offs of each option, cite
+the evidence matrix, and include a concrete example: preferably a small Mermaid
+diagram/ERD or a PII-safe example drawn from masked source samples. Use a
+generic worked example when source samples are unavailable or cannot be shown
+safely.
+
 Keep source representation details out of the canonical model. Source keys,
 grain, load policy, expressions, and relationship failure actions belong in the
 v5 EntityBinding authored by **kairos-design-mapping**.
@@ -205,7 +227,9 @@ v5 EntityBinding authored by **kairos-design-mapping**.
 
 Obtain explicit decisions for every item in Gate 4. When evidence conflicts,
 prefer confirmed business meaning, explain the trade-off, and do not hide
-source-feasibility limitations.
+source-feasibility limitations. For each user-facing choice, summarize the
+recommended option and why the other options were not selected, using visuals or
+PII-safe examples when they help the user compare the consequences.
 
 ### 7. Prepare and validate the patch
 

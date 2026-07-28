@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from click.testing import CliRunner
 
+from kairos_ontology.cli.main import cli
 from kairos_ontology.core.compiler import CompileMode, compile_domain
 from kairos_ontology.core.compiler.emit import emit_artifacts
 from kairos_ontology.core.compiler.quality import SAFETY_RULE_CODES
@@ -34,6 +36,142 @@ def _binding(hub: Path, name: str) -> tuple[Path, dict]:
 
 def _write_binding(path: Path, document: dict) -> None:
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
+def _add_billing_domain(hub: Path) -> None:
+    (hub / "model" / "ontologies" / "billing.ttl").write_text(
+        """@prefix billing: <https://example.test/ontology/billing#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.test/ontology/billing> a owl:Ontology ;
+  owl:versionInfo "1.0.0" ;
+  rdfs:label "Synthetic billing slice" .
+
+billing:Account a owl:Class ; rdfs:label "Account" .
+billing:account_id a owl:DatatypeProperty ;
+  rdfs:domain billing:Account ; rdfs:range xsd:string .
+billing:account_name a owl:DatatypeProperty ;
+  rdfs:domain billing:Account ; rdfs:range xsd:string .
+""",
+        encoding="utf-8",
+    )
+    _write_binding(
+        hub / "integration" / "bindings" / "account.binding.yaml",
+        {
+            "apiVersion": "kairos.eu/v5",
+            "kind": "EntityBinding",
+            "metadata": {"name": "erp-account", "domain": "billing"},
+            "source": {"relation": "erp.customers"},
+            "target": {"class": "billing:Account"},
+            "grain": {"columns": ["customer_id"]},
+            "identity": {"strategy": "source-natural", "sourceKey": ["customer_id"]},
+            "load": {"mode": "full-refresh"},
+            "fields": [
+                {"property": "billing:account_id", "expression": "customer_id"},
+                {"property": "billing:account_name", "expression": "customer_name"},
+            ],
+        },
+    )
+
+
+def _add_external_reference_fixture(hub: Path, *, composite: bool = False) -> None:
+    _add_billing_domain(hub)
+    (hub / "catalog-v001.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="https://example.test/ontology/billing" uri="model/ontologies/billing.ttl"/>
+</catalog>
+""",
+        encoding="utf-8",
+    )
+    (hub / "model" / "ontologies" / "billing.ttl").write_text(
+        """@prefix billing: <https://example.test/ontology/billing#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.test/ontology/billing> a owl:Ontology ;
+  owl:versionInfo "1.0.0" ;
+  rdfs:label "Synthetic billing slice" .
+
+billing:Account a owl:Class ; rdfs:label "Account" .
+billing:account_id a owl:DatatypeProperty ;
+  rdfs:domain billing:Account ; rdfs:range xsd:string .
+billing:account_region a owl:DatatypeProperty ;
+  rdfs:domain billing:Account ; rdfs:range xsd:string .
+""",
+        encoding="utf-8",
+    )
+    ontology = hub / "model" / "ontologies" / "party.ttl"
+    ontology.write_text(
+        ontology.read_text(encoding="utf-8")
+        .replace(
+            "@prefix party: <https://example.test/ontology/party#> .",
+            "@prefix party: <https://example.test/ontology/party#> .\n"
+            "@prefix billing: <https://example.test/ontology/billing#> .",
+        )
+        .replace(
+            '<https://example.test/ontology/party> a owl:Ontology ;',
+            '<https://example.test/ontology/party> a owl:Ontology ;\n'
+            '  owl:imports <https://example.test/ontology/billing> ;',
+        )
+        + "\nparty:billingAccount a owl:ObjectProperty ;\n"
+        "  rdfs:domain party:Customer ; rdfs:range billing:Account .\n"
+        "party:billing_account_id a owl:DatatypeProperty ;\n"
+        "  rdfs:domain party:Customer ; rdfs:range xsd:string .\n",
+        encoding="utf-8",
+    )
+    source = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
+    source.write_text(
+        source.read_text(encoding="utf-8")
+        + """
+src:customer_account_id a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "billing_account_id" ; kb:dataType "varchar(30)" ;
+  kb:nullable "false"^^xsd:boolean .
+""",
+        encoding="utf-8",
+    )
+    customer_path, customer = _binding(hub, "customer")
+    customer["fields"].append(
+        {"property": "party:billing_account_id", "expression": "billing_account_id"}
+    )
+    key = [{"column": "account_id", "type": "string"}]
+    join = [{"local": "billing_account_id", "foreign": "account_id"}]
+    if composite:
+        key.append({"column": "account_region", "type": "string"})
+        join.append({"local": "country_code", "foreign": "account_region"})
+    customer["relationships"] = [
+        {
+            "property": "party:billingAccount",
+            "target": "billing:Account",
+            "externalReference": {
+                "name": "account",
+                "domain": "billing",
+                "key": key,
+            },
+            "join": join,
+            "cardinality": "many-to-one",
+            "mode": "non-temporal",
+            "missingParent": "error",
+            "ambiguousParent": "error",
+        }
+    ]
+    customer["quality"] = [
+        item for item in customer["quality"] if item.get("kind") != "referential"
+    ]
+    customer["quality"].append({"kind": "referential", "columns": [item["local"] for item in join]})
+    _write_binding(customer_path, customer)
+    account_path, account = _binding(hub, "account")
+    account["source"] = {"relation": "crm.countries"}
+    account["grain"] = {"columns": ["code"]}
+    account["identity"] = {"strategy": "source-natural", "sourceKey": ["code"]}
+    account["fields"] = [
+        {"property": "billing:account_id", "expression": "code"},
+        {"property": "billing:account_region", "expression": "country_name"},
+    ]
+    _write_binding(account_path, account)
 
 
 def _incremental(scd: int) -> dict:
@@ -157,6 +295,86 @@ def test_v5_scenario_check_explain_and_deterministic_plan():
     assert "not_null" in customer_name["tests"]
 
 
+def test_v5_external_reference_resolves_cross_domain_parent_and_emits_ref(tmp_path):
+    hub = _copy_hub(tmp_path)
+    _add_external_reference_fixture(hub)
+
+    result = compile_domain(hub, "party", CompileMode.EXPLAIN)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    artifacts = result.artifact_dict()
+    sql = artifacts["models/silver/party/customer.sql"].lower()
+    assert "left join {{ ref('account') }}" in sql
+    assert "[src].[billing_account_id] = [account].[account_id]" in sql
+    assert "account_sk" in sql
+    assert "tests/party/customer__referential.sql" in artifacts
+    assert "left join {{ ref(\"account\") }} as parent" in artifacts[
+        "tests/party/customer__referential.sql"
+    ].lower()
+    schema = yaml.safe_load(artifacts["models/silver/party/_party__models.yml"])
+    customer = next(model for model in schema["models"] if model["name"] == "customer")
+    dumped = yaml.safe_dump(customer, sort_keys=True)
+    assert "kairos_temporal_fk_cardinality" in dumped
+    assert "account_sk" in dumped
+    assert all("account.binding.yaml" not in path for path in result.explain.binding_paths)
+
+
+def test_v5_external_reference_composite_key_uses_ordered_tuple(tmp_path):
+    hub = _copy_hub(tmp_path)
+    _add_external_reference_fixture(hub, composite=True)
+
+    result = compile_domain(hub, "party", CompileMode.EXPLAIN)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    sql = result.artifact_dict()["models/silver/party/customer.sql"].lower()
+    assert "[src].[billing_account_id] = [account].[account_id]" in sql
+    assert "[src].[country_code] = [account].[account_region]" in sql
+
+
+@pytest.mark.parametrize(
+    ("mutate", "code", "message"),
+    [
+        (
+            lambda relationship: relationship["join"][0].update({"foreign": "missing_key"}),
+            "safety.relationship-endpoint",
+            "key mismatch",
+        ),
+        (
+            lambda relationship: relationship["externalReference"]["key"].append(
+                {"column": "extra_key", "type": "string"}
+            ),
+            "safety.relationship-endpoint",
+            "key mismatch",
+        ),
+        (
+            lambda relationship: relationship["externalReference"]["key"].reverse(),
+            "safety.relationship-endpoint",
+            "key mismatch",
+        ),
+        (
+            lambda relationship: relationship["externalReference"]["key"][0].update(
+                {"type": "bigint"}
+            ),
+            "safety.type-incompatible",
+            "incompatible",
+        ),
+    ],
+)
+def test_v5_external_reference_key_errors_are_fail_closed(tmp_path, mutate, code, message):
+    hub = _copy_hub(tmp_path)
+    _add_external_reference_fixture(hub, composite=True)
+    path, customer = _binding(hub, "customer")
+    mutate(customer["relationships"][0])
+    _write_binding(path, customer)
+
+    result = compile_domain(hub, "party", CompileMode.EXPLAIN)
+
+    assert not result.succeeded
+    diagnostic = next(item for item in result.diagnostics.items if item.code == code)
+    assert message in diagnostic.message
+    assert diagnostic.location.path.endswith("customer.binding.yaml")
+
+
 def test_v5_scenario_is_stateless_and_layered():
     before = {path.relative_to(_HUB) for path in _HUB.rglob("*")}
     compile_domain(_HUB, "party")
@@ -209,6 +427,71 @@ def test_v5_scenario_emit_is_byte_deterministic_and_manifest_owned(tmp_path):
     assert tuple(plan.plan.artifact_paths) == tuple(sorted(plan.artifact_dict()))
     assert manifest_paths == tuple(plan.plan.artifact_paths)
     assert (second.target_dir / "models/silver/party/customer.sql").is_file()
+
+
+def test_v5_cli_bare_emit_defaults_to_unified_medallion_dbt(tmp_path, monkeypatch):
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        ["compile", "party", "--emit"],
+        env={"KAIROS_SKILL_CONTEXT": "1"},
+    )
+
+    assert result.exit_code == 0, result.output
+    target = hub / "output" / "medallion" / "dbt"
+    assert (target / "dbt_project.yml").is_file()
+    assert (target / "models/silver/party/customer.sql").is_file()
+    assert not (target / "party").exists()
+
+
+def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
+    tmp_path,
+    monkeypatch,
+):
+    hub = _copy_hub(tmp_path)
+    _add_billing_domain(hub)
+    target_ab = hub / "output" / "medallion" / "dbt"
+    target_ba = hub / "output" / "reverse" / "dbt"
+    runner = CliRunner()
+    monkeypatch.chdir(hub)
+
+    for domain in ("party", "billing"):
+        result = runner.invoke(
+            cli,
+            ["compile", domain, "--emit", str(target_ab)],
+            env={"KAIROS_SKILL_CONTEXT": "1"},
+        )
+        assert result.exit_code == 0, result.output
+    for domain in ("billing", "party"):
+        result = runner.invoke(
+            cli,
+            ["compile", domain, "--emit", str(target_ba)],
+            env={"KAIROS_SKILL_CONTEXT": "1"},
+        )
+        assert result.exit_code == 0, result.output
+
+    assert (target_ab / "models/silver/party/customer.sql").is_file()
+    assert (target_ab / "models/silver/billing/account.sql").is_file()
+    assert not (target_ab / "party").exists()
+    assert not (target_ab / "billing").exists()
+    project = (target_ab / "dbt_project.yml").read_text(encoding="utf-8")
+    assert "name: 'kairos_medallion_project'" in project
+    assert "      billing:" in project
+    assert "      party:" in project
+
+    bytes_ab = {
+        path.relative_to(target_ab).as_posix(): path.read_bytes()
+        for path in target_ab.rglob("*")
+        if path.is_file()
+    }
+    bytes_ba = {
+        path.relative_to(target_ba).as_posix(): path.read_bytes()
+        for path in target_ba.rglob("*")
+        if path.is_file()
+    }
+    assert bytes_ab == bytes_ba
 
 
 def test_v5_reemit_prunes_stale_noncanonical_manifest_artifacts(tmp_path):

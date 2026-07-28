@@ -9,7 +9,7 @@ executable authority.
 |---|---|
 | `compile DOMAIN --check` | Build and validate a `CompilePlan` without writing |
 | `compile DOMAIN --explain [--format text\|json]` | Explain that plan without writing |
-| `compile DOMAIN --emit DIRECTORY` | Atomically render manifest-owned artifacts |
+| `compile DOMAIN --emit [DIRECTORY]` | Atomically render manifest-owned dbt artifacts (default `output/medallion/dbt`) |
 
 The modes are mutually exclusive. The compiler reads the adapter from `kairos.yaml`;
 supported values are `fabric` and `databricks`.

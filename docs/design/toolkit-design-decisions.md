@@ -189,6 +189,9 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-135](#dd-135-retire-v4-release-and-lifecycle-orchestration) | Retire V4 Release and Lifecycle Orchestration | Accepted | 2026-07-27 |
 | [DD-136](#dd-136-retire-v4-claim-binding-and-completeness-authority) | Retire V4 Claim Binding and Completeness Authority | Accepted | 2026-07-27 |
 | [DD-137](#dd-137-derived-stateless-readiness-proposal-kairos-ontology-next) | Derived, Stateless Readiness Proposal (`kairos-ontology next`) | Accepted | 2026-07-28 |
+| [DD-138](#dd-138-cross-domain-relationship-targets-via-external-references) | Cross-domain Relationship Targets via External References | Accepted | 2026-07-28 |
+| [DD-139](#dd-139-authored-passthrough-technical-columns--dd-107-amendment) | Authored Passthrough Technical Columns — DD-107 Amendment | Proposed (Parked) | 2026-07-28 |
+| [DD-140](#dd-140-canonical-emit-layout-and-dbt-package-topology) | Canonical Emit Layout and dbt-Package Topology | Accepted | 2026-07-28 |
 
 ---
 
@@ -9261,6 +9264,216 @@ canonical compiler remains the sole planning authority and its diagnostics are s
 - `kairos-flow` and `kairos-diagnose-status` stop independently routing and consume the proposal.
 - A passing compile check reported here is not a downstream runtime or release guarantee.
 - Adding a new action kind requires extending the single `ACTION_SKILLS` routing map.
+
+---
+
+## DD-138: Cross-domain Relationship Targets via External References
+
+**Status:** Accepted
+**Date:** 2026-07-28
+**Affects:** V5 `EntityBinding` relationship declarations, compiler BuildScope resolution,
+relationship diagnostics, provenance hashing, and generated dbt relationship tests
+**Implementation:** Accepted. `RelationshipSpec` gains an external-reference field; the
+compiler resolves the declared key contract. Physical cross-domain `ref()` emission is enabled
+by the unified topology accepted in DD-140.
+
+### Context
+
+DD-133 §7 already allows a relationship target to be either another entity with a binding and
+model in the current domain scope, or an explicitly declared external reference that the compiler
+can treat as a resolvable parent without generating that parent. DD-133 §8 deliberately keeps
+`compile <domain>` per-domain: the BuildScope includes bindings whose `metadata.domain` matches,
+with stable ordering and one `by_target` binding per class. Earlier DD-019, DD-027, and DD-097
+record historical demand for cross-domain foreign-key wiring, but they predate the v5 authoring
+break and must not be treated as automatic v5 scope-widening requirements.
+
+### Decision
+
+Add an explicit external-reference declaration to a relationship target. The declaration names the
+external parent and states its key contract: ordered key column name(s), canonical key type(s), and
+optionally the expected package/model identifier once emit topology is decided. The compiler
+resolves the relationship against that declared contract and does not generate a model for the
+parent.
+
+The contract is fail-closed:
+
+- a missing target declaration remains a missing-target diagnostic;
+- a relationship join column that cannot be mapped to an output column is a missing-key
+  diagnostic;
+- incompatible child and external key types are a type diagnostic;
+- composite keys are ordered tuples, and cardinality, order, names, and types must all match;
+- runtime names reserved for generated columns remain reserved for the child side of the join.
+
+Resolution is deterministic. The compiler must not search peer-domain bindings or choose an
+arbitrary binding from a class-local `by_target` map. The declared external-reference contract is
+the authority, even when a peer hub happens to contain a binding for the same ontology class.
+
+The naive alternative, resolving through a peer binding's key output, is rejected. It depends on
+which peer bindings are loaded, on peer authoring order, and on `by_target` retaining only one
+binding per class, so it can silently select the wrong physical parent. If maintainers ever choose
+scope widening instead, that would be a separate decision coupled to the emit/dbt-package topology
+in DD-140 because cross-domain `ref()` wiring is only reachable when the generated package layout
+contains both domains in a deterministic project graph.
+
+Provenance hashing should include the external-reference declaration because it affects the
+compiled contract and generated tests. Peer inputs should not enter the BuildScope hash merely
+because they exist elsewhere. They enter provenance only if a future accepted topology decision
+explicitly widens scope to load peer bindings or package manifests as compiler inputs.
+
+### Rationale
+
+The explicit contract follows DD-133 §7 without weakening the per-domain BuildScope. It gives
+relationship validation enough information to be deterministic and testable while keeping model
+ownership clear: the child domain can assert how it references an external parent, but it does not
+compile that parent.
+
+### Consequences
+
+- ISSUE-7 / Workstream C should implement the DD-133 external-reference route first.
+- Tests should cover missing target, missing key, incompatible types, composite-key ordering, and
+  deterministic behavior when peer bindings for the target class also exist.
+- Generated docs and diagnostics must make clear that an external reference is a contract, not a
+  discovered peer model.
+- Cross-domain physical `ref()` generation remains blocked on DD-140 unless the external parent is
+  made available by the selected dbt package topology.
+
+---
+
+## DD-139: Authored Passthrough Technical Columns — DD-107 Amendment
+
+**Status:** Proposed (Parked)
+**Date:** 2026-07-28
+**Affects:** DD-107 materialization authority, v5 `EntityBinding` schema, source-column
+ownership, Silver contract parity, manifest/parity hashing, and mapping diagnostics
+**Implementation:** Parked. Workstream B1 (actionable diagnostics + documentation) is shipped and
+resolves the immediate DX pain; the legitimate workaround (map the key as a scalar field) keeps
+DD-107's column contract honest. This construct is deferred and revisited only if authoring
+friction recurs.
+
+### Context
+
+DD-107 makes source ownership explicit: a source column becomes a materialized Silver output only
+when a `fields:` expression references it. Identity, quality, and relationship join columns are
+therefore expected to be mapped fields today. That rule is intentional because the `fields:` set is
+the deterministic column contract used by parity checks, generated schema, and review.
+
+However, identity keys, quality check columns, and relationship join keys are sometimes technical
+columns whose materialization is needed for runtime checks but whose meaning should not invent a
+synthetic ontology property. ISSUE-4/5 / Workstream B2 asks whether authors need an ergonomic,
+explicit way to carry those columns through.
+
+### Decision
+
+Amend DD-107 to allow an explicit authored passthrough/technical field construct that materializes
+a source column without asserting a new ontology property. The construct should be closed-schema,
+reviewable, and distinguishable from semantic `fields:` entries. It names the source expression,
+the output column, the output type, nullability, and its technical purpose such as identity,
+quality, or relationship support.
+
+Implicit auto-materialization is rejected. Automatically adding `identity.sourceKey`,
+`quality.columns`, or relationship join columns would change the deterministic parity/manifest
+column set behind the author's back, make compiler output depend on policy side effects rather
+than the declared projection, and risk exposing PII or other sensitive source columns that were
+not intentionally selected for Silver.
+
+Validation rules should include:
+
+- case-insensitive output-name collision checks against semantic fields, other passthrough fields,
+  and reserved runtime/generated names;
+- duplicate source use checks, allowing the same source column only when outputs and purposes are
+  explicitly distinct and non-ambiguous;
+- required output names and types, with adapter-normalized types participating in the same Silver
+  schema contract as semantic fields;
+- fail-closed diagnostics when a passthrough is referenced by identity, quality, or relationships
+  but is missing or type-incompatible.
+
+Passthrough columns are materialized Silver outputs and therefore affect the downstream Silver
+contract, dbt schema YAML, manifest/parity hash, emitted SQL bytes, and any release evidence that
+compares expected and actual columns. They are not ontology properties, are not emitted as OWL, and
+must be labelled in explanations as technical outputs.
+
+### Rationale
+
+An explicit construct preserves DD-107's source-ownership rule while avoiding ontology pollution.
+It keeps the reviewer in control of which physical columns leave Bronze/prep and makes sensitive
+column exposure a conscious authored decision.
+
+### Consequences
+
+- Workstream B1 can remain limited to clearer diagnostics and documentation for the current rule.
+- Workstream B2 requires binding-schema, normalization, render, contract, and parity-hash changes
+  before authors can rely on passthrough technical outputs.
+- Any implementation must treat passthrough outputs as first-class dbt contract columns but not as
+  canonical ontology facts.
+
+---
+
+## DD-140: Canonical Emit Layout and dbt-Package Topology
+
+**Status:** Accepted
+**Date:** 2026-07-28
+**Affects:** `compile --emit`, scaffold `output/` slots, dbt project/package generation,
+manifest ownership, `.gitignore`, downstream dataplatform consumption, and cross-domain refs
+**Implementation:** Accepted. `--emit` becomes projection-aware and targets the scaffolded
+slots; the dbt projection materializes into a single canonical medallion project with per-domain
+manifest ownership so stateless `compile <domain>` replaces only the files it owns.
+
+### Context
+
+V5 currently emits a domain-centric tree under `output/<domain>/`, while scaffolded hub layouts
+reserve projection-aware slots such as `output/medallion/dbt`, `output/medallion/powerbi`,
+`output/neo4j`, and `output/azure-search`. Maintainers need to decide whether canonical emit should
+follow those projection slots or continue to own a domain subtree.
+
+The dbt topology is coupled to this layout. A unified dbt project can make cross-domain `ref()`
+wiring reachable inside one project graph, while standalone-per-domain dbt projects keep domain
+emission isolated but require package dependencies or external contracts for references. This
+affects whether DD-138 can ever generate physical cross-domain `ref()` calls rather than only
+contract-level relationship tests.
+
+The corrected repository fact is that `output/` is currently un-ignored but not git-tracked. A
+future blanket `.gitignore` entry for generated output must either preserve scaffold `.gitkeep`
+slot markers with negated exceptions or intentionally remove those placeholders; otherwise the
+scaffolded projection slots will disappear from fresh clones.
+
+### Decision
+
+Adopt **projection-aware emit into the scaffolded slots** combined with a **single canonical
+medallion dbt project** that retains **per-domain manifest ownership**. The chosen options from
+those considered are (1) projection-aware layout and (3) unified dbt project:
+
+1. **Projection-aware emit layout (chosen).** Emit each projection into the scaffolded slot it
+   serves, such as `output/medallion/dbt` for dbt, `output/medallion/powerbi/<product>` for
+   semantic models, and analogous folders for search or graph projections.
+3. **Unified dbt project (chosen).** Emit all domains into one canonical medallion dbt project so
+   cross-domain `ref()` calls are ordinary dbt graph edges, while each `compile <domain> --emit`
+   owns and replaces only its manifest-listed files (statelessness preserved, per DD-097
+   multi-domain reconciliation).
+
+The rejected alternatives are (2) domain-centric `output/<domain>/` and (4) standalone-per-domain
+dbt projects. Standalone packages would keep cross-domain relationships as package-management
+concerns and force DD-138's external-reference contract to remain contract-only rather than
+emitting physical refs.
+
+`output/` is added to `.gitignore` with negated exceptions that preserve scaffold `.gitkeep` slot
+markers (e.g. `output/**` plus `!output/**/.gitkeep`) so fresh clones keep the projection slots
+while generated artifacts stay untracked.
+
+### Rationale
+
+Projection-aware slots match the scaffold and downstream consumption model. A unified dbt project
+maximizes deterministic compile-time relationship wiring, but it increases coordination and stale
+artifact risk. Standalone projects preserve isolation and simpler ownership, but make cross-domain
+relationships package-management concerns rather than local compiler refs.
+
+### Consequences
+
+- Maintainers must decide the emit tree before broadening generated artifacts beyond current dbt
+  outputs.
+- `.gitignore` changes for generated `output/` must preserve or intentionally remove scaffold slot
+  placeholders.
+- The chosen dbt topology constrains whether ISSUE-7 can produce physical cross-domain dbt refs or
+  only declared external-reference contracts.
 
 ---
 
