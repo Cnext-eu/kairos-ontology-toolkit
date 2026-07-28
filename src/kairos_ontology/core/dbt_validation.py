@@ -152,8 +152,46 @@ def _dependency_ids(node: dict[str, object]) -> set[str]:
     return {str(value) for value in values} if isinstance(values, list) else set()
 
 
+_COLUMN_MARKER = re.compile(r"^-- DD-110-COLUMNS: (.+)$", re.MULTILINE)
+
+
+def _marker_columns(node: dict[str, object]) -> list[str] | None:
+    """Return the ordered column names declared in a model's DD-110-COLUMNS marker.
+
+    Returns ``None`` when the model carries no marker (e.g. Gold or non-Kairos models).
+    Raises when the marker exists but is not a JSON array of strings.
+    """
+    raw = node.get("raw_code")
+    if not isinstance(raw, str):
+        raw = node.get("raw_sql")
+    if not isinstance(raw, str):
+        return None
+    match = _COLUMN_MARKER.search(raw)
+    if match is None:
+        return None
+    try:
+        parsed = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise DbtValidationError(
+            "manifest",
+            f"model '{_node_name(node)}' has a malformed DD-110-COLUMNS marker: {exc}",
+        ) from exc
+    if not isinstance(parsed, list) or not all(isinstance(name, str) for name in parsed):
+        raise DbtValidationError(
+            "manifest",
+            f"model '{_node_name(node)}' DD-110-COLUMNS marker is not a JSON array of names",
+        )
+    return list(parsed)
+
+
+def _manifest_columns(node: dict[str, object]) -> list[str]:
+    """Return the ordered contract column names dbt parsed for a model node."""
+    columns = node.get("columns")
+    return list(columns.keys()) if isinstance(columns, dict) else []
+
+
 def validate_manifest(manifest_path: Path) -> None:
-    """Validate custom-model wrapper and decision-test edges in a dbt manifest."""
+    """Validate custom-model wrapper edges and DD-110 Silver output parity in a dbt manifest."""
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -168,7 +206,40 @@ def validate_manifest(manifest_path: Path) -> None:
         for node_id, node in nodes.items()
         if isinstance(node, dict) and node.get("resource_type") == "model"
     }
+    for model in model_nodes.values():
+        marker = _marker_columns(model)
+        if marker is None:
+            continue
+        declared = _manifest_columns(model)
+        # DD-110 parity only fires when dbt actually parsed a column contract for the model;
+        # an empty declaration means the contract is not enforced, so comparing would produce
+        # a false positive rather than catch real drift.
+        if declared and declared != marker:
+            raise DbtValidationError(
+                "manifest",
+                (
+                    f"model '{_node_name(model)}' violates DD-110 Silver output parity: "
+                    f"emitted marker columns {marker} do not match the parsed manifest "
+                    f"columns {declared} (order-sensitive)"
+                ),
+            )
     for model_id, model in model_nodes.items():
+        meta = model.get("meta")
+        kairos = meta.get("kairos") if isinstance(meta, dict) else None
+        if not isinstance(kairos, dict):
+            continue
+
+        silver_dependents = [
+            node
+            for node in model_nodes.values()
+            if model_id in _dependency_ids(node)
+            and "models/silver/" in str(node.get("original_file_path") or "").replace("\\", "/")
+        ]
+        if not silver_dependents:
+            raise DbtValidationError(
+                "manifest",
+                f"contracted model '{_node_name(model)}' has no generated Silver dependent",
+            )
         meta = model.get("meta")
         kairos = meta.get("kairos") if isinstance(meta, dict) else None
         if not isinstance(kairos, dict):
