@@ -236,8 +236,7 @@ def test_supersede_requires_accepted_state(bundle: Path):
     )
     _write(bundle, "HUB-DD-20260728-x.md", fm, body="# Context\ntbd\n")
     assert any(
-        e.code == "supersede_requires_accept"
-        for e in dr.validate_decision_bundle(bundle).errors
+        e.code == "supersede_requires_accept" for e in dr.validate_decision_bundle(bundle).errors
     )
 
 
@@ -252,7 +251,9 @@ def test_supersede_cycle_detected(bundle: Path):
 def test_dangling_supersedes_warns(bundle: Path):
     fm = _accepted_fm("HUB-DD-20260728-x") + "supersedes: [HUB-DD-19990101-gone]\n"
     _write(bundle, "HUB-DD-20260728-x.md", fm)
-    assert any(w.code == "dangling_supersedes" for w in dr.validate_decision_bundle(bundle).warnings)
+    assert any(
+        w.code == "dangling_supersedes" for w in dr.validate_decision_bundle(bundle).warnings
+    )
 
 
 def test_serialize_round_trips_and_orders_keys(tmp_path: Path):

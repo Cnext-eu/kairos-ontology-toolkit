@@ -37,6 +37,13 @@ The override applies only to this skill invocation. It expires when the skill
 ends or pauses, is never inherited by another skill or later resume, and does
 not authorize another design skill.
 
+## Decision Log materiality
+
+If a mapping choice resolves a genuine tension or real gap, persist it with
+`kairos-ontology decision new --title "<concise>" --domain <domain>` and one
+or more `--source <evidence-resource>` references. Never log routine
+confirmations, successful validations, or mechanical binding choices.
+
 ## Authority and scope
 
 One binding document maps:

@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+"""Decision Log CLI commands."""
+
+from __future__ import annotations
+
+import os
+import secrets
+from datetime import date
+from pathlib import Path
+
+import click
+
+from .. import __version__ as _toolkit_version
+from ..core.decision_records import (
+    VALID_DECISION_STATES,
+    build_index_markdown,
+    generate_decision_id,
+    render_new_record,
+    validate_decision_bundle,
+)
+from ..core.hub_utils import find_hub_root
+
+_MAX_ID_ATTEMPTS = 8
+
+
+def _decisions_dir(cwd: Path | None = None) -> Path:
+    """Resolve and create the current hub's decision bundle directory."""
+    if cwd is None:
+        cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if hub_root is None:
+        hub_root = cwd / "ontology-hub"
+    decisions_path = hub_root / "decisions"
+    decisions_path.mkdir(parents=True, exist_ok=True)
+    return decisions_path
+
+
+def _write_index(decisions_path: Path) -> None:
+    """Atomically regenerate ``index.md`` for *decisions_path*."""
+    index_text = build_index_markdown(validate_decision_bundle(decisions_path).records)
+    temp_path = decisions_path / f".index.{secrets.token_hex(6)}.tmp"
+    try:
+        temp_path.write_text(index_text, encoding="utf-8")
+        os.replace(temp_path, decisions_path / "index.md")
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _new_record_id(explicit_id: str | None) -> str:
+    token = explicit_id if explicit_id is not None else secrets.token_hex(3)
+    return token if explicit_id is not None else generate_decision_id(date.today(), token)
+
+
+@click.group()
+def decision() -> None:
+    """Create and inspect hub OKF Decision Log records."""
+
+
+@decision.command(name="new")
+@click.option("--title", required=True, help="Decision record title.")
+@click.option("--domain", help="Optional canonical domain for the decision.")
+@click.option(
+    "--decision-state",
+    type=click.Choice(sorted(VALID_DECISION_STATES)),
+    default="Proposed",
+    show_default=True,
+    help="Initial decision workflow state.",
+)
+@click.option("--source", multiple=True, help="Evidence resource string; may be repeated.")
+@click.option("--id", "record_id", help="Explicit decision record id.")
+def new_decision(
+    title: str,
+    domain: str | None,
+    decision_state: str,
+    source: tuple[str, ...],
+    record_id: str | None,
+) -> None:
+    """Create a new Decision Log record and refresh the index."""
+    decisions_path = _decisions_dir()
+    attempts = 1 if record_id is not None else _MAX_ID_ATTEMPTS
+
+    for _ in range(attempts):
+        candidate_id = _new_record_id(record_id)
+        target = decisions_path / f"{candidate_id}.md"
+        try:
+            with target.open("x", encoding="utf-8") as handle:
+                handle.write(
+                    render_new_record(
+                        record_id=candidate_id,
+                        title=title,
+                        version=_toolkit_version,
+                        domain=domain,
+                        decision_state=decision_state,
+                        sources=list(source),
+                    )
+                )
+        except FileExistsError:
+            if record_id is not None:
+                raise click.ClickException(f"Decision record already exists: {target}") from None
+            continue
+
+        _write_index(decisions_path)
+        click.echo(str(target))
+        return
+
+    raise click.ClickException(f"Could not allocate a unique decision id after {attempts} attempts")
+
+
+@decision.command(name="list")
+def list_decisions() -> None:
+    """List Decision Log records."""
+    decisions_path = _decisions_dir()
+    result = validate_decision_bundle(decisions_path)
+    for record in result.records:
+        click.echo(
+            f"{record.id or record.path.stem}\t{record.decision_state or ''}\t{record.title or ''}"
+        )

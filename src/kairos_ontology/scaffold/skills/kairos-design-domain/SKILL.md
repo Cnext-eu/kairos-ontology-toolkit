@@ -199,8 +199,9 @@ Present only PII-safe evidence:
 |---|---|---|---|---|---|
 
 Use relation/column identifiers and types; examples must remain masked. State
-conflicts and missing evidence explicitly. This matrix is ephemeral conversation
-context, not a hub artifact.
+conflicts and missing evidence explicitly. This matrix is an in-conversation
+working scratchpad; material rationale belongs in the hub Decision Log under
+`decisions/` when it meets the materiality threshold below.
 
 ### 5. Propose the smallest useful slice
 
@@ -231,7 +232,37 @@ source-feasibility limitations. For each user-facing choice, summarize the
 recommended option and why the other options were not selected, using visuals or
 PII-safe examples when they help the user compare the consequences.
 
-### 7. Prepare and validate the patch
+### 7. Persist material decisions
+
+After a modeling choice is accepted, persist it only when it resolved a genuine
+tension or real gap: conflicting source or reference evidence, intentional
+divergence from an industry standard, or a modeling choice with viable rejected
+alternatives. This is a strict materiality threshold.
+
+Anti-pattern: never log routine confirmations, successful validations, or
+mechanical choices. If it was not a real decision with at least one rejected
+alternative, do not create a record.
+
+For a material decision, run:
+
+```powershell
+kairos-ontology decision new --title "<concise>" --domain <domain> --source <evidence-resource> ...
+```
+
+Then fill the generated record body with Context/Finding, Decision, an
+`Alternatives rejected` table with at least one row, Consequences, and
+`Why future maintainers need this`. Set a `materiality` tag and `confidence`.
+Move `decision_state` to `Accepted`, with sources, once the decision is
+confirmed.
+
+In interactive mode, propose the decision and its materiality, then confirm with
+the user before writing. In fleet mode, write with `generated.by` set to the
+agent actor, recording rationale, confidence, and evidence references.
+
+The PR human-review gate is the real materiality backstop: Decision Log records
+are reviewed like code.
+
+### 8. Prepare and validate the patch
 
 Create a reviewable unified diff limited to
 `model/ontologies/<domain>.ttl`. Parse the full post-patch graph in memory and run
@@ -241,13 +272,13 @@ evidence.
 In interactive mode, show the validated diff and wait for final approval. In
 fleet mode, record the AI approval with rationale, confidence, and evidence.
 
-### 8. Apply and verify
+### 9. Apply and verify
 
 Apply only the approved diff. Reread and parse the saved ontology, repeat Gate 5,
 and confirm no other authored file changed. If validation fails, restore the
 pre-patch content and report the failure.
 
-### 9. Hand off
+### 10. Hand off
 
 Report the accepted slice and remaining questions. The next step is
 **kairos-design-mapping**, which authors one closed YAML `EntityBinding` per

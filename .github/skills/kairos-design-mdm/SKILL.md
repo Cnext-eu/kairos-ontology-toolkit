@@ -16,6 +16,13 @@ inherited. Record rationale, confidence, and references for every AI-approved ch
 uncertain identifiers, automatic merge bounds, survivorship, sensitive data, reference-data
 licensing, or destructive choices.
 
+## Decision Log materiality
+
+If an MDM policy choice resolves a genuine tension or real gap, persist it with
+`kairos-ontology decision new --title "<concise>" --domain <domain>` and one
+or more `--source <evidence-resource>` references. Never log routine
+confirmations, successful validations, or mechanical policy choices.
+
 ## Policy design
 
 For each mastered canonical class, review and author:
