@@ -75,6 +75,7 @@ from .result import (
     SourceLocation,
     order_compile_diagnostics,
 )
+from .result import DiagnosticSeverity
 from .scope import BuildScope, ProvenanceInput
 from .temporal import adapt_temporal_relationships
 
@@ -170,14 +171,21 @@ def _prefix_diagnostics(loaded, root_path: Path) -> tuple[CompileDiagnostic, ...
             imported.setdefault(prefix, set()).update(namespaces)
     for prefix, namespaces in sorted(imported.items()):
         if len(namespaces) > 1:
+            label = prefix or ":"
+            candidates = " ".join(
+                f"@prefix {prefix}: <{namespace}> ." for namespace in sorted(namespaces)
+            )
             diagnostics.append(
                 CompileDiagnostic(
                     code="safety.prefix-ambiguous",
                     message=(
-                        f"imported prefix '{prefix or ':'}' maps to multiple namespaces "
-                        f"without a root declaration: {', '.join(sorted(namespaces))}"
+                        f"imported prefix '{label}' maps to multiple namespaces "
+                        f"without a root declaration: {', '.join(sorted(namespaces))}. "
+                        f"The imported prefix is not bound for resolution; declare one "
+                        f"candidate in the root ontology to disambiguate: {candidates}"
                     ),
                     location=SourceLocation(path=str(root_path)),
+                    severity=DiagnosticSeverity.WARNING,
                 )
             )
     return tuple(diagnostics)
@@ -330,7 +338,14 @@ def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[Proper
 def _ontology_symbols(
     ontology_path: Path, hub_root: Path
 ) -> tuple[
-    Graph, str, str, str, tuple[ResolvedClass, ...], tuple[ResolvedProperty, ...], tuple[str, ...]
+    Graph,
+    str,
+    str,
+    str,
+    tuple[ResolvedClass, ...],
+    tuple[ResolvedProperty, ...],
+    tuple[str, ...],
+    tuple[CompileDiagnostic, ...],
 ]:
     # DD-108/DD-103: resolve binding symbols against a non-asserted (RDFS) profile so that
     # subclass-inherited and cross-namespace imported properties become bindable via the
@@ -338,9 +353,18 @@ def _ontology_symbols(
     loaded = load_ontology(
         ontology_path, identity_root=hub_root, profile=SemanticProfile.RDFS
     )
+    # DD-133: same-file prefix conflicts remain blocking errors, but an imported-only ambiguous
+    # prefix is never bound for resolution (see ``_declared_prefix_aliases``), so it is surfaced
+    # as a non-fatal warning with candidate ``@prefix`` declarations rather than failing compile.
     prefix_diagnostics = _prefix_diagnostics(loaded, ontology_path)
-    if prefix_diagnostics:
-        raise CompileError(prefix_diagnostics)
+    prefix_errors = tuple(
+        item for item in prefix_diagnostics if item.severity is DiagnosticSeverity.ERROR
+    )
+    prefix_warnings = tuple(
+        item for item in prefix_diagnostics if item.severity is not DiagnosticSeverity.ERROR
+    )
+    if prefix_errors:
+        raise CompileError(prefix_errors)
     graph = loaded.graph
     index = loaded.semantic_index
     first_class = next(graph.subjects(RDF.type, OWL.Class), None)
@@ -415,6 +439,7 @@ def _ontology_symbols(
         tuple(classes),
         tuple(properties.values()),
         closure_paths or (str(ontology_path),),
+        prefix_warnings,
     )
 
 
@@ -468,7 +493,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
                 )
             ]
         )
-    graph, namespace, ontology_iri, version, classes, properties, ontology_paths = (
+    graph, namespace, ontology_iri, version, classes, properties, ontology_paths, prefix_warnings = (
         _ontology_symbols(ontology_path, root)
     )
     relations = list(_source_relations(source_paths))
@@ -546,6 +571,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         binding_paths=tuple(str(path) for path in binding_paths),
         ontology_paths=ontology_paths,
         inputs=tuple(inputs),
+        prefix_warnings=prefix_warnings,
     )
     context = ResolutionContext(
         domain=domain,
@@ -1925,7 +1951,7 @@ def _planned_artifact_paths(
 def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     """Build the canonical graph-free plan without rendering or writing artifacts."""
     scope, context = resolve_scope(Path(hub_root), domain)
-    diagnostics: list[CompileDiagnostic] = []
+    diagnostics: list[CompileDiagnostic] = list(scope.prefix_warnings)
     specs: list[EntityBindingSpec] = []
     valid_bindings: list[EntityBinding] = []
     bounds: list[BoundSources] = []
