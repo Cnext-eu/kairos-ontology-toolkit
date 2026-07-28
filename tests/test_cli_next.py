@@ -45,7 +45,7 @@ def test_next_json_is_clean_on_stdout_with_banner_on_stderr(hub, monkeypatch):
     result = _invoke(hub, monkeypatch, ["--format", "json"])
     assert result.exit_code == 0
     payload = _stdout_json(result)  # would raise if stdout were polluted
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["compile_ran"] is True
     assert "DD-137" in result.stderr
     kinds = {action["kind"] for action in payload["actions"]}
@@ -107,3 +107,28 @@ def test_gather_snapshot_flags_binding_without_ontology(hub):
     orphan = next(d for d in snapshot.domains if d.domain == "orphan")
     assert orphan.ontology is InputStatus.MISSING
     assert orphan.has_bindings is True
+
+
+def test_gather_snapshot_observes_emitted_project_and_adapter(hub):
+    without = gather_hub_input_snapshot(hub)
+    assert without.emitted_dbt_project is InputStatus.MISSING
+    assert without.adapter == "fabric"
+
+    project = hub / "output" / "medallion" / "dbt"
+    project.mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: hub\n", encoding="utf-8")
+
+    with_emit = gather_hub_input_snapshot(hub)
+    assert with_emit.emitted_dbt_project is InputStatus.PRESENT
+
+
+def test_next_surfaces_optional_validate_dbt_after_emit(hub, monkeypatch):
+    project = hub / "output" / "medallion" / "dbt"
+    project.mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: hub\n", encoding="utf-8")
+
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    gate = next(a for a in payload["actions"] if a["kind"] == "validate-dbt")
+    assert gate["status"] == "optional"
+    assert gate["command"] == "kairos-ontology validate-dbt --platform fabric"

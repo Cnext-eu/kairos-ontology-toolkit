@@ -101,6 +101,56 @@ def test_passed_compile_recommends_emit():
     assert proposal.actions[0].status is ActionStatus.RECOMMENDED
 
 
+def test_emitted_project_surfaces_optional_validate_dbt_gate():
+    proposal = propose_next_actions(
+        _hub(
+            domains=(_domain("party"),),
+            emitted_dbt_project=InputStatus.PRESENT,
+            adapter="fabric",
+        )
+    )
+    kinds = _kinds(proposal)
+    assert "validate-dbt" in kinds
+    gate = next(a for a in proposal.actions if a.kind == "validate-dbt")
+    assert gate.status is ActionStatus.OPTIONAL
+    assert gate.blocking is False
+    assert gate.skill == "kairos-execute-validate"
+    assert gate.command == "kairos-ontology validate-dbt --platform fabric"
+
+
+def test_validate_dbt_gate_absent_without_emitted_project():
+    proposal = propose_next_actions(_hub(domains=(_domain("party"),)))
+    assert "validate-dbt" not in _kinds(proposal)
+
+
+def test_validate_dbt_gate_absent_when_no_domain_passes():
+    proposal = propose_next_actions(
+        _hub(
+            domains=(_domain("party", compile_status=CompileStatus.NOT_RUN),),
+            compile_ran=False,
+            emitted_dbt_project=InputStatus.PRESENT,
+            adapter="databricks",
+        )
+    )
+    assert "validate-dbt" not in _kinds(proposal)
+
+
+def test_validate_dbt_gate_uses_placeholder_platform_when_adapter_unknown():
+    proposal = propose_next_actions(
+        _hub(domains=(_domain("party"),), emitted_dbt_project=InputStatus.PRESENT)
+    )
+    gate = next(a for a in proposal.actions if a.kind == "validate-dbt")
+    assert gate.command == "kairos-ontology validate-dbt --platform <fabric|databricks>"
+
+
+def test_unreadable_emitted_project_requires_human_decision():
+    proposal = propose_next_actions(
+        _hub(domains=(_domain("party"),), emitted_dbt_project=InputStatus.UNREADABLE)
+    )
+    gate = next(a for a in proposal.actions if a.kind == "validate-dbt")
+    assert gate.status is ActionStatus.HUMAN_DECISION_REQUIRED
+
+
 def test_not_run_compile_is_indeterminate_never_ready():
     proposal = propose_next_actions(
         _hub(compile_ran=False,
@@ -183,4 +233,4 @@ def test_proposal_is_json_serializable_and_stable():
     first = json.dumps(payload, sort_keys=True)
     second = json.dumps(payload, sort_keys=True)
     assert first == second
-    assert '"schema_version": 1' in first
+    assert '"schema_version": 2' in first
