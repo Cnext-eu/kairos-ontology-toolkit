@@ -257,6 +257,23 @@ class RelationshipJoin:
 
 
 @dataclass(frozen=True, slots=True)
+class ExternalReferenceKey:
+    """One ordered parent-key column in an external reference contract."""
+
+    column: str
+    type: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalReferenceSpec:
+    """A declared cross-domain physical parent and its ordered key contract."""
+
+    name: str
+    domain: str
+    key: tuple[ExternalReferenceKey, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TemporalRelationshipPolicy:
     """Complete time semantics for a current or as-of relationship."""
 
@@ -280,6 +297,7 @@ class RelationshipSpec:
     mode: str
     missing_parent: str
     ambiguous_parent: str
+    external_reference: ExternalReferenceSpec | None = None
     temporal: TemporalRelationshipPolicy | None = None
     pointer: str = ""
 
@@ -593,6 +611,22 @@ def _build_binding(data: dict, resolver: _MarkResolver, path: str) -> EntityBind
 
     relationships: list[RelationshipSpec] = []
     for index, raw in enumerate(data.get("relationships", ())):
+        external_reference_raw = raw.get("externalReference")
+        external_reference = (
+            ExternalReferenceSpec(
+                name=str(external_reference_raw["name"]),
+                domain=str(external_reference_raw["domain"]),
+                key=tuple(
+                    ExternalReferenceKey(
+                        column=str(item["column"]),
+                        type=str(item["type"]),
+                    )
+                    for item in external_reference_raw["key"]
+                ),
+            )
+            if external_reference_raw
+            else None
+        )
         temporal_raw = raw.get("temporal")
         temporal = (
             TemporalRelationshipPolicy(
@@ -621,6 +655,7 @@ def _build_binding(data: dict, resolver: _MarkResolver, path: str) -> EntityBind
                 mode=str(raw["mode"]),
                 missing_parent=str(raw["missingParent"]),
                 ambiguous_parent=str(raw["ambiguousParent"]),
+                external_reference=external_reference,
                 temporal=temporal,
                 pointer=f"/relationships/{index}",
             )

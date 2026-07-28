@@ -343,6 +343,7 @@ def build_conformance_plan(
                     item.mode,
                     item.missing_parent,
                     item.ambiguous_parent,
+                    item.external_reference,
                 )
                 for item in binding.relationships
             )
@@ -354,6 +355,7 @@ def build_conformance_plan(
                     item.mode,
                     item.missing_parent,
                     item.ambiguous_parent,
+                    item.external_reference,
                 )
                 for item in canonical.relationships
             )

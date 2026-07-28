@@ -55,7 +55,7 @@ from .adapter import (
     ResolvedRelation,
     adapt_binding,
 )
-from .bindings import EntityBinding, ExprColumn, load_entity_binding
+from .bindings import EntityBinding, ExprColumn, RelationshipSpec, load_entity_binding
 from .compile import CompileMode
 from .conformance import ConformancePlan, ConformanceTypeContract, build_conformance_plan
 from .dbt_source import resolve_dbt_model_source
@@ -594,6 +594,63 @@ def _resolved_binding_relation(
     return context.relation(ref)
 
 
+def _relationship_ref_uri(graph: Graph, ref: str, context: ResolutionContext) -> str:
+    if ref.startswith(("http://", "https://", "urn:")):
+        return ref
+    if ":" in ref:
+        prefix, local = ref.split(":", 1)
+        namespace = graph.namespace_manager.store.namespace(prefix)
+        return f"{namespace}{local}" if namespace is not None else ""
+    return f"{context.namespace}{ref}" if ref else ""
+
+
+def _relationship_target_class(
+    relationship: RelationshipSpec, context: ResolutionContext, hub_root: str | Path
+) -> ResolvedClass | None:
+    target = context.klass(relationship.target)
+    if target is not None:
+        return target
+    ontology_path = Path(hub_root) / "model" / "ontologies" / f"{context.domain}.ttl"
+    if not ontology_path.is_file():
+        return None
+    loaded = load_ontology(
+        ontology_path,
+        identity_root=Path(hub_root),
+        profile=SemanticProfile.RDFS,
+    )
+    uri = _relationship_ref_uri(loaded.graph, relationship.target, context)
+    if not uri and ":" in relationship.target:
+        prefix, local = relationship.target.split(":", 1)
+        uri = next(
+            (
+                f"{namespaces[0]}{local}"
+                for source in loaded.sources
+                for namespaces in (
+                    _declared_prefixes(source.manifest.source_path).get(prefix, ()),
+                )
+                if namespaces
+            ),
+            "",
+        )
+    node = URIRef(uri) if uri else None
+    if node is None or (node, RDF.type, OWL.Class) not in loaded.graph:
+        return None
+    _, local = _namespace_local(uri)
+    return ResolvedClass(
+        relationship.target,
+        uri,
+        local,
+        _literal(loaded.graph, node, RDFS.label, local),
+        _literal(loaded.graph, node, RDFS.comment, ""),
+    )
+
+
+def _source_types_compatible(left: str, right: str) -> bool:
+    left_type = _source_type(left)
+    right_type = _source_type(right)
+    return left_type is not None and right_type is not None and left_type.kind is right_type.kind
+
+
 def _conformance_contract(
     binding: EntityBinding, context: ResolutionContext
 ) -> ConformanceTypeContract:
@@ -702,7 +759,7 @@ def _conformance_plans(
 
 
 def _foreign_keys(
-    bindings: tuple[EntityBinding, ...], context: ResolutionContext
+    bindings: tuple[EntityBinding, ...], context: ResolutionContext, hub_root: str | Path
 ) -> tuple[ForeignKeyAuthoringFact, ...]:
     class_by_ref = {
         binding.target_class: context.klass(binding.target_class) for binding in bindings
@@ -713,6 +770,8 @@ def _foreign_keys(
         for relationship in binding.relationships:
             prop = context.property(relationship.property)
             target = class_by_ref.get(relationship.target)
+            if target is None and relationship.external_reference is not None:
+                target = _relationship_target_class(relationship, context, hub_root)
             if domain_class is None or prop is None or target is None:
                 continue
             facts.append(
@@ -1057,7 +1116,7 @@ def merge_bound_sources(
                 {item.class_uri for bound in bounds for item in bound.binding_observations}
             )
         ),
-        foreign_key_facts=_foreign_keys(bindings, context),
+        foreign_key_facts=_foreign_keys(bindings, context, hub_root),
         silver_candidates=tuple(silver_by_model[key] for key in sorted(silver_by_model)),
         schema_candidates=tuple(schema_by_model[key] for key in sorted(schema_by_model)),
         policy_facts=replace(
@@ -1097,6 +1156,7 @@ def _wire_relationships(
     bounds: tuple[BoundSources, ...],
     bindings: tuple[EntityBinding, ...],
     context: ResolutionContext,
+    hub_root: str | Path,
 ) -> tuple[BoundSources, ...]:
     def quote(value: str) -> str:
         return (
@@ -1112,22 +1172,32 @@ def _wire_relationships(
         fk_columns: list[ColumnSpec] = []
         relation = _resolved_binding_relation(binding, context)
         for relationship in binding.relationships:
+            external = relationship.external_reference
             target_binding = by_target.get(relationship.target)
-            target_class = context.klass(relationship.target)
+            target_class = _relationship_target_class(relationship, context, hub_root)
             prop = context.property(relationship.property)
             if (
                 relation is None
-                or target_binding is None
                 or target_class is None
                 or prop is None
-                or len(relationship.on) != 1
+                or (external is None and target_binding is None)
+                or (external is None and len(relationship.on) != 1)
             ):
                 continue
-            join = relationship.on[0]
-            target_column = _relationship_output_column(target_binding, join.foreign, context)
-            if target_column is None:
-                continue
-            target_model = target_class.name.lower()
+            if external is None:
+                join = relationship.on[0]
+                assert target_binding is not None
+                target_columns = (_relationship_output_column(target_binding, join.foreign, context),)
+                if target_columns[0] is None:
+                    continue
+                target_model = target_class.name.lower()
+                description = f"Surrogate reference to {target_class.name}"
+            else:
+                target_columns = tuple(item.column for item in external.key)
+                target_model = external.name
+                description = (
+                    f"Surrogate reference to external {external.domain}.{external.name}"
+                )
             fk_column = f"{target_model}_sk"
             joins.append(
                 JoinSpec(
@@ -1137,8 +1207,10 @@ def _wire_relationships(
                     referenced_model=f"{{{{ ref('{target_model}') }}}}",
                     fk_column=fk_column,
                     source_alias="src",
-                    source_column_uris=(relation.column_uri(join.local),),
-                    target_columns=(target_column,),
+                    source_column_uris=tuple(
+                        relation.column_uri(join.local) for join in relationship.on
+                    ),
+                    target_columns=target_columns,
                     relationship_uri=prop.uri,
                     temporal_mode=relationship.mode.replace("non-temporal", "none"),
                     as_of_column=(
@@ -1166,7 +1238,7 @@ def _wire_relationships(
                     canonical_type=CanonicalTypeSpec(CanonicalTypeKind.STRING),
                     nullable=relationship.missing_parent != "error",
                     role="foreign-key",
-                    description=f"Surrogate reference to {target_class.name}",
+                    description=description,
                     tests=("not_null",) if relationship.missing_parent == "error" else (),
                     provenance=(f"relationship:{prop.uri}", "rule:DD-133"),
                 )
@@ -1212,10 +1284,16 @@ def _project_relationship_match_counts(shaped, bindings, context):
             for relationship in binding.relationships:
                 prop = context.property(relationship.property)
                 target = context.klass(relationship.target)
-                if prop is not None and target is not None:
+                external = relationship.external_reference
+                target_model = (
+                    external.name
+                    if external is not None
+                    else target.name.lower() if target is not None else ""
+                )
+                if prop is not None and target_model:
                     replacements[temporal_match_count_column(prop.uri)] = (
-                        f"COUNT({quote(target.name.lower())}."
-                        f"{quote(f'{target.name.lower()}_sk')}) "
+                        f"COUNT({quote(target_model)}."
+                        f"{quote(f'{target_model}_sk')}) "
                         f"OVER (PARTITION BY {partition})",
                         prop.uri,
                     )
@@ -1393,6 +1471,30 @@ def _binding_safety_diagnostics(
                     rule_id="DD-133-safety",
                 )
             )
+    for index, relationship in enumerate(binding.relationships):
+        generated_fk = (
+            f"{relationship.external_reference.name}_sk"
+            if relationship.external_reference is not None
+            else ""
+        )
+        reserved_with_external = {*reserved, generated_fk}
+        for join_index, join in enumerate(relationship.on):
+            if join.local.lower() not in reserved_with_external:
+                continue
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="safety.identity-role-collision",
+                    message=(
+                        f"relationship local column '{join.local}' collides with a "
+                        "compiler-owned identity/runtime role"
+                    ),
+                    location=SourceLocation(
+                        path=binding.source_path,
+                        pointer=f"/relationships/{index}/join/{join_index}/local",
+                    ),
+                    rule_id="DD-133-safety",
+                )
+            )
     return tuple(diagnostics)
 
 
@@ -1447,6 +1549,7 @@ def _relationship_diagnostics(
     targets = {item.target_class: item for item in selected.values()}
     for index, relationship in enumerate(binding.relationships):
         pointer = f"/relationships/{index}"
+        external = relationship.external_reference
         target_binding = targets.get(relationship.target)
         target_relation = (
             _resolved_binding_relation(target_binding, context)
@@ -1455,8 +1558,8 @@ def _relationship_diagnostics(
         )
         prop = context.property(relationship.property)
         source_class = context.klass(binding.target_class)
-        target_class = context.klass(relationship.target)
-        if prop is None or target_binding is None:
+        target_class = _relationship_target_class(relationship, context, hub_root)
+        if external is None and target_binding is None:
             external_domain = _external_target_domain(
                 hub_root, context.domain, relationship.target
             )
@@ -1481,6 +1584,27 @@ def _relationship_diagnostics(
                 )
             )
             continue
+        if prop is None:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="safety.relationship-endpoint",
+                    message=f"relationship property '{relationship.property}' does not resolve",
+                    location=SourceLocation(path=binding.source_path, pointer=pointer),
+                )
+            )
+            continue
+        if external is not None and target_class is None:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="safety.relationship-endpoint",
+                    message=(
+                        f"relationship '{relationship.property}' target "
+                        f"'{relationship.target}' does not resolve as an ontology class"
+                    ),
+                    location=SourceLocation(path=binding.source_path, pointer=pointer),
+                )
+            )
+            continue
         if source_class is None:
             continue
         if (
@@ -1499,6 +1623,25 @@ def _relationship_diagnostics(
                 )
             )
             continue
+        if external is not None:
+            declared_key = tuple(item.column for item in external.key)
+            authored_foreign = tuple(join.foreign for join in relationship.on)
+            if authored_foreign != declared_key:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.relationship-endpoint",
+                        message=(
+                            "relationship externalReference key mismatch: join.foreign "
+                            f"{authored_foreign!r} must exactly match declared key "
+                            f"{declared_key!r}"
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path,
+                            pointer=f"{pointer}/externalReference/key",
+                        ),
+                    )
+                )
+                continue
         if relationship.temporal is not None:
             if (
                 relationship.mode == "as-of"
@@ -1528,7 +1671,7 @@ def _relationship_diagnostics(
                 )
             )
             continue
-        if len(relationship.on) != 1:
+        if external is None and len(relationship.on) != 1:
             diagnostics.append(
                 CompileDiagnostic(
                     code="safety.adapter-unsupported",
@@ -1540,22 +1683,49 @@ def _relationship_diagnostics(
         foreign_columns = (
             {column.name: column for column in target_relation.columns} if target_relation else {}
         )
+        external_types = (
+            {item.column: item.type for item in external.key} if external is not None else {}
+        )
         for join_index, join in enumerate(relationship.on):
             local = local_columns.get(join.local)
             foreign = foreign_columns.get(join.foreign)
             join_pointer = f"{pointer}/join/{join_index}"
-            if local is None or foreign is None:
-                missing = join.local if local is None else join.foreign
-                side = "local" if local is None else "foreign"
+            if local is None:
                 diagnostics.append(
                     CompileDiagnostic(
                         code="safety.column-unresolved",
-                        message=f"relationship {side} column '{missing}' does not resolve",
+                        message=f"relationship local column '{join.local}' does not resolve",
                         location=SourceLocation(path=binding.source_path, pointer=join_pointer),
                     )
                 )
                 continue
-            if _source_type(local.data_type) != _source_type(foreign.data_type):
+            if external is None and foreign is None:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.column-unresolved",
+                        message=f"relationship foreign column '{join.foreign}' does not resolve",
+                        location=SourceLocation(path=binding.source_path, pointer=join_pointer),
+                    )
+                )
+                continue
+            if external is not None:
+                key_type = external_types.get(join.foreign, "")
+                if not key_type or not _source_types_compatible(local.data_type, key_type):
+                    diagnostics.append(
+                        CompileDiagnostic(
+                            code="safety.type-incompatible",
+                            message=(
+                                f"relationship local column '{join.local}' "
+                                f"({local.data_type}) is incompatible with external key "
+                                f"'{join.foreign}' ({key_type})"
+                            ),
+                            location=SourceLocation(path=binding.source_path, pointer=join_pointer),
+                        )
+                    )
+                continue
+            if foreign is not None and _source_type(local.data_type) != _source_type(
+                foreign.data_type
+            ):
                 diagnostics.append(
                     CompileDiagnostic(
                         code="safety.type-incompatible",
@@ -1612,6 +1782,18 @@ def _focused_quality_artifacts(
             f"{json.dumps(relation.table_name)}) }}}}"
         )
 
+    def parent_sql(relationship: RelationshipSpec) -> str:
+        external = relationship.external_reference
+        if external is not None:
+            return f"{{{{ ref({json.dumps(external.name)}) }}}}"
+        target_binding = targets.get(relationship.target)
+        parent = (
+            _resolved_binding_relation(target_binding, context)
+            if target_binding is not None
+            else None
+        )
+        return source_sql(parent) if parent is not None else ""
+
     for binding in bindings:
         relation = _resolved_binding_relation(binding, context)
         klass = context.klass(binding.target_class)
@@ -1643,13 +1825,10 @@ def _focused_quality_artifacts(
                 ),
                 None,
             )
-            target_binding = targets.get(relationship.target) if relationship else None
-            parent = (
-                _resolved_binding_relation(target_binding, context)
-                if target_binding is not None
-                else None
-            )
-            if relationship is None or parent is None:
+            if relationship is None:
+                continue
+            parent_ref = parent_sql(relationship)
+            if not parent_ref:
                 continue
             adapter = context.target_platform
             predicates = " and ".join(
@@ -1665,7 +1844,7 @@ def _focused_quality_artifacts(
             artifacts[path] = (
                 "-- DD-133 focused source referential check\n"
                 f"select child.* from {source_sql(relation)} as child\n"
-                f"left join {source_sql(parent)} as parent on {predicates}\n"
+                f"left join {parent_ref} as parent on {predicates}\n"
                 f"where child.{local} is not null "
                 f"and parent.{missing_identifier} is null\n"
             )
@@ -1696,7 +1875,13 @@ def _focused_quality_artifact_paths(
                 ),
                 None,
             )
-            if relationship is None or targets.get(relationship.target) is None:
+            if (
+                relationship is None
+                or (
+                    relationship.external_reference is None
+                    and targets.get(relationship.target) is None
+                )
+            ):
                 continue
             suffix = "" if check_index == 0 else f"_{check_index + 1}"
             paths.add(f"tests/{binding.domain}/{model_name}__referential{suffix}.sql")
@@ -1832,7 +2017,9 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     materialized = None
     if bounds:
         try:
-            wired_bounds = _wire_relationships(tuple(bounds), tuple(valid_bindings), context)
+            wired_bounds = _wire_relationships(
+                tuple(bounds), tuple(valid_bindings), context, scope.hub_root
+            )
             merged = merge_bound_sources(
                 wired_bounds,
                 tuple(valid_bindings),

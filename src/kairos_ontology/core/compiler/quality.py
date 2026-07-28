@@ -68,7 +68,7 @@ def run_safety_kernel(ir: CanonicalProjectIR) -> tuple[CompileDiagnostic, ...]:
                 )
             )
         for relationship in binding.relationships:
-            if relationship.target not in targets:
+            if relationship.external_reference is None and relationship.target not in targets:
                 diagnostics.append(
                     CompileDiagnostic(
                         code="safety.relationship-endpoint",
