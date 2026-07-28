@@ -158,6 +158,45 @@ def test_unknown_top_level_field_rejected() -> None:
     assert "binding.schema" in _codes(excinfo.value)
 
 
+_NON_TEMPORAL_REL = """\
+relationships:
+  - property: party:hasCountry
+    target: ref:Country
+    join:
+      - local: country
+        foreign: iso2
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: error
+    ambiguousParent: error
+"""
+
+
+def test_missing_parent_accepts_yaml_null_alias() -> None:
+    doc = VALID + _NON_TEMPORAL_REL.replace("missingParent: error", "missingParent: null")
+    binding = load_entity_binding(doc, path="rel.binding.yaml")
+    assert binding.relationships[0].missing_parent == "null"
+
+
+def test_invalid_missing_parent_reports_precise_enum_message() -> None:
+    doc = VALID + _NON_TEMPORAL_REL.replace("missingParent: error", "missingParent: maybe")
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(doc, path="rel.binding.yaml")
+    messages = [d.message for d in excinfo.value.diagnostics]
+    assert any("'maybe' is not one of" in message for message in messages)
+    # The opaque anyOf/oneOf fallback message must no longer leak through.
+    assert all("given schemas" not in message for message in messages)
+    assert any(diag.location.line > 0 for diag in excinfo.value.diagnostics)
+
+
+def test_ambiguous_parent_does_not_accept_null_alias() -> None:
+    doc = VALID + _NON_TEMPORAL_REL.replace("ambiguousParent: error", "ambiguousParent: null")
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(doc, path="rel.binding.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
+    assert any("['error', 'first']" in diag.message for diag in excinfo.value.diagnostics)
+
+
 @pytest.mark.parametrize(
     ("document", "code"),
     [

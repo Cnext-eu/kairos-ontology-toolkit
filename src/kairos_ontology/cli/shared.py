@@ -662,7 +662,17 @@ def _read_pinned_toolkit_version() -> str | None:
         )
     if not m:
         return None
-    return _tag_to_version(m.group(1))
+    version = _tag_to_version(m.group(1))
+    # A git pin may reference a bare commit SHA rather than a release tag. Such a pin is not
+    # PEP 440-comparable against the running semver, so return None (stay silent) instead of
+    # emitting a perpetual "different from" banner that can never match.
+    try:
+        from packaging.version import Version
+
+        Version(version)
+    except Exception:
+        return None
+    return version
 
 
 def _warn_if_version_mismatch() -> None:

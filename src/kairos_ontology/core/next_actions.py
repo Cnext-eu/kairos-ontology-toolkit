@@ -349,7 +349,7 @@ def _domain_actions(domain: DomainSnapshot, compile_ran: bool) -> list[NextActio
                 f"'{name}' passes the canonical compile check. Emit artifacts when ready; "
                 "a passing check is not a downstream runtime/release guarantee."
             ),
-            command=f"kairos-ontology compile {name} --emit output/",
+            command=f"kairos-ontology compile {name} --emit",
             priority=base + 30,
             domain=name,
         )

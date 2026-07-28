@@ -22,6 +22,7 @@ from typing import Any
 
 import yaml
 from jsonschema import Draft7Validator
+from jsonschema.exceptions import best_match
 
 from .result import CompileDiagnostic, CompileError, SourceLocation
 
@@ -436,16 +437,79 @@ def _load_schema() -> dict:
     return json.loads(text)
 
 
+def _alias_null_tokens(data: Any) -> None:
+    """Accept YAML ``null`` as an alias for the string enum token ``"null"``.
+
+    Only ``missingParent`` and ``temporal.lateParent`` accept the ``"null"`` token. YAML
+    ``null`` there parses to Python ``None`` and would otherwise fail the string enum with an
+    opaque ``oneOf`` diagnostic. A *missing* key is left untouched so required-field errors still
+    fire, and ``ambiguousParent`` (enum ``error|first``) is intentionally not coerced.
+    """
+    if not isinstance(data, dict):
+        return
+    relationships = data.get("relationships")
+    if not isinstance(relationships, list):
+        return
+    for relationship in relationships:
+        if not isinstance(relationship, dict):
+            continue
+        if relationship.get("missingParent", "") is None:
+            relationship["missingParent"] = "null"
+        temporal = relationship.get("temporal")
+        if isinstance(temporal, dict) and temporal.get("lateParent", "") is None:
+            temporal["lateParent"] = "null"
+
+
+def _branch_index(error) -> Any:
+    """Return the ``oneOf``/``anyOf`` branch index a context sub-error belongs to."""
+    return error.schema_path[0] if error.schema_path else None
+
+
+def _discriminated_leaf(error):
+    """Pick the discriminated branch of a ``oneOf``/``anyOf`` and return its best sub-error.
+
+    Draft 7's generic ``best_match`` is not discriminator-aware and can select a sibling branch
+    (e.g. flag a missing ``temporal`` when the instance is plainly ``mode: non-temporal``). The
+    relationship/temporal branches carry a ``const`` discriminator (``mode``/``openEnded``), so any
+    branch rejected *purely* because that const mismatched is not the branch the author intended;
+    dropping those branches leaves the real error to surface.
+    """
+    context = list(error.context or [])
+    if not context:
+        return None
+    rejected = {_branch_index(sub) for sub in context if sub.validator == "const"}
+    survivors = [sub for sub in context if _branch_index(sub) not in rejected] or context
+    return best_match(survivors)
+
+
 def _schema_diagnostics(data: Any, resolver: _MarkResolver) -> list[CompileDiagnostic]:
     validator = Draft7Validator(_load_schema())
     diagnostics: list[CompileDiagnostic] = []
     for error in validator.iter_errors(data):
-        pointer = "/" + "/".join(str(part) for part in error.absolute_path)
+        # Draft 7 reports the generic "is not valid under any of the given schemas" at a
+        # ``oneOf``/``anyOf`` branch point, hiding the offending field. Descend into the
+        # discriminated branch (by ``mode``/``openEnded`` const) to surface the real leaf error.
+        parts = list(error.absolute_path)
+        leaf = error
+        while leaf.context:
+            chosen = _discriminated_leaf(leaf)
+            if chosen is None:
+                break
+            leaf = chosen
+            parts.extend(leaf.absolute_path)
+        pointer = "/" + "/".join(str(part) for part in parts)
+        # A missing required field has no YAML mark, so resolve the location to the deepest
+        # existing ancestor (falling back to root) while keeping the precise leaf message.
+        location = resolver.at(pointer)
+        trim = len(parts)
+        while location.line == 0 and trim > 0:
+            trim -= 1
+            location = resolver.at("/" + "/".join(str(part) for part in parts[:trim]))
         diagnostics.append(
             CompileDiagnostic(
                 code="binding.schema",
-                message=error.message,
-                location=resolver.at(pointer),
+                message=leaf.message,
+                location=location,
             )
         )
     return diagnostics
@@ -528,6 +592,7 @@ def load_entity_binding(text: str, *, path: str = "<binding>") -> EntityBinding:
         )
         raise CompileError(diagnostics)
 
+    _alias_null_tokens(data)
     diagnostics.extend(_schema_diagnostics(data, resolver))
     if not diagnostics:
         diagnostics.extend(_contract_diagnostics(data, resolver))
