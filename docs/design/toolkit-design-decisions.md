@@ -189,9 +189,9 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-135](#dd-135-retire-v4-release-and-lifecycle-orchestration) | Retire V4 Release and Lifecycle Orchestration | Accepted | 2026-07-27 |
 | [DD-136](#dd-136-retire-v4-claim-binding-and-completeness-authority) | Retire V4 Claim Binding and Completeness Authority | Accepted | 2026-07-27 |
 | [DD-137](#dd-137-derived-stateless-readiness-proposal-kairos-ontology-next) | Derived, Stateless Readiness Proposal (`kairos-ontology next`) | Accepted | 2026-07-28 |
-| [DD-138](#dd-138-cross-domain-relationship-targets-via-external-references) | Cross-domain Relationship Targets via External References | Proposed | 2026-07-28 |
-| [DD-139](#dd-139-authored-passthrough-technical-columns--dd-107-amendment) | Authored Passthrough Technical Columns — DD-107 Amendment | Proposed | 2026-07-28 |
-| [DD-140](#dd-140-canonical-emit-layout-and-dbt-package-topology) | Canonical Emit Layout and dbt-Package Topology | Proposed | 2026-07-28 |
+| [DD-138](#dd-138-cross-domain-relationship-targets-via-external-references) | Cross-domain Relationship Targets via External References | Accepted | 2026-07-28 |
+| [DD-139](#dd-139-authored-passthrough-technical-columns--dd-107-amendment) | Authored Passthrough Technical Columns — DD-107 Amendment | Proposed (Parked) | 2026-07-28 |
+| [DD-140](#dd-140-canonical-emit-layout-and-dbt-package-topology) | Canonical Emit Layout and dbt-Package Topology | Accepted | 2026-07-28 |
 
 ---
 
@@ -9269,12 +9269,13 @@ canonical compiler remains the sole planning authority and its diagnostics are s
 
 ## DD-138: Cross-domain Relationship Targets via External References
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-28
 **Affects:** V5 `EntityBinding` relationship declarations, compiler BuildScope resolution,
 relationship diagnostics, provenance hashing, and generated dbt relationship tests
-**Implementation:** Proposed only. No code is implemented yet; the existing
-`RelationshipSpec` has no external-reference field.
+**Implementation:** Accepted. `RelationshipSpec` gains an external-reference field; the
+compiler resolves the declared key contract. Physical cross-domain `ref()` emission is enabled
+by the unified topology accepted in DD-140.
 
 ### Context
 
@@ -9340,12 +9341,14 @@ compile that parent.
 
 ## DD-139: Authored Passthrough Technical Columns — DD-107 Amendment
 
-**Status:** Proposed
+**Status:** Proposed (Parked)
 **Date:** 2026-07-28
 **Affects:** DD-107 materialization authority, v5 `EntityBinding` schema, source-column
 ownership, Silver contract parity, manifest/parity hashing, and mapping diagnostics
-**Implementation:** Proposed only. Workstream B1 actionable diagnostics and documentation are a
-separate low-risk fix; this decision covers only an optional ergonomic construct.
+**Implementation:** Parked. Workstream B1 (actionable diagnostics + documentation) is shipped and
+resolves the immediate DX pain; the legitimate workaround (map the key as a scalar field) keeps
+DD-107's column contract honest. This construct is deferred and revisited only if authoring
+friction recurs.
 
 ### Context
 
@@ -9407,12 +9410,13 @@ column exposure a conscious authored decision.
 
 ## DD-140: Canonical Emit Layout and dbt-Package Topology
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-07-28
 **Affects:** `compile --emit`, scaffold `output/` slots, dbt project/package generation,
 manifest ownership, `.gitignore`, downstream dataplatform consumption, and cross-domain refs
-**Implementation:** Proposed only. No emit-layout or package-topology change is implemented by
-this decision.
+**Implementation:** Accepted. `--emit` becomes projection-aware and targets the scaffolded
+slots; the dbt projection materializes into a single canonical medallion project with per-domain
+manifest ownership so stateless `compile <domain>` replaces only the files it owns.
 
 ### Context
 
@@ -9434,25 +9438,26 @@ scaffolded projection slots will disappear from fresh clones.
 
 ### Decision
 
-Leave the decision open pending maintainer sign-off. The options are:
+Adopt **projection-aware emit into the scaffolded slots** combined with a **single canonical
+medallion dbt project** that retains **per-domain manifest ownership**. The chosen options from
+those considered are (1) projection-aware layout and (3) unified dbt project:
 
-1. **Projection-aware emit layout.** Emit each projection into the scaffolded slot it serves, such
-   as `output/medallion/dbt/<domain>` for dbt, `output/medallion/powerbi/<product>` for semantic
-   models, and analogous folders for search or graph projections.
-2. **Domain-centric emit layout.** Continue owning `output/<domain>/` and place all artifacts for
-   that domain under one manifest-owned subtree.
-3. **Unified dbt project.** Generate or package all emitted domains into one dbt project so
-   cross-domain `ref()` calls are ordinary dbt graph edges.
-4. **Standalone-per-domain dbt projects.** Emit each domain as an isolated dbt project/package and
-   express cross-domain references through package dependencies, declared external references, or
-   downstream dataplatform composition.
+1. **Projection-aware emit layout (chosen).** Emit each projection into the scaffolded slot it
+   serves, such as `output/medallion/dbt` for dbt, `output/medallion/powerbi/<product>` for
+   semantic models, and analogous folders for search or graph projections.
+3. **Unified dbt project (chosen).** Emit all domains into one canonical medallion dbt project so
+   cross-domain `ref()` calls are ordinary dbt graph edges, while each `compile <domain> --emit`
+   owns and replaces only its manifest-listed files (statelessness preserved, per DD-097
+   multi-domain reconciliation).
 
-Recommended direction: choose projection-aware emit for hub slots and a single canonical medallion
-`dbt` project when domains are emitted into the same dataplatform. Retain per-domain manifest
-ownership inside that project so `compile <domain>` remains stateless and can replace only the
-files it owns. If maintainers prefer standalone packages, DD-138's external-reference contract
-should remain the cross-domain relationship authority and generated `ref()` calls should be limited
-to dependencies explicitly declared in package metadata.
+The rejected alternatives are (2) domain-centric `output/<domain>/` and (4) standalone-per-domain
+dbt projects. Standalone packages would keep cross-domain relationships as package-management
+concerns and force DD-138's external-reference contract to remain contract-only rather than
+emitting physical refs.
+
+`output/` is added to `.gitignore` with negated exceptions that preserve scaffold `.gitkeep` slot
+markers (e.g. `output/**` plus `!output/**/.gitkeep`) so fresh clones keep the projection slots
+while generated artifacts stay untracked.
 
 ### Rationale
 
