@@ -171,9 +171,21 @@ def compile_cmd(
     result = compile_domain(hub, domain, mode)
     emit_target = None
     if emit_dir is not None and result.can_emit:
-        requested_target = (
-            hub / _DEFAULT_DBT_EMIT_DIR if emit_dir == _BARE_EMIT_SENTINEL else emit_dir
-        )
+        if emit_dir == _BARE_EMIT_SENTINEL:
+            requested_target = hub / _DEFAULT_DBT_EMIT_DIR
+        else:
+            requested_target = emit_dir
+            resolved = requested_target.resolve(strict=False)
+            try:
+                resolved.relative_to(hub.resolve(strict=False))
+            except ValueError:
+                click.echo(
+                    f"⚠️  --emit target {resolved} is outside this hub "
+                    f"({hub.resolve(strict=False)}).\n"
+                    f"   The canonical emit target is {hub / _DEFAULT_DBT_EMIT_DIR}; "
+                    f"pass a bare --emit to use it.",
+                    err=True,
+                )
         emit_target = _emit_compile_artifacts(result, requested_target)
     if output_format == "json":
         click.echo(json.dumps(_payload(result), indent=2, sort_keys=True))

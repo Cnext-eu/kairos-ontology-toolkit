@@ -9266,6 +9266,20 @@ canonical compiler remains the sole planning authority and its diagnostics are s
 - A passing compile check reported here is not a downstream runtime or release guarantee.
 - Adding a new action kind requires extending the single `ACTION_SKILLS` routing map.
 
+### Amendment (proposal schema v2): optional offline dbt gate
+
+`SCHEMA_VERSION` is bumped to `2`. The snapshot gains one additional **defensible emitted-output
+observation**, `emitted_dbt_project` (presence/unreadable/missing of
+`output/medallion/dbt/dbt_project.yml`), plus the configured `adapter` used only to render a
+command. When an emitted project is observed **and** at least one domain currently passes the
+compile check, the proposer surfaces a single hub-level `validate-dbt` action with status
+`optional` (never `blocking`, never a mandatory sequential step). This deliberately does **not**
+reintroduce lifecycle state: the observation is presence-only, cannot prove the emitted project is
+fresh or that the current CompilePlan produced it, and disappears when the emitted project is
+absent. The action routes to `kairos-execute-validate`, matching the opt-in offline
+`deps → parse → manifest → compile` gate (see the DD-110 parity check in `core/dbt_validation.py`).
+An unreadable emitted project yields `human_decision_required` instead.
+
 ---
 
 ## DD-138: Cross-domain Relationship Targets via External References

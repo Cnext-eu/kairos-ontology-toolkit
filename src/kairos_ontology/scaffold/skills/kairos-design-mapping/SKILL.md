@@ -276,11 +276,23 @@ contract.
 
 For cross-domain targets, author `externalReference` explicitly. Its `name` is
 the parent dbt model in the unified medallion project, `domain` is the owning
-domain, and `key` is the ordered parent-side key contract. The ordered
+domain, and `key` is the ordered parent-side key contract. Each `key[].column`
+is the parent's **materialized output column** (not the child's source column),
+and each `key[].type` is a canonical type token whose kind must match the local
+source column's kind. Canonical kinds are `string`, `boolean`, `int16`, `int32`,
+`int64`, `decimal`, `float64`, `date`, `time`, `timestamp`, `binary`, and
+`json`; common SQL aliases (`bigint`, `int`, `varchar(n)`, `decimal(p,s)`,
+`datetime`, …) are also accepted and normalized by kind. The ordered
 `join[].foreign` values must exactly match `externalReference.key[].column`,
 and each child `join[].local` source type must be compatible with the declared
 key type. Do not inspect or depend on peer-domain bindings to infer these
-values; the declaration is the contract.
+values; the declaration is the contract. See `example-entity-binding.yaml`
+(`party:hasAccount → billing:Account`) for a worked cross-domain example.
+
+Every relationship `join[].local` column must **also** be mapped as a scalar
+`fields:` entry. The join-local FK column is not auto-materialized into the
+silver projection; omitting its `fields:` mapping fails compilation with
+`mapping.unresolved-join-input` (`DD-107-source-ownership`).
 
 Use `quality:` only for focused evidence-backed dbt tests. It is not execution
 authority and does not replace compiler safety.

@@ -58,6 +58,17 @@ class TestReadPinnedVersion:
         monkeypatch.chdir(tmp_path)
         assert _read_pinned_toolkit_version() is None
 
+    def test_none_when_git_pinned_to_sha(self, tmp_path, monkeypatch):
+        # A bare commit SHA is not PEP 440-comparable against the running semver.
+        _write_pyproject_git(tmp_path, "c4dd565c69853a0c9abad60d34ba6931b40c5068")
+        monkeypatch.chdir(tmp_path)
+        assert _read_pinned_toolkit_version() is None
+
+    def test_parses_git_pinned_to_tag(self, tmp_path, monkeypatch):
+        _write_pyproject_git(tmp_path, "v3.11.0")
+        monkeypatch.chdir(tmp_path)
+        assert _read_pinned_toolkit_version() == "3.11.0"
+
 
 class TestWarnVersionMismatch:
     def test_warns_when_running_older_than_pin(self, tmp_path, monkeypatch, capsys):
@@ -76,6 +87,13 @@ class TestWarnVersionMismatch:
         assert capsys.readouterr().err == ""
 
     def test_no_warn_when_no_pin(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        _warn_if_version_mismatch()
+        assert capsys.readouterr().err == ""
+
+    def test_no_warn_when_git_pinned_to_sha(self, tmp_path, monkeypatch, capsys):
+        # Legacy git-SHA pins are not comparable and must stay silent, not warn every command.
+        _write_pyproject_git(tmp_path, "c4dd565c69853a0c9abad60d34ba6931b40c5068")
         monkeypatch.chdir(tmp_path)
         _warn_if_version_mismatch()
         assert capsys.readouterr().err == ""

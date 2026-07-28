@@ -63,6 +63,30 @@ def _authored_ttl(path: Path) -> bool:
     return path.suffix == ".ttl" and not path.name.endswith(".template")
 
 
+def _emitted_dbt_status(root: Path) -> InputStatus:
+    """Observe the unified emitted dbt project (presence only, never freshness)."""
+    project_file = root / "output" / "medallion" / "dbt" / "dbt_project.yml"
+    if not project_file.exists():
+        return InputStatus.MISSING
+    try:
+        project_file.read_text(encoding="utf-8")
+    except OSError:
+        return InputStatus.UNREADABLE
+    return InputStatus.PRESENT
+
+
+def _configured_adapter(root: Path) -> str:
+    """Return the supported adapter from kairos.yaml, or '' when absent/unsupported."""
+    import yaml
+
+    try:
+        config = yaml.safe_load((root / "kairos.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return ""
+    adapter = config.get("adapter", "") if isinstance(config, dict) else ""
+    return str(adapter) if adapter in ("fabric", "databricks") else ""
+
+
 def _ontology_domains(ontologies_dir: Path) -> tuple[set[str], set[str]]:
     """Return (domain stems, unreadable stems) from ``model/ontologies``."""
     domains: set[str] = set()
@@ -227,4 +251,6 @@ def gather_hub_input_snapshot(
         ontology_only_domains=ontology_only,
         binding_only_domains=binding_only,
         compile_ran=run_compile,
+        emitted_dbt_project=_emitted_dbt_status(root),
+        adapter=_configured_adapter(root),
     )

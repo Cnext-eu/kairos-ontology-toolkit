@@ -13,6 +13,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
+from .result import CompileDiagnostic
+
 
 @dataclass(frozen=True, slots=True)
 class ProvenanceInput:
@@ -35,6 +37,7 @@ class BuildScope:
     binding_paths: tuple[str, ...] = ()
     ontology_paths: tuple[str, ...] = ()
     inputs: tuple[ProvenanceInput, ...] = ()
+    prefix_warnings: tuple[CompileDiagnostic, ...] = ()
 
     def provenance_hash(self) -> str:
         """Return a wall-clock-free SHA-256 over all scope-defining inputs."""

@@ -918,6 +918,7 @@ def _render_next_text(proposal, snapshot) -> None:
     click.echo(f"     sources:        {snapshot.sources.value}")
     click.echo(f"     dbt transforms: {snapshot.dbt_transforms.value}")
     click.echo(f"     shapes:         {snapshot.shapes.value}")
+    click.echo(f"     emitted dbt:    {snapshot.emitted_dbt_project.value}")
     if not proposal.actions:
         return
     click.echo("")
@@ -991,6 +992,7 @@ def next_action_cmd(domains, output_format, no_compile):
                 "sources": snapshot.sources.value,
                 "dbt_transforms": snapshot.dbt_transforms.value,
                 "shapes": snapshot.shapes.value,
+                "emitted_dbt_project": snapshot.emitted_dbt_project.value,
             },
             "actions": [_next_action_dict(action) for action in proposal.actions],
         }

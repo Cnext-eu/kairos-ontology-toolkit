@@ -74,3 +74,22 @@ def test_compile_emit_writes_unified_dbt_project_preserving_unowned_files(tmp_pa
     assert (output / ".kairos-compile-manifest.shared.json").is_file()
     assert not (output / "party").exists()
     assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+def test_compile_emit_warns_when_explicit_target_is_outside_hub(tmp_path, monkeypatch):
+    hub = _hub(tmp_path / "hub")
+    outside = tmp_path / "generated"
+    monkeypatch.chdir(hub)
+    result = CliRunner().invoke(cli, ["compile", "party", "--emit", str(outside)])
+    assert result.exit_code == 0, result.output
+    assert "outside this hub" in result.stderr
+    assert (outside / "models/silver/party/customer.sql").is_file()
+
+
+def test_compile_bare_emit_targets_hub_output_without_warning(tmp_path, monkeypatch):
+    hub = _hub(tmp_path / "hub")
+    monkeypatch.chdir(hub)
+    result = CliRunner().invoke(cli, ["compile", "party", "--emit"])
+    assert result.exit_code == 0, result.output
+    assert "outside this hub" not in result.stderr
+    assert (hub / "output/medallion/dbt/models/silver/party/customer.sql").is_file()

@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 #: Bumped when the machine-readable proposal contract changes.
-SCHEMA_VERSION = 1
+#: v2 adds the optional ``validate-dbt`` gate action and the emitted-dbt-project observation.
+SCHEMA_VERSION = 2
 
 
 class InputStatus(str, Enum):
@@ -62,6 +63,7 @@ ACTION_SKILLS: dict[str, str] = {
     "fix-diagnostic": "kairos-execute-validate",
     "validate": "kairos-execute-validate",
     "compile-emit": "kairos-execute-project",
+    "validate-dbt": "kairos-execute-validate",
     "review-gold": "kairos-design-gold",
     "review-mdm": "kairos-design-mdm",
 }
@@ -105,6 +107,12 @@ class HubInputSnapshot:
     ontology_only_domains: tuple[str, ...] = ()
     binding_only_domains: tuple[str, ...] = ()
     compile_ran: bool = True
+    #: Presence of the unified emitted dbt project (output/medallion/dbt/dbt_project.yml).
+    #: This is the only defensible emitted-output observation; it never implies freshness or
+    #: that the current CompilePlan produced it.
+    emitted_dbt_project: InputStatus = InputStatus.MISSING
+    #: Configured adapter from kairos.yaml, used only to render the validate-dbt command.
+    adapter: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,7 +357,7 @@ def _domain_actions(domain: DomainSnapshot, compile_ran: bool) -> list[NextActio
                 f"'{name}' passes the canonical compile check. Emit artifacts when ready; "
                 "a passing check is not a downstream runtime/release guarantee."
             ),
-            command=f"kairos-ontology compile {name} --emit output/",
+            command=f"kairos-ontology compile {name} --emit",
             priority=base + 30,
             domain=name,
         )
@@ -385,6 +393,48 @@ def _domain_actions(domain: DomainSnapshot, compile_ran: bool) -> list[NextActio
     return actions
 
 
+def _emit_gate_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
+    """Optionally surface the offline dbt parse/compile gate (DD-137, opt-in).
+
+    This is advisory and never a mandatory sequential step: the snapshot cannot prove the
+    emitted project is fresh or that the current CompilePlan produced it. It appears only when
+    an emitted dbt project is observed and at least one domain currently passes the check.
+    """
+    if snapshot.emitted_dbt_project is InputStatus.UNREADABLE:
+        return [
+            _action(
+                "validate-dbt",
+                ActionStatus.HUMAN_DECISION_REQUIRED,
+                rationale=(
+                    "output/medallion/dbt is present but unreadable; resolve access before "
+                    "running the offline dbt gate."
+                ),
+                command="kairos-ontology validate-dbt --platform <fabric|databricks>",
+                priority=500,
+            )
+        ]
+    if snapshot.emitted_dbt_project is not InputStatus.PRESENT:
+        return []
+    if not any(
+        domain.compile_status is CompileStatus.PASSED for domain in snapshot.domains
+    ):
+        return []
+    platform = snapshot.adapter or "<fabric|databricks>"
+    return [
+        _action(
+            "validate-dbt",
+            ActionStatus.OPTIONAL,
+            rationale=(
+                "An emitted dbt project exists at output/medallion/dbt. Optionally run the "
+                "hub-wide offline gate (deps → parse → manifest → compile); it needs no "
+                "warehouse and is not a runtime/release guarantee."
+            ),
+            command=f"kairos-ontology validate-dbt --platform {platform}",
+            priority=500,
+        )
+    ]
+
+
 def _summarize(actions: tuple[NextAction, ...]) -> str:
     if not actions:
         return "No next action derived: authored inputs present and all domains compile."
@@ -405,6 +455,7 @@ def propose_next_actions(snapshot: HubInputSnapshot) -> NextActionProposal:
     actions: list[NextAction] = list(_hub_level_actions(snapshot))
     for domain in snapshot.domains:
         actions.extend(_domain_actions(domain, snapshot.compile_ran))
+    actions.extend(_emit_gate_actions(snapshot))
     ordered = tuple(sorted(actions, key=_sort_key))
     return NextActionProposal(
         schema_version=SCHEMA_VERSION,
