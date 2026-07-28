@@ -50,6 +50,7 @@ from .shared import (
     _stamp_managed,
     _tag_to_version,
     _toolkit_git_sha_source,
+    _write_refmodels_fetch_provenance,
     _whl_url,
 )
 
@@ -535,17 +536,18 @@ def update_refmodels(git_ref, dest_path):
             capture_output=True,
             text=True,
         )
-        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else "unknown"
+        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
 
         # Replace destination with fetched content
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(src, dest)
+        _write_refmodels_fetch_provenance(dest, ref=git_ref, commit=sha)
 
         # Report results
         click.echo(f"  ✓ Reference models updated: {dest}")
         click.echo(f"    Ref    : {git_ref}")
-        click.echo(f"    Commit : {sha[:12]}")
+        click.echo(f"    Commit : {sha[:12] if sha else 'unknown'}")
 
         # Check for VERSION file
         version_file = dest / "VERSION"

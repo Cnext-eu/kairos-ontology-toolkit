@@ -13,6 +13,7 @@ import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -1428,6 +1429,71 @@ _REFMODELS_REMOTE = "https://github.com/Cnext-eu/kairos-ontology-referencemodels
 _REFMODELS_REMOTE_DIR = "ontology-reference-models"
 
 
+_REFMODELS_FETCH_PROVENANCE = "FETCH_PROVENANCE.json"
+
+
+def _write_refmodels_fetch_provenance(
+    dest: Path,
+    *,
+    ref: str,
+    commit: str | None,
+    source_repo: str = _REFMODELS_REMOTE,
+    fetched_at: str | None = None,
+) -> Path:
+    """Write truthful reference-model fetch provenance into ``dest``."""
+    timestamp = fetched_at or datetime.now(UTC).replace(microsecond=0).isoformat()
+    payload = {
+        "ref": ref,
+        "commit": commit or None,
+        "fetched_at": timestamp.replace("+00:00", "Z"),
+        "source_repo": source_repo,
+    }
+    path = dest / _REFMODELS_FETCH_PROVENANCE
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _read_refmodels_fetch_provenance(ref_models_dir: Path | None) -> dict[str, str | None] | None:
+    """Read reference-model fetch provenance when present and well-formed."""
+    if ref_models_dir is None:
+        return None
+    path = ref_models_dir / _REFMODELS_FETCH_PROVENANCE
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    ref = raw.get("ref")
+    commit = raw.get("commit")
+    fetched_at = raw.get("fetched_at")
+    source_repo = raw.get("source_repo")
+    if not isinstance(ref, str) or (commit is not None and not isinstance(commit, str)):
+        return None
+    if fetched_at is not None and not isinstance(fetched_at, str):
+        return None
+    if source_repo is not None and not isinstance(source_repo, str):
+        return None
+    return {
+        "ref": ref,
+        "commit": commit,
+        "fetched_at": fetched_at,
+        "source_repo": source_repo,
+    }
+
+
+def _format_refmodels_fetch_provenance(ref_models_dir: Path | None) -> str | None:
+    """Return a concise reference-model provenance label for CLI output."""
+    provenance = _read_refmodels_fetch_provenance(ref_models_dir)
+    if provenance is None:
+        return None
+    commit = provenance["commit"]
+    short_commit = commit[:12] if commit else "unknown commit"
+    return f"ref {provenance['ref']} @ {short_commit}"
+
+
 def _detect_refmodels_dest() -> Path:
     """Auto-detect the reference-models destination directory.
 
@@ -1504,9 +1570,17 @@ def _run_reference_models_update(repo_dir: Path, version: str | None = None):
             print(f"  ⚠  Folder '{_REFMODELS_REMOTE_DIR}' not found in ref '{git_ref}'")
             return
 
+        sha_result = subprocess.run(
+            ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(src, dest)
+        _write_refmodels_fetch_provenance(dest, ref=git_ref, commit=sha)
 
         # Commit the populated reference-models content
         result = subprocess.run(
@@ -1534,9 +1608,8 @@ def _run_reference_models_update(repo_dir: Path, version: str | None = None):
             "  ⚠  Reference models update failed — run 'kairos-ontology update-refmodels' manually"
         )
         if hasattr(exc, "stderr") and exc.stderr:
-            print(
-                f"       {exc.stderr.decode().strip() if isinstance(exc.stderr, bytes) else exc.stderr}"
-            )
+            stderr = exc.stderr.decode().strip() if isinstance(exc.stderr, bytes) else exc.stderr
+            print(f"       {stderr}")
     finally:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
