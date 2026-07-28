@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .. import __version__ as _toolkit_version
 from ..core._provenance import provenance_comment
+from ..core.catalog_utils import sync_domain_catalog_entry
 
 # Importing the design-time MDM package registers the additive ``mdm-profile``
 # projection target with the core projector (registry pattern, MDM-DD-002).
@@ -353,7 +354,8 @@ def init(domain, company_domain, force):
         ontology_dst = hub / "model" / "ontologies" / f"{domain}.ttl"
         if ontology_dst.exists() and not force:
             print(
-                f"  ⏭  ontology-hub/model/ontologies/{domain}.ttl already exists (use --force to overwrite)"
+                f"  ⏭  ontology-hub/model/ontologies/{domain}.ttl already exists "
+                "(use --force to overwrite)"
             )
         elif template_src.is_file():
             label = domain.replace("-", " ").replace("_", " ").title()
@@ -366,6 +368,13 @@ def init(domain, company_domain, force):
             content = provenance_comment("init", editable=True) + "\n" + content
             ontology_dst.write_text(content, encoding="utf-8")
             print(f"  ✓ Created ontology-hub/model/ontologies/{domain}.ttl")
+        if ontology_dst.exists() and catalog_dst.exists():
+            ontology_iri = sync_domain_catalog_entry(
+                catalog_dst,
+                ontology_dst,
+                company_domain=company_domain,
+            )
+            print(f"  ✓ Registered {ontology_iri} in ontology-hub/catalog-v001.xml")
 
     # 9. Run smartcoding update if the script exists
     _run_smartcoding_update(cwd)
@@ -494,7 +503,8 @@ def migrate(check, dry_run, hub_path):
                         dst = new_target_dir / item.name
                         if check:
                             print(
-                                f"  MOVE  output/{old_target}/{item.name}  →  output/{new_rel}/{item.name}"
+                                f"  MOVE  output/{old_target}/{item.name}  →  "
+                                f"output/{new_rel}/{item.name}"
                             )
                         else:
                             if dst.exists():

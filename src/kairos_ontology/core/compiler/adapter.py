@@ -180,8 +180,17 @@ class ResolutionContext:
         return next((item for item in self.classes if item.ref == ref), None)
 
     def property(self, ref: str) -> ResolvedProperty | None:
-        """Return the resolved property for an author field ``property`` token."""
+        """Return the first resolved property for an author field ``property`` token."""
         return next((item for item in self.properties if item.ref == ref), None)
+
+    def property_matches(self, ref: str) -> tuple[ResolvedProperty, ...]:
+        """Return every resolved property sharing ``ref`` (for alias-collision detection).
+
+        With inherited cross-namespace properties, two imported properties can share a local
+        name and therefore the same synthesized ``<prefix>:<local>`` ref. Callers use this to
+        emit an explicit ambiguity diagnostic instead of silently picking the first match.
+        """
+        return tuple(item for item in self.properties if item.ref == ref)
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,6 +515,107 @@ def _values(resource: str, predicate: str, *values: str) -> AuthoredValuesFact:
     return AuthoredValuesFact(resource, predicate, tuple(values))
 
 
+def _expression_columns(expression: Expression) -> tuple[str, ...]:
+    """Return every source column referenced by an authored expression, order-preserving."""
+    ordered: list[str] = []
+
+    def walk(expr: Expression) -> None:
+        if isinstance(expr, ExprColumn):
+            ordered.append(expr.column)
+        elif isinstance(expr, (ExprOperator, ExprFunction, ExprMacro)):
+            for arg in expr.args:
+                walk(arg)
+        elif isinstance(expr, ExprCase):
+            for branch in expr.branches:
+                walk(branch.when)
+                walk(branch.then)
+            if expr.else_ is not None:
+                walk(expr.else_)
+
+    walk(expression)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for name in ordered:
+        if name not in seen:
+            seen.add(name)
+            unique.append(name)
+    return tuple(unique)
+
+
+def _resolve_identity_output_columns(
+    key_columns: tuple[str, ...],
+    field_records: list[tuple[Expression, str]],
+    pointer: str,
+    path: str,
+    diagnostics: list[CompileDiagnostic],
+) -> tuple[str, ...]:
+    """Map ordered identity key SOURCE columns to their emitted target OUTPUT column names.
+
+    Identity facts must carry the emitted output column names, never the raw source column
+    names, so downstream generated keys, business grain, and identity roles reference the
+    materialized columns (DD-108/DD-133). Emits an actionable diagnostic when a key component
+    has no direct single-column field mapping to a target property.
+    """
+    resolved: list[str] = []
+    for column in key_columns:
+        direct = [
+            output
+            for expression, output in field_records
+            if isinstance(expression, ExprColumn) and expression.column == column
+        ]
+        distinct_direct = list(dict.fromkeys(direct))
+        if len(distinct_direct) == 1:
+            resolved.append(distinct_direct[0])
+            continue
+        if len(distinct_direct) > 1:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="identity.ambiguous-key-mapping",
+                    message=(
+                        f"identity key source column '{column}' maps to multiple target output "
+                        f"columns ({', '.join(distinct_direct)}); identity requires an "
+                        "unambiguous single target property"
+                    ),
+                    location=SourceLocation(path=path, pointer=pointer),
+                )
+            )
+            continue
+        expression_targets = list(
+            dict.fromkeys(
+                output
+                for expression, output in field_records
+                if not isinstance(expression, ExprColumn)
+                and column in _expression_columns(expression)
+            )
+        )
+        if expression_targets:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="identity.key-column-in-expression",
+                    message=(
+                        f"identity key source column '{column}' is only referenced inside a "
+                        f"multi-part expression producing output column(s) "
+                        f"{', '.join(expression_targets)}; an identity key must map directly to a "
+                        "single target property so its output column name is unambiguous"
+                    ),
+                    location=SourceLocation(path=path, pointer=pointer),
+                )
+            )
+        else:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="identity.authored-key-not-supplied",
+                    message=(
+                        f"identity key source column '{column}' maps to no target property; add a "
+                        f"field whose expression is source column '{column}' so it is emitted as "
+                        "an output column (no output column is currently produced for it)"
+                    ),
+                    location=SourceLocation(path=path, pointer=pointer),
+                )
+            )
+    return tuple(resolved)
+
+
 def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSources:
     """Adapt one parsed :class:`EntityBinding` to a complete graph-free ``BoundSources``.
 
@@ -569,8 +679,25 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
     builder = _ExprBuilder(symbols=symbols, source_path=path, resource_base=resource_base)
     column_mappings: list[ColumnMappingFact] = []
     column_specs: list[ColumnSpec] = []
+    field_records: list[tuple[Expression, str]] = []
     for index, field_map in enumerate(binding.fields):
-        prop = context.property(field_map.property)
+        matches = context.property_matches(field_map.property)
+        distinct_uris = sorted({item.uri for item in matches})
+        if len(distinct_uris) > 1:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="binding.ambiguous-property",
+                    message=(
+                        f"property '{field_map.property}' is ambiguous; it resolves to "
+                        f"{len(distinct_uris)} distinct ontology properties "
+                        f"({', '.join(distinct_uris)}); qualify the field with the owning "
+                        "namespace prefix"
+                    ),
+                    location=SourceLocation(path=path, pointer=f"/fields/{index}/property"),
+                )
+            )
+            continue
+        prop = matches[0] if matches else None
         if prop is None:
             diagnostics.append(
                 CompileDiagnostic(
@@ -611,6 +738,9 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 )
                 continue
             source_uri = source_uri or sorted(symbol.uri for symbol in symbols.values())[0]
+        # DD-108/DD-133: the emitted silver/dbt column name is the resolved property's
+        # ``column_name`` (already snake-cased at kernel resolution), never the source column.
+        output_column = prop.column_name
         column_mappings.append(
             ColumnMappingFact(
                 resource_uri=map_uri,
@@ -618,20 +748,21 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 target_property_uri=prop.uri,
                 match_type="exact",
                 expression=expression,
-                target_column_name=prop.column_name,
+                target_column_name=output_column,
                 target_data_type=prop.data_type,
                 target_is_object_property=prop.is_object_property,
             )
         )
         column_specs.append(
             ColumnSpec(
-                name=prop.column_name,
+                name=output_column,
                 data_type=prop.data_type,
                 nullable=nullable,
                 mapping_resource_uri=map_uri,
                 description=prop.description,
             )
         )
+        field_records.append((field_map.expression, output_column))
 
     diagnostics.extend(builder.diagnostics)
 
@@ -653,7 +784,9 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                     CompileDiagnostic(
                         code="binding.quality-column-unmapped",
                         message=(
-                            f"quality check column '{column}' is not mapped to a target field"
+                            f"quality check column '{column}' is a SOURCE column, but no field "
+                            f"maps source column '{column}' to a target output; add a field "
+                            "mapping for it or remove it from the quality check"
                         ),
                         location=SourceLocation(path=path, pointer=check.pointer),
                     )
@@ -684,6 +817,25 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
             )
         )
 
+    # Resolve the ordered business/source identity key SOURCE columns to their emitted target
+    # OUTPUT column names so the identity fact never couples a source column name to a target
+    # property name (DD-108/DD-133). source_key remains the raw source columns for source-record
+    # identity and conformance; only the natural-key/business identity uses output columns.
+    if strategy_value == "business-key":
+        identity_key_columns = binding.identity.business_key or binding.identity.source_key
+        identity_key_pointer = (
+            "/identity/businessKey" if binding.identity.business_key else "/identity/sourceKey"
+        )
+        natural_key_output = _resolve_identity_output_columns(
+            identity_key_columns,
+            field_records,
+            identity_key_pointer,
+            path,
+            diagnostics,
+        )
+    else:
+        natural_key_output = ()
+
     if diagnostics:
         raise CompileError(order_compile_diagnostics(diagnostics))
 
@@ -697,6 +849,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
         resource_base=resource_base,
         meta=meta,
         strategy_value=strategy_value,
+        natural_key_columns=natural_key_output,
         column_mappings=tuple(column_mappings),
         column_specs=tuple(column_specs),
     )
@@ -781,6 +934,7 @@ def _assemble_bound_sources(
     resource_base: str,
     meta: OntologyMetadataSpec,
     strategy_value: str,
+    natural_key_columns: tuple[str, ...],
     column_mappings: tuple[ColumnMappingFact, ...],
     column_specs: tuple[ColumnSpec, ...],
 ) -> BoundSources:
@@ -833,7 +987,6 @@ def _assemble_bound_sources(
 
     record_key_uri = f"{resource_base}:record-key"
 
-    natural_key_columns = binding.identity.business_key or binding.identity.source_key
     surrogate = strategy_value == "surrogate-only"
     identity = EntityIdentityFact(
         resource_uri=class_uri,

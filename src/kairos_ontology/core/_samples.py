@@ -94,6 +94,15 @@ def _normalize(name: str) -> str:
     return s.lower().replace(" ", "_").replace("-", "_")
 
 
+def _name_tokens(name: str | None) -> set[str]:
+    """Return separator- and camelCase-aware column name tokens."""
+    norm = _normalize(name or "")
+    raw_tokens = re.findall(r"[a-z0-9]+", norm)
+    tokens = set(raw_tokens)
+    tokens.update(token[:-1] for token in raw_tokens if len(token) > 3 and token.endswith("s"))
+    return tokens
+
+
 def _name_is_pii(name: str | None) -> bool:
     if not name:
         return False
@@ -143,7 +152,56 @@ def redaction_token(
     )
 
 
-def _kind_from_name(name: str | None) -> str | None:
+_PERSON_CONTEXT_TOKENS = {"contact", "person", "employee", "chauffeur"}
+_DRIVER_TOKENS = {"driver", "chauffeur"}
+_NAME_TOKENS = {"name", "first", "last", "maiden", "full"}
+_IDENTIFIER_TOKENS = {"no", "id", "number", "key", "code", "identifier"}
+_DESCRIPTION_TOKENS = {"description", "desc"}
+_NON_PERSON_SUBJECT_TOKENS = {
+    "account",
+    "carrier",
+    "company",
+    "customer",
+    "debtor",
+    "haulier",
+    "product",
+    "supplier",
+    "vendor",
+    "vessel",
+}
+
+
+def _kind_from_person_column_tokens(tokens: set[str]) -> str | None:
+    """Classify token-aware person/driver-bearing column names."""
+    if not tokens:
+        return None
+
+    has_driver = bool(tokens & _DRIVER_TOKENS)
+    has_person_context = bool(tokens & _PERSON_CONTEXT_TOKENS)
+    has_name = bool(tokens & _NAME_TOKENS)
+    has_identifier = bool(tokens & _IDENTIFIER_TOKENS)
+    has_description = bool(tokens & _DESCRIPTION_TOKENS)
+
+    if has_driver and (has_name or has_description):
+        return "name"
+    if has_driver and has_identifier:
+        return "identifier"
+    if has_person_context and has_name:
+        return "name"
+    if has_person_context and has_identifier:
+        return "identifier"
+    if {"first", "name"} <= tokens or {"last", "name"} <= tokens:
+        return "name"
+    if {"maiden", "name"} <= tokens or {"full", "name"} <= tokens:
+        return "name"
+    if tokens == {"name"}:
+        return "name"
+    if has_name and not (tokens & _NON_PERSON_SUBJECT_TOKENS):
+        return "name" if has_person_context else None
+    return None
+
+
+def _kind_from_name(name: str | None, *, context_name: str | None = None) -> str | None:
     norm = _normalize(name or "")
     named_kinds = (
         ("email", "email"),
@@ -169,6 +227,12 @@ def _kind_from_name(name: str | None) -> str | None:
     for keyword, kind in named_kinds:
         if keyword in norm:
             return kind
+    tokens = _name_tokens(name)
+    if context_name:
+        tokens |= _name_tokens(context_name)
+    token_kind = _kind_from_person_column_tokens(tokens)
+    if token_kind:
+        return token_kind
     return "pii-column" if _name_is_pii(name) else None
 
 
@@ -229,7 +293,7 @@ def redact_sample_value(
     """
     if value is None or is_redaction_token(value):
         return value, None
-    kind = detect_sample_pii_kind(column, value)
+    kind = _kind_from_name(column, context_name=table) or _kind_from_nested(value)
     if not kind:
         return value, None
     finding = SamplePrivacyFinding(table=table, column=column, kind=kind)
@@ -281,7 +345,7 @@ def find_unredacted_sample_pii(
         for column, value in row.items():
             if is_redaction_token(value):
                 continue
-            kind = detect_sample_pii_kind(str(column), value)
+            kind = _kind_from_name(str(column), context_name=table) or _kind_from_nested(value)
             if kind:
                 findings.append(
                     SamplePrivacyFinding(table=table, column=str(column), kind=kind)
@@ -318,7 +382,11 @@ def is_pii_column(
     """
     if gdpr_protected:
         return True
-    if _name_is_pii(column_name) or _name_is_pii(target_property) or _name_is_pii(target_label):
+    if (
+        _kind_from_name(column_name)
+        or _kind_from_name(target_property)
+        or _kind_from_name(target_label)
+    ):
         return True
     for v in sample_values or []:
         if value_is_pii_shaped(str(v)):

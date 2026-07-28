@@ -13,6 +13,7 @@ from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target regist
 
 from .shared import (
     _autodetect_analysis_dir,
+    _format_refmodels_fetch_provenance,
     _resolve_ref_models_dir,
     _resolve_semantic_input,
     _warn_if_no_skill_context,
@@ -629,6 +630,15 @@ def check_inventory_cmd(
 
     click.echo("🔎 Checking materialized inventories")
     click.echo(f"   Inventory dir: {inv_path}")
+    if ref_path is not None:
+        version_path = ref_path / "VERSION"
+        if version_path.is_file():
+            version = version_path.read_text(encoding="utf-8").strip()
+            if version:
+                click.echo(f"   Reference models VERSION: {version}")
+        provenance = _format_refmodels_fetch_provenance(ref_path)
+        if provenance:
+            click.echo(f"   Reference models provenance: {provenance}")
     for stem in report.ok:
         click.echo(f"   ✓ {stem}: up to date")
     for stem in report.missing:

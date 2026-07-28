@@ -3697,9 +3697,10 @@ def _validate_identity_columns(
         raise PolicyNormalizationError(
             "identity.authored-key-not-supplied",
             (
-                "authored naturalKey/mastered/integration identity columns must be "
-                f"explicitly mapped on {candidate.identity.model_name!r}; missing: "
-                f"{', '.join(missing)}"
+                "authored naturalKey identity OUTPUT column(s) must be explicitly materialized "
+                f"as mapped fields on {candidate.identity.model_name!r}; missing output "
+                f"column(s): {', '.join(missing)}. Each naturalKey component must correspond to "
+                "a field whose target property emits that output column"
             ),
             rule_id="DD-108-business-identity",
             resource_uri=identity.entity_uri,
