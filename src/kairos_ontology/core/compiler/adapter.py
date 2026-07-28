@@ -177,11 +177,19 @@ class ResolutionContext:
 
     def klass(self, ref: str) -> ResolvedClass | None:
         """Return the resolved class for an author ``target.class`` token."""
-        return next((item for item in self.classes if item.ref == ref), None)
+        matches = self.class_matches(ref)
+        distinct_uris = {item.uri for item in matches}
+        return matches[0] if len(distinct_uris) == 1 else None
 
     def property(self, ref: str) -> ResolvedProperty | None:
         """Return the first resolved property for an author field ``property`` token."""
-        return next((item for item in self.properties if item.ref == ref), None)
+        matches = self.property_matches(ref)
+        distinct_uris = {item.uri for item in matches}
+        return matches[0] if len(distinct_uris) == 1 else None
+
+    def class_matches(self, ref: str) -> tuple[ResolvedClass, ...]:
+        """Return every resolved class sharing ``ref`` for alias-collision detection."""
+        return tuple(item for item in self.classes if item.ref == ref)
 
     def property_matches(self, ref: str) -> tuple[ResolvedProperty, ...]:
         """Return every resolved property sharing ``ref`` (for alias-collision detection).
@@ -191,6 +199,34 @@ class ResolutionContext:
         emit an explicit ambiguity diagnostic instead of silently picking the first match.
         """
         return tuple(item for item in self.properties if item.ref == ref)
+
+    def class_tokens(self, uri: str | None = None) -> tuple[str, ...]:
+        """Return bindable class tokens, optionally restricted to one class URI."""
+        return tuple(
+            sorted({item.ref for item in self.classes if uri is None or item.uri == uri})
+        )
+
+    def property_tokens(self, uri: str | None = None) -> tuple[str, ...]:
+        """Return bindable property tokens, optionally restricted to one property URI."""
+        return tuple(
+            sorted({item.ref for item in self.properties if uri is None or item.uri == uri})
+        )
+
+
+def _token_list(tokens: tuple[str, ...], *, limit: int = 12) -> str:
+    if not tokens:
+        return "none"
+    head = tokens[:limit]
+    suffix = "" if len(tokens) <= limit else f", ... ({len(tokens) - limit} more)"
+    return ", ".join(head) + suffix
+
+
+def _ambiguous_targets_by_uri(items: tuple[ResolvedClass | ResolvedProperty, ...]) -> str:
+    parts: list[str] = []
+    for uri in sorted({item.uri for item in items}):
+        tokens = tuple(sorted({item.ref for item in items if item.uri == uri}))
+        parts.append(f"{uri} (tokens: {_token_list(tokens)})")
+    return "; ".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -606,9 +642,9 @@ def _resolve_identity_output_columns(
                 CompileDiagnostic(
                     code="identity.authored-key-not-supplied",
                     message=(
-                        f"identity key source column '{column}' maps to no target property; add a "
-                        f"field whose expression is source column '{column}' so it is emitted as "
-                        "an output column (no output column is currently produced for it)"
+                        f"IDENTITY key source column '{column}' is not supplied by fields:; add "
+                        f"a fields: entry mapping source column '{column}' directly to a scalar "
+                        "target property so the identity key is materialized"
                     ),
                     location=SourceLocation(path=path, pointer=pointer),
                 )
@@ -635,7 +671,9 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
         else binding.source.relation
     )
     relation = context.relation(source_ref)
-    klass = context.klass(binding.target_class)
+    class_matches = context.class_matches(binding.target_class)
+    class_uris = sorted({item.uri for item in class_matches})
+    klass = class_matches[0] if len(class_uris) == 1 else None
     if relation is None:
         diagnostics.append(
             CompileDiagnostic(
@@ -651,11 +689,25 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 ),
             )
         )
-    if klass is None:
+    if len(class_uris) > 1:
+        diagnostics.append(
+            CompileDiagnostic(
+                code="binding.ambiguous-class",
+                message=(
+                    f"target class '{binding.target_class}' is ambiguous; usable tokens by URI: "
+                    f"{_ambiguous_targets_by_uri(class_matches)}"
+                ),
+                location=SourceLocation(path=path, pointer="/target/class"),
+            )
+        )
+    elif klass is None:
         diagnostics.append(
             CompileDiagnostic(
                 code="binding.unknown-class",
-                message=f"target class '{binding.target_class}' does not resolve",
+                message=(
+                    f"target class '{binding.target_class}' does not resolve; usable class "
+                    f"tokens: {_token_list(context.class_tokens())}"
+                ),
                 location=SourceLocation(path=path, pointer="/target/class"),
             )
         )
@@ -688,10 +740,8 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 CompileDiagnostic(
                     code="binding.ambiguous-property",
                     message=(
-                        f"property '{field_map.property}' is ambiguous; it resolves to "
-                        f"{len(distinct_uris)} distinct ontology properties "
-                        f"({', '.join(distinct_uris)}); qualify the field with the owning "
-                        "namespace prefix"
+                        f"property '{field_map.property}' is ambiguous; usable tokens by URI: "
+                        f"{_ambiguous_targets_by_uri(matches)}"
                     ),
                     location=SourceLocation(path=path, pointer=f"/fields/{index}/property"),
                 )
@@ -702,7 +752,10 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
             diagnostics.append(
                 CompileDiagnostic(
                     code="binding.unknown-property",
-                    message=f"property '{field_map.property}' does not resolve in the ontology",
+                    message=(
+                        f"property '{field_map.property}' does not resolve in the ontology; "
+                        f"usable property tokens: {_token_list(context.property_tokens())}"
+                    ),
                     location=SourceLocation(path=path, pointer=f"/fields/{index}/property"),
                 )
             )
@@ -784,9 +837,9 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                     CompileDiagnostic(
                         code="binding.quality-column-unmapped",
                         message=(
-                            f"quality check column '{column}' is a SOURCE column, but no field "
-                            f"maps source column '{column}' to a target output; add a field "
-                            "mapping for it or remove it from the quality check"
+                            f"QUALITY check column '{column}' is a source column, but no fields "
+                            f"entry maps source column '{column}' to a scalar target property; add "
+                            "a fields: entry mapping it or remove it from the quality check"
                         ),
                         location=SourceLocation(path=path, pointer=check.pointer),
                     )

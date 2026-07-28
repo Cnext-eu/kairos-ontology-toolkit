@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 from pathlib import Path
+import re
+from dataclasses import replace
 
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
@@ -105,6 +106,117 @@ def _qnames(graph: Graph, uri: URIRef) -> tuple[str, ...]:
     except KeyError:
         pass
     return tuple(sorted(values))
+
+
+_PREFIX_DECLARATION = re.compile(
+    r"(?im)^\s*@prefix\s+([^:\s]*)\s*:\s*<([^>]*)>\s*\."
+)
+
+
+def _namespace_local(uri: str) -> tuple[str, str]:
+    if "#" in uri:
+        namespace, local = uri.rsplit("#", 1)
+        return f"{namespace}#", local
+    namespace, local = uri.rsplit("/", 1) if "/" in uri else ("", uri)
+    return (f"{namespace}/" if namespace else "", local)
+
+
+def _declared_prefixes(source_path: str) -> dict[str, tuple[str, ...]]:
+    """Return explicitly authored Turtle prefixes from one source file."""
+    if not source_path:
+        return {}
+    path = Path(source_path)
+    if not path.is_file() or path.suffix.lower() not in {".ttl", ".turtle"}:
+        return {}
+    text = path.read_text(encoding="utf-8")
+    prefixes: dict[str, list[str]] = {}
+    for match in _PREFIX_DECLARATION.finditer(text):
+        prefixes.setdefault(match.group(1), []).append(match.group(2))
+    return {prefix: tuple(namespaces) for prefix, namespaces in prefixes.items()}
+
+
+def _prefix_diagnostics(loaded, root_path: Path) -> tuple[CompileDiagnostic, ...]:
+    diagnostics: list[CompileDiagnostic] = []
+    for source in loaded.sources:
+        path = source.manifest.source_path
+        for prefix, namespaces in sorted(_declared_prefixes(path).items()):
+            distinct = tuple(dict.fromkeys(namespaces))
+            if len(distinct) > 1:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.prefix-ambiguous",
+                        message=(
+                            f"prefix '{prefix or ':'}' is declared with multiple namespaces "
+                            f"in {path}: {', '.join(distinct)}"
+                        ),
+                        location=SourceLocation(path=path),
+                    )
+                )
+    imported: dict[str, set[str]] = {}
+    root = str(root_path.resolve())
+    root_prefixes = {
+        prefix
+        for source in loaded.sources
+        if source.manifest.source_path and str(Path(source.manifest.source_path).resolve()) == root
+        for prefix in _declared_prefixes(source.manifest.source_path)
+    }
+    for source in loaded.sources:
+        path = source.manifest.source_path
+        if not path or str(Path(path).resolve()) == root:
+            continue
+        for prefix, namespaces in _declared_prefixes(path).items():
+            if prefix in root_prefixes:
+                continue
+            imported.setdefault(prefix, set()).update(namespaces)
+    for prefix, namespaces in sorted(imported.items()):
+        if len(namespaces) > 1:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="safety.prefix-ambiguous",
+                    message=(
+                        f"imported prefix '{prefix or ':'}' maps to multiple namespaces "
+                        f"without a root declaration: {', '.join(sorted(namespaces))}"
+                    ),
+                    location=SourceLocation(path=str(root_path)),
+                )
+            )
+    return tuple(diagnostics)
+
+
+def _declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ...]:
+    """Return bindable declared-prefix aliases for ``uri``.
+
+    Root-declared prefixes take precedence over imported prefixes. Imported duplicate prefixes
+    are bindable only when every declaration points at the same namespace. The empty prefix is
+    emitted as ``:Local``.
+    """
+    namespace, local = _namespace_local(uri)
+    root = str(root_path.resolve())
+    root_prefixes: dict[str, str] = {}
+    imported_prefixes: dict[str, set[str]] = {}
+    for source in loaded.sources:
+        path = source.manifest.source_path
+        if not path:
+            continue
+        declarations = _declared_prefixes(path)
+        if str(Path(path).resolve()) == root:
+            for prefix, namespaces in declarations.items():
+                if namespaces:
+                    root_prefixes[prefix] = namespaces[-1]
+        else:
+            for prefix, namespaces in declarations.items():
+                imported_prefixes.setdefault(prefix, set()).update(namespaces)
+    aliases: set[str] = set()
+    for prefix, declared_namespace in root_prefixes.items():
+        if declared_namespace == namespace:
+            aliases.add(f"{prefix}:{local}" if prefix else f":{local}")
+    for prefix, namespaces in imported_prefixes.items():
+        if prefix in root_prefixes or len(namespaces) != 1:
+            continue
+        declared_namespace = next(iter(namespaces))
+        if declared_namespace == namespace:
+            aliases.add(f"{prefix}:{local}" if prefix else f":{local}")
+    return tuple(sorted(aliases))
 
 
 def _source_relations(paths: tuple[Path, ...]) -> tuple[ResolvedRelation, ...]:
@@ -226,6 +338,9 @@ def _ontology_symbols(
     loaded = load_ontology(
         ontology_path, identity_root=hub_root, profile=SemanticProfile.RDFS
     )
+    prefix_diagnostics = _prefix_diagnostics(loaded, ontology_path)
+    if prefix_diagnostics:
+        raise CompileError(prefix_diagnostics)
     graph = loaded.graph
     index = loaded.semantic_index
     first_class = next(graph.subjects(RDF.type, OWL.Class), None)
@@ -246,6 +361,7 @@ def _ontology_symbols(
     domain_prefix = ontology_path.stem
     for info in list_classes(graph, namespace):
         class_refs = set(_qnames(graph, URIRef(info.uri)))
+        class_refs.update(_declared_prefix_aliases(loaded, ontology_path, info.uri))
         class_refs.add(f"{domain_prefix}:{info.name}")
         parent_uris = tuple(
             sorted(
@@ -268,6 +384,7 @@ def _ontology_symbols(
         for prop in _class_index_properties(index, info.uri, graph):
             data_type = _XSD_TYPES.get(prop.range_uri, prop.range_uri)
             property_refs = set(_qnames(graph, URIRef(prop.uri)))
+            property_refs.update(_declared_prefix_aliases(loaded, ontology_path, prop.uri))
             property_refs.add(f"{domain_prefix}:{prop.name}")
             for ref in sorted(property_refs):
                 key = (ref, prop.uri)
@@ -1192,6 +1309,7 @@ def _adapter_safety_diagnostic(item: CompileDiagnostic) -> CompileDiagnostic:
         "binding.unknown-column": "safety.column-unresolved",
         "binding.unknown-key-column": "safety.column-unresolved",
         "binding.unknown-class": "safety.class-unresolved",
+        "binding.ambiguous-class": "safety.class-unresolved",
         "binding.unknown-property": "safety.property-unresolved",
         "binding.unsupported-dbt-model-source": "safety.adapter-unsupported",
         "binding.unknown-identity-strategy": "safety.identity-incomplete",
@@ -1290,10 +1408,36 @@ def _binding_domain(text: str) -> str | None:
     return str(metadata.get("domain", "")) if isinstance(metadata, dict) else None
 
 
+def _binding_target_class(text: str) -> str:
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return ""
+    if not isinstance(document, dict):
+        return ""
+    target = document.get("target")
+    return str(target.get("class", "")) if isinstance(target, dict) else ""
+
+
+def _external_target_domain(
+    hub_root: str, current_domain: str, target_class: str
+) -> str | None:
+    binding_dir = Path(hub_root) / "integration" / "bindings"
+    for path in sorted(binding_dir.glob("*.binding.yaml")):
+        text = path.read_text(encoding="utf-8")
+        domain = _binding_domain(text)
+        if not domain or domain == current_domain:
+            continue
+        if _binding_target_class(text) == target_class:
+            return domain
+    return None
+
+
 def _relationship_diagnostics(
     binding: EntityBinding,
     selected: dict[str, EntityBinding],
     context: ResolutionContext,
+    hub_root: str,
 ) -> tuple[CompileDiagnostic, ...]:
     diagnostics: list[CompileDiagnostic] = []
     relation = _resolved_binding_relation(binding, context)
@@ -1313,13 +1457,26 @@ def _relationship_diagnostics(
         source_class = context.klass(binding.target_class)
         target_class = context.klass(relationship.target)
         if prop is None or target_binding is None:
+            external_domain = _external_target_domain(
+                hub_root, context.domain, relationship.target
+            )
+            if external_domain:
+                message = (
+                    f"relationship '{relationship.property}' target "
+                    f"'{relationship.target}' is bound in domain '{external_domain}', outside "
+                    "this domain's compile scope; declare an external reference "
+                    "(DD-133 §7) or move the target in-scope"
+                )
+            else:
+                message = (
+                    f"relationship '{relationship.property}' target "
+                    f"'{relationship.target}' does not resolve in compile scope; "
+                    "cross-domain targets require a declared external reference"
+                )
             diagnostics.append(
                 CompileDiagnostic(
                     code="safety.relationship-endpoint",
-                    message=(
-                        f"relationship '{relationship.property}' target "
-                        f"'{relationship.target}' does not resolve in compile scope"
-                    ),
+                    message=message,
                     location=SourceLocation(path=binding.source_path, pointer=pointer),
                 )
             )
@@ -1637,7 +1794,9 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             diagnostics.extend(exc.diagnostics)
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
             continue
-        relationship_diagnostics = _relationship_diagnostics(binding, selected_by_name, context)
+        relationship_diagnostics = _relationship_diagnostics(
+            binding, selected_by_name, context, scope.hub_root
+        )
         if relationship_diagnostics:
             diagnostics.extend(relationship_diagnostics)
             specs.append(EntityBindingSpec(binding=binding, blocked=True))

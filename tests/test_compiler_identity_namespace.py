@@ -236,7 +236,9 @@ def test_identity_key_without_field_mapping_is_actionable():
     assert "identity.authored-key-not-supplied" in diagnostics
     message = diagnostics["identity.authored-key-not-supplied"]
     assert "lonely" in message
-    assert "no target property" in message
+    assert "IDENTITY" in message
+    assert "fields:" in message
+    assert "scalar target property" in message
 
 
 def test_identity_key_mapping_ambiguity_is_reported():

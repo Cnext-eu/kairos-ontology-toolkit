@@ -351,7 +351,11 @@ def normalize_contract(
         except KeyError as exc:
             raise MappingContractError(
                 "mapping.unresolved-join-input",
-                "Silver FK join references a source symbol absent from normalized mappings",
+                (
+                    f"RELATIONSHIP join local column source symbol '{exc.args[0]}' is absent "
+                    "from normalized mappings; add a fields: entry mapping the FK join local "
+                    "column to a scalar property so the join column is materialized"
+                ),
                 resource_uri=str(exc.args[0]),
                 rule_id="DD-107-source-ownership",
             ) from exc
