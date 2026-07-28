@@ -474,6 +474,8 @@ def _remove_toolkit_test_ref_state(content: str) -> tuple[str, _ToolkitTestRefSt
     start = match.start()
     if start > 0 and content[start - 1] == "\n":
         start -= 1
+        if start > 0 and content[start - 1] == "\r":
+            start -= 1
     return content[:start] + content[end:], state
 
 

@@ -5,6 +5,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import tomllib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -107,7 +108,18 @@ def test_test_ref_metadata_round_trips_without_rewriting_other_toml(ending):
     assert decoded == state
 
 
-def test_test_ref_metadata_rejects_nested_or_invalid_state():
+def test_test_ref_metadata_round_trips_with_crlf_line_endings():
+    content = _pyproject(RELEASE_SOURCE).replace("\n", "\r\n")
+    state = _ToolkitTestRefState("feature/example", SHA, RELEASE_SOURCE)
+
+    encoded = _add_toolkit_test_ref_state(content, state)
+
+    assert _read_toolkit_test_ref_state(encoded) == state
+    restored, decoded = _remove_toolkit_test_ref_state(encoded)
+    assert restored == content
+    assert decoded == state
+    assert "\r\r" not in restored and not restored.endswith("\r")
+    tomllib.loads(restored)
     state = _ToolkitTestRefState("main", SHA, RELEASE_SOURCE)
     content = _add_toolkit_test_ref_state(_pyproject(RELEASE_SOURCE), state)
 
