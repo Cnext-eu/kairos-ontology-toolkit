@@ -874,3 +874,115 @@ def draft_model_report_cmd(
         )
     else:
         click.echo(f"✅ Draft model evidence packs for {report['summary']['domains']} domain(s).")
+
+
+_NEXT_ADVISORY = (
+    "advisory: recomputed every run, never stored, never authority (DD-137). "
+    "A passing compile check is not a downstream runtime/release guarantee."
+)
+
+
+def _next_action_dict(action) -> dict:
+    return {
+        "kind": action.kind,
+        "status": action.status.value,
+        "skill": action.skill,
+        "domain": action.domain,
+        "target": action.target,
+        "priority": action.priority,
+        "blocking": action.blocking,
+        "command": action.command,
+        "rationale": action.rationale,
+    }
+
+
+def _render_next_text(proposal, snapshot) -> None:
+    click.echo("🧭 Kairos next-action proposal (advisory — recomputed, not stored)")
+    click.echo(f"   Hub: {proposal.hub_root}")
+    click.echo(f"   {proposal.summary}")
+    click.echo("")
+    click.echo("   Authored inputs (presence only — completeness is never inferred):")
+    click.echo(f"     discovery:      {snapshot.discovery.value}")
+    click.echo(f"     sources:        {snapshot.sources.value}")
+    click.echo(f"     dbt transforms: {snapshot.dbt_transforms.value}")
+    click.echo(f"     shapes:         {snapshot.shapes.value}")
+    if not proposal.actions:
+        return
+    click.echo("")
+    click.echo("   Next actions:")
+    for action in proposal.actions:
+        scope = f" [{action.domain}]" if action.domain else ""
+        click.echo(
+            f"     • [{action.status.value}] {action.kind}{scope} "
+            f"→ skill: {action.skill}"
+        )
+        click.echo(f"         {action.rationale}")
+        click.echo(f"         run: {action.command}")
+
+
+@click.command(name="next")
+@click.option("--domain", "domains", multiple=True, help="Restrict to one or more domains.")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (JSON is emitted clean on stdout).",
+)
+@click.option(
+    "--no-compile",
+    "no_compile",
+    is_flag=True,
+    default=False,
+    help="Skip the canonical compile check; downstream readiness is reported indeterminate.",
+)
+def next_action_cmd(domains, output_format, no_compile):
+    """Propose the next stateless action(s) from authored hub inputs (advisory, DD-137)."""
+    from ..core.hub_utils import find_hub_root
+    from ..core.hub_inspection import gather_hub_input_snapshot
+    from ..core.next_actions import SCHEMA_VERSION, propose_next_actions
+
+    hub_root = find_hub_root(Path.cwd(), require_model=True)
+    if hub_root is None:
+        if output_format == "json":
+            click.echo(
+                json.dumps(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "error": "hub-not-found",
+                        "message": "no Kairos hub (model/ + integration/) found from cwd",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            click.echo(
+                "❌ No Kairos hub found from the current directory.", err=True
+            )
+        raise click.exceptions.Exit(2)
+
+    snapshot = gather_hub_input_snapshot(
+        hub_root, domains=list(domains) or None, run_compile=not no_compile
+    )
+    proposal = propose_next_actions(snapshot)
+
+    if output_format == "json":
+        click.echo(_NEXT_ADVISORY, err=True)
+        payload = {
+            "schema_version": proposal.schema_version,
+            "hub_root": Path(proposal.hub_root).as_posix(),
+            "summary": proposal.summary,
+            "compile_ran": snapshot.compile_ran,
+            "inputs": {
+                "discovery": snapshot.discovery.value,
+                "sources": snapshot.sources.value,
+                "dbt_transforms": snapshot.dbt_transforms.value,
+                "shapes": snapshot.shapes.value,
+            },
+            "actions": [_next_action_dict(action) for action in proposal.actions],
+        }
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_next_text(proposal, snapshot)
