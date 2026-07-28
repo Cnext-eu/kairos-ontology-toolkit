@@ -228,7 +228,9 @@ def read_xlsx_tables(
     wb = load_workbook(path, read_only=True, data_only=True)
     tables = []
 
+    has_multiple_sheets = len(wb.sheetnames) > 1
     for sheet_name in wb.sheetnames:
+        table_name = f"{path.stem}__{sheet_name}" if has_multiple_sheets else path.stem
         ws = wb[sheet_name]
         rows_iter = ws.iter_rows(values_only=True)
 
@@ -283,7 +285,7 @@ def read_xlsx_tables(
 
         tables.append(
             {
-                "name": sheet_name,
+                "name": table_name,
                 "row_count": row_count,
                 "columns": columns,
                 "sample_rows": sample_rows,
@@ -458,6 +460,12 @@ def write_source_dir(
     Returns:
         Path to the output directory.
     """
+    table_names = [str(table["name"]) for table in tables]
+    duplicate_names = sorted({name for name in table_names if table_names.count(name) > 1})
+    if duplicate_names:
+        names = ", ".join(duplicate_names)
+        raise ValueError(f"Duplicate final table name(s) in flatfile import: {names}")
+
     # Sanitize and validate every sample before publishing any artifact.
     safe_tables = copy.deepcopy(tables)
     for table in safe_tables:
@@ -599,7 +607,8 @@ def run_import_flatfile(
     sample_size: int = DEFAULT_SAMPLE_SIZE,
     exclude_columns: set[str] | None = None,
     keep_technical: bool = False,
-) -> Path:
+    return_count: bool = False,
+) -> Path | tuple[Path, int, int]:
     """Orchestrate the flatfile import workflow.
 
     Accepts a single CSV, single XLSX, single Parquet, or a directory containing
@@ -613,9 +622,10 @@ def run_import_flatfile(
         sample_size: Number of sample rows to store.
         exclude_columns: Explicit set of column names to exclude.
         keep_technical: If True, skip auto-detection of technical columns.
+        return_count: If True, return ``(output_dir, table_count, sample_file_count)``.
 
     Returns:
-        Path to the output directory.
+        Path to the output directory, or a tuple with counts from this import.
     """
     tables: list[dict[str, Any]] = []
 
@@ -683,4 +693,7 @@ def run_import_flatfile(
             output_dir = Path("integration/sources") / system_name
 
     result_dir = write_source_dir(tables, system_name, output_dir)
+    if return_count:
+        sample_count = sum(1 for table in tables if table.get("sample_rows"))
+        return result_dir, len(tables), sample_count
     return result_dir

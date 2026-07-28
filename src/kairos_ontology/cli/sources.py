@@ -460,7 +460,7 @@ def import_flatfile(
     click.echo(f"📋 Importing flat files from: {source_path}")
 
     try:
-        result_dir = run_import_flatfile(
+        result_dir, table_count, samples_count = run_import_flatfile(
             source_path=source_path,
             system_name=system_name,
             output_dir=output_dir,
@@ -468,17 +468,14 @@ def import_flatfile(
             sample_size=sample_size,
             exclude_columns=exclude_set,
             keep_technical=keep_technical,
+            return_count=True,
         )
     except (ValueError, ImportError) as e:
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
 
-    # Count outputs
-    yaml_count = len(list(result_dir.glob("*.yaml"))) - 1  # exclude _manifest.yaml
-    samples_count = len(list(result_dir.glob("*.samples.yaml")))
-
     click.echo(f"\n✅ Written to: {result_dir}")
-    click.echo(f"   📊 {yaml_count} table(s) documented")
+    click.echo(f"   📊 {table_count} table(s) documented")
     if samples_count:
         click.echo(f"   📋 {samples_count} sample file(s) created")
     click.echo(f"\n💡 Next step: kairos-ontology import-source --from {result_dir}")

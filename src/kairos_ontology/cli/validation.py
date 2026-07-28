@@ -127,6 +127,7 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir):
 )
 @click.option(
     "--report-format",
+    "--format",
     type=click.Choice(["json", "markdown", "both"]),
     default="json",
     show_default=True,
