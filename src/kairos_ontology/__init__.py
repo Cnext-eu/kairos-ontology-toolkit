@@ -54,6 +54,14 @@ from kairos_ontology.core.ontology_ops import (
     parse_ontology,
     parse_ontology_content,
 )
+from kairos_ontology.core.next_actions import (
+    NextAction,
+    NextActionProposal,
+    HubInputSnapshot,
+    DomainSnapshot,
+    propose_next_actions,
+)
+from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
 
 __all__ = [
     "__version__",
@@ -98,4 +106,10 @@ __all__ = [
     "serialize_graph",
     "parse_ontology",
     "parse_ontology_content",
+    "NextAction",
+    "NextActionProposal",
+    "HubInputSnapshot",
+    "DomainSnapshot",
+    "propose_next_actions",
+    "gather_hub_input_snapshot",
 ]

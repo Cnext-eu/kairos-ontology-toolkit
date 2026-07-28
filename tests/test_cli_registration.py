@@ -30,6 +30,7 @@ RETAINED_COMMANDS = {
     "mdm-validate",
     "migrate",
     "new-repo",
+    "next",
     "project",
     "propose-alignment",
     "resolve-ontology",
