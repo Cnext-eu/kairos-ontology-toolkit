@@ -75,14 +75,14 @@ uv run kairos-ontology compile customer --check
 uv run kairos-ontology compile customer --explain
 uv run kairos-ontology compile customer --explain --format json
 
-# Deterministic, atomic output
-uv run kairos-ontology compile customer \
-  --emit ontology-hub/output/medallion/dbt
+# Deterministic, atomic output to the fixed publish location
+uv run kairos-ontology compile customer --emit
 ```
 
 The three modes are mutually exclusive. `--check` and `--explain` do not modify the hub.
-`--emit` renders only safe entities, owns only manifest-listed paths below the selected
-target, removes stale owned files, and preserves unrelated files. Check success means the
+`--emit` renders only safe entities to the fixed
+`ontology-hub-publish/medallion/dbt` location, owns only manifest-listed paths there,
+removes stale owned files, and preserves unrelated files. Check success means the
 static compile contract passed; it is not deployment, runtime validation, or release
 certification.
 

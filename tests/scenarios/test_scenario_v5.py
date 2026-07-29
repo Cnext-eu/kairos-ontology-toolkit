@@ -450,24 +450,27 @@ def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
     tmp_path,
     monkeypatch,
 ):
-    hub = _copy_hub(tmp_path)
-    _add_billing_domain(hub)
-    target_ab = hub / "output" / "medallion" / "dbt"
-    target_ba = hub / "output" / "reverse" / "dbt"
+    hub_ab = _copy_hub(tmp_path / "ab")
+    _add_billing_domain(hub_ab)
+    hub_ba = _copy_hub(tmp_path / "ba")
+    _add_billing_domain(hub_ba)
+    target_ab = hub_ab.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    target_ba = hub_ba.parent / "ontology-hub-publish" / "medallion" / "dbt"
     runner = CliRunner()
-    monkeypatch.chdir(hub)
 
+    monkeypatch.chdir(hub_ab)
     for domain in ("party", "billing"):
         result = runner.invoke(
             cli,
-            ["compile", domain, "--emit", str(target_ab)],
+            ["compile", domain, "--emit"],
             env={"KAIROS_SKILL_CONTEXT": "1"},
         )
         assert result.exit_code == 0, result.output
+    monkeypatch.chdir(hub_ba)
     for domain in ("billing", "party"):
         result = runner.invoke(
             cli,
-            ["compile", domain, "--emit", str(target_ba)],
+            ["compile", domain, "--emit"],
             env={"KAIROS_SKILL_CONTEXT": "1"},
         )
         assert result.exit_code == 0, result.output
@@ -476,6 +479,8 @@ def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
     assert (target_ab / "models/silver/billing/account.sql").is_file()
     assert not (target_ab / "party").exists()
     assert not (target_ab / "billing").exists()
+    # Emit is a sibling of the hub, never nested inside it.
+    assert not (hub_ab / "ontology-hub-publish").exists()
     project = (target_ab / "dbt_project.yml").read_text(encoding="utf-8")
     assert "name: 'kairos_medallion_project'" in project
     assert "      billing:" in project

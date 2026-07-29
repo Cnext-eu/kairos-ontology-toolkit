@@ -349,7 +349,7 @@ def _reject_retired_compiler_targets(targets: Iterable[str]) -> None:
         selected = ", ".join(retired)
         raise ProjectionRunError(
             f"project target(s) {selected} are retired; canonical Silver/dbt generation "
-            "must use `kairos-ontology compile <domain> --emit <directory>`"
+            "must use `kairos-ontology compile <domain> --emit`"
         )
     compile_plan_only = sorted(
         {
@@ -367,7 +367,7 @@ def _reject_retired_compiler_targets(targets: Iterable[str]) -> None:
         raise ProjectionRunError(
             f"project target(s) {selected} are disabled because legacy graph projection "
             "bypasses the immutable CompilePlan; use `kairos-ontology compile <domain> "
-            "--check|--explain|--emit <directory>`. Gold and MDM consumers must receive "
+            "--check|--explain|--emit`. Gold and MDM consumers must receive "
             "that compiler-produced CompilePlan through the typed downstream registry."
         )
 

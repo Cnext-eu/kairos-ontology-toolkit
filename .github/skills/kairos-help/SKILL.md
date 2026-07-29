@@ -25,7 +25,7 @@ immutable CompilePlan and deterministic downstream artifacts.
 ```powershell
 kairos-ontology compile <domain> --check --format json
 kairos-ontology compile <domain> --explain --format json
-kairos-ontology compile <domain> --emit <directory>
+kairos-ontology compile <domain> --emit
 kairos-ontology decision new
 kairos-ontology validate
 ```

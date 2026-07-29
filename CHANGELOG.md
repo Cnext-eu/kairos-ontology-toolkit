@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`compile --emit` no longer nests output inside the hub (DD-142 amendment):** `--emit` is now a
+  pure flag with a fixed, non-configurable target — `<repo>/ontology-hub-publish/medallion/dbt`.
+  The previous optional `--emit DIRECTORY` argument anchored relative values (e.g.
+  `ontology-hub-publish/medallion/dbt`) to the hub root, producing
+  `ontology-hub/ontology-hub-publish/medallion/dbt` (the publish tree wrongly nested inside the
+  hub). Passing a directory to `--emit` is now rejected.
+
 ## [5.0.1] — 2026-07-30
 
 ### Added

@@ -62,12 +62,12 @@ def test_compile_returns_nonzero_for_diagnostics(tmp_path, monkeypatch):
 
 def test_compile_emit_writes_unified_dbt_project_preserving_unowned_files(tmp_path, monkeypatch):
     hub = _hub(tmp_path / "hub")
-    output = tmp_path / "generated"
+    output = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
     unrelated = output / "invoice" / "user.txt"
     unrelated.parent.mkdir(parents=True)
     unrelated.write_text("keep", encoding="utf-8")
     monkeypatch.chdir(hub)
-    result = CliRunner().invoke(cli, ["compile", "party", "--emit", str(output)])
+    result = CliRunner().invoke(cli, ["compile", "party", "--emit"])
     assert result.exit_code == 0, result.output
     assert (output / "models/silver/party/customer.sql").is_file()
     assert (output / ".kairos-compile-manifest.party.json").is_file()
@@ -76,14 +76,15 @@ def test_compile_emit_writes_unified_dbt_project_preserving_unowned_files(tmp_pa
     assert unrelated.read_text(encoding="utf-8") == "keep"
 
 
-def test_compile_emit_explicit_target_outside_hub_emits_silently(tmp_path, monkeypatch):
+def test_compile_emit_rejects_an_explicit_directory_argument(tmp_path, monkeypatch):
     hub = _hub(tmp_path / "hub")
-    outside = tmp_path / "generated"
     monkeypatch.chdir(hub)
-    result = CliRunner().invoke(cli, ["compile", "party", "--emit", str(outside)])
-    assert result.exit_code == 0, result.output
-    assert "outside this hub" not in result.stderr
-    assert (outside / "models/silver/party/customer.sql").is_file()
+    result = CliRunner().invoke(cli, ["compile", "party", "--emit", "some/dir"])
+    # --emit is a pure flag; the extra token is parsed as a second DOMAIN argument
+    # and rejected, so no folder can be created under the hub.
+    assert result.exit_code != 0
+    assert not (hub / "some").exists()
+    assert not (hub / "ontology-hub-publish").exists()
 
 
 def test_compile_bare_emit_targets_publish_root_without_warning(tmp_path, monkeypatch):
@@ -94,14 +95,18 @@ def test_compile_bare_emit_targets_publish_root_without_warning(tmp_path, monkey
     assert "outside this hub" not in result.stderr
     expected = hub.parent / "ontology-hub-publish/medallion/dbt/models/silver/party/customer.sql"
     assert expected.is_file()
+    # Never nested inside the hub.
+    assert not (hub / "ontology-hub-publish").exists()
 
 
-def test_compile_explicit_relative_emit_anchors_to_hub_from_repo_root(tmp_path, monkeypatch):
+def test_compile_emit_from_repo_root_lands_in_sibling_publish_root(tmp_path, monkeypatch):
     repository = tmp_path / "repository"
     hub = _hub(repository / "ontology-hub")
     monkeypatch.chdir(repository)
-    result = CliRunner().invoke(cli, ["compile", "party", "--emit", "build/dbt"])
+    result = CliRunner().invoke(cli, ["compile", "party", "--emit"])
     assert result.exit_code == 0, result.output
-    assert (hub / "build/dbt/models/silver/party/customer.sql").is_file()
-    assert not (repository / "build/dbt").exists()
+    expected = repository / "ontology-hub-publish/medallion/dbt/models/silver/party/customer.sql"
+    assert expected.is_file()
+    assert not (hub / "ontology-hub-publish").exists()
+
 

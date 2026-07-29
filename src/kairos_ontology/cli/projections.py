@@ -104,13 +104,13 @@ def project(
     if target in RETIRED_COMPILER_TARGETS:
         raise click.ClickException(
             f"`project --target {target}` is retired; use "
-            "`kairos-ontology compile <domain> --emit <directory>`"
+            "`kairos-ontology compile <domain> --emit`"
         )
     if target in COMPILE_PLAN_ONLY_TARGETS:
         raise click.ClickException(
             f"`project --target {target}` is disabled because it bypasses the immutable "
             "CompilePlan; use `kairos-ontology compile <domain> "
-            "--check|--explain|--emit <directory>`. Gold and MDM must consume the "
+            "--check|--explain|--emit`. Gold and MDM must consume the "
             "compiler-produced plan through the typed downstream registry."
         )
     cwd = Path.cwd()

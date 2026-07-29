@@ -21,7 +21,7 @@ PII-free source metadata and values.
 ```bash
 uv run kairos-ontology compile customer --check
 uv run kairos-ontology compile customer --explain --format json
-uv run kairos-ontology compile customer --emit ontology-hub/output/medallion/dbt
+uv run kairos-ontology compile customer --emit
 ```
 
 Point out that check/explain are write-free, emit is manifest-owned and atomic, and compile
