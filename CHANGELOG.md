@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.2] — 2026-07-29
+
 ### Fixed
 - **`compile --emit` no longer nests output inside the hub (DD-142 amendment):** `--emit` is now a
   pure flag with a fixed, non-configurable target — `<repo>/ontology-hub-publish/medallion/dbt`.
