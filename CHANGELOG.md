@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.0.0] — 2026-07-27
+## [5.0.0] — 2026-07-29
+
+### Added
+- **Stateless `next` readiness inspector (DD-137):** new CLI command that reports the
+  next inspect/design/bind/validate/compile action from authored hub inputs without
+  mutating state.
+- **Per-hub OKF Decision Log (DD-141):** capability for capturing confirmed design
+  decisions with rationale, confidence, and references.
+- **Unified cross-domain emit (DD-140):** consolidated emit path and resolver/diagnostic
+  remediation for cross-domain compilation.
+
+### Fixed
+- Toolkit confirmed-defect batch and follow-up remediation of resolver, diagnostics, and
+  the compile validation loop.
 
 ### Documentation
 - Consolidated the **5.0 candidate** documentation around the implemented DD-133 clean
