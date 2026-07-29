@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from rdflib import Graph, OWL
+from rdflib import Graph, OWL, RDF
 
 _logger = logging.getLogger(__name__)
 
@@ -356,6 +356,84 @@ def resolve_import_paths(
         for entry in loaded.manifest
         if entry.import_uri is not None and entry.import_depth == 1
     }
+
+
+def _relative_catalog_uri(catalog_path: Path, target_path: Path) -> str:
+    """Return a catalog-local URI path using XML-friendly separators."""
+    try:
+        relative = target_path.resolve().relative_to(catalog_path.parent.resolve())
+    except ValueError:
+        relative = target_path
+    return relative.as_posix()
+
+
+def _declared_ontology_iri(ontology_ttl_path: Path) -> Optional[str]:
+    """Return the first declared owl:Ontology IRI in a Turtle ontology file."""
+    graph = Graph()
+    graph.parse(ontology_ttl_path, format=_get_rdf_format(ontology_ttl_path))
+    for subject in graph.subjects(RDF.type, OWL.Ontology):
+        if subject:
+            return str(subject).rstrip("/")
+    return None
+
+
+def sync_domain_catalog_entry(
+    catalog_path: Path,
+    ontology_ttl_path: Path,
+    *,
+    company_domain: Optional[str] = None,
+) -> str:
+    """Ensure a hub-authored domain ontology is mapped in an XML catalog.
+
+    The ontology IRI is read from the file's ``owl:Ontology`` declaration. If no
+    declaration is present, ``company_domain`` supplies the conventional fallback
+    ``https://<company_domain>/ont/<stem>``.
+
+    Returns:
+        The ontology IRI registered in the catalog.
+    """
+    ontology_iri = _declared_ontology_iri(ontology_ttl_path)
+    if ontology_iri is None:
+        if not company_domain:
+            raise ValueError(
+                "Cannot infer catalog IRI without an owl:Ontology declaration "
+                "or company_domain fallback."
+            )
+        ontology_iri = f"https://{company_domain.rstrip('/')}/ont/{ontology_ttl_path.stem}"
+
+    relative_uri = _relative_catalog_uri(catalog_path, ontology_ttl_path)
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+    tree = ET.parse(catalog_path, parser=parser)
+    root = tree.getroot()
+    namespace = ""
+    if root.tag.startswith("{"):
+        namespace = root.tag[1:].split("}", 1)[0]
+        ET.register_namespace("", namespace)
+
+    uri_tag = f"{{{namespace}}}uri" if namespace else "uri"
+    next_catalog_tag = f"{{{namespace}}}nextCatalog" if namespace else "nextCatalog"
+    matching_uri = None
+    for child in root:
+        if child.tag != uri_tag:
+            continue
+        if child.get("name") == ontology_iri or child.get("uri") == relative_uri:
+            matching_uri = child
+            break
+
+    if matching_uri is None:
+        matching_uri = ET.Element(uri_tag)
+        insert_at = len(root)
+        for index, child in enumerate(root):
+            if child.tag == next_catalog_tag:
+                insert_at = index
+                break
+        root.insert(insert_at, matching_uri)
+
+    matching_uri.set("name", ontology_iri)
+    matching_uri.set("uri", relative_uri)
+    ET.indent(tree, space="  ")
+    tree.write(catalog_path, encoding="utf-8", xml_declaration=True)
+    return ontology_iri
 
 
 def validate_catalog(catalog_path: Path) -> Dict[str, bool]:

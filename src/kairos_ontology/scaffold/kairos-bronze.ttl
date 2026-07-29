@@ -162,7 +162,7 @@ kairos-bronze:scale a owl:DatatypeProperty ;
 
 kairos-bronze:contentType a owl:DatatypeProperty ;
     rdfs:label "content type" ;
-    rdfs:comment "Observed physical content type: scalar, json-array, or json-object. JSON processing authority belongs to an explicit kairos-prep contract; Bronze retains the raw value." ;
+    rdfs:comment "Observed physical content type: scalar, json-array, or json-object. Bronze retains the raw value." ;
     rdfs:domain kairos-bronze:SourceColumn ;
     rdfs:range xsd:string .
 
@@ -200,7 +200,7 @@ kairos-bronze:fieldName a owl:DatatypeProperty ;
 
 kairos-bronze:fieldType a owl:DatatypeProperty ;
     rdfs:label "field type" ;
-    rdfs:comment "Observed source field type; target type and parse behavior belong to kairos-prep." ;
+    rdfs:comment "Observed source field type; target typing belongs to the compiled binding." ;
     rdfs:domain kairos-bronze:JsonField ;
     rdfs:range xsd:string .
 

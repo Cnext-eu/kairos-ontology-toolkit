@@ -1,57 +1,44 @@
 # {company_name} — Ontology Hub
 
-## Company context
+| Field | Value |
+|---|---|
+| Company | {company_name} |
+| Domain | `{company_domain}` |
+| Namespace base | `https://{company_domain}/ont/` |
 
-| Field              | Value                                          |
-|--------------------|------------------------------------------------|
-| **Company name**   | {company_name}                                 |
-| **Company domain** | {company_domain}                               |
-| **Namespace base** | `https://{company_domain}/ont/`                |
+## V5 contract
 
-## Namespace convention
+Author:
 
-All ontologies in this hub use the namespace pattern:
+- canonical domain/reference TTL under `model/ontologies/`;
+- source-vocabulary TTL under `integration/sources/`;
+- one closed `EntityBinding` per source relation or contracted dbt model under
+  `integration/bindings/`;
+- optional ordinary contracted dbt SQL/YAML under `integration/transforms/dbt/models/`;
+- optional Gold/MDM policy TTL under `model/extensions/`.
 
+Do not add claims, preparation or Silver-extension authority, lifecycle/readiness state,
+release evidence, or generated files as authored inputs.
+
+## Compile
+
+```bash
+uv run kairos-ontology compile <domain> --check
+uv run kairos-ontology compile <domain> --explain --format json
+uv run kairos-ontology compile <domain> --emit
 ```
-https://{company_domain}/ont/<domain>#
-```
 
-For example:
-- Customer domain → `https://{company_domain}/ont/customer#`
-- Order domain → `https://{company_domain}/ont/order#`
+The adapter is selected in `kairos.yaml` (`fabric` or `databricks`). Every invocation
+builds one immutable `CompilePlan`; check and explain do not write. Bare `--emit`
+writes the unified dbt project to `output/medallion/dbt`.
 
-## Domain model overview
+## Ontology conventions
 
-Before creating individual domain ontology files, define the high-level domain
-structure here.  This helps avoid fragmented .ttl files and ensures coherent
-coverage.
+- One domain per lowercase, hyphenated `.ttl` file.
+- Every ontology declares `owl:Ontology`, `rdfs:label`, and `owl:versionInfo`.
+- Classes use PascalCase; properties use camelCase.
+- Keep `_master.ttl` imports current.
+- Keep samples synthetic and free of personal or proprietary data.
 
-| Domain | Description | File | Status |
-|--------|-------------|------|--------|
-| *(add domains here)* | | | |
-
-## Master ontology
-
-The file `ontology-hub/model/ontologies/_master.ttl` imports all domain ontologies
-into a single unified graph.  Keep it updated when adding or removing domains.
-
-## Governed lifecycle
-
-Use the canonical lifecycle:
-
-`discovery → source → domain → mapping → claims → silver → gold → validate → project`
-
-Source onboarding includes an explicit `integration/preparation/` contract. Typed mappings
-bind prepared source fields to domain properties. Silver dbt, YAML, DDL, constraints, and
-ERD share one parity-checked authority. Gold is profile-driven; the v1 Power BI profile
-requires explicit table roles, governed measures/calendars, and fail-closed security.
-Projection emits evidence and checks but does not claim runtime monitoring or deployment
-success.
-
-## Conventions
-
-- One domain per `.ttl` file (e.g., `customer.ttl`, `order.ttl`).
-- Filename = domain identifier (lowercase, hyphens for multi-word).
-- Every file declares an `owl:Ontology` with `rdfs:label` and `owl:versionInfo`.
-- Classes: PascalCase.  Properties: camelCase.
-- Target 5–15 classes per domain file.
+V5 is a clean break. Rebuild v4 hubs from this scaffold; no compatibility or conversion
+command is provided.

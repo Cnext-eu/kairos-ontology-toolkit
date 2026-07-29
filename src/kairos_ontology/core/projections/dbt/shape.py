@@ -21,7 +21,6 @@ from .policy_specs import (
     ChangeDetectionStrategy,
     EntityIriMode,
     IdentityStrategy,
-    PrepMode,
     SilverColumnRole,
 )
 from .specs import (
@@ -30,14 +29,6 @@ from .specs import (
     CoverageSpec,
     MacroSetSpec,
     MaterializationIntent,
-    PrepArrayChildModelSpec,
-    PrepArrayColumnSpec,
-    PrepCdcColumnSpec,
-    PrepColumnSpec,
-    PrepModelSpec,
-    PrepRecordKeySpec,
-    PrepRouteSpec,
-    PrepScalarColumnSpec,
     SchemaDocumentSpec,
     SchemaKind,
     SchemaModelSpec,
@@ -52,7 +43,6 @@ from .specs import (
 )
 from ..uri_utils import camel_to_snake
 
-
 _STRING = CanonicalTypeSpec(CanonicalTypeKind.STRING)
 _HASH_STRING = CanonicalTypeSpec(CanonicalTypeKind.STRING, length=64)
 _BOOLEAN = CanonicalTypeSpec(CanonicalTypeKind.BOOLEAN)
@@ -65,252 +55,6 @@ def _model_piece(value: str) -> str:
     if result and result[0].isdigit():
         result = f"s_{result}"
     return result or "source"
-
-
-def _prep_specs(
-    project: NormalizedProjectFacts,
-) -> tuple[
-    tuple[PrepModelSpec, ...],
-    tuple[PrepArrayChildModelSpec, ...],
-    tuple[PrepRouteSpec, ...],
-]:
-    table_index = {
-        table.uri: (system, table)
-        for system in project.systems
-        for table in system.tables
-        if table.relation_kind == "physical"
-    }
-    models: list[PrepModelSpec] = []
-    children: list[PrepArrayChildModelSpec] = []
-    routes: list[PrepRouteSpec] = []
-    for preparation in project.policy.preparations:
-        system, table = table_index[preparation.table.source_table_uri]
-        source_name = _model_piece(system.label)
-        model_name = f"stg_{source_name}__{_model_piece(table.name)}"
-        ref_model = (
-            model_name if preparation.mode.value is PrepMode.NORMALIZE else ""
-        )
-
-        rename_by_uri = {
-            rename.source_column_uri: rename.target_name.value
-            for rename in preparation.renames
-        }
-        cleanup_by_uri: dict[str, list] = {}
-        for cleanup in preparation.cleanup_rules:
-            cleanup_by_uri.setdefault(cleanup.source_column_uri, []).append(cleanup)
-        conversion_by_uri = {
-            conversion.source_column_uri: conversion
-            for conversion in preparation.type_conversions
-        }
-        sentinel_by_uri: dict[str, list] = {}
-        for sentinel in preparation.sentinel_rules:
-            sentinel_by_uri.setdefault(sentinel.source_column_uri, []).append(sentinel)
-
-        prep_columns: list[PrepColumnSpec] = []
-        output_by_uri: dict[str, str] = {}
-        for column in table.columns:
-            if column.origin != "raw":
-                continue
-            output_name = rename_by_uri.get(column.uri, column.name)
-            cleanup = tuple(cleanup_by_uri.get(column.uri, ()))
-            conversion = conversion_by_uri.get(column.uri)
-            sentinels = tuple(sentinel_by_uri.get(column.uri, ()))
-            transformed = bool(cleanup or conversion or sentinels)
-            raw_name = f"{output_name}__raw" if transformed else ""
-            error_flag = (
-                f"_prep_parse_error__{output_name}"
-                if conversion is not None
-                and conversion.error_action.value.value == "null-with-evidence"
-                else ""
-            )
-            prep_columns.append(
-                PrepColumnSpec(
-                    source_column_uri=column.uri,
-                    source_name=column.name,
-                    output_name=output_name,
-                    source_data_type=column.data_type,
-                    nullable=column.nullable,
-                    is_primary_key=column.is_primary_key,
-                    cleanup_rules=cleanup,
-                    conversion=conversion,
-                    sentinel_rules=sentinels,
-                    raw_output_name=raw_name,
-                    error_flag_name=error_flag,
-                )
-            )
-            output_by_uri[column.uri] = output_name
-
-        record_key = PrepRecordKeySpec(
-            resource_uri=preparation.source_record_key.resource_uri,
-            source_scope=preparation.source_record_key.source_scope.value,
-            table_scope=preparation.source_record_key.table_scope.value,
-            component_columns=tuple(
-                output_by_uri[uri]
-                for uri in preparation.source_record_key.components.value
-            ),
-            output_name=preparation.source_record_key.output.name.value,
-            data_type=preparation.source_record_key.output.data_type.value,
-        )
-        routes.append(
-            PrepRouteSpec(
-                relation_uri=table.uri,
-                source_name=source_name,
-                table_name=table.name,
-                mode=preparation.mode.value.value,
-                ref_model=ref_model,
-                source_record_key=record_key,
-            )
-        )
-        cdc_columns: list[PrepCdcColumnSpec] = []
-        if preparation.cdc is not None:
-            operation_map = (
-                preparation.cdc.operation_code_map.value
-                if preparation.cdc.operation_code_map is not None
-                else ()
-            )
-            for role, field in (
-                ("operation", preparation.cdc.operation),
-                ("source_updated_at", preparation.cdc.source_updated_at),
-                ("source_effective_at", preparation.cdc.source_effective_at),
-                ("ingested_at", preparation.cdc.ingested_at),
-                ("sequence", preparation.cdc.sequence),
-            ):
-                if field is None:
-                    continue
-                output = field.normalized_fields[0]
-                cdc_columns.append(
-                    PrepCdcColumnSpec(
-                        role=role,
-                        source_columns=tuple(
-                            output_by_uri[uri] for uri in field.raw_columns.value
-                        ),
-                        output_name=output.name.value,
-                        data_type=output.data_type.value,
-                        operation_code_map=operation_map if role == "operation" else (),
-                    )
-                )
-
-        scalar_columns = tuple(
-            PrepScalarColumnSpec(
-                resource_uri=item.resource_uri,
-                source_column=output_by_uri[item.source_column_uri],
-                json_path=(
-                    item.output.json_path.value
-                    if item.output.json_path is not None
-                    else item.json_path.value
-                ),
-                output_name=item.output.name.value,
-                data_type=item.output.data_type.value,
-                retention=item.retention.value,
-                error_action=item.error_action.value,
-                error_flag_name=(
-                    f"_prep_json_error__{item.output.name.value}"
-                    if item.error_action.value.value == "null-with-evidence"
-                    else ""
-                ),
-            )
-            for item in preparation.scalar_json
-        )
-
-        if preparation.mode.value is PrepMode.NORMALIZE:
-            models.append(
-                PrepModelSpec(
-                    resource_uri=preparation.resource_uri,
-                    model_name=model_name,
-                    artifact_path=(
-                        f"models/staging/{source_name}/{model_name}.sql"
-                    ),
-                    source_name=source_name,
-                    source_label=system.label,
-                    source_table_uri=table.uri,
-                    source_table_name=table.name,
-                    source_alias="src",
-                    columns=tuple(prep_columns),
-                    source_record_key=record_key,
-                    cdc_columns=tuple(cdc_columns),
-                    scalar_columns=scalar_columns,
-                    technical_dedupe=preparation.technical_dedupe,
-                    schema_evolution=preparation.schema_evolution.action.value,
-                )
-            )
-
-        for child in preparation.array_children:
-            child_name = child.child_relation_name.value
-            element_index = (
-                child.element_index_field.value
-                if child.element_index_field is not None
-                else ""
-            )
-            child_spec = PrepArrayChildModelSpec(
-                resource_uri=child.resource_uri,
-                model_name=child_name,
-                artifact_path=f"models/staging/{source_name}/{child_name}.sql",
-                source_name=source_name,
-                parent_model_name=model_name,
-                parent_source_table_uri=table.uri,
-                source_json_column=output_by_uri[child.source_column_uri],
-                json_path=child.json_path.value,
-                parent_key_columns=tuple(
-                    output_by_uri[uri] for uri in child.parent_key_components.value
-                ),
-                element_key_path=(
-                    child.element_key_path.value
-                    if child.element_key_path is not None
-                    else ""
-                ),
-                element_index_column=element_index,
-                null_action=child.null_action.value,
-                empty_action=child.empty_action.value,
-                retention=child.retention.value,
-                columns=tuple(
-                    PrepArrayColumnSpec(
-                        resource_uri=column.resource_uri,
-                        name=column.name.value,
-                        data_type=column.data_type.value,
-                        json_path=(
-                            column.json_path.value
-                            if column.json_path is not None
-                            else "$"
-                        ),
-                    )
-                    for column in child.columns
-                ),
-            )
-            children.append(child_spec)
-            routes.append(
-                PrepRouteSpec(
-                    relation_uri=child.resource_uri,
-                    source_name=source_name,
-                    table_name=child_name,
-                    mode=PrepMode.NORMALIZE.value,
-                    ref_model=child_name,
-                    source_record_key=record_key,
-                )
-            )
-    return (
-        tuple(sorted(models, key=lambda item: item.artifact_path)),
-        tuple(sorted(children, key=lambda item: item.artifact_path)),
-        tuple(sorted(routes, key=lambda item: item.relation_uri)),
-    )
-
-
-def _source_record_key_expression(route: PrepRouteSpec, source_alias: str) -> str:
-    """Render the route's governed source/table/record key input for Silver."""
-    key = route.source_record_key
-    if key is None:
-        return ""
-    if route.ref_model:
-        return f"{source_alias}.{key.output_name}"
-    arguments = (
-        f"'{key.source_scope.replace(chr(39), chr(39) * 2)}'",
-        f"'{key.table_scope.replace(chr(39), chr(39) * 2)}'",
-        *(f"{source_alias}.{component}" for component in key.component_columns),
-    )
-    return (
-        "{{ dbt_utils.generate_surrogate_key(["
-        + ", ".join(repr(argument) for argument in arguments)
-        + "]) }}"
-    )
 
 
 def _generated_key_expression(inputs: tuple[str, ...]) -> str:
@@ -328,10 +72,7 @@ def _identity_input_names(model: SilverModelSpec) -> tuple[str, ...]:
         return ("_source_system", "_source_record_key")
     if identity.strategy.value is IdentityStrategy.DETERMINISTIC_INTEGRATION_KEY:
         return identity.business.keys.value
-    if (
-        identity.strategy.value is IdentityStrategy.BUSINESS_KEY
-        and authority.multi_source is None
-    ):
+    if identity.strategy.value is IdentityStrategy.BUSINESS_KEY and authority.multi_source is None:
         return identity.business.keys.value
     return ("_source_system", "_source_record_key")
 
@@ -341,12 +82,8 @@ def _identity_expression_inputs(
     columns: tuple[ColumnSpec, ...],
 ) -> tuple[str, ...]:
     input_names = _identity_input_names(model)
-    if (
-        model.kind is SilverModelKind.UNION
-        or (
-            model.authority is not None
-            and model.authority.runtime is not None
-        )
+    if model.kind is SilverModelKind.UNION or (
+        model.authority is not None and model.authority.runtime is not None
     ):
         return input_names
     by_name = {column.name: column.expression or column.name for column in columns}
@@ -362,19 +99,13 @@ def _timestamp_expression(
     platform: str,
 ) -> str:
     source = next(
-        (
-            item
-            for item in timestamp.sources
-            if item.source_identity_ref == source_identity_ref
-        ),
+        (item for item in timestamp.sources if item.source_identity_ref == source_identity_ref),
         None,
     )
     source_column = (
         source.source_column
         if source is not None and source.supplied
-        else None
-        if source is not None
-        else timestamp.source_column
+        else None if source is not None else timestamp.source_column
     )
     if source_column is None:
         target_type = "DATETIME2" if platform == "fabric" else "TIMESTAMP"
@@ -398,11 +129,7 @@ def _apply_identity_contract(
     identity = authority.entity_identity if authority is not None else None
     if identity is None:
         if model.kind is SilverModelKind.SOURCE_BRANCH:
-            source = (
-                model.sources[0]
-                if model.sources
-                else SourceBindingSpec(alias="source")
-            )
+            source = model.sources[0] if model.sources else SourceBindingSpec(alias="source")
             structural = (
                 ColumnSpec(
                     "_source_system",
@@ -426,9 +153,7 @@ def _apply_identity_contract(
                     canonical_type=_STRING,
                     nullable=False,
                     role=SilverColumnRole.SOURCE_IDENTITY.value,
-                    generated_after_mapping=(
-                        model.source_record_key_generated_after_mapping
-                    ),
+                    generated_after_mapping=(model.source_record_key_generated_after_mapping),
                 ),
             )
             names = {column.name for column in model.columns}
@@ -440,9 +165,7 @@ def _apply_identity_contract(
                 ),
             )
         columns = list(
-            column
-            for column in model.columns
-            if column.name != f"{model.identity.model_name}_iri"
+            column for column in model.columns if column.name != f"{model.identity.model_name}_iri"
         )
         if model.kind is SilverModelKind.UNION:
             names = {column.name for column in columns}
@@ -469,20 +192,20 @@ def _apply_identity_contract(
             )
         )
         columns = tuple(
-            replace(
-                column,
-                expression=key_expression,
-                canonical_type=_STRING,
-                nullable=False,
-                role=SilverColumnRole.SURROGATE_JOIN_KEY.value,
-                description="Physical source-scoped join key; identity policy is missing",
-                provenance=tuple(
-                    sorted({*column.provenance, "rule:DD-108-surrogate"})
-                ),
-                generated_after_mapping=True,
+            (
+                replace(
+                    column,
+                    expression=key_expression,
+                    canonical_type=_STRING,
+                    nullable=False,
+                    role=SilverColumnRole.SURROGATE_JOIN_KEY.value,
+                    description="Physical source-scoped join key; identity policy is missing",
+                    provenance=tuple(sorted({*column.provenance, "rule:DD-108-surrogate"})),
+                    generated_after_mapping=True,
+                )
+                if column.name == f"{model.identity.model_name}_sk"
+                else column
             )
-            if column.name == f"{model.identity.model_name}_sk"
-            else column
             for column in columns
         )
         return replace(
@@ -534,19 +257,22 @@ def _apply_identity_contract(
                 role=SilverColumnRole.SOURCE_IDENTITY.value,
                 description="Source/table-scoped immutable record key",
                 provenance=("rule:DD-108-source-identity",),
-                generated_after_mapping=(
-                    model.source_record_key_generated_after_mapping
-                ),
+                generated_after_mapping=(model.source_record_key_generated_after_mapping),
                 include_in_change_detection=False,
             ),
         )
         columns = [
             *structural,
-            *(column for column in columns if column.name not in {
-                "_source_system",
-                "_source_identity_ref",
-                "_source_record_key",
-            }),
+            *(
+                column
+                for column in columns
+                if column.name
+                not in {
+                    "_source_system",
+                    "_source_identity_ref",
+                    "_source_record_key",
+                }
+            ),
         ]
         expected = (
             item
@@ -615,15 +341,10 @@ def _apply_identity_contract(
                 include_in_change_detection=False,
             ),
         )
-        columns.extend(
-            column for column in lineage_columns if column.name not in names
-        )
+        columns.extend(column for column in lineage_columns if column.name not in names)
         names.update(column.name for column in lineage_columns)
         for timestamp in authority.audit.columns:
-            if (
-                timestamp.supplied
-                and timestamp.column_name not in names
-            ):
+            if timestamp.supplied and timestamp.column_name not in names:
                 columns.append(
                     ColumnSpec(
                         name=timestamp.column_name,
@@ -667,9 +388,7 @@ def _apply_identity_contract(
             generated_columns.append(
                 ColumnSpec(
                     name=integration_name,
-                    expression=_generated_key_expression(
-                        tuple(identity.business.keys.value)
-                    ),
+                    expression=_generated_key_expression(tuple(identity.business.keys.value)),
                     canonical_type=_STRING,
                     nullable=False,
                     role=SilverColumnRole.INTEGRATION_IDENTITY.value,
@@ -686,19 +405,13 @@ def _apply_identity_contract(
                     canonical_type=_STRING,
                     nullable=False,
                     role=SilverColumnRole.ENTITY_IRI.value,
-                    description=(
-                        "Entity-instance IRI; independent of the physical join key"
-                    ),
+                    description=("Entity-instance IRI; independent of the physical join key"),
                     provenance=("rule:DD-108-entity-iri",),
                     generated_after_mapping=True,
                 )
             )
         columns = [
-            *(
-                column
-                for column in generated_columns
-                if column.name not in existing_names
-            ),
+            *(column for column in generated_columns if column.name not in existing_names),
             *columns,
         ]
         return replace(
@@ -715,20 +428,20 @@ def _apply_identity_contract(
 
     if sk_name in by_name:
         columns = [
-            replace(
-                column,
-                expression=key_expression,
-                canonical_type=_STRING,
-                nullable=False,
-                role=SilverColumnRole.SURROGATE_JOIN_KEY.value,
-                description="Physical surrogate join key; not business identity",
-                provenance=tuple(
-                    sorted({*column.provenance, "rule:DD-108-surrogate"})
-                ),
-                generated_after_mapping=True,
+            (
+                replace(
+                    column,
+                    expression=key_expression,
+                    canonical_type=_STRING,
+                    nullable=False,
+                    role=SilverColumnRole.SURROGATE_JOIN_KEY.value,
+                    description="Physical surrogate join key; not business identity",
+                    provenance=tuple(sorted({*column.provenance, "rule:DD-108-surrogate"})),
+                    generated_after_mapping=True,
+                )
+                if column.name == sk_name
+                else column
             )
-            if column.name == sk_name
-            else column
             for column in columns
         ]
     else:
@@ -752,9 +465,7 @@ def _apply_identity_contract(
             0,
             ColumnSpec(
                 name=integration_name,
-                expression=_generated_key_expression(
-                    tuple(identity.business.keys.value)
-                ),
+                expression=_generated_key_expression(tuple(identity.business.keys.value)),
                 canonical_type=_STRING,
                 nullable=False,
                 role=SilverColumnRole.INTEGRATION_IDENTITY.value,
@@ -768,25 +479,24 @@ def _apply_identity_contract(
         columns = [column for column in columns if column.name != iri_name]
     else:
         iri_expression = (
-            f"CONCAT('{identity.entity_uri}/instance/', "
-            f"{_generated_key_expression(inputs)})"
+            f"CONCAT('{identity.entity_uri}/instance/', " f"{_generated_key_expression(inputs)})"
         )
         if iri_name in {column.name for column in columns}:
             columns = [
-                replace(
-                    column,
-                    expression=iri_expression,
-                    canonical_type=_STRING,
-                    nullable=False,
-                    role=SilverColumnRole.ENTITY_IRI.value,
-                    description="Entity-instance IRI; independent of the physical join key",
-                    provenance=tuple(
-                        sorted({*column.provenance, "rule:DD-108-entity-iri"})
-                    ),
-                    generated_after_mapping=True,
+                (
+                    replace(
+                        column,
+                        expression=iri_expression,
+                        canonical_type=_STRING,
+                        nullable=False,
+                        role=SilverColumnRole.ENTITY_IRI.value,
+                        description="Entity-instance IRI; independent of the physical join key",
+                        provenance=tuple(sorted({*column.provenance, "rule:DD-108-entity-iri"})),
+                        generated_after_mapping=True,
+                    )
+                    if column.name == iri_name
+                    else column
                 )
-                if column.name == iri_name
-                else column
                 for column in columns
             ]
         else:
@@ -810,9 +520,7 @@ def _apply_identity_contract(
             ColumnSpec(
                 name="_source_identity_ref",
                 expression=(
-                    f"'{escaped_ref}'"
-                    if escaped_ref
-                    else "CAST(NULL AS {{ dbt.type_string() }})"
+                    f"'{escaped_ref}'" if escaped_ref else "CAST(NULL AS {{ dbt.type_string() }})"
                 ),
                 canonical_type=_STRING,
                 nullable=not bool(escaped_ref),
@@ -903,14 +611,16 @@ def _apply_runtime_columns(model: SilverModelSpec) -> SilverModelSpec:
                 canonical_type=(
                     _INT64
                     if name in incremental.ordering.tie_breakers.value
-                    else _TIMESTAMP
-                    if name
-                    in {
-                        incremental.ordering.source_updated_at.value,
-                        incremental.ordering.source_effective_at.value,
-                        incremental.ordering.ingested_at.value,
-                    }
-                    else _STRING
+                    else (
+                        _TIMESTAMP
+                        if name
+                        in {
+                            incremental.ordering.source_updated_at.value,
+                            incremental.ordering.source_effective_at.value,
+                            incremental.ordering.ingested_at.value,
+                        }
+                        else _STRING
+                    )
                 ),
                 nullable=False,
                 role=SilverColumnRole.AUDIT.value,
@@ -935,17 +645,19 @@ def _runtime_model(
         else {}
     )
     joins = tuple(
-        replace(
-            join,
-            temporal_mode=relationships[join.relationship_uri].mode.value.value,
-            as_of_column=(
-                relationships[join.relationship_uri].as_of_column.value
-                if relationships[join.relationship_uri].as_of_column is not None
-                else ""
-            ),
+        (
+            replace(
+                join,
+                temporal_mode=relationships[join.relationship_uri].mode.value.value,
+                as_of_column=(
+                    relationships[join.relationship_uri].as_of_column.value
+                    if relationships[join.relationship_uri].as_of_column is not None
+                    else ""
+                ),
+            )
+            if join.relationship_uri in relationships
+            else join
         )
-        if join.relationship_uri in relationships
-        else join
         for join in model.joins
     )
     fk_change_detection = {
@@ -957,19 +669,21 @@ def _runtime_model(
         model,
         joins=joins,
         columns=tuple(
-            replace(
-                column,
-                include_in_change_detection=fk_change_detection[column.name],
+            (
+                replace(
+                    column,
+                    include_in_change_detection=fk_change_detection[column.name],
+                )
+                if column.name in fk_change_detection
+                else column
             )
-            if column.name in fk_change_detection
-            else column
             for column in model.columns
         ),
     )
-    if (
-        runtime_authority is None
-        or model.kind not in {SilverModelKind.ENTITY, SilverModelKind.UNION}
-    ):
+    if runtime_authority is None or model.kind not in {
+        SilverModelKind.ENTITY,
+        SilverModelKind.UNION,
+    }:
         columns = normalized_model.columns
         if model.kind is SilverModelKind.SOURCE_BRANCH:
             existing_names = {column.name for column in columns}
@@ -994,8 +708,7 @@ def _runtime_model(
                         include_in_change_detection=False,
                     )
                     for relationship in relationships.values()
-                    if temporal_match_count_column(relationship.property_uri)
-                    not in existing_names
+                    if temporal_match_count_column(relationship.property_uri) not in existing_names
                 ),
             )
         return replace(
@@ -1004,9 +717,11 @@ def _runtime_model(
             materialization_intent=(
                 MaterializationIntent("view")
                 if model.kind is SilverModelKind.SOURCE_BRANCH
-                else MaterializationIntent("table")
-                if model.kind in {SilverModelKind.ENTITY, SilverModelKind.UNION}
-                else model.materialization_intent
+                else (
+                    MaterializationIntent("table")
+                    if model.kind in {SilverModelKind.ENTITY, SilverModelKind.UNION}
+                    else model.materialization_intent
+                )
             ),
             runtime=None,
         )
@@ -1025,6 +740,17 @@ def _runtime_model(
                 for mapping in project.mappings.columns
                 if mapping.target_property_uri == property_uri
             }
+            if not matches:
+                relationship_columns = {
+                    column.name
+                    for column in model.columns
+                    if f"relationship:{property_uri}" in column.provenance
+                }
+                matches = {
+                    (column.name, column.canonical_type)
+                    for column in model.columns
+                    if column.name in relationship_columns and column.canonical_type is not None
+                }
             if len(matches) != 1:
                 raise ValueError(
                     "DD-109-hash: canonical hash input "
@@ -1036,13 +762,9 @@ def _runtime_model(
                     "DD-109-hash: canonical hash input "
                     f"{property_uri!r} resolves outside model {model.identity.model_name!r}"
                 )
-            hash_columns.append(
-                CanonicalHashColumnSpec(property_uri, column_name, data_type)
-            )
+            hash_columns.append(CanonicalHashColumnSpec(property_uri, column_name, data_type))
 
-    role_by_name = {
-        item.column.name: item.role.value for item in authority.columns
-    }
+    role_by_name = {item.column.name: item.role.value for item in authority.columns}
     compare_columns = tuple(
         column.name
         for column in normalized_model.columns
@@ -1061,29 +783,24 @@ def _runtime_model(
                     f"{relationship.property_uri!r}"
                 )
     if (
-        runtime_authority.change_detection.value
-        is ChangeDetectionStrategy.COMPARE_COLUMNS
+        runtime_authority.change_detection.value is ChangeDetectionStrategy.COMPARE_COLUMNS
         and not compare_columns
     ):
         raise ValueError(
             f"DD-109-scd: {model.identity.model_name!r} has no change-detection columns"
         )
     if (
-        runtime_authority.change_detection.value
-        is ChangeDetectionStrategy.CANONICAL_HASH
+        runtime_authority.change_detection.value is ChangeDetectionStrategy.CANONICAL_HASH
         and not hash_columns
     ):
-        raise ValueError(
-            f"DD-109-hash: {model.identity.model_name!r} has no canonical hash inputs"
-        )
+        raise ValueError(f"DD-109-hash: {model.identity.model_name!r} has no canonical hash inputs")
 
     columns = normalized_model.columns
     incremental = runtime_authority.incremental
     history = runtime_authority.history
     interval_start = (
         history.business_valid_from_column
-        if history.time_basis is not None
-        and history.time_basis.value.value == "business-valid"
+        if history.time_basis is not None and history.time_basis.value.value == "business-valid"
         else history.system_from_column
     )
     unique_key = (
@@ -1123,8 +840,7 @@ def _runtime_model(
             default_expression="0",
             role=SilverColumnRole.FOREIGN_KEY.value,
             description=(
-                "DD-109 temporal lookup match-count diagnostic for "
-                f"{relationship.property_uri}"
+                "DD-109 temporal lookup match-count diagnostic for " f"{relationship.property_uri}"
             ),
             provenance=(
                 f"property:{relationship.property_uri}",
@@ -1172,9 +888,7 @@ def _runtime_model(
                 canonical_type=_HASH_STRING,
                 nullable=False,
                 role=SilverColumnRole.HISTORY.value,
-                description=(
-                    "DD-109 canonical SHA-256 v1 lowercase hexadecimal representation"
-                ),
+                description=("DD-109 canonical SHA-256 v1 lowercase hexadecimal representation"),
                 provenance=(
                     f"policy:{runtime_authority.canonical_hash.resource_uri}",
                     "rule:DD-109-hash",
@@ -1255,81 +969,6 @@ def _runtime_model(
             temporal_relationships=authority.foreign_keys,
         ),
     )
-
-
-def _routed_silver_models(
-    project: NormalizedProjectFacts,
-    prep_models: tuple[PrepModelSpec, ...],
-    prep_routes: tuple[PrepRouteSpec, ...],
-) -> tuple[SilverModelSpec, ...]:
-    routes = {item.relation_uri: item for item in prep_routes}
-    result: list[SilverModelSpec] = []
-    for candidate in project.silver_models:
-        routed_sources = []
-        source_record_key_expression = ""
-        source_identity_ref = ""
-        for source in candidate.sources:
-            route = routes.get(source.table_uri)
-            if route is None or source.ref_model:
-                routed_sources.append(source)
-                continue
-            routed_sources.append(replace(source, ref_model=route.ref_model))
-            if not source_record_key_expression:
-                source_record_key_expression = _source_record_key_expression(
-                    route,
-                    source.alias,
-                )
-                source_identity_ref = (
-                    route.source_record_key.resource_uri
-                    if route.source_record_key is not None
-                    else ""
-                )
-        model = SilverModelSpec(
-                identity=candidate.identity,
-                kind=candidate.kind,
-                columns=tuple(
-                    replace(
-                        column,
-                        expression=(
-                            source_record_key_expression
-                            if source_record_key_expression
-                            and column.name == "_source_record_key"
-                            else column.expression
-                        ),
-                    )
-                    for column in candidate.columns
-                ),
-                sources=tuple(routed_sources),
-                joins=candidate.joins,
-                materialization_intent=candidate.materialization_intent,
-                ontology_metadata=candidate.ontology_metadata,
-                where_clause=candidate.where_clause,
-                source_models=candidate.source_models,
-                surrogate_key_expression=candidate.surrogate_key_expression,
-                integration_key_expression=candidate.integration_key_expression,
-                iri_expression=candidate.iri_expression,
-                parent_model=candidate.parent_model,
-                source_identity_ref=source_identity_ref or candidate.source_identity_ref,
-                source_record_key_expression=(
-                    source_record_key_expression
-                    if source_record_key_expression
-                    else candidate.source_record_key_expression
-                ),
-                source_record_key_generated_after_mapping=(
-                    False
-                    if source_record_key_expression
-                    else candidate.source_record_key_generated_after_mapping
-                ),
-                authority=candidate.authority,
-        )
-        identity_model = _apply_identity_contract(
-            model,
-            source_identity_ref=source_identity_ref,
-            platform=project.target_platform,
-        )
-        identity_model = _apply_runtime_columns(identity_model)
-        result.append(_runtime_model(identity_model, project))
-    return tuple(result)
 
 
 def _identity_auxiliary_models(
@@ -1585,9 +1224,7 @@ def _finalize_silver_contracts(
     for item in models:
         for column in item.columns:
             if column.canonical_type is not None:
-                type_by_name.setdefault(column.name, set()).add(
-                    column.canonical_type
-                )
+                type_by_name.setdefault(column.name, set()).add(column.canonical_type)
     result: list[SilverModelSpec] = []
     for model in models:
         authority = model.authority
@@ -1634,10 +1271,11 @@ def _finalize_silver_contracts(
             )
         names = {column.name for column in normalized_columns}
 
-        relationships = {
-            item.property_uri: item
-            for item in authority.foreign_keys
-        } if authority is not None else {}
+        relationships = (
+            {item.property_uri: item for item in authority.foreign_keys}
+            if authority is not None
+            else {}
+        )
         foreign_keys: list[SilverForeignKeySpec] = []
         for join in model.joins:
             if not join.fk_column or join.fk_column not in names:
@@ -1666,25 +1304,19 @@ def _finalize_silver_contracts(
                     temporal_mode=temporal_mode,
                     as_of_column=(
                         relationship.as_of_column.value
-                        if relationship is not None
-                        and relationship.as_of_column is not None
+                        if relationship is not None and relationship.as_of_column is not None
                         else join.as_of_column
                     ),
                     interval=(
                         relationship.interval.value.value
-                        if relationship is not None
-                        and relationship.interval is not None
+                        if relationship is not None and relationship.interval is not None
                         else ""
                     ),
                     cardinality=(
-                        relationship.cardinality.value.value
-                        if relationship is not None
-                        else ""
+                        relationship.cardinality.value.value if relationship is not None else ""
                     ),
                     missing_action=(
-                        relationship.missing_action.value.value
-                        if relationship is not None
-                        else ""
+                        relationship.missing_action.value.value if relationship is not None else ""
                     ),
                     ambiguous_action=(
                         relationship.ambiguous_action.value.value
@@ -1704,12 +1336,12 @@ def _finalize_silver_contracts(
                     provenance=tuple(
                         value
                         for value in (
-                            f"property:{join.relationship_uri}"
-                            if join.relationship_uri
-                            else "",
-                            "rule:DD-109-temporal-fk"
-                            if relationship is not None
-                            else "rule:DD-110-emitted-fk",
+                            f"property:{join.relationship_uri}" if join.relationship_uri else "",
+                            (
+                                "rule:DD-109-temporal-fk"
+                                if relationship is not None
+                                else "rule:DD-110-emitted-fk"
+                            ),
                         )
                         if value
                     ),
@@ -1741,9 +1373,7 @@ def _finalize_silver_contracts(
                 grain_columns = identity.business.keys.value
             else:
                 grain_columns = ("_source_system", "_source_record_key")
-            grain_columns = tuple(
-                column for column in grain_columns if column in names
-            )
+            grain_columns = tuple(column for column in grain_columns if column in names)
             if grain_columns:
                 predicate = (
                     f"{model.runtime.authority.history.current_flag_column} = 1"
@@ -1790,9 +1420,7 @@ def _finalize_silver_contracts(
                         ),
                     )
                 ),
-                comment=(
-                    f"Silver {model.kind.value} for {model.identity.class_name}"
-                ),
+                comment=(f"Silver {model.kind.value} for {model.identity.class_name}"),
                 provenance=tuple(
                     value
                     for value in (
@@ -1873,8 +1501,7 @@ def _schema_model(
                 column,
                 description=(
                     documented[column.name].description
-                    if column.name in documented
-                    and documented[column.name].description
+                    if column.name in documented and documented[column.name].description
                     else column.description
                 ),
                 metadata=(
@@ -1883,9 +1510,7 @@ def _schema_model(
                     else column.metadata
                 ),
                 tests=(
-                    documented[column.name].tests
-                    if column.name in documented
-                    else column.tests
+                    documented[column.name].tests if column.name in documented else column.tests
                 ),
             )
             for column in (silver.columns if silver is not None else model.columns)
@@ -1911,41 +1536,28 @@ def _schema_model(
     identity = authority.entity_identity
     roles_by_column = {
         column: tuple(
-            item
-            for item in authority.identity_roles
-            if item.emitted and column in item.columns
+            item for item in authority.identity_roles if item.emitted and column in item.columns
         )
         for column in {
-            column
-            for item in authority.identity_roles
-            if item.emitted
-            for column in item.columns
+            column for item in authority.identity_roles if item.emitted for column in item.columns
         }
     }
-    role_by_column = {
-        column: roles[-1]
-        for column, roles in roles_by_column.items()
-        if roles
-    }
-    authority_by_column = {
-        item.column.name: item for item in authority.columns
-    }
-    temporal_by_property = {
-        item.property_uri: item for item in authority.foreign_keys
-    }
+    role_by_column = {column: roles[-1] for column, roles in roles_by_column.items() if roles}
+    authority_by_column = {item.column.name: item for item in authority.columns}
+    temporal_by_property = {item.property_uri: item for item in authority.foreign_keys}
     documented = {column.name: column for column in model.columns}
-    physical_columns = {
-        column.name: column for column in silver.columns
-    } if silver is not None else {}
+    physical_columns = (
+        {column.name: column for column in silver.columns} if silver is not None else {}
+    )
     temporal_by_column = {
         column: temporal_by_property[foreign_key.property_uri]
         for foreign_key in (silver.foreign_keys if silver is not None else ())
         if foreign_key.property_uri in temporal_by_property
         for column in foreign_key.columns
     }
-    ordered_names = [
-        column.name for column in silver.columns
-    ] if silver is not None else list(documented)
+    ordered_names = (
+        [column.name for column in silver.columns] if silver is not None else list(documented)
+    )
     runtime = authority.runtime
 
     columns: list[ColumnSpec] = []
@@ -1956,8 +1568,7 @@ def _schema_model(
             physical,
             description=(
                 source_documentation.description
-                if source_documentation is not None
-                and source_documentation.description
+                if source_documentation is not None and source_documentation.description
                 else physical.description
             ),
             metadata=(
@@ -1966,9 +1577,7 @@ def _schema_model(
                 else physical.metadata
             ),
             tests=(
-                source_documentation.tests
-                if source_documentation is not None
-                else physical.tests
+                source_documentation.tests if source_documentation is not None else physical.tests
             ),
         )
         role = role_by_column.get(name)
@@ -1981,9 +1590,7 @@ def _schema_model(
                     "temporal_mode": relationship.mode.value.value,
                     "temporal_cardinality": relationship.cardinality.value.value,
                     "missing_parent_action": relationship.missing_action.value.value,
-                    "ambiguous_parent_action": (
-                        relationship.ambiguous_action.value.value
-                    ),
+                    "ambiguous_parent_action": (relationship.ambiguous_action.value.value),
                     "late_parent_action": relationship.late_parent_action.value.value,
                     "fk_change_detection": str(
                         relationship.participates_in_change_detection.value
@@ -2019,33 +1626,22 @@ def _schema_model(
                 for test in tests
                 if not (
                     test == "unique"
-                    or (
-                        isinstance(thaw_value(test), dict)
-                        and "unique" in thaw_value(test)
-                    )
+                    or (isinstance(thaw_value(test), dict) and "unique" in thaw_value(test))
                 )
             ]
             tests.append(
                 freeze_value(
                     {
                         "unique": {
-                            "config": {
-                                "where": (
-                                    f"{runtime.history.current_flag_column} = 1"
-                                )
-                            }
+                            "config": {"where": (f"{runtime.history.current_flag_column} = 1")}
                         }
                     }
                 )
-                if runtime is not None
-                and runtime.history.scd_type.value.value == "2"
+                if runtime is not None and runtime.history.scd_type.value.value == "2"
                 else "unique"
             )
         if (
-            (
-                column_authority is not None
-                and not column_authority.nullable.value
-            )
+            (column_authority is not None and not column_authority.nullable.value)
             or current.nullable is False
         ) and "not_null" not in tests:
             tests.append("not_null")
@@ -2083,59 +1679,45 @@ def _schema_model(
                 "attribute_conflict_policy": authority.multi_source.conflict.value.value,
                 "key_collision_policy": authority.multi_source.collision.value.value,
                 "branch_deletion_policy": authority.multi_source.deletion.value.value,
-                "branch_late_arrival_policy": (
-                    authority.multi_source.late_arrival.value.value
-                ),
-                "reconciliation_tests": ",".join(
-                    authority.multi_source.reconciliation_tests.value
-                ),
+                "branch_late_arrival_policy": (authority.multi_source.late_arrival.value.value),
+                "reconciliation_tests": ",".join(authority.multi_source.reconciliation_tests.value),
             }
         )
     for timestamp in authority.audit.columns:
         model_metadata[f"{timestamp.column_name}_origin"] = timestamp.origin.value.value
-        model_metadata[f"{timestamp.column_name}_supplied"] = str(
-            timestamp.supplied
-        ).lower()
+        model_metadata[f"{timestamp.column_name}_supplied"] = str(timestamp.supplied).lower()
 
-    grain_columns = (
-        silver.grain.columns
-        if silver is not None and silver.grain is not None
-        else ()
-    )
+    grain_columns = silver.grain.columns if silver is not None and silver.grain is not None else ()
     if len(grain_columns) == 1:
         unique_test = (
             freeze_value(
-                {
-                    "unique": {
-                        "config": {
-                            "where": f"{runtime.history.current_flag_column} = 1"
-                        }
-                    }
-                }
+                {"unique": {"config": {"where": f"{runtime.history.current_flag_column} = 1"}}}
             )
             if runtime is not None and runtime.history.scd_type.value.value == "2"
             else "unique"
         )
         columns = [
-            replace(
-                column,
-                tests=(
-                    *(
-                        test
-                        for test in column.tests
-                        if not (
-                            test == "unique"
-                            or (
-                                isinstance(thaw_value(test), dict)
-                                and "unique" in thaw_value(test)
+            (
+                replace(
+                    column,
+                    tests=(
+                        *(
+                            test
+                            for test in column.tests
+                            if not (
+                                test == "unique"
+                                or (
+                                    isinstance(thaw_value(test), dict)
+                                    and "unique" in thaw_value(test)
+                                )
                             )
-                        )
+                        ),
+                        unique_test,
                     ),
-                    unique_test,
-                ),
+                )
+                if column.name == grain_columns[0]
+                else column
             )
-            if column.name == grain_columns[0]
-            else column
             for column in columns
         ]
     data_tests: list[object] = []
@@ -2163,12 +1745,8 @@ def _schema_model(
                 {
                     "kairos_runtime_cdc_contract": {
                         "operation_column": incremental.cdc_operation.value,
-                        "source_updated_at": (
-                            incremental.ordering.source_updated_at.value
-                        ),
-                        "source_effective_at": (
-                            incremental.ordering.source_effective_at.value
-                        ),
+                        "source_updated_at": (incremental.ordering.source_updated_at.value),
+                        "source_effective_at": (incremental.ordering.source_effective_at.value),
                         "ingested_at": incremental.ordering.ingested_at.value,
                     }
                 },
@@ -2193,9 +1771,7 @@ def _schema_model(
                     {
                         "kairos_runtime_half_open_intervals": {
                             "identity_columns": list(incremental.merge_identity.value),
-                            "business_from_column": (
-                                runtime.history.business_valid_from_column
-                            ),
+                            "business_from_column": (runtime.history.business_valid_from_column),
                             "business_to_column": runtime.history.business_valid_to_column,
                             "system_from_column": runtime.history.system_from_column,
                             "system_to_column": runtime.history.system_to_column,
@@ -2208,9 +1784,7 @@ def _schema_model(
             {
                 "kairos_temporal_fk_cardinality": {
                     "property_uri": relationship.property_uri,
-                    "match_count_column": temporal_match_count_column(
-                        relationship.property_uri
-                    ),
+                    "match_count_column": temporal_match_count_column(relationship.property_uri),
                     "mode": relationship.mode.value.value,
                     "cardinality": relationship.cardinality.value.value,
                     "missing_action": relationship.missing_action.value.value,
@@ -2243,10 +1817,6 @@ def _schema_model(
 def _source_catalogs(project: NormalizedProjectFacts) -> tuple[SourceCatalogSpec, ...]:
     mapped = {mapping.source_table_uri for mapping in project.mappings.tables}
     mapped.update(project.replacement_input_uris)
-    mapped.update(
-        preparation.table.source_table_uri
-        for preparation in project.policy.preparations
-    )
     catalogs: list[SourceCatalogSpec] = []
     for system in project.systems:
         source_name = camel_to_snake(system.label).replace(" ", "_")
@@ -2278,39 +1848,40 @@ def _silver_models(
 ) -> tuple[SilverModelSpec, ...]:
     specs: list[SilverModelSpec] = []
     for candidate in project.silver_models:
-        specs.append(
-            SilverModelSpec(
-                identity=candidate.identity,
-                kind=candidate.kind,
-                columns=candidate.columns,
-                sources=candidate.sources,
-                joins=candidate.joins,
-                materialization_intent=candidate.materialization_intent,
-                ontology_metadata=candidate.ontology_metadata,
-                where_clause=candidate.where_clause,
-                source_models=candidate.source_models,
-                surrogate_key_expression=candidate.surrogate_key_expression,
-                integration_key_expression=candidate.integration_key_expression,
-                iri_expression=candidate.iri_expression,
-                parent_model=candidate.parent_model,
-                source_identity_ref=candidate.source_identity_ref,
-                source_record_key_expression=candidate.source_record_key_expression,
-                source_record_key_generated_after_mapping=(
-                    candidate.source_record_key_generated_after_mapping
-                ),
-                authority=candidate.authority,
-            )
+        model = SilverModelSpec(
+            identity=candidate.identity,
+            kind=candidate.kind,
+            columns=candidate.columns,
+            sources=candidate.sources,
+            joins=candidate.joins,
+            materialization_intent=candidate.materialization_intent,
+            ontology_metadata=candidate.ontology_metadata,
+            where_clause=candidate.where_clause,
+            source_models=candidate.source_models,
+            surrogate_key_expression=candidate.surrogate_key_expression,
+            integration_key_expression=candidate.integration_key_expression,
+            iri_expression=candidate.iri_expression,
+            parent_model=candidate.parent_model,
+            source_identity_ref=candidate.source_identity_ref,
+            source_record_key_expression=candidate.source_record_key_expression,
+            source_record_key_generated_after_mapping=(
+                candidate.source_record_key_generated_after_mapping
+            ),
+            authority=candidate.authority,
         )
+        identity_model = _apply_identity_contract(
+            model,
+            source_identity_ref=candidate.source_identity_ref,
+            platform=project.target_platform,
+        )
+        specs.append(_runtime_model(_apply_runtime_columns(identity_model), project))
     return tuple(specs)
 
 
 def shape_project(contract: ProjectionContract) -> ShapedProject:
     """Create ordered logical specs without RDF, file access, or rendering."""
     project = contract.project
-    prep_models, prep_children, prep_routes = _prep_specs(project)
-    primary_silver_models = _finalize_silver_contracts(
-        _routed_silver_models(project, prep_models, prep_routes)
-    )
+    primary_silver_models = _finalize_silver_contracts(_silver_models(project))
     silver_models = _finalize_silver_contracts(
         (
             *primary_silver_models,
@@ -2320,11 +1891,7 @@ def shape_project(contract: ProjectionContract) -> ShapedProject:
     registry = build_silver_registry(
         project.silver_outcomes,
         project.parent_relations,
-        (
-            model.authority
-            for model in silver_models
-            if model.authority is not None
-        ),
+        (model.authority for model in silver_models if model.authority is not None),
         ontology_version=project.ontology_metadata.version,
         materialized_models=silver_models,
     )
@@ -2348,16 +1915,12 @@ def shape_project(contract: ProjectionContract) -> ShapedProject:
                 ),
                 kind=SchemaKind.SILVER,
                 models=tuple(
-                    _schema_model(model, primary_silver_models)
-                    for model in project.schema_models
+                    _schema_model(model, primary_silver_models) for model in project.schema_models
                 ),
             )
         )
     return ShapedProject(
         source_catalogs=_source_catalogs(project),
-        prep_models=prep_models,
-        prep_children=prep_children,
-        prep_routes=prep_routes,
         silver_models=silver_models,
         silver_outcomes=project.silver_outcomes,
         schema_documents=tuple(schema_documents),

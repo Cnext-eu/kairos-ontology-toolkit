@@ -25,10 +25,7 @@ def test_client_dimension_is_explicit_and_security_is_fail_closed(
         "RLS",
         "OLS",
     }
-    assert all(
-        item["security_boundary"] is False
-        for item in product["perspectives"]
-    )
+    assert all(item["security_boundary"] is False for item in product["perspectives"])
 
 
 def test_invoice_facts_need_no_dimensions_and_keep_measure_columns(
@@ -37,15 +34,13 @@ def test_invoice_facts_need_no_dimensions_and_keep_measure_columns(
     product = _product(invoice_dbt_artifacts, "invoice")
     assert {item["role"] for item in product["tables"]} == {"fact"}
     assert all(item["fact_grain"] for item in product["tables"])
-    assert all(item["incremental_policy"] for item in product["tables"])
+    assert all(not item["incremental_policy"] for item in product["tables"])
     assert all(item["lifecycle"] == "approved" for item in product["measures"])
-    assert all(
-        item["data_validated_by_projection"] is False
-        for item in product["measures"]
+    assert all(item["data_validated_by_projection"] is False for item in product["measures"])
+    assert (
+        "total_amount as total_amount"
+        in invoice_dbt_artifacts["models/gold/invoice/fact_invoice.sql"]
     )
-    assert "total_amount as total_amount" in invoice_dbt_artifacts[
-        "models/gold/invoice/fact_invoice.sql"
-    ]
 
 
 def test_invoice_calendar_is_approved_and_role_bound(invoice_dbt_artifacts):

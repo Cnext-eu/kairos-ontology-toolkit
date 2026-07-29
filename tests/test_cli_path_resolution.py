@@ -14,7 +14,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-import kairos_ontology.cli.main as cli_main
+import kairos_ontology.cli.projections as projection_commands
+import kairos_ontology.cli.validation as validation_commands
 from kairos_ontology.cli.main import cli
 
 VALID_TTL = """\
@@ -51,26 +52,27 @@ def _make_hub(root: Path, *, with_shapes: bool = True, with_catalog: bool = Fals
 def _patch_validation(monkeypatch):
     """Patch validation entry points; return a dict capturing their kwargs."""
     calls: dict[str, dict] = {}
-    monkeypatch.setattr(cli_main, "run_validation", lambda **kw: calls.update(validation=kw))
-    monkeypatch.setattr(cli_main, "run_gdpr_validation", lambda **kw: calls.update(gdpr=kw))
+    monkeypatch.setattr(
+        validation_commands, "run_validation", lambda **kw: calls.update(validation=kw)
+    )
+    monkeypatch.setattr(
+        validation_commands, "run_gdpr_validation", lambda **kw: calls.update(gdpr=kw)
+    )
     return calls
 
 
 def _patch_projections(monkeypatch):
     calls: dict[str, dict] = {}
-    monkeypatch.setattr(cli_main, "run_projections", lambda **kw: calls.update(projection=kw))
+    monkeypatch.setattr(
+        projection_commands, "run_projections", lambda **kw: calls.update(projection=kw)
+    )
     return calls
 
 
 def _write_accelerator_packs(root: Path, *names: str) -> Path:
     ref_models = root / "ontology-reference-models"
     for name in names:
-        blueprint = (
-            ref_models
-            / "accelerator-packs"
-            / name
-            / "client-hub-blueprint"
-        )
+        blueprint = ref_models / "accelerator-packs" / name / "client-hub-blueprint"
         blueprint.mkdir(parents=True)
         (blueprint / "data-domains.yaml").write_text("groups: []\n", encoding="utf-8")
     return ref_models
@@ -325,52 +327,6 @@ def test_project_ontology_and_ontologies_are_mutually_exclusive(tmp_path, monkey
     assert "Use either --ontology" in result.output
 
 
-def test_project_strict_threads_gate_flag(tmp_path, monkeypatch):
-    hub = _make_hub(tmp_path)
-    calls = _patch_projections(monkeypatch)
-    monkeypatch.chdir(hub)
-
-    result = CliRunner().invoke(cli, ["project", "--target", "dbt", "--strict"])
-
-    assert result.exit_code == 0, result.output
-    assert calls["projection"]["strict"] is True
-
-
-def test_project_strict_defaults_false(tmp_path, monkeypatch):
-    hub = _make_hub(tmp_path)
-    calls = _patch_projections(monkeypatch)
-    monkeypatch.chdir(hub)
-
-    result = CliRunner().invoke(cli, ["project", "--target", "dbt"])
-
-    assert result.exit_code == 0, result.output
-    assert calls["projection"]["strict"] is False
-
-
-def test_project_rejects_strict_for_non_dbt_target(tmp_path, monkeypatch):
-    hub = _make_hub(tmp_path)
-    monkeypatch.chdir(hub)
-
-    result = CliRunner().invoke(cli, ["project", "--target", "neo4j", "--strict"])
-
-    assert result.exit_code == 2
-    assert "--strict applies only" in result.output
-
-
-def test_project_threads_databricks_platform(tmp_path, monkeypatch):
-    hub = _make_hub(tmp_path)
-    calls = _patch_projections(monkeypatch)
-    monkeypatch.chdir(hub)
-
-    result = CliRunner().invoke(
-        cli,
-        ["project", "--target", "dbt", "--platform", "databricks"],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert calls["projection"]["platform"] == "databricks"
-
-
 def test_project_rejects_platform_for_non_dbt_target(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path)
     monkeypatch.chdir(hub)
@@ -382,20 +338,3 @@ def test_project_rejects_platform_for_non_dbt_target(tmp_path, monkeypatch):
 
     assert result.exit_code == 2
     assert "--platform applies only" in result.output
-
-
-def test_project_surfaces_reported_projection_failure(tmp_path, monkeypatch):
-    from kairos_ontology.core.projector import ProjectionRunError
-
-    hub = _make_hub(tmp_path)
-    monkeypatch.chdir(hub)
-
-    def fail(**kwargs):
-        raise ProjectionRunError("dbt assembly failed")
-
-    monkeypatch.setattr(cli_main, "run_projections", fail)
-    result = CliRunner().invoke(cli, ["project", "--target", "dbt"])
-
-    assert result.exit_code == 1
-    assert "dbt assembly failed" in result.output
-    assert "Traceback" not in result.output

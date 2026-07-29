@@ -62,9 +62,7 @@ class SourceCatalog:
         """Return legacy affinity report stems produced for generated vocab files."""
 
         stems = set(self.managed_generated_stems)
-        ordinary_systems = {
-            table.system for table in self.tables.values() if not table.generated
-        }
+        ordinary_systems = {table.system for table in self.tables.values() if not table.generated}
         for table in self.tables.values():
             if not table.generated:
                 continue
@@ -74,9 +72,7 @@ class SourceCatalog:
     def superseded_report_stems(self) -> set[str]:
         """Return old per-file systems replaced by directory-level identity."""
 
-        ordinary_systems = {
-            table.system for table in self.tables.values() if not table.generated
-        }
+        ordinary_systems = {table.system for table in self.tables.values() if not table.generated}
         stems = {
             path.name.removesuffix(".vocabulary.ttl")
             for table in self.tables.values()
@@ -126,9 +122,7 @@ def _table_definition(
     column_uris.update(graph.subjects(KAIROS_BRONZE.sourceTable, table_uri))
     source_systems = set(graph.objects(table_uri, KAIROS_BRONZE.sourceSystem))
     source_systems.update(graph.objects(table_uri, KAIROS_BRONZE.belongsToSystem))
-    subjects = {
-        subject for subject in {table_uri, *column_uris} if isinstance(subject, URIRef)
-    }
+    subjects = {subject for subject in {table_uri, *column_uris} if isinstance(subject, URIRef)}
     generated = generated_path or any(
         str(graph.value(subject, KAIROS_DBT.sourceKind) or "") == "dbt-contract"
         for subject in {table_uri, *source_systems}
@@ -143,9 +137,7 @@ def _table_definition(
         columns.append(
             {
                 "name": column_name,
-                "data_type": str(
-                    graph.value(column_uri, KAIROS_BRONZE.dataType) or "unknown"
-                ),
+                "data_type": str(graph.value(column_uri, KAIROS_BRONZE.dataType) or "unknown"),
                 "nullable": bool(graph.value(column_uri, KAIROS_BRONZE.nullable)),
                 "samples": str(sample_values).split(" | ") if sample_values else [],
             }
@@ -174,26 +166,19 @@ def build_source_catalog(
     if not root.is_dir():
         return catalog
 
-    generated_roots = {
-        (root / "custom-transformations").resolve(),
-        *(Path(path).resolve() for path in generated_sources_dirs),
-    }
+    generated_roots = {Path(path).resolve() for path in generated_sources_dirs}
     for vocab_file in sorted(root.rglob("*.vocabulary.ttl")):
         resolved = vocab_file.resolve()
         generated_path = any(resolved.is_relative_to(path) for path in generated_roots)
         if generated_path:
-            catalog.managed_generated_stems.add(
-                resolved.name.removesuffix(".vocabulary.ttl")
-            )
+            catalog.managed_generated_stems.add(resolved.name.removesuffix(".vocabulary.ttl"))
         graph = Graph()
         try:
             graph.parse(resolved, format="turtle")
         except Exception as exc:
             if any(resolved.is_relative_to(path) for path in generated_roots):
                 continue
-            catalog.conflicts.append(
-                f"Could not parse Bronze vocabulary {resolved}: {exc}"
-            )
+            catalog.conflicts.append(f"Could not parse Bronze vocabulary {resolved}: {exc}")
             continue
         system = source_system_key(root, resolved)
         for table_uri in graph.subjects(RDF.type, KAIROS_BRONZE.SourceTable):

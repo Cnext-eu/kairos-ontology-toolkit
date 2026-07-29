@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
 
-__version__ = "4.7.0rc12"
+__version__ = "5.0.0"
 
 from kairos_ontology.core.catalog_utils import (
     CatalogLoadResult,
@@ -26,7 +26,6 @@ from kairos_ontology.core.semantic_index import (
 )
 from kairos_ontology.core.reference_modules import (
     AcceleratorModuleConfig,
-    DisputedClaimModule,
     ManagedImportPlan,
     ReferenceModuleContext,
     ReferenceModuleProfile,
@@ -37,6 +36,12 @@ from kairos_ontology.core.reference_modules import (
 )
 from kairos_ontology.core.validator import run_validation, validate_content, validate_gdpr
 from kairos_ontology.core.projector import run_projections, project_graph
+from kairos_ontology.core.compiler import (
+    build_compile_plan,
+    compile_domain,
+    compile_plan_result,
+    render_compile_plan,
+)
 from kairos_ontology.core.ontology_ops import (
     list_classes,
     list_properties,
@@ -49,6 +54,14 @@ from kairos_ontology.core.ontology_ops import (
     parse_ontology,
     parse_ontology_content,
 )
+from kairos_ontology.core.next_actions import (
+    NextAction,
+    NextActionProposal,
+    HubInputSnapshot,
+    DomainSnapshot,
+    propose_next_actions,
+)
+from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
 
 __all__ = [
     "__version__",
@@ -67,7 +80,6 @@ __all__ = [
     "SemanticIndex",
     "build_semantic_index",
     "AcceleratorModuleConfig",
-    "DisputedClaimModule",
     "ManagedImportPlan",
     "ReferenceModuleContext",
     "ReferenceModuleProfile",
@@ -80,6 +92,10 @@ __all__ = [
     "validate_gdpr",
     "run_projections",
     "project_graph",
+    "build_compile_plan",
+    "compile_domain",
+    "compile_plan_result",
+    "render_compile_plan",
     "list_classes",
     "list_properties",
     "list_relationships",
@@ -90,4 +106,10 @@ __all__ = [
     "serialize_graph",
     "parse_ontology",
     "parse_ontology_content",
+    "NextAction",
+    "NextActionProposal",
+    "HubInputSnapshot",
+    "DomainSnapshot",
+    "propose_next_actions",
+    "gather_hub_input_snapshot",
 ]

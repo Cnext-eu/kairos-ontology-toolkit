@@ -1,158 +1,102 @@
-<p align="center">
-<pre align="center">
+# Kairos Ontology Toolkit
 
-    $$\   $$\  $$$$$$\  $$$$$$\ $$$$$$$\   $$$$$$\   $$$$$$\
-    $$ | $$  |$$  __$$\ \_$$  _|$$  __$$\ $$  __$$\ $$  __$$\
-    $$ |$$  / $$ /  $$ |  $$ |  $$ |  $$ |$$ /  $$ |$$ /  \__|
-    $$$$$  /  $$$$$$$$ |  $$ |  $$$$$$$  |$$ |  $$ |\$$$$$$\
-    $$  $$<   $$  __$$ |  $$ |  $$  __$$< $$ |  $$ | \____$$\
-    $$ |\$$\  $$ |  $$ |  $$ |  $$ |  $$ |$$ |  $$ |$$\   $$ |
-    $$ | \$$\ $$ |  $$ |$$$$$$\ $$ |  $$ | $$$$$$  |\$$$$$$  |
-    \__|  \__|\__|  \__|\______|\__|  \__| \______/  \______/
+Kairos compiles governed OWL/Turtle models and source contracts into deterministic data
+artifacts. Version 5 is a clean architecture break: it has no v4 compatibility mode,
+dual-format authoring, or hub migration path.
 
-              O N T O L O G Y   T O O L K I T
+> This repository contains a **5.0 candidate**, not a published 5.0 GA release.
 
-</pre>
-</p>
+## V5 authoring contract
 
-<p align="center">
-  <strong>Kairos Ontology Toolkit</strong><br>
-  <em>Part of the <a href="https://github.com/Cnext-eu">Kairos Community Edition</a> by Cnext.eu</em>
-</p>
+The canonical authored inputs are:
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-  <img src="https://img.shields.io/badge/python-3.12%2B-brightgreen.svg" alt="Python">
-</p>
+1. domain and optional reference-model **TTL** under `model/ontologies/`;
+2. authoritative source-vocabulary **TTL** under `integration/sources/`;
+3. one closed `EntityBinding` YAML per source relation or contracted dbt model under
+   `integration/bindings/`;
+4. optional ordinary contracted dbt **SQL/YAML** for joins, windows, aggregation, JSON
+   expansion, fallback rules, or grain changes; and
+5. optional Gold and MDM policy TTL.
 
----
+Claims, authored preparation policy, lifecycle/readiness state, release evidence, and
+Silver-extension authority are not v5 inputs.
 
-**Turn governed OWL/Turtle models and source contracts into data artifacts** —
-medallion-layer SQL schemas, dbt models, Power BI semantic models, graph databases,
-search indexes, and AI prompt context. Production release remains gated by preparation,
-typed mappings, Silver parity, validation, and target-specific evidence.
-
-> 📖 **New here?** Read the [User Guide](docs/USER_GUIDE.md) for a complete walkthrough.
-
----
-
-## ✨ Key Features
-
-| Category | Highlights |
-|----------|-----------|
-| 🔍 **Validation** | 3-level pipeline: RDF/OWL syntax → SHACL constraints → SPARQL consistency |
-| 🏗️ **8 Projection Targets** | Silver DDL, dbt, Power BI / TMDL, Neo4j, Azure Search, a2ui, prompt, HTML report |
-| 🥈 **Medallion Architecture** | Mandatory source preparation, typed mappings, shared Silver authority, SCD1/SCD2 runtime contracts, and profile-driven Gold |
-| 📦 **Hub Scaffolding** | `kairos init` bootstraps a complete ontology repository with CI, skills, and config |
-| 🔗 **Full Traceability** | SKOS-based source→domain lineage in every generated SQL comment and schema YAML |
-| 🌐 **Multi-Domain** | Each domain deploys independently; cross-domain FK joins resolve automatically |
-| 📊 **Power BI** | Governed dimensional Gold profile, TMDL/DAX, approved calendars, and fail-closed RLS/OLS scaffolds |
-
-## 🚀 Quick Start
+## Compile
 
 ```bash
-# Install from a tagged GitHub release (the toolkit is not published to PyPI)
-pip install "git+https://github.com/Cnext-eu/kairos-ontology-toolkit.git@v3.16.0"
+# Validate one domain without writing
+uv run kairos-ontology compile customer --check
 
-# Scaffold a new ontology hub
-kairos-ontology init my-ontology-hub
+# Inspect the same normalized plan
+uv run kairos-ontology compile customer --explain
+uv run kairos-ontology compile customer --explain --format json
 
-# Validate ontologies
-kairos-ontology validate --all
-
-# After authoring preparation, mappings, and Silver/Gold policy, generate projections
-kairos-ontology project --target all
+# Atomically emit manifest-owned artifacts
+uv run kairos-ontology compile customer --emit ontology-hub/output/medallion/dbt
 ```
 
-## 🎯 Projection Targets
+`compile` resolves the hub from `kairos.yaml`, creates one immutable, graph-free
+`CompilePlan`, and uses that plan for check, explain, emit, Gold, and MDM consumption.
+`--check` and `--explain` are write-free. `--emit` is deterministic and uses a
+same-volume stage-and-swap transaction. Supported compiler adapters are `fabric` and
+`databricks`, selected in `kairos.yaml`.
 
-| Target | Output | Use Case |
-|--------|--------|----------|
-| **silver** | `CREATE TABLE` DDL, `ALTER TABLE`, Mermaid ERD + SVG | Fabric/Databricks warehouse physical layer |
-| **dbt** | SQL models, `schema.yml`, `dbt_project.yml` (silver + gold) | dbt-based ELT pipelines on Fabric/Databricks |
-| **powerbi** | Star schema DDL, TMDL, DAX measures, hierarchies | Power BI DirectLake semantic models |
-| **neo4j** | Cypher `CREATE` statements | Knowledge graph databases |
-| **azure-search** | JSON index definitions | Azure AI Search |
-| **a2ui** | JSON Schema messages | UI generation / form builders |
-| **prompt** | JSON context documents | LLM prompt engineering |
-| **report** | HTML mapping report with data flow diagrams | Source-to-domain coverage review |
-| **mdm-profile** | Immutable, content-addressed MDM policy profile (JSON + review MD) | Master Data Management — consumed by `kairos-mdm-runtime` (opt-in; requires `*-mdm-ext.ttl`) |
+## Lean hub layout
 
-Each target produces per-domain output — deploy and version domains independently.
-
-## 🏛️ Architecture
-
-```
-kairos-ontology-toolkit/
-├── src/kairos_ontology/              # Core toolkit (pip-installable)
-│   ├── cli/                          # Click CLI (validate, project, init, import-tmdl)
-│   ├── projections/                  # 8 projection generators
-│   │   ├── medallion_silver_projector.py   # Silver DDL + ERD
-│   │   ├── medallion_dbt_projector.py      # dbt models (silver + gold)
-│   │   ├── medallion_gold_projector.py     # Profile-driven Gold orchestration
-│   │   └── ...                             # neo4j, azure-search, a2ui, prompt, report
-│   ├── scaffold/                     # Hub repo templates (distributed via init/update)
-│   ├── templates/                    # Jinja2 output templates per target
-│   ├── validator.py                  # 3-level validation pipeline
-│   └── projector.py                  # Multi-domain projection orchestrator
-└── tests/                            # pytest test suite (1000+ tests)
-    └── scenarios/                    # Full-pipeline scenario tests (acme-hub)
-```
-
-## 📂 Hub Repository Structure
-
-When you run `kairos-ontology init`, you get a fully configured ontology hub:
-
-```
-my-ontology-hub/
-├── integration/
-│   ├── sources/             # Immutable Bronze source vocabulary descriptions
-│   └── preparation/         # Source-side normalization and routing policy
+```text
+ontology-hub/
+├── kairos.yaml
+├── catalog-v001.xml
 ├── model/
-│   ├── ontologies/          # Domain semantics
-│   ├── extensions/          # Silver/Gold policy contracts
-│   ├── mappings/            # Typed SKOS source-to-domain mappings
-│   ├── governance/          # Strict-release baseline and evidence policy
-│   ├── shapes/              # SHACL validation shapes
-│   └── reference-models/    # Shared/imported ontologies + XML catalog
-├── output/                  # Generated projections (per target, per domain)
-│   └── medallion/
-│       ├── dbt/             # dbt project (models/, macros/, dbt_project.yml)
-│       ├── silver/          # DDL + ERD diagrams
-│       └── powerbi/         # TMDL + star schema
-└── .github/skills/          # Copilot agent skills for interactive modeling
+│   ├── ontologies/
+│   └── shapes/                         # optional SHACL
+├── integration/
+│   ├── sources/
+│   ├── bindings/
+│   ├── discovery/                      # confirmed context only
+│   └── transforms/dbt/                 # optional ordinary SQL/YAML
+└── output/                             # derived; never author here
 ```
 
-## 🛠️ Development
+Create a hub with `kairos-ontology init` or `new-repo`. Existing v4 hubs must be rebuilt
+as fresh v5 hubs; `migrate` only handles an older directory-layout operation and does not
+convert v4 authoring to v5.
+
+## Downstream consumption
+
+Publish emitted artifacts at an immutable Git revision or versioned artifact location.
+Pin that revision from the dataplatform, run `dbt deps`, `dbt parse`, `dbt build`, and
+`dbt test`, and never edit compiler-owned output. See
+[CompilePlan consumption](docs/CONSUMING_COMPILE_PLAN.md).
+
+## Unreleased toolkit testing
 
 ```bash
-git clone https://github.com/Cnext-eu/kairos-ontology-toolkit.git
-cd kairos-ontology-toolkit
-uv sync --all-groups              # install all deps
-uv run pytest                     # 1000+ tests
+uv run kairos-ontology update --test-ref <branch-or-sha>
+# test the immutable resolved commit
+uv run kairos-ontology update --restore
 ```
 
-[uv](https://docs.astral.sh/uv/) manages dependencies, environments, and builds.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow.
+This does not change the configured release channel or publish a release.
 
-## 🤝 Community
+## Documentation
 
-This project is part of the **Kairos Community Edition** — an open-source suite of
-tools for ontology-driven data architecture.
+- [User guide](docs/USER_GUIDE.md)
+- [CLI reference](docs/CLI_REFERENCE.md)
+- [CompilePlan consumption](docs/CONSUMING_COMPILE_PLAN.md)
+- [Documentation map](docs/README.md)
+- [DD-133 v5 compiler contract](docs/design/dd-133-v5-entity-binding-compile.md)
+- [Design decisions](docs/design/toolkit-design-decisions.md)
 
-| | |
-|---|---|
-| 📋 [Contributing Guide](CONTRIBUTING.md) | How to contribute (DCO sign-off, PR process) |
-| 📜 [Code of Conduct](CODE_OF_CONDUCT.md) | Contributor Covenant v2.1 |
-| 🔒 [Security Policy](SECURITY.md) | Vulnerability reporting |
-| 📝 [Changelog](CHANGELOG.md) | Release history |
-| 📖 [User Guide](docs/USER_GUIDE.md) | Complete walkthrough & reference |
-| 🗺️ [Documentation Map](docs/README.md) | Index of all docs (design, MDM, guides, archive) |
-| 🏗️ [Design Decisions](docs/design/toolkit-design-decisions.md) | ADR log for architectural choices |
+## Development
 
-## 📄 License
+```bash
+uv sync --all-groups
+uv run pytest
+uv build
+```
 
-Licensed under the **Apache License, Version 2.0** — see [LICENSE](LICENSE) for details.
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
+[CHANGELOG.md](CHANGELOG.md).
 
-Copyright 2026 [Cnext.eu](https://cnext.eu) — Built with ❤️ as part of the
-**Kairos Community Edition**.
+Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Cnext.eu.

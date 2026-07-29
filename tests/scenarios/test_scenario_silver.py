@@ -34,15 +34,10 @@ def test_scenario_emits_passing_parity_manifest(
 
 
 def test_client_sql_yaml_and_ddl_have_identical_final_columns(client_dbt_artifacts):
-    manifest = json.loads(
-        client_dbt_artifacts["metadata/client-silver-parity.json"]
-    )
-    schema = yaml.safe_load(
-        client_dbt_artifacts["models/silver/client/_client__models.yml"]
-    )
+    manifest = json.loads(client_dbt_artifacts["metadata/client-silver-parity.json"])
+    schema = yaml.safe_load(client_dbt_artifacts["models/silver/client/_client__models.yml"])
     schema_columns = {
-        model["name"]: [column["name"] for column in model["columns"]]
-        for model in schema["models"]
+        model["name"]: [column["name"] for column in model["columns"]] for model in schema["models"]
     }
     ddl = client_dbt_artifacts["analyses/client/client-ddl.sql"]
 
@@ -50,69 +45,33 @@ def test_client_sql_yaml_and_ddl_have_identical_final_columns(client_dbt_artifac
         if model["model_name"] not in schema_columns:
             continue
         expected = model["columns"]
-        sql = client_dbt_artifacts[
-            model["representations"]["dbt_sql"]["path"]
-        ]
+        sql = client_dbt_artifacts[model["representations"]["dbt_sql"]["path"]]
         marker = json.dumps(expected, separators=(",", ":"))
         assert f"-- DD-110-COLUMNS: {marker}" in sql
         assert f"-- DD-110-COLUMNS: {marker}" in ddl
         assert schema_columns[model["model_name"]] == expected
 
 
-def test_runtime_contract_has_no_legacy_silver_columns(client_dbt_artifacts):
-    ddl = client_dbt_artifacts["analyses/client/client-ddl.sql"]
-
-    assert "_source_record_key" in ddl
-    assert "_source_record_id" not in ddl
-    assert "_row_hash BINARY" not in ddl
-    assert "_business_valid_from" in ddl
-    assert "_business_valid_to" in ddl
-    assert "_system_from" in ddl
-    assert "_system_to" in ddl
-    assert " valid_from " not in ddl
-    assert " valid_to " not in ddl
-
-
-def test_temporal_fk_and_quality_links_are_explicit(invoice_dbt_artifacts):
-    metadata = json.loads(
-        invoice_dbt_artifacts["metadata/invoice-silver-constraints.json"]
-    )
+def test_structural_fks_do_not_infer_runtime_links(invoice_dbt_artifacts):
+    metadata = json.loads(invoice_dbt_artifacts["metadata/invoice-silver-constraints.json"])
     constraints = [
-        constraint
-        for model in metadata["models"]
-        for constraint in model["constraints"]
+        constraint for model in metadata["models"] for constraint in model["constraints"]
     ]
-    links = [
-        link
-        for model in metadata["models"]
-        for link in model["relation_links"]
-    ]
+    links = [link for model in metadata["models"] for link in model["relation_links"]]
 
     assert any(
         constraint["kind"] == "foreign-key"
         and constraint["temporal_mode"] in {"current", "as-of", "none"}
         for constraint in constraints
     )
-    assert all(
-        constraint["enforced"] is False
-        for constraint in constraints
-    )
-    assert any(
-        link["relation_kind"] in {
-            "dq-result",
-            "dq-quarantine",
-            "temporal-fk-quarantine",
-        }
-        for link in links
-    )
+    assert all(constraint["enforced"] is False for constraint in constraints)
+    assert links == []
 
 
 def test_erd_uses_only_emitted_models_and_temporal_annotations(
     invoice_dbt_artifacts,
 ):
-    metadata = json.loads(
-        invoice_dbt_artifacts["metadata/invoice-silver-constraints.json"]
-    )
+    metadata = json.loads(invoice_dbt_artifacts["metadata/invoice-silver-constraints.json"])
     emitted = {model["model_name"].upper() for model in metadata["models"]}
     erd = invoice_dbt_artifacts["docs/diagrams/invoice/invoice-erd.mmd"]
 

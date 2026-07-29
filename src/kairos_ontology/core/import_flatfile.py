@@ -43,9 +43,15 @@ DEFAULT_SAMPLE_SIZE = 5
 # Known lakehouse/ingestion metadata columns that are typically technical noise.
 # Columns matching these names (case-insensitive) and appearing in all tables with
 # distinctCount=1 are auto-excluded unless --keep-technical is set.
-KNOWN_TECHNICAL_COLUMNS = frozenset({
-    "volume", "subfolder", "table", "last_ingest_date", "rowversion",
-})
+KNOWN_TECHNICAL_COLUMNS = frozenset(
+    {
+        "volume",
+        "subfolder",
+        "table",
+        "last_ingest_date",
+        "rowversion",
+    }
+)
 
 # --------------------------------------------------------------------------- #
 # Type Inference
@@ -181,10 +187,7 @@ def read_csv_table(
         columns.append(col_dict)
 
     # Sample rows (raw dicts for .samples.yaml)
-    sample_rows = [
-        {k: v for k, v in row.items() if v}
-        for row in all_rows[:sample_size]
-    ]
+    sample_rows = [{k: v for k, v in row.items() if v} for row in all_rows[:sample_size]]
 
     return {
         "name": table_name,
@@ -225,7 +228,9 @@ def read_xlsx_tables(
     wb = load_workbook(path, read_only=True, data_only=True)
     tables = []
 
+    has_multiple_sheets = len(wb.sheetnames) > 1
     for sheet_name in wb.sheetnames:
+        table_name = f"{path.stem}__{sheet_name}" if has_multiple_sheets else path.stem
         ws = wb[sheet_name]
         rows_iter = ws.iter_rows(values_only=True)
 
@@ -276,17 +281,16 @@ def read_xlsx_tables(
 
             columns.append(col_dict)
 
-        sample_rows = [
-            {k: v for k, v in row.items() if v}
-            for row in all_rows[:sample_size]
-        ]
+        sample_rows = [{k: v for k, v in row.items() if v} for row in all_rows[:sample_size]]
 
-        tables.append({
-            "name": sheet_name,
-            "row_count": row_count,
-            "columns": columns,
-            "sample_rows": sample_rows,
-        })
+        tables.append(
+            {
+                "name": table_name,
+                "row_count": row_count,
+                "columns": columns,
+                "sample_rows": sample_rows,
+            }
+        )
 
     wb.close()
     return tables
@@ -320,10 +324,7 @@ def _arrow_type_to_sql(arrow_type: Any) -> str:
         if pa.types.is_uint32(arrow_type):
             return "bigint"
         return "int"
-    if (
-        pa.types.is_floating(arrow_type)
-        or pa.types.is_decimal(arrow_type)
-    ):
+    if pa.types.is_floating(arrow_type) or pa.types.is_decimal(arrow_type):
         return "decimal"
     if pa.types.is_timestamp(arrow_type):
         return "datetime"
@@ -398,11 +399,7 @@ def read_parquet_table(
     columns = []
     for pos, col_name in enumerate(headers, start=1):
         raw_values = column_values[col_name]
-        non_empty_values = [
-            str(v).strip()
-            for v in raw_values
-            if v is not None and str(v).strip()
-        ]
+        non_empty_values = [str(v).strip() for v in raw_values if v is not None and str(v).strip()]
         distinct_values = list(dict.fromkeys(non_empty_values))
         nullable = len(non_empty_values) < row_count
 
@@ -424,8 +421,7 @@ def read_parquet_table(
         row = {
             col_name: str(column_values[col_name][r]).strip()
             for col_name in headers
-            if column_values[col_name][r] is not None
-            and str(column_values[col_name][r]).strip()
+            if column_values[col_name][r] is not None and str(column_values[col_name][r]).strip()
         }
         sample_rows.append(row)
 
@@ -464,6 +460,12 @@ def write_source_dir(
     Returns:
         Path to the output directory.
     """
+    table_names = [str(table["name"]) for table in tables]
+    duplicate_names = sorted({name for name in table_names if table_names.count(name) > 1})
+    if duplicate_names:
+        names = ", ".join(duplicate_names)
+        raise ValueError(f"Duplicate final table name(s) in flatfile import: {names}")
+
     # Sanitize and validate every sample before publishing any artifact.
     safe_tables = copy.deepcopy(tables)
     for table in safe_tables:
@@ -506,8 +508,7 @@ def write_source_dir(
             "name": tbl_name,
             "row_count": table.get("row_count", 0),
             "columns": [
-                {k: v for k, v in col.items() if k != "samples"}
-                for col in table["columns"]
+                {k: v for k, v in col.items() if k != "samples"} for col in table["columns"]
             ],
         }
         with open(output_dir / f"{tbl_name}.yaml", "w", encoding="utf-8") as f:
@@ -584,10 +585,7 @@ def exclude_columns_from_tables(
 
     exclude_lower = {c.lower() for c in columns_to_exclude}
     for tbl in tables:
-        tbl["columns"] = [
-            col for col in tbl["columns"]
-            if col["name"].lower() not in exclude_lower
-        ]
+        tbl["columns"] = [col for col in tbl["columns"] if col["name"].lower() not in exclude_lower]
         # Also strip excluded columns from sample rows
         tbl["sample_rows"] = [
             {k: v for k, v in row.items() if k.lower() not in exclude_lower}
@@ -609,7 +607,8 @@ def run_import_flatfile(
     sample_size: int = DEFAULT_SAMPLE_SIZE,
     exclude_columns: set[str] | None = None,
     keep_technical: bool = False,
-) -> Path:
+    return_count: bool = False,
+) -> Path | tuple[Path, int, int]:
     """Orchestrate the flatfile import workflow.
 
     Accepts a single CSV, single XLSX, single Parquet, or a directory containing
@@ -623,9 +622,10 @@ def run_import_flatfile(
         sample_size: Number of sample rows to store.
         exclude_columns: Explicit set of column names to exclude.
         keep_technical: If True, skip auto-detection of technical columns.
+        return_count: If True, return ``(output_dir, table_count, sample_file_count)``.
 
     Returns:
-        Path to the output directory.
+        Path to the output directory, or a tuple with counts from this import.
     """
     tables: list[dict[str, Any]] = []
 
@@ -640,9 +640,7 @@ def run_import_flatfile(
         elif suffix == ".parquet":
             tables.append(read_parquet_table(source_path, max_rows, sample_size))
         else:
-            raise ValueError(
-                f"Unsupported file type: {suffix}. Use .csv, .xlsx, or .parquet"
-            )
+            raise ValueError(f"Unsupported file type: {suffix}. Use .csv, .xlsx, or .parquet")
 
     elif source_path.is_dir():
         default_name = source_path.name
@@ -656,9 +654,7 @@ def run_import_flatfile(
                 tables.append(read_parquet_table(f, max_rows, sample_size))
 
         if not tables:
-            raise ValueError(
-                f"No CSV, Excel, or Parquet files found in: {source_path}"
-            )
+            raise ValueError(f"No CSV, Excel, or Parquet files found in: {source_path}")
     else:
         raise ValueError(f"Path does not exist: {source_path}")
 
@@ -697,25 +693,7 @@ def run_import_flatfile(
             output_dir = Path("integration/sources") / system_name
 
     result_dir = write_source_dir(tables, system_name, output_dir)
-
-    # Best-effort: write an import-results session file under the hub root.
-    from .hub_utils import find_hub_root
-    from .import_session import write_import_session
-
-    hub_root = find_hub_root(Path.cwd())
-    if hub_root is None:
-        parts = result_dir.resolve().parts
-        if "integration" in parts:
-            idx = len(parts) - 1 - list(reversed(parts)).index("integration")
-            if idx > 0:
-                hub_root = Path(*parts[:idx])
-    write_import_session(
-        hub_root,
-        system_name,
-        "flatfile",
-        tables,
-        output_paths=[str(result_dir)],
-        next_step=f"Generate bronze vocabulary: kairos-ontology import-source --from {result_dir}",
-    )
-
+    if return_count:
+        sample_count = sum(1 for table in tables if table.get("sample_rows"))
+        return result_dir, len(tables), sample_count
     return result_dir

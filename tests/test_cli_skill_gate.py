@@ -28,7 +28,7 @@ def test_warns_for_skill_managed_command(capsys):
 
 def test_silent_for_ungated_command(capsys):
     """Commands without an owning skill (CLI exceptions) never warn."""
-    for cmd in ("import-tmdl", "coverage-report", "propose-alignment", "lifecycle"):
+    for cmd in ("import-tmdl", "coverage-report", "propose-alignment"):
         _warn_if_no_skill_context(cmd)
     assert capsys.readouterr().err == ""
 
@@ -75,6 +75,7 @@ def test_cli_exceptions_are_not_gated():
         "generate-inventory",
         "check-inventory",
         "catalog-test",
-        "lifecycle",
+        "scaffold-silver-ext",
+        "validate-silver-ext",
     ):
         assert cmd not in _SKILL_COVERED_COMMANDS

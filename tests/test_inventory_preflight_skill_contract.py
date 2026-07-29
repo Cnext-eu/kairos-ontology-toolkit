@@ -16,7 +16,7 @@ SKILL_ROOTS = [
 @pytest.mark.parametrize("root", SKILL_ROOTS, ids=["github", "scaffold"])
 @pytest.mark.parametrize("skill", ["kairos-flow", "kairos-design-domain"])
 def test_pre_design_skills_use_scoped_inventory_authority(root, skill):
-    text = (root / skill / "SKILL.md").read_text(encoding="utf-8")
+    text = " ".join((root / skill / "SKILL.md").read_text(encoding="utf-8").split())
 
     assert "check-inventory --domains" in text
     assert "--explain-scope" in text
@@ -32,19 +32,16 @@ def test_domain_gate_is_blocking_before_design(root):
     text = (root / "kairos-design-domain" / "SKILL.md").read_text(encoding="utf-8")
 
     gate = text.index("### Gate 0: Scoped reference-inventory freshness")
-    first_design_gate = text.index("### Gate 1: Session file prerequisite")
+    first_design_gate = text.index("### Gate 1: Source completeness")
     assert gate < first_design_gate
-    assert "Missing or stale" in text[gate:first_design_gate]
+    assert "Missing\nor stale" in text[gate:first_design_gate]
     assert "STOP" in text[gate:first_design_gate]
 
 
 @pytest.mark.parametrize("root", SKILL_ROOTS, ids=["github", "scaffold"])
 def test_ops_owns_explicit_reference_model_updates(root):
     text = (root / "kairos-toolkit-ops" / "SKILL.md").read_text(encoding="utf-8")
-    normalized = " ".join(text.split())
 
-    assert "Pre-design freshness hand-off" in text
-    assert "ontology-reference-models/VERSION" in text
-    assert "Do not reinterpret" in text
-    assert "do not update automatically" in normalized
-    assert "explicit approval" in normalized
+    assert "update-refmodels --git-ref <ref>" in text
+    assert "Updating reference models is explicit" in text
+    assert "inspect ontology closure and compiler diagnostics" in text

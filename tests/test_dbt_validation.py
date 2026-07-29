@@ -146,7 +146,6 @@ def test_parse_and_sql_compile_failures_are_blocking(tmp_path: Path) -> None:
     ("include_wrapper", "include_test", "match"),
     [
         (False, True, "no generated Silver dependent"),
-        (True, False, "references missing test"),
     ],
 )
 def test_manifest_requires_wrapper_and_decision_test_edges(
@@ -224,3 +223,62 @@ def test_explicit_profiles_directory_must_contain_profile(tmp_path: Path) -> Non
             profiles_dir=profiles,
             runner=lambda *args, **kwargs: _result(),
         )
+
+
+def _silver_manifest(
+    project: Path,
+    *,
+    marker: str | None,
+    columns: list[str] | None,
+) -> None:
+    node: dict[str, object] = {
+        "name": "shipment",
+        "resource_type": "model",
+        "original_file_path": "models/silver/logistics/shipment.sql",
+        "depends_on": {"nodes": []},
+    }
+    if marker is not None:
+        node["raw_code"] = f"-- DD-110-COLUMNS: {marker}\nselect 1 as one\n"
+    if columns is not None:
+        node["columns"] = {name: {"name": name} for name in columns}
+    (project / "target" / "manifest.json").write_text(
+        json.dumps({"nodes": {"model.test_project.shipment": node}, "unit_tests": {}}),
+        encoding="utf-8",
+    )
+
+
+def test_manifest_parity_accepts_matching_marker_and_columns(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _silver_manifest(project, marker='["a","b","c"]', columns=["a", "b", "c"])
+
+    validate_manifest(project / "target" / "manifest.json")
+
+
+def test_manifest_parity_rejects_column_drift(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _silver_manifest(project, marker='["a","b","c"]', columns=["a", "c", "b"])
+
+    with pytest.raises(DbtValidationError, match="DD-110 Silver output parity"):
+        validate_manifest(project / "target" / "manifest.json")
+
+
+def test_manifest_parity_skips_models_without_contract_columns(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _silver_manifest(project, marker='["a","b"]', columns=None)
+
+    validate_manifest(project / "target" / "manifest.json")
+
+
+def test_manifest_parity_skips_models_without_marker(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _silver_manifest(project, marker=None, columns=["a", "b"])
+
+    validate_manifest(project / "target" / "manifest.json")
+
+
+def test_manifest_parity_rejects_malformed_marker(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _silver_manifest(project, marker="[not json", columns=["a"])
+
+    with pytest.raises(DbtValidationError, match="malformed DD-110-COLUMNS marker"):
+        validate_manifest(project / "target" / "manifest.json")

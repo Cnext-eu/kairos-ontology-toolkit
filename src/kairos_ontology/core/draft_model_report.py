@@ -17,9 +17,7 @@ from typing import Any
 import yaml
 
 from ._cache import compute_entry_hash
-from .claim_registry import ClaimRegistry, load_registry
-from .derive_claims import (
-    class_claim_id,
+from .evidence_loaders import (
     load_affinity_by_domain,
     load_skos_links,
     load_tmdl_concept_mappings,
@@ -78,8 +76,7 @@ def _iter_existing_files(paths: list[Path | None]) -> list[Path]:
 
 def _input_provenance(paths: list[Path | None]) -> dict[str, Any]:
     files = [
-        {"path": str(path), "sha256": _file_sha256(path)}
-        for path in _iter_existing_files(paths)
+        {"path": str(path), "sha256": _file_sha256(path)} for path in _iter_existing_files(paths)
     ]
     return {
         "input_files": files,
@@ -89,8 +86,6 @@ def _input_provenance(paths: list[Path | None]) -> dict[str, Any]:
 
 
 def _evidence_status(evidence: list[str]) -> str:
-    if "claim-approved" in evidence:
-        return "claim-approved"
     if "mapping-backed" in evidence:
         return "mapping-backed"
     if "source-backed" in evidence:
@@ -198,30 +193,17 @@ def _matches_terms(record: dict[str, Any], terms: list[str]) -> bool:
 
 def _entity_triage(entity: dict[str, Any]) -> str:
     status = str(entity.get("evidence_status") or "unresolved")
-    if status in {"claim-approved", "mapping-backed"}:
+    if status == "mapping-backed":
         return "covered"
     if status == "source-backed":
-        return "claim-needed"
+        return "modeling-needed"
     if status in {"tmdl-only", "tmdl+glossary", "glossary-supported"}:
         return "domain-gap"
-    return "claim-needed"
+    return "modeling-needed"
 
 
-def _has_claim_or_mapping_backing(entities: list[dict[str, Any]]) -> bool:
-    return any(
-        entity.get("evidence_status") in {"claim-approved", "mapping-backed"}
-        for entity in entities
-    )
-
-
-def _load_registries(claims_dir: Path | None) -> dict[str, ClaimRegistry]:
-    if not claims_dir or not claims_dir.is_dir():
-        return {}
-    registries: dict[str, ClaimRegistry] = {}
-    for path in sorted(claims_dir.glob("*-claims.yaml")):
-        domain = path.name.replace("-claims.yaml", "")
-        registries[domain] = load_registry(path)
-    return registries
+def _has_mapping_backing(entities: list[dict[str, Any]]) -> bool:
+    return any(entity.get("evidence_status") == "mapping-backed" for entity in entities)
 
 
 def _load_tmdl_relationships(tmdl_dir: Path | None) -> list[dict[str, Any]]:
@@ -341,39 +323,6 @@ def _term_matches(name: str, terms: list[dict[str, str]]) -> list[dict[str, str]
     return matches[:5]
 
 
-def _claim_nodes(registry: ClaimRegistry, glossary_terms: list[dict[str, str]]) -> list[dict[str, Any]]:
-    nodes: list[dict[str, Any]] = []
-    for claim in registry.claims:
-        if claim.type not in {"class", "reference_data"}:
-            continue
-        name = _local_name(claim.class_uri) or claim.id
-        evidence = []
-        if claim.status == "approved":
-            evidence.append("claim-approved")
-        if any(ev.type == "source_table" for ev in claim.evidence_sources):
-            evidence.append("source-backed")
-        if any(ev.type == "skos_mapping" for ev in claim.evidence_sources):
-            evidence.append("mapping-backed")
-        if any(ev.type == "tmdl_concept_mapping" for ev in claim.evidence_sources):
-            evidence.append("tmdl-only")
-        glossary = _term_matches(name, glossary_terms)
-        if glossary:
-            evidence.append("glossary-supported")
-        nodes.append(
-            {
-                "id": claim.id,
-                "label": name,
-                "claim_id": claim.id,
-                "claim_status": claim.status,
-                "disposition_suggestion": claim.disposition,
-                "evidence": sorted(set(evidence)) or ["unresolved"],
-                "evidence_status": _evidence_status(evidence),
-                "glossary_matches": glossary,
-            }
-        )
-    return nodes
-
-
 def _affinity_nodes(domain: str, tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     nodes = []
     for table in tables:
@@ -397,14 +346,13 @@ def _affinity_nodes(domain: str, tables: list[dict[str, Any]]) -> list[dict[str,
 def _tmdl_nodes(
     domain: str,
     tables: list[dict[str, Any]],
-    known_claims: set[str],
     glossary_terms: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
     nodes = []
     for table in tables:
         table_domain = _normalise_domain(table.get("domain") or table.get("data_domain") or None)
         ref_match = str(table.get("reference_model_match") or "")
-        if table_domain != domain and (not ref_match or class_claim_id(domain, ref_match) not in known_claims):
+        if table_domain != domain:
             continue
         label = ref_match or str(table.get("tmdl_name") or "UnroutedTmdl")
         evidence = ["tmdl-only"]
@@ -459,12 +407,14 @@ def _apply_data_product_filter(
             for rel in data.get("relationship_questions", [])
             if isinstance(rel, dict) and (_matches_terms(rel, terms) or domain in terms)
         ]
-        backed = _has_claim_or_mapping_backing(entities)
+        backed = _has_mapping_backing(entities)
         gold_candidates = []
         for measure in data.get("gold_candidates", []):
-            if not isinstance(measure, dict) or not (_matches_terms(measure, terms) or domain in terms):
+            if not isinstance(measure, dict) or not (
+                _matches_terms(measure, terms) or domain in terms
+            ):
                 continue
-            triage = "gold-annotation-needed" if backed else "claim-needed"
+            triage = "gold-annotation-needed" if backed else "modeling-needed"
             gold_candidates.append({**measure, "product_triage": triage})
 
         if not (entities or relationships or gold_candidates):
@@ -555,8 +505,8 @@ def _product_next_action(
     }
     if "domain-gap" in triage:
         return "Resolve domain gaps before mapping or gold annotation."
-    if "claim-needed" in triage:
-        return "Review claim evidence and approve only source-backed items."
+    if "modeling-needed" in triage:
+        return "Review source evidence before adding canonical entities."
     if "silver-question" in triage:
         return "Confirm silver keys/FKs/SCD choices before gold design."
     if "gold-annotation-needed" in triage:
@@ -566,7 +516,6 @@ def _product_next_action(
 
 def build_draft_model_report(
     *,
-    claims_dir: Path | None = None,
     analysis_dir: Path | None = None,
     mappings_dir: Path | None = None,
     tmdl_dir: Path | None = None,
@@ -576,7 +525,6 @@ def build_draft_model_report(
     data_product_contract_path: Path | None = None,
 ) -> dict[str, Any]:
     """Build an all-domain advisory draft-model report as serialisable data."""
-    registries = _load_registries(claims_dir)
     affinity_by_domain = load_affinity_by_domain(analysis_dir) if analysis_dir else {}
     tmdl_tables = load_tmdl_concept_mappings(tmdl_dir) if tmdl_dir else []
     tmdl_relationships = _load_tmdl_relationships(tmdl_dir)
@@ -584,7 +532,7 @@ def build_draft_model_report(
     skos_links = load_skos_links(mappings_dir) if mappings_dir else []
     glossary_terms = _load_glossary_terms(glossary_dir)
 
-    domains = set(registries) | set(affinity_by_domain)
+    domains = set(affinity_by_domain)
     for table in tmdl_tables:
         explicit_domain = table.get("domain") or table.get("data_domain")
         if explicit_domain:
@@ -600,15 +548,9 @@ def build_draft_model_report(
         domains = {d for d in domains if any(f in d.lower() for f in filters)}
 
     report_domains: dict[str, Any] = {}
-    all_known_claims = {
-        domain: {claim.id for claim in registry.claims}
-        for domain, registry in registries.items()
-    }
     for domain in sorted(domains):
-        registry = registries.get(domain, ClaimRegistry(domain=domain))
-        nodes = _claim_nodes(registry, glossary_terms)
-        nodes.extend(_affinity_nodes(domain, affinity_by_domain.get(domain, [])))
-        nodes.extend(_tmdl_nodes(domain, tmdl_tables, all_known_claims.get(domain, set()), glossary_terms))
+        nodes = _affinity_nodes(domain, affinity_by_domain.get(domain, []))
+        nodes.extend(_tmdl_nodes(domain, tmdl_tables, glossary_terms))
         deduped_nodes = {node["id"]: node for node in nodes}
 
         domain_measures = [m for m in tmdl_measures if _normalise_domain(m.get("domain")) == domain]
@@ -618,38 +560,24 @@ def build_draft_model_report(
             if _normalise_domain(rel.get("from_domain")) == domain
             or _normalise_domain(rel.get("to_domain")) == domain
         ]
-        advisory_candidates = list(registry.relationship_candidates)
-        for candidate in advisory_candidates:
-            candidate.setdefault("evidence", ["source-backed"])
-            candidate.setdefault("status", "advisory")
-
-        # proposal-quality (finding #7): cross-domain evidence is surfaced
-        # SEPARATELY from in-domain claim candidates — it was deliberately
-        # excluded from this domain's claims because the matched
-        # property/class is owned by a different accelerator data-domain, so
-        # it must never be conflated with this domain's own relationship
-        # questions.
-        cross_domain_handoffs = [h.to_dict() for h in registry.domain_handoffs]
-
         report_domains[domain] = {
             "domain": domain,
             "lifecycle_inputs": {
-                "claims": "available" if domain in registries else "not_available_yet",
                 "affinity": "available" if domain in affinity_by_domain else "not_available_yet",
                 "mappings": "available" if skos_links else "not_available_yet",
                 "tmdl": "available" if tmdl_tables else "not_available_yet",
                 "glossary": "available" if glossary_terms else "not_available_yet",
             },
             "candidate_entities": list(deduped_nodes.values()),
-            "relationship_questions": domain_relationships + advisory_candidates,
-            "cross_domain_handoffs": cross_domain_handoffs,
+            "relationship_questions": domain_relationships,
+            "cross_domain_handoffs": [],
             "gold_candidates": domain_measures,
             "mapping_gaps": "not_available_yet" if not skos_links else [],
-            "next_action": _next_action(domain in registries, bool(skos_links), bool(domain_measures)),
+            "next_action": _next_action(bool(skos_links), bool(domain_measures)),
         }
 
     provenance = _input_provenance(
-        [claims_dir, analysis_dir, mappings_dir, tmdl_dir, glossary_dir, data_product_contract_path]
+        [analysis_dir, mappings_dir, tmdl_dir, glossary_dir, data_product_contract_path]
     )
     payload_for_hash = {
         "domains": report_domains,
@@ -687,14 +615,12 @@ def build_draft_model_report(
     return report
 
 
-def _next_action(has_registry: bool, has_mappings: bool, has_measures: bool) -> str:
-    if not has_registry:
-        return "Run domain design; use this draft as the evidence agenda."
+def _next_action(has_mappings: bool, has_measures: bool) -> str:
     if not has_mappings:
-        return "Run mapping, then claims fit-gap enrichment."
+        return "Run domain design, then mapping."
     if has_measures:
-        return "Review claims, then hand measure candidates to gold design."
-    return "Review claims and proceed to silver design when approved."
+        return "Review evidence, then hand measure candidates to gold design."
+    return "Review mapped evidence and proceed to Silver design."
 
 
 def render_mermaid_erd(domains: dict[str, Any]) -> str:
@@ -760,22 +686,22 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     ]
     if is_product:
         lines.extend(
-           [
-               f"- Candidate entities: {report['summary']['candidate_entities']}",
-               f"- Relationship questions: {report['summary']['relationship_questions']}",
-               f"- Gold candidates: {report['summary']['gold_candidates']}",
-               f"- Conflicts: {report['summary']['conflicts']}",
-               f"- Triage basis: {report['triage_basis']}",
-           ]
+            [
+                f"- Candidate entities: {report['summary']['candidate_entities']}",
+                f"- Relationship questions: {report['summary']['relationship_questions']}",
+                f"- Gold candidates: {report['summary']['gold_candidates']}",
+                f"- Conflicts: {report['summary']['conflicts']}",
+                f"- Triage basis: {report['triage_basis']}",
+            ]
         )
     else:
         lines.extend(
-           [
-               f"- TMDL relationships: {report['summary']['tmdl_relationships']}",
-               f"- TMDL measures: {report['summary']['tmdl_measures']}",
-               f"- Glossary terms: {report['summary']['glossary_terms']}",
-               f"- SKOS links: {report['summary']['skos_links']}",
-           ]
+            [
+                f"- TMDL relationships: {report['summary']['tmdl_relationships']}",
+                f"- TMDL measures: {report['summary']['tmdl_measures']}",
+                f"- Glossary terms: {report['summary']['glossary_terms']}",
+                f"- SKOS links: {report['summary']['skos_links']}",
+            ]
         )
     lines.extend(
         [

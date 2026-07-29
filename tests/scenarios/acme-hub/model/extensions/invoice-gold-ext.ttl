@@ -41,7 +41,6 @@ acme-inv:Invoice
     kairos-ext:factGrain "one invoice or credit-note source record" ;
     kairos-ext:factType "transaction" ;
     kairos-ext:dimensionVersionBinding "as-of-invoice-date" ;
-    kairos-ext:incrementalPolicy acme-inv:InvoiceIncremental ;
     kairos-ext:perspective "Finance" .
 
 acme-inv:InvoiceLine
@@ -51,8 +50,7 @@ acme-inv:InvoiceLine
     kairos-ext:goldSourceVersion "1.0.0" ;
     kairos-ext:factGrain "one invoice line source record" ;
     kairos-ext:factType "transaction" ;
-    kairos-ext:dimensionVersionBinding "as-of-invoice-date" ;
-    kairos-ext:incrementalPolicy acme-inv:InvoiceLineIncremental .
+    kairos-ext:dimensionVersionBinding "as-of-invoice-date" .
 
 acme-inv:TotalInvoiceAmount a kairos-ext:Measure ;
     kairos-ext:measureId "invoice.total-amount" ;

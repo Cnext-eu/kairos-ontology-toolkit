@@ -53,7 +53,7 @@ from .mapping_specs import (
     TableMappingSpec,
 )
 from .normalize import normalize_contract
-from .render import render_project
+from .render import render_canonical_project, render_project
 from .shape import shape_project
 from .capabilities import ADAPTER_CAPABILITY_REGISTRY, negotiate_capabilities
 from .canonical_hash import (
@@ -121,7 +121,6 @@ from .policy_specs import (
     MedallionPolicySpec,
     MultiSourcePolicySpec,
     PolicyIssue,
-    PreparationSpec,
     SilverModelAuthoritySpec,
     SilverRuntimeAuthoritySpec,
     TemporalRelationshipSpec,
@@ -146,10 +145,6 @@ from .specs import (
     ForeignKeyPolicy,
     ModelIdentity,
     ModelOutcome,
-    PrepArrayChildModelSpec,
-    PrepModelPhysicalPlan,
-    PrepModelSpec,
-    PrepRouteSpec,
     SchemaDocumentSpec,
     SchemaModelSpec,
     SilverModelOutcome,
@@ -233,10 +228,6 @@ __all__ = [
     "ModelOutcome",
     "NullExpression",
     "OperatorExpression",
-    "PrepArrayChildModelSpec",
-    "PrepModelPhysicalPlan",
-    "PrepModelSpec",
-    "PrepRouteSpec",
     "MedallionPolicyFacts",
     "MedallionPolicySpec",
     "MultiSourcePolicySpec",
@@ -245,7 +236,6 @@ __all__ = [
     "PolicyNormalizationStages",
     "PolicyIssue",
     "Prerequisite",
-    "PreparationSpec",
     "ProjectionContract",
     "SchemaDocumentSpec",
     "SchemaModelSpec",
@@ -283,6 +273,7 @@ __all__ = [
     "plan_materialization",
     "collect_materialization",
     "render_project",
+    "render_canonical_project",
     "render_gold_dbt_artifacts",
     "render_powerbi_artifacts",
     "gold_product_report",

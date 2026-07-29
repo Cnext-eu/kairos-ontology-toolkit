@@ -1,44 +1,13 @@
-# Contracted dbt output identity
+# Historical: synchronized dbt contract identity
 
-Synchronized dbt contracts emit a typed `kairos-dbt:ContractIdentity` at
-`{virtual_source_iri}/contract-identity`. It is a DD-108 source/output authority only:
-it does not establish domain or enterprise business identity.
+> **V4 historical record.** Contract-identity evidence, virtual-source synchronization,
+> readiness checks, and their commands were retired by DD-133/DD-135/DD-136. This document
+> is not active v5 guidance.
 
-The resource records the model and virtual table, ordered grain columns, replacement
-lineage, decision evidence/status, required uniqueness/non-null checks, optional canonical
-CDC output bindings, and a SHA-256 hash of the identity-relevant contract plus SQL.
+V4 materialized a separate contract-identity resource and persisted dbt run evidence. That
+authority was removed because it duplicated planning and could drift from emitted artifacts.
 
-Declared dbt tests are not passing evidence. After executing tests against a configured
-warehouse, capture the actual dbt artifacts:
-
-```text
-kairos-ontology capture-dbt-contract-evidence \
-  --run-results target/run_results.json \
-  --manifest target/manifest.json
-kairos-ontology sync-dbt-contracts
-```
-
-Evidence is written to
-`integration/transforms/dbt/evidence/contract-identity.json`. Only passing dbt `unique`,
-`not_null`, or `dbt_utils.unique_combination_of_columns` results are accepted. Missing or
-stale evidence surfaces a review-only `identity.contract-unverified` diagnostic: ordinary
-(non-strict) dbt generation, `check-projection`, and mapping/silver readiness proceed with
-that diagnostic reported, but `project --strict` and release eligibility remain blocked
-until current, passing evidence is captured. Changes to contract fields, SQL, grain key,
-tests, CDC bindings, decisions, or source replacements change the content hash.
-
-Capture requires `run_results.json` and `manifest.json` from the same dbt invocation:
-both must provide equal, non-empty `metadata.invocation_id` and `metadata.dbt_version`.
-The standard v12 manifest must contain exactly one model node at the current
-`original_file_path`. Its dbt SHA-256 checksum and `raw_code` must match the current SQL.
-Standard model fields must match the current contract YAML semantics, including descriptions,
-meta, config/contract, columns, data types, and constraints. Current generic tests, singular
-tests that reference the model, and unit-test definitions must have exact standard manifest
-nodes; required generic and singular test results must pass in the matching invocation.
-
-No custom manifest fields or post-run hashes are required or accepted. Missing, ambiguous,
-stale, or mismatched artifacts are rejected without replacing existing evidence. Evidence v1
-is intentionally not trusted; rerun and capture to produce v2 evidence.
-
-New synchronized columns use the canonical `__` IRI separator. Existing slash-delimited
-column IRIs remain valid and ordinary synchronization preserves them.
+In v5, an ordinary dbt SQL model and its authoritative model-contract YAML are referenced
+directly by `EntityBinding.source.dbtModel`. The compiler validates the source contract and
+incorporates it into one immutable `CompilePlan`. Runtime dbt results remain ordinary
+dataplatform tests; Kairos does not persist a release/readiness evidence registry.

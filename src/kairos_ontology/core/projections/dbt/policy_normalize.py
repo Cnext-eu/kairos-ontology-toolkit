@@ -29,8 +29,6 @@ from .policy_specs import (
     AdapterName,
     AdapterSupportFact,
     ApprovedDeviationSpec,
-    ArrayChildSpec,
-    ArrayValueAction,
     AuditPolicySpec,
     AuthoredValuesFact,
     BackfillAction,
@@ -46,15 +44,12 @@ from .policy_specs import (
     CanonicalTypeSpec,
     CapabilityRequirementSpec,
     ChangeDetectionStrategy,
-    CleanupOperation,
-    CleanupRuleSpec,
     CollisionAction,
     ConflictAction,
     ContributionLineageRelationSpec,
     ContributionLineageSpec,
     CorrectionAction,
     CdcOperation,
-    CdcFieldSpec,
     CdcOrderingSpec,
     DataQualityRuleFact,
     DataQualityRuleSpec,
@@ -78,7 +73,6 @@ from .policy_specs import (
     EntityIdentityFact,
     EntityIdentitySpec,
     EntityIriMode,
-    ErrorAction,
     ExactEquivalenceSpec,
     FactType,
     GoldProductFact,
@@ -117,40 +111,25 @@ from .policy_specs import (
     NormalizationSpec,
     ParentAction,
     PerspectiveSpec,
-    PhysicalRenameSpec,
     PolicyIssue,
     PolicyProvenance,
     PolicySource,
-    PreparationPolicyFact,
-    PreparationSpec,
-    PreparedColumnFact,
-    PreparedColumnSpec,
-    PrepMode,
     QuarantineEffectSpec,
-    RawPayloadRetention,
     ReplayAction,
-    ScalarJsonSpec,
     SchemaEvolutionAction,
     SchemaEvolutionSpec,
     Scd2TimeBasis,
     ScdType,
     SecurityFact,
     SecurityPolicySpec,
-    SentinelAction,
-    SentinelRuleSpec,
     SilverColumnAuthoritySpec,
     SilverColumnRole,
     SilverModelAuthoritySpec,
     SilverRuntimeAuthoritySpec,
-    SourceCdcSpec,
     SourceIdentityPolicy,
     SourcePrecedenceMode,
     SourcePrecedenceSpec,
-    SourceRecordKeySpec,
-    SourceTableIdentitySpec,
     SurrogateIdentityPolicy,
-    TechnicalDedupeMode,
-    TechnicalDedupeSpec,
     TemporalMode,
     TemporalRelationshipFact,
     TemporalRelationshipSpec,
@@ -158,7 +137,6 @@ from .policy_specs import (
     TimestampRole,
     TimestampSemanticSpec,
     TimestampSourceSpec,
-    TypeConversionSpec,
 )
 from .mapping_specs import SourceMappings
 from .specs import (
@@ -169,7 +147,6 @@ from .specs import (
     ModelOutcome,
     SilverModelKind,
     SourceSystemFact,
-    SourceTableFact,
 )
 
 E = TypeVar("E", bound=Enum)
@@ -279,7 +256,7 @@ class PolicyNormalizationError(ValueError):
 class PolicyNormalizationStages:
     """Partial stage results produced by preparation/identity collection."""
 
-    preparation: EvaluationResult[tuple[PreparationSpec, ...]]
+    preparation: EvaluationResult[tuple[object, ...]]
     identity: EvaluationResult[tuple[EntityIdentitySpec, ...]]
     runtime: EvaluationResult[object]
     foreign_keys: EvaluationResult[object]
@@ -682,1114 +659,6 @@ def _types_compatible(source: CanonicalTypeSpec, target: CanonicalTypeSpec) -> b
     if source.kind is CanonicalTypeKind.STRING and target.length:
         return source.length is not None and source.length <= target.length
     return True
-
-
-def _passthrough_risks(
-    fact: PreparationPolicyFact,
-    table,
-    mappings: SourceMappings,
-    adapter: AdapterName,
-    schema_action: SchemaEvolutionAction,
-) -> tuple[tuple[str, str, str], ...]:
-    """Return every deterministic reason a passthrough route is unsafe."""
-    from .capabilities import is_reserved_identifier
-
-    risks: set[tuple[str, str, str]] = set()
-    operations = (
-        ("prep.passthrough-rename", fact.renames, "physical rename"),
-        ("prep.passthrough-cleanup", fact.cleanup_rules, "cleanup operation"),
-        ("prep.passthrough-cast", fact.type_conversions, "type conversion"),
-        ("prep.passthrough-sentinel", fact.sentinel_rules, "sentinel normalization"),
-        ("prep.passthrough-cdc", fact.cdc, "derived CDC/audit field"),
-        ("prep.passthrough-json-scalar", fact.scalar_json, "scalar JSON extraction"),
-        ("prep.passthrough-json-array", fact.array_json, "JSON array child"),
-        (
-            "prep.passthrough-dedupe",
-            fact.technical_dedupes,
-            "technical deduplication",
-        ),
-    )
-    for code, values, label in operations:
-        if values:
-            risks.add((code, "DD-106-prep-passthrough", f"authored {label} is present"))
-
-    if fact.normalization_evidence is not None and fact.normalization_evidence.values:
-        risks.add(
-            (
-                "prep.passthrough-normalization-evidence",
-                "DD-106-prep-passthrough",
-                "normalization evidence declares technical cleanup",
-            )
-        )
-    if schema_action is not SchemaEvolutionAction.FAIL:
-        risks.add(
-            (
-                "prep.passthrough-schema-risk",
-                "DD-106-schema-evolution",
-                f"schema-change policy {schema_action.value!r} requires a physical boundary",
-            )
-        )
-    if table.incremental_column:
-        risks.add(
-            (
-                "prep.passthrough-derived-watermark",
-                "DD-106-cdc",
-                f"incremental column {table.incremental_column!r} requires normalized audit routing",
-            )
-        )
-
-    raw_columns = {column.uri: column for column in table.columns if column.origin == "raw"}
-    for column in raw_columns.values():
-        if not _SAFE_NAME.fullmatch(column.name):
-            risks.add(
-                (
-                    "prep.passthrough-unsafe-identifier",
-                    "DD-106-prep-identifier",
-                    f"source column {column.name!r} is not a portable unquoted identifier",
-                )
-            )
-        elif is_reserved_identifier(adapter, column.name):
-            risks.add(
-                (
-                    "prep.passthrough-reserved-identifier",
-                    "DD-106-prep-identifier",
-                    f"source column {column.name!r} is reserved on {adapter.value}",
-                )
-            )
-        if column.json is not None:
-            risks.add(
-                (
-                    "prep.passthrough-json-shape",
-                    "DD-106-json",
-                    f"source column {column.name!r} declares {column.json.content_type}",
-                )
-            )
-        if _source_type(column.data_type) is None:
-            risks.add(
-                (
-                    "prep.passthrough-unknown-source-type",
-                    "DD-106-prep-cast",
-                    f"source column {column.name!r} has unsupported type {column.data_type!r}",
-                )
-            )
-
-    for mapping in mappings.columns:
-        column = raw_columns.get(mapping.source_column_uri)
-        if column is None:
-            continue
-        source_type = _source_type(column.data_type)
-        target_type = _target_type(mapping.target_data_type)
-        if (
-            source_type is not None
-            and target_type is not None
-            and not _types_compatible(source_type, target_type)
-        ):
-            risks.add(
-                (
-                    "prep.passthrough-incompatible-type",
-                    "DD-106-prep-cast",
-                    (
-                        f"source column {column.name!r} type {column.data_type!r} is "
-                        f"incompatible with mapped target {mapping.target_column_name!r} "
-                        f"type {mapping.target_data_type!r}"
-                    ),
-                )
-            )
-    return tuple(sorted(risks))
-
-
-def _prepared_column(fact: PreparedColumnFact) -> PreparedColumnSpec:
-    rule = "DD-106-prepared-column"
-    return PreparedColumnSpec(
-        resource_uri=fact.resource_uri,
-        name=_safe_identifier(fact.target_name, "prepared column name", rule),
-        data_type=_canonical_type(fact.target_type, rule),
-        json_path=(
-            _text(fact.json_path, "prepared JSON path", rule)
-            if fact.json_path is not None
-            else None
-        ),
-    )
-
-
-def _validate_source_column(
-    value: str,
-    known_columns: frozenset[str],
-    resource_uri: str,
-) -> None:
-    if value not in known_columns:
-        raise PolicyNormalizationError(
-            "prep.unknown-source-column",
-            f"source column {value!r} is not declared in the bound source vocabulary",
-            rule_id="DD-106-source-column",
-            resource_uri=resource_uri,
-        )
-
-
-def _operation_map(
-    fact: AuthoredValuesFact | None,
-) -> EffectiveValue[tuple[tuple[str, str], ...]] | None:
-    if fact is None:
-        return None
-    pairs: list[tuple[str, str]] = []
-    for value in _many(fact, "CDC operation code map", "DD-106-cdc", split_commas=True):
-        separator = "=" if "=" in value else ":" if ":" in value else ""
-        if not separator:
-            raise _error(
-                "prep.invalid-operation-map",
-                f"CDC operation map entry {value!r} must use raw=normalized",
-                fact,
-                "DD-106-cdc",
-            )
-        raw, normalized = (item.strip() for item in value.split(separator, 1))
-        if not raw or normalized not in {
-            "insert",
-            "update",
-            "delete",
-            "soft-delete",
-            "snapshot",
-        }:
-            raise _error(
-                "prep.invalid-operation-map",
-                f"invalid CDC operation map entry {value!r}",
-                fact,
-                "DD-106-cdc",
-            )
-        pairs.append((raw, normalized))
-    if sum(raw == "*" for raw, _ in pairs) > 1:
-        raise _error(
-            "prep.invalid-operation-map",
-            "CDC operation map may contain at most one wildcard snapshot mapping",
-            fact,
-            "DD-106-cdc",
-        )
-    return _effective(tuple(sorted(set(pairs))), fact, "DD-106-cdc")
-
-
-def _cdc_field(
-    raw: AuthoredValuesFact | None,
-    normalized: tuple[PreparedColumnFact, ...],
-    label: str,
-) -> CdcFieldSpec | None:
-    rule = "DD-106-cdc"
-    if raw is None and not normalized:
-        return None
-    if raw is None:
-        raise PolicyNormalizationError(
-            "prep.cdc-missing-raw",
-            f"{label} has a normalized field but no raw source field",
-            rule_id=rule,
-            resource_uri=normalized[0].resource_uri,
-        )
-    if len(normalized) != 1:
-        raise _error(
-            "prep.cdc-output-cardinality",
-            f"{label} requires exactly one normalized prepared field",
-            raw,
-            rule,
-        )
-    return CdcFieldSpec(
-        raw_columns=_texts(raw, f"{label} raw columns", rule),
-        normalized_fields=(_prepared_column(normalized[0]),),
-    )
-
-
-def _normalize_cdc(facts: tuple, known_columns: frozenset[str]) -> SourceCdcSpec | None:
-    if not facts:
-        return None
-    if len(facts) != 1:
-        raise PolicyNormalizationError(
-            "prep.multiple-cdc-mappings",
-            "one source-table preparation policy may link exactly one CDC mapping",
-            rule_id="DD-106-cdc",
-            resource_uri=facts[0].resource_uri,
-        )
-    fact = facts[0]
-    for raw in (
-        fact.raw_operation_columns,
-        fact.raw_update_timestamp_columns,
-        fact.raw_effective_timestamp_columns,
-        fact.raw_ingestion_timestamp_columns,
-        fact.raw_sequence_columns,
-    ):
-        if raw is not None:
-            for value in raw.values:
-                _validate_source_column(value, known_columns, fact.resource_uri)
-    result = SourceCdcSpec(
-        operation=_cdc_field(
-            fact.raw_operation_columns,
-            fact.normalized_operation_fields,
-            "CDC operation",
-        ),
-        source_updated_at=_cdc_field(
-            fact.raw_update_timestamp_columns,
-            fact.normalized_update_timestamp_fields,
-            "source update timestamp",
-        ),
-        source_effective_at=_cdc_field(
-            fact.raw_effective_timestamp_columns,
-            fact.normalized_effective_timestamp_fields,
-            "source effective timestamp",
-        ),
-        ingested_at=_cdc_field(
-            fact.raw_ingestion_timestamp_columns,
-            fact.normalized_ingestion_timestamp_fields,
-            "ingestion timestamp",
-        ),
-        sequence=_cdc_field(
-            fact.raw_sequence_columns,
-            fact.normalized_sequence_fields,
-            "CDC total-order sequence",
-        ),
-        operation_code_map=_operation_map(fact.operation_code_map),
-    )
-    if not any(
-        (
-            result.operation,
-            result.source_updated_at,
-            result.source_effective_at,
-            result.ingested_at,
-            result.sequence,
-        )
-    ):
-        raise PolicyNormalizationError(
-            "prep.empty-cdc-mapping",
-            "CDC mapping must declare at least one raw and normalized field role",
-            rule_id="DD-106-cdc",
-            resource_uri=fact.resource_uri,
-        )
-    return result
-
-
-def _normalize_record_key(
-    facts: tuple,
-    known_columns: frozenset[str],
-) -> SourceRecordKeySpec:
-    rule = "DD-106-source-record-key"
-    if len(facts) != 1:
-        resource = facts[0].resource_uri if facts else ""
-        raise PolicyNormalizationError(
-            "prep.record-key-cardinality",
-            "each preparation policy requires exactly one source-record key policy",
-            rule_id=rule,
-            resource_uri=resource,
-        )
-    fact = facts[0]
-    components = _texts(
-        fact.components,
-        "source-record key components",
-        rule,
-    )
-    for value in components.value:
-        _validate_source_column(value, known_columns, fact.resource_uri)
-    if len(fact.outputs) != 1:
-        raise PolicyNormalizationError(
-            "prep.record-key-output-cardinality",
-            "source-record key requires exactly one prepared output field",
-            rule_id=rule,
-            resource_uri=fact.resource_uri,
-        )
-    output = _prepared_column(fact.outputs[0])
-    if output.name.value != "_source_record_key":
-        raise PolicyNormalizationError(
-            "prep.record-key-output-name",
-            "source-record key output must be named '_source_record_key'",
-            rule_id=rule,
-            resource_uri=fact.outputs[0].resource_uri,
-        )
-    return SourceRecordKeySpec(
-        resource_uri=fact.resource_uri,
-        source_scope=_text(fact.source_scope, "source record-key scope", rule),
-        table_scope=_text(fact.table_scope, "table record-key scope", rule),
-        components=components,
-        output=output,
-    )
-
-
-def _normalize_scalar_json(
-    facts: tuple,
-    known_columns: frozenset[str],
-) -> tuple[ScalarJsonSpec, ...]:
-    result: list[ScalarJsonSpec] = []
-    for fact in facts:
-        source = _single(fact.source_column, "scalar JSON source column", "DD-106-json")
-        _validate_source_column(source, known_columns, fact.resource_uri)
-        if len(fact.extracted_columns) != 1:
-            raise PolicyNormalizationError(
-                "prep.scalar-json-output-cardinality",
-                "scalar JSON extraction requires exactly one prepared output",
-                rule_id="DD-106-json-scalar",
-                resource_uri=fact.resource_uri,
-            )
-        result.append(
-            ScalarJsonSpec(
-                resource_uri=fact.resource_uri,
-                source_column_uri=source,
-                json_path=_text(fact.json_path, "scalar JSON path", "DD-106-json"),
-                output=_prepared_column(fact.extracted_columns[0]),
-                retention=_enum(
-                    fact.retention,
-                    RawPayloadRetention,
-                    "raw payload retention",
-                    "DD-106-json-replay",
-                ),
-                error_action=_enum(
-                    fact.error_policy,
-                    ErrorAction,
-                    "JSON extraction error policy",
-                    "DD-106-json-error",
-                ),
-            )
-        )
-    return tuple(result)
-
-
-def _normalize_array_json(
-    facts: tuple,
-    known_columns: frozenset[str],
-) -> tuple[ArrayChildSpec, ...]:
-    result: list[ArrayChildSpec] = []
-    names: set[str] = set()
-    for fact in facts:
-        source = _single(fact.source_column, "array JSON source column", "DD-106-json")
-        _validate_source_column(source, known_columns, fact.resource_uri)
-        key_path = _optional_single(
-            fact.element_key_path,
-            "array element key path",
-            "DD-106-json-array",
-        )
-        index_field = _optional_single(
-            fact.element_index_field,
-            "array element index field",
-            "DD-106-json-array",
-        )
-        if bool(key_path) == bool(index_field):
-            raise PolicyNormalizationError(
-                "prep.array-element-key",
-                "array child must declare exactly one elementKeyPath or elementIndexField",
-                rule_id="DD-106-json-array",
-                resource_uri=fact.resource_uri,
-            )
-        direct_paths = [
-            value
-            for value in (
-                key_path,
-                *(
-                    item.json_path.values[0]
-                    for item in fact.extracted_columns
-                    if item.json_path is not None and item.json_path.values
-                ),
-            )
-            if value
-        ]
-        invalid_paths = sorted(
-            path
-            for path in direct_paths
-            if re.fullmatch(r"\$\.[A-Za-z_][A-Za-z0-9_]*", path) is None
-        )
-        if invalid_paths:
-            raise PolicyNormalizationError(
-                "prep.array-nested-element-unsupported",
-                (
-                    "array-child extraction supports flat object elements with direct "
-                    f"scalar paths only; unsupported paths: {', '.join(invalid_paths)}"
-                ),
-                rule_id="DD-106-json-array",
-                resource_uri=fact.resource_uri,
-            )
-        non_scalar = sorted(
-            item.resource_uri
-            for item in fact.extracted_columns
-            if _prepared_column(item).data_type.value.kind is CanonicalTypeKind.JSON
-        )
-        if non_scalar:
-            raise PolicyNormalizationError(
-                "prep.array-non-scalar-output",
-                (
-                    "array-child extraction supports scalar output fields only; "
-                    f"JSON outputs were declared by: {', '.join(non_scalar)}"
-                ),
-                rule_id="DD-106-json-array",
-                resource_uri=fact.resource_uri,
-            )
-        name = _safe_identifier(
-            fact.child_relation_name,
-            "array child relation name",
-            "DD-106-json-array",
-        )
-        if name.value in names:
-            raise PolicyNormalizationError(
-                "prep.duplicate-child-relation",
-                f"array child relation {name.value!r} is declared more than once",
-                rule_id="DD-106-json-array",
-                resource_uri=fact.resource_uri,
-            )
-        names.add(name.value)
-        parents = _texts(
-            fact.parent_key_components,
-            "array parent-key components",
-            "DD-106-json-array",
-        )
-        for value in parents.value:
-            _validate_source_column(value, known_columns, fact.resource_uri)
-        result.append(
-            ArrayChildSpec(
-                resource_uri=fact.resource_uri,
-                source_column_uri=source,
-                json_path=_text(fact.json_path, "array JSON path", "DD-106-json"),
-                child_relation_name=name,
-                parent_key_components=parents,
-                element_key_path=(
-                    _text(
-                        fact.element_key_path,
-                        "array element key path",
-                        "DD-106-json-array",
-                    )
-                    if fact.element_key_path is not None
-                    else None
-                ),
-                element_index_field=(
-                    _safe_identifier(
-                        fact.element_index_field,
-                        "array element index field",
-                        "DD-106-json-array",
-                    )
-                    if fact.element_index_field is not None
-                    else None
-                ),
-                null_action=_enum(
-                    fact.null_policy,
-                    ArrayValueAction,
-                    "null-array policy",
-                    "DD-106-json-array",
-                ),
-                empty_action=_enum(
-                    fact.empty_policy,
-                    ArrayValueAction,
-                    "empty-array policy",
-                    "DD-106-json-array",
-                ),
-                retention=_enum(
-                    fact.retention,
-                    RawPayloadRetention,
-                    "raw payload retention",
-                    "DD-106-json-replay",
-                ),
-                columns=tuple(_prepared_column(item) for item in fact.extracted_columns),
-            )
-        )
-    return tuple(result)
-
-
-def _index_preparation_policies(
-    facts: MedallionPolicyFacts,
-    systems: tuple[SourceSystemFact, ...],
-    mappings: SourceMappings,
-) -> tuple[
-    dict[str, tuple[SourceSystemFact, SourceTableFact]],
-    dict[str, list[PreparationPolicyFact]],
-]:
-    """Index physical tables and enforce one preparation policy per mapped table."""
-    table_index: dict[str, tuple[SourceSystemFact, SourceTableFact]] = {}
-    for system in systems:
-        for table in system.tables:
-            if table.relation_kind != "physical":
-                continue
-            table_index[table.uri] = (system, table)
-
-    by_table: dict[str, list[PreparationPolicyFact]] = {}
-    for fact in facts.preparations:
-        table_uri = _single(fact.source_table, "prepared source table", "DD-106-prep")
-        by_table.setdefault(table_uri, []).append(fact)
-    for table_uri, policies in sorted(by_table.items()):
-        if len(policies) != 1:
-            raise PolicyNormalizationError(
-                "prep.duplicate-policy",
-                f"source table {table_uri!r} has {len(policies)} preparation policies",
-                rule_id="DD-106-prep-coverage",
-                resource_uri=policies[0].resource_uri,
-            )
-        if table_uri not in table_index:
-            raise PolicyNormalizationError(
-                "prep.unknown-source-table",
-                f"preparation policy references unknown source table {table_uri!r}",
-                rule_id="DD-106-prep",
-                resource_uri=policies[0].resource_uri,
-            )
-
-    mapped_tables = {
-        mapping.source_table_uri
-        for mapping in mappings.tables
-        if mapping.source_table_uri in table_index
-    }
-    for table_uri in sorted(mapped_tables - set(by_table)):
-        raise PolicyNormalizationError(
-            "prep.missing-policy",
-            f"mapped source table {table_uri!r} has no preparation policy",
-            rule_id="DD-106-prep-coverage",
-            resource_uri=table_uri,
-        )
-
-    return table_index, by_table
-
-
-def _normalize_prep(
-    facts: MedallionPolicyFacts,
-    systems: tuple[SourceSystemFact, ...],
-    mappings: SourceMappings,
-    adapter: AdapterName,
-) -> tuple[PreparationSpec, ...]:
-    from .capabilities import is_reserved_identifier
-
-    table_index, by_table = _index_preparation_policies(facts, systems, mappings)
-
-    result: list[PreparationSpec] = []
-    for table_uri, policy_facts in sorted(by_table.items()):
-        fact = policy_facts[0]
-        system, table = table_index[table_uri]
-        raw_columns = tuple(column for column in table.columns if column.origin == "raw")
-        column_uris = frozenset(column.uri for column in raw_columns)
-        if not fact.mode.values:
-            raise PolicyNormalizationError(
-                "prep.missing-mode",
-                "every mapped physical source table must declare prepMode",
-                rule_id="DD-106-prep-mode",
-                resource_uri=fact.resource_uri,
-                predicate_uri=fact.mode.predicate_uri,
-            )
-        if len(fact.mode.values) != 1:
-            raise PolicyNormalizationError(
-                "prep.duplicate-mode",
-                (
-                    "every mapped physical source table must declare exactly one "
-                    f"prepMode; found {fact.mode.values!r}"
-                ),
-                rule_id="DD-106-prep-mode",
-                resource_uri=fact.resource_uri,
-                predicate_uri=fact.mode.predicate_uri,
-            )
-        mode = _enum(fact.mode, PrepMode, "preparation mode", "DD-106-prep-mode")
-        schema_evolution = SchemaEvolutionSpec(
-            _enum(
-                fact.schema_change_policy,
-                SchemaEvolutionAction,
-                "prep schema-change policy",
-                "DD-106-schema-evolution",
-            )
-        )
-        passthrough_risks = (
-            _passthrough_risks(
-                fact,
-                table,
-                mappings,
-                adapter,
-                schema_evolution.action.value,
-            )
-            if mode.value is PrepMode.PASSTHROUGH
-            else ()
-        )
-        if passthrough_risks:
-            details = "; ".join(
-                f"{code} ({rule_id}): {reason}" for code, rule_id, reason in passthrough_risks
-            )
-            raise PolicyNormalizationError(
-                "prep.passthrough-blocked",
-                f"passthrough validation failed closed: {details}",
-                rule_id="DD-106-prep-passthrough",
-                resource_uri=fact.resource_uri,
-            )
-
-        renames: list[PhysicalRenameSpec] = []
-        for rename in fact.renames:
-            source = _single(
-                rename.source_column,
-                "rename source column",
-                "DD-106-prep-rename",
-            )
-            _validate_source_column(source, column_uris, rename.resource_uri)
-            renames.append(
-                PhysicalRenameSpec(
-                    source_column_uri=source,
-                    target_name=_safe_identifier(
-                        rename.target_name,
-                        "renamed prepared column",
-                        "DD-106-prep-rename",
-                    ),
-                )
-            )
-        rename_by_uri = {item.source_column_uri: item.target_name.value for item in renames}
-        if len(rename_by_uri) != len(renames):
-            raise PolicyNormalizationError(
-                "prep.duplicate-rename",
-                "a source column may have only one physical rename",
-                rule_id="DD-106-prep-rename",
-                resource_uri=fact.resource_uri,
-            )
-        if len(set(rename_by_uri.values())) != len(rename_by_uri):
-            raise PolicyNormalizationError(
-                "prep.rename-collision",
-                "physical rename targets must be unique within a preparation model",
-                rule_id="DD-106-prep-rename",
-                resource_uri=fact.resource_uri,
-            )
-
-        if mode.value is PrepMode.NORMALIZE:
-            for column in raw_columns:
-                unsafe = not _SAFE_NAME.fullmatch(column.name)
-                reserved = is_reserved_identifier(adapter, column.name)
-                if (unsafe or reserved) and column.uri not in rename_by_uri:
-                    reason = (
-                        "not a portable identifier" if unsafe else f"reserved on {adapter.value}"
-                    )
-                    raise PolicyNormalizationError(
-                        "prep.missing-safe-rename",
-                        (f"source column {column.name!r} is {reason}; declare prep:physicalRename"),
-                        rule_id="DD-106-prep-identifier",
-                        resource_uri=fact.resource_uri,
-                    )
-            physical_names = [rename_by_uri.get(column.uri, column.name) for column in raw_columns]
-            duplicates = sorted({name for name in physical_names if physical_names.count(name) > 1})
-            if duplicates:
-                raise PolicyNormalizationError(
-                    "prep.output-name-collision",
-                    (f"prepared physical column names collide: {', '.join(duplicates)}"),
-                    rule_id="DD-106-prep-identifier",
-                    resource_uri=fact.resource_uri,
-                )
-            reserved_outputs = sorted(
-                {name for name in physical_names if is_reserved_identifier(adapter, name)}
-            )
-            if reserved_outputs:
-                raise PolicyNormalizationError(
-                    "prep.reserved-output-identifier",
-                    (
-                        f"prepared output identifiers are reserved on {adapter.value}: "
-                        f"{', '.join(reserved_outputs)}"
-                    ),
-                    rule_id="DD-106-prep-identifier",
-                    resource_uri=fact.resource_uri,
-                )
-
-        cleanup: list[CleanupRuleSpec] = []
-        for rule_fact in fact.cleanup_rules:
-            source = _single(
-                rule_fact.source_column,
-                "cleanup source column",
-                "DD-106-prep-cleanup",
-            )
-            _validate_source_column(source, column_uris, rule_fact.resource_uri)
-            lossless = _bool(
-                rule_fact.lossless,
-                "cleanup lossless flag",
-                "DD-106-prep-cleanup",
-            )
-            if not lossless.value:
-                raise PolicyNormalizationError(
-                    "prep.lossy-cleanup",
-                    "ordinary prep cleanup must be explicitly lossless",
-                    rule_id="DD-106-prep-cleanup",
-                    resource_uri=rule_fact.resource_uri,
-                )
-            cleanup.append(
-                CleanupRuleSpec(
-                    source_column_uri=source,
-                    operation=_enum(
-                        rule_fact.operation,
-                        CleanupOperation,
-                        "cleanup operation",
-                        "DD-106-prep-cleanup",
-                    ),
-                    lossless=lossless,
-                )
-            )
-
-        conversions: list[TypeConversionSpec] = []
-        for conversion in fact.type_conversions:
-            source = _single(
-                conversion.source_column,
-                "type-conversion source column",
-                "DD-106-prep-cast",
-            )
-            _validate_source_column(source, column_uris, conversion.resource_uri)
-            parse_policy = _text(
-                conversion.parse_policy,
-                "deterministic parse policy",
-                "DD-106-prep-cast",
-            )
-            if not re.fullmatch(r"[a-z][a-z0-9-]*", parse_policy.value):
-                raise PolicyNormalizationError(
-                    "prep.invalid-parse-policy",
-                    (f"parse policy {parse_policy.value!r} must be a safe lowercase named parser"),
-                    rule_id="DD-106-prep-cast",
-                    resource_uri=conversion.resource_uri,
-                )
-            conversions.append(
-                TypeConversionSpec(
-                    source_column_uri=source,
-                    target_type=_canonical_type(
-                        conversion.target_type,
-                        "DD-106-prep-cast",
-                    ),
-                    parse_policy=parse_policy,
-                    error_action=_enum(
-                        conversion.error_policy,
-                        ErrorAction,
-                        "parse error policy",
-                        "DD-106-prep-cast",
-                    ),
-                )
-            )
-
-        sentinels: list[SentinelRuleSpec] = []
-        for sentinel in fact.sentinel_rules:
-            source = _single(
-                sentinel.source_column,
-                "sentinel source column",
-                "DD-106-prep-sentinel",
-            )
-            _validate_source_column(source, column_uris, sentinel.resource_uri)
-            action = _enum(
-                sentinel.action,
-                SentinelAction,
-                "sentinel action",
-                "DD-106-prep-sentinel",
-            )
-            replacement = (
-                _text(
-                    sentinel.normalized_value,
-                    "normalized sentinel replacement",
-                    "DD-106-prep-sentinel",
-                )
-                if sentinel.normalized_value is not None
-                else None
-            )
-            if action.value is SentinelAction.TO_NORMALIZED_VALUE and replacement is None:
-                raise PolicyNormalizationError(
-                    "prep.sentinel-missing-replacement",
-                    "to-normalized-value requires normalizedValue",
-                    rule_id="DD-106-prep-sentinel",
-                    resource_uri=sentinel.resource_uri,
-                )
-            if action.value is SentinelAction.TO_NULL and replacement is not None:
-                raise PolicyNormalizationError(
-                    "prep.sentinel-contradictory-replacement",
-                    "to-null must not also declare normalizedValue",
-                    rule_id="DD-106-prep-sentinel",
-                    resource_uri=sentinel.resource_uri,
-                )
-            sentinels.append(
-                SentinelRuleSpec(
-                    source_column_uri=source,
-                    sentinel_value=_text(
-                        sentinel.sentinel_value,
-                        "raw sentinel value",
-                        "DD-106-prep-sentinel",
-                    ),
-                    action=action,
-                    normalized_value=replacement,
-                    evidence=_texts(
-                        sentinel.evidence,
-                        "sentinel evidence",
-                        "DD-106-prep-sentinel",
-                    ),
-                )
-            )
-
-        if len({item.source_column_uri for item in conversions}) != len(conversions):
-            raise PolicyNormalizationError(
-                "prep.duplicate-type-conversion",
-                "a source column may declare only one canonical type conversion",
-                rule_id="DD-106-prep-cast",
-                resource_uri=fact.resource_uri,
-            )
-
-        conversion_by_uri = {item.source_column_uri: item.target_type.value for item in conversions}
-        raw_by_uri = {column.uri: column for column in raw_columns}
-        for mapping in mappings.columns:
-            column = raw_by_uri.get(mapping.source_column_uri)
-            if column is None:
-                continue
-            source_type = _source_type(column.data_type)
-            target_type = _target_type(mapping.target_data_type)
-            if source_type is None:
-                raise PolicyNormalizationError(
-                    "prep.unsupported-source-type",
-                    (
-                        f"source column {column.name!r} has unsupported declared "
-                        f"type {column.data_type!r}"
-                    ),
-                    rule_id="DD-106-prep-cast",
-                    resource_uri=fact.resource_uri,
-                )
-            if target_type is None or _types_compatible(source_type, target_type):
-                continue
-            conversion_type = conversion_by_uri.get(column.uri)
-            if conversion_type is None:
-                raise PolicyNormalizationError(
-                    "prep.missing-required-cast",
-                    (
-                        f"source column {column.name!r} type {column.data_type!r} is "
-                        f"incompatible with mapped target {mapping.target_column_name!r} "
-                        f"type {mapping.target_data_type!r}; declare prep:typeConversion"
-                    ),
-                    rule_id="DD-106-prep-cast",
-                    resource_uri=fact.resource_uri,
-                )
-            if conversion_type.kind is not target_type.kind:
-                raise PolicyNormalizationError(
-                    "prep.cast-target-mismatch",
-                    (
-                        f"conversion for {column.name!r} produces "
-                        f"{conversion_type.kind.value!r}, not mapped target "
-                        f"{target_type.kind.value!r}"
-                    ),
-                    rule_id="DD-106-prep-cast",
-                    resource_uri=fact.resource_uri,
-                )
-
-        cdc = _normalize_cdc(fact.cdc, column_uris)
-        if table.incremental_column and cdc is None:
-            raise PolicyNormalizationError(
-                "prep.missing-cdc-normalization",
-                (
-                    f"source table incremental column {table.incremental_column!r} "
-                    "requires a normalized CDC/audit mapping"
-                ),
-                rule_id="DD-106-cdc",
-                resource_uri=fact.resource_uri,
-            )
-
-        scalar_json = _normalize_scalar_json(fact.scalar_json, column_uris)
-        array_json = _normalize_array_json(fact.array_json, column_uris)
-        json_contract_columns = {item.source_column_uri for item in scalar_json} | {
-            item.source_column_uri for item in array_json
-        }
-        for column in raw_columns:
-            if column.json is not None and column.uri not in json_contract_columns:
-                raise PolicyNormalizationError(
-                    "prep.missing-json-contract",
-                    (
-                        f"JSON source column {column.name!r} requires scalar extraction "
-                        "or an explicit array-child contract"
-                    ),
-                    rule_id="DD-106-json",
-                    resource_uri=fact.resource_uri,
-                )
-
-        record_key = _normalize_record_key(fact.record_keys, column_uris)
-        primary_key_uris = {
-            column.uri
-            for column in raw_columns
-            if column.is_primary_key or column.name in table.primary_key_columns
-        }
-        if set(record_key.components.value) != primary_key_uris:
-            raise PolicyNormalizationError(
-                "prep.record-key-not-source-pk",
-                (
-                    "source-record key components must exactly match the declared "
-                    "source-table primary key"
-                ),
-                rule_id="DD-106-source-record-key",
-                resource_uri=fact.resource_uri,
-            )
-        if mode.value is PrepMode.NORMALIZE:
-            cdc_fields = (
-                (
-                    cdc.operation,
-                    cdc.source_updated_at,
-                    cdc.source_effective_at,
-                    cdc.ingested_at,
-                    cdc.sequence,
-                )
-                if cdc is not None
-                else ()
-            )
-            derived_names = [
-                record_key.output.name.value,
-                *(
-                    field.normalized_fields[0].name.value
-                    for field in cdc_fields
-                    if field is not None
-                ),
-                *(item.output.name.value for item in scalar_json),
-                *(column.name.value for child in array_json for column in child.columns),
-            ]
-            reserved_derived = sorted(
-                {name for name in derived_names if is_reserved_identifier(adapter, name)}
-            )
-            if reserved_derived:
-                raise PolicyNormalizationError(
-                    "prep.reserved-derived-identifier",
-                    (
-                        f"prepared derived identifiers are reserved on {adapter.value}: "
-                        f"{', '.join(reserved_derived)}"
-                    ),
-                    rule_id="DD-106-prep-identifier",
-                    resource_uri=fact.resource_uri,
-                )
-
-        if len(fact.technical_dedupes) > 1:
-            raise PolicyNormalizationError(
-                "prep.conflicting-dedupe",
-                "a preparation policy may declare at most one TechnicalDedupe",
-                rule_id="DD-106-technical-dedupe",
-                resource_uri=fact.resource_uri,
-            )
-        if fact.technical_dedupes:
-            authored_dedupe = fact.technical_dedupes[0]
-            by_uri = {column.uri: column.name for column in raw_columns}
-            unknown_keys = sorted(set(authored_dedupe.keys.values) - set(by_uri))
-            if unknown_keys:
-                raise PolicyNormalizationError(
-                    "prep.unknown-dedupe-key",
-                    f"dedupe keys are not source columns: {', '.join(unknown_keys)}",
-                    rule_id="DD-106-technical-dedupe",
-                    resource_uri=authored_dedupe.resource_uri,
-                )
-            keys = tuple(by_uri[uri] for uri in authored_dedupe.keys.values)
-            positioned: list[tuple[int, str, str]] = []
-            seen_positions: set[int] = set()
-            for order_fact in authored_dedupe.order_terms:
-                column_uri = _single(
-                    order_fact.source_column,
-                    "dedupe order source column",
-                    "DD-109-total-order",
-                )
-                if column_uri not in by_uri:
-                    raise PolicyNormalizationError(
-                        "prep.invalid-dedupe-order",
-                        f"order column {column_uri!r} is not a source column",
-                        rule_id="DD-109-total-order",
-                        resource_uri=order_fact.resource_uri,
-                    )
-                raw_position = _single(
-                    order_fact.position,
-                    "dedupe order position",
-                    "DD-109-total-order",
-                )
-                try:
-                    position = int(raw_position)
-                except ValueError as exc:
-                    raise PolicyNormalizationError(
-                        "prep.invalid-dedupe-order",
-                        f"order position {raw_position!r} must be a positive integer",
-                        rule_id="DD-109-total-order",
-                        resource_uri=order_fact.resource_uri,
-                    ) from exc
-                direction = _single(
-                    order_fact.direction,
-                    "dedupe sort direction",
-                    "DD-109-total-order",
-                ).upper()
-                if position < 1 or position in seen_positions or direction not in {"ASC", "DESC"}:
-                    raise PolicyNormalizationError(
-                        "prep.invalid-dedupe-order",
-                        "order positions must be unique positive integers and direction "
-                        "must be ASC or DESC",
-                        rule_id="DD-109-total-order",
-                        resource_uri=order_fact.resource_uri,
-                    )
-                seen_positions.add(position)
-                positioned.append((position, by_uri[column_uri], direction))
-            positioned.sort()
-            if (
-                not keys
-                or not positioned
-                or [item[0] for item in positioned] != list(range(1, len(positioned) + 1))
-            ):
-                raise PolicyNormalizationError(
-                    "prep.incomplete-dedupe",
-                    "technical dedupe requires keys and a contiguous complete total order",
-                    rule_id="DD-106-technical-dedupe",
-                    resource_uri=authored_dedupe.resource_uri,
-                )
-            order_columns = [item[1] for item in positioned]
-            normalized_order = tuple(f"{name} {direction}" for _, name, direction in positioned)
-            missing_ties = sorted(set(table.primary_key_columns) - set(order_columns))
-            if missing_ties:
-                raise PolicyNormalizationError(
-                    "prep.incomplete-total-order",
-                    (
-                        "technical dedupe order must include source primary-key "
-                        f"tie-breakers: {', '.join(missing_ties)}"
-                    ),
-                    rule_id="DD-109-total-order",
-                    resource_uri=authored_dedupe.resource_uri,
-                )
-            dedupe = TechnicalDedupeSpec(
-                mode=_effective(
-                    TechnicalDedupeMode.COMPLETE_TOTAL_ORDER,
-                    authored_dedupe.keys,
-                    "DD-106-technical-dedupe",
-                ),
-                keys=_effective(
-                    keys,
-                    authored_dedupe.keys,
-                    "DD-106-technical-dedupe",
-                ),
-                total_order=_effective(
-                    normalized_order,
-                    authored_dedupe.keys,
-                    "DD-109-total-order",
-                ),
-            )
-        else:
-            dedupe = TechnicalDedupeSpec(
-                mode=_default(
-                    TechnicalDedupeMode.NONE,
-                    "DD-106-technical-dedupe",
-                    "No technical deduplication was authored.",
-                ),
-                keys=_default(
-                    (),
-                    "DD-106-technical-dedupe",
-                    "No technical deduplication keys were authored.",
-                ),
-                total_order=_default(
-                    (),
-                    "DD-109-total-order",
-                    "No technical deduplication order was authored.",
-                ),
-            )
-
-        evidence = (
-            _texts(
-                fact.normalization_evidence,
-                "normalization evidence",
-                "DD-106-prep-evidence",
-                required=False,
-            )
-            if fact.normalization_evidence is not None
-            else _default(
-                (),
-                "DD-106-prep-evidence",
-                "No additional normalization evidence was required.",
-            )
-        )
-        result.append(
-            PreparationSpec(
-                resource_uri=fact.resource_uri,
-                table=SourceTableIdentitySpec(
-                    source_system_uri=system.uri,
-                    source_table_uri=table.uri,
-                    source_name=system.label,
-                    table_name=table.name,
-                ),
-                mode=mode,
-                schema_evolution=schema_evolution,
-                renames=tuple(renames),
-                cleanup_rules=tuple(cleanup),
-                type_conversions=tuple(conversions),
-                sentinel_rules=tuple(sentinels),
-                cdc=cdc,
-                source_record_key=record_key,
-                scalar_json=scalar_json,
-                array_children=array_json,
-                technical_dedupe=dedupe,
-                normalization_evidence=evidence,
-            )
-        )
-    return tuple(result)
 
 
 def _normalize_multi_source(
@@ -2386,17 +1255,10 @@ def _normalize_temporal(
 
 def _timestamp_semantics(
     source_refs: tuple[str, ...] = (),
-    preparations: tuple[PreparationSpec, ...] = (),
     incremental: IncrementalPolicySpec | None = None,
     available_columns_by_source: dict[str, frozenset[str]] | None = None,
     contract_cdc_by_source: dict[str, dict[str, str]] | None = None,
 ) -> tuple[TimestampSemanticSpec, ...]:
-    prep_by_source: dict[str, PreparationSpec] = {}
-    for preparation in preparations:
-        prep_by_source[preparation.source_record_key.resource_uri] = preparation
-        for child in preparation.array_children:
-            prep_by_source[child.resource_uri] = preparation
-
     roles = (
         (
             TimestampRole.INGESTED_AT,
@@ -2442,26 +1304,16 @@ def _timestamp_semantics(
         configured = incremental_columns.get(cdc_attribute)
         source_values: list[TimestampSourceSpec] = []
         for source_ref in source_refs:
-            preparation = prep_by_source.get(source_ref)
-            cdc_field = (
-                getattr(preparation.cdc, cdc_attribute)
-                if preparation is not None and preparation.cdc is not None
-                else None
-            )
             contract_column = (contract_cdc_by_source or {}).get(source_ref, {}).get(cdc_attribute)
             source_column = (
-                cdc_field.normalized_fields[0].name.value
-                if cdc_field is not None
-                else (
-                    configured.value
-                    if (
-                        configured is not None
-                        and not configured.value.startswith("_")
-                        and configured.value
-                        in (available_columns_by_source or {}).get(source_ref, frozenset())
-                    )
-                    else None
+                configured.value
+                if (
+                    configured is not None
+                    and not configured.value.startswith("_")
+                    and configured.value
+                    in (available_columns_by_source or {}).get(source_ref, frozenset())
                 )
+                else None
             )
             if source_column is None and contract_column is not None:
                 source_column = contract_column
@@ -2489,7 +1341,7 @@ def _timestamp_semantics(
                 supplied_origin if supplied else TimestampOrigin.NOT_SUPPLIED,
                 "DD-108-lineage-time",
                 (
-                    f"{output_name} is supplied by source preparation."
+                    f"{output_name} is supplied by the binding load policy."
                     if supplied
                     else f"{output_name} is not supplied; no other timestamp is substituted."
                 ),
@@ -2510,7 +1362,6 @@ def _timestamp_semantics(
 
 def _normalize_identities(
     facts: tuple[EntityIdentityFact, ...],
-    preparations: tuple[PreparationSpec, ...],
     multi_source: tuple[MultiSourcePolicySpec, ...],
     hashes: tuple[CanonicalHashPolicySpec, ...],
     incremental: tuple[IncrementalPolicySpec, ...],
@@ -2521,35 +1372,54 @@ def _normalize_identities(
     multi_by_ref = {item.resource_uri: item for item in multi_source}
     hash_refs = {item.resource_uri for item in hashes}
     incremental_by_ref = {item.resource_uri: item for item in incremental}
-    prepared_identity_refs = {
-        identity_ref
-        for preparation in preparations
-        for identity_ref in (
-            preparation.source_record_key.resource_uri,
-            *(child.resource_uri for child in preparation.array_children),
-        )
-    }
     contract_by_identity = {
         contract.identity_resource_uri: contract
         for _, contract in contracts
         if contract.identity_resource_uri
     }
-    governed_identity_refs = prepared_identity_refs | set(contract_by_identity)
-    source_ref_by_relation = {
-        relation_uri: identity_ref
-        for preparation in preparations
-        for relation_uri, identity_ref in (
-            (
-                preparation.table.source_table_uri,
-                preparation.source_record_key.resource_uri,
-            ),
-            *((child.resource_uri, child.resource_uri) for child in preparation.array_children),
-        )
-    }
+    governed_identity_refs = (
+        set(contract_by_identity)
+        | {
+            candidate.source_identity_ref
+            for candidate in candidates
+            if candidate.source_identity_ref
+        }
+        | {
+            source_ref
+            for fact in facts
+            if fact.source_identities is not None
+            for source_ref in fact.source_identities.values
+            if source_ref
+        }
+    )
+    source_ref_by_relation: dict[str, str] = {}
     source_ref_by_relation.update(
         {
             contract.virtual_source_iri: contract.identity_resource_uri
             for contract in contract_by_identity.values()
+        }
+    )
+    identity_fact_by_class = {fact.resource_uri: fact for fact in facts}
+    sources_by_class: dict[str, dict[str, object]] = {}
+    for candidate in candidates:
+        class_sources = sources_by_class.setdefault(candidate.identity.class_uri, {})
+        for source in candidate.sources:
+            class_sources.setdefault(source.table_uri, source)
+    for class_uri, class_sources in sources_by_class.items():
+        identity_fact = identity_fact_by_class.get(class_uri)
+        source_refs = (
+            identity_fact.source_identities.values
+            if identity_fact is not None and identity_fact.source_identities is not None
+            else ()
+        )
+        for source, source_ref in zip(class_sources.values(), source_refs, strict=False):
+            source_ref_by_relation.setdefault(source.table_uri, source_ref)
+    source_ref_by_relation.update(
+        {
+            source.table_uri: candidate.source_identity_ref
+            for candidate in candidates
+            if candidate.source_identity_ref
+            for source in candidate.sources
         }
     )
     available_columns: dict[tuple[str, str], set[str]] = {}
@@ -2616,8 +1486,8 @@ def _normalize_identities(
             raise PolicyNormalizationError(
                 "identity.unknown-source-identity",
                 (
-                    "sourceIdentity must reference a governed prep RecordKeyPolicy, "
-                    "ArrayChildContract, or dbt ContractIdentity; unknown: "
+                    "sourceIdentity must reference a source bound by EntityBinding "
+                    "or a dbt ContractIdentity; unknown: "
                     f"{', '.join(unknown_source_refs)}"
                 ),
                 rule_id="DD-108-source-identity",
@@ -3113,7 +1983,6 @@ def _normalize_identities(
                     contribution=contribution,
                     timestamps=_timestamp_semantics(
                         source_refs.value,
-                        preparations,
                         incremental_by_ref.get(incremental_ref),
                         {
                             source_ref: frozenset(
@@ -4232,26 +3101,14 @@ def _normalize_gold_table(
                 rule_id="DD-112-fact",
                 resource_uri=fact.resource_uri,
             )
-        if fact.version_binding is None or fact.incremental_policy_refs is None:
+        if fact.version_binding is None:
             raise PolicyNormalizationError(
                 "gold.incomplete-fact-runtime",
-                "fact requires dimensionVersionBinding and incrementalPolicy",
+                "fact requires dimensionVersionBinding",
                 rule_id="DD-112-fact",
                 resource_uri=fact.resource_uri,
             )
-        incremental_ref = _single(
-            fact.incremental_policy_refs,
-            "Gold fact incremental policy",
-            "DD-112-fact",
-        )
-        runtime = incremental.get(incremental_ref)
-        if runtime is None:
-            raise PolicyNormalizationError(
-                "gold.unknown-incremental-policy",
-                f"Gold fact references unknown incremental policy {incremental_ref!r}",
-                rule_id="DD-112-fact",
-                resource_uri=fact.resource_uri,
-            )
+        incremental_ref = None
         correction = (
             _enum(
                 fact.correction,
@@ -4260,7 +3117,7 @@ def _normalize_gold_table(
                 "DD-112-fact",
             )
             if fact.correction is not None
-            else runtime.correction
+            else None
         )
         late_arrival = (
             _enum(
@@ -4270,7 +3127,7 @@ def _normalize_gold_table(
                 "DD-112-fact",
             )
             if fact.late_arrival is not None
-            else runtime.late_arrival
+            else None
         )
         return GoldTablePolicySpec(
             resource_uri=fact.resource_uri,
@@ -4565,14 +3422,16 @@ def _normalize_gold(
 
 
 def _capability_requirements(
-    preparations: tuple[PreparationSpec, ...],
     hashes: tuple[CanonicalHashPolicySpec, ...],
     incremental: tuple[IncrementalPolicySpec, ...],
     temporal: tuple[TemporalRelationshipSpec, ...],
+    multi_source: tuple[MultiSourcePolicySpec, ...],
+    identity_facts: tuple[EntityIdentityFact, ...],
     quality: tuple[DataQualityRuleSpec, ...],
     gold: GoldProductSpec,
     *,
     has_foreign_keys: bool,
+    has_contracted_dbt_source: bool,
 ) -> tuple[CapabilityRequirementSpec, ...]:
     required: set[tuple[AdapterCapability, str, str]] = {
         (AdapterCapability.CANONICAL_TYPES, "project", "DD-111-types")
@@ -4585,17 +3444,87 @@ def _capability_requirements(
                 "DD-109-hash",
             )
         )
-    if any(item.scalar_json for item in preparations):
-        required.add((AdapterCapability.JSON_SCALAR, "prep", "DD-106-json-scalar"))
-    if any(item.array_children for item in preparations):
-        required.add((AdapterCapability.JSON_ARRAY_CHILD, "prep", "DD-106-json-array"))
     if incremental:
         required.add((AdapterCapability.MERGE_UPSERT, "project", "DD-109-merge"))
         required.add((AdapterCapability.DELETE_SEMANTICS, "project", "DD-109-delete"))
         required.add((AdapterCapability.WINDOW_FUNCTIONS, "project", "DD-109-total-order"))
+        required.add((AdapterCapability.TOTAL_ORDERING, "project", "DD-109-total-order"))
+    if any(
+        fact.scd_type is not None and fact.scd_type.values == (ScdType.TYPE_1.value,)
+        for fact in identity_facts
+    ):
+        required.add((AdapterCapability.INCREMENTAL_SCD1, "silver", "DD-133-stage2-scd1"))
+    if any(
+        fact.scd_type is not None and fact.scd_type.values == (ScdType.TYPE_2.value,)
+        for fact in identity_facts
+    ):
+        required.add((AdapterCapability.INCREMENTAL_SCD2, "silver", "DD-133-stage2-scd2"))
+    if any(
+        item.schema_evolution.action.value is SchemaEvolutionAction.FAIL for item in incremental
+    ):
+        required.add(
+            (
+                AdapterCapability.SCHEMA_EVOLUTION_FAIL,
+                "project",
+                "DD-109-schema-change",
+            )
+        )
+    if any(
+        item.schema_evolution.action.value is SchemaEvolutionAction.APPROVED_CONTRACT_UPDATE
+        for item in incremental
+    ):
+        required.add(
+            (
+                AdapterCapability.SCHEMA_EVOLUTION_APPEND_COMPATIBLE,
+                "project",
+                "DD-109-schema-change",
+            )
+        )
     if temporal or has_foreign_keys:
         required.add((AdapterCapability.TEMPORAL_LOOKUP, "silver", "DD-109-temporal-fk"))
         required.add((AdapterCapability.CONSTRAINTS, "silver", "DD-110-constraints"))
+    if any(item.mode.value is TemporalMode.CURRENT for item in temporal):
+        required.add(
+            (
+                AdapterCapability.TEMPORAL_FK_CURRENT,
+                "silver",
+                "DD-109-temporal-fk",
+            )
+        )
+    if any(item.mode.value is TemporalMode.AS_OF for item in temporal):
+        required.add(
+            (
+                AdapterCapability.TEMPORAL_FK_AS_OF,
+                "silver",
+                "DD-109-temporal-fk",
+            )
+        )
+    if any(
+        item.relationship.value is BranchRelationship.EXACTLY_EQUIVALENT for item in multi_source
+    ):
+        required.add(
+            (
+                AdapterCapability.CONFORMANCE_DEDUPLICATE,
+                "silver",
+                "DD-133-stage2-conformance",
+            )
+        )
+    elif multi_source:
+        required.add(
+            (
+                AdapterCapability.CONFORMANCE_UNION_ALL,
+                "silver",
+                "DD-133-stage2-conformance",
+            )
+        )
+    if has_contracted_dbt_source:
+        required.add(
+            (
+                AdapterCapability.CONTRACTED_DBT_SOURCE,
+                "source",
+                "DD-133-stage2-contracted-source",
+            )
+        )
     if any(item.action.value in {DqAction.QUARANTINE, DqAction.BLOCK} for item in quality):
         required.add((AdapterCapability.QUARANTINE, "quality", "DD-115-quarantine"))
     if quality:
@@ -4747,115 +3676,6 @@ def _column_role(name: str, fk_names: frozenset[str]) -> SilverColumnRole:
     return SilverColumnRole.BUSINESS
 
 
-def _cdc_output_name(field: CdcFieldSpec | None) -> str | None:
-    if field is None or len(field.normalized_fields) != 1:
-        return None
-    return field.normalized_fields[0].name.value
-
-
-def _validate_runtime_sources(
-    identity: EntityIdentitySpec,
-    runtime: IncrementalPolicySpec,
-    preparations: tuple[PreparationSpec, ...],
-) -> None:
-    prep_by_ref: dict[str, PreparationSpec] = {}
-    child_element_identity: dict[str, str] = {}
-    for preparation in preparations:
-        prep_by_ref[preparation.source_record_key.resource_uri] = preparation
-        for child in preparation.array_children:
-            prep_by_ref[child.resource_uri] = preparation
-            child_element_identity[child.resource_uri] = (
-                child.element_index_field.value
-                if child.element_index_field is not None
-                else "_element_key"
-            )
-
-    expected = {
-        "operation": runtime.cdc_operation.value,
-        "source_updated_at": runtime.ordering.source_updated_at.value,
-        "source_effective_at": runtime.ordering.source_effective_at.value,
-        "ingested_at": runtime.ordering.ingested_at.value,
-    }
-    for source_ref in identity.source.record_key_refs.value:
-        element_identity = child_element_identity.get(source_ref)
-        if (
-            element_identity is not None
-            and identity.key_scope.value is KeyScope.SOURCE_TABLE_ARRAY_ELEMENT
-            and element_identity not in runtime.merge_identity.value
-        ):
-            raise PolicyNormalizationError(
-                "incremental.array-element-identity-missing",
-                (
-                    f"array-child source identity {source_ref!r} requires "
-                    f"{element_identity!r} in mergeIdentity"
-                ),
-                rule_id="DD-109-merge",
-                resource_uri=identity.entity_uri,
-            )
-        preparation = prep_by_ref.get(source_ref)
-        cdc = preparation.cdc if preparation is not None else None
-        if cdc is None:
-            raise PolicyNormalizationError(
-                "incremental.source-cdc-missing",
-                f"incremental source identity {source_ref!r} has no complete prep CDC mapping",
-                rule_id="DD-109-cdc",
-                resource_uri=identity.entity_uri,
-            )
-        actual = {
-            "operation": _cdc_output_name(cdc.operation),
-            "source_updated_at": _cdc_output_name(cdc.source_updated_at),
-            "source_effective_at": _cdc_output_name(cdc.source_effective_at),
-            "ingested_at": _cdc_output_name(cdc.ingested_at),
-        }
-        mismatches = [
-            label for label, expected_name in expected.items() if actual[label] != expected_name
-        ]
-        if mismatches:
-            raise PolicyNormalizationError(
-                "incremental.source-cdc-incomplete",
-                (
-                    f"source identity {source_ref!r} does not supply configured "
-                    f"normalized CDC fields: {', '.join(mismatches)}"
-                ),
-                rule_id="DD-109-cdc",
-                resource_uri=identity.entity_uri,
-            )
-        if cdc.operation_code_map is None or not cdc.operation_code_map.value:
-            raise PolicyNormalizationError(
-                "incremental.operation-map-missing",
-                f"source identity {source_ref!r} requires a canonical CDC operation map",
-                rule_id="DD-109-cdc",
-                resource_uri=identity.entity_uri,
-            )
-        sequence_name = _cdc_output_name(cdc.sequence)
-        if sequence_name is None:
-            raise PolicyNormalizationError(
-                "incremental.sequence-missing",
-                f"source identity {source_ref!r} requires a normalized CDC sequence",
-                rule_id="DD-109-total-order",
-                resource_uri=identity.entity_uri,
-            )
-        available_order = {
-            *runtime.merge_identity.value,
-            sequence_name,
-        }
-        missing_order = [
-            column
-            for column in runtime.ordering.tie_breakers.value
-            if column not in available_order
-        ]
-        if missing_order:
-            raise PolicyNormalizationError(
-                "incremental.unbound-order-term",
-                (
-                    f"source identity {source_ref!r} cannot supply total-order terms: "
-                    f"{', '.join(missing_order)}"
-                ),
-                rule_id="DD-109-total-order",
-                resource_uri=identity.entity_uri,
-            )
-
-
 def _validate_identity_columns(
     candidate: BoundSilverModel,
     identity: EntityIdentitySpec | None,
@@ -4865,7 +3685,6 @@ def _validate_identity_columns(
         identity is None
         or not identity.business.keys.value
         or candidate.identity.outcome is not ModelOutcome.GENERATED
-        or candidate.kind is SilverModelKind.STUB
     ):
         return
     columns = {column.name: column for column in candidate.columns}
@@ -4878,9 +3697,10 @@ def _validate_identity_columns(
         raise PolicyNormalizationError(
             "identity.authored-key-not-supplied",
             (
-                "authored naturalKey/mastered/integration identity columns must be "
-                f"explicitly mapped on {candidate.identity.model_name!r}; missing: "
-                f"{', '.join(missing)}"
+                "authored naturalKey identity OUTPUT column(s) must be explicitly materialized "
+                f"as mapped fields on {candidate.identity.model_name!r}; missing output "
+                f"column(s): {', '.join(missing)}. Each naturalKey component must correspond to "
+                "a field whose target property emits that output column"
             ),
             rule_id="DD-108-business-identity",
             resource_uri=identity.entity_uri,
@@ -5044,9 +3864,7 @@ def _silver_foreign_key_policy(
     materialized_classes = {
         candidate.identity.class_uri
         for candidate in candidates
-        if candidate.identity.class_uri
-        and candidate.identity.outcome is ModelOutcome.GENERATED
-        and candidate.kind is not SilverModelKind.STUB
+        if candidate.identity.class_uri and candidate.identity.outcome is ModelOutcome.GENERATED
     }
     descriptors = []
     for descriptor in fk_policy.descriptors:
@@ -5075,7 +3893,6 @@ def _silver_foreign_key_policy(
 
 def _silver_authorities(
     candidates: tuple[BoundSilverModel, ...],
-    preparations: tuple[PreparationSpec, ...],
     identities: tuple[EntityIdentitySpec, ...],
     identity_facts: tuple[EntityIdentityFact, ...],
     multi_source: tuple[MultiSourcePolicySpec, ...],
@@ -5120,7 +3937,8 @@ def _silver_authorities(
             for item in descriptors
             if item.property_uri not in temporal_by_property
         )
-        if missing_temporal:
+        identity = identity_by_uri.get(class_uri)
+        if identity is not None and missing_temporal:
             raise PolicyNormalizationError(
                 "temporal-fk.policy-missing",
                 (
@@ -5130,7 +3948,6 @@ def _silver_authorities(
                 rule_id="DD-109-temporal-fk",
                 resource_uri=class_uri,
             )
-        identity = identity_by_uri.get(class_uri)
         _validate_identity_columns(candidate, identity)
         timestamps = identity.lineage.timestamps if identity else _timestamp_semantics()
         history = history_by_class.get(class_uri)
@@ -5144,7 +3961,6 @@ def _silver_authorities(
                     resource_uri=class_uri,
                 )
             runtime = incremental_by_uri[identity.incremental_policy_ref]
-            _validate_runtime_sources(identity, runtime, preparations)
             hash_policy = (
                 hash_by_uri.get(identity.hash_policy_ref)
                 if identity.hash_policy_ref is not None
@@ -5157,7 +3973,9 @@ def _silver_authorities(
                 canonical_hash=hash_policy,
             )
         for descriptor in descriptors:
-            relationship = temporal_by_property[descriptor.property_uri]
+            relationship = temporal_by_property.get(descriptor.property_uri)
+            if relationship is None:
+                continue
             parent_history = history_by_class.get(descriptor.target_class)
             if (
                 relationship.mode.value is TemporalMode.NONE
@@ -5417,101 +4235,6 @@ def _gold_registry() -> GoldProductProfileRegistry:
     )
 
 
-def _collect_preparations(
-    facts: MedallionPolicyFacts,
-    systems: tuple[SourceSystemFact, ...],
-    mappings: SourceMappings,
-    adapter: AdapterName,
-    collector: DiagnosticCollector,
-) -> EvaluationResult[tuple[PreparationSpec, ...]]:
-    """Normalize independent preparation roots without retrying a failed root."""
-
-    table_index = {
-        table.uri: (system, table)
-        for system in systems
-        for table in system.tables
-        if table.relation_kind == "physical"
-    }
-    by_table: dict[str, list[PreparationPolicyFact]] = {}
-    for fact in facts.preparations:
-        try:
-            table_uri = _single(fact.source_table, "prepared source table", "DD-106-prep")
-        except PolicyNormalizationError as exc:
-            collector.add(exc.diagnostic)
-            continue
-        by_table.setdefault(table_uri, []).append(fact)
-
-    invalid_tables: set[str] = set()
-    for table_uri, policies in sorted(by_table.items()):
-        if len(policies) != 1:
-            error = PolicyNormalizationError(
-                "prep.duplicate-policy",
-                f"source table {table_uri!r} has {len(policies)} preparation policies",
-                rule_id="DD-106-prep-coverage",
-                resource_uri=policies[0].resource_uri,
-            )
-            collector.add(error.diagnostic)
-            invalid_tables.add(table_uri)
-        elif table_uri not in table_index:
-            error = PolicyNormalizationError(
-                "prep.unknown-source-table",
-                f"preparation policy references unknown source table {table_uri!r}",
-                rule_id="DD-106-prep",
-                resource_uri=policies[0].resource_uri,
-            )
-            collector.add(error.diagnostic)
-            invalid_tables.add(table_uri)
-
-    mapped_tables = {
-        mapping.source_table_uri
-        for mapping in mappings.tables
-        if mapping.source_table_uri in table_index
-    }
-    for table_uri in sorted(mapped_tables - set(by_table)):
-        error = PolicyNormalizationError(
-            "prep.missing-policy",
-            f"mapped source table {table_uri!r} has no preparation policy",
-            rule_id="DD-106-prep-coverage",
-            resource_uri=table_uri,
-        )
-        collector.add(error.diagnostic)
-        invalid_tables.add(table_uri)
-
-    result: list[PreparationSpec] = []
-    for table_uri, policy_facts in sorted(by_table.items()):
-        if table_uri in invalid_tables:
-            continue
-        system, table = table_index[table_uri]
-        column_uris = {column.uri for column in table.columns}
-        scoped_system = replace(system, tables=(table,))
-        scoped_mappings = replace(
-            mappings,
-            tables=tuple(item for item in mappings.tables if item.source_table_uri == table_uri),
-            columns=tuple(
-                item for item in mappings.columns if item.source_column_uri in column_uris
-            ),
-        )
-        scoped_facts = replace(facts, preparations=(policy_facts[0],))
-        try:
-            result.extend(
-                _normalize_prep(
-                    scoped_facts,
-                    (scoped_system,),
-                    scoped_mappings,
-                    adapter,
-                )
-            )
-        except PolicyNormalizationError as exc:
-            collector.add(exc.diagnostic)
-
-    diagnostics = collector.diagnostics
-    return EvaluationResult(
-        status=EvaluationStatus.FAILED if diagnostics else EvaluationStatus.PASSED,
-        value=tuple(result),
-        diagnostics=diagnostics,
-    )
-
-
 def _not_evaluated_stage(
     stage: str,
     prerequisite: Prerequisite,
@@ -5540,7 +4263,6 @@ def _not_evaluated_stage(
 
 def _collect_identities(
     facts: tuple[EntityIdentityFact, ...],
-    preparations: EvaluationResult[tuple[PreparationSpec, ...]],
     multi_source: tuple[MultiSourcePolicySpec, ...],
     hashes: tuple[CanonicalHashPolicySpec, ...],
     incremental: tuple[IncrementalPolicySpec, ...],
@@ -5552,26 +4274,6 @@ def _collect_identities(
 ) -> EvaluationResult[tuple[EntityIdentitySpec, ...]]:
     """Normalize each independent DD-108 identity root once."""
 
-    available_preparations = preparations.value or ()
-    available_refs = {
-        identity_ref
-        for preparation in available_preparations
-        for identity_ref in (
-            preparation.source_record_key.resource_uri,
-            *(child.resource_uri for child in preparation.array_children),
-        )
-    }
-    available_refs.update(
-        contract.identity_resource_uri
-        for _, contract in contracts
-        if contract.identity_resource_uri
-    )
-    prep_diagnostic_ids = tuple(item.id for item in preparations.diagnostics)
-    prep_prerequisite = Prerequisite(
-        id="preparation",
-        status=preparations.status,
-        diagnostic_ids=prep_diagnostic_ids,
-    )
     runtime_prerequisite = Prerequisite(
         id="runtime",
         status=(
@@ -5587,18 +4289,6 @@ def _collect_identities(
     skipped_prerequisites: list[Prerequisite] = []
     own_diagnostics: list[Diagnostic] = []
     for fact in sorted(facts, key=lambda item: item.resource_uri):
-        source_refs = {
-            value.strip()
-            for value in (fact.source_identities.values if fact.source_identities else ())
-            if value.strip()
-        }
-        if (
-            preparations.status is not EvaluationStatus.PASSED
-            and source_refs
-            and not source_refs.issubset(available_refs)
-        ):
-            skipped_prerequisites.append(prep_prerequisite)
-            continue
         authored_incremental_refs = {
             value
             for value in (
@@ -5618,7 +4308,6 @@ def _collect_identities(
             result.extend(
                 _normalize_identities(
                     (fact,),
-                    available_preparations,
                     multi_source,
                     hashes,
                     incremental,
@@ -5745,15 +4434,6 @@ def normalize_medallion_policy(
         )
     )
     collector = DiagnosticCollector(mode)
-    preparation_result = (
-        _collect_preparations(facts, systems, mappings, adapter, collector)
-        if mode is ExecutionMode.COLLECT
-        else EvaluationResult(
-            status=EvaluationStatus.PASSED,
-            value=_normalize_prep(facts, systems, mappings, adapter),
-        )
-    )
-    preparations = preparation_result.value or ()
     multi_source = _normalize_multi_source(facts.multi_source)
     incremental_result = (
         _collect_policy_values(
@@ -5793,7 +4473,6 @@ def normalize_medallion_policy(
     identity_result = (
         _collect_identities(
             facts.identities,
-            preparation_result,
             multi_source,
             hashes,
             incremental,
@@ -5808,7 +4487,6 @@ def normalize_medallion_policy(
             status=EvaluationStatus.PASSED,
             value=_normalize_identities(
                 facts.identities,
-                preparations,
                 multi_source,
                 hashes,
                 incremental,
@@ -5824,19 +4502,8 @@ def normalize_medallion_policy(
         status=identity_result.status,
         diagnostic_ids=tuple(item.id for item in identity_result.diagnostics),
     )
-    prep_prerequisite = Prerequisite(
-        id="preparation",
-        status=preparation_result.status,
-        diagnostic_ids=tuple(item.id for item in preparation_result.diagnostics),
-    )
     runtime_result: EvaluationResult[object] = incremental_result
     fk_result: EvaluationResult[object] = temporal_result
-    if (
-        mode is ExecutionMode.COLLECT
-        and not prep_prerequisite.available
-        and incremental_result.status is EvaluationStatus.PASSED
-    ):
-        runtime_result = _not_evaluated_stage("runtime", prep_prerequisite)
     if (
         mode is ExecutionMode.COLLECT
         and not identity_prerequisite.available
@@ -5893,13 +4560,17 @@ def normalize_medallion_policy(
             diagnostics=(exc.diagnostic,),
         )
     requirements = _capability_requirements(
-        preparations,
         hashes,
         incremental,
         temporal,
+        multi_source,
+        facts.identities,
         quality,
         gold,
         has_foreign_keys=bool(silver_fk_policy.descriptors),
+        has_contracted_dbt_source=any(
+            table.ref_model for system in systems for table in system.tables
+        ),
     )
     quality_scope_targets = _resolve_quality_scopes(
         quality,
@@ -5923,7 +4594,6 @@ def normalize_medallion_policy(
                 silver_items.extend(
                     _silver_authorities(
                         (candidate,),
-                        preparations,
                         identities,
                         facts.identities,
                         multi_source,
@@ -5953,7 +4623,6 @@ def normalize_medallion_policy(
     else:
         silver = _silver_authorities(
             silver_candidates,
-            preparations,
             identities,
             facts.identities,
             multi_source,
@@ -5995,7 +4664,6 @@ def normalize_medallion_policy(
             ),
         ),
         naming_convention=naming,
-        preparations=preparations,
         identities=identities,
         multi_source=multi_source,
         incremental=incremental,
@@ -6124,7 +4792,7 @@ def normalize_medallion_policy(
     if mode is ExecutionMode.COLLECT and collector.diagnostics:
         raise PolicyCollectionError(
             PolicyNormalizationStages(
-                preparation=preparation_result,
+                preparation=EvaluationResult(status=EvaluationStatus.PASSED, value=()),
                 identity=identity_result,
                 runtime=runtime_result,
                 foreign_keys=fk_result,

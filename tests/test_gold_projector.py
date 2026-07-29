@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from rdflib import Literal, Namespace, URIRef
 
 from kairos_ontology.core.projections.dbt import (
     DimensionalGoldSpec,
@@ -60,11 +59,7 @@ def _generate(
     platform: str = "fabric",
 ) -> dict[str, str]:
     graph, namespace, classes = _load_ontology(domain)
-    peers = (
-        [EXTENSIONS_DIR / "client-silver-ext.ttl"]
-        if domain == "invoice"
-        else []
-    )
+    peers = [EXTENSIONS_DIR / "client-silver-ext.ttl"] if domain == "invoice" else []
     return generate_gold_artifacts(
         classes=classes,
         graph=graph,
@@ -76,9 +71,7 @@ def _generate(
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
         gold_ext_path=(
-            gold_path
-            if gold_path is not None
-            else EXTENSIONS_DIR / f"{domain}-gold-ext.ttl"
+            gold_path if gold_path is not None else EXTENSIONS_DIR / f"{domain}-gold-ext.ttl"
         ),
         silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
         peer_ext_paths=peers,
@@ -178,15 +171,9 @@ def test_explicit_zero_dimension_facts_are_not_inferred(invoice_gold):
     }
     assert all(table["fact_grain"] for table in report["tables"])
     assert all(table["fact_type"] == "transaction" for table in report["tables"])
-    assert all(table["incremental_policy"] for table in report["tables"])
-    assert all(
-        table["correction_policy"] == "replace-by-total-order"
-        for table in report["tables"]
-    )
-    assert all(
-        table["late_arrival_policy"] == "reconcile-with-lookback"
-        for table in report["tables"]
-    )
+    assert all(not table["incremental_policy"] for table in report["tables"])
+    assert all(not table["correction_policy"] for table in report["tables"])
+    assert all(not table["late_arrival_policy"] for table in report["tables"])
 
 
 @pytest.mark.parametrize(
@@ -228,7 +215,7 @@ def test_dimension_exposure_and_source_version_are_explicit(client_gold):
 @pytest.mark.parametrize(
     ("exposure", "current_view", "current_filter"),
     (
-        ("current-only", False, True),
+        ("current-only", False, False),
         ("history-only", False, False),
         ("dual", True, False),
     ),
@@ -249,42 +236,7 @@ def test_dimension_exposure_modes_are_physical(
     )
     sql = artifacts["client/dbt/models/gold/client/dim_client.sql"]
     assert ("where is_current = 1" in sql) is current_filter
-    assert (
-        "client/dbt/models/gold/client/dim_client_current.sql" in artifacts
-    ) is current_view
-
-
-def test_explicit_bridge_grain_endpoints_cardinality_and_weight(tmp_path: Path):
-    text = _gold_text("invoice") + """
-acme-inv:InvoiceLineTax
-    kairos-ext:goldTableType "bridge" ;
-    kairos-ext:goldTableName "bridge_invoice_line_tax" ;
-    kairos-ext:goldSourceModel "invoice_line_tax" ;
-    kairos-ext:goldSourceVersion "1.0.0" ;
-    kairos-ext:bridgeGrain "one tax allocation per invoice line" ;
-    kairos-ext:bridgeEndpoint acme-inv:Invoice, acme-inv:InvoiceLine ;
-    kairos-ext:bridgeEndpointBinding
-        "Invoice=invoice_line_tax_sk", "InvoiceLine=_source_record_key" ;
-    kairos-ext:bridgeCardinality "many-to-many" ;
-    kairos-ext:bridgeWeightColumn "tax_rate" ;
-    kairos-ext:bridgeAllocationSemantics "weighted-by-tax-rate" .
-"""
-    artifacts = _generate(
-        "invoice",
-        gold_path=_write_gold(tmp_path, "invoice", text),
-    )
-    bridge = next(
-        table
-        for table in _report(artifacts, "invoice")["tables"]
-        if table["role"] == "bridge"
-    )
-    assert bridge["bridge_grain"] == "one tax allocation per invoice line"
-    assert bridge["bridge_cardinality"] == "many-to-many"
-    assert bridge["bridge_weight_column"] == "tax_rate"
-    assert len(bridge["bridge_endpoint_bindings"]) == 2
-    assert "BRIDGE_INVOICE_LINE_TAX" in artifacts[
-        "invoice/invoice-gold-erd.mmd"
-    ]
+    assert ("client/dbt/models/gold/client/dim_client_current.sql" in artifacts) is current_view
 
 
 def test_source_model_and_version_drift_block(tmp_path: Path):
@@ -309,9 +261,7 @@ def test_missing_silver_measure_column_blocks(tmp_path: Path):
 
 
 def test_approved_measure_keeps_base_column_and_emits_dax(invoice_gold):
-    fact_sql = invoice_gold[
-        "invoice/dbt/models/gold/invoice/fact_invoice.sql"
-    ]
+    fact_sql = invoice_gold["invoice/dbt/models/gold/invoice/fact_invoice.sql"]
     ddl = invoice_gold["invoice/invoice-gold-ddl.sql"]
     dax = invoice_gold["invoice/measures/invoice-measures.dax"]
     assert "total_amount as total_amount" in fact_sql
@@ -326,38 +276,6 @@ def test_approved_measure_keeps_base_column_and_emits_dax(invoice_gold):
     assert measure["data_type"] == "decimal"
     assert measure["format_string"] == "#,##0.00"
     assert measure["folder"] == "Finance"
-
-
-def test_legacy_measure_expression_on_datatype_property_has_no_behavior():
-    graph, namespace, classes = _load_ontology("invoice")
-    ext = Namespace("https://kairos.cnext.eu/ext#")
-    graph.add(
-        (
-            URIRef("https://acme.example/ontology/invoice#totalAmount"),
-            ext.measureExpression,
-            Literal("SUM([legacy])"),
-        )
-    )
-    artifacts = generate_gold_artifacts(
-        classes,
-        graph,
-        TEMPLATE_DIR,
-        namespace,
-        shapes_dir=SHAPES_DIR,
-        ontology_name="invoice",
-        ontology_metadata=_metadata("invoice"),
-        sources_dir=SOURCES_DIR,
-        mappings_dir=MAPPINGS_DIR,
-        gold_ext_path=EXTENSIONS_DIR / "invoice-gold-ext.ttl",
-        silver_ext_path=EXTENSIONS_DIR / "invoice-silver-ext.ttl",
-        peer_ext_paths=[EXTENSIONS_DIR / "client-silver-ext.ttl"],
-    )
-    report = _report(artifacts, "invoice")
-    assert len(report["measures"]) == 2
-    assert "SUM([legacy])" not in artifacts["invoice/measures/invoice-measures.dax"]
-    assert "total_amount" in artifacts[
-        "invoice/dbt/models/gold/invoice/fact_invoice.sql"
-    ]
 
 
 @pytest.mark.parametrize(
@@ -391,9 +309,7 @@ def test_measure_lifecycle_controls_emission_and_release(
         gold_path=_write_gold(tmp_path, "invoice", text),
     )
     report = _report(artifacts, "invoice")
-    measure = next(
-        item for item in report["measures"] if item["id"] == "invoice.total-amount"
-    )
+    measure = next(item for item in report["measures"] if item["id"] == "invoice.total-amount")
     assert measure["emitted"] is emitted
     dax = artifacts.get("invoice/measures/invoice-measures.dax", "")
     assert ("[invoice.total-amount]" in dax) is emitted
@@ -432,8 +348,7 @@ def test_approved_measure_requires_owner_tests_and_evidence(tmp_path: Path):
         ),
         (
             original.replace(
-                '    kairos-ext:measureValidationTest '
-                '"invoice-total-reconciliation" ;\n',
+                "    kairos-ext:measureValidationTest " '"invoice-total-reconciliation" ;\n',
                 "",
                 1,
             ),
@@ -441,14 +356,11 @@ def test_approved_measure_requires_owner_tests_and_evidence(tmp_path: Path):
         ),
         (
             original.replace(
-                '    kairos-ext:measureValidationTest '
-                '"invoice-total-reconciliation" ;\n',
-                '    kairos-ext:measureValidationTest '
-                '"invoice-total-reconciliation" .\n',
+                "    kairos-ext:measureValidationTest " '"invoice-total-reconciliation" ;\n',
+                "    kairos-ext:measureValidationTest " '"invoice-total-reconciliation" .\n',
                 1,
             ).replace(
-                '    kairos-ext:measureValidationEvidence '
-                '"dq-run:invoice-total-v1" .\n',
+                "    kairos-ext:measureValidationEvidence " '"dq-run:invoice-total-v1" .\n',
                 "",
                 1,
             ),
@@ -474,8 +386,7 @@ def test_calendar_is_only_generated_when_explicit_and_approved(
     assert not any("dim_date" in path for path in client_gold)
     assert "invoice/dbt/models/gold/shared/dim_date.sql" in invoice_gold
     assert (
-        "invoice/Invoice.SemanticModel/definition/"
-        "calculationGroups/time-intelligence.tmdl"
+        "invoice/Invoice.SemanticModel/definition/" "calculationGroups/time-intelligence.tmdl"
     ) in invoice_gold
     calendar = _report(invoice_gold, "invoice")["calendar"]
     assert calendar["bounds"] == ["2020-01-01", "2035-12-31"]
@@ -526,16 +437,11 @@ def test_complete_security_is_fail_closed_and_perspectives_are_navigation_only(
     assert report["security"]["positive_tests"]
     assert report["security"]["negative_tests"]
     assert report["security"]["test_evidence"]
-    roles = client_gold[
-        "client/Client.SemanticModel/definition/roles/security.tmdl"
-    ]
+    roles = client_gold["client/Client.SemanticModel/definition/roles/security.tmdl"]
     assert "filterExpression: FALSE()" in roles
     assert "columnPermission dim_client.email" in roles
     assert "metadataPermission: none" in roles
-    assert all(
-        perspective["security_boundary"] is False
-        for perspective in report["perspectives"]
-    )
+    assert all(perspective["security_boundary"] is False for perspective in report["perspectives"])
 
 
 @pytest.mark.parametrize(
@@ -593,21 +499,15 @@ acme:DatabricksSecurityDeviation a kairos-ext:Deviation ;
 def test_ddl_tmdl_dax_erd_and_report_are_deterministic(invoice_gold):
     second = _generate("invoice")
     comparable = {
-        path: content
-        for path, content in invoice_gold.items()
-        if path != "__release_data__"
+        path: content for path, content in invoice_gold.items() if path != "__release_data__"
     }
     assert comparable == {
-        path: content
-        for path, content in second.items()
-        if path != "__release_data__"
+        path: content for path, content in second.items() if path != "__release_data__"
     }
     assert "CREATE TABLE" in invoice_gold["invoice/invoice-gold-ddl.sql"]
     assert "erDiagram" in invoice_gold["invoice/invoice-gold-erd.mmd"]
     schema = yaml.safe_load(
-        invoice_gold[
-            "invoice/dbt/models/gold/invoice/_invoice__gold_models.yml"
-        ]
+        invoice_gold["invoice/dbt/models/gold/invoice/_invoice__gold_models.yml"]
     )
     assert {item["name"] for item in schema["models"]} == {
         "fact_invoice",

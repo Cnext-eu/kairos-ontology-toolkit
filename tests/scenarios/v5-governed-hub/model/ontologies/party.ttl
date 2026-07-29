@@ -1,0 +1,22 @@
+@prefix party: <https://example.test/party#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.test/party> a owl:Ontology ;
+  owl:versionInfo "1.0.0" ;
+  rdfs:label "Synthetic governed party slice" .
+
+party:Customer a owl:Class ;
+  rdfs:label "Customer" ;
+  rdfs:comment "A synthetic purchasing party." .
+
+party:customer_id a owl:DatatypeProperty ;
+  rdfs:domain party:Customer ;
+  rdfs:range xsd:string ;
+  rdfs:label "customer identifier" .
+
+party:customerName a owl:DatatypeProperty ;
+  rdfs:domain party:Customer ;
+  rdfs:range xsd:string ;
+  rdfs:label "customer name" .

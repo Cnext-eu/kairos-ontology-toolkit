@@ -1,0 +1,996 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+"""v5 EntityBinding YAML schema model, loader, and closed expression grammar (DD-133).
+
+This module owns the *document* contract for a v5 ``EntityBinding``:
+
+* a duplicate-key-rejecting YAML loader that preserves source locations;
+* JSON-Schema validation of the document shape (``schema/entity-binding.schema.json``);
+* frozen dataclasses mirroring the closed schema; and
+* structural validation of the closed scalar-expression grammar.
+
+It does **not** resolve symbols against ontologies/sources and it does **not** emit RDF or
+dbt artifacts — that is the adapter's job (``bindings`` -> typed facts) in a later phase.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from importlib import resources
+from typing import Any
+
+import yaml
+from jsonschema import Draft7Validator
+from jsonschema.exceptions import best_match
+
+from .result import CompileDiagnostic, CompileError, SourceLocation
+
+MAX_EXPRESSION_DEPTH = 64
+
+# Closed allow-lists owned by the compiler (DD-133 §4). These MUST be a subset of the names
+# the downstream DD-107 mapping normalizer accepts (``mapping_normalize._OPERATORS`` /
+# ``_FUNCTION_ARITY`` / ``_APPROVED_MACROS``); anything outside these is rejected here so the
+# author sees a source-located error instead of a deep normalizer failure. Complex logic must
+# move to a contracted dbt model referenced via ``source.dbtModel``. Technical-cleanup
+# functions (cast/trim/replace/json-*) are intentionally excluded from scalar mappings.
+ALLOWED_OPERATORS: frozenset[str] = frozenset(
+    {
+        "add",
+        "subtract",
+        "multiply",
+        "divide",
+        "modulo",
+        "negate",
+        "equal",
+        "not-equal",
+        "less-than",
+        "less-or-equal",
+        "greater-than",
+        "greater-or-equal",
+        "and",
+        "or",
+        "not",
+        "is-null",
+        "is-not-null",
+    }
+)
+ALLOWED_FUNCTIONS: frozenset[str] = frozenset(
+    {"abs", "round", "concat", "upper", "lower", "length", "coalesce", "nullif"}
+)
+ALLOWED_MACROS: frozenset[str] = frozenset({"concat", "dayOfWeek", "monthName", "quarter"})
+ALLOWED_NULL_POLICIES: frozenset[str] = frozenset(
+    {
+        "propagate",
+        "never-null",
+        "three-valued",
+        "first-non-null",
+        "null-if-equal",
+        "branch",
+        "explicit-null",
+    }
+)
+
+_SCHEMA_RESOURCE = "entity-binding.schema.json"
+
+
+# --------------------------------------------------------------------------------------
+# Closed scalar-expression grammar (maps 1:1 to the existing mapping AST).
+# --------------------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class ExprColumn:
+    """A bare source-column reference."""
+
+    column: str
+    null_policy: str = ""
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ExprLiteral:
+    """A typed literal."""
+
+    lexical: str
+    datatype: str
+    null_policy: str = ""
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ExprNull:
+    """An explicit SQL NULL."""
+
+    null_policy: str = "explicit-null"
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ExprOperator:
+    """A scalar operator over sub-expressions."""
+
+    op: str
+    args: tuple["Expression", ...]
+    null_policy: str = ""
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ExprFunction:
+    """A scalar function over sub-expressions."""
+
+    fn: str
+    args: tuple["Expression", ...]
+    null_policy: str = ""
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ExprCaseBranch:
+    """One ordered CASE WHEN/THEN branch."""
+
+    when: "Expression"
+    then: "Expression"
+
+
+@dataclass(frozen=True, slots=True)
+class ExprCase:
+    """A CASE expression with ordered branches and an else."""
+
+    branches: tuple[ExprCaseBranch, ...]
+    else_: "Expression | None"
+    null_policy: str = ""
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ExprMacro:
+    """A namespaced macro invocation."""
+
+    macro: str
+    args: tuple["Expression", ...]
+    null_policy: str = ""
+    pointer: str = ""
+
+
+Expression = (
+    ExprColumn | ExprLiteral | ExprNull | ExprOperator | ExprFunction | ExprCase | ExprMacro
+)
+
+
+# --------------------------------------------------------------------------------------
+# Document dataclasses (mirror the closed JSON Schema).
+# --------------------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class DbtModelRef:
+    """A contracted dbt model and its authoritative SQL/YAML files."""
+
+    name: str
+    sql_path: str
+    contract_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRef:
+    """The single source relation or contracted dbt model."""
+
+    relation: str = ""
+    dbt_model: DbtModelRef | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GrainSpec:
+    """The explicit materialized grain."""
+
+    columns: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class IdentitySpec:
+    """The identity strategy and key scopes."""
+
+    strategy: str
+    source_key: tuple[str, ...]
+    business_key: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CdcOperationSpec:
+    """Canonical source CDC operation mapping."""
+
+    column: str
+    insert_values: tuple[str, ...]
+    update_values: tuple[str, ...]
+    delete_values: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LookbackSpec:
+    """Bounded incremental lookback window."""
+
+    value: int
+    unit: str
+
+
+@dataclass(frozen=True, slots=True)
+class IncrementalPolicy:
+    """Complete, explicit incremental runtime policy."""
+
+    merge_identity: tuple[str, ...]
+    canonical_hash_inputs: tuple[str, ...]
+    cdc_operation: CdcOperationSpec
+    source_updated_at: str
+    business_effective_at: str
+    ingested_at: str
+    total_order: tuple[str, ...]
+    lookback: LookbackSpec
+    delete: str
+    late_arrival: str
+    correction: str
+    replay: str
+    backfill: str
+    schema_evolution: str
+
+
+@dataclass(frozen=True, slots=True)
+class LoadSpec:
+    """Closed full-refresh or incremental/SCD load contract."""
+
+    mode: str
+    scd: int | None = None
+    incremental: IncrementalPolicy | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FieldMapping:
+    """One property mapped to a closed scalar expression."""
+
+    property: str
+    expression: Expression
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipJoin:
+    """One local->foreign join column pair."""
+
+    local: str
+    foreign: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalReferenceKey:
+    """One ordered parent-key column in an external reference contract."""
+
+    column: str
+    type: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalReferenceSpec:
+    """A declared cross-domain physical parent and its ordered key contract."""
+
+    name: str
+    domain: str
+    key: tuple[ExternalReferenceKey, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TemporalRelationshipPolicy:
+    """Complete time semantics for a current or as-of relationship."""
+
+    parent_valid_from: str
+    parent_valid_to: str
+    open_ended: str
+    overlap: str
+    late_parent: str
+    change_detection: str
+    child_event_time: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipSpec:
+    """One relationship to a materializable or external reference entity."""
+
+    property: str
+    target: str
+    on: tuple[RelationshipJoin, ...]
+    cardinality: str
+    mode: str
+    missing_parent: str
+    ambiguous_parent: str
+    external_reference: ExternalReferenceSpec | None = None
+    temporal: TemporalRelationshipPolicy | None = None
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ConformanceOrder:
+    """One deterministic conformance deduplication ordering key."""
+
+    column: str
+    direction: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnionPolicy:
+    """Union-all or deterministic union/deduplication policy."""
+
+    mode: str
+    deduplicate_by: tuple[str, ...] = ()
+    order_by: tuple[ConformanceOrder, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConformanceSpec:
+    """Explicit policy for bindings that materialize one canonical class."""
+
+    group: str
+    source_precedence: int
+    conflict: str
+    union: UnionPolicy
+
+
+@dataclass(frozen=True, slots=True)
+class QualityCheck:
+    """One focused data-quality check (evidence, not authority)."""
+
+    kind: str
+    columns: tuple[str, ...] = ()
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class EntityBinding:
+    """A fully parsed, closed v5 EntityBinding document."""
+
+    api_version: str
+    name: str
+    domain: str
+    source: SourceRef
+    target_class: str
+    grain: GrainSpec
+    identity: IdentitySpec
+    load: LoadSpec
+    fields: tuple[FieldMapping, ...]
+    relationships: tuple[RelationshipSpec, ...] = ()
+    conformance: ConformanceSpec | None = None
+    quality: tuple[QualityCheck, ...] = ()
+    source_path: str = ""
+
+    @property
+    def load_mode(self) -> str:
+        """Return the load mode retained for first-slice callers."""
+        return self.load.mode
+
+
+# --------------------------------------------------------------------------------------
+# Loader with duplicate-key rejection and source-location resolution.
+# --------------------------------------------------------------------------------------
+class _MarkResolver:
+    """Resolves a JSON-pointer path to a ``(line, column)`` using a composed YAML tree."""
+
+    def __init__(self, root: Any, path: str) -> None:
+        self._root = root
+        self._path = path
+
+    def at(self, pointer: str) -> SourceLocation:
+        node = self._root
+        for part in [p for p in pointer.split("/") if p != ""]:
+            node = self._descend(node, part)
+            if node is None:
+                return SourceLocation(path=self._path, pointer=pointer or "/")
+        mark = getattr(node, "start_mark", None)
+        if mark is None:
+            return SourceLocation(path=self._path, pointer=pointer or "/")
+        return SourceLocation(
+            path=self._path, line=mark.line + 1, column=mark.column + 1, pointer=pointer or "/"
+        )
+
+    @staticmethod
+    def _descend(node: Any, part: str) -> Any:
+        if isinstance(node, yaml.MappingNode):
+            for key_node, value_node in node.value:
+                if getattr(key_node, "value", None) == part:
+                    return value_node
+            return None
+        if isinstance(node, yaml.SequenceNode):
+            try:
+                return node.value[int(part)]
+            except (ValueError, IndexError):
+                return None
+        return None
+
+
+def _collect_duplicate_key_diagnostics(
+    node: Any, path: str, diagnostics: list[CompileDiagnostic]
+) -> None:
+    if isinstance(node, yaml.MappingNode):
+        seen: dict[str, Any] = {}
+        for key_node, value_node in node.value:
+            key = getattr(key_node, "value", None)
+            if isinstance(key, str):
+                if key in seen:
+                    mark = key_node.start_mark
+                    diagnostics.append(
+                        CompileDiagnostic(
+                            code="binding.duplicate-key",
+                            message=f"duplicate key '{key}'",
+                            location=SourceLocation(
+                                path=path, line=mark.line + 1, column=mark.column + 1
+                            ),
+                        )
+                    )
+                seen[key] = value_node
+            _collect_duplicate_key_diagnostics(value_node, path, diagnostics)
+    elif isinstance(node, yaml.SequenceNode):
+        for item in node.value:
+            _collect_duplicate_key_diagnostics(item, path, diagnostics)
+
+
+def _load_schema() -> dict:
+    text = (
+        resources.files(__package__)
+        .joinpath("schema")
+        .joinpath(_SCHEMA_RESOURCE)
+        .read_text(encoding="utf-8")
+    )
+    return json.loads(text)
+
+
+def _alias_null_tokens(data: Any) -> None:
+    """Accept YAML ``null`` as an alias for the string enum token ``"null"``.
+
+    Only ``missingParent`` and ``temporal.lateParent`` accept the ``"null"`` token. YAML
+    ``null`` there parses to Python ``None`` and would otherwise fail the string enum with an
+    opaque ``oneOf`` diagnostic. A *missing* key is left untouched so required-field errors still
+    fire, and ``ambiguousParent`` (enum ``error|first``) is intentionally not coerced.
+    """
+    if not isinstance(data, dict):
+        return
+    relationships = data.get("relationships")
+    if not isinstance(relationships, list):
+        return
+    for relationship in relationships:
+        if not isinstance(relationship, dict):
+            continue
+        if relationship.get("missingParent", "") is None:
+            relationship["missingParent"] = "null"
+        temporal = relationship.get("temporal")
+        if isinstance(temporal, dict) and temporal.get("lateParent", "") is None:
+            temporal["lateParent"] = "null"
+
+
+def _branch_index(error) -> Any:
+    """Return the ``oneOf``/``anyOf`` branch index a context sub-error belongs to."""
+    return error.schema_path[0] if error.schema_path else None
+
+
+def _discriminated_leaf(error):
+    """Pick the discriminated branch of a ``oneOf``/``anyOf`` and return its best sub-error.
+
+    Draft 7's generic ``best_match`` is not discriminator-aware and can select a sibling branch
+    (e.g. flag a missing ``temporal`` when the instance is plainly ``mode: non-temporal``). The
+    relationship/temporal branches carry a ``const`` discriminator (``mode``/``openEnded``), so any
+    branch rejected *purely* because that const mismatched is not the branch the author intended;
+    dropping those branches leaves the real error to surface.
+    """
+    context = list(error.context or [])
+    if not context:
+        return None
+    rejected = {_branch_index(sub) for sub in context if sub.validator == "const"}
+    survivors = [sub for sub in context if _branch_index(sub) not in rejected] or context
+    return best_match(survivors)
+
+
+def _schema_diagnostics(data: Any, resolver: _MarkResolver) -> list[CompileDiagnostic]:
+    validator = Draft7Validator(_load_schema())
+    diagnostics: list[CompileDiagnostic] = []
+    for error in validator.iter_errors(data):
+        # Draft 7 reports the generic "is not valid under any of the given schemas" at a
+        # ``oneOf``/``anyOf`` branch point, hiding the offending field. Descend into the
+        # discriminated branch (by ``mode``/``openEnded`` const) to surface the real leaf error.
+        parts = list(error.absolute_path)
+        leaf = error
+        while leaf.context:
+            chosen = _discriminated_leaf(leaf)
+            if chosen is None:
+                break
+            leaf = chosen
+            parts.extend(leaf.absolute_path)
+        pointer = "/" + "/".join(str(part) for part in parts)
+        # A missing required field has no YAML mark, so resolve the location to the deepest
+        # existing ancestor (falling back to root) while keeping the precise leaf message.
+        location = resolver.at(pointer)
+        trim = len(parts)
+        while location.line == 0 and trim > 0:
+            trim -= 1
+            location = resolver.at("/" + "/".join(str(part) for part in parts[:trim]))
+        diagnostics.append(
+            CompileDiagnostic(
+                code="binding.schema",
+                message=leaf.message,
+                location=location,
+            )
+        )
+    return diagnostics
+
+
+def _contract_diagnostics(data: dict, resolver: _MarkResolver) -> list[CompileDiagnostic]:
+    """Return deterministic semantic diagnostics not expressible cleanly in Draft 7."""
+    load = data.get("load", {})
+    incremental = load.get("incremental", {})
+    cdc = incremental.get("cdcOperation", {})
+    categories = {
+        name: set(cdc.get(name, ())) for name in ("insertValues", "updateValues", "deleteValues")
+    }
+    diagnostics: list[CompileDiagnostic] = []
+    scd = load.get("scd")
+    correction = incremental.get("correction")
+    allowed_corrections = {1: {"error", "overwrite"}, 2: {"error", "new-version"}}
+    if scd in allowed_corrections and correction not in allowed_corrections[scd]:
+        diagnostics.append(
+            CompileDiagnostic(
+                code="binding.scd-correction-incompatible",
+                message=(
+                    f"SCD{scd} correction must be one of "
+                    f"{sorted(allowed_corrections[scd])}, not {correction!r}"
+                ),
+                location=resolver.at("/load/incremental/correction"),
+            )
+        )
+    for left, right in (
+        ("insertValues", "updateValues"),
+        ("insertValues", "deleteValues"),
+        ("updateValues", "deleteValues"),
+    ):
+        overlap = sorted(categories[left] & categories[right])
+        if overlap:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="binding.cdc-operation-ambiguous",
+                    message=(
+                        f"CDC values must identify exactly one operation; {overlap!r} occur in "
+                        f"both {left} and {right}"
+                    ),
+                    location=resolver.at(f"/load/incremental/cdcOperation/{right}"),
+                )
+            )
+    return diagnostics
+
+
+def load_entity_binding(text: str, *, path: str = "<binding>") -> EntityBinding:
+    """Parse and structurally validate one EntityBinding document.
+
+    Raises :class:`CompileError` with ordered, source-located diagnostics on any duplicate
+    key, unknown field, schema violation, or malformed expression.
+    """
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        location = SourceLocation(
+            path=path,
+            line=(mark.line + 1) if mark else 0,
+            column=(mark.column + 1) if mark else 0,
+        )
+        raise CompileError(
+            [CompileDiagnostic(code="binding.yaml", message=str(exc), location=location)]
+        ) from exc
+
+    resolver = _MarkResolver(root, path)
+    diagnostics: list[CompileDiagnostic] = []
+    _collect_duplicate_key_diagnostics(root, path, diagnostics)
+
+    data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        diagnostics.append(
+            CompileDiagnostic(
+                code="binding.not-a-mapping",
+                message="an EntityBinding document must be a YAML mapping",
+                location=resolver.at("/"),
+            )
+        )
+        raise CompileError(diagnostics)
+
+    _alias_null_tokens(data)
+    diagnostics.extend(_schema_diagnostics(data, resolver))
+    if not diagnostics:
+        diagnostics.extend(_contract_diagnostics(data, resolver))
+    if diagnostics:
+        raise CompileError(diagnostics)
+
+    binding = _build_binding(data, resolver, path)
+    return binding
+
+
+def _build_binding(data: dict, resolver: _MarkResolver, path: str) -> EntityBinding:
+    diagnostics: list[CompileDiagnostic] = []
+    source = data["source"]
+    dbt_raw = source.get("dbtModel")
+    source_ref = SourceRef(
+        relation=str(source.get("relation", "")),
+        dbt_model=(
+            DbtModelRef(
+                name=str(dbt_raw["name"]),
+                sql_path=str(dbt_raw["sqlPath"]),
+                contract_path=str(dbt_raw["contractPath"]),
+            )
+            if dbt_raw
+            else None
+        ),
+    )
+    identity_raw = data["identity"]
+    identity = IdentitySpec(
+        strategy=str(identity_raw["strategy"]),
+        source_key=tuple(str(c) for c in identity_raw["sourceKey"]),
+        business_key=tuple(str(c) for c in identity_raw.get("businessKey", ())),
+    )
+    grain = GrainSpec(columns=tuple(str(c) for c in data["grain"]["columns"]))
+    load_raw = data["load"]
+    incremental_raw = load_raw.get("incremental")
+    incremental = None
+    if incremental_raw:
+        cdc_raw = incremental_raw["cdcOperation"]
+        lookback_raw = incremental_raw["lookback"]
+        incremental = IncrementalPolicy(
+            merge_identity=tuple(str(c) for c in incremental_raw["mergeIdentity"]),
+            canonical_hash_inputs=tuple(str(c) for c in incremental_raw["canonicalHashInputs"]),
+            cdc_operation=CdcOperationSpec(
+                column=str(cdc_raw["column"]),
+                insert_values=tuple(str(v) for v in cdc_raw["insertValues"]),
+                update_values=tuple(str(v) for v in cdc_raw["updateValues"]),
+                delete_values=tuple(str(v) for v in cdc_raw["deleteValues"]),
+            ),
+            source_updated_at=str(incremental_raw["sourceUpdatedAt"]),
+            business_effective_at=str(incremental_raw["businessEffectiveAt"]),
+            ingested_at=str(incremental_raw["ingestedAt"]),
+            total_order=tuple(str(c) for c in incremental_raw["totalOrder"]),
+            lookback=LookbackSpec(
+                value=int(lookback_raw["value"]),
+                unit=str(lookback_raw["unit"]),
+            ),
+            delete=str(incremental_raw["delete"]),
+            late_arrival=str(incremental_raw["lateArrival"]),
+            correction=str(incremental_raw["correction"]),
+            replay=str(incremental_raw["replay"]),
+            backfill=str(incremental_raw["backfill"]),
+            schema_evolution=str(incremental_raw["schemaEvolution"]),
+        )
+    load = LoadSpec(
+        mode=str(load_raw["mode"]),
+        scd=int(load_raw["scd"]) if "scd" in load_raw else None,
+        incremental=incremental,
+    )
+
+    fields: list[FieldMapping] = []
+    for index, raw in enumerate(data["fields"]):
+        pointer = f"/fields/{index}/expression"
+        expression = _parse_expression(raw["expression"], pointer, resolver, diagnostics, depth=0)
+        fields.append(
+            FieldMapping(
+                property=str(raw["property"]),
+                expression=expression,
+                pointer=f"/fields/{index}",
+            )
+        )
+
+    relationships: list[RelationshipSpec] = []
+    for index, raw in enumerate(data.get("relationships", ())):
+        external_reference_raw = raw.get("externalReference")
+        external_reference = (
+            ExternalReferenceSpec(
+                name=str(external_reference_raw["name"]),
+                domain=str(external_reference_raw["domain"]),
+                key=tuple(
+                    ExternalReferenceKey(
+                        column=str(item["column"]),
+                        type=str(item["type"]),
+                    )
+                    for item in external_reference_raw["key"]
+                ),
+            )
+            if external_reference_raw
+            else None
+        )
+        temporal_raw = raw.get("temporal")
+        temporal = (
+            TemporalRelationshipPolicy(
+                parent_valid_from=str(temporal_raw["parentValidFrom"]),
+                parent_valid_to=str(temporal_raw["parentValidTo"]),
+                open_ended=(
+                    "null" if temporal_raw["openEnded"] is None else str(temporal_raw["openEnded"])
+                ),
+                overlap=str(temporal_raw["overlap"]),
+                late_parent=str(temporal_raw["lateParent"]),
+                change_detection=str(temporal_raw["changeDetection"]),
+                child_event_time=str(temporal_raw.get("childEventTime", "")),
+            )
+            if temporal_raw
+            else None
+        )
+        relationships.append(
+            RelationshipSpec(
+                property=str(raw["property"]),
+                target=str(raw["target"]),
+                on=tuple(
+                    RelationshipJoin(local=str(j["local"]), foreign=str(j["foreign"]))
+                    for j in raw["join"]
+                ),
+                cardinality=str(raw["cardinality"]),
+                mode=str(raw["mode"]),
+                missing_parent=str(raw["missingParent"]),
+                ambiguous_parent=str(raw["ambiguousParent"]),
+                external_reference=external_reference,
+                temporal=temporal,
+                pointer=f"/relationships/{index}",
+            )
+        )
+
+    conformance_raw = data.get("conformance")
+    conformance = None
+    if conformance_raw:
+        union_raw = conformance_raw["union"]
+        conformance = ConformanceSpec(
+            group=str(conformance_raw["group"]),
+            source_precedence=int(conformance_raw["sourcePrecedence"]),
+            conflict=str(conformance_raw["conflict"]),
+            union=UnionPolicy(
+                mode=str(union_raw["mode"]),
+                deduplicate_by=tuple(str(c) for c in union_raw.get("deduplicateBy", ())),
+                order_by=tuple(
+                    ConformanceOrder(column=str(item["column"]), direction=str(item["direction"]))
+                    for item in union_raw.get("orderBy", ())
+                ),
+            ),
+        )
+
+    quality: list[QualityCheck] = []
+    for index, raw in enumerate(data.get("quality", ())):
+        quality.append(
+            QualityCheck(
+                kind=str(raw["kind"]),
+                columns=tuple(str(c) for c in raw.get("columns", ())),
+                pointer=f"/quality/{index}",
+            )
+        )
+
+    if diagnostics:
+        raise CompileError(diagnostics)
+
+    return EntityBinding(
+        api_version=str(data["apiVersion"]),
+        name=str(data["metadata"]["name"]),
+        domain=str(data["metadata"]["domain"]),
+        source=source_ref,
+        target_class=str(data["target"]["class"]),
+        grain=grain,
+        identity=identity,
+        load=load,
+        fields=tuple(fields),
+        relationships=tuple(relationships),
+        conformance=conformance,
+        quality=tuple(quality),
+        source_path=path,
+    )
+
+
+def _reject(
+    diagnostics: list[CompileDiagnostic],
+    resolver: _MarkResolver,
+    pointer: str,
+    code: str,
+    message: str,
+) -> ExprNull:
+    diagnostics.append(CompileDiagnostic(code=code, message=message, location=resolver.at(pointer)))
+    return ExprNull(pointer=pointer)
+
+
+def _parse_expression(
+    node: Any,
+    pointer: str,
+    resolver: _MarkResolver,
+    diagnostics: list[CompileDiagnostic],
+    depth: int,
+) -> Expression:
+    if depth > MAX_EXPRESSION_DEPTH:
+        return _reject(
+            diagnostics,
+            resolver,
+            pointer,
+            "expression.too-deep",
+            f"expression nesting exceeds MAX_EXPRESSION_DEPTH ({MAX_EXPRESSION_DEPTH})",
+        )
+    if node is None:
+        return ExprNull(pointer=pointer)
+    if isinstance(node, str):
+        if not node:
+            return _reject(
+                diagnostics,
+                resolver,
+                pointer,
+                "expression.empty-column",
+                "source-column shorthand must not be empty",
+            )
+        return ExprColumn(column=node, pointer=pointer)
+    if not isinstance(node, dict):
+        return _reject(
+            diagnostics,
+            resolver,
+            pointer,
+            "expression.invalid",
+            f"expression must be a source-column string, null, or a mapping (got {type(node).__name__})",
+        )
+
+    null_policy = str(node.get("nullPolicy", ""))
+    if null_policy and null_policy not in ALLOWED_NULL_POLICIES:
+        _reject(
+            diagnostics,
+            resolver,
+            pointer,
+            "expression.null-policy",
+            f"unknown nullPolicy '{null_policy}'",
+        )
+
+    tags = [t for t in ("column", "literal", "op", "fn", "case", "macro") if t in node]
+    if len(tags) != 1:
+        return _reject(
+            diagnostics,
+            resolver,
+            pointer,
+            "expression.ambiguous",
+            "expression node must have exactly one of: column, literal, op, fn, case, macro",
+        )
+    tag = tags[0]
+    allowed_keys = {
+        "column": {"column", "nullPolicy"},
+        "literal": {"literal", "datatype", "nullPolicy"},
+        "op": {"op", "args", "nullPolicy"},
+        "fn": {"fn", "args", "nullPolicy"},
+        "case": {"case", "else", "nullPolicy"},
+        "macro": {"macro", "args", "nullPolicy"},
+    }[tag]
+    unknown_keys = sorted(set(node) - allowed_keys)
+    if unknown_keys:
+        return _reject(
+            diagnostics,
+            resolver,
+            pointer,
+            "expression.unknown-field",
+            f"unknown expression field(s): {', '.join(unknown_keys)}",
+        )
+
+    if tag == "column":
+        return ExprColumn(column=str(node["column"]), null_policy=null_policy, pointer=pointer)
+
+    if tag == "literal":
+        if "datatype" not in node:
+            return _reject(
+                diagnostics,
+                resolver,
+                pointer,
+                "expression.literal-datatype",
+                "literal expression requires a 'datatype'",
+            )
+        return ExprLiteral(
+            lexical=str(node["literal"]),
+            datatype=str(node["datatype"]),
+            null_policy=null_policy,
+            pointer=pointer,
+        )
+
+    if tag == "op":
+        op = str(node["op"])
+        if op not in ALLOWED_OPERATORS:
+            _reject(
+                diagnostics,
+                resolver,
+                pointer,
+                "expression.operator-not-allowed",
+                f"operator '{op}' is not in the allow-list {sorted(ALLOWED_OPERATORS)}",
+            )
+        args = _parse_args(node.get("args"), pointer, resolver, diagnostics, depth)
+        return ExprOperator(op=op, args=args, null_policy=null_policy, pointer=pointer)
+
+    if tag == "fn":
+        fn = str(node["fn"])
+        if fn not in ALLOWED_FUNCTIONS:
+            _reject(
+                diagnostics,
+                resolver,
+                pointer,
+                "expression.function-not-allowed",
+                f"function '{fn}' is not in the allow-list {sorted(ALLOWED_FUNCTIONS)}",
+            )
+        args = _parse_args(node.get("args"), pointer, resolver, diagnostics, depth)
+        return ExprFunction(fn=fn, args=args, null_policy=null_policy, pointer=pointer)
+
+    if tag == "macro":
+        macro = str(node["macro"])
+        if macro not in ALLOWED_MACROS:
+            _reject(
+                diagnostics,
+                resolver,
+                pointer,
+                "expression.macro-not-allowed",
+                f"macro '{macro}' is not in the allow-list {sorted(ALLOWED_MACROS)}",
+            )
+        return ExprMacro(
+            macro=macro,
+            args=_parse_args(node.get("args"), pointer, resolver, diagnostics, depth),
+            null_policy=null_policy,
+            pointer=pointer,
+        )
+
+    # tag == "case"
+    raw_branches = node["case"]
+    branches: list[ExprCaseBranch] = []
+    if not isinstance(raw_branches, list) or not raw_branches:
+        _reject(
+            diagnostics,
+            resolver,
+            pointer,
+            "expression.case-empty",
+            "case expression requires a non-empty list of when/then branches",
+        )
+    else:
+        for bi, branch in enumerate(raw_branches):
+            if not isinstance(branch, dict) or set(branch) != {"when", "then"}:
+                _reject(
+                    diagnostics,
+                    resolver,
+                    f"{pointer}/case/{bi}",
+                    "expression.case-branch",
+                    "each case branch requires 'when' and 'then'",
+                )
+                continue
+            branches.append(
+                ExprCaseBranch(
+                    when=_parse_expression(
+                        branch["when"],
+                        f"{pointer}/case/{bi}/when",
+                        resolver,
+                        diagnostics,
+                        depth + 1,
+                    ),
+                    then=_parse_expression(
+                        branch["then"],
+                        f"{pointer}/case/{bi}/then",
+                        resolver,
+                        diagnostics,
+                        depth + 1,
+                    ),
+                )
+            )
+    else_expr = (
+        _parse_expression(node["else"], f"{pointer}/else", resolver, diagnostics, depth + 1)
+        if "else" in node
+        else None
+    )
+    return ExprCase(
+        branches=tuple(branches), else_=else_expr, null_policy=null_policy, pointer=pointer
+    )
+
+
+def _parse_args(
+    raw: Any,
+    pointer: str,
+    resolver: _MarkResolver,
+    diagnostics: list[CompileDiagnostic],
+    depth: int,
+) -> tuple[Expression, ...]:
+    if raw is None:
+        _reject(diagnostics, resolver, pointer, "expression.args-missing", "expected 'args' list")
+        return ()
+    if not isinstance(raw, list) or not raw:
+        _reject(
+            diagnostics,
+            resolver,
+            pointer,
+            "expression.args-empty",
+            "'args' must be a non-empty list",
+        )
+        return ()
+    return tuple(
+        _parse_expression(item, f"{pointer}/args/{i}", resolver, diagnostics, depth + 1)
+        for i, item in enumerate(raw)
+    )

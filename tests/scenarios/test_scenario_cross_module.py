@@ -55,8 +55,7 @@ def _address_class():
     }
 
 
-def _inventory_side_effect(domain_uris, catalog_path, *,
-                           inventory_dir=None, module_map=None):
+def _inventory_side_effect(domain_uris, catalog_path, *, inventory_dir=None, module_map=None):
     if module_map is None:
         # Home pool (STEP 1 + rollup): real party classes, untagged.
         return _party_classes()
@@ -79,30 +78,57 @@ def _llm_response():
         "ref_class": "Party",
         "ref_class_confidence": 0.9,
         "column_alignments": [
-            {"column": "ClientID", "ref_class": "Party",
-             "ref_property": "partyIdentifier", "alignment": "semantic",
-             "confidence": 0.8, "rationale": "Business id"},
-            {"column": "Name", "ref_class": "Party",
-             "ref_property": "partyName", "alignment": "exact",
-             "confidence": 0.95, "rationale": "Name"},
-            {"column": "Email", "ref_class": "Party",
-             "ref_property": "email", "alignment": "exact",
-             "confidence": 0.95, "rationale": "Email"},
-            {"column": "Country", "ref_class": "Party",
-             "ref_property": "country", "alignment": "exact",
-             "confidence": 0.95, "rationale": "Country"},
-            {"column": "City", "ref_class": "Address", "ref_module": "reference-data",
-             "ref_property": "city", "alignment": "semantic",
-             "confidence": 0.85, "rationale": "City belongs on a shared Address"},
+            {
+                "column": "ClientID",
+                "ref_class": "Party",
+                "ref_property": "partyIdentifier",
+                "alignment": "semantic",
+                "confidence": 0.8,
+                "rationale": "Business id",
+            },
+            {
+                "column": "Name",
+                "ref_class": "Party",
+                "ref_property": "partyName",
+                "alignment": "exact",
+                "confidence": 0.95,
+                "rationale": "Name",
+            },
+            {
+                "column": "Email",
+                "ref_class": "Party",
+                "ref_property": "email",
+                "alignment": "exact",
+                "confidence": 0.95,
+                "rationale": "Email",
+            },
+            {
+                "column": "Country",
+                "ref_class": "Party",
+                "ref_property": "country",
+                "alignment": "exact",
+                "confidence": 0.95,
+                "rationale": "Country",
+            },
+            {
+                "column": "City",
+                "ref_class": "Address",
+                "ref_module": "reference-data",
+                "ref_property": "city",
+                "alignment": "semantic",
+                "confidence": 0.85,
+                "rationale": "City belongs on a shared Address",
+            },
         ],
     }
 
 
 def _mock_client():
     def create_completion(**kwargs):
-        return mock.MagicMock(choices=[mock.MagicMock(
-            message=mock.MagicMock(content=json.dumps(_llm_response()))
-        )])
+        return mock.MagicMock(
+            choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(_llm_response())))]
+        )
+
     client = mock.MagicMock()
     client.chat.completions.create = create_completion
     return client
@@ -131,29 +157,29 @@ def _affinity_dir(tmp_path):
             {"domain": "client", "table_count": 1, "tables": ["tblClient"]},
         ],
     }
-    (analysis / "adminpulse-affinity.yaml").write_text(
-        yaml.dump(affinity), encoding="utf-8"
-    )
+    (analysis / "adminpulse-affinity.yaml").write_text(yaml.dump(affinity), encoding="utf-8")
     return analysis
 
 
 def _run(tmp_path, *, cross_module):
     kw = {}
     if cross_module:
-        kw = {"cross_module": True, "accelerator": "logistics",
-              "ref_models_dir": tmp_path}
-    with mock.patch(
-        "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
-    ), mock.patch(
-        "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-        side_effect=_inventory_side_effect,
-    ), mock.patch(
-        "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
-        return_value={
-            PARTY_URI: {"module": "client", "domains": ["client"]},
-            ADDRESS_URI: {"module": "reference-data",
-                          "domains": ["client", "invoice"]},
-        },
+        kw = {"cross_module": True, "accelerator": "logistics", "ref_models_dir": tmp_path}
+    with (
+        mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
+        ),
+        mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            side_effect=_inventory_side_effect,
+        ),
+        mock.patch(
+            "kairos_ontology.core.analyse_sources.load_accelerator_uri_modules",
+            return_value={
+                PARTY_URI: {"module": "client", "domains": ["client"]},
+                ADDRESS_URI: {"module": "reference-data", "domains": ["client", "invoice"]},
+            },
+        ),
     ):
         alignments = build_domain_alignments(
             analysis_dir=_affinity_dir(tmp_path),
@@ -197,43 +223,3 @@ class TestCrossModuleScenario:
         assert data["alignment_params_sha256"]
         for col in data["tables"][0]["columns"]:
             assert "ref_module" not in col
-
-
-class TestCrossModuleOwnershipHandoff:
-    """proposal-quality — a DD-070 cross-module column becomes a typed
-    :class:`DomainHandoff` in the Claim Registry, never an in-domain claim for
-    the 'client' domain (the accelerator ``owns``/``does_not_own`` boundary
-    applied before claim emission)."""
-
-    def test_city_becomes_handoff_not_property_claim(self, tmp_path):
-        from kairos_ontology.core.migrate_claims import alignment_to_registry
-
-        data = _run(tmp_path, cross_module=True)
-        registry = alignment_to_registry(data)
-
-        # No in-domain property claim for Address.city in the 'client' registry.
-        assert not any(
-            c.type == "property" and c.id and c.id.endswith("-city")
-            for c in registry.claims
-        )
-        assert len(registry.domain_handoffs) == 1
-        handoff = registry.domain_handoffs[0]
-        assert handoff.ref_class == "Address"
-        assert handoff.ref_property == "city"
-        assert handoff.owning_domains == ["client", "invoice"]
-        assert handoff.ref_module == "reference-data"
-        ev = handoff.evidence_sources[0]
-        assert ev.system == "adminpulse"
-        assert ev.table == "tblClient"
-        assert ev.column == "City"
-
-    def test_home_property_claims_unaffected(self, tmp_path):
-        from kairos_ontology.core.migrate_claims import alignment_to_registry
-
-        data = _run(tmp_path, cross_module=True)
-        registry = alignment_to_registry(data)
-        # partyName / email / country stay ordinary in-domain property claims.
-        prop_ids = {c.id for c in registry.claims if c.type == "property"}
-        assert any("party-name" in pid for pid in prop_ids) or any(
-            "partyname" in pid for pid in prop_ids
-        )

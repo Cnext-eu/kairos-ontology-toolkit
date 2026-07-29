@@ -106,6 +106,12 @@ def _graph_to_info(graph: Graph) -> OntologyInfo:
 # ---------------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------------
+# NOTE (DD-103/DD-108): ``list_classes`` filters to an exact namespace prefix and
+# ``list_properties`` requires an exact ``rdfs:domain`` match; neither walks the
+# ``rdfs:subClassOf`` hierarchy. They are for ontology inventory / non-binding uses only.
+# Structure-aware binding resolution (inherited, cross-namespace properties) MUST use the
+# DD-103 semantic index (``SemanticIndex.class_properties``), as the v5 compiler kernel does.
+# ---------------------------------------------------------------------------
 
 def list_classes(graph: Graph, namespace: Optional[str] = None) -> List[ClassInfo]:
     """Return all ``owl:Class`` instances in *namespace* (or all if ``None``)."""

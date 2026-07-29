@@ -1,194 +1,24 @@
 ---
 name: kairos-setup-dataplatform
-description: >
-  Guide for scaffolding and setting up a downstream dataplatform dbt repository
-  that consumes ontology-hub projections. Covers scaffold generation, profile
-  configuration, source binding, bronze introspection, and CI setup.
+description: Scaffold a downstream dbt repository that consumes v5 compile output.
 ---
-<!-- kairos-ontology-toolkit:managed -->
 
-# Kairos Dataplatform Setup Skill
+# Dataplatform Setup
 
-> **🔒 Skill context:** Before running any `kairos-ontology` /
-> `python -m kairos_ontology` command in this skill, set the sentinel env var so
-> the CLI knows it runs inside a skill and suppresses its skill-gate warning:
-> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
-> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+The ontology hub compiles canonical dbt artifacts; the dataplatform supplies physical connections,
+deployment configuration, and runtime tests.
 
-You help users create and configure a **dataplatform** dbt repository that consumes
-ontology-generated models from an ontology-hub. The dataplatform is the downstream
-consumer that connects to the actual bronze lakehouse/warehouse.
+1. From a v5 hub, run `kairos-ontology compile <domain> --check --format json` for each selected
+   domain and resolve all errors.
+2. Set `KAIROS_SKILL_CONTEXT=1`, then run
+   `kairos-ontology init-dataplatform <name> --platform <platform>`.
+3. Configure `profiles.yml` without committing credentials.
+4. Bind physical databases, schemas, and source relations in the downstream dbt project.
+5. Consume the compiler-emitted dbt package at an immutable Git revision or artifact version.
+6. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` against the target adapter.
+7. Validate generated Power BI assets in the selected Fabric/Power BI deployment toolchain when
+   Gold output is consumed.
 
-## Before you start
-
-0. **Run from within the hub repo** — The `init-dataplatform` command must be run
-   from within an ontology-hub repository so it can auto-detect the hub's repo URL,
-   version, and source systems.
-
-1. **Quick toolkit version check** — run `kairos-ontology update --check` once at
-   the start. If outdated, run `kairos-ontology update` first.
-
-## Architecture
-
-```
-ontology-hub (producer)              dataplatform (consumer)
-┌────────────────────────┐           ┌────────────────────────┐
-│ Vocabulary + Mappings  │           │ dbt_project.yml        │
-│ → dbt projection       │           │ packages.yml ──────┐   │
-│   (logical source refs)│           │ models/_sources.yml │   │
-│                        │           │   (physical binding)│   │
-│ output/medallion/dbt/  │ ────────► │ dbt_packages/ ◄────┘   │
-│                        │           │ macros/                │
-└────────────────────────┘           │   extract_source_      │
-                                     │   schema.sql           │
-                                     │ pyproject.toml (uv)    │
-                                     └────────────────────────┘
-```
-
-**Key principle:** The hub generates transform logic (SQL with real column names);
-the dataplatform provides physical source binding (database, schema, connection).
-
-## Step 1: Scaffold the Dataplatform
-
-From within the ontology-hub repository:
-
-```bash
-kairos-ontology init-dataplatform [NAME] [--platform fabric-lakehouse|fabric-warehouse|databricks]
-```
-
-This creates a sibling directory with:
-- `dbt_project.yml` pre-configured
-- `packages.yml` pinned to the hub's current version
-- `models/_sources.yml` pre-populated from hub vocabulary
-- `macros/extract_source_schema.sql` for bronze introspection
-- `pyproject.toml` with uv + kairos-ontology-toolkit dependency
-- `.github/workflows/deploy-powerbi-semantic-model.yml` (fabric-cicd publish flow)
-- `.github/fabric/deployment-settings.json.example` (deployment config checklist)
-- `scripts/package_fabric_semantic_model.py` (prepares Fabric package metadata)
-- `profiles.yml.example` with platform-specific connection template
-- `README.md` with setup instructions
-
-### Auto-detection
-
-When run from a hub repo, the command auto-detects:
-- **Hub repo URL** from git remote origin
-- **Hub version** from VERSION.json
-- **Source systems** from integration/sources/ directories
-- **Table names** from vocabulary TTL files
-
-## Step 2: Configure Connection Profile
-
-Copy `profiles.yml.example` to `~/.dbt/profiles.yml` and fill in your connection:
-
-### Microsoft Fabric Lakehouse
-```yaml
-your_project:
-  target: dev
-  outputs:
-    dev:
-      type: fabric
-      driver: "ODBC Driver 18 for SQL Server"
-      server: "your-workspace.datawarehouse.fabric.microsoft.com"
-      database: "your-lakehouse-name"
-      schema: "dbo"
-      authentication: CLI
-```
-
-### Databricks
-```yaml
-your_project:
-  target: dev
-  outputs:
-    dev:
-      type: databricks
-      catalog: "your-catalog"
-      schema: "silver"
-      host: "workspace-url.azuredatabricks.net"
-      http_path: "/sql/1.0/warehouses/warehouse-id"
-      token: "your-token"
-```
-
-## Step 3: Update Physical Source Bindings
-
-Edit `models/_sources.yml` to match your actual bronze database/schema:
-
-```yaml
-version: 2
-sources:
-  - name: adminpulse
-    database: bronze_lakehouse        # ← Your actual database
-    schema: raw_adminpulse            # ← Your actual schema
-    tables:
-      - name: tblClient
-      - name: tblInvoice
-```
-
-## Step 4: Pull Hub Models and Build
-
-```bash
-cd your-dataplatform/
-uv sync                    # Install Python dependencies
-dbt deps                   # Pull ontology-hub dbt package
-dbt build                  # Build all models
-dbt test                   # Run tests
-```
-
-## Step 5: Bronze Introspection (Optional)
-
-To refresh the hub vocabulary from actual bronze tables:
-
-```bash
-# In the dataplatform repo:
-dbt run-operation extract_source_schema --args '{source_name: "adminpulse"}'
-# → Produces YAML output
-
-# Copy YAML to the hub repo and run:
-kairos-ontology import-source --from adminpulse-schema.yaml --system adminpulse
-```
-
-This updates the vocabulary TTL with new/changed/removed columns.
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| `init-dataplatform` can't detect hub | Run from within the hub repo root |
-| `dbt deps` auth error | Ensure CI runner has access to hub repo (PAT or SSH) |
-| `dbt deps` fails with "couldn't find remote ref" | The hub hasn't published a release yet. Leave the package commented out in `packages.yml` until the first tag is available. The `print_query` macro works without packages installed. |
-| Source not found | Check `_sources.yml` table names match hub vocabulary |
-| Type mismatch errors | Run bronze introspection to refresh vocabulary |
-| Missing columns in silver | Update SKOS mappings in hub for new columns |
-| `dbt parse` crashes with TypeError on tables | Ensure `tables:` is `tables: []` (not bare/null) when no tables are listed |
-
-### Introspection Without Packages
-
-If `dbt deps` is blocked (e.g., no hub release yet), you can still discover
-your warehouse schema using the `print_query` macro — it has no package
-dependencies:
-
-```bash
-dbt run-operation print_query \
-  --args '{sql: "SELECT table_schema, table_name FROM INFORMATION_SCHEMA.TABLES"}' \
-  --profiles-dir .dbt
-```
-
-### Source Discovery Workflow
-
-When populating `_sources.yml` from warehouse introspection:
-
-1. Run `print_query` to discover available schemas and tables
-2. Write results to a **proposed** file (e.g., `_sources_discovered.yml`)
-3. Review and merge into your `_sources.yml` manually
-4. Run `dbt run-operation extract_source_schema` for full column metadata
-
-This generate-then-merge approach prevents accidental overwrites of any
-custom configuration in your existing `_sources.yml`.
-
-## Related Skills
-
-| Skill | When to use |
-|-------|-------------|
-| **kairos-package-dataplatform** | Understanding the hub→dataplatform consumption pattern |
-| **kairos-design-mapping** | Creating/updating SKOS column mappings |
-| **kairos-design-source** | Designing bronze vocabulary from scratch |
-| **kairos-execute-project** | Running projections in the hub |
+Source schema extraction may feed reviewed source TTL in the hub. Complex upstream logic must be an
+ordinary contracted dbt SQL/YAML model and referenced directly by an EntityBinding. The
+dataplatform must not redefine canonical grain, identity, load behavior, or field mappings.

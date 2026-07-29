@@ -139,7 +139,6 @@ class ModuleDiagnostic:
     term_uri: str | None = None
     expected_ontology_iri: str | None = None
     managed_source: str | None = None
-    claim_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -218,7 +217,7 @@ def active_default_annotation_paths(
 
 @dataclass(frozen=True)
 class ManagedImportRequirement:
-    """One direct import required by claims or configured module activation."""
+    """One direct import required by configured module activation or ontology use."""
 
     import_iri: str
     expected_ontology_iri: str
@@ -226,28 +225,6 @@ class ManagedImportRequirement:
     reasons: tuple[str, ...] = ()
     term_uris: tuple[str, ...] = ()
     accepted_transitive: bool = False
-
-
-@dataclass(frozen=True)
-class DisputedClaimModule:
-    """A deferred/rejected claim whose term's reference module remains an active
-    managed import for *other* reasons (another claim, or configured data-domain
-    activation) — DD-122.
-
-    Deferring or rejecting a claim never removes its module from the domain when
-    something else still requires it; this is surfaced so the curator who decided
-    against that claim is not misled into believing the module was dropped.
-    """
-
-    claim_id: str
-    claim_status: str
-    term_uri: str
-    module_id: str
-    import_iri: str
-    reasons: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -259,7 +236,6 @@ class ManagedImportPlan:
     selected_class_uris: tuple[str, ...]
     diagnostics: tuple[ModuleDiagnostic, ...] = ()
     activation_inventory: dict[str, Any] = field(default_factory=dict)
-    disputed_claims: tuple[DisputedClaimModule, ...] = ()
 
     @property
     def expected_imports(self) -> tuple[str, ...]:
@@ -376,7 +352,7 @@ def resolve_hub_accelerator_detailed(
     candidates that remain plausible.
 
     This is the single shared resolution path for ``validate``, ``project`` /
-    ``check-projection``, ``check-inventory``, and ``check-claims`` (DD-125
+    compiler diagnostics, ``check-inventory``, and ``check-claims`` (DD-125
     accelerator-resolution consolidation).
     """
     selected = explicit.strip() if explicit and explicit.strip() else None
@@ -810,17 +786,7 @@ def _diagnostic_key(item: ModuleDiagnostic) -> tuple[str, ...]:
         item.term_uri or "",
         item.expected_ontology_iri or "",
         item.managed_source or "",
-        item.claim_id or "",
     )
-
-
-def _claim_term_refs(registry: Any) -> list[tuple[str, str, str]]:
-    from .binding_analysis import approved_imported_term_refs
-
-    return [
-        (claim_id, term_uri, claim_type)
-        for claim_id, term_uri, claim_type in approved_imported_term_refs(registry)
-    ]
 
 
 def _module_term(module: ResolvedReferenceModule, uri: str) -> Any | None:
@@ -864,79 +830,7 @@ def _is_local_term(term_uri: str, ontology_iri: str | None) -> bool:
     return term_uri.startswith((bare + "#", bare + "/"))
 
 
-def _disputed_claim_modules(
-    registry: Any,
-    *,
-    context: ReferenceModuleContext | None,
-    activated_ids: set[str],
-    local_ontology_iri: str | None,
-    requirement_data: dict[tuple[str, str], dict[str, Any]],
-) -> tuple[DisputedClaimModule, ...]:
-    """Report deferred/rejected claims whose module remains active for other reasons.
-
-    Uses :func:`binding_analysis.is_decided_non_activating` — the companion of the
-    shared :func:`binding_analysis.claim_activates_projecting_import` predicate —
-    so a claim the curator explicitly deferred/rejected never itself contributes an
-    import requirement (DD-122), while still telling the curator when the module
-    it referenced remains required anyway (another claim, or configured
-    data-domain activation), so a deferred/rejected decision is never mistaken for
-    "module removed".
-    """
-    from .binding_analysis import (
-        IMPORTED_ORIGIN,
-        MATERIALIZATION_DISPOSITIONS,
-        is_decided_non_activating,
-    )
-
-    if context is None:
-        return ()
-    active_iris = {iri for iri, _owner_iri in requirement_data} | {
-        owner_iri for _iri, owner_iri in requirement_data
-    }
-    disputed: list[DisputedClaimModule] = []
-    for claim in registry.claims:
-        if not is_decided_non_activating(claim):
-            continue
-        if claim.origin != IMPORTED_ORIGIN:
-            continue
-        if claim.disposition not in MATERIALIZATION_DISPOSITIONS:
-            continue
-        term_uri = claim.identifying_uri()
-        if not term_uri or _is_local_term(term_uri, local_ontology_iri):
-            continue
-        match = _find_term_module(term_uri, context.modules, activated_ids)
-        if match is None:
-            continue
-        module, term = match
-        owner_iri = _owner_ontology(module, term)
-        candidates = {module.ontology_iri.rstrip("#"), owner_iri.rstrip("#")}
-        if not candidates & active_iris:
-            continue
-        reasons = tuple(
-            sorted(
-                {
-                    reason
-                    for (iri, owner), data in requirement_data.items()
-                    if iri in candidates or owner in candidates
-                    for reason in data["reasons"]
-                }
-            )
-        )
-        disputed.append(
-            DisputedClaimModule(
-                claim_id=claim.id,
-                claim_status=claim.status,
-                term_uri=term_uri,
-                module_id=module.profile.id,
-                import_iri=module.ontology_iri,
-                reasons=reasons,
-            )
-        )
-    return tuple(sorted(disputed, key=lambda item: (item.claim_id, item.term_uri)))
-
-
 def build_managed_import_plan(
-    registry: Any,
     *,
     domain: str,
     context: ReferenceModuleContext | None = None,
@@ -945,7 +839,7 @@ def build_managed_import_plan(
     projected_uris: Iterable[str] | None = None,
     local_ontology_iri: str | None = None,
 ) -> ManagedImportPlan:
-    """Build the union of claim-driven and data-domain-driven managed imports."""
+    """Build managed imports from configured activation and authored ontology use."""
     if local_ontology_iri is None and ontology_graph is not None:
         local_ontology_iri = next(
             (
@@ -1024,64 +918,6 @@ def build_managed_import_plan(
                 reason=f"data-domain:{domain}",
             )
 
-    class_claims: set[str] = set()
-    for claim_id, term_uri, claim_type in _claim_term_refs(registry):
-        if _is_local_term(term_uri, local_ontology_iri):
-            continue
-        if claim_type in {"class", "reference_data"}:
-            class_claims.add(term_uri)
-        match = _find_term_module(term_uri, context.modules, activated_ids) if context else None
-        if match is None:
-            fallback = _fallback_document_iri(term_uri).rstrip("#")
-            require(
-                fallback,
-                owner_iri=fallback,
-                source="claim-uri-fallback",
-                reason=f"claim:{claim_id}",
-                term_uri=term_uri,
-            )
-            if context:
-                diagnostics.append(
-                    ModuleDiagnostic(
-                        "warning",
-                        "term_owner_unresolved",
-                        f"Could not resolve the managed module owning {term_uri}; "
-                        f"using the legacy URI fallback {fallback}",
-                        term_uri=term_uri,
-                        expected_ontology_iri=fallback,
-                        managed_source="claim-uri-fallback",
-                        claim_id=claim_id,
-                    )
-                )
-            continue
-
-        module, term = match
-        owner_iri = _owner_ontology(module, term)
-        importer = accepted_transitive_importer(owner_iri)
-        if importer is not None:
-            module = importer
-        accepted = importer is not None or owner_iri in {
-            item.rstrip("#") for item in module.profile.accepted_transitive_dependencies
-        }
-        import_iri = module.ontology_iri if accepted else owner_iri
-        require(
-            import_iri,
-            owner_iri=owner_iri,
-            source=module.profile.id,
-            reason=f"claim:{claim_id}",
-            term_uri=term_uri,
-            accepted_transitive=accepted,
-        )
-        if accepted:
-            require(
-                module.ontology_iri,
-                owner_iri=owner_iri,
-                source=module.profile.id,
-                reason=f"accepted-transitive:{module.profile.id}",
-                term_uri=term_uri,
-                accepted_transitive=True,
-            )
-
     if context and dependency_graph is not None:
         authored_term_uris = {
             str(node)
@@ -1145,7 +981,7 @@ def build_managed_import_plan(
             module = context.module(module_id)
             if module:
                 profile_allowlist.update(module.profile.projection_allowlist)
-    selected = class_claims | profile_allowlist
+    selected = profile_allowlist
 
     requirements = tuple(
         ManagedImportRequirement(
@@ -1157,13 +993,6 @@ def build_managed_import_plan(
             accepted_transitive=bool(data["accepted_transitive"]),
         )
         for (iri, owner_iri), data in sorted(requirement_data.items())
-    )
-    disputed_claims = _disputed_claim_modules(
-        registry,
-        context=context,
-        activated_ids=activated_ids,
-        local_ontology_iri=local_ontology_iri,
-        requirement_data=requirement_data,
     )
     inventory = build_activation_inventory(
         domain=domain,
@@ -1177,7 +1006,6 @@ def build_managed_import_plan(
         selected_class_uris=tuple(sorted(selected)),
         diagnostics=tuple(sorted(diagnostics, key=_diagnostic_key)),
         activation_inventory=inventory,
-        disputed_claims=disputed_claims,
     )
     if ontology_graph is None:
         return plan
@@ -1192,7 +1020,6 @@ def build_managed_import_plan(
             )
         ),
         activation_inventory=plan.activation_inventory,
-        disputed_claims=plan.disputed_claims,
     )
 
 
@@ -1216,16 +1043,7 @@ def validate_external_term_imports(
         if requirement.import_iri.rstrip("#") in direct:
             continue
         terms = requirement.term_uris or (None,)
-        reasons = requirement.reasons or (None,)
         for term in terms:
-            claim_id = next(
-                (
-                    reason.removeprefix("claim:")
-                    for reason in reasons
-                    if reason and reason.startswith("claim:")
-                ),
-                None,
-            )
             diagnostics.append(
                 ModuleDiagnostic(
                     "error",
@@ -1237,7 +1055,6 @@ def validate_external_term_imports(
                     term_uri=term,
                     expected_ontology_iri=requirement.expected_ontology_iri,
                     managed_source=requirement.managed_source,
-                    claim_id=claim_id,
                 )
             )
     return tuple(sorted(diagnostics, key=_diagnostic_key))

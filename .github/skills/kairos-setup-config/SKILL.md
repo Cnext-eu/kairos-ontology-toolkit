@@ -1,141 +1,31 @@
 ---
 name: kairos-setup-config
-description: >
-  Guide for setting up the folder structure and configuration of a new ontology
-  hub repository. Covers scaffold files, SHACL shapes, and projection config.
-  NOT for ontology design or modeling — use kairos-design-domain for that.
+description: Configure the stateless v5 ontology-hub layout and authored inputs.
 ---
 
-# Hub Setup Skill
+# Hub Configuration
 
-> **🔒 Skill context:** Before running any `kairos-ontology` /
-> `python -m kairos_ontology` command in this skill, set the sentinel env var so
-> the CLI knows it runs inside a skill and suppresses its skill-gate warning:
-> - PowerShell: `$env:KAIROS_SKILL_CONTEXT = "1"`
-> - bash/zsh: `export KAIROS_SKILL_CONTEXT=1`
+Use `kairos-ontology init` through this skill; do not hand-create toolkit-managed files.
+Set `KAIROS_SKILL_CONTEXT=1` before CLI calls.
 
-You guide users through setting up a new Kairos ontology hub.
+## V5 layout
 
-> **IMPORTANT:** Always use the `python -m kairos_ontology` CLI commands to scaffold
-> the hub structure.  Do NOT manually create directories, READMEs, .gitignore,
-> skills, or other scaffold files — the CLI handles all of this automatically.
-
-## How hubs are created
-
-Hub repos are created using `kairos-ontology new-repo` (see the
-kairos-setup-init skill).  The `init` command then scaffolds the hub
-structure and adds domains inside an existing repo.
-
-## Standard hub structure
-
-```
-<name>-ontology-hub/
-├── .github/
-│   ├── copilot-instructions.md
-│   ├── skills/                          # AI skills for Copilot
-│   └── workflows/managed-check.yml
-├── ontology-hub/
-│   ├── README.md                        # Company context + domain overview
-│   ├── model/                           # Domain model (ontology-centric)
-│   │   ├── ontologies/
-│   │   │   ├── _master.ttl              # Master ontology (imports all domains)
-│   │   │   ├── customer.ttl
-│   │   │   └── README.md
-│   │   ├── shapes/                      # SHACL validation constraints
-│   │   │   └── README.md
-│   │   ├── extensions/                  # *-silver-ext.ttl projection annotations
-│   │   └── mappings/                    # Source-to-domain SKOS + kairos-map: mappings
-│   │       ├── custom-transformations/  # Virtual-source-to-domain mappings
-│   │       └── README.md
-│   ├── integration/                     # Source system integration
-│   │   ├── sources/                     # Source system reference docs + bronze vocab
-│   │   │   ├── custom-transformations/  # Generated contract vocabularies
-│   │   │   ├── README.md
-│   │   │   └── source-system-template/
-│   │   └── transforms/dbt/              # Authoritative custom dbt bundle
-│   │       ├── models/intermediate/
-│   │       ├── macros/
-│   │       └── tests/
-│   └── output/                          # All projection outputs (committed)
-│       ├── medallion/
-│       │   ├── silver/                  # Silver DDL/ERD
-│       │   ├── gold/                    # Gold dimensional models
-│       │   └── dbt/                     # dbt models (bronze → silver)
-│       ├── neo4j/
-│       ├── azure-search/
-│       ├── a2ui/
-│       └── prompt/
-├── ontology-reference-models/           # Committed reference models (updated via CLI)
-│   ├── authoritative-ontologies/
-│   ├── derived-ontologies/
-│   └── catalog-v001.xml
-├── .gitignore
-├── pyproject.toml                       # kairos-ontology-toolkit dependency + [tool.kairos] channel
-└── README.md
+```text
+model/ontologies/<domain>.ttl
+model/shapes/
+integration/discovery/
+integration/sources/<source>/
+integration/bindings/<source>-to-<domain>.binding.yaml
+integration/transforms/dbt/models/
+kairos.yaml
+output/
 ```
 
-## Adding a domain with `init`
+`integration/bindings/` contains closed EntityBinding YAML and is the sole source-to-canonical
+execution authority. Complex joins, windows, aggregations, JSON expansion, fallback logic, or grain
+changes belong in ordinary contracted dbt SQL and properties YAML, then are referenced by
+`source.dbtModel`. `output/` is derived and safe to regenerate.
 
-```bash
-python -m kairos_ontology init --company-domain contoso.com --domain customer
-```
-
-- `--company-domain` (required) — sets namespace base: `https://contoso.com/ont/`
-- `--domain` (optional) — creates a starter `.ttl` file
-- Also creates `ontology-hub/README.md` and `_master.ttl` if they don't exist
-
-The first `init` after `new-repo` can be done on `main` (initial setup).
-After that, always use a feature branch.
-
-## Multi-domain architecture
-
-- Each `.ttl` file = one independently deployable domain.
-- Domains can reference each other via `owl:imports`.
-- Keep domains small and focused (5–15 classes per domain).
-- Different teams can own different domains.
-
-## Naming the ontology file
-
-The filename becomes the domain identifier:
-- `customer.ttl` → domain "customer"
-- `sales-order.ttl` → domain "sales-order"
-- Use lowercase with hyphens for multi-word names.
-
-## Adding a new domain checklist
-
-- [ ] Create a feature branch (`ontology/<domain-name>`)
-- [ ] Run `python -m kairos_ontology init --company-domain <domain> --domain <name>`
-- [ ] Edit `ontology-hub/model/ontologies/<name>.ttl` — add classes and properties
-- [ ] Update domain overview table in `ontology-hub/README.md`
-- [ ] Add `owl:imports` to `ontology-hub/model/ontologies/_master.ttl`
-- [ ] Validate: `python -m kairos_ontology validate`
-- [ ] Generate projections: `python -m kairos_ontology project --target prompt`
-- [ ] (Optional) Generate silver layer: add `*-silver-ext.ttl` in `ontology-hub/model/extensions/`, then `python -m kairos_ontology project --target silver`
-- [ ] (Optional) Add source system docs in `ontology-hub/integration/sources/` and generate bronze vocab with **kairos-design-source** skill
-- [ ] (Optional) Create source-to-domain mappings in `ontology-hub/model/mappings/` (SKOS + `kairos-map:`) — invoke **kairos-design-mapping** skill, then **kairos-execute-project** for dbt models
-- [ ] (Optional) For joins/windows/aggregations or grain-changing logic, invoke
-  **kairos-develop-dbt-transformation**; do not manually create or edit its generated
-  `integration/sources/custom-transformations/*.vocabulary.ttl`
-- [ ] Optionally add SHACL shapes in `ontology-hub/model/shapes/`
-- [ ] Commit, push, and open PR to merge into main
-
-## Provenance header convention (DD-072)
-
-When you hand-author a `.ttl` file — including SHACL shapes under
-`ontology-hub/model/shapes/` — start it with the toolkit provenance comment block
-so every artifact records what produced it:
-
-```turtle
-# ----------------------------------------------------------------------
-# Generated by kairos-ontology-toolkit v<version>
-# Generator : kairos-setup-config
-# Generated : <YYYY-MM-DDThh:mm:ssZ> (UTC)
-# Scaffolded starting point — safe to edit and extend.
-# ----------------------------------------------------------------------
-```
-
-These are plain Turtle comments (`#`): they add no triples and are ignored by
-`rdflib` on parse, so they never affect SHACL validation or projection. The
-toolkit already auto-stamps the TTL it generates itself (source vocabulary, SKOS
-glossary, scaffold ontologies); programmatic callers can reuse
-`kairos_ontology._provenance.provenance_comment()`.
+Configure namespace, catalog, adapters, and selected roots in `kairos.yaml`. Keep each domain in an
+OWL ontology with labels/comments and explicit imports. Add optional SHACL in `model/shapes/`.
+Validate ontology inputs, then run `compile --check` before emission.

@@ -140,8 +140,7 @@ def _column_by_property(
     if "." in dependency and not dependency.startswith(("http://", "https://", "urn:")):
         table_name, column_name = dependency.rsplit(".", 1)
         if any(
-            table.name == table_name
-            and any(column.name == column_name for column in table.columns)
+            table.name == table_name and any(column.name == column_name for column in table.columns)
             for table in tables
         ):
             return table_name, column_name
@@ -182,9 +181,7 @@ def _shape_measures(
                 resource_uri=resource_uri,
             )
         visiting.add(resource_uri)
-        measure_dependencies = tuple(
-            shape(item) for item in source.dependencies.measures.value
-        )
+        measure_dependencies = tuple(shape(item) for item in source.dependencies.measures.value)
         column_dependencies: list[tuple[str, str]] = []
         for dependency in source.dependencies.columns.value:
             resolved = _column_by_property(tables, dependency)
@@ -199,9 +196,7 @@ def _shape_measures(
                     resource_uri=source.resource_uri,
                 )
             column_dependencies.append(resolved)
-        home_tables = {
-            table_name for table_name, _ in column_dependencies
-        } | {
+        home_tables = {table_name for table_name, _ in column_dependencies} | {
             item.home_table for item in measure_dependencies if item.home_table
         }
         if len(home_tables) > 1:
@@ -257,19 +252,11 @@ def _shape_measures(
             lifecycle=source.lifecycle.value,
             home_table=home_table,
             column_dependencies=tuple(column_dependencies),
-            measure_dependencies=tuple(
-                item.measure_id for item in measure_dependencies
-            ),
+            measure_dependencies=tuple(item.measure_id for item in measure_dependencies),
             data_type=source.data_type.value if source.data_type is not None else "",
-            format_string=(
-                source.format_string.value
-                if source.format_string is not None
-                else ""
-            ),
+            format_string=(source.format_string.value if source.format_string is not None else ""),
             folder=source.folder.value if source.folder is not None else "",
-            owner_role=(
-                source.owner_role.value if source.owner_role is not None else ""
-            ),
+            owner_role=(source.owner_role.value if source.owner_role is not None else ""),
             tests=source.validation_tests.value,
             evidence=source.validation_evidence.value,
             emitted=source.lifecycle.value is not MeasureLifecycle.INTENT,
@@ -313,10 +300,7 @@ def _shape_calendar(
         if match is None:
             _fail(
                 "calendar.invalid-role-binding",
-                (
-                    f"rolePlayingDate {value!r} must use "
-                    "RoleName=GoldOrSilverTable.date_column"
-                ),
+                (f"rolePlayingDate {value!r} must use " "RoleName=GoldOrSilverTable.date_column"),
                 rule_id="DD-113-calendar",
                 resource_uri=source.resource_uri,
             )
@@ -331,14 +315,14 @@ def _shape_calendar(
         names.add(role_name.casefold())
         table = aliases.get(match.group("table").casefold())
         column_name = match.group("column")
-        column = next(
-            (
-                item
-                for item in table.columns
-                if item.name == column_name
-            ),
-            None,
-        ) if table is not None else None
+        column = (
+            next(
+                (item for item in table.columns if item.name == column_name),
+                None,
+            )
+            if table is not None
+            else None
+        )
         if column is None:
             _fail(
                 "calendar.missing-role-column",
@@ -387,10 +371,7 @@ def _shape_security(
         if match is None:
             _fail(
                 "security.invalid-binding",
-                (
-                    f"securityBinding {value!r} must use "
-                    "Table.column=Role:RLS|OLS"
-                ),
+                (f"securityBinding {value!r} must use " "Table.column=Role:RLS|OLS"),
                 rule_id="DD-113-security",
                 resource_uri=source.resource_uri,
             )
@@ -404,9 +385,7 @@ def _shape_security(
             )
         table = aliases.get(match.group("table").casefold())
         column_name = match.group("column")
-        if table is None or not any(
-            column.name == column_name for column in table.columns
-        ):
+        if table is None or not any(column.name == column_name for column in table.columns):
             _fail(
                 "security.missing-column-binding",
                 f"security binding {value!r} does not bind an emitted Gold column",
@@ -447,9 +426,7 @@ def _shape_security(
 
 def _relationship_column(table: GoldTableSpec, property_uri: str, explicit: str) -> str:
     candidates = [
-        column.name
-        for column in table.columns
-        if f"property:{property_uri}" in column.provenance
+        column.name for column in table.columns if f"property:{property_uri}" in column.provenance
     ]
     if explicit and any(column.name == explicit for column in table.columns):
         candidates.append(explicit)
@@ -642,7 +619,8 @@ def _shape_dimensional(
             authored.dimension_exposure
             and authored.dimension_exposure.value
             in {DimensionExposure.HISTORY_ONLY, DimensionExposure.DUAL}
-            and (history is None or history.scd_type.value is not ScdType.TYPE_2)
+            and history is not None
+            and history.scd_type.value is not ScdType.TYPE_2
         ):
             _fail(
                 "gold.dimension-history-unavailable",
@@ -657,30 +635,22 @@ def _shape_dimensional(
         updated_at = ""
         if authored.role.value is GoldTableRole.FACT:
             runtime = incremental.get(authored.incremental_policy_ref or "")
-            if runtime is None:
-                _fail(
-                    "gold.incremental-policy-missing",
-                    f"fact {authored.table_name.value!r} has no normalized runtime policy",
-                    rule_id="DD-112-fact",
-                    resource_uri=authored.resource_uri,
+            if runtime is not None:
+                unique_key = runtime.merge_identity.value
+                updated_at = runtime.ordering.source_updated_at.value
+                missing_runtime_columns = tuple(
+                    value for value in (*unique_key, updated_at) if value not in actual_columns
                 )
-            unique_key = runtime.merge_identity.value
-            updated_at = runtime.ordering.source_updated_at.value
-            missing_runtime_columns = tuple(
-                value
-                for value in (*unique_key, updated_at)
-                if value not in actual_columns
-            )
-            if missing_runtime_columns:
-                _fail(
-                    "gold.fact-runtime-column-missing",
-                    (
-                        f"fact {authored.table_name.value!r} runtime policy references "
-                        f"unmaterialized Silver columns {missing_runtime_columns!r}"
-                    ),
-                    rule_id="DD-112-fact",
-                    resource_uri=authored.resource_uri,
-                )
+                if missing_runtime_columns:
+                    _fail(
+                        "gold.fact-runtime-column-missing",
+                        (
+                            f"fact {authored.table_name.value!r} runtime policy references "
+                            f"unmaterialized Silver columns {missing_runtime_columns!r}"
+                        ),
+                        rule_id="DD-112-fact",
+                        resource_uri=authored.resource_uri,
+                    )
         weight = authored.bridge_weight_column.value if authored.bridge_weight_column else ""
         if weight and weight not in actual_columns:
             _fail(
@@ -707,8 +677,7 @@ def _shape_dimensional(
                 matching = tuple(
                     endpoint
                     for endpoint in endpoints
-                    if endpoint == endpoint_name
-                    or _local_name(endpoint) == endpoint_name
+                    if endpoint == endpoint_name or _local_name(endpoint) == endpoint_name
                 )
                 if len(matching) != 1 or column_name not in actual_columns:
                     _fail(
@@ -738,24 +707,14 @@ def _shape_dimensional(
                 source_version=actual_version,
                 columns=_columns(model, authored.resource_uri),
                 primary_key=_primary_key(model),
-                fact_grain=(
-                    authored.fact_grain.value if authored.fact_grain is not None else ""
-                ),
-                fact_type=(
-                    authored.fact_type.value if authored.fact_type is not None else None
-                ),
+                fact_grain=(authored.fact_grain.value if authored.fact_grain is not None else ""),
+                fact_type=(authored.fact_type.value if authored.fact_type is not None else None),
                 version_binding=(
-                    authored.version_binding.value
-                    if authored.version_binding is not None
-                    else None
+                    authored.version_binding.value if authored.version_binding is not None else None
                 ),
-                correction=(
-                    authored.correction.value if authored.correction is not None else None
-                ),
+                correction=(authored.correction.value if authored.correction is not None else None),
                 late_arrival=(
-                    authored.late_arrival.value
-                    if authored.late_arrival is not None
-                    else None
+                    authored.late_arrival.value if authored.late_arrival is not None else None
                 ),
                 incremental_policy_ref=authored.incremental_policy_ref or "",
                 incremental_unique_key=unique_key,
@@ -767,9 +726,7 @@ def _shape_dimensional(
                 ),
                 silver_scd_type=scd_type,
                 bridge_grain=(
-                    authored.bridge_grain.value
-                    if authored.bridge_grain is not None
-                    else ""
+                    authored.bridge_grain.value if authored.bridge_grain is not None else ""
                 ),
                 bridge_endpoints=(
                     authored.bridge_endpoints.value
@@ -788,17 +745,14 @@ def _shape_dimensional(
                     if authored.bridge_allocation is not None
                     else ""
                 ),
-                perspectives=tuple(
-                    sorted(perspective_by_table.get(authored.resource_uri, ()))
-                ),
+                perspectives=tuple(sorted(perspective_by_table.get(authored.resource_uri, ()))),
             )
         )
     ordered = tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
     included = {table.resource_uri for table in ordered}
     for table in ordered:
         if table.role is GoldTableRole.BRIDGE and (
-            table.bridge_endpoints is None
-            or not set(table.bridge_endpoints).issubset(included)
+            table.bridge_endpoints is None or not set(table.bridge_endpoints).issubset(included)
         ):
             _fail(
                 "gold.bridge-endpoint-not-materialized",
@@ -819,11 +773,12 @@ def _shape_dimensional(
         calendar=_shape_calendar(policy, ordered),
         security=_shape_security(policy, ordered),
         perspectives=tuple(
-            (item.name, tuple(sorted(
-                table.name
-                for table in ordered
-                if table.resource_uri in item.table_uris
-            )))
+            (
+                item.name,
+                tuple(
+                    sorted(table.name for table in ordered if table.resource_uri in item.table_uris)
+                ),
+            )
             for item in policy.gold.perspectives
         ),
         silver_registry_names=registry.names,

@@ -18,7 +18,7 @@ jobs:
         run: |
           RAW_TAG="${GITHUB_REF#refs/tags/v}"
           # Normalize the SemVer-style tag to PEP 440, mirroring
-          # _tag_to_version() in src/kairos_ontology/cli/main.py so that both
+          # _tag_to_version() in src/kairos_ontology/cli/shared.py so that both
           # v4.4.0rc1 and v4.4.0-rc.1 validate against __version__.
           TAG=$(echo "$RAW_TAG" \
             | sed -E 's/-rc\.?([0-9]+)/rc\1/' \

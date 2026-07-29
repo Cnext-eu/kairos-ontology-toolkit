@@ -25,8 +25,16 @@ KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 
 # System-generated columns that don't come from SKOS mappings
 SYSTEM_COLUMNS = {
-    "_sk", "_iri", "_type", "_source_system", "_source_record_key", "_loaded_at",
-    "_row_hash", "valid_from", "valid_to", "is_current",
+    "_sk",
+    "_iri",
+    "_type",
+    "_source_system",
+    "_source_record_key",
+    "_loaded_at",
+    "_row_hash",
+    "valid_from",
+    "valid_to",
+    "is_current",
 }
 
 
@@ -67,9 +75,7 @@ def _extract_column_maps(g: Graph, domain_ns: str) -> dict[str, set[str]]:
             ontology_g.parse(ttl_file, format="turtle")
 
     # Identify object properties (FK relations)
-    object_props = {
-        str(s) for s, _, _ in ontology_g.triples((None, RDF.type, OWL.ObjectProperty))
-    }
+    object_props = {str(s) for s, _, _ in ontology_g.triples((None, RDF.type, OWL.ObjectProperty))}
 
     class_columns: dict[str, set[str]] = {}
 
@@ -181,9 +187,22 @@ def _get_sql_columns(sql: str) -> set[str]:
 
     # Filter out SQL type keywords that get false-matched
     sql_types = {
-        "string", "boolean", "varchar", "int", "integer", "bigint",
-        "smallint", "float", "double", "decimal", "date", "timestamp",
-        "bit", "text", "binary", "number",
+        "string",
+        "boolean",
+        "varchar",
+        "int",
+        "integer",
+        "bigint",
+        "smallint",
+        "float",
+        "double",
+        "decimal",
+        "date",
+        "timestamp",
+        "bit",
+        "text",
+        "binary",
+        "number",
     }
     result = set(matches + matches2) - sql_types
     return result
@@ -221,15 +240,16 @@ class TestMappingToSqlCompleteness:
         for prop in all_props:
             col_name = _resolve_expected_col_name(prop, overrides)
             # Accept exact match, or FK-style variants (_sk, _fk suffix)
-            if (col_name not in all_sql_columns
-                    and f"{col_name}_sk" not in all_sql_columns
-                    and f"{col_name}_fk" not in all_sql_columns
-                    and col_name not in all_sql_text):
+            if (
+                col_name not in all_sql_columns
+                and f"{col_name}_sk" not in all_sql_columns
+                and f"{col_name}_fk" not in all_sql_columns
+                and col_name not in all_sql_text
+            ):
                 missing.append(f"{prop} (expected: {col_name})")
 
-        assert not missing, (
-            "Mapped properties missing from dbt SQL:\n"
-            + "\n".join(f"  - {m}" for m in sorted(missing))
+        assert not missing, "Mapped properties missing from dbt SQL:\n" + "\n".join(
+            f"  - {m}" for m in sorted(missing)
         )
 
     def test_invoice_mapped_columns_present(self, invoice_dbt_artifacts):
@@ -254,15 +274,16 @@ class TestMappingToSqlCompleteness:
         for prop in all_props:
             snake_name = _camel_to_snake(prop)
             # Accept exact match, or FK-style variants (_sk, _fk suffix)
-            if (snake_name not in all_sql_columns
-                    and f"{snake_name}_sk" not in all_sql_columns
-                    and f"{snake_name}_fk" not in all_sql_columns
-                    and snake_name not in all_sql_text):
+            if (
+                snake_name not in all_sql_columns
+                and f"{snake_name}_sk" not in all_sql_columns
+                and f"{snake_name}_fk" not in all_sql_columns
+                and snake_name not in all_sql_text
+            ):
                 missing.append(f"{prop} (expected: {snake_name})")
 
-        assert not missing, (
-            "Mapped properties missing from dbt SQL:\n"
-            + "\n".join(f"  - {m}" for m in sorted(missing))
+        assert not missing, "Mapped properties missing from dbt SQL:\n" + "\n".join(
+            f"  - {m}" for m in sorted(missing)
         )
 
 
@@ -285,25 +306,25 @@ class TestSchemaYamlCompleteness:
         # not dim_date which is internally generated)
         sql_columns: set[str] = set()
         for key, content in client_dbt_artifacts.items():
-            if (key.endswith(".sql")
-                    and key.startswith("models/silver/")
-                    and "__from_" not in key
-                    and "__dq_quarantine" not in key
-                    and "dim_date" not in key
-                    and "macros/" not in key):
+            if (
+                key.endswith(".sql")
+                and key.startswith("models/silver/")
+                and "__from_" not in key
+                and "__dq_quarantine" not in key
+                and "dim_date" not in key
+                and "macros/" not in key
+            ):
                 sql_columns.update(_get_sql_columns(content))
 
         # Filter out system columns
         meaningful_sql_cols = {
-            c for c in sql_columns
-            if not _is_system_column(c) and not c.startswith("_")
+            c for c in sql_columns if not _is_system_column(c) and not c.startswith("_")
         }
 
         missing_from_yaml = meaningful_sql_cols - yaml_columns
 
-        assert not missing_from_yaml, (
-            "SQL columns missing from schema YAML:\n"
-            + "\n".join(f"  - {c}" for c in sorted(missing_from_yaml))
+        assert not missing_from_yaml, "SQL columns missing from schema YAML:\n" + "\n".join(
+            f"  - {c}" for c in sorted(missing_from_yaml)
         )
 
 
@@ -330,7 +351,7 @@ class TestFilterConditionsApplied:
                 all_per_source_sql += content + "\n"
 
         for value in (0, 1, 2):
-            assert f"[tbl_client].[client_type_code] = {value}" in all_per_source_sql
+            assert f"[tbl_client].[Type] = {value}" in all_per_source_sql
 
 
 class TestNoPhantomColumns:
@@ -345,9 +366,7 @@ class TestNoPhantomColumns:
         overrides = _load_silver_column_overrides("client")
 
         # Expected column names from mappings (silverColumnName override or snake_case)
-        expected_from_mapping = {
-            _resolve_expected_col_name(p, overrides) for p in all_props
-        }
+        expected_from_mapping = {_resolve_expected_col_name(p, overrides) for p in all_props}
 
         # Get all columns from per-source SQL models
         per_source_columns: set[str] = set()
@@ -357,15 +376,16 @@ class TestNoPhantomColumns:
 
         # Unexplained = not in mapping AND not a system column
         unexplained = {
-            c for c in per_source_columns
+            c
+            for c in per_source_columns
             if c not in expected_from_mapping and not _is_system_column(c)
         }
 
         # Allow FK columns (end with _fk or _sk referencing another entity)
         unexplained = {
-            c for c in unexplained
-            if not c.endswith("_fk") and not c.endswith("_sk")
-            and not c.startswith("_")
+            c
+            for c in unexplained
+            if not c.endswith("_fk") and not c.endswith("_sk") and not c.startswith("_")
         }
 
         # NOTE: This is an advisory check. Some columns may come from FK
@@ -422,9 +442,10 @@ class TestSilverExtTypesMatchCasts:
             if not re.search(rf"\bas\s+{re.escape(col_name)}\b", all_sql, re.IGNORECASE):
                 missing_columns.append(f"{prop} (expected column '{col_name}')")
 
-        assert not missing_columns, (
-            "silverDataType-annotated columns missing from SQL output:\n"
-            + "\n".join(f"  - {c}" for c in sorted(missing_columns))
+        assert (
+            not missing_columns
+        ), "silverDataType-annotated columns missing from SQL output:\n" + "\n".join(
+            f"  - {c}" for c in sorted(missing_columns)
         )
 
         # Check 2: Where CAST exists for a column, verify it uses the correct type
@@ -446,11 +467,11 @@ class TestSilverExtTypesMatchCasts:
                 }.get(expected_type.upper(), {expected_type.upper()})
                 if actual_type not in accepted_types:
                     type_mismatches.append(
-                        f"{prop}: silverDataType={expected_type}, "
-                        f"SQL CAST uses {actual_type}"
+                        f"{prop}: silverDataType={expected_type}, " f"SQL CAST uses {actual_type}"
                     )
 
-        assert not type_mismatches, (
-            "silverDataType annotations inconsistent with SQL CASTs:\n"
-            + "\n".join(f"  - {m}" for m in sorted(type_mismatches))
+        assert (
+            not type_mismatches
+        ), "silverDataType annotations inconsistent with SQL CASTs:\n" + "\n".join(
+            f"  - {m}" for m in sorted(type_mismatches)
         )

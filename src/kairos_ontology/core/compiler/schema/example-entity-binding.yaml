@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+# Canonical v5 EntityBinding example (DD-133 §10). Loadable via load_entity_binding().
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: crm-customer-to-party
+  domain: party
+source:
+  relation: crm.customers
+target:
+  class: party:Customer
+grain:
+  columns: [customer_id]
+identity:
+  strategy: source-natural
+  sourceKey: [customer_id]
+load:
+  mode: incremental
+  scd: 2
+  incremental:
+    mergeIdentity: [customer_id]
+    canonicalHashInputs: [customer_id, full_name, country]
+    cdcOperation:
+      column: operation
+      insertValues: [I]
+      updateValues: [U]
+      deleteValues: [D]
+    sourceUpdatedAt: source_updated_at
+    businessEffectiveAt: effective_at
+    ingestedAt: ingested_at
+    totalOrder: [source_updated_at, sequence_number]
+    lookback: { value: 2, unit: days }
+    delete: soft-delete
+    lateArrival: accept
+    correction: new-version
+    replay: idempotent
+    backfill: merge
+    schemaEvolution: fail
+fields:
+  - property: party:customerId
+    expression: customer_id
+  - property: party:displayName
+    expression:
+      fn: upper
+      args: [{ column: full_name }]
+  - property: party:countryCode
+    expression:
+      fn: upper
+      args: [{ column: country }]
+  # FK join-local column for the cross-domain relationship below. A relationship's
+  # join.local column is NOT auto-materialized: it MUST also be mapped as a scalar field
+  # (DD-107-source-ownership), otherwise compile fails with mapping.unresolved-join-input.
+  - property: party:accountReference
+    expression: account_id
+relationships:
+  - property: party:hasCountry
+    target: ref:Country
+    join: [{ local: country, foreign: iso2 }]
+    cardinality: many-to-one
+    mode: as-of
+    missingParent: error
+    ambiguousParent: error
+    temporal:
+      childEventTime: effective_at
+      parentValidFrom: valid_from
+      parentValidTo: valid_to
+      openEnded: null
+      overlap: error
+      lateParent: error
+      changeDetection: include
+  # Cross-domain relationship. The parent binding (billing:Account) is compiled in a
+  # different domain, so it cannot be a same-domain `target` lookup — it is referenced by
+  # its materialized output column via `externalReference`:
+  #   * key.column is the PARENT's materialized output column (not the child source column);
+  #   * type is a canonical type token (e.g. string, int32, int64, decimal, boolean,
+  #     date, timestamp) whose kind must match the local source column's kind;
+  #   * join.foreign MUST equal externalReference.key.column (else safety.relationship-endpoint).
+  - property: party:hasAccount
+    target: billing:Account
+    externalReference:
+      name: account
+      domain: billing
+      key:
+        - column: account_id
+          type: string
+    join: [{ local: account_id, foreign: account_id }]
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: null
+    ambiguousParent: first
+conformance:
+  group: party-customer
+  sourcePrecedence: 1
+  conflict: prefer-precedence
+  union:
+    mode: deduplicate
+    deduplicateBy: [customer_id]
+    orderBy:
+      - { column: source_updated_at, direction: descending }
+quality:
+  - kind: not-null
+    columns: [customer_id]
+  - kind: unique
+    columns: [customer_id]

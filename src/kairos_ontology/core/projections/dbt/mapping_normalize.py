@@ -41,12 +41,9 @@ from .policy_specs import (
     CanonicalTypeKind,
     CanonicalTypeSpec,
     MedallionPolicySpec,
-    PrepMode,
-    SentinelAction,
 )
 from .policy_normalize import _source_type, _target_type, _types_compatible
 from .specs import ContractFact, SourceSystemFact
-
 
 _BOOLEAN = CanonicalTypeSpec(CanonicalTypeKind.BOOLEAN)
 _INT64 = CanonicalTypeSpec(CanonicalTypeKind.INT64)
@@ -152,12 +149,8 @@ _APPROVED_MACROS = {
     f"{_MACRO_NAMESPACE}monthName": "kairos_month_name",
     f"{_MACRO_NAMESPACE}quarter": "kairos_quarter",
 }
-_CAPABILITY_ADAPTERS = {
-    capability: ("fabric", "databricks") for capability in MappingCapability
-}
-_TIME_LEXICAL = re.compile(
-    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,7})?"
-)
+_CAPABILITY_ADAPTERS = {capability: ("fabric", "databricks") for capability in MappingCapability}
+_TIME_LEXICAL = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,7})?")
 
 
 def _error(
@@ -179,10 +172,7 @@ def _canonical_type(value: str, resource_uri: str) -> CanonicalTypeSpec:
     raw = value.strip().lower()
     result = _target_type(raw)
     if result is None:
-        aliases = {
-            kind.value: kind
-            for kind in CanonicalTypeKind
-        }
+        aliases = {kind.value: kind for kind in CanonicalTypeKind}
         sized_string = re.fullmatch(r"string\((\d+)\)", raw)
         decimal = re.fullmatch(r"decimal\((\d+),(\d+)\)", raw)
         if sized_string:
@@ -414,11 +404,7 @@ def _comparable(
     left: CanonicalTypeSpec,
     right: CanonicalTypeSpec,
 ) -> bool:
-    return (
-        left.kind is right.kind
-        or left.kind in _NUMERIC_KINDS
-        and right.kind in _NUMERIC_KINDS
-    )
+    return left.kind is right.kind or left.kind in _NUMERIC_KINDS and right.kind in _NUMERIC_KINDS
 
 
 def _numeric_output(arguments: tuple[MappingExpression, ...]) -> CanonicalTypeSpec:
@@ -640,11 +626,11 @@ def _expression(
             raise _error(
                 "mapping.technical-cleanup",
                 (
-                    f"function {fact.operation!r} is technical cleanup; author it in "
-                    "kairos-prep through kairos-design-source"
+                    f"function {fact.operation!r} is technical cleanup; route it "
+                    "through a contracted dbt transformation"
                 ),
                 resource_uri=fact.resource_uri,
-                rule_id="DD-107-prep-routing",
+                rule_id="DD-107-transformation-routing",
             )
         if fact.operation in _NONDETERMINISTIC_FUNCTIONS:
             raise _error(
@@ -709,10 +695,7 @@ def _expression(
                 )
         elif fact.operation == "coalesce":
             first = arguments[0].metadata.output_type
-            if any(
-                not _comparable(first, item.metadata.output_type)
-                for item in arguments[1:]
-            ):
+            if any(not _comparable(first, item.metadata.output_type) for item in arguments[1:]):
                 raise _error(
                     "mapping.invalid-argument-type",
                     "coalesce arguments must have compatible types",
@@ -720,10 +703,7 @@ def _expression(
                     rule_id="DD-107-types",
                 )
             output = _canonical_type(fact.output_type, fact.resource_uri)
-            if any(
-                not _target_compatible(item.metadata.output_type, output)
-                for item in arguments
-            ):
+            if any(not _target_compatible(item.metadata.output_type, output) for item in arguments):
                 raise _error(
                     "mapping.output-type-mismatch",
                     "coalesce arguments must match the declared output type",
@@ -798,10 +778,7 @@ def _expression(
         )
         output = _canonical_type(fact.output_type, fact.resource_uri)
         results = tuple(branch.result for branch in branches) + (else_expression,)
-        if any(
-            not _target_compatible(item.metadata.output_type, output)
-            for item in results
-        ):
+        if any(not _target_compatible(item.metadata.output_type, output) for item in results):
             raise _error(
                 "mapping.output-type-mismatch",
                 "all CASE results must match the declared output type",
@@ -815,10 +792,7 @@ def _expression(
             nullable=any(item.metadata.nullable for item in results),
             null_policy=MappingNullPolicy.BRANCH,
             capability=MappingCapability.CASE_EXPRESSION,
-            inputs=_inputs(
-                tuple(branch.condition for branch in branches)
-                + results
-            ),
+            inputs=_inputs(tuple(branch.condition for branch in branches) + results),
         )
         return CaseExpression(metadata, branches, else_expression)
 
@@ -903,55 +877,22 @@ def _effective_symbols(
     dict[str, MappingInputSpec],
     dict[str, tuple[MappingInputSpec, ...]],
 ]:
-    preparations = {
-        item.table.source_table_uri: item for item in policy.preparations
-    }
     by_uri: dict[str, list[MappingInputSpec]] = {}
     for system in systems:
         for table in system.tables:
-            preparation = preparations.get(table.uri)
-            renames = (
-                {
-                    item.source_column_uri: item.target_name.value
-                    for item in preparation.renames
-                }
-                if preparation is not None
-                else {}
-            )
-            conversions = (
-                {
-                    item.source_column_uri: item.target_type.value
-                    for item in preparation.type_conversions
-                }
-                if preparation is not None
-                else {}
-            )
-            nullable_by_sentinel = (
-                {
-                    item.source_column_uri
-                    for item in preparation.sentinel_rules
-                    if item.action.value is SentinelAction.TO_NULL
-                }
-                if preparation is not None
-                else set()
-            )
             for column in table.columns:
-                source_type = conversions.get(column.uri) or _source_type(column.data_type)
+                source_type = _source_type(column.data_type)
                 if source_type is None:
                     continue
-                prepared = (
-                    preparation is not None
-                    and preparation.mode.value is PrepMode.NORMALIZE
-                )
                 symbol = MappingInputSpec(
                     source_column_uri=column.uri,
                     source_table_uri=table.uri,
                     source_name=system.label,
                     authored_name=column.name,
-                    physical_name=renames.get(column.uri, column.name),
+                    physical_name=column.name,
                     data_type=source_type,
-                    nullable=column.nullable or column.uri in nullable_by_sentinel,
-                    origin="prepared" if prepared else column.origin,
+                    nullable=column.nullable,
+                    origin=column.origin,
                 )
                 by_uri.setdefault(column.uri, []).append(symbol)
                 if table.relation_kind == "contracted-virtual":
@@ -963,11 +904,7 @@ def _effective_symbols(
                             by_uri.setdefault(alias, []).append(
                                 replace(symbol, source_column_uri=alias)
                             )
-    ambiguous = {
-        uri: tuple(values)
-        for uri, values in by_uri.items()
-        if len(values) != 1
-    }
+    ambiguous = {uri: tuple(values) for uri, values in by_uri.items() if len(values) != 1}
     unique = {uri: values[0] for uri, values in by_uri.items() if len(values) == 1}
     return unique, ambiguous
 
@@ -979,9 +916,7 @@ def _source_symbol(
     resource_uri: str,
 ) -> MappingInputSpec:
     if source_column_uri in ambiguous:
-        owners = ", ".join(
-            sorted(item.source_table_uri for item in ambiguous[source_column_uri])
-        )
+        owners = ", ".join(sorted(item.source_table_uri for item in ambiguous[source_column_uri]))
         raise _error(
             "mapping.ambiguous-source-column",
             f"sourceColumn {source_column_uri!r} has multiple owners: {owners}",
@@ -1089,18 +1024,6 @@ def _route(
                 rule_id="DD-107-transformation-readiness",
             )
         return MappingRoute.CONTRACTED_TRANSFORMATION, contract.name
-    if relation_kind == "prepared-child":
-        return MappingRoute.PREPARED, ""
-    preparation = next(
-        (
-            item
-            for item in policy.preparations
-            if item.table.source_table_uri == table_uri
-        ),
-        None,
-    )
-    if preparation is not None and preparation.mode.value is PrepMode.NORMALIZE:
-        return MappingRoute.PREPARED, ""
     return MappingRoute.DIRECT, ""
 
 
@@ -1160,9 +1083,7 @@ def normalize_mapping_contract(
     symbols, ambiguous = _effective_symbols(systems, policy)
     tables: list[TableMappingSpec] = []
     columns: list[ColumnMappingSpec] = []
-    table_uris = {
-        table.uri for system in systems for table in system.tables
-    }
+    table_uris = {table.uri for system in systems for table in system.tables}
     seen_table_resources: set[str] = set()
     seen_column_resources: set[str] = set()
 
@@ -1195,10 +1116,7 @@ def normalize_mapping_contract(
             )
             raise _error(
                 "mapping.relational-mapping-type",
-                (
-                    f"mappingType {fact.mapping_type!r} is relational or grain-affecting"
-                    f"{hint}"
-                ),
+                (f"mappingType {fact.mapping_type!r} is relational or grain-affecting" f"{hint}"),
                 resource_uri=fact.resource_uri,
                 rule_id="DD-107-transformation-routing",
             )
@@ -1356,22 +1274,13 @@ def normalize_mapping_contract(
                 rule_id="DD-107-transformation-routing",
             )
         if not _target_compatible(expression.metadata.output_type, target_type):
-            raise _error(
-                "mapping.target-output-type-mismatch",
-                (
-                    f"expression outputs {_type_label(expression.metadata.output_type)!r}, "
-                    f"but target requires {_type_label(target_type)!r}; type conversion "
-                    "is technical cleanup and must be authored in kairos-prep"
-                ),
-                resource_uri=fact.resource_uri,
-                rule_id="DD-107-types",
+            expression = FunctionExpression(
+                replace(expression.metadata, output_type=target_type),
+                "cast",
+                (expression,),
             )
         target_table = next(
-            (
-                item
-                for item in facts.tables
-                if item.source_table_uri == source.source_table_uri
-            ),
+            (item for item in facts.tables if item.source_table_uri == source.source_table_uri),
             None,
         )
         target_class_uri = target_table.target_class_uri if target_table else ""
@@ -1406,10 +1315,7 @@ def normalize_mapping_contract(
         first = unsupported[0]
         raise _error(
             "mapping.unsupported-adapter-capability",
-            (
-                f"{first.capability.value!r} is unsupported on adapter "
-                f"{first.adapter!r}"
-            ),
+            (f"{first.capability.value!r} is unsupported on adapter " f"{first.adapter!r}"),
             resource_uri=first.mapping_resource_uri,
             rule_id=first.rule_id,
         )
@@ -1541,9 +1447,11 @@ def bind_expression_to_column(
             source_column_uri=source_column_uri,
             physical_name=physical_name,
         )
-        nested = tuple(item.condition for item in branches) + tuple(
-            item.result for item in branches
-        ) + (else_expression,)
+        nested = (
+            tuple(item.condition for item in branches)
+            + tuple(item.result for item in branches)
+            + (else_expression,)
+        )
         return replace(
             expression,
             branches=branches,

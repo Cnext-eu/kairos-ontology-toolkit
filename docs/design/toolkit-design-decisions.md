@@ -46,6 +46,10 @@ This makes it immediately clear which decision they belong to. Files without a
 
 ## Index
 
+> **Current architecture:** start with DD-133. DD-135 and DD-136 record the completed v4
+> operational retirement. Earlier accepted entries remain historical records unless a later
+> decision explicitly supersedes them; they are not an alternate active authoring path.
+
 | ID | Title | Status | Date |
 |----|-------|--------|------|
 | [DD-001](#dd-001-gold-layer-inheritance--class-per-table) | Gold Layer Inheritance — Class-Per-Table | Proposed | 2026-04-25 |
@@ -180,6 +184,15 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-130](#dd-130-silver-ext-shape-discovery-with-packaged-fallback-and-windows-safe-loading) | Silver-ext Shape Discovery with Packaged Fallback and Windows-Safe Loading | Accepted | 2026-07-26 |
 | [DD-131](#dd-131-multi-class-property-domains-via-a-single-effective-domain-resolver) | Multi-Class Property Domains via a Single Effective-Domain Resolver | Accepted | 2026-07-26 |
 | [DD-132](#dd-132-fact-extraction-decomposition-guarded-by-a-full-artifact-characterization-baseline) | Fact-Extraction Decomposition Guarded by a Full-Artifact Characterization Baseline | Accepted | 2026-07-27 |
+| [DD-133](#dd-133-v5-authoring-break--yaml-entitybinding--stateless-compile) | V5 Authoring Break — YAML EntityBinding + Stateless `compile` | Accepted | 2026-07-27 |
+| [DD-134](#dd-134-immutable-reversible-unreleased-toolkit-testing) | Immutable, Reversible Unreleased Toolkit Testing | Accepted | 2026-07-27 |
+| [DD-135](#dd-135-retire-v4-release-and-lifecycle-orchestration) | Retire V4 Release and Lifecycle Orchestration | Accepted | 2026-07-27 |
+| [DD-136](#dd-136-retire-v4-claim-binding-and-completeness-authority) | Retire V4 Claim Binding and Completeness Authority | Accepted | 2026-07-27 |
+| [DD-137](#dd-137-derived-stateless-readiness-proposal-kairos-ontology-next) | Derived, Stateless Readiness Proposal (`kairos-ontology next`) | Accepted | 2026-07-28 |
+| [DD-138](#dd-138-cross-domain-relationship-targets-via-external-references) | Cross-domain Relationship Targets via External References | Accepted | 2026-07-28 |
+| [DD-139](#dd-139-authored-passthrough-technical-columns--dd-107-amendment) | Authored Passthrough Technical Columns — DD-107 Amendment | Proposed (Parked) | 2026-07-28 |
+| [DD-140](#dd-140-canonical-emit-layout-and-dbt-package-topology) | Canonical Emit Layout and dbt-Package Topology | Accepted | 2026-07-28 |
+| [DD-141](#dd-141-adopt-okf-based-per-hub-decision-log-as-a-toolkit-capability) | Adopt OKF-based per-hub Decision Log as a toolkit capability | Accepted | 2026-07-29 |
 
 ---
 
@@ -6606,6 +6619,11 @@ without breaking existing hubs.
 - Catalog/import cycles terminate deterministically and remain visible in diagnostics.
 - Structured CLI inspection and prompt slices replace raw Turtle interpretation for
   semantic decisions.
+- The v5 `EntityBinding` compiler resolves bound-class properties through this semantic
+  index under the `rdfs` profile so subclass-inherited, cross-namespace imported properties
+  are bindable without local redeclaration; see the DD-108 amendment (2026-07-28). Per the
+  breadth principle above, such inherited properties are physically materialized only when a
+  binding field explicitly binds them.
 
 ---
 
@@ -6973,6 +6991,51 @@ unreviewed row-level equivalence.
 - Multi-source schema alignment is no longer described as semantic conformance by
   itself.
 - Every composite transformation exposes complete contribution lineage.
+
+### Amendment (2026-07-28): identity keys are target OUTPUT columns; compile-time resolution uses the semantic index
+
+Two coupled compile-time defects are corrected in the v5 `EntityBinding` compiler
+(`core/compiler/adapter.py`, `core/compiler/kernel.py`).
+
+**1. Business/natural identity is decoupled from source column names.** `identity.sourceKey`
+and `identity.businessKey` enumerate **source** columns, but the identity fact (`naturalKey`,
+which drives generated surrogate/integration keys, business grain, identity roles, and render)
+previously baked those **source** names into the identity. That only compiled when
+`camel_to_snake(source_column) == camel_to_snake(target_property_local_name)` — a coincidence
+of the canonical fixture. The adapter now resolves each ordered identity key component to the
+**target OUTPUT column** it is mapped to (via the field whose expression is exactly that source
+column) *before* constructing `EntityIdentityFact`, so downstream consumers receive coherent
+output-named identity. `identity.sourceKey` is unchanged for `_source_record_key` and
+conformance. Emitted silver/dbt column names are now the snake-cased target property local name
+(`camel_to_snake(...)`), matching the graph projection path and the `naturalKey` normalization;
+this is idempotent for already-snake property names. An identity key component that maps to no
+field, to more than one target output, or only inside a multi-column expression is a specific,
+actionable diagnostic (`identity.authored-key-not-supplied`,
+`identity.ambiguous-key-mapping`, `identity.key-column-in-expression`) rather than a silent
+source-named key. The quality-column and `identity.authored-key-not-supplied` diagnostics are
+made actionable (they name the source column, the mapped target/output, or state that none
+maps).
+
+**2. Compile-time binding resolution uses the DD-103 semantic index under a non-asserted
+profile.** The kernel previously loaded the ontology under the default `ASSERTED` profile and
+resolved a bound class's properties with the exact-domain / exact-namespace helpers in
+`ontology_ops` (`list_classes`/`list_properties`), which do not walk `rdfs:subClassOf`. A hub
+subclass therefore could not bind an inherited reference property whose `rdfs:domain` is an
+ancestor class in an imported namespace without redeclaring it locally. The kernel now loads
+with `SemanticProfile.RDFS` (the minimal profile that populates subclass-inherited properties)
+and resolves each bound class's direct **and** inherited, cross-namespace properties through the
+semantic index closure (`SemanticIndex.class_properties`). Each inherited resolved property is
+made applicable to the bound subclass in the resolved-symbol layer (the bound class URI is added
+to its `domain_uris`); the ontology graph is never rewritten. The exact-domain/namespace
+`ontology_ops` helpers remain for inventory / non-binding uses only and must not be used for
+structure-aware binding resolution. Consistent with **DD-103**, imported *semantic* breadth must
+not silently widen *physical* projection breadth: inherited properties are materialized **only**
+when explicitly bound in an `EntityBinding` field, never auto-emitted. Binding targets remain
+hub-namespace classes; imported ancestor classes are not themselves binding targets. Because
+inherited cross-namespace properties can share a local name, an authored field ref that resolves
+to more than one distinct property URI is a compile diagnostic (`binding.ambiguous-property`);
+callers qualify the field with the owning namespace (full URI or a bound prefix) to disambiguate.
+Unambiguous resolution is unchanged.
 
 ---
 
@@ -8906,6 +8969,602 @@ splitting into separate lists would silently discard.
 
 ---
 
+## DD-133: V5 Authoring Break — YAML EntityBinding + Stateless `compile`
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** new `src/kairos_ontology/core/compiler/`, new
+`src/kairos_ontology/cli/compile.py`, existing
+`core/projections/dbt/` (reused phases), `kairos-design-domain` +
+`kairos-design-mapping` skills, `tests/scenarios/v5-hub/`
+**Implementation:** `src/kairos_ontology/core/compiler/`,
+`src/kairos_ontology/cli/compile.py`, the lean packaged hub scaffold, and the companion
+contract [`dd-133-v5-entity-binding-compile.md`](dd-133-v5-entity-binding-compile.md).
+
+### Context
+
+The v4 authoring/operating experience accumulated too many overlapping authorities —
+claims, mapping TTL, preparation TTL, Silver-extension TTL, transformation contracts,
+virtual sources, readiness reports, lifecycle/phase state, and release evidence — layered
+on top of an otherwise capable immutable dbt projection pipeline. Authoring a single
+canonical entity required editing several TTL authorities and passing multiple gates.
+
+V5 collapses this to **one** authoring authority and **one** execution path. Because this
+is a clean break, **no v4 hub compatibility, dual-format authoring, migration command, or
+upgrade path is provided** — existing client hubs are **rebuilt from fresh** as v5 hubs.
+
+### Decision
+
+1. **One authoring authority:** a concise, closed **YAML `EntityBinding`** is the single
+   source-to-canonical execution authority. OWL/TTL remains authoritative for the canonical
+   Silver model; source vocabularies remain authoritative for Bronze; hand-authored dbt
+   remains authoritative for complex relational transforms. The binding *references* these;
+   it never copies or replaces them, and it is validated by a packaged JSON Schema then
+   converted directly into frozen dataclasses and the existing graph-free mapping AST —
+   **never** serialized to intermediate RDF.
+2. **One execution path:** a **stateless `compile`** command with mutually exclusive
+   `--check` / `--explain` / `--emit` modes. `--check`/`--explain` never write hub files;
+   `--emit` builds a complete in-memory plan then writes atomically via same-volume
+   stage-then-swap over a manifest-owned target subtree. Kairos persists **no** lifecycle,
+   readiness, proposal, claim, or verification state.
+3. **Reuse, don't rebuild:** the new `core/compiler/` package adapts the existing immutable
+   `bind → normalize → shape → materialize → render` dbt phases via graph-free authored
+   facts — there is no second renderer. `core/compiler` must never import
+   `kairos_ontology.mdm` (layering rule).
+4. **Minimal non-suppressible safety kernel** gates emission; focused data-quality checks
+   are evidence emitted as ordinary dbt tests, not a Kairos runtime-result contract.
+5. **Superseded-for-the-v5-path at acceptance** (then deprecated-but-operative, not
+   deleted from decision history): the
+   lifecycle/readiness/release, claims/synchronization, and mandatory-preparation/
+   virtual-source/contract-identity decisions listed in the companion doc §9. Their v4
+   command paths were to keep working until retirement. Stage 4 subsequently removed them
+   under DD-135/DD-136 and the retirement inventory. DD-107's graph-free scalar AST
+   is **retained and reused**; only its RDF-authored, preparation-routed acquisition path is
+   superseded.
+6. **Stage 2 closed contract:** `load` is discriminated between full refresh and complete
+   incremental SCD1/SCD2 policy; relationships are discriminated between non-temporal,
+   current, and as-of policy; multi-source materialization requires explicit conformance,
+   precedence, conflict, and union/dedup policy; and `source.dbtModel` carries required SQL
+   and authoritative dbt-contract paths. All values load into frozen types. Unknown fields,
+   duplicate YAML keys, incomplete variants, and ambiguous CDC operation values fail with
+   source-located diagnostics. No v4 shape is accepted.
+
+The full normative contract — hub layout, closed YAML schema, scalar-expression grammar,
+safety kernel, atomic-emission contract, scope/provenance rules, and a canonical example —
+lives in the companion doc.
+
+### Rationale
+
+- A single closed binding removes the multi-authority coordination cost and the classes of
+  bug that came from claims/preparation/virtual-source drift, while the closed grammar and
+  allow-list keep it from becoming a new dumping ground.
+- Reusing the already-immutable, already-graph-free mapping AST (`AuthoredExpressionFact` is
+  a "graph-free structural copy") means v5 inherits the tested typed/deterministic rendering
+  behavior instead of forking a second pipeline.
+- Statelessness makes builds reproducible and eliminates the readiness/lifecycle/evidence
+  persistence that coupled authoring to operational state.
+- A clean break (no compatibility) is acceptable because client hubs are rebuilt from fresh,
+  so migration machinery would be pure cost.
+
+### Consequences
+
+- The complete strict kernel is implemented, including
+  incremental/SCD canonical hashing, temporal relationships, explicit conformance, adapter
+  capabilities, and direct contracted dbt SQL/YAML sources.
+- The one-binding-per-source rule remains: each document selects one relation or one
+  contracted dbt model. Multi-source materialization uses separate bindings with one explicit,
+  deterministic conformance contract.
+- Stage 3 establishes immutable `CompilePlan` as the sole canonical Silver/dbt planning
+  authority and `compile` as the only generation path. Optional Gold/MDM consumers reuse the
+  typed plan. Immutable phases, typed policy/expression structures, adapters, canonical
+  hashing, and deterministic renderers are retained.
+- Stage 4 retired every inventoried v4 operational wave and its commands/tests/assets; it did
+  not add v4 compatibility, dual authoring, or migration. The earlier
+  deprecated-but-operative state is preserved above as cutover history.
+- The adapter seam into the existing phases was de-risked by `v5-seam-spike` before the YAML
+  schema was locked.
+- Skills become thin LLM loops over deterministic primitives — no second proposal DB or
+  session-state subsystem is introduced.
+- The lean scaffold, active documentation, CLI navigation, downstream-consumption guidance,
+  and managed skills describe the implemented clean-break architecture.
+- Documentation consolidation is not v5 GA publication; version/tag/assets and publication
+  verification remain a separate maintainer release operation.
+
+---
+
+## DD-134: Immutable, Reversible Unreleased Toolkit Testing
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** `update` CLI, hub `pyproject.toml` / `uv.lock`, managed-file refresh,
+toolkit operations and release guidance
+**Implementation:** `src/kairos_ontology/cli/main.py` (`update --test-ref`,
+`update --restore`, test-ref state and dependency transaction helpers)
+
+### Context
+
+Testing toolkit work in a real hub previously required publishing a formal
+pre-release or manually editing dependency pins. A mutable branch pin was not
+reproducible, while manual restoration could resolve to a different release or
+lose the exact prior source. Same-version test commits also risked skipping the
+managed-file refresh, especially around Windows executable locking.
+
+### Decision
+
+`update --test-ref <branch-or-sha>` resolves the GitHub ref before mutation and
+accepts only its immutable 40-character commit SHA. It rewrites every PEP 508
+toolkit dependency while preserving extras, locks and syncs, and forces managed
+files to refresh from the tested commit. The existing release channel remains
+unchanged; testing creates no tag, release asset, version bump, or CHANGELOG
+entry.
+
+The hub records the requested ref, resolved SHA, and exact prior dependency
+source in temporary, visible `[tool.kairos.test-ref]` metadata. `--restore`
+restores that exact source, removes the metadata, relocks/resyncs, and refreshes
+released managed files. Nested sessions and restore without valid metadata are
+rejected. `--upgrade`, `--test-ref`, and `--restore` are mutually exclusive.
+
+Dependency-file changes are transactional: failures restore the original
+`pyproject.toml` and `uv.lock` bytes. Windows reuses the detached self-update
+helper from DD-057, including forced refresh and its transcript.
+
+### Rationale
+
+Resolving mutable names once combines convenient branch testing with a
+reviewable, reproducible pin. Saving the source rather than only a channel or
+version guarantees exact restoration. Reusing the established transaction and
+Windows refresh mechanisms avoids a second, platform-specific update path.
+
+### Consequences
+
+- During a test, expected hub drift is limited to dependency files and
+  toolkit-managed `.github` files (plus the normally ignored Windows refresh
+  transcript); ordinary channel selection is unaffected.
+- Hubs retain visible restore authority until a successful `--restore`.
+- GitHub/`gh` access is required for ref resolution, and Windows users must wait
+  for the detached helper before testing or reviewing the final diff.
+- Failed synchronous resolution, locking, syncing, scheduling, or refresh does
+  not leave a partially changed dependency state. A detached Windows-helper
+  failure remains recoverable from its transcript and the saved restore state.
+
+---
+
+## DD-135: Retire V4 Release and Lifecycle Orchestration
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** release evaluation, lifecycle/status scanning, projection readiness, CLI and scaffold
+**Implementation:** `docs/design/stage4-retirement-import-inventory.json`,
+`tests/test_stage4_retirement_inventory.py`, and the canonical v5 compiler
+
+### Context
+
+DD-133 made `CompilePlan` the canonical Silver/dbt planning authority. The older release
+evaluator, lifecycle gate, projection-readiness planner, and status scanner duplicated planning
+and persisted heuristic lifecycle evidence after their production consumers had been cut over.
+
+### Decision
+
+Delete those four modules after the deterministic AST inventory proves their production import
+edges are zero. Remove their Click commands and lifecycle-state scaffold. Retained diagnostics
+and routing consume ordered compiler diagnostics; source analysis, ontology/reference inventory,
+update/version diagnostics, and compiler diagnostics remain supported.
+
+### Rationale
+
+One typed planning authority prevents readiness and release heuristics from disagreeing with the
+artifacts the compiler can actually emit. A versioned retirement gate makes deletion reviewable
+and prevents a removed subsystem from being reintroduced by an unnoticed import.
+
+### Consequences
+
+- `check-projection`, `check-release`, and `status` are no longer CLI commands.
+- Importing any retired module raises `ModuleNotFoundError`.
+- New hubs do not scaffold `.kairos-state`; flow and diagnostic skills are stateless.
+- Compile success is not a runtime-validation or release-certification claim.
+- The transformation evidence/synchronization/candidate, preparation/Silver RDF authority,
+  report/session persistence, release-baseline, and obsolete-command waves recorded in the
+  same inventory are also retired. Ordinary contracted dbt SQL/YAML source contracts and
+  reusable source/ontology/compiler/rendering architecture remain.
+
+---
+
+## DD-136: Retire V4 Claim Binding and Completeness Authority
+
+**Status:** Accepted
+**Date:** 2026-07-27
+**Affects:** claim registry/binding/completeness modules, dbt shared phases, CLI, scaffold,
+managed skills, and Stage 4 architecture gates
+**Implementation:** `docs/design/stage4-retirement-import-inventory.json`,
+`tests/test_stage4_retirement_inventory.py`
+
+### Context
+
+The v5 compiler makes reviewed `EntityBinding` YAML the only materialization authority.
+V4 claims, aspirational Silver stubs, and completeness-policy gates duplicated that decision
+and left dead authority embedded in otherwise reusable normalization and rendering modules.
+
+### Decision
+
+Delete the claim, binding-analysis, completeness, and source-coverage modules and their command,
+scaffold, export, and test surfaces. Remove aspirational/stub and claim-eligibility branches from
+shared dbt phases. Retain only source analysis, ontology/reference loading, Gold/MDM consumers,
+typed expression/policy structures, renderers, and the ontology-only discriminator predicate
+required by active compiler paths.
+
+The deterministic Stage 4 inventory asserts zero production imports, absent retired modules and
+commands/assets, mirrored managed skills, and absence of retired production markers.
+
+### Rationale
+
+One binding authority prevents source evidence, claims, stub eligibility, and completeness
+heuristics from disagreeing. Extracting narrow shared predicates before deletion preserves the
+v5 compiler and downstream consumers without retaining V4 governance semantics.
+
+### Consequences
+
+- V4 claim, aspirational-stub, and completeness commands and Python APIs no longer exist.
+- Unbound entities fail through compiler diagnostics; no empty Silver model is emitted.
+- Source completeness remains an interactive onboarding question, not projection authority.
+- Historical DD-094 through DD-096 describe retired V4 behavior and are superseded here.
+
+---
+
+## DD-137: Derived, Stateless Readiness Proposal (`kairos-ontology next`)
+
+**Status:** Accepted
+**Date:** 2026-07-28
+**Affects:** CLI (`next`), `core/next_actions.py`, `core/hub_inspection.py`, `kairos-flow` and
+`kairos-diagnose-status` skills (and their scaffold copies)
+**Implementation:** `src/kairos_ontology/core/next_actions.py`,
+`src/kairos_ontology/core/hub_inspection.py`, `src/kairos_ontology/cli/inspection.py`,
+`tests/test_next_actions.py`, `tests/test_cli_next.py`
+
+### Context
+
+V5 is stateless (DD-133/DD-135): design skills surface next actions conversationally, but nothing
+persists them and `kairos-flow` must never create a continuation record. Two skills independently
+encoded a next-action decision tree in non-deterministic, untestable LLM prose, so routing could
+drift between sessions and between skills. Users asked for a repeatable, drift-free way to
+recompute and present the next action without reintroducing a stored state file.
+
+### Decision
+
+Add a read-only `kairos-ontology next` command that gathers a defensible, in-memory snapshot of
+authored inputs and canonical compiler status, then derives an advisory, deterministic
+`NextActionProposal`. The pure proposer (`core/next_actions.py`) performs no I/O and holds no
+state; the I/O gatherer (`core/hub_inspection.py`) reuses the existing binding loader and compiler
+entry points rather than adding an alternate resolver. The command is the **single deterministic
+routing authority**: `kairos-flow` and `kairos-diagnose-status` consume its JSON and map stable
+action kinds to owning skills instead of re-deriving their own decision tree.
+
+The proposal reports only defensible observations — authored input present/missing/unreadable,
+canonical compile status and ordered diagnostics, and authored optional (Gold/MDM) policy presence.
+Stages whose completion cannot be proven from authored inputs are emitted as
+`human_decision_required`; when the compile check is skipped, downstream readiness is
+`indeterminate`. JSON is clean on stdout with the advisory banner on stderr; exit is `0` for any
+advisory proposal (including blocking diagnostic actions, which are data) and non-zero only for an
+operational error such as an unresolved hub.
+
+### Rationale
+
+One deterministic routing authority prevents the two skills' heuristics from disagreeing and makes
+routing testable and byte-stable. Keeping the proposal derived and advisory — recomputed every run,
+never persisted — preserves the stateless architecture instead of reviving a state file.
+
+### Contrast with the retired DD-135/DD-136 readiness subsystem
+
+This is explicitly **not** the retired lifecycle/status/completeness authority. It never persists a
+continuation record, never claims semantic completeness from file presence, and never becomes an
+alternate compile or materialization authority. File presence is reported as presence only; the
+canonical compiler remains the sole planning authority and its diagnostics are surfaced verbatim.
+
+### Consequences
+
+- `kairos-ontology next` exists as a read-only advisory command; no state is written.
+- `kairos-flow` and `kairos-diagnose-status` stop independently routing and consume the proposal.
+- A passing compile check reported here is not a downstream runtime or release guarantee.
+- Adding a new action kind requires extending the single `ACTION_SKILLS` routing map.
+
+### Amendment (proposal schema v2): optional offline dbt gate
+
+`SCHEMA_VERSION` is bumped to `2`. The snapshot gains one additional **defensible emitted-output
+observation**, `emitted_dbt_project` (presence/unreadable/missing of
+`output/medallion/dbt/dbt_project.yml`), plus the configured `adapter` used only to render a
+command. When an emitted project is observed **and** at least one domain currently passes the
+compile check, the proposer surfaces a single hub-level `validate-dbt` action with status
+`optional` (never `blocking`, never a mandatory sequential step). This deliberately does **not**
+reintroduce lifecycle state: the observation is presence-only, cannot prove the emitted project is
+fresh or that the current CompilePlan produced it, and disappears when the emitted project is
+absent. The action routes to `kairos-execute-validate`, matching the opt-in offline
+`deps → parse → manifest → compile` gate (see the DD-110 parity check in `core/dbt_validation.py`).
+An unreadable emitted project yields `human_decision_required` instead.
+
+---
+
+## DD-138: Cross-domain Relationship Targets via External References
+
+**Status:** Accepted
+**Date:** 2026-07-28
+**Affects:** V5 `EntityBinding` relationship declarations, compiler BuildScope resolution,
+relationship diagnostics, provenance hashing, and generated dbt relationship tests
+**Implementation:** Accepted. `RelationshipSpec` gains an external-reference field; the
+compiler resolves the declared key contract. Physical cross-domain `ref()` emission is enabled
+by the unified topology accepted in DD-140.
+
+### Context
+
+DD-133 §7 already allows a relationship target to be either another entity with a binding and
+model in the current domain scope, or an explicitly declared external reference that the compiler
+can treat as a resolvable parent without generating that parent. DD-133 §8 deliberately keeps
+`compile <domain>` per-domain: the BuildScope includes bindings whose `metadata.domain` matches,
+with stable ordering and one `by_target` binding per class. Earlier DD-019, DD-027, and DD-097
+record historical demand for cross-domain foreign-key wiring, but they predate the v5 authoring
+break and must not be treated as automatic v5 scope-widening requirements.
+
+### Decision
+
+Add an explicit external-reference declaration to a relationship target. The declaration names the
+external parent and states its key contract: ordered key column name(s), canonical key type(s), and
+optionally the expected package/model identifier once emit topology is decided. The compiler
+resolves the relationship against that declared contract and does not generate a model for the
+parent.
+
+The contract is fail-closed:
+
+- a missing target declaration remains a missing-target diagnostic;
+- a relationship join column that cannot be mapped to an output column is a missing-key
+  diagnostic;
+- incompatible child and external key types are a type diagnostic;
+- composite keys are ordered tuples, and cardinality, order, names, and types must all match;
+- runtime names reserved for generated columns remain reserved for the child side of the join.
+
+Resolution is deterministic. The compiler must not search peer-domain bindings or choose an
+arbitrary binding from a class-local `by_target` map. The declared external-reference contract is
+the authority, even when a peer hub happens to contain a binding for the same ontology class.
+
+The naive alternative, resolving through a peer binding's key output, is rejected. It depends on
+which peer bindings are loaded, on peer authoring order, and on `by_target` retaining only one
+binding per class, so it can silently select the wrong physical parent. If maintainers ever choose
+scope widening instead, that would be a separate decision coupled to the emit/dbt-package topology
+in DD-140 because cross-domain `ref()` wiring is only reachable when the generated package layout
+contains both domains in a deterministic project graph.
+
+Provenance hashing should include the external-reference declaration because it affects the
+compiled contract and generated tests. Peer inputs should not enter the BuildScope hash merely
+because they exist elsewhere. They enter provenance only if a future accepted topology decision
+explicitly widens scope to load peer bindings or package manifests as compiler inputs.
+
+### Rationale
+
+The explicit contract follows DD-133 §7 without weakening the per-domain BuildScope. It gives
+relationship validation enough information to be deterministic and testable while keeping model
+ownership clear: the child domain can assert how it references an external parent, but it does not
+compile that parent.
+
+### Consequences
+
+- ISSUE-7 / Workstream C should implement the DD-133 external-reference route first.
+- Tests should cover missing target, missing key, incompatible types, composite-key ordering, and
+  deterministic behavior when peer bindings for the target class also exist.
+- Generated docs and diagnostics must make clear that an external reference is a contract, not a
+  discovered peer model.
+- Cross-domain physical `ref()` generation remains blocked on DD-140 unless the external parent is
+  made available by the selected dbt package topology.
+
+---
+
+## DD-139: Authored Passthrough Technical Columns — DD-107 Amendment
+
+**Status:** Proposed (Parked)
+**Date:** 2026-07-28
+**Affects:** DD-107 materialization authority, v5 `EntityBinding` schema, source-column
+ownership, Silver contract parity, manifest/parity hashing, and mapping diagnostics
+**Implementation:** Parked. Workstream B1 (actionable diagnostics + documentation) is shipped and
+resolves the immediate DX pain; the legitimate workaround (map the key as a scalar field) keeps
+DD-107's column contract honest. This construct is deferred and revisited only if authoring
+friction recurs.
+
+### Context
+
+DD-107 makes source ownership explicit: a source column becomes a materialized Silver output only
+when a `fields:` expression references it. Identity, quality, and relationship join columns are
+therefore expected to be mapped fields today. That rule is intentional because the `fields:` set is
+the deterministic column contract used by parity checks, generated schema, and review.
+
+However, identity keys, quality check columns, and relationship join keys are sometimes technical
+columns whose materialization is needed for runtime checks but whose meaning should not invent a
+synthetic ontology property. ISSUE-4/5 / Workstream B2 asks whether authors need an ergonomic,
+explicit way to carry those columns through.
+
+### Decision
+
+Amend DD-107 to allow an explicit authored passthrough/technical field construct that materializes
+a source column without asserting a new ontology property. The construct should be closed-schema,
+reviewable, and distinguishable from semantic `fields:` entries. It names the source expression,
+the output column, the output type, nullability, and its technical purpose such as identity,
+quality, or relationship support.
+
+Implicit auto-materialization is rejected. Automatically adding `identity.sourceKey`,
+`quality.columns`, or relationship join columns would change the deterministic parity/manifest
+column set behind the author's back, make compiler output depend on policy side effects rather
+than the declared projection, and risk exposing PII or other sensitive source columns that were
+not intentionally selected for Silver.
+
+Validation rules should include:
+
+- case-insensitive output-name collision checks against semantic fields, other passthrough fields,
+  and reserved runtime/generated names;
+- duplicate source use checks, allowing the same source column only when outputs and purposes are
+  explicitly distinct and non-ambiguous;
+- required output names and types, with adapter-normalized types participating in the same Silver
+  schema contract as semantic fields;
+- fail-closed diagnostics when a passthrough is referenced by identity, quality, or relationships
+  but is missing or type-incompatible.
+
+Passthrough columns are materialized Silver outputs and therefore affect the downstream Silver
+contract, dbt schema YAML, manifest/parity hash, emitted SQL bytes, and any release evidence that
+compares expected and actual columns. They are not ontology properties, are not emitted as OWL, and
+must be labelled in explanations as technical outputs.
+
+### Rationale
+
+An explicit construct preserves DD-107's source-ownership rule while avoiding ontology pollution.
+It keeps the reviewer in control of which physical columns leave Bronze/prep and makes sensitive
+column exposure a conscious authored decision.
+
+### Consequences
+
+- Workstream B1 can remain limited to clearer diagnostics and documentation for the current rule.
+- Workstream B2 requires binding-schema, normalization, render, contract, and parity-hash changes
+  before authors can rely on passthrough technical outputs.
+- Any implementation must treat passthrough outputs as first-class dbt contract columns but not as
+  canonical ontology facts.
+
+---
+
+## DD-140: Canonical Emit Layout and dbt-Package Topology
+
+**Status:** Accepted
+**Date:** 2026-07-28
+**Affects:** `compile --emit`, scaffold `output/` slots, dbt project/package generation,
+manifest ownership, `.gitignore`, downstream dataplatform consumption, and cross-domain refs
+**Implementation:** Accepted. `--emit` becomes projection-aware and targets the scaffolded
+slots; the dbt projection materializes into a single canonical medallion project with per-domain
+manifest ownership so stateless `compile <domain>` replaces only the files it owns.
+
+### Context
+
+V5 currently emits a domain-centric tree under `output/<domain>/`, while scaffolded hub layouts
+reserve projection-aware slots such as `output/medallion/dbt`, `output/medallion/powerbi`,
+`output/neo4j`, and `output/azure-search`. Maintainers need to decide whether canonical emit should
+follow those projection slots or continue to own a domain subtree.
+
+The dbt topology is coupled to this layout. A unified dbt project can make cross-domain `ref()`
+wiring reachable inside one project graph, while standalone-per-domain dbt projects keep domain
+emission isolated but require package dependencies or external contracts for references. This
+affects whether DD-138 can ever generate physical cross-domain `ref()` calls rather than only
+contract-level relationship tests.
+
+The corrected repository fact is that `output/` is currently un-ignored but not git-tracked. A
+future blanket `.gitignore` entry for generated output must either preserve scaffold `.gitkeep`
+slot markers with negated exceptions or intentionally remove those placeholders; otherwise the
+scaffolded projection slots will disappear from fresh clones.
+
+### Decision
+
+Adopt **projection-aware emit into the scaffolded slots** combined with a **single canonical
+medallion dbt project** that retains **per-domain manifest ownership**. The chosen options from
+those considered are (1) projection-aware layout and (3) unified dbt project:
+
+1. **Projection-aware emit layout (chosen).** Emit each projection into the scaffolded slot it
+   serves, such as `output/medallion/dbt` for dbt, `output/medallion/powerbi/<product>` for
+   semantic models, and analogous folders for search or graph projections.
+3. **Unified dbt project (chosen).** Emit all domains into one canonical medallion dbt project so
+   cross-domain `ref()` calls are ordinary dbt graph edges, while each `compile <domain> --emit`
+   owns and replaces only its manifest-listed files (statelessness preserved, per DD-097
+   multi-domain reconciliation).
+
+The rejected alternatives are (2) domain-centric `output/<domain>/` and (4) standalone-per-domain
+dbt projects. Standalone packages would keep cross-domain relationships as package-management
+concerns and force DD-138's external-reference contract to remain contract-only rather than
+emitting physical refs.
+
+`output/` is added to `.gitignore` with negated exceptions that preserve scaffold `.gitkeep` slot
+markers (e.g. `output/**` plus `!output/**/.gitkeep`) so fresh clones keep the projection slots
+while generated artifacts stay untracked.
+
+### Rationale
+
+Projection-aware slots match the scaffold and downstream consumption model. A unified dbt project
+maximizes deterministic compile-time relationship wiring, but it increases coordination and stale
+artifact risk. Standalone projects preserve isolation and simpler ownership, but make cross-domain
+relationships package-management concerns rather than local compiler refs.
+
+### Consequences
+
+- Maintainers must decide the emit tree before broadening generated artifacts beyond current dbt
+  outputs.
+- `.gitignore` changes for generated `output/` must preserve or intentionally remove scaffold slot
+  placeholders.
+- The chosen dbt topology constrains whether ISSUE-7 can produce physical cross-domain dbt refs or
+  only declared external-reference contracts.
+
+---
+
+
+## DD-141: Adopt OKF-based per-hub Decision Log as a toolkit capability
+
+**Status:** Accepted
+**Date:** 2026-07-29
+**Affects:** hub scaffold decisions bundle, `decision` CLI, validation, `kairos-help`
+skill, and documentation
+**Implementation:** `kairos-ontology decision new`, decision-bundle scaffold files under
+`ontology-hub/decisions/`, and the decision-profile validation path in
+`kairos-ontology validate`
+
+### Context
+
+Material ontology-design decisions were being made during Copilot-assisted design, but their
+rationale lived only in ephemeral conversation memory. The authored TTL states *what is true*;
+it does not durably explain *why* a maintainer accepted a genuine modeling tension, real gap,
+or rejected alternative. The `kairos-design-domain` workflow even described its rationale matrix
+as ephemeral, so refreshes and later reviews could preserve classes and properties while losing
+the evidence and trade-offs that justified them.
+
+DD-080 and DD-085 previously used OKF-shaped `.kairos-state` phase logs for interactive session
+continuation, but DD-135 retired that state structure for v5. The Decision Log is intentionally
+separate from that retired session state: it is durable, human-reviewed hub documentation for
+material decisions, not a lifecycle or continuation store.
+
+### Decision
+
+Adopt a per-hub **Decision Log** as a toolkit capability. Each v5 hub may carry a Google Cloud
+Open Knowledge Format (OKF) v0.2 Markdown + YAML-frontmatter bundle at
+`<hub_root>/decisions/` (for scaffolded hubs, `ontology-hub/decisions/`). Decision records are
+named `HUB-DD-*.md`; `index.md` is generated; the README and
+`HUB-DD-template.md.template` are managed scaffold files.
+
+Authors create records with `kairos-ontology decision new`. `kairos-ontology validate` now lints
+an existing bundle with the Kairos decision profile and reports two diagnostic classes:
+OKF-conformance findings and Kairos-decision-profile findings. An absent bundle is skipped.
+
+The materiality threshold is strict: log genuine tensions, real gaps, intentional standard
+divergence, evidence conflicts, or decisions with persistent consequences and rejected
+alternatives. Never log routine confirmations, obvious field additions, or decisions whose
+rationale is already fully expressed by the authored model.
+
+### Alternatives rejected
+
+| Option | Why rejected |
+|---|---|
+| Single hand-rolled hub file like the old `docs/draft/specs.md` pattern | Does not scale beyond one or two decisions, has no machine-checkable structure, and cannot be validated as a bundle. |
+| Store rationale in TTL comments | Conflates canonical facts with review rationale, is easy to drop during ontology refresh, and cannot clearly carry rejected alternatives or lifecycle metadata. |
+| ADRs only under repository `docs/` | Documents toolkit choices, not per-hub modeling choices, and is not shipped with scaffolded hubs where future maintainers need the rationale. |
+
+### Rationale
+
+OKF gives the hub a familiar, document-oriented record format without inventing a bespoke file
+syntax. A Kairos-specific decision profile can enforce the fields that make ontology rationale
+reviewable — materiality, sources, status, accepted/rejected state, and rejected alternatives —
+while keeping the actual record readable in any Markdown viewer.
+
+Scaffolding the README and template makes the capability discoverable in every new hub. Generating
+`index.md` avoids hand-maintained navigation drift, and validating the bundle during
+`validate` puts decision quality beside ontology syntax, SHACL, binding, and compile diagnostics.
+
+### Consequences
+
+- Every hub can keep durable rationale for material ontology-design decisions beside its authored
+  inputs.
+- `kairos-ontology validate` now also lints the decision bundle when it exists; an absent bundle
+  remains a compatible skip.
+- PR review is the materiality backstop: reviewers should reject routine confirmations and require
+  records for consequential design tensions or standard divergences.
+- The Decision Log does not revive `.kairos-state`; it is a separate, durable, human-reviewed
+  artifact rather than session state.
+
+---
 
 
 ```markdown

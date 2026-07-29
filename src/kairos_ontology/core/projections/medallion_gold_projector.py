@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from rdflib import Graph
 
@@ -19,7 +19,66 @@ from .dbt import (
     shape_project,
 )
 from .dbt.gold_render import render_powerbi_artifacts
+from .dbt.gold_materialize import materialize_gold_product
+from .dbt.gold_shape import shape_gold_product
 from .dbt.gold_specs import GoldContractError
+from .dbt.gold_specs import GoldProductLogicalSpec, GoldProductPhysicalSpec
+
+if TYPE_CHECKING:
+    from ..compiler.plan import CompilePlan
+
+
+def plan_gold_from_compile_plan(
+    compile_plan: "CompilePlan",
+) -> tuple[GoldProductLogicalSpec, GoldProductPhysicalSpec]:
+    """Build optional Gold logical/physical plans from canonical Stage 3 Silver."""
+    if compile_plan.blocked:
+        raise GoldContractError(
+            "gold.compile-plan-blocked",
+            "Gold cannot consume a blocked compiler plan",
+            rule_id="DD-133-downstream",
+        )
+    shaped = compile_plan.shaped_project
+    contract = compile_plan.normalized_contract
+    materialized = compile_plan.materialization_plan
+    registry = compile_plan.silver_registry
+    if shaped is None or contract is None or materialized is None or registry is None:
+        raise GoldContractError(
+            "gold.compile-plan-incomplete",
+            "Gold requires a shaped compiler plan with a Silver registry",
+            rule_id="DD-133-downstream",
+        )
+
+    logical = shape_gold_product(
+        contract.policy,
+        registry,
+        shaped.silver_models,
+        contract.fk_classification,
+        ontology_name=compile_plan.resolution.ontology_name,
+        ontology_version=compile_plan.resolution.ontology_version,
+        required=True,
+    )
+    assert logical is not None
+    physical = materialize_gold_product(
+        logical,
+        adapter_version=materialized.adapter.version,
+        capability_results=materialized.adapter.capability_results,
+    )
+    return logical, physical
+
+
+def generate_gold_from_compile_plan(
+    compile_plan: "CompilePlan",
+) -> dict[str, str]:
+    """Render deterministic optional Gold artifacts without rebuilding Silver."""
+    logical, physical = plan_gold_from_compile_plan(compile_plan)
+    parity = {
+        "status": "pass",
+        "authority": "compile-plan",
+        "provenance_hash": compile_plan.provenance_hash,
+        "models": [name for name, _ in compile_plan.silver_registry.names],
+    }
+    return render_powerbi_artifacts(logical, physical, silver_parity=parity)
 
 
 def _require_silver_authority(bound, contract, shaped) -> None:
@@ -28,27 +87,17 @@ def _require_silver_authority(bound, contract, shaped) -> None:
         missing.append("imported source vocabulary")
     if not contract.mapping_contract.tables or not contract.mapping_contract.columns:
         missing.append("validated table/column mappings")
-    if not contract.policy.preparations:
-        missing.append("normalized preparation policy")
     final_models = tuple(
-        model
-        for model in shaped.silver_models
-        if model.kind.value in {"entity", "union"}
+        model for model in shaped.silver_models if model.kind.value in {"entity", "union"}
     )
     if not final_models:
         missing.append("bound generated Silver models")
-    if any(
-        model.authority is None or model.authority.entity_identity is None
-        for model in final_models
-    ):
-        missing.append("normalized identity/Silver policy")
     if missing:
         raise GoldContractError(
             "gold.silver-authority-incomplete",
             (
                 "Gold consumes the actual Silver registry and cannot infer an "
-                "ontology-only product. Missing: "
-                + "; ".join(missing)
+                "ontology-only product. Missing: " + "; ".join(missing)
             ),
             rule_id="DD-112-silver-binding",
         )
@@ -64,7 +113,6 @@ def generate_gold_artifacts(
     ontology_name: str = "domain",
     ontology_metadata: dict | None = None,
     sources_dir: Path | None = None,
-    preparation_dir: Path | None = None,
     mappings_dir: Path | None = None,
     gold_ext_path: Path | None = None,
     silver_ext_path: Path | None = None,
@@ -73,7 +121,6 @@ def generate_gold_artifacts(
     peer_ontology_paths: list | None = None,
     target_platform: str = "fabric",
     contract_registry: Mapping[str, object] | None = None,
-    eligible_class_uris: set[str] | None = None,
 ) -> dict[str, str]:
     """Generate one registered Gold product from typed Silver and Gold plans."""
     shaped, plan = plan_gold_projection(
@@ -85,7 +132,6 @@ def generate_gold_artifacts(
         ontology_name=ontology_name,
         ontology_metadata=ontology_metadata,
         sources_dir=sources_dir,
-        preparation_dir=preparation_dir,
         mappings_dir=mappings_dir,
         gold_ext_path=gold_ext_path,
         silver_ext_path=silver_ext_path,
@@ -94,12 +140,10 @@ def generate_gold_artifacts(
         peer_ontology_paths=peer_ontology_paths,
         target_platform=target_platform,
         contract_registry=contract_registry,
-        eligible_class_uris=eligible_class_uris,
     )
     rendered = render_project(shaped, plan)
     release_data = rendered.pop("__release_data__")
     rendered.pop("__coverage_data__", None)
-    rendered.pop("__unbound_eligible__", None)
     parity = release_data.get("parity_status", {})
     if parity.get("status") != "pass":
         raise GoldContractError(

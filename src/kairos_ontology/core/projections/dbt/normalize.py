@@ -37,23 +37,14 @@ def _binding_policy(bound: BoundSources) -> BindingPolicy:
         elif observation.discriminator_parent_name:
             state = "folded"
             reason = f"S3 discriminator subclass of {observation.discriminator_parent_name}"
-        elif observation.eligible:
-            state = "stub"
-            reason = "approved claim, no bronze mapping (aspirational)"
         else:
             state = "skipped"
-            reason = "no bronze mapping and no approving claim"
+            reason = "no source binding"
         states.append((observation.class_uri, state))
         reasons.append((observation.class_uri, reason))
     return BindingPolicy(
         states=tuple(states),
         reasons=tuple(reasons),
-        eligible_class_uris=frozenset(
-            observation.class_uri
-            for observation in bound.binding_observations
-            if observation.eligible
-        ),
-        stubs_enabled=bound.emit_aspirational_stubs,
     )
 
 
@@ -192,45 +183,10 @@ def normalize_contract(
     except MappingContractError as exc:
         if mode is ExecutionMode.FAIL_FAST:
             raise
-        preparation = collection_error.stages.preparation if collection_error else None
-        prep_dependent = exc.code in {
-            "mapping.target-output-type-mismatch",
-            "mapping.prepared-output-missing",
-            "mapping.prepared-route-missing",
-        }
-        if (
-            preparation is not None
-            and preparation.status is not EvaluationStatus.PASSED
-            and prep_dependent
-        ):
-            from .diagnostics import Diagnostic
-
-            dependencies = tuple(item.id for item in preparation.diagnostics if item.blocking)
-            mapping_result = EvaluationResult.not_evaluated(
-                preparation.prerequisites,
-                (
-                    Diagnostic(
-                        code="mapping.not-evaluated",
-                        message="mapping checks require available preparation outputs",
-                        rule_id="DD-116-prerequisite",
-                        stage="mapping",
-                        owner_skill="kairos-design-mapping",
-                        blocking=False,
-                        depends_on=dependencies,
-                        evidence=tuple(f"prerequisite:{item}" for item in dependencies),
-                        remediation=(
-                            "Resolve preparation blockers, then rerun "
-                            "kairos-design-mapping readiness."
-                        ),
-                        evaluation_status=EvaluationStatus.NOT_EVALUATED,
-                    ),
-                ),
-            )
-        else:
-            mapping_result = EvaluationResult(
-                status=EvaluationStatus.FAILED,
-                diagnostics=(exc.diagnostic,),
-            )
+        mapping_result = EvaluationResult(
+            status=EvaluationStatus.FAILED,
+            diagnostics=(exc.diagnostic,),
+        )
         mapping_contract = MappingContractSpec((), (), bound.mappings.namespaces, ())
     if collection_error is not None or mapping_result.status is EvaluationStatus.FAILED:
         if collection_error is None:
@@ -395,11 +351,69 @@ def normalize_contract(
         except KeyError as exc:
             raise MappingContractError(
                 "mapping.unresolved-join-input",
-                "Silver FK join references a source symbol absent from normalized mappings",
+                (
+                    f"RELATIONSHIP join local column source symbol '{exc.args[0]}' is absent "
+                    "from normalized mappings; add a fields: entry mapping the FK join local "
+                    "column to a scalar property so the join column is materialized"
+                ),
                 resource_uri=str(exc.args[0]),
                 rule_id="DD-107-source-ownership",
             ) from exc
         return replace(join, source_inputs=inputs)
+
+    table_context = {
+        table.uri: (system.label, table) for system in bound.systems for table in system.tables
+    }
+    source_ref_by_table: dict[tuple[str, str], str] = {}
+    for class_uri, authority in authorities.items():
+        identity = authority.entity_identity
+        if identity is None:
+            continue
+        table_uris = tuple(
+            dict.fromkeys(
+                source.table_uri
+                for candidate in bound.silver_candidates
+                if candidate.identity.class_uri == class_uri
+                for source in candidate.sources
+            )
+        )
+        source_ref_by_table.update(
+            {
+                (class_uri, table_uri): source_ref
+                for table_uri, source_ref in zip(
+                    table_uris,
+                    identity.source.record_key_refs.value,
+                    strict=False,
+                )
+            }
+        )
+
+    def source_identity(candidate) -> tuple[str, str]:
+        if candidate.source_identity_ref or not candidate.sources:
+            return candidate.source_identity_ref, candidate.source_record_key_expression
+        source = candidate.sources[0]
+        identity_ref = source_ref_by_table.get(
+            (candidate.identity.class_uri, source.table_uri),
+            "",
+        )
+        context = table_context.get(source.table_uri)
+        if context is None:
+            return identity_ref, ""
+        system_label, table = context
+        components = tuple(column.name for column in table.columns if column.is_primary_key)
+        if not components:
+            return identity_ref, ""
+        arguments = (
+            f"'{system_label}'",
+            f"'{table.name}'",
+            *(f"{source.alias}.{name}" for name in components),
+        )
+        expression = (
+            "{{ dbt_utils.generate_surrogate_key(["
+            + ", ".join(repr(argument) for argument in arguments)
+            + "]) }}"
+        )
+        return identity_ref, expression
 
     return ProjectionContract(
         fk_classification=foreign_key_policy,
@@ -441,18 +455,15 @@ def normalize_contract(
                     integration_key_expression=candidate.integration_key_expression,
                     iri_expression=candidate.iri_expression,
                     parent_model=candidate.parent_model,
-                    source_identity_ref=candidate.source_identity_ref,
-                    source_record_key_expression=candidate.source_record_key_expression,
+                    source_identity_ref=source_identity(candidate)[0],
+                    source_record_key_expression=source_identity(candidate)[1],
                     source_record_key_generated_after_mapping=(
                         candidate.source_record_key_generated_after_mapping
+                        or bool(source_identity(candidate)[1])
                     ),
                     authority=authorities.get(candidate.identity.class_uri),
                 )
                 for candidate in bound.silver_candidates
-                if (
-                    candidate.identity.outcome.value != "aspirational_stub"
-                    or binding_policy.should_emit_stub(candidate.identity.class_uri)
-                )
             ),
             silver_outcomes=bound.silver_outcomes,
             schema_models=tuple(

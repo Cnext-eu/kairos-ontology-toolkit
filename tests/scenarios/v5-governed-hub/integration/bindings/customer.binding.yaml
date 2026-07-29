@@ -1,0 +1,21 @@
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: crm-customer
+  domain: party
+source:
+  relation: crm.customers
+target:
+  class: party:Customer
+grain:
+  columns: [customer_id]
+identity:
+  strategy: source-natural
+  sourceKey: [customer_id]
+load:
+  mode: full-refresh
+fields:
+  - property: party:customer_id
+    expression: customer_id
+  - property: party:customerName
+    expression: customer_name

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from pyshacl import validate
@@ -39,20 +38,15 @@ from kairos_ontology.core.projections.dbt.mapping_specs import (
     MAX_MAPPING_AST_DEPTH,
     MappingContractError,
     MappingInputSpec,
-    MappingRoute,
     OperatorExpression,
 )
-from kairos_ontology.core.projections.dbt.mapping_normalize import _route
 from kairos_ontology.core.projections.dbt.policy_specs import (
     CanonicalTypeKind,
     CanonicalTypeSpec,
 )
 from kairos_ontology.core.projections.dbt.specs import (
-    ContractFact,
     JoinSpec,
     SourceBindingSpec,
-    SourceSystemFact,
-    SourceTableFact,
 )
 from tests.scenarios.conftest import (
     EXTENSIONS_DIR,
@@ -63,7 +57,6 @@ from tests.scenarios.conftest import (
     _load_ontology,
 )
 from tests.test_dbt_phases import _client_inputs
-
 
 KMAP = Namespace("https://kairos.cnext.eu/mapping#")
 SCAFFOLD = Path(__file__).parents[1] / "src" / "kairos_ontology" / "scaffold"
@@ -178,9 +171,7 @@ def _domain_contract(domain: str, adapter: str = "fabric"):
 def test_scenario_contract_contains_scalar_null_and_typed_literal_nodes():
     contract = _domain_contract("invoice")
     currency = next(
-        item
-        for item in contract.mapping_contract.columns
-        if item.target_column_name == "currency"
+        item for item in contract.mapping_contract.columns if item.target_column_name == "currency"
     )
     line_total = next(
         item
@@ -198,7 +189,7 @@ def test_scenario_contract_contains_scalar_null_and_typed_literal_nodes():
     assert line_total.expression.operator == "multiply"
 
 
-def test_prep_rename_is_bound_as_a_symbol_and_rendered_safely():
+def test_raw_source_name_is_bound_as_a_symbol_and_rendered_safely():
     bound = bind_sources(_client_inputs())
     contract = normalize_contract(bound)
     filter_mapping = next(
@@ -209,7 +200,7 @@ def test_prep_rename_is_bound_as_a_symbol_and_rendered_safely():
     assert filter_mapping.row_filter is not None
     source = filter_mapping.row_filter.metadata.referenced_inputs[0]
     assert source.authored_name == "Type"
-    assert source.physical_name == "client_type_code"
+    assert source.physical_name == "Type"
 
     shaped = shape_project(contract)
     artifacts = render_project(
@@ -221,7 +212,7 @@ def test_prep_rename_is_bound_as_a_symbol_and_rendered_safely():
         for path, value in artifacts.items()
         if path.endswith("client__from_admin_pulse__tbl_client__corporate_client.sql")
     )
-    assert "where ([tbl_client].[client_type_code] = 0)" in branch
+    assert "where ([tbl_client].[Type] = 0)" in branch
 
 
 def test_case_and_null_semantics_are_typed_and_immutable():
@@ -425,11 +416,14 @@ def test_length_generated_sql_counts_trailing_spaces_portably(adapter: str, expe
         _input(),
     )
 
-    assert render_mapping_expression(
-        expression,
-        adapter=adapter,
-        sources=(SourceBindingSpec("src", table_uri="urn:source#table"),),
-    ) == expected
+    assert (
+        render_mapping_expression(
+            expression,
+            adapter=adapter,
+            sources=(SourceBindingSpec("src", table_uri="urn:source#table"),),
+        )
+        == expected
+    )
 
 
 def test_mapping_ast_depth_fails_with_contract_error():
@@ -448,70 +442,6 @@ def test_mapping_ast_depth_fails_with_contract_error():
 
     with pytest.raises(MappingContractError, match="mapping.expression-too-deep"):
         _normalize(fact)
-
-
-def test_contracted_virtual_route_requires_explicit_approved_evidence_and_tests():
-    table_uri = "https://example.test/source#virtual"
-    target_uri = "https://example.test/domain#Order"
-    systems = (
-        SourceSystemFact(
-            uri="https://example.test/source",
-            label="source",
-            database="",
-            schema="",
-            connection_type="",
-            tables=(
-                SourceTableFact(
-                    uri=table_uri,
-                    name="virtual",
-                    label="Virtual",
-                    primary_key_columns=(),
-                    incremental_column=None,
-                    columns=(),
-                    relation_kind="contracted-virtual",
-                ),
-            ),
-        ),
-    )
-    incomplete = ContractFact(
-        name="int_orders",
-        materialization="table",
-        target_class=target_uri,
-        virtual_source_iri=table_uri,
-        supported_adapters=("fabric", "databricks"),
-        grain_key=("order_id",),
-        approved=True,
-    )
-
-    with pytest.raises(
-        MappingContractError,
-        match="no explicit transformation decisions.*accepted evidence.*verified tests",
-    ):
-        _route(
-            table_uri,
-            target_uri,
-            systems=systems,
-            policy=SimpleNamespace(preparations=()),
-            contracts=(("int_orders", incomplete),),
-            replacement_input_uris=frozenset(),
-            resource_uri="urn:mapping#orders",
-        )
-
-    complete = dataclasses.replace(
-        incomplete,
-        decision_statuses=("developer_approved",),
-        evidence_artifacts=("integration/evidence/orders.ttl",),
-        verified_tests=("unit_test_orders",),
-    )
-    assert _route(
-        table_uri,
-        target_uri,
-        systems=systems,
-        policy=SimpleNamespace(preparations=()),
-        contracts=(("int_orders", complete),),
-        replacement_input_uris=frozenset(),
-        resource_uri="urn:mapping#orders",
-    ) == (MappingRoute.CONTRACTED_TRANSFORMATION, "int_orders")
 
 
 @pytest.mark.parametrize(
@@ -701,23 +631,18 @@ def test_render_blocks_a_mapped_column_without_validated_ast():
         for item in shaped.silver_models
         if any(column.mapping_resource_uri for column in item.columns)
     )
-    column = next(
-        item for item in model.columns if item.mapping_resource_uri
-    )
+    column = next(item for item in model.columns if item.mapping_resource_uri)
     invalid_model = dataclasses.replace(
         model,
         columns=tuple(
-            dataclasses.replace(item, mapping_expression=None)
-            if item is column
-            else item
+            dataclasses.replace(item, mapping_expression=None) if item is column else item
             for item in model.columns
         ),
     )
     invalid = dataclasses.replace(
         shaped,
         silver_models=tuple(
-            invalid_model if item is model else item
-            for item in shaped.silver_models
+            invalid_model if item is model else item for item in shaped.silver_models
         ),
     )
     with pytest.raises(MappingContractError, match="mapping.render-blocked"):

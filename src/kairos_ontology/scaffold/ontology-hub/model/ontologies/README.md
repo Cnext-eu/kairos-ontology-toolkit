@@ -16,6 +16,9 @@ represents one independently deployable data domain.
 # Validate all ontologies
 kairos-ontology validate
 
-# Generate projection artifacts
-kairos-ontology project
+# Check one domain without writing
+kairos-ontology compile <domain> --check
+
+# Explain the immutable plan
+kairos-ontology compile <domain> --explain
 ```

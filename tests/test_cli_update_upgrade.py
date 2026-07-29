@@ -27,7 +27,7 @@ def _make_hub_pyproject(tmp_path: Path, version: str = "v3.8.0") -> Path:
     pyproject.write_text(
         '[project]\nname = "test-hub"\n\ndependencies = [\n'
         f'  "kairos-ontology-toolkit @ https://github.com/Cnext-eu/'
-        f'kairos-ontology-toolkit/releases/download/{version}/'
+        f"kairos-ontology-toolkit/releases/download/{version}/"
         f'kairos_ontology_toolkit-0.0.0-py3-none-any.whl",\n]\n\n'
         '[tool.kairos]\nchannel = "preview"\n',
         encoding="utf-8",
@@ -57,13 +57,12 @@ class TestUpdateUpgradeWindows:
     """Tests for the Windows-specific uv sync skip during --upgrade."""
 
     @patch("kairos_ontology.cli.main.subprocess.Popen")
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_windows_skips_uv_sync(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen,
-        runner, tmp_path
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen, runner, tmp_path
     ):
         """On Windows, uv sync should be skipped after uv lock succeeds."""
         _make_hub_pyproject(tmp_path)
@@ -81,13 +80,20 @@ class TestUpdateUpgradeWindows:
 
     @patch("kairos_ontology.cli.main.os.getpid", return_value=4242)
     @patch("kairos_ontology.cli.main.subprocess.Popen")
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_windows_schedules_detached_refresh(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen,
-        mock_getpid, runner, tmp_path
+        self,
+        mock_run,
+        mock_scaffold,
+        mock_channel,
+        mock_resolve,
+        mock_popen,
+        mock_getpid,
+        runner,
+        tmp_path,
     ):
         """On Windows, the refresh is scheduled as a detached helper (not a blocking
         re-exec), waiting on the parent PID so the .exe lock is released first."""
@@ -117,13 +123,20 @@ class TestUpdateUpgradeWindows:
 
     @patch("kairos_ontology.cli.main.os.getpid", return_value=4242)
     @patch("kairos_ontology.cli.main.subprocess.Popen")
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_windows_detached_refresh_propagates_check(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen,
-        mock_getpid, runner, tmp_path
+        self,
+        mock_run,
+        mock_scaffold,
+        mock_channel,
+        mock_resolve,
+        mock_popen,
+        mock_getpid,
+        runner,
+        tmp_path,
     ):
         """`--upgrade --check` schedules the refresh with `update --check`."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -136,16 +149,15 @@ class TestUpdateUpgradeWindows:
         assert result.exit_code == 0
         mock_popen.assert_called_once()
         script = mock_popen.call_args[0][0][-1]
-        assert "uv run kairos-ontology update --check" in script
+        assert "uv run kairos-ontology update --force-managed --check" in script
 
     @patch("kairos_ontology.cli.main.subprocess.Popen", side_effect=OSError("boom"))
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_windows_detached_fallback_on_oserror(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen,
-        runner, tmp_path
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_popen, runner, tmp_path
     ):
         """If the detached helper cannot be launched, print manual guidance and exit 1."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -159,9 +171,9 @@ class TestUpdateUpgradeWindows:
         assert "uv run kairos-ontology update" in result.output
         mock_scaffold.assert_not_called()
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_non_windows_runs_uv_sync(
         self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
@@ -185,9 +197,9 @@ class TestUpdateUpgradeWindows:
 class TestUpdateUpgradeReexec:
     """The post-upgrade refresh must re-exec under the NEW toolkit version."""
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_reexec_refresh_when_version_changed(
         self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
@@ -203,13 +215,13 @@ class TestUpdateUpgradeReexec:
 
         assert result.exit_code == 0
         calls = [c[0][0] for c in mock_run.call_args_list]
-        assert ["uv", "run", "kairos-ontology", "update"] in calls
+        assert ["uv", "run", "kairos-ontology", "update", "--force-managed"] in calls
         # In-process managed refresh must NOT have run (re-exec owns it now).
         mock_scaffold.assert_not_called()
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_reexec_propagates_check_flag(
         self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
@@ -224,11 +236,18 @@ class TestUpdateUpgradeReexec:
 
         assert result.exit_code == 0
         calls = [c[0][0] for c in mock_run.call_args_list]
-        assert ["uv", "run", "kairos-ontology", "update", "--check"] in calls
+        assert [
+            "uv",
+            "run",
+            "kairos-ontology",
+            "update",
+            "--force-managed",
+            "--check",
+        ] in calls
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_reexec_exit_code_propagates(
         self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
@@ -249,10 +268,10 @@ class TestUpdateUpgradeReexec:
 
         assert result.exit_code == 1
 
-    @patch("kairos_ontology.cli.main._toolkit_version", "3.9.0rc2")
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._toolkit_version", "3.9.0rc2")
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_no_reexec_when_version_unchanged(
         self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
@@ -276,13 +295,12 @@ class TestUpdateUpgradeReexec:
 class TestUpdateHubRootResolution:
     """update must operate on the real managed root, never scaffold a second hub (DD-062)."""
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_upgrade_reroots_from_subdirectory(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve,
-        runner, tmp_path, monkeypatch
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path, monkeypatch
     ):
         """Run from a content subdir → re-roots up and updates the parent's pin."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -300,13 +318,12 @@ class TestUpdateHubRootResolution:
         assert "v3.9.0-rc.2" in (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
         assert not (subdir / "pyproject.toml").exists()
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_upgrade_refuses_when_no_hub(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve,
-        runner, tmp_path, monkeypatch
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path, monkeypatch
     ):
         """No pin / managed .github anywhere → hard-error, no fabrication."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -322,9 +339,7 @@ class TestUpdateHubRootResolution:
         assert not (workdir / "pyproject.toml").exists()
 
     @patch("subprocess.run")
-    def test_plain_update_still_works_in_subdir(
-        self, mock_run, runner, tmp_path, monkeypatch
-    ):
+    def test_plain_update_still_works_in_subdir(self, mock_run, runner, tmp_path, monkeypatch):
         """Plain refresh from a content subdir re-roots to the parent hub."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         _make_hub_pyproject(tmp_path)
@@ -338,29 +353,6 @@ class TestUpdateHubRootResolution:
         # No spurious .github created in the content subdir.
         assert not (subdir / ".github").exists()
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
-    @patch("subprocess.run")
-    def test_legacy_hub_fabricates_pyproject(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve,
-        runner, tmp_path, monkeypatch
-    ):
-        """A legacy managed hub (managed .github, no pyproject) still gets one."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        gh = tmp_path / ".github"
-        gh.mkdir()
-        (gh / "copilot-instructions.md").write_text(
-            "<!-- kairos-ontology-toolkit:managed v1.0.0 -->\n", encoding="utf-8"
-        )
-        monkeypatch.chdir(tmp_path)
-
-        with patch("sys.platform", "linux"):
-            result = runner.invoke(cli, ["update", "--upgrade"])
-
-        assert result.exit_code == 0
-        assert (tmp_path / "pyproject.toml").is_file()
-
 
 class TestUpdateUpgradeExtrasPins:
     """The pin-rewriter must also rewrite [project.optional-dependencies] pins.
@@ -370,9 +362,9 @@ class TestUpdateUpgradeExtrasPins:
     made `uv lock` fail with conflicting URLs for the same package.
     """
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_extras_pin_is_rewritten_and_marker_preserved(
         self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
@@ -395,9 +387,9 @@ class TestUpdateUpgradeExtrasPins:
         # The extras marker survived the rewrite.
         assert "kairos-ontology-toolkit[flatfile] @ " in text
 
-    @patch("kairos_ontology.cli.main._resolve_channel", return_value="v3.9.0-rc.2")
-    @patch("kairos_ontology.cli.main._read_hub_channel", return_value="preview")
-    @patch("kairos_ontology.cli.main._managed_scaffold_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_plain_only_pin_still_rewritten(
         self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path

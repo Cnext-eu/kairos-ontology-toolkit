@@ -8,7 +8,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 keywords = ["ontology", "owl", "turtle", "rdf", "shacl", "validation", "projection"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
@@ -55,6 +55,9 @@ parquet = [
 [project.urls]
 Homepage = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
 Repository = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
+Changelog = "https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/Cnext-eu/kairos-ontology-toolkit/tree/main/docs"
+Issues = "https://github.com/Cnext-eu/kairos-ontology-toolkit/issues"
 
 [project.scripts]
 kairos-ontology = "kairos_ontology.cli.main:cli"
@@ -92,8 +95,20 @@ path = "src/kairos_ontology/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/kairos_ontology"]
 
+[tool.hatch.build]
+exclude = [
+    "**/__pycache__",
+    "**/*.pyc",
+    "**/*.pyo",
+]
+
 [tool.hatch.build.targets.sdist]
 include = [
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "pyproject.toml",
     "src/kairos_ontology/**/*",
 ]
 

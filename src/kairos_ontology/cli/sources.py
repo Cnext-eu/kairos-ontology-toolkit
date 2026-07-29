@@ -1,0 +1,1613 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+"""Focused sources CLI commands."""
+
+import json
+import click
+from pathlib import Path
+
+# Importing the design-time MDM package registers the additive ``mdm-profile``
+# projection target with the core projector (registry pattern, MDM-DD-002).
+# The CLI is the layer that legitimately depends on both core and mdm.
+from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
+
+from .shared import (
+    _FORMAT_OPTION,
+    _REFMODELS_OPTION,
+    _emit,
+    _resolve_conformance_root,
+    _resolve_import_dir,
+    _resolve_ref_models_dir,
+)
+
+
+@click.command(name="import-tmdl")
+@click.argument("source", type=click.Path(exists=True))
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default="integration/sources/powerbi",
+    help="Output directory (default: integration/sources/powerbi/)",
+)
+def import_tmdl(source, output):
+    """Import and inventory TMDL/PBIP files for ontology modeling.
+
+    SOURCE is a path to a PBIP ZIP archive, a SemanticModel folder, or a
+    standalone .tmdl file. The command parses TMDL content and generates:
+
+    \b
+    - An Engineering Pack (markdown) with table/column/measure inventory
+    - A Concept Mapping template (YAML) for reference model alignment
+    """
+    from ..core.import_tmdl import run_import_tmdl
+
+    source_path = Path(source)
+    output_path = Path(output)
+
+    click.echo(f"📦 Importing TMDL from: {source_path}")
+    generated = run_import_tmdl(source_path, output_path)
+
+    if generated:
+        click.echo(f"\n✅ Generated {len(generated)} file(s):")
+        for f in generated:
+            click.echo(f"   {f}")
+    else:
+        click.echo("\n⚠️  No TMDL content found. Check input path.", err=True)
+        raise SystemExit(1)
+
+
+@click.command(name="show-source-schema")
+@click.option("--system", required=True)
+@click.option("--sources", type=click.Path(exists=True, file_okay=False), default=None)
+def show_source_schema_cmd(system, sources):
+    """Print the parsed source vocabulary for one source system as JSON."""
+    from ..core.analyse_sources import parse_source_vocabulary
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    source_root = (
+        Path(sources)
+        if sources
+        else hub / "integration" / "sources" if hub else Path("integration") / "sources"
+    )
+    system_dir = source_root / system
+    if not system_dir.is_dir():
+        raise click.ClickException(f"Source system directory not found: {system_dir}")
+    tables: dict = {}
+    files = []
+    for ttl in sorted(system_dir.glob("*.ttl")):
+        files.append(str(ttl))
+        for table, columns in parse_source_vocabulary(ttl).items():
+            tables.setdefault(table, []).extend(columns)
+    click.echo(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "system": system,
+                "source_files": files,
+                "table_count": len(tables),
+                "tables": tables,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+@click.command(name="import-source")
+@click.option(
+    "--from",
+    "from_path",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to source-schema YAML file or extracted/<system>/ directory.",
+)
+@click.option(
+    "--system", "system_name", default=None, help="Override the system name (default: from YAML)."
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: integration/sources/{system}/).",
+)
+@click.option("--dry-run", is_flag=True, help="Show changes without writing files.")
+@click.option(
+    "--enrich/--no-enrich",
+    default=True,
+    help="Run inference enrichment (enum/format/FK detection). Default: enabled.",
+)
+@click.option(
+    "--enum-threshold",
+    type=int,
+    default=25,
+    help="Max distinct values to suggest as enumeration (default: 25).",
+)
+@click.option(
+    "--split-tables",
+    is_flag=True,
+    default=False,
+    help="ONLY generate per-table files (skip monolithic). By default both are written.",
+)
+def import_source(from_path, system_name, output, dry_run, enrich, enum_threshold, split_tables):
+    """Import source schema YAML and generate/refresh bronze vocabulary TTL.
+
+    Reads a standardized source-schema YAML file (produced by the
+    extract_source_schema dbt macro or manually) and generates or updates
+    the corresponding kairos-bronze vocabulary TTL.
+
+    Accepts either a single YAML file (v1.0) or a directory with
+    _manifest.yaml + per-table YAML files (v1.1 from extract-schema).
+
+    With --enrich (default), runs inference passes that add:
+    - Enum suggestions for low-cardinality columns
+    - Format hints (email, date, UUID, phone, URL)
+    - FK relationship suggestions from naming patterns
+
+    \b
+    Examples:
+      kairos-ontology import-source --from extracted/adminpulse-schema.yaml
+      kairos-ontology import-source --from extracted/adminpulse/
+      kairos-ontology import-source --from schema.yaml --system myapp --dry-run
+      kairos-ontology import-source --from extracted/nms/ --no-enrich
+      kairos-ontology import-source --from extracted/nms/ --split-tables
+    """
+    from ..core.import_source import run_import_source, parse_source_schema_dir
+
+    source_path = Path(from_path)
+    output_dir = Path(output) if output else None
+
+    # CWD guard: warn if running from a dataplatform repo
+    cwd = Path.cwd()
+    if (cwd / "dbt_project.yml").exists() and not (cwd / "model").is_dir():
+        click.echo(
+            "⚠️  You appear to be in a dataplatform repo (dbt_project.yml found, "
+            "no model/ directory). import-source writes to CWD-relative paths by "
+            "default. Consider running from your ontology-hub repo or using "
+            "--output to specify the hub path.",
+            err=True,
+        )
+
+    # Support directory input (v1.1 per-table format)
+    tmp_cleanup = None
+    if source_path.is_dir():
+        click.echo(f"📋 Importing source schema from directory: {source_path}")
+        try:
+            data = parse_source_schema_dir(source_path)
+        except ValueError as e:
+            click.echo(f"\n❌ {e}", err=True)
+            raise SystemExit(1)
+        # Write a temporary combined YAML for run_import_source
+        import tempfile
+        import yaml as _yaml
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as tmp:
+            _yaml.dump(data, tmp, default_flow_style=False, sort_keys=False)
+            yaml_path = Path(tmp.name)
+            tmp_cleanup = yaml_path
+    else:
+        yaml_path = source_path
+        click.echo(f"📋 Importing source schema from: {yaml_path}")
+
+    try:
+        result_path, report = run_import_source(
+            yaml_path=yaml_path,
+            system_name=system_name,
+            output_dir=output_dir,
+            dry_run=dry_run,
+            enrich=enrich,
+            enum_threshold=enum_threshold,
+            split_tables=split_tables,
+        )
+    except ValueError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+    if report and report.has_changes:
+        click.echo(f"\n📊 Changes detected: {report.summary()}")
+        if report.added_tables:
+            click.echo(f"   ✅ New tables: {', '.join(report.added_tables)}")
+        if report.removed_tables:
+            click.echo(f"   ⚠️  Deprecated tables: {', '.join(report.removed_tables)}")
+        if report.added_columns:
+            for c in report.added_columns[:10]:
+                click.echo(f"   + {c.table}.{c.column}")
+            if len(report.added_columns) > 10:
+                click.echo(f"   ... and {len(report.added_columns) - 10} more")
+        if report.removed_columns:
+            for c in report.removed_columns[:10]:
+                click.echo(f"   - {c.table}.{c.column}")
+            if len(report.removed_columns) > 10:
+                click.echo(f"   ... and {len(report.removed_columns) - 10} more")
+        if report.type_changes:
+            for c in report.type_changes[:10]:
+                click.echo(f"   ~ {c.table}.{c.column}: {c.old_value} → {c.new_value}")
+    elif report is None:
+        click.echo("\n🆕 Fresh vocabulary generated (no existing file to merge with)")
+    else:
+        click.echo("\n✅ No changes — vocabulary is already in sync")
+
+    if dry_run:
+        click.echo("\n🔍 Dry-run mode — no files written")
+    elif result_path:
+        if split_tables:
+            # split-tables-only mode: result_path is the vocabulary/ directory
+            n_files = len(list(result_path.glob("*.vocabulary.ttl")))
+            click.echo(f"\n✅ Written {n_files} per-table vocabulary files to: {result_path}")
+        else:
+            # Default mode: monolithic + per-table
+            click.echo(f"\n✅ Written: {result_path}")
+            vocab_dir = result_path.parent / "vocabulary"
+            if vocab_dir.is_dir():
+                n_files = len(list(vocab_dir.glob("*.vocabulary.ttl")))
+                click.echo(f"   📂 Also written {n_files} per-table files to: {vocab_dir}")
+
+        # Persist privacy-safe row-context files from directory inputs.
+        if source_path.is_dir() and result_path:
+            import yaml as _yaml
+
+            from ..core.source_privacy import sanitize_samples_document
+
+            dest_dir = result_path.parent if not split_tables else result_path.parent
+            samples_copied = 0
+            for samples_file in source_path.glob("*.samples.yaml"):
+                dest_file = dest_dir / samples_file.name
+                document = _yaml.safe_load(samples_file.read_text(encoding="utf-8"))
+                table = (
+                    str(document.get("table"))
+                    if isinstance(document, dict) and document.get("table")
+                    else samples_file.name.removesuffix(".samples.yaml")
+                )
+                table_file = source_path / f"{table}.yaml"
+                table_data = (
+                    _yaml.safe_load(table_file.read_text(encoding="utf-8"))
+                    if table_file.is_file()
+                    else {}
+                ) or {}
+                column_types = {
+                    str(column.get("name", "")): str(column.get("data_type", "unknown"))
+                    for column in table_data.get("columns", [])
+                }
+                safe_document, _ = sanitize_samples_document(
+                    document,
+                    table=table,
+                    column_types=column_types,
+                )
+                dest_file.write_text(
+                    _yaml.safe_dump(
+                        safe_document,
+                        allow_unicode=True,
+                        sort_keys=False,
+                    ),
+                    encoding="utf-8",
+                )
+                samples_copied += 1
+            if samples_copied:
+                click.echo(
+                    f"   📋 Persisted {samples_copied} privacy-safe "
+                    ".samples.yaml file(s) for row-level context"
+                )
+
+    # Clean up temp file if we created one
+    if tmp_cleanup and tmp_cleanup.exists():
+        tmp_cleanup.unlink()
+
+
+@click.command(name="source-privacy")
+@click.option(
+    "--sources",
+    type=click.Path(exists=True, file_okay=False),
+    default=None,
+    help="Source directory to inspect (default: integration/sources).",
+)
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Rewrite affected source YAML and vocabulary TTL with opaque redaction tokens.",
+)
+def source_privacy_cmd(sources, fix):
+    """Check or sanitize persisted source sample artifacts without exposing values."""
+    from collections import Counter
+
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_privacy import run_source_privacy
+
+    if sources:
+        source_dir = Path(sources)
+    else:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+        if hub_root is None:
+            click.echo(
+                "❌ Could not locate ontology-hub; pass --sources explicitly.",
+                err=True,
+            )
+            raise SystemExit(2)
+        source_dir = hub_root / "integration" / "sources"
+
+    try:
+        report = run_source_privacy(source_dir, fix=fix)
+    except (ValueError, OSError) as exc:
+        click.echo(f"❌ Source privacy check failed: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    click.echo(f"🔒 Source privacy: scanned {report.files_scanned} artifact(s)")
+    summary = Counter(
+        (
+            str(path.relative_to(source_dir)),
+            finding.table,
+            finding.column,
+            finding.kind,
+        )
+        for path, finding in report.findings
+    )
+    for (path, table, column, kind), count in sorted(summary.items()):
+        click.echo(f"   ⚠ {path}: {table}.{column} [{kind}] × {count}")
+
+    if fix:
+        click.echo(f"   ✓ Rewritten {len(report.changed_files)} affected artifact(s)")
+        remaining = run_source_privacy(source_dir)
+        if remaining.findings:
+            click.echo(
+                f"❌ {len(remaining.findings)} unresolved privacy finding(s) remain.",
+                err=True,
+            )
+            raise SystemExit(1)
+        click.echo("✅ Source sample artifacts are privacy-safe for supported patterns.")
+        return
+
+    if report.findings:
+        click.echo(
+            f"❌ {len(report.findings)} privacy finding(s); rerun with --fix.",
+            err=True,
+        )
+        raise SystemExit(1)
+    click.echo("✅ Source sample artifacts are privacy-safe for supported patterns.")
+
+
+@click.command(name="import-flatfile")
+@click.option(
+    "--from",
+    "from_path",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to CSV file, Excel file, Parquet file, or directory of flat files.",
+)
+@click.option(
+    "--system",
+    "system_name",
+    default=None,
+    help="System name (default: derived from filename/directory).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: integration/sources/{system}/).",
+)
+@click.option(
+    "--sample-size",
+    type=int,
+    default=5,
+    help="Number of sample rows to store per table (default: 5).",
+)
+@click.option(
+    "--max-rows",
+    type=int,
+    default=1000,
+    help="Maximum rows to read for type inference (default: 1000).",
+)
+@click.option(
+    "--exclude-columns",
+    default=None,
+    help="Comma-separated list of column names to exclude from output.",
+)
+@click.option(
+    "--keep-technical",
+    is_flag=True,
+    default=False,
+    help="Keep auto-detected technical/metadata columns (volume, subfolder, etc.).",
+)
+def import_flatfile(
+    from_path,
+    system_name,
+    output,
+    sample_size,
+    max_rows,
+    exclude_columns,
+    keep_technical,
+):
+    """Import CSV/Excel/Parquet flat files as source schema documentation.
+
+    Reads flat files and produces the standard source schema format
+    (_manifest.yaml + per-table YAML + samples). Use import-source afterwards
+    to generate the bronze vocabulary TTL.
+
+    \b
+    Supported inputs:
+      - Single .csv file → 1 table
+      - Single .xlsx file → 1 table per worksheet
+      - Single .parquet file → 1 table
+      - Directory of .csv/.xlsx/.parquet files → 1 table per file/sheet
+
+    \b
+    Examples:
+      kairos-ontology import-flatfile --from exports/customers.csv --system erp
+      kairos-ontology import-flatfile --from data/report.xlsx --system finance
+      kairos-ontology import-flatfile --from exports/orders.parquet --system wms
+      kairos-ontology import-flatfile --from data-exports/ --system legacy-erp
+      kairos-ontology import-flatfile --from .input/data --system erp \\
+        --exclude-columns "volume,subfolder,table"
+
+    \b
+    Next step after import-flatfile:
+      kairos-ontology import-source --from integration/sources/{system}/
+    """
+    from ..core.import_flatfile import run_import_flatfile
+
+    source_path = Path(from_path)
+    output_dir = Path(output) if output else None
+
+    # Parse comma-separated exclusion list
+    exclude_set: set[str] | None = None
+    if exclude_columns:
+        exclude_set = {c.strip() for c in exclude_columns.split(",") if c.strip()}
+
+    click.echo(f"📋 Importing flat files from: {source_path}")
+
+    try:
+        result_dir, table_count, samples_count = run_import_flatfile(
+            source_path=source_path,
+            system_name=system_name,
+            output_dir=output_dir,
+            max_rows=max_rows,
+            sample_size=sample_size,
+            exclude_columns=exclude_set,
+            keep_technical=keep_technical,
+            return_count=True,
+        )
+    except (ValueError, ImportError) as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"\n✅ Written to: {result_dir}")
+    click.echo(f"   📊 {table_count} table(s) documented")
+    if samples_count:
+        click.echo(f"   📋 {samples_count} sample file(s) created")
+    click.echo(f"\n💡 Next step: kairos-ontology import-source --from {result_dir}")
+
+
+@click.command(name="analyse-sources")
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--ref-models",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontology-reference-models/ directory (default: auto-detect).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output directory (default: integration/sources/_analysis/).",
+)
+@click.option(
+    "--threshold",
+    type=float,
+    default=0.3,
+    help="Deprecated; ignored in table-centric (schema_version 2) analysis.",
+)
+@click.option(
+    "--model",
+    "llm_model",
+    default="gpt-5.4-mini",
+    help="LLM model for semantic matching (default: gpt-5.4-mini).",
+)
+@click.option(
+    "--max-domains",
+    type=int,
+    default=None,
+    help="Maximum reference domains to analyse (rate limit protection).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names — OUTPUT filter only (issue #189): "
+    "tables are always classified against the full domain set, then "
+    "only matching primary domains are written (case-insensitive "
+    "substring match).",
+)
+@click.option(
+    "--materialize",
+    "materialize_dir",
+    type=click.Path(),
+    default=None,
+    help="Write the resolved analysis context (manifest + per-domain YAML) "
+    "to this directory for inspection.",
+)
+@click.option(
+    "--exclude",
+    "exclude_patterns",
+    multiple=True,
+    default=("archive/**",),
+    help="Glob patterns to exclude from reference models (default: archive/**).",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack name (e.g. logistics) — classify against its "
+    "data domains (party, commercial, ...) instead of raw reference models.",
+)
+@click.option(
+    "--shallow",
+    is_flag=True,
+    default=False,
+    help="Skip owl:imports resolution in the reference-model fallback (faster).",
+)
+@click.option(
+    "--max-workers",
+    type=int,
+    default=8,
+    help="Max concurrent per-table LLM calls (default: 8; use 1 for serial).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Bypass the per-table cache and re-classify every table.",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False, help="Show per-table classification lines."
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress progress output (errors still shown).",
+)
+def analyse_sources_cmd(
+    sources,
+    ref_models,
+    output,
+    threshold,
+    llm_model,
+    max_domains,
+    domains_filter,
+    materialize_dir,
+    exclude_patterns,
+    accelerator,
+    shallow,
+    max_workers,
+    force,
+    verbose,
+    quiet,
+):
+    """Analyse source vocabularies against reference model domains (LLM-powered).
+
+    Classifies each source table by domain affinity. Two strategies:
+
+    \b
+    - Data-domain-first (recommended): pass --accelerator <name> to classify
+      tables toward the accelerator's data domains (party, commercial, booking,
+      ...), each carrying its model URIs. Fast — no owl:imports resolution.
+    - Reference-model (default): resolves and groups reference model TTLs.
+
+    Produces per-source affinity reports that the modeling skill uses to scope
+    context and seed evidence tables.
+
+    --domains is an OUTPUT focus, not a candidate restriction: every table is
+    always classified against the full domain set (so it gets its true primary
+    domain), then only tables whose primary domain matches --domains are written
+    (issue #189). This avoids forcing unrelated tables into the requested domain.
+
+    Requires AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
+
+    \b
+    Examples:
+      kairos-ontology analyse-sources --accelerator logistics
+      kairos-ontology analyse-sources --accelerator logistics --domains "party,booking"
+      kairos-ontology analyse-sources --materialize .resolved/ --verbose
+      kairos-ontology analyse-sources --sources path/to/sources/ --ref-models path/to/refs/
+    """
+    from ..core.analyse_sources import (
+        run_analyse_sources,
+        resolve_reference_models,
+        build_data_domain_targets,
+        load_data_domains,
+        list_accelerator_packs,
+        make_reporter,
+    )
+    from ..core.ai_provider import DEFAULT_MODEL, ROLE_AFFINITY, resolve_role_model
+    from ..core.hub_utils import find_hub_root
+
+    # Issue #182: a per-role model override (KAIROS_AI_AFFINITY_MODEL) acts as the
+    # default for this step unless the operator pinned --model explicitly.
+    if llm_model == DEFAULT_MODEL:
+        llm_model = resolve_role_model(ROLE_AFFINITY, DEFAULT_MODEL)
+
+    # Auto-detect hub paths
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+
+    if sources is None:
+        if hub_root:
+            sources_path = hub_root / "integration" / "sources"
+        else:
+            sources_path = Path("integration/sources")
+    else:
+        sources_path = Path(sources)
+
+    if ref_models is None:
+        ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
+        if ref_models_path is None:
+            click.echo(
+                "❌ Cannot find ontology-reference-models/ directory. "
+                "Use --ref-models to specify.",
+                err=True,
+            )
+            raise SystemExit(1)
+    else:
+        ref_models_path = Path(ref_models)
+
+    if output is None:
+        output_path = sources_path / "_analysis"
+    else:
+        output_path = Path(output)
+
+    if not sources_path.is_dir():
+        click.echo(f"❌ Sources directory not found: {sources_path}", err=True)
+        raise SystemExit(1)
+
+    if not quiet:
+        click.echo(f"🔍 Analysing sources in: {sources_path}")
+        click.echo(f"   Reference models: {ref_models_path}")
+        click.echo(f"   Model: {llm_model}")
+        if accelerator:
+            click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
+        if domains_filter:
+            click.echo(
+                f"   Domain filter: {domains_filter} "
+                f"(output focus only — full set is classified)"
+            )
+        click.echo()
+
+    # Detect catalog for owl:imports resolution
+    catalog_file = None
+    if hub_root:
+        candidate_cat = hub_root / "catalog-v001.xml"
+        if candidate_cat.exists():
+            catalog_file = candidate_cat
+
+    # Convert exclude_patterns tuple to list
+    excl_list = list(exclude_patterns) if exclude_patterns else None
+
+    # Pre-flight: show resolved domains (skipped in quiet mode)
+    if not quiet:
+        if accelerator:
+            data_domains = load_data_domains(ref_models_path, accelerator=accelerator)
+            if not data_domains:
+                available = list_accelerator_packs(ref_models_path)
+                click.echo(
+                    f"❌ No data-domains.yaml for accelerator '{accelerator}'. "
+                    f"Available: {available or '(none)'}",
+                    err=True,
+                )
+                raise SystemExit(1)
+            targets = build_data_domain_targets(data_domains)
+            click.echo(f"📊 {len(targets)} data domain(s) from '{accelerator}':")
+            for d in targets:
+                uris = ", ".join(d.get("uris", [])) or "(no URIs)"
+                click.echo(f"   • {d['domain_name']} [{d.get('group', '')}] → {uris}")
+            click.echo()
+        else:
+            ref_domains = resolve_reference_models(
+                ref_models_path,
+                catalog_path=(None if shallow else catalog_file),
+                exclude_patterns=excl_list,
+            )
+            if ref_domains:
+                total_cls = sum(len(d.get("classes", [])) for d in ref_domains)
+                total_props = sum(
+                    sum(len(c.get("properties", [])) for c in d.get("classes", []))
+                    for d in ref_domains
+                )
+                click.echo(
+                    f"📊 Resolved {len(ref_domains)} domain(s) "
+                    f"({total_cls} classes, {total_props} properties):"
+                )
+                for d in ref_domains:
+                    n_cls = len(d.get("classes", []))
+                    n_props = sum(len(c.get("properties", [])) for c in d.get("classes", []))
+                    click.echo(f"   • {d['domain_name']} ({n_cls} classes, {n_props} properties)")
+                click.echo()
+
+    # Parse domains filter
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+
+    # Parse materialize dir
+    mat_dir = Path(materialize_dir) if materialize_dir else None
+
+    try:
+        reporter = make_reporter(verbose=verbose, quiet=quiet)
+        output_files = run_analyse_sources(
+            sources_dir=sources_path,
+            ref_models_dir=ref_models_path,
+            output_dir=output_path,
+            model=llm_model,
+            threshold=threshold,
+            max_domains=max_domains,
+            domains_filter=filter_list,
+            materialize_dir=mat_dir,
+            catalog_path=catalog_file,
+            exclude_patterns=excl_list,
+            accelerator=accelerator,
+            shallow=shallow,
+            report=reporter,
+            max_workers=max_workers,
+            force=force,
+            cost_warning=not quiet,
+        )
+        if not quiet:
+            click.echo(
+                f"\n✅ Analysis complete! Written {len(output_files)} file(s) " f"to: {output_path}"
+            )
+            for f in output_files:
+                click.echo(f"   📄 {f.name}")
+    except EnvironmentError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+    except ValueError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+
+@click.command(name="audit-silver-samples")
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect).",
+)
+@click.option(
+    "--mappings",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/mappings/ directory (default: auto-detect).",
+)
+@click.option(
+    "--dbt-output",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to generated dbt output directory (default: output/medallion/dbt).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Report output directory (default: output/reports/silver-sample-audit).",
+)
+@click.option(
+    "--fail-on",
+    type=click.Choice(["none", "warning", "error"]),
+    default="none",
+    help="Exit non-zero when findings at this severity exist (default: none).",
+)
+def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
+    """Offline advisory audit of generated silver dbt mappings using source samples.
+
+    This command reads source vocabularies, SKOS mappings, and generated dbt SQL
+    only. It does not require a dbt profile, warehouse credentials, or live bronze
+    data. Findings are advisory by default.
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.silver_sample_audit import run_silver_sample_audit
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    base = hub_root or cwd
+
+    sources_path = Path(sources) if sources else base / "integration" / "sources"
+    mappings_path = Path(mappings) if mappings else base / "model" / "mappings"
+    dbt_output_path = Path(dbt_output) if dbt_output else base / "output" / "medallion" / "dbt"
+    output_path = Path(output) if output else base / "output" / "reports" / "silver-sample-audit"
+
+    click.echo("🔎 Running offline silver sample audit")
+    click.echo(f"   Sources:    {sources_path}")
+    click.echo(f"   Mappings:   {mappings_path}")
+    click.echo(f"   dbt output: {dbt_output_path}")
+    click.echo(f"   Report:     {output_path}")
+    click.echo()
+
+    report = run_silver_sample_audit(
+        sources_dir=sources_path,
+        mappings_dir=mappings_path,
+        dbt_output_dir=dbt_output_path,
+        output_dir=output_path,
+    )
+
+    counts = report.counts
+    click.echo(
+        f"✅ Audit complete: {report.mapped_columns} mapped column(s), "
+        f"{report.sampled_mapped_columns} with samples "
+        f"({report.sample_coverage_ratio:.0%} coverage)"
+    )
+    click.echo(
+        f"   Findings: {counts['error']} error(s), "
+        f"{counts['warning']} warning(s), {counts['info']} info"
+    )
+    click.echo(f"   📄 {output_path / 'silver-sample-audit.yaml'}")
+    click.echo(f"   📄 {output_path / 'silver-sample-audit.md'}")
+
+    should_fail = (fail_on == "error" and counts["error"] > 0) or (
+        fail_on == "warning" and (counts["error"] > 0 or counts["warning"] > 0)
+    )
+    if should_fail:
+        raise SystemExit(1)
+
+
+@click.command(name="propose-alignment")
+@click.option(
+    "--analysis",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to _analysis/ directory with affinity reports (default: auto-detect).",
+)
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect).",
+)
+@click.option(
+    "--catalog",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to catalog-v001.xml (default: auto-detect from hub).",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Advisory alignment output directory (default: source _analysis/ directory).",
+)
+@click.option(
+    "--model",
+    "llm_model",
+    default="gpt-5.4-mini",
+    help="LLM model for semantic alignment (default: gpt-5.4-mini).",
+)
+@click.option(
+    "--domains",
+    "domains_filter",
+    default=None,
+    help="Comma-separated domain names to include (case-insensitive substring match).",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False, help="Show per-table alignment details."
+)
+@click.option(
+    "--quiet",
+    "-q",
+    is_flag=True,
+    default=False,
+    help="Suppress progress output (errors still shown).",
+)
+@click.option(
+    "--include-mapping-hints",
+    is_flag=True,
+    default=False,
+    help="DD-045: add deterministic transform + structural mapping hints "
+    "(advisory, human-confirmed). Default output is unchanged.",
+)
+@click.option(
+    "--no-sample-values",
+    "no_sample_values",
+    is_flag=True,
+    default=False,
+    help="DD-075: suppress masked sample example_values in the output "
+    "(values are included by default; PII is always masked).",
+)
+@click.option(
+    "--max-prompt-classes",
+    type=int,
+    default=12,
+    help="Max reference classes in first-pass table prompt (default: 12).",
+)
+@click.option(
+    "--retry-min-confidence",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.6,
+    help="Retry with full reference inventory when ref_class confidence is below this "
+    "threshold (default: 0.6).",
+)
+@click.option(
+    "--retry-min-mapped-ratio",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.4,
+    help="Retry with full reference inventory when non-custom mapped column ratio is "
+    "below this threshold (default: 0.4).",
+)
+@click.option(
+    "--max-workers",
+    type=int,
+    default=8,
+    help="Max concurrent per-table LLM calls (default: 8; use 1 for serial).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Bypass caches (domain affinity skip + per-table cache) and re-align all.",
+)
+@click.option(
+    "--cross-module",
+    "cross_module",
+    is_flag=True,
+    default=False,
+    help="DD-070 (issue #166): widen the property candidate pool to the whole "
+    "accelerator so columns can match sibling/shared-module properties "
+    "(e.g. a shared Address class). Requires --accelerator. Default output "
+    "is unchanged.",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack name whose data-domains.yaml defines the cross-module "
+    "property pool (required with --cross-module).",
+)
+@click.option(
+    "--custom-confidence-floor",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.5,
+    help="Issue #182: below this confidence an unmatched column emits no "
+    "suggested property (null) instead of a confident-but-wrong guess "
+    "(default: 0.5).",
+)
+@click.option(
+    "--high-accuracy",
+    "high_accuracy",
+    is_flag=True,
+    default=False,
+    help="Issue #182: use the preferred non-reasoning accuracy tier "
+    "(gpt-5.4) for this accuracy-sensitive alignment step "
+    "(overrides the default model unless --model was set "
+    "explicitly). Costs more per run than the mini default.",
+)
+@click.option(
+    "--allow-fallback-output",
+    "allow_fallback_output",
+    is_flag=True,
+    default=False,
+    help="Write a domain alignment even when "
+    "every one of its tables is fallback-only (no reference model "
+    "to align against — the LLM was never called). Without this "
+    "flag such a domain is skipped as incomplete so a placeholder "
+    "never masquerades as a real proposal.",
+)
+def propose_alignment_cmd(
+    analysis,
+    sources,
+    catalog,
+    output,
+    llm_model,
+    domains_filter,
+    verbose,
+    quiet,
+    include_mapping_hints,
+    no_sample_values,
+    max_prompt_classes,
+    retry_min_confidence,
+    retry_min_mapped_ratio,
+    max_workers,
+    force,
+    cross_module,
+    accelerator,
+    custom_confidence_floor,
+    high_accuracy,
+    allow_fallback_output,
+):
+    """Propose source-column → reference-model-property alignment (LLM-powered).
+
+    Pre-modeling step that analyses how source columns map to reference model
+    classes and properties. Requires affinity reports from analyse-sources.
+
+    \b
+    Produces per-domain alignment YAML files that the modeling skill uses
+    to pre-populate the Source Evidence Table with reference model matches.
+
+    \b
+    Examples:
+      kairos-ontology propose-alignment
+      kairos-ontology propose-alignment --domains "commercial,party" --verbose
+      kairos-ontology propose-alignment --analysis path/to/_analysis/
+    """
+    from ..core.propose_alignment import (
+        HIGH_ACCURACY_MODEL,
+        AlignmentTotalFailureError,
+        run_propose_alignment,
+    )
+    from ..core.ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
+    from ..core.conformance_artifact import ARTIFACT_RELPATH
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+
+    # Issue #182: the opt-in high-accuracy preset bumps the model tier for this
+    # accuracy-sensitive step, unless the operator pinned a model explicitly. When
+    # neither is given, a per-role model override (KAIROS_AI_ALIGNMENT_MODEL) acts
+    # as the default so it stays consistent with KAIROS_AI_ALIGNMENT_ENDPOINT.
+    if high_accuracy and llm_model == DEFAULT_MODEL:
+        llm_model = HIGH_ACCURACY_MODEL
+    elif llm_model == DEFAULT_MODEL:
+        llm_model = resolve_role_model(ROLE_ALIGNMENT, DEFAULT_MODEL)
+
+    # Auto-detect analysis directory
+    if analysis is None:
+        for candidate in [
+            (hub_root / "integration" / "sources" / "_analysis") if hub_root else None,
+            cwd / "integration" / "sources" / "_analysis",
+            cwd / "_analysis",
+        ]:
+            if candidate and candidate.is_dir():
+                analysis_path = candidate
+                break
+        else:
+            click.echo(
+                "❌ Cannot find _analysis/ directory with affinity reports. "
+                "Run 'kairos-ontology analyse-sources' first, or use --analysis.",
+                err=True,
+            )
+            raise SystemExit(1)
+    else:
+        analysis_path = Path(analysis)
+
+    # Auto-detect sources directory
+    if sources is None:
+        if hub_root:
+            sources_path = hub_root / "integration" / "sources"
+        else:
+            sources_path = cwd / "integration" / "sources"
+    else:
+        sources_path = Path(sources)
+
+    # Auto-detect catalog
+    if catalog is None:
+        catalog_path = None
+        if hub_root:
+            candidate_cat = hub_root / "catalog-v001.xml"
+            if candidate_cat.exists():
+                catalog_path = candidate_cat
+    else:
+        catalog_path = Path(catalog)
+
+    output_path = Path(output) if output else analysis_path
+
+    # DD-070: resolve the reference-models dir + validate cross-module prerequisites.
+    ref_models_dir = None
+    if cross_module:
+        ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+        if not accelerator:
+            click.echo(
+                "❌ --cross-module requires --accelerator <name> (the accelerator "
+                "pack whose data-domains.yaml defines the cross-module pool).",
+                err=True,
+            )
+            raise SystemExit(1)
+        if ref_models_dir is None:
+            click.echo(
+                "❌ --cross-module needs a reference-models directory "
+                "(ontology-reference-models/). None found. Run "
+                "'kairos-ontology update-refmodels' first.",
+                err=True,
+            )
+            raise SystemExit(1)
+
+    # uri-anchor-contract: auto-detect the confirmed discovery conformance
+    # artifact (DD-090) so a table's affinity-derived likely_entity that was
+    # explicitly confirmed (``conforms``/``conforms-with-rename``, including a
+    # human rename via ``rename_to``) resolves straight to its canonical
+    # inventory URI, ahead of any name-similarity/LLM class guess. A missing
+    # artifact is not an error — output stays exactly as before this feature.
+    conformance_artifact_path = (
+        (hub_root / ARTIFACT_RELPATH) if hub_root else (cwd / ARTIFACT_RELPATH)
+    )
+    if not conformance_artifact_path.is_file():
+        conformance_artifact_path = None
+
+    if not quiet:
+        click.echo("📐 Proposing column→property alignment")
+        click.echo(f"   Analysis: {analysis_path}")
+        click.echo(f"   Sources: {sources_path}")
+        click.echo(f"   Catalog: {catalog_path or '(none)'}")
+        click.echo(f"   Model: {llm_model}")
+        if domains_filter:
+            click.echo(f"   Domain filter: {domains_filter}")
+        if include_mapping_hints:
+            click.echo("   Mapping hints: enabled (DD-045)")
+        if cross_module:
+            click.echo(f"   Cross-module: enabled (accelerator: {accelerator}) [DD-070]")
+        if conformance_artifact_path:
+            click.echo(f"   Confirmed anchors: {conformance_artifact_path}")
+        click.echo()
+
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+
+    def reporter(msg, level="normal"):
+        if quiet:
+            return
+        if level == "verbose" and not verbose:
+            return
+        click.echo(msg)
+
+    try:
+        generation_stats: dict[str, int] = {}
+        output_files = run_propose_alignment(
+            analysis_dir=analysis_path,
+            sources_dir=sources_path,
+            catalog_path=catalog_path,
+            output_dir=output_path,
+            model=llm_model,
+            domains_filter=filter_list,
+            report=reporter,
+            include_mapping_hints=include_mapping_hints,
+            include_sample_values=not no_sample_values,
+            max_prompt_classes=max_prompt_classes,
+            retry_min_confidence=retry_min_confidence,
+            retry_min_mapped_ratio=retry_min_mapped_ratio,
+            max_workers=max_workers,
+            force=force,
+            cost_warning=not quiet,
+            cross_module=cross_module,
+            accelerator=accelerator,
+            ref_models_dir=ref_models_dir,
+            custom_confidence_floor=custom_confidence_floor,
+            allow_fallback_output=allow_fallback_output,
+            generation_stats=generation_stats,
+            conformance_artifact_path=conformance_artifact_path,
+        )
+        if not quiet:
+            click.echo(
+                f"\n✅ Proposal complete! Wrote {len(output_files)} alignment "
+                f"file(s) to: {output_path}"
+            )
+            for f in output_files:
+                click.echo(f"   📄 {f.name}")
+            if generation_stats.get("provider_failure"):
+                click.echo(
+                    f"   ⚠ {generation_stats['provider_failure']} of "
+                    f"{generation_stats.get('attempted', 0)} attempted table(s) "
+                    "had a semantic generation failure — see per-table warnings above."
+                )
+    except AlignmentTotalFailureError as e:
+        # Alignment-reliability: total failure must never print success and must
+        # exit non-zero. Nothing was written by the pipeline in this case.
+        click.echo(f"\n⛔ {e}", err=True)
+        raise SystemExit(1)
+    except EnvironmentError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+    except ValueError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+
+@click.command(name="discovery-status")
+@click.option(
+    "--import-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to .import/businessdiscovery/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--extraction-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to businessdiscovery/_extractions/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Exit non-zero when documents are new (unprocessed) or changed.",
+)
+@click.option(
+    "--warn-only",
+    is_flag=True,
+    default=False,
+    help="Report status but always exit 0 (never block).",
+)
+def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
+    """Report which business-discovery documents are unprocessed or changed (DD-060).
+
+    Deterministic, AI-free helper for the ``design-discovery`` skill: scans the raw
+    artifacts in ``.import/businessdiscovery/`` and compares each against its
+    per-document extraction file under ``businessdiscovery/_extractions/`` using the
+    stored ``source_sha256``.  The skill uses this to process only **new** or
+    **changed** documents on a rerun instead of re-reading everything.
+
+    Informational by default (exit 0).  Pass ``--strict`` to exit non-zero when
+    there is work to do (new or changed documents).
+
+    \\b
+    Examples:
+      kairos-ontology discovery-status
+      kairos-ontology discovery-status --strict
+    """
+    from ..core.discovery_extraction import check_discovery_docs
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+
+    if import_dir:
+        imp_path = Path(import_dir)
+    else:
+        imp_path = _resolve_import_dir(cwd, hub_root)
+
+    if extraction_dir:
+        ext_path = Path(extraction_dir)
+    elif hub_root:
+        ext_path = hub_root / "businessdiscovery" / "_extractions"
+    else:
+        ext_path = cwd / "businessdiscovery" / "_extractions"
+
+    report = check_discovery_docs(import_dir=imp_path, extraction_dir=ext_path)
+
+    click.echo("🔎 Checking business-discovery documents")
+    click.echo(f"   Import dir:     {imp_path}")
+    click.echo(f"   Extraction dir: {ext_path}")
+
+    if not imp_path.is_dir():
+        click.echo("   ⚠ No .import/businessdiscovery/ directory found — nothing to process.")
+        return
+
+    for name in report.ok:
+        click.echo(f"   ✓ {name}: up to date")
+    for name in report.unprocessed:
+        click.echo(f"   ➕ {name}: NEW (not yet processed)")
+    for name in report.changed:
+        click.echo(f"   ♻ {name}: CHANGED since last extraction")
+    for name in report.unverifiable:
+        click.echo(f"   ⚠ {name}: cannot verify freshness (no stored hash — reprocess)")
+    for name in report.conflict:
+        click.echo(f"   ⚠ {name}: conflicting provenance (claimed by >1 extraction)")
+    for name in report.orphan:
+        click.echo(f"   ⚠ {name}: orphan extraction (no matching source document)")
+
+    if report.has_work and strict and not warn_only:
+        click.echo(
+            "\n❌ Discovery documents need processing. Run the "
+            "kairos-design-discovery skill to extract new/changed documents.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    if report.has_work:
+        n = len(report.unprocessed) + len(report.changed)
+        click.echo(f"\n⚠ {n} document(s) need processing (run kairos-design-discovery).")
+    elif report.has_warnings:
+        click.echo("\n⚠ Discovery documents checked with warnings (not blocking).")
+    else:
+        click.echo("\n✅ All discovery documents are processed and up to date.")
+
+
+@click.group(name="discovery-conformance")
+def discovery_conformance():
+    """Core Concepts Conformance helpers for the design-discovery skill (DD-090).
+
+    Deterministic, machine-output helpers that load the archetype + discovery contract
+    from a reference-models checkout (>= v1.11.0), derive relationship topology, and
+    validate the conformance artifact.  The interactive interview itself is driven by the
+    **kairos-design-discovery** skill — these subcommands give it clean JSON/YAML to work
+    from.  All human-readable progress goes to **stderr**; stdout is machine output only.
+    """
+
+
+@discovery_conformance.command(name="list-archetypes")
+@_REFMODELS_OPTION
+@_FORMAT_OPTION
+def conformance_list(refmodels_root, output_format):
+    """List archetype ids available in the reference-models checkout."""
+    from ..core.archetype_loader import list_archetypes, load_outcome_codes
+
+    root = _resolve_conformance_root(refmodels_root)
+    click.echo(f"🔎 Reference-models root: {root}", err=True)
+    _emit(
+        {
+            "refmodels_root": str(root),
+            "archetypes": list_archetypes(root),
+            "outcome_codes": load_outcome_codes(root),
+        },
+        output_format,
+    )
+
+
+@discovery_conformance.command(name="load")
+@click.option("--archetype", "archetype_id", required=True, help="Archetype id to load.")
+@_REFMODELS_OPTION
+@_FORMAT_OPTION
+def conformance_load(archetype_id, refmodels_root, output_format):
+    """Load an archetype: emit catalog, derived topology, and discovery-doc path.
+
+    The skill uses this payload to drive the conformance interview. Concept coverage,
+    relationship edges (with declared cardinality), and version-drift warnings are all
+    included; warnings are also echoed to stderr.
+    """
+    from ..core.archetype_loader import (
+        ArchetypeError,
+        check_version_drift,
+        load_archetype,
+        locate_discovery_doc,
+        _refmodels_version,
+    )
+    from ..core.archetype_topology import derive_archetype_topology
+
+    root = _resolve_conformance_root(refmodels_root)
+    try:
+        archetype = load_archetype(root, archetype_id)
+    except ArchetypeError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    try:
+        discovery_doc = locate_discovery_doc(root, archetype_id)
+    except ArchetypeError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    topology = derive_archetype_topology(root, archetype)
+    drift = check_version_drift(archetype, root)
+
+    for w in drift + topology.warnings():
+        click.echo(f"⚠ {w}", err=True)
+    if discovery_doc is None:
+        click.echo(
+            f"⚠ No discovery doc paired with '{archetype_id}'; "
+            "the skill will run a generic per-concept flow.",
+            err=True,
+        )
+
+    payload = {
+        "archetype": {
+            "id": archetype.id,
+            "label": archetype.label,
+            "description": archetype.description,
+            "source": archetype.source_path.name,
+            "catalog_hash": archetype.catalog_hash,
+            "concept_set_hash": archetype.concept_set_hash(),
+            "compatible_with": archetype.compatible_with,
+        },
+        "refmodels_version": _refmodels_version(root),
+        "discovery_doc": str(discovery_doc) if discovery_doc else None,
+        "ref_model_modules": [{"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules],
+        "core_concepts": [
+            {"uri": c.uri, "label": c.label, "tier": c.tier} for c in archetype.core_concepts
+        ],
+        "topology": {
+            "present_concepts": topology.present_concepts,
+            "missing_concepts": topology.missing_concepts,
+            "loaded_modules": topology.loaded_modules,
+            "edges": [
+                {
+                    "property": e.property_uri,
+                    "label": e.property_label,
+                    "domain": e.domain_uri,
+                    "range": e.range_uri,
+                    "min_cardinality": e.min_cardinality,
+                    "max_cardinality": e.max_cardinality,
+                    "exact_cardinality": e.exact_cardinality,
+                    "functional": e.functional,
+                    "cardinality_declared": e.cardinality_declared,
+                    "mandatory": e.mandatory,
+                }
+                for e in topology.edges
+            ],
+        },
+        "warnings": drift + topology.warnings(),
+    }
+    _emit(payload, output_format)
+
+
+@discovery_conformance.command(name="validate")
+@click.option(
+    "--file",
+    "artifact_file",
+    type=click.Path(),
+    default=None,
+    help="Conformance artifact (default: <hub>/integration/discovery/"
+    "core-concepts-conformance.yaml).",
+)
+@_REFMODELS_OPTION
+def conformance_validate(artifact_file, refmodels_root):
+    """Validate a conformance artifact against the shared outcome-codes enum."""
+    from ..core.archetype_loader import load_outcome_codes
+    from ..core.conformance_artifact import (
+        ARTIFACT_RELPATH,
+        ConformanceArtifactError,
+        read_artifact,
+        validate_artifact,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if artifact_file:
+        path = Path(artifact_file)
+    elif hub_root:
+        path = hub_root / ARTIFACT_RELPATH
+    else:
+        path = cwd / ARTIFACT_RELPATH
+
+    root = _resolve_conformance_root(refmodels_root)
+    try:
+        artifact = read_artifact(path)
+    except ConformanceArtifactError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    errors = validate_artifact(artifact, load_outcome_codes(root))
+    if errors:
+        click.echo(f"❌ Conformance artifact invalid ({len(errors)} error(s)):", err=True)
+        for e in errors:
+            click.echo(f"   • {e}", err=True)
+        raise SystemExit(1)
+    click.echo(f"✅ Conformance artifact valid: {path}", err=True)
+
+
+@click.command(name="build-glossary")
+@click.option(
+    "--extraction-dir",
+    type=click.Path(),
+    default=None,
+    help="Path to businessdiscovery/_extractions/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(),
+    default=None,
+    help="Output glossary TTL path (default: businessdiscovery/{company}-glossary.ttl).",
+)
+@click.option(
+    "--company-domain",
+    "company_domain",
+    type=str,
+    default=None,
+    help="Company domain (e.g. acme.com). Default: auto-detect from hub README.",
+)
+@click.option(
+    "--company-name",
+    "company_name",
+    type=str,
+    default=None,
+    help="Company display name for the scheme label. Default: auto-detect from hub README.",
+)
+@click.option(
+    "--glossary-namespace",
+    "glossary_namespace",
+    type=str,
+    default=None,
+    help="Glossary namespace IRI. Default: https://{company-domain}/glossary#.",
+)
+@click.option(
+    "--company-specific-only",
+    is_flag=True,
+    default=False,
+    help="Only include terms flagged company_specific in the extractions.",
+)
+def build_glossary_cmd(
+    extraction_dir,
+    output_path,
+    company_domain,
+    company_name,
+    glossary_namespace,
+    company_specific_only,
+):
+    """Build the SKOS company glossary TTL from confirmed extractions (DD-062).
+
+    Deterministic, AI-free serializer for the ``kairos-design-discovery`` skill:
+    reads the per-document extraction files under ``businessdiscovery/_extractions/``
+    and aggregates their ``extracted_terms`` into a SKOS ``ConceptScheme`` glossary
+    overlay.  Terms are grouped by their resolved ``linked_iri`` (or ``prefLabel``),
+    ``altLabel`` values are deduplicated, and ``linked_iri`` becomes ``rdfs:seeAlso``
+    (or ``skos:relatedMatch`` when the term sets ``link_relation: relatedMatch``).
+
+    The domain ontology is never touched — this writes only the glossary overlay.
+
+    \\b
+    Examples:
+      kairos-ontology build-glossary
+      kairos-ontology build-glossary --company-specific-only
+      kairos-ontology build-glossary --company-domain acme.com --output glossary.ttl
+    """
+    from ..core.glossary_builder import build_glossary, derive_glossary_namespace, read_company_info
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+
+    if extraction_dir:
+        ext_path = Path(extraction_dir)
+    elif hub_root:
+        ext_path = hub_root / "businessdiscovery" / "_extractions"
+    else:
+        ext_path = cwd / "businessdiscovery" / "_extractions"
+
+    # Resolve company name + domain (CLI flags win, else parse the hub README).
+    readme_name, readme_domain = (None, None)
+    if hub_root and (not company_name or not company_domain):
+        readme_name, readme_domain = read_company_info(hub_root)
+    company_name = company_name or readme_name
+    company_domain = company_domain or readme_domain
+
+    if not glossary_namespace:
+        if not company_domain:
+            click.echo(
+                "❌ Could not determine the company domain. Pass --company-domain "
+                "or --glossary-namespace (no hub README value found).",
+                err=True,
+            )
+            raise SystemExit(1)
+        glossary_namespace = derive_glossary_namespace(company_domain)
+
+    scheme_label = f"{company_name} Business Glossary" if company_name else "Business Glossary"
+    scheme_description = (
+        "Company-specific terminology overlay for source-to-domain mapping. "
+        "Does not modify the domain ontology."
+    )
+
+    if output_path:
+        out_path = Path(output_path)
+    else:
+        slug = (company_domain.split(".")[0] if company_domain else "company").lower()
+        base = hub_root / "businessdiscovery" if hub_root else cwd / "businessdiscovery"
+        out_path = base / f"{slug}-glossary.ttl"
+
+    click.echo("🛠  Building business glossary")
+    click.echo(f"   Extraction dir: {ext_path}")
+    click.echo(f"   Namespace:      {glossary_namespace}")
+    click.echo(f"   Output:         {out_path}")
+
+    if not ext_path.is_dir():
+        click.echo(
+            "   ⚠ No _extractions/ directory found — run the kairos-design-discovery "
+            "skill first to extract terminology.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    result = build_glossary(
+        extraction_dir=ext_path,
+        output_path=out_path,
+        glossary_namespace=glossary_namespace,
+        scheme_label=scheme_label,
+        scheme_description=scheme_description,
+        company_specific_only=company_specific_only,
+    )
+
+    click.echo(
+        f"   ✓ Wrote {len(result.concepts)} concept(s) from "
+        f"{len(result.sources)} extraction file(s)."
+    )
+    if result.skipped_terms:
+        click.echo(f"   ⏭ Skipped {result.skipped_terms} term(s) (no prefLabel or filtered).")
+    click.echo("\n✅ Glossary built.")

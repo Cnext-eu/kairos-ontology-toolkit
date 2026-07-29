@@ -1,360 +1,54 @@
 ---
 name: kairos-develop-dbt-transformation
 description: >
-  Interactive, evidence-grounded workflow for creating and updating contracted
-  advanced dbt transformations that feed generated Kairos Silver models. Use for
-  joins, windows, rankings, aggregations, JSON expansion, fallback rules, or grain
-  changes that exceed the typed deterministic scalar mapping contract. NOT for ordinary mappings
-  (kairos-design-mapping) or merely running projections (kairos-execute-project).
+  Interactive v5 workflow for ordinary dbt SQL and properties YAML when an
+  EntityBinding needs a contracted relational or grain-changing source model.
 ---
+<!-- kairos-ontology-toolkit:managed v2.35.0 -->
 
-# Develop Contracted dbt Transformation
+# Develop a Contracted dbt Transformation
 
-## Recovery from synchronized virtual vocabulary
-
-When the governed SQL/schema/test bundle is lost but its synchronized virtual vocabulary
-survives, preview a deterministic recovery skeleton:
-
-```bash
-KAIROS_SKILL_CONTEXT=1 kairos-ontology reconstruct-dbt-transformation \
-  --vocabulary integration/sources/custom-transformations/<model>.vocabulary.ttl
-```
-
-Add `--output integration/transforms/dbt` to write it. Existing files are never replaced
-without `--overwrite`. The recovered output columns, types, target class, virtual IRI, and
-grain key come from RDF evidence. SQL dependencies, transformation logic, materialization,
-adapters, business grain, decisions, approvals, and passing test evidence remain explicit
-`REVIEW_REQUIRED` items and must pass this skill's normal gates before synchronization.
-
-Create or update a handwritten dbt intermediate model while preserving the Kairos
-semantic boundary:
-
-- dbt SQL owns executable relational logic;
-- dbt contract YAML owns physical output columns and types;
-- ontology and glossary own business meaning;
-- SKOS owns virtual-source-to-domain meaning;
-- Silver extensions own semantic natural keys, SK/FK/SCD policy;
-- `meta.kairos.decisions` owns rationale, evidence, confidence, and approval;
-- dbt unit/data tests provide executable evidence; and
-- generated Silver remains the public ontology-aligned model.
-
-This skill is **interactive by default**. Never generate a complete transformation and
-silently approve its grain, identity, mappings, or Silver policy.
-
-## Hard gates
-
-1. **Evidence before SQL.** Read the relevant glossary, ontology, sources, mappings,
-   Silver extensions, and existing dbt artifacts before proposing a contract.
-   Source profiling evidence is mandatory; if representative fixtures or a working
-   executable flow are unavailable, record the gap and do not claim implementation readiness.
-2. **Grain before columns.** Obtain explicit approval of the semantic target, row grain,
-   entity-versus-association choice, identity, overlap, deduplication, and survivorship.
-3. **Contract before implementation.** Approve output columns/types, physical key columns,
-   adapter support, decisions, and tests before writing SQL.
-4. **No invented inputs.** Every source column, relationship, and business rule needs a
-   supporting artifact. Mark gaps and assumptions; do not hide them in SQL.
-5. **No semantic bypass.** Route ontology changes to `kairos-design-domain`, mappings to
-   `kairos-design-mapping`, and SK/FK/SCD policy to `kairos-design-silver`.
-6. **Preserve authored SQL.** Show a diff and obtain approval before replacing or
-   substantially restructuring an existing custom model.
-7. **No weakened acceptance.** Never remove tests, loosen a contract, or lower decision
-   confidence merely to make validation pass.
-8. **No sensitive context.** Do not place credentials, raw PII, proprietary sample values,
-   or internal connection details in prompts, SQL comments, fixtures, decisions, or logs.
+Use this skill only when a direct relation plus closed scalar binding expressions
+cannot express the required result. The outputs are ordinary dbt SQL and
+properties YAML under `integration/transforms/dbt/models/`.
 
 ## Design fleet mode (DD-088)
 
-Default is interactive. Fleet mode is active only when the user explicitly
-requests fleet, autopilot, or AI-approved design decisions for this invocation.
-Any fleet override applies only to this skill invocation. It expires when the
-skill ends or pauses and is never inherited by another skill or a later resume.
+Default is interactive. Confirm source relations, business meaning, output grain,
+key columns, relational logic, fallback behavior, output columns/types, adapter
+scope, tests, and the exact patch before writing.
 
-In fleet mode:
+An explicit AI-approved override applies only to this skill invocation and is
+never inherited. Record rationale, confidence, and evidence for every AI-approved
+checkpoint. Stop for ambiguity, low confidence, policy-sensitive choices,
+destructive changes, or proprietary/PII risk.
 
-- retain every phase and validation gate;
-- record rationale, confidence, and evidence for every AI-made checkpoint;
-- use `status: ai_approved`, never `developer_approved` or `stakeholder_approved`;
-- mask sample evidence and avoid proprietary content; and
-- stop for low confidence, grain/identity ambiguity, governance-sensitive rules,
-  destructive replacement, licensing concerns, or PII risk.
+## Workflow
 
-## Lifecycle state
+1. Read the target ontology, source vocabulary, PII-safe samples, current binding,
+   and existing dbt project files.
+2. Confirm one output row grain and its physical key columns.
+3. Present the proposed `source()`/`ref()` graph, relational operations, null and
+   error behavior, deterministic ordering, and adapter assumptions. Obtain the
+   active mode's checkpoint decision.
+4. Author SQL with `source()` and `ref()`; do not hard-code physical relation names.
+5. Author `version: 2` properties YAML with `config.contract.enforced: true`, every
+   output column name/type, focused dbt tests, and `meta.kairos` containing grain,
+   `grain_key`, target class, `virtual_source_iri`, and supported adapters. The
+   legacy-named IRI identifies the contracted model output only; do not generate a
+   separate virtual-source artifact or registry.
+6. Validate with the dbt commands already configured by the project. Fix parse,
+   contract, compile, and focused test failures before handoff.
+7. Return to **kairos-design-mapping**. Set `source.dbtModel.name`, `sqlPath`, and
+   `contractPath`; make binding grain and source key exactly match the contracted
+   `grain_key`.
+8. Run the stateless binding feedback loop:
 
-Store resumable state at:
-
-```text
-ontology-hub/.kairos-state/phases/dbt-transformation/<model>.md
-```
-
-Create the file before writing transformation artifacts. Use OKF frontmatter:
-
-```yaml
----
-type: kairos-phase-log
-phase: dbt-transformation
-instance: <model>
-status: in-progress
-last_updated: <ISO-8601 timestamp>
----
-```
-
-Record:
-
-- target class and approved grain;
-- semantic natural-key properties and physical key columns;
-- selected source tables/models;
-- evidence inventory;
-- approved decision IDs and statuses;
-- files created or updated;
-- semantic-skill handoffs;
-- synchronization/projection/validation results;
-- unresolved questions; and
-- the next safe action.
-
-Do not edit `.kairos-state/status.md`; `kairos-flow` owns global continuation state.
-
-## Phase 1 — Preflight and evidence packet
-
-1. Locate the hub from the current directory.
-2. Read the phase log if it exists and offer to resume.
-3. Read `model/planning/dbt-transformations/candidates.yaml` when present. Select one
-   candidate by its stable repository-relative artifact ID, verify its checksum state, and
-   distinguish machine observations from governed assessment fields. A changed/orphaned
-   candidate requires reassessment; a rename requires explicit relinking.
-   Every non-`unassessed` disposition must record the current `assessed_sha256`. When marking
-   a candidate `implemented`, set `implemented_model_name` to the exact discovered dbt
-   contract resource name; it need not match the imported artifact filename.
-4. Confirm these inputs exist:
-   - `businessdiscovery/` glossary and approved business context;
-   - `model/ontologies/`;
-   - `integration/sources/` vocabularies and available profiling metadata;
-   - `model/mappings/`;
-   - `model/extensions/*-silver-ext.ttl`;
-   - `integration/transforms/dbt/` when updating an existing model.
-5. Select one transformation and one semantic target.
-6. Build a bounded evidence packet containing only relevant:
-   - glossary concepts and definitions;
-   - ontology classes/properties/relationships/ranges;
-   - masked source column evidence and analysis;
-   - existing mappings and confidence;
-   - Silver key/FK/SCD annotations and claims;
-   - existing custom SQL/contracts/macros/tests;
-   - generated virtual vocabulary and projection reports;
-   - manifest dependencies when available; and
-   - selected adapter and approved package constraints.
-7. Report missing, conflicting, or inferred evidence separately.
-
-If source or domain evidence is incomplete, stop and route to the owning design skill.
-
-## Phase 2 — Grain and identity checkpoint
-
-Present and approve:
-
-| Decision | Required content |
-|---|---|
-| Semantic target | Existing class, proposed class, or association |
-| Row grain | One precise sentence beginning “one row per…” |
-| Semantic key | Ontology properties identifying the row |
-| Physical key | Contract output columns realizing the semantic key |
-| Source overlap | Whether branches can represent the same business entity |
-| Deduplication | Partition, ordering, and tie behavior |
-| Survivorship | Winning values where identities overlap |
-| Null policy | Behavior for every key component |
-
-Do not proceed while the target might be the wrong entity or association.
-
-If the ontology must change, invoke `kairos-design-domain` and resume after validation.
-
-## Phase 3 — Contract and decision checkpoint
-
-Propose the dbt contract before SQL:
-
-- model name and description;
-- `table`, `view`, or supported `incremental` materialization;
-- every output column name, type, description, and required test;
-- `meta.kairos.target_class`;
-- stable `meta.kairos.virtual_source_iri`;
-- approved grain sentence;
-- supported adapters (`fabric`, `databricks`);
-- physical natural-key columns;
-- approved required packages/macros;
-- optional `meta.kairos.replaces_sources` entries using canonical Bronze
-  `SourceTable` IRIs when this model replaces an unsafe direct source path; and
-- `meta.kairos.decisions`.
-
-For each non-trivial rule, record:
-
-```yaml
-- id: route-fallback
-  statement: Use booking route, then stops, then shipment header.
-  evidence:
-    - artifact: businessdiscovery/glossary.ttl
-      subject: https://example.com/glossary#ShippingRoute
-  confidence: high
-  status: proposed
-  implemented_by:
-    model: int_shipment_conformed
-  verified_by:
-    - unit_test_route_fallback
-```
-
-Rules:
-
-- `ai_inferred` is not an approval state; unapproved inference is `proposed`.
-- Approved states require actor and timestamp.
-- Evidence paths are repository-relative.
-- RDF subjects must exist in the referenced artifact.
-- `implemented_by` names a dbt model, never an internal CTE.
-- `verified_by` names existing or planned dbt tests.
-- Decision text is descriptive metadata, never executable configuration.
-- `replaces_sources` is an asserted governance boundary, not mechanically verified SQL
-  lineage. Each entry contains only an absolute `table_iri`.
-- Generated dbt-contract vocabularies are projection inputs, not independent source
-  systems. Do not run source affinity analysis or create claims for their virtual tables;
-  the contract target and governed source-replacement evidence provide their authority.
-- Use `replaces_sources` only when the source-table claim targets the same class as the
-  contract. Joined inputs representing other entities are dependencies, not replacements.
-
-Wait for approval before creating or replacing the contract.
-
-## Phase 4 — Implement SQL and tests
-
-Place authoritative inputs under:
-
-```text
-integration/transforms/dbt/
-  models/intermediate/<area>/<model>.sql
-  models/intermediate/<area>/<model>.yml
-  macros/<area>/<hub-or-domain>__<macro>.sql
-  tests/<area>/assert_<model>_<behavior>.sql
-```
-
-Implementation rules:
-
-- use `source()` and `ref()`, never hard-coded physical relations;
-- keep joins, windows, aggregation, cross-relation fallback, and grain formation in
-  the custom model; source rename/trim/cast/sentinel/JSON/CDC cleanup stays in prep;
-- emit canonical business values rather than final Silver SK/FK/IRI values;
-- prefix custom macros with `<hub-or-domain>__`;
-- never use the reserved `kairos_` prefix;
-- use only toolkit-approved package dependencies;
-- write portable SQL or explicit adapter dispatch for every adapter declared by the contract;
-- alias joined inputs so dbt unit tests can mock them;
-- add unit tests for windows, ranking, fallback, complex cases, and regressions;
-- run those tests against masked representative fixtures (or a governed working flow)
-  before synchronizing the virtual source;
-- add data tests for key uniqueness/non-nullness, accepted values, relationships, grain,
-  and fan-out;
-- omit raw sensitive values from fixtures; and
-- preserve existing user-authored structure unless replacement was approved.
-
-Show the proposed diff and update the phase log.
-
-## Phase 5 — Synchronize semantic surfaces
-
-1. Set `KAIROS_SKILL_CONTEXT=1`.
-2. Run:
-
-   ```text
-   kairos-ontology sync-dbt-contracts
+   ```powershell
+   $env:KAIROS_SKILL_CONTEXT = "1"
+   uv run kairos-ontology compile <domain> --check --format text
+   uv run kairos-ontology compile <domain> --explain --format text
    ```
 
-3. Inspect the generated managed vocabulary under
-   `integration/sources/custom-transformations/`.
-   It includes a source-scoped `kairos-dbt:ContractIdentity`; never treat this as
-   enterprise identity. Declared key tests leave it unverified. After real warehouse tests
-   pass, run `capture-dbt-contract-evidence --run-results target/run_results.json
-   --manifest target/manifest.json`, then synchronize again. Contract/SQL/key/test changes
-   invalidate the hash-bound evidence and surface a review-only `identity.contract-unverified`
-   diagnostic — ordinary generation and `check-transformation-readiness --stage mapping|silver`
-   proceed, but `project --strict` and release eligibility remain blocked until current
-   passing evidence is captured.
-   Capture accepts ordinary standard v12 artifacts with matching invocation IDs/dbt versions.
-   It verifies current SQL through the model node's path, raw code, and dbt SHA-256 checksum,
-   and verifies current contract fields and exact generic/singular/unit-test definitions from
-   standard manifest fields. Never mutate artifacts or add provenance after the invocation.
-4. Invoke `kairos-design-mapping` to author named v2 `TableMapping` / `ColumnMapping`
-   resources for the virtual table and columns through SKOS.
-   A governed replacement requires table-level `skos:exactMatch` from the virtual table to
-   `target_class`. Do not map the replaced Bronze table directly merely to satisfy coverage.
-5. Invoke `kairos-design-silver` to confirm `silverSourceRef`, semantic natural key,
-   SCD policy, and supported FKs.
-6. If either skill changes the semantic target or identity, return to Phase 2 and update
-   the contract rather than forcing the previous design.
-7. Run `sync-dbt-contracts --check` after semantic handoffs.
-8. Run `check-claims --domains <domain>` and confirm it reports governed replacement
-   coverage without a direct/replacement authority conflict.
-
-Never hand-edit the managed virtual vocabulary.
-
-Newly created vocabularies use the Turtle `PN_LOCAL`-safe
-`{virtual_source_iri}__{column_name}` convention. Existing slash-delimited column IRIs
-remain valid and ordinary synchronization preserves them. To upgrade an existing hub,
-first preview `kairos-ontology migrate-column-iris`; apply only after reviewing every
-old/new IRI with `--apply --backup-dir <new-directory>`. The migration updates source
-and mapping RDF references together and refuses collisions or backup overwrite.
-
-## Phase 6 — Validate the authored transformation contract
-
-For each required platform:
-
-1. Validate the authored custom dbt project:
-
-   ```text
-   kairos-ontology validate-dbt --platform <fabric|databricks>
-   ```
-
-2. Distinguish:
-   - contract, SQL, Jinja, dependency, manifest, and reference failures: fix and rerun;
-   - credential, driver, network, or warehouse-introspection failures: record as
-     environment-blocked;
-   - runtime grain/data failures: require a configured warehouse and do not claim
-     production readiness without them.
-3. Update decision/test references and repeat synchronization if the contract changed.
-
-Do not invoke projection from this skill. After transformation readiness is
-green, hand off to **kairos-design-mapping** for the final virtual-source
-mapping, then to **kairos-design-silver** for bound confirmation.
-
-## Completion gate
-
-The transformation is ready for review when:
-
-- grain and identity are approved;
-- contract and decision metadata validate;
-- the managed vocabulary is synchronized;
-- every governed replacement aligns its canonical source IRI, approved source claim,
-  virtual-table exact match, contract target, and `silverSourceRef`;
-- SKOS mappings and Silver policy passed their owning skill gates;
-- custom resources are self-contained and collision-free;
-- every adapter declared by the contract parses successfully;
-- compile succeeds or is explicitly environment-blocked;
-- unit/data tests exist for every recorded decision;
-- no secrets, PII, or proprietary fixtures are present; and
-- the phase log contains no unresolved blocking question.
-
-Finally run both deterministic gates:
-
-```bash
-$env:KAIROS_SKILL_CONTEXT = "1"
-kairos-ontology check-transformation-readiness --stage mapping
-kairos-ontology check-transformation-readiness --stage silver
-```
-
-`check-transformation-readiness` extends (rather than replaces) the candidate assessment gate
-with the `transformation` scope of the shared projection-readiness evaluator. It evaluates every
-discovered synchronized contract even when the candidate inventory is absent or empty, covering
-grain, decision evidence, replacement lineage, canonical CDC outputs, allowed dependencies,
-implementation/test references, contract identity evidence, and synchronization. Its JSON
-includes owner-skill and prerequisite information and it writes no artifacts.
-
-Contract/schema parsing and focused dbt validation establish **local contract validity** only.
-Do not claim transformation completion until this bound transformation readiness is also green
-at the applicable mapping and Silver checkpoints.
-
-Do not mark the candidate `implemented` until `implemented_model_name` identifies a
-discoverable contract and the managed virtual vocabulary is synchronized. The Silver gate may
-still remain blocked by mapping or `silverSourceRef` work owned by their respective skills.
-
-Warehouse-backed tests remain required before production publication even when toolkit
-offline validation is complete.
+The dbt output contract is physical source authority. It does not define canonical
+ontology meaning, and this skill does not emit generated Kairos artifacts.

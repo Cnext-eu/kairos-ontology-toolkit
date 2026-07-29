@@ -1,0 +1,49 @@
+<!--
+Copy this file to a name like HUB-DD-20260729-short-token.md, then replace the
+placeholder values. The .template suffix prevents this example from being scanned
+as a decision record.
+
+---
+type: Decision Record
+id: HUB-DD-<yyyymmdd>-<token>
+title: <title>
+domain: <domain>
+status: draft
+decision_state: Proposed
+materiality:
+  - <evidence-conflict>
+generated:
+  by: kairos-ontology-toolkit/<version>
+  at: <yyyy-mm-ddThh:mm:ssZ>
+sources:
+  - id: <source-id>
+    resource: <source-uri-or-path>
+# Optional:
+# supersedes:
+#   - HUB-DD-<yyyymmdd>-<token>
+# stale_after: <yyyy-mm-dd>
+---
+-->
+
+# Context / Finding
+
+<What tension or real gap forced a decision? Cite PII-safe evidence: source
+relations/columns, reference-model terms, confirmed business context.>
+
+# Decision
+
+<What we chose, stated plainly.>
+
+# Alternatives rejected
+
+| Option | Why rejected |
+|--------|--------------|
+| <option> | <why it was not chosen> |
+
+# Consequences
+
+<Downstream effects, required follow-ups, validation caveats.>
+
+# Why future maintainers need this
+
+<Why this rationale must survive an ontology refresh that keeps only the TTL.>

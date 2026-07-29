@@ -2,9 +2,8 @@
 # Copyright 2026 Cnext.eu
 """Scenario tests for the design-time MDM profile projection (mdm-profile target).
 
-Exercises the ``kairos_ontology.mdm`` package against the synthetic Acme hub:
-the profile projector directly, and the full ``run_projections`` wiring through
-the core projector registry (verifying discovery, dispatch and output routing).
+Exercises the ``kairos_ontology.mdm`` package against the synthetic Acme hub and
+verifies that legacy graph orchestration cannot act as execution authority.
 """
 
 import json
@@ -79,21 +78,17 @@ class TestMdmProfileProjection:
 
 
 class TestMdmProfileEndToEnd:
-    def test_run_projections_writes_output_mdm(self, tmp_path):
-        """Full wiring: run_projections dispatches mdm-profile via the registry."""
-        from kairos_ontology.core.projector import run_projections
+    def test_run_projections_rejects_legacy_mdm_graph_authority(self, tmp_path):
+        from kairos_ontology.core.projector import ProjectionRunError, run_projections
 
         output = tmp_path / "output"
         catalog = HUB_ROOT / "catalog-v001.xml"
-        run_projections(
-            ontologies_path=ONTOLOGIES_DIR,
-            catalog_path=catalog if catalog.exists() else output / "missing.xml",
-            output_path=output,
-            target="mdm-profile",
-        )
+        with pytest.raises(ProjectionRunError, match="immutable CompilePlan"):
+            run_projections(
+                ontologies_path=ONTOLOGIES_DIR,
+                catalog_path=catalog if catalog.exists() else output / "missing.xml",
+                output_path=output,
+                target="mdm-profile",
+            )
 
-        profile = output / "mdm" / "client-mdm-profile.json"
-        assert profile.exists(), "expected output/mdm/client-mdm-profile.json"
-        payload = json.loads(profile.read_text(encoding="utf-8"))
-        assert payload["provenance"]["domain"] == "client"
-        assert payload["mastered_concepts"]
+        assert not output.exists()

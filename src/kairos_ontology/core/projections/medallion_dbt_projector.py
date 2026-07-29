@@ -36,7 +36,6 @@ from rdflib import Graph, Namespace, URIRef, XSD, RDFS
 from rdflib.namespace import OWL, RDF
 
 from .uri_utils import camel_to_snake, extract_local_name
-from ..determinism import resolve_generated_at
 from .shared import (
     ForeignKeyClassification,
     KAIROS_EXT,
@@ -51,7 +50,6 @@ from .shared import (
 )
 
 if TYPE_CHECKING:
-    from ..binding_analysis import BindingAnalysis
     from ..dbt_contracts import DbtContractModel
     from .dbt.specs import SilverModelSpec
 
@@ -101,20 +99,6 @@ def _resolve_qname(uri: str, ns_bindings: dict[str, str] | None = None) -> str:
             local = uri[len(ns_uri) :]
             return f"{prefix}:{local}"
     return _prefixed_iri(uri)
-
-
-# Module-level cache for entity metadata (populated by generate_dbt_artifacts,
-# read by projector.py via get_last_entity_metadata)
-_last_entity_metadata: dict[str, list[dict]] = {}
-
-
-def get_last_entity_metadata() -> dict[str, list[dict]]:
-    """Return cached entity metadata from the last generate_dbt_artifacts call.
-
-    Returns:
-        Dict of {domain_name: [entity_meta_dicts]}.
-    """
-    return dict(_last_entity_metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -951,7 +935,6 @@ class SilverProjectionInputs:
     naming_convention: str
     fk_contract: ForeignKeyClassification
     bindings: "SourceBindings"
-    analysis: "BindingAnalysis"
     active_contracts: dict
     class_to_sources: dict
     folded_source_targets: dict
@@ -966,11 +949,8 @@ def _build_projection_fact_inputs(
     mappings: dict,
     ontology_name: str,
     contract_registry: Mapping[str, "DbtContractModel"] | None,
-    emit_aspirational_stubs: bool,
-    eligible_class_uris: set[str] | None,
     fk_classification: ForeignKeyClassification | None,
     bindings: "SourceBindings | None",
-    analysis: "BindingAnalysis | None",
 ) -> SilverProjectionInputs:
     """Resolve the shared, read-only inputs consumed by every Silver class.
 
@@ -1001,33 +981,11 @@ def _build_projection_fact_inputs(
             contract_registry=contract_registry,
         )
     )
-    # Canonical materialization analysis (DD-096): reuse the already-computed
-    # bindings so stub emission and the release gate consume the *same* bound/
-    # folded/stub/skipped classification as status and the strict gate — never a
-    # divergent inline reimplementation. `stubs_enabled` only gates byte emission;
-    # the aspirational/release facts are derived independently of it.
-    from .. import binding_analysis as _ba
-
-    resolved_analysis = (
-        analysis
-        if analysis is not None
-        else _ba.build(
-            classes=classes,
-            graph=graph,
-            systems=systems,
-            mappings=mappings,
-            contract_registry=contract_registry,
-            eligible_class_uris=eligible_class_uris,
-            stubs_enabled=emit_aspirational_stubs,
-            bindings=resolved_bindings,
-        )
-    )
     return SilverProjectionInputs(
         schema_name=schema_name,
         naming_convention=naming_conv,
         fk_contract=fk_contract,
         bindings=resolved_bindings,
-        analysis=resolved_analysis,
         active_contracts=resolved_bindings.active_contracts,
         class_to_sources=resolved_bindings.class_to_sources,
         folded_source_targets=resolved_bindings.folded_source_targets,
@@ -1046,12 +1004,10 @@ class SilverClassDecision:
     precede them.
     """
 
-    status: str  # "folded" | "stub" | "unbound" | "bound"
+    status: str  # "folded" | "unbound" | "bound"
     model_name: str
     source_refs: list["SourceRef"]
     folded_parent_name: str | None = None
-    stub_columns: list[dict] | None = None
-    unbound_eligible: bool = False
 
 
 def _class_silver_decision(
@@ -1061,22 +1017,19 @@ def _class_silver_decision(
     graph: Graph,
     naming_conv: str,
     class_to_sources: dict,
-    analysis: "BindingAnalysis",
     platform: str,
 ) -> SilverClassDecision:
     """Classify a single class's Silver assembly path.
 
-    Mirrors the discriminator-subclass, stub-eligibility, and missing-mapping
-    checks previously inlined at the top of ``_extract_silver_model_facts``'s
-    per-class loop, in the same precedence order: bound (has source refs) >
-    S3 discriminator-folded subtype > aspirational stub-eligible > unbound
-    (no bronze mapping).
+    Classify source-bound, discriminator-folded, and unbound classes.
     """
     model_name = silver_table_name(graph, URIRef(cls_uri), local, naming_conv)
     source_refs = class_to_sources.get(cls_uri, [])
     if source_refs:
         return SilverClassDecision(
-            status="bound", model_name=model_name, source_refs=source_refs,
+            status="bound",
+            model_name=model_name,
+            source_refs=source_refs,
         )
 
     # Check if this class is a discriminator subclass (S3-flattened into parent)
@@ -1094,28 +1047,10 @@ def _class_silver_decision(
                 folded_parent_name=extract_local_name(str(parent)),
             )
 
-    if analysis.should_emit_stub(cls_uri):
-        # Target-first stub → bind loop: this class is an approved,
-        # materialization-eligible claim with no bronze mapping yet. The stub
-        # columns are computed here so the parent can build a typed, zero-row
-        # placeholder without recomputing this classification.
-        stub_cols = _stub_columns(graph, cls_uri, model_name, platform)
-        return SilverClassDecision(
-            status="stub",
-            model_name=model_name,
-            source_refs=[],
-            stub_columns=stub_cols,
-        )
-
     return SilverClassDecision(
         status="unbound",
         model_name=model_name,
         source_refs=[],
-        # Release gate (DD-096 / DEC-1): an approved, materialization-eligible
-        # claim with no bronze mapping is an *unbound target*, regardless of
-        # whether a stub was emitted, so `project --strict` can block release
-        # on unbound approved claims.
-        unbound_eligible=analysis.is_release_blocking(cls_uri),
     )
 
 
@@ -1128,10 +1063,8 @@ def compute_source_bindings(
 ) -> "SourceBindings":
     """Compute per-class bronze source bindings (single source of truth).
 
-    Extracted from the Silver fact builder so the projector and the standalone
-    :mod:`kairos_ontology.core.binding_analysis` classifier share the exact same
-    ``class_to_sources`` (discriminator folding + contracted virtual sources
-    resolved) rather than reimplementing divergent "is bound" logic.
+    Extracted from the Silver fact builder so consumers share the exact same
+    ``class_to_sources`` rather than reimplementing divergent source-binding logic.
     """
     warnings: list[str] = []
     contracts = contract_registry or {}
@@ -1255,44 +1188,6 @@ def compute_source_bindings(
     )
 
 
-def _stub_columns(
-    graph: Graph, cls_uri: str, model_name: str, platform: str = DEFAULT_PLATFORM
-) -> list[dict]:
-    """Build the typed column list for an aspirational Silver stub (DEC-4).
-
-    Mirrors the schema-yaml column derivation: surrogate-key + IRI structural
-    columns followed by the class's datatype-property columns (including inherited
-    ones), typed via ``kairos-ext:silverDataType`` → ``rdfs:range`` → the platform
-    string fallback (``VARCHAR(255)``). Columns are typed where typable so the stub
-    dbt-compiles on Fabric; the value is always ``cast(null as <type>)``.
-    """
-    cols: list[dict] = [
-        {"name": f"{model_name}_sk", "data_type": _xsd_to_target(XSD.string, platform)},
-        {"name": f"{model_name}_iri", "data_type": _xsd_to_target(XSD.string, platform)},
-        {"name": "_source_system", "data_type": _xsd_to_target(XSD.string, platform)},
-        {"name": "_source_record_key", "data_type": _xsd_to_target(XSD.string, platform)},
-        {"name": "_loaded_at", "data_type": _xsd_to_target(XSD.dateTime, platform)},
-    ]
-    domain_classes = _get_class_and_parents(graph, cls_uri)
-    seen: set[str] = {c["name"] for c in cols}
-    for prop in sorted(graph.subjects(RDF.type, OWL.DatatypeProperty), key=str):
-        prop_domains = {str(cls) for cls in effective_domain_classes(graph, prop)}
-        if not (prop_domains & domain_classes):
-            continue
-        col_name = _resolve_column_name(graph, str(prop))
-        if col_name in seen:
-            continue
-        seen.add(col_name)
-        silver_dt = graph.value(URIRef(str(prop)), KAIROS_EXT.silverDataType)
-        if silver_dt:
-            data_type = str(silver_dt)
-        else:
-            range_uri = graph.value(prop, RDFS.range)
-            data_type = _xsd_to_target(range_uri, platform)
-        cols.append({"name": col_name, "data_type": data_type})
-    return cols
-
-
 def _build_multi_source_silver_specs(
     *,
     cls_uri: str,
@@ -1358,9 +1253,7 @@ def _build_multi_source_silver_specs(
             tbl_suffix = _camel_to_snake(raw_tbl.split(".")[-1])
             subtype_target = _source_ref_target(source_ref)
             if subtype_target and source_table_counts[(src, raw_tbl)] > 1:
-                tbl_suffix = (
-                    f"{tbl_suffix}__{_camel_to_snake(extract_local_name(subtype_target))}"
-                )
+                tbl_suffix = f"{tbl_suffix}__{_camel_to_snake(extract_local_name(subtype_target))}"
             src_model_name = f"{model_name}__from_{src_suffix}__{tbl_suffix}"
         else:
             src_model_name = f"{model_name}__from_{src_suffix}"
@@ -1711,8 +1604,7 @@ def _build_single_source_silver_spec(
         )
     warnings_accum.extend(fk_warnings)
 
-    # Build source CTEs. Shape applies mandatory preparation routing after
-    # normalization; a bind-time ref is reserved for DD-093 contracts.
+    # Build source CTEs after expressions have been resolved against the bound contract.
     source_ctes = []
     for i, src_ref in enumerate(source_refs):
         src, raw_tbl, tbl_uri = _source_ref_parts(src_ref)
@@ -1847,11 +1739,8 @@ def _extract_silver_model_facts(
     platform: str = DEFAULT_PLATFORM,
     mapping_ns: dict[str, str] | None = None,
     contract_registry: Mapping[str, "DbtContractModel"] | None = None,
-    emit_aspirational_stubs: bool = False,
-    eligible_class_uris: set[str] | None = None,
     fk_classification: ForeignKeyClassification | None = None,
     bindings: "SourceBindings | None" = None,
-    analysis: "BindingAnalysis | None" = None,
 ) -> tuple[tuple, list[str], list[dict]]:
     """Extract Silver logical-model facts from the bound authoring graph.
 
@@ -1872,8 +1761,7 @@ def _extract_silver_model_facts(
     specs: list[SilverModelSpec] = []
     warnings: list[str] = []
     entity_metadata: list[dict] = []
-    from .dbt.builders import build_silver_model, outcome_context, outcome_from_context
-    from .dbt.specs import ModelIdentity, ModelOutcome, SilverModelKind
+    from .dbt.builders import outcome_context, outcome_from_context
 
     def emit(spec) -> None:
         specs.append(spec)
@@ -1886,19 +1774,14 @@ def _extract_silver_model_facts(
         mappings=mappings,
         ontology_name=ontology_name,
         contract_registry=contract_registry,
-        emit_aspirational_stubs=emit_aspirational_stubs,
-        eligible_class_uris=eligible_class_uris,
         fk_classification=fk_classification,
         bindings=bindings,
-        analysis=analysis,
     )
-    schema_name = fact_inputs.schema_name
     naming_conv = fact_inputs.naming_convention
     bindings = fact_inputs.bindings
     active_contracts = fact_inputs.active_contracts
     class_to_sources = fact_inputs.class_to_sources
     warnings.extend(bindings.warnings)
-    analysis = fact_inputs.analysis
     for cls in classes:
         cls_uri = cls["uri"]
         local = cls["name"]
@@ -1908,7 +1791,6 @@ def _extract_silver_model_facts(
             graph=graph,
             naming_conv=naming_conv,
             class_to_sources=class_to_sources,
-            analysis=analysis,
             platform=platform,
         )
         model_name = decision.model_name
@@ -1935,52 +1817,6 @@ def _extract_silver_model_facts(
             )
             continue
 
-        if decision.status == "stub":
-            # Target-first stub → bind loop: this class is an approved,
-            # materialization-eligible claim with no bronze mapping yet. Emit a
-            # typed, zero-row placeholder so downstream models have a stable
-            # Silver contract. `aspirational` is DERIVED (canonical
-            # BindingAnalysis), not persisted; emission is byte-gated on the flag.
-            stub_cols = decision.stub_columns
-            stub_path = f"models/silver/{ontology_name}/{model_name}.sql"
-            stub_spec = build_silver_model(
-                identity=ModelIdentity(
-                    class_name=local,
-                    class_uri=cls_uri,
-                    model_name=model_name,
-                    domain_name=ontology_name,
-                    schema_name=schema_name,
-                    artifact_path=stub_path,
-                    outcome=ModelOutcome.ASPIRATIONAL_STUB,
-                ),
-                kind=SilverModelKind.STUB,
-                columns=stub_cols,
-                materialization="view",
-                ontology_metadata=meta,
-            )
-            emit(stub_spec)
-            logger.info(
-                "Class '%s' is an approved claim with no bronze mapping — "
-                "emitting aspirational Silver stub (bind via kairos-design-mapping).",
-                local,
-            )
-            entity_metadata.append(
-                {
-                    "class_name": local,
-                    "class_uri": cls_uri,
-                    "model_file": stub_path,
-                    "scd_type": None,
-                    "source_count": 0,
-                    "column_count": len(stub_cols),
-                    "column_names": [c["name"] for c in stub_cols],
-                    "fk_join_count": 0,
-                    "skipped": False,
-                    "aspirational": True,
-                    "skip_reason": None,
-                }
-            )
-            continue
-
         if decision.status == "unbound":
             msg = (
                 f"No bronze mapping for class '{local}' — skipping silver model. "
@@ -1999,12 +1835,6 @@ def _extract_silver_model_facts(
                     "column_names": [],
                     "fk_join_count": 0,
                     "skipped": True,
-                    # Release gate (DD-096 / DEC-1): an approved, materialization-eligible
-                    # claim with no bronze mapping is an *unbound target*. Recorded from
-                    # the canonical analysis (release-blocking == aspirational) regardless
-                    # of whether a stub was emitted, so `project --strict` can block
-                    # release on unbound approved claims.
-                    "unbound_eligible": decision.unbound_eligible,
                     "skip_reason": "No bronze mapping found",
                 }
             )
@@ -3647,7 +3477,6 @@ def _extract_schema_model_facts(
     mappings: dict | None = None,
     generated_class_names: set[str] | None = None,
     platform: str = DEFAULT_PLATFORM,
-    aspirational_class_names: set[str] | None = None,
     fk_classification: ForeignKeyClassification | None = None,
     naming_conv: str | None = None,
 ) -> tuple:
@@ -3757,10 +3586,6 @@ def _extract_schema_model_facts(
             "silver_default_packages": ", ".join(meta.get("silver_default_packages", [])),
             "silver_overrides": ", ".join(meta.get("silver_overrides", [])),
         }
-        if aspirational_class_names and cls["name"] in aspirational_class_names:
-            # Read-only, derived marker: this Silver model is an aspirational stub
-            # (approved claim, not yet bound to a bronze source).
-            model_meta["is_aspirational"] = "true"
         models_data.append(
             {
                 "name": model_name,
@@ -3833,7 +3658,6 @@ def generate_dbt_artifacts(
     ontology_metadata: dict = None,
     bronze_dir: Path = None,
     sources_dir: Path = None,
-    preparation_dir: Path = None,
     mappings_dir: Path = None,
     gold_ext_path: Path = None,
     target_platform: str = DEFAULT_PLATFORM,
@@ -3843,8 +3667,6 @@ def generate_dbt_artifacts(
     peer_ontology_paths: list = None,
     logical_sources_only: bool = False,
     contract_registry: Mapping[str, "DbtContractModel"] | None = None,
-    emit_aspirational_stubs: bool = False,
-    eligible_class_uris: set[str] | None = None,
     require_silver_evidence: bool = False,
 ) -> dict:
     """Generate dbt project artifacts from ontology + source vocabulary + SKOS mappings.
@@ -3862,8 +3684,6 @@ def generate_dbt_artifacts(
         bronze_dir: Deprecated — use *sources_dir* instead.
         sources_dir: Path to ``integration/sources/`` directory.  Vocabulary TTLs
             are discovered recursively under each source system sub-folder.
-        preparation_dir: Path to ``integration/preparation/`` policy TTLs. When
-            omitted, it is resolved as the sibling of *sources_dir*.
         mappings_dir: Path to ``mappings/`` directory with SKOS mapping TTLs.
         gold_ext_path: Optional path to ``*-gold-ext.ttl`` for gold model generation.
         target_platform: Target SQL platform for type mapping.
@@ -3888,7 +3708,6 @@ def generate_dbt_artifacts(
         ontology_metadata=ontology_metadata,
         bronze_dir=bronze_dir,
         sources_dir=sources_dir,
-        preparation_dir=preparation_dir,
         mappings_dir=mappings_dir,
         gold_ext_path=gold_ext_path,
         target_platform=target_platform,
@@ -3898,8 +3717,6 @@ def generate_dbt_artifacts(
         peer_ontology_paths=peer_ontology_paths,
         logical_sources_only=logical_sources_only,
         contract_registry=contract_registry,
-        emit_aspirational_stubs=emit_aspirational_stubs,
-        eligible_class_uris=eligible_class_uris,
         require_silver_evidence=require_silver_evidence,
     )
     from .dbt import render_project
@@ -3917,7 +3734,6 @@ def plan_dbt_projection(
     ontology_metadata: dict = None,
     bronze_dir: Path = None,
     sources_dir: Path = None,
-    preparation_dir: Path = None,
     mappings_dir: Path = None,
     gold_ext_path: Path = None,
     target_platform: str = DEFAULT_PLATFORM,
@@ -3927,8 +3743,6 @@ def plan_dbt_projection(
     peer_ontology_paths: list = None,
     logical_sources_only: bool = False,
     contract_registry: Mapping[str, "DbtContractModel"] | None = None,
-    emit_aspirational_stubs: bool = False,
-    eligible_class_uris: set[str] | None = None,
     require_silver_evidence: bool = False,
     diagnostic_mode=None,
 ):
@@ -3954,7 +3768,6 @@ def plan_dbt_projection(
         ontology_metadata=ontology_metadata,
         bronze_dir=bronze_dir,
         sources_dir=sources_dir,
-        preparation_dir=preparation_dir,
         mappings_dir=mappings_dir,
         gold_ext_path=gold_ext_path,
         target_platform=target_platform,
@@ -3964,8 +3777,6 @@ def plan_dbt_projection(
         peer_ontology_paths=peer_ontology_paths,
         logical_sources_only=logical_sources_only,
         contract_registry=contract_registry,
-        emit_aspirational_stubs=emit_aspirational_stubs,
-        eligible_class_uris=eligible_class_uris,
     )
 
     # Phase 1 — bind: commit source systems, mappings, contracts + SourceBindings.
@@ -3987,18 +3798,11 @@ def plan_dbt_projection(
             missing.append("imported source vocabulary")
         if not contract.mapping_contract.tables or not contract.mapping_contract.columns:
             missing.append("validated table/column mappings")
-        if not contract.policy.preparations:
-            missing.append("normalized preparation policy")
         final_models = tuple(
             model for model in shaped.silver_models if model.kind.value in {"entity", "union"}
         )
         if not final_models:
             missing.append("bound generated Silver models")
-        if any(
-            model.authority is None or model.authority.entity_identity is None
-            for model in final_models
-        ):
-            missing.append("normalized identity/Silver policy")
         if planless_unbound := tuple(
             sorted(
                 name
@@ -4023,13 +3827,6 @@ def plan_dbt_projection(
             )
     for warning in shaped.warnings:
         logger.warning("%s", warning)
-    # Cache entity metadata for session log (retrieved via get_last_entity_metadata).
-    from .dbt.builders import outcome_context
-
-    _last_entity_metadata[inputs.ontology_name] = [
-        outcome_context(item) for item in shaped.silver_outcomes
-    ]
-
     # Phase 4 — materialize: choose adapter and physical/release plans.
     plan = (
         collect_materialization(contract, shaped)
@@ -4075,8 +3872,6 @@ def generate_dbt_project_config(
             version="",
             template_root=str(template_dir),
         ),
-        prep_models=(),
-        prep_documents=(),
         models=(),
         quality_models=(),
         documents=(),
@@ -4086,7 +3881,7 @@ def generate_dbt_project_config(
             gold_domains=tuple(gold_domain_names or ()),
             emit=True,
         ),
-        release=ReleasePlan(unbound_eligible_names=(), known_models=()),
+        release=ReleasePlan(known_models=()),
     )
     return render_project_config(plan)
 
@@ -4208,123 +4003,3 @@ def generate_coverage_data(
         }
 
     return report
-
-
-# ---------------------------------------------------------------------------
-# dbt Session Log — per-domain Markdown report for .sessions-projection/
-# ---------------------------------------------------------------------------
-
-
-def write_dbt_session_log(
-    domain: str,
-    entity_metadata: list[dict],
-    sessions_dir: Path,
-    toolkit_version: str = "",
-    warnings: list[str] | None = None,
-) -> Path | None:
-    """Write a separate dbt projection session log.
-
-    Filename: ``dbt-{domain}-{YYYY-MM-DD_HH-MM-SS}.md``
-
-    Args:
-        domain: Domain name (e.g. "client", "invoice").
-        entity_metadata: List of per-entity metadata dicts from the bind fact extractor.
-        sessions_dir: Path to ``.sessions-projection/`` directory.
-        toolkit_version: Installed toolkit version string.
-        warnings: Optional list of projection warning messages.
-
-    Returns:
-        Path to the written file, or None if sessions_dir is unavailable.
-    """
-    if not sessions_dir or not entity_metadata:
-        return None
-
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-
-    now = resolve_generated_at()
-    date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
-    filename = f"dbt-{domain}-{date_str}.md"
-    path = sessions_dir / filename
-
-    lines: list[str] = []
-    lines.append(f"# dbt Projection Report — {domain}")
-    lines.append("")
-    lines.append(f"**Generated:** {now.strftime('%Y-%m-%d %H:%M:%S')}  ")
-    lines.append(f"**Toolkit version:** {toolkit_version}  ")
-    lines.append(f"**Domain:** {domain}  ")
-    lines.append("")
-
-    # Silver Models table
-    generated = [e for e in entity_metadata if not e.get("skipped")]
-    if generated:
-        lines.append("## Silver Models")
-        lines.append("")
-        lines.append("| Entity | Model File | SCD | Sources | Columns | FK Joins |")
-        lines.append("|--------|-----------|-----|---------|---------|----------|")
-        for e in generated:
-            src_label = str(e["source_count"])
-            if e["source_count"] > 1:
-                src_label += " (multi)"
-            lines.append(
-                f"| {e['class_name']} | {e['model_file']} "
-                f"| {e['scd_type']} | {src_label} "
-                f"| {e['column_count']} | {e['fk_join_count']} |"
-            )
-        lines.append("")
-
-    # Skipped classes
-    skipped = [e for e in entity_metadata if e.get("skipped")]
-    if skipped:
-        lines.append("## Skipped Classes (no mapping)")
-        lines.append("")
-        for e in skipped:
-            lines.append(f"- `{e['class_name']}` — {e.get('skip_reason', 'Unknown')}")
-        lines.append("")
-
-    # Warnings (deduplicated, excluding messages already shown in Skipped section)
-    skipped_class_names = {e["class_name"] for e in entity_metadata if e.get("skipped")}
-    seen: set[str] = set()
-    unique_warnings: list[str] = []
-    for w in warnings or []:
-        if w not in seen:
-            # Skip warnings about classes already listed in Skipped section
-            is_about_skipped = any(
-                f"'{name}'" in w and "skipping" in w.lower() for name in skipped_class_names
-            )
-            if not is_about_skipped:
-                seen.add(w)
-                unique_warnings.append(w)
-
-    if unique_warnings:
-        lines.append("## ⚠️ Warnings")
-        lines.append("")
-        for w in unique_warnings:
-            lines.append(f"- {w}")
-        lines.append("")
-
-    # Info notes (deduplicated) — e.g. inherited cross-table props on a subtype
-    # claimed as its own silver table (issue #181). Informational, not actionable.
-    info_seen: set[str] = set()
-    unique_info: list[str] = []
-    for e in entity_metadata:
-        for note in e.get("info_notes") or []:
-            if note not in info_seen:
-                info_seen.add(note)
-                unique_info.append(note)
-
-    if unique_info:
-        lines.append("## ℹ️ Info")
-        lines.append("")
-        for note in unique_info:
-            lines.append(f"- {note}")
-        lines.append("")
-
-    if not skipped and not unique_warnings and not unique_info:
-        lines.append("## ✅ No issues")
-        lines.append("")
-        lines.append("All entities projected without warnings.")
-        lines.append("")
-
-    content = "\n".join(lines)
-    path.write_text(content, encoding="utf-8")
-    return path

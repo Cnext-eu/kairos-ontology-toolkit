@@ -1,56 +1,25 @@
-# {System Name}
+# Source system
 
-> Replace `{System Name}` with the actual name of the source system and rename
-> this folder to match (lowercase with hyphens, e.g. `erp-navision`).
+Rename this folder to a lowercase, hyphenated system identifier.
 
-## Overview
-
-| Field | Value |
-|-------|-------|
-| **System name** | _{e.g. AdminPulse}_ |
-| **Owner / contact** | _{team or person responsible}_ |
-| **Version** | _{version or date of the reference docs}_ |
-| **Source type** | _{API, Database, File export, …}_ |
-
-## Connection details
+## Reviewed metadata
 
 | Field | Value |
-|-------|-------|
-| **Type** | _{REST API / SQL Server / PostgreSQL / File / …}_ |
-| **Database** | _{database name, if applicable}_ |
-| **Schema** | _{schema name, if applicable}_ |
-| **Base URL** | _{API base URL, if applicable}_ |
+|---|---|
+| System identifier | `sample-system` |
+| Owning team | _team name, not an individual's contact details_ |
+| Source type | _API, database, or file_ |
+| Contract version | _version or date_ |
 
-> **Do not** store credentials, tokens, or connection strings here. Use a
-> secrets manager or environment variables for sensitive values.
+Keep authoritative source-vocabulary TTL in this folder. Supporting DDL/OpenAPI/schema
+material may be included only when redistribution is allowed and secrets, personal data,
+internal URLs, and proprietary samples have been removed.
 
-## Reference documents
+## Workflow
 
-List the files you have placed in this folder:
+1. Import reviewed schema metadata with `import-source` or `import-flatfile`.
+2. Review the generated vocabulary TTL and redact persisted examples.
+3. Create one closed EntityBinding for each selected relation.
+4. Run `kairos-ontology compile <domain> --check`.
 
-- [ ] `example-api-spec.yaml` — OpenAPI specification
-- [ ] `example-ddl.sql` — SQL DDL export (`CREATE TABLE` statements)
-- [ ] `example-sample.json` — Sample data / API response
-- [ ] `notes.md` — Observations, caveats, data quality notes
-
-_(Delete or add lines as needed.)_
-
-## Notes & observations
-
-_Record anything useful about this source system: known data quality issues,
-naming quirks, fields that are always null, deprecated endpoints, etc._
-
--
-
-## Generating the bronze vocabulary
-
-Once your reference documents are in place, use the **`kairos-ontology-medallion-source`**
-Copilot skill to generate the source vocabulary TTL file:
-
-1. Make sure this folder contains at least one reference document (API spec,
-   DDL export, or sample data).
-2. Invoke the `kairos-ontology-medallion-source` skill and point it at this folder.
-3. The skill will produce (or update) the source vocabulary TTL **in this
-   folder** (e.g. `erp-system.vocabulary.ttl`).
-4. Review the generated TTL and commit both the source docs and the vocabulary
-   together.
+Do not store credentials or connection strings. Use synthetic sample values.

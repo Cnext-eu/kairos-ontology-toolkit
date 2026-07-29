@@ -7,13 +7,6 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from kairos_ontology.core.claim_registry import (
-    Claim,
-    ClaimRegistry,
-    DomainHandoff,
-    EvidenceSource,
-    write_registry,
-)
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.draft_model_report import (
     build_draft_model_report,
@@ -41,24 +34,6 @@ def _write_affinity(analysis_dir: Path) -> None:
         ),
         encoding="utf-8",
     )
-
-
-def _write_claims(claims_dir: Path) -> None:
-    registry = ClaimRegistry(
-        domain="party",
-        claims=[
-            Claim(
-                id="party-tradeparty",
-                type="class",
-                status="approved",
-                disposition="claim",
-                origin="imported",
-                class_uri="https://example.com/ref/party#TradeParty",
-                evidence_sources=[EvidenceSource(type="source_table", system="crm", table="account")],
-            )
-        ],
-    )
-    write_registry(registry, claims_dir / "party-claims.yaml")
 
 
 def _write_tmdl(tmdl_dir: Path) -> None:
@@ -151,36 +126,6 @@ def _write_product_contract(path: Path, *, projection_authority: bool = False) -
     )
 
 
-def test_build_report_creates_all_domain_evidence_and_global_erd(tmp_path):
-    claims_dir = tmp_path / "model" / "claims"
-    analysis_dir = tmp_path / "integration" / "sources" / "_analysis"
-    tmdl_dir = tmp_path / "integration" / "sources" / "powerbi"
-    glossary_dir = tmp_path / "businessdiscovery"
-    _write_claims(claims_dir)
-    _write_affinity(analysis_dir)
-    _write_tmdl(tmdl_dir)
-    _write_glossary(glossary_dir)
-
-    report = build_draft_model_report(
-        claims_dir=claims_dir,
-        analysis_dir=analysis_dir,
-        tmdl_dir=tmdl_dir,
-        glossary_dir=glossary_dir,
-    )
-
-    assert report["advisory"] is True
-    assert report["projection_authority"] is False
-    assert {"party", "commercial"} <= set(report["domains"])
-    assert report["summary"]["tmdl_relationships"] == 1
-    assert report["summary"]["tmdl_measures"] == 1
-    assert "flowchart LR" in report["cross_domain_erd"]
-    assert "domain_party" in report["cross_domain_erd"]
-    assert "many-to-one" in report["cross_domain_erd"]
-
-    party_entities = report["domains"]["party"]["candidate_entities"]
-    assert any(entity["evidence_status"] == "claim-approved" for entity in party_entities)
-
-
 def test_data_product_contract_must_be_non_authoritative(tmp_path):
     contract = tmp_path / "model" / "planning" / "data-products" / "sales" / "contract.yaml"
     _write_product_contract(contract, projection_authority=True)
@@ -191,38 +136,6 @@ def test_data_product_contract_must_be_non_authoritative(tmp_path):
         assert "projection_authority: false" in str(exc)
     else:
         raise AssertionError("authoritative data-product contracts must be rejected")
-
-
-def test_build_data_product_report_filters_and_keeps_planning_guardrails(tmp_path):
-    claims_dir = tmp_path / "model" / "claims"
-    analysis_dir = tmp_path / "integration" / "sources" / "_analysis"
-    tmdl_dir = tmp_path / "integration" / "sources" / "powerbi"
-    contract = tmp_path / "model" / "planning" / "data-products" / "sales" / "contract.yaml"
-    _write_claims(claims_dir)
-    _write_affinity(analysis_dir)
-    _write_tmdl(tmdl_dir)
-    _write_product_contract(contract)
-
-    report = build_draft_model_report(
-        claims_dir=claims_dir,
-        analysis_dir=analysis_dir,
-        tmdl_dir=tmdl_dir,
-        data_product_contract_path=contract,
-    )
-
-    assert report["artifact"] == "data-product-draft-model-report"
-    assert report["projection_authority"] is False
-    assert report["contract"]["projection_authority"] is False
-    assert report["triage_basis"] == "derived-from-dd086-evidence-status"
-    assert report["provenance"]["stale"] is False
-    assert {"party", "commercial"} <= set(report["domains"])
-
-    commercial_gold = report["domains"]["commercial"]["gold_candidates"]
-    assert commercial_gold
-    assert commercial_gold[0]["product_triage"] == "claim-needed"
-    assert commercial_gold[0]["disposition_suggestion"] != "gold-only"
-    party_entities = report["domains"]["party"]["candidate_entities"]
-    assert any(entity["product_triage"] == "covered" for entity in party_entities)
 
 
 def test_write_report_outputs_yaml_markdown_and_unfenced_mermaid(tmp_path):
@@ -304,52 +217,3 @@ def test_draft_model_report_cli_writes_data_product_artifacts(tmp_path):
     assert (contract.parent / "data-product-report.md").exists()
     assert (contract.parent / "data-product-erd.mmd").exists()
     assert "Data-product vertical-slice plan" in result.output
-
-
-def test_domain_handoffs_surfaced_separately_from_relationship_questions(tmp_path):
-    # proposal-quality (finding #7): a cross-domain handoff must be visible in
-    # the report, but NEVER mixed into this domain's own relationship
-    # questions/claim candidates.
-    claims_dir = tmp_path / "model" / "claims"
-    claims_dir.mkdir(parents=True)
-    registry = ClaimRegistry(
-        domain="party",
-        claims=[
-            Claim(
-                id="party-tradeparty", type="class", status="approved",
-                disposition="claim", origin="imported",
-                class_uri="https://example.com/ref/party#TradeParty",
-                evidence_sources=[EvidenceSource(type="source_table", system="crm",
-                                                  table="account")],
-            )
-        ],
-        domain_handoffs=[
-            DomainHandoff(
-                ref_class="Address", ref_property="city",
-                owning_domains=["logistics"], ref_module="reference-data",
-                evidence_sources=[EvidenceSource(type="source_column", system="crm",
-                                                  table="account", column="City")],
-            )
-        ],
-    )
-    write_registry(registry, claims_dir / "party-claims.yaml")
-
-    report = build_draft_model_report(claims_dir=claims_dir)
-
-    handoffs = report["domains"]["party"]["cross_domain_handoffs"]
-    assert len(handoffs) == 1
-    assert handoffs[0]["ref_class"] == "Address"
-    assert handoffs[0]["ref_property"] == "city"
-    assert handoffs[0]["owning_domains"] == ["logistics"]
-    # Never conflated with this domain's own relationship questions.
-    assert all(
-        rel.get("ref_class") != "Address" for rel in report["domains"]["party"]["relationship_questions"]
-    )
-
-
-def test_no_domain_handoffs_yields_empty_list(tmp_path):
-    claims_dir = tmp_path / "model" / "claims"
-    claims_dir.mkdir(parents=True)
-    write_registry(ClaimRegistry(domain="party"), claims_dir / "party-claims.yaml")
-    report = build_draft_model_report(claims_dir=claims_dir)
-    assert report["domains"]["party"]["cross_domain_handoffs"] == []

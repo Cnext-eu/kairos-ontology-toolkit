@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from rdflib import Graph, Literal, Namespace, RDF, URIRef
-from rdflib.namespace import OWL
+from rdflib import Graph, Literal, URIRef
 
 from kairos_ontology.core.projections.dbt.builders import (
     build_silver_registry,
@@ -34,7 +33,6 @@ from kairos_ontology.core.projections.medallion_dbt_projector import (
     _get_raw_natural_key,
     generate_dbt_artifacts,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -83,50 +81,6 @@ BRONZE_TTL = textwrap.dedent("""\
         kairos-bronze:columnName "ModifiedDate" ;
         kairos-bronze:dataType "datetime" ;
         kairos-bronze:nullable "false"^^xsd:boolean .
-""")
-
-PREP_TTL = textwrap.dedent("""\
-    @prefix prep: <https://example.com/preparation/adminpulse#> .
-    @prefix bronze-ap: <https://example.com/bronze/adminpulse#> .
-    @prefix kairos-prep: <https://kairos.cnext.eu/preparation#> .
-
-    prep:clientPolicy a kairos-prep:PreparationPolicy ;
-        kairos-prep:sourceTable bronze-ap:tblClient ;
-        kairos-prep:prepMode "normalize" ;
-        kairos-prep:schemaChangePolicy "fail" ;
-        kairos-prep:cleanupRule prep:nameTrim ;
-        kairos-prep:typeConversion prep:clientIdCast ;
-        kairos-prep:cdcMapping prep:clientCdc ;
-        kairos-prep:recordKeyPolicy prep:clientKey .
-
-    prep:nameTrim a kairos-prep:CleanupRule ;
-        kairos-prep:sourceColumn bronze-ap:tblClient_Name ;
-        kairos-prep:cleanupOperation "trim" ;
-        kairos-prep:lossless true .
-
-    prep:clientIdCast a kairos-prep:TypeConversion ;
-        kairos-prep:sourceColumn bronze-ap:tblClient_ClientID ;
-        kairos-prep:targetType "string" ;
-        kairos-prep:parsePolicy "integer-lexical" ;
-        kairos-prep:errorPolicy "fail" .
-
-    prep:clientCdc a kairos-prep:CdcMapping ;
-        kairos-prep:rawUpdateTimestampColumn bronze-ap:tblClient_ModifiedDate ;
-        kairos-prep:normalizedUpdateTimestampField prep:sourceUpdatedAt .
-
-    prep:sourceUpdatedAt a kairos-prep:PreparedColumn ;
-        kairos-prep:targetColumnName "_source_updated_at" ;
-        kairos-prep:targetType "timestamp" .
-
-    prep:clientKey a kairos-prep:RecordKeyPolicy ;
-        kairos-prep:sourceScope "adminpulse" ;
-        kairos-prep:tableScope "tblClient" ;
-        kairos-prep:recordKeyComponent bronze-ap:tblClient_ClientID ;
-        kairos-prep:recordKeyOutput prep:sourceRecordKey .
-
-    prep:sourceRecordKey a kairos-prep:PreparedColumn ;
-        kairos-prep:targetColumnName "_source_record_key" ;
-        kairos-prep:targetType "string" .
 """)
 
 SKOS_MAPPING_TTL = textwrap.dedent("""\
@@ -214,319 +168,11 @@ SHACL_TTL = textwrap.dedent("""\
 """)
 
 
-_GENERATE_DBT_ARTIFACTS = generate_dbt_artifacts
-
-
-def _write_explicit_test_prep(
-    source_root: Path,
-    mappings_root: Path,
-    ontology_graph: Graph,
-    preparation_root: Path,
-    *,
-    platform: str,
-) -> None:
-    """Author explicit prep fixtures for legacy projector-focused test cases."""
-    if preparation_root.is_dir() and any(preparation_root.rglob("*.ttl")):
-        return
-
-    bronze = Namespace("https://kairos.cnext.eu/bronze#")
-    prep = Namespace("https://kairos.cnext.eu/preparation#")
-    ext = Namespace("https://kairos.cnext.eu/ext#")
-    mapping = Namespace("https://kairos.cnext.eu/mapping#")
-    skos = Namespace("http://www.w3.org/2004/02/skos/core#")
-    rdfs = Namespace("http://www.w3.org/2000/01/rdf-schema#")
-
-    source_graph = Graph()
-    for path in sorted(source_root.rglob("*.ttl")):
-        source_graph.parse(path, format="turtle")
-    mapping_graph = Graph()
-    for path in sorted(mappings_root.rglob("*.ttl")):
-        mapping_graph.parse(path, format="turtle")
-
-    mapped_tables = {
-        table
-        for contract in mapping_graph.subjects(RDF.type, mapping.TableMapping)
-        for table in mapping_graph.objects(contract, mapping.sourceTable)
-        if (table, RDF.type, bronze.SourceTable) in source_graph
-    }
-    if not mapped_tables:
-        return
-
-    output = Graph()
-    supplemental_source = Graph()
-    type_by_xsd = {
-        "http://www.w3.org/2001/XMLSchema#boolean": "boolean",
-        "http://www.w3.org/2001/XMLSchema#date": "date",
-        "http://www.w3.org/2001/XMLSchema#dateTime": "timestamp",
-        "http://www.w3.org/2001/XMLSchema#decimal": "decimal(18,4)",
-        "http://www.w3.org/2001/XMLSchema#double": "float64",
-        "http://www.w3.org/2001/XMLSchema#float": "float64",
-        "http://www.w3.org/2001/XMLSchema#int": "int32",
-        "http://www.w3.org/2001/XMLSchema#integer": "int64",
-        "http://www.w3.org/2001/XMLSchema#long": "int64",
-        "http://www.w3.org/2001/XMLSchema#short": "int16",
-        "http://www.w3.org/2001/XMLSchema#string": "string",
-    }
-    reserved = {
-        "status",
-        "type",
-        "value",
-    } if platform == "fabric" else set()
-
-    for index, table in enumerate(sorted(mapped_tables, key=str), 1):
-        table_name = str(
-            source_graph.value(table, bronze.tableName)
-            or source_graph.value(table, rdfs.label)
-            or str(table).rsplit("#", 1)[-1]
-        )
-        columns = sorted(
-            source_graph.subjects(bronze.sourceTable, table),
-            key=str,
-        )
-        by_name = {
-            str(
-                source_graph.value(column, bronze.columnName)
-                or str(column).rsplit("#", 1)[-1]
-            ): column
-            for column in columns
-        }
-        authored_pk_names = [
-            name.strip()
-            for value in source_graph.objects(table, bronze.primaryKeyColumns)
-            for name in str(value).split(",")
-            if name.strip()
-        ]
-        primary_keys = [
-            by_name[name] for name in authored_pk_names if name in by_name
-        ] or [
-            column
-            for column in columns
-            if str(source_graph.value(column, bronze.isPrimaryKey)).lower()
-            == "true"
-        ]
-        if not primary_keys and columns:
-            primary_keys = [columns[0]]
-            name = next(
-                column_name
-                for column_name, column in by_name.items()
-                if column == columns[0]
-            )
-            supplemental_source.add(
-                (table, bronze.primaryKeyColumns, Literal(name))
-            )
-            supplemental_source.add(
-                (columns[0], bronze.isPrimaryKey, Literal(True))
-            )
-
-        policy = URIRef(f"urn:test-prep:table:{index}")
-        output.add((policy, RDF.type, prep.PreparationPolicy))
-        output.add((policy, prep.sourceTable, table))
-        output.add((policy, prep.prepMode, Literal("normalize")))
-        output.add((policy, prep.schemaChangePolicy, Literal("fail")))
-
-        key = URIRef(f"urn:test-prep:key:{index}")
-        key_output = URIRef(f"urn:test-prep:key-output:{index}")
-        output.add((policy, prep.recordKeyPolicy, key))
-        output.add((key, prep.sourceScope, Literal("test-source")))
-        output.add((key, prep.tableScope, Literal(table_name)))
-        for column in primary_keys:
-            output.add((key, prep.recordKeyComponent, column))
-        output.add((key, prep.recordKeyOutput, key_output))
-        output.add((key_output, prep.targetColumnName, Literal("_source_record_key")))
-        output.add((key_output, prep.targetType, Literal("string")))
-
-        for column_index, column in enumerate(columns, 1):
-            column_name = next(
-                name for name, candidate in by_name.items() if candidate == column
-            )
-            if (
-                not column_name.replace("_", "").isalnum()
-                or column_name[0].isdigit()
-                or column_name.lower() in reserved
-            ):
-                rename = URIRef(
-                    f"urn:test-prep:rename:{index}:{column_index}"
-                )
-                output.add((policy, prep.physicalRename, rename))
-                output.add((rename, prep.sourceColumn, column))
-                output.add(
-                    (
-                        rename,
-                        prep.targetColumnName,
-                        Literal(f"{_camel_to_snake(column_name)}_source"),
-                    )
-                )
-
-            target_ranges = {
-                str(
-                    ontology_graph.value(target, ext.silverDataType)
-                    or ontology_graph.value(target, rdfs.range)
-                    or ""
-                )
-                for predicate in (
-                    skos.exactMatch,
-                    skos.closeMatch,
-                    skos.narrowMatch,
-                    skos.broadMatch,
-                )
-                for target in mapping_graph.objects(column, predicate)
-            }
-            canonical_targets = {
-                type_by_xsd.get(value, value.lower())
-                for value in target_ranges
-                if value in type_by_xsd
-                or value.lower()
-                in {
-                    "boolean",
-                    "date",
-                    "float64",
-                    "int16",
-                    "int32",
-                    "int64",
-                    "string",
-                    "timestamp",
-                }
-                or value.lower().startswith("decimal(")
-            }
-            if len(canonical_targets) == 1:
-                target = next(iter(canonical_targets))
-                source_type = str(
-                    source_graph.value(column, bronze.dataType) or ""
-                ).lower()
-                source_base = source_type.split("(", 1)[0]
-                source_kind = {
-                    "bigint": "int64",
-                    "bit": "boolean",
-                    "bool": "boolean",
-                    "boolean": "boolean",
-                    "date": "date",
-                    "datetime": "timestamp",
-                    "datetime2": "timestamp",
-                    "decimal": "decimal",
-                    "float": "float64",
-                    "int": "int32",
-                    "integer": "int32",
-                    "numeric": "decimal",
-                    "smallint": "int16",
-                    "timestamp": "timestamp",
-                }.get(source_base, "string")
-                target_kind = "decimal" if target.startswith("decimal(") else target
-                if source_kind == target_kind:
-                    continue
-                parse_policy = (
-                    "boolean-canonical"
-                    if source_kind == "boolean"
-                    else (
-                        "integer-lexical"
-                        if source_kind in {"int16", "int32", "int64"}
-                        else (
-                            "decimal-invariant"
-                            if source_kind in {"decimal", "float64"}
-                            else "strict-text"
-                        )
-                    )
-                )
-                conversion = URIRef(
-                    f"urn:test-prep:conversion:{index}:{column_index}"
-                )
-                output.add((policy, prep.typeConversion, conversion))
-                output.add((conversion, prep.sourceColumn, column))
-                output.add(
-                    (
-                        conversion,
-                        prep.targetType,
-                        Literal(target),
-                    )
-                )
-                output.add(
-                    (
-                        conversion,
-                        prep.parsePolicy,
-                        Literal(parse_policy),
-                    )
-                )
-                output.add((conversion, prep.errorPolicy, Literal("fail")))
-
-        incremental_name = source_graph.value(table, bronze.incrementalColumn)
-        incremental_column = (
-            by_name.get(str(incremental_name))
-            if incremental_name is not None
-            else None
-        )
-        if incremental_column is not None:
-            cdc = URIRef(f"urn:test-prep:cdc:{index}")
-            cdc_output = URIRef(f"urn:test-prep:cdc-output:{index}")
-            output.add((policy, prep.cdcMapping, cdc))
-            output.add(
-                (cdc, prep.rawUpdateTimestampColumn, incremental_column)
-            )
-            output.add(
-                (cdc, prep.normalizedUpdateTimestampField, cdc_output)
-            )
-            output.add(
-                (
-                    cdc_output,
-                    prep.targetColumnName,
-                    Literal("_source_updated_at"),
-                )
-            )
-            output.add((cdc_output, prep.targetType, Literal("timestamp")))
-
-    preparation_root.mkdir(parents=True, exist_ok=True)
-    output.serialize(
-        preparation_root / "__projector-test-prep.ttl",
-        format="turtle",
-    )
-    if supplemental_source:
-        supplemental_source.serialize(
-            source_root / "__projector-test-source-keys.ttl",
-            format="turtle",
-        )
-
-
-def generate_dbt_artifacts(*args, **kwargs):
-    """Run projector tests with explicit DD-106 policies for their source fixtures."""
-    graph = kwargs.get("graph") or (args[1] if len(args) > 1 else Graph())
-    ext = Namespace("https://kairos.cnext.eu/ext#")
-    for prop in tuple(graph.subjects(RDF.type, OWL.ObjectProperty)):
-        authored = (
-            (ext.silverForeignKeyTemporalMode, Literal("none")),
-            (ext.silverForeignKeyChangeDetection, Literal(False)),
-            (ext.silverForeignKeyCardinality, Literal("zero-or-one")),
-            (ext.silverForeignKeyMissingPolicy, Literal("fail")),
-            (ext.silverForeignKeyAmbiguousPolicy, Literal("fail")),
-            (ext.silverForeignKeyLateParentPolicy, Literal("fail")),
-        )
-        for predicate, value in authored:
-            if graph.value(prop, predicate) is None:
-                graph.add((prop, predicate, value))
-    source_root = kwargs.get("sources_dir") or kwargs.get("bronze_dir")
-    mappings_root = kwargs.get("mappings_dir")
-    if source_root is not None and mappings_root is not None:
-        source_root = Path(source_root)
-        preparation_root = Path(
-            kwargs.get("preparation_dir")
-            or source_root.parent / "preparation"
-        )
-        _write_explicit_test_prep(
-            source_root,
-            Path(mappings_root),
-            graph,
-            preparation_root,
-            platform=kwargs.get("target_platform", "fabric"),
-        )
-        kwargs["preparation_dir"] = preparation_root
-    return _GENERATE_DBT_ARTIFACTS(*args, **kwargs)
-
-
 @pytest.fixture
 def bronze_dir(tmp_path):
     d = tmp_path / "bronze"
     d.mkdir()
     (d / "adminpulse.ttl").write_text(BRONZE_TTL, encoding="utf-8")
-    prep = tmp_path / "preparation"
-    prep.mkdir()
-    (prep / "adminpulse-prep.ttl").write_text(PREP_TTL, encoding="utf-8")
     return d
 
 
@@ -555,12 +201,14 @@ def shapes_dir(tmp_path):
 
 @pytest.fixture
 def classes():
-    return [{
-        "uri": "http://kairos.example/ontology/Client",
-        "name": "Client",
-        "label": "Client",
-        "comment": "A client entity",
-    }]
+    return [
+        {
+            "uri": "http://kairos.example/ontology/Client",
+            "name": "Client",
+            "label": "Client",
+            "comment": "A client entity",
+        }
+    ]
 
 
 @pytest.fixture
@@ -571,6 +219,7 @@ def template_dir():
 # ---------------------------------------------------------------------------
 # Unit tests: helpers
 # ---------------------------------------------------------------------------
+
 
 class TestHelpers:
     def test_camel_to_snake(self):
@@ -596,12 +245,14 @@ class TestHelpers:
     def test_xsd_datetime_to_fabric_has_precision(self):
         # Regression: xsd:dateTime must map to DATETIME2(6) for Fabric, not bare DATETIME2
         from rdflib.namespace import XSD
+
         assert _xsd_to_target(XSD.dateTime, "fabric") == "DATETIME2(6)"
 
 
 # ---------------------------------------------------------------------------
 # Unit tests: bronze parsing
 # ---------------------------------------------------------------------------
+
 
 class TestBronzeParsing:
     def test_parse_bronze_returns_systems(self, bronze_dir):
@@ -680,6 +331,7 @@ class TestBronzeParsing:
 # ---------------------------------------------------------------------------
 # Unit tests: SKOS mapping parsing
 # ---------------------------------------------------------------------------
+
 
 class TestSkosMapping:
     def test_parse_skos_table_maps(self, mappings_dir):
@@ -771,7 +423,6 @@ class TestSkosMapping:
         targets = {e["target_uri"] for e in maps["table_maps"][key]}
         assert "http://kairos.example/ontology/Client" in targets
         assert "http://kairos.example/ontology/ContactPerson" in targets
-
 
     def test_parse_skos_coalesce_contract(self, tmp_path):
         """A structured COALESCE AST is captured without SQL."""
@@ -868,11 +519,10 @@ class TestSkosMapping:
 # Unit tests: SHACL test extraction
 # ---------------------------------------------------------------------------
 
+
 class TestShaclTests:
     def test_extract_shacl_tests(self, shapes_dir):
-        tests = _extract_shacl_tests(
-            shapes_dir, "http://kairos.example/ontology/Client"
-        )
+        tests = _extract_shacl_tests(shapes_dir, "http://kairos.example/ontology/Client")
         assert "client_id" in tests
         assert "not_null" in tests["client_id"]
         assert "unique" in tests["client_id"]
@@ -895,9 +545,11 @@ class TestShaclTests:
 # Integration: full artifact generation
 # ---------------------------------------------------------------------------
 
+
 class TestGenerateDbtArtifacts:
-    def test_silver_models_generated(self, classes, ontology_graph, template_dir,
-                                       bronze_dir, mappings_dir):
+    def test_silver_models_generated(
+        self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
+    ):
         """Silver entity models are generated when bronze + mappings exist."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -942,12 +594,14 @@ class TestGenerateDbtArtifacts:
             length_test = next(
                 test
                 for test in complex_tests
-                if "dbt_expectations.expect_column_value_lengths_to_be_between"
-                in test
+                if "dbt_expectations.expect_column_value_lengths_to_be_between" in test
             )
-            assert length_test[
-                "dbt_expectations.expect_column_value_lengths_to_be_between"
-            ]["min_value"] == 2
+            assert (
+                length_test["dbt_expectations.expect_column_value_lengths_to_be_between"][
+                    "min_value"
+                ]
+                == 2
+            )
 
     def test_with_bronze_and_mappings(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
@@ -966,11 +620,7 @@ class TestGenerateDbtArtifacts:
         source_files = [k for k in artifacts if "_sources.yml" in k]
         assert len(source_files) >= 1
 
-        # Normalize mode emits exactly one integrated prep model.
-        staging_files = [k for k in artifacts if "stg_" in k]
-        assert "models/staging/admin_pulse/stg_admin_pulse__tbl_client.sql" in (
-            staging_files
-        )
+        assert not any("models/staging/" in key for key in artifacts)
 
         # Should have silver model
         silver_files = [k for k in artifacts if "models/silver/" in k and k.endswith(".sql")]
@@ -987,10 +637,10 @@ class TestGenerateDbtArtifacts:
         assert "metaplane/dbt_expectations" in packages_yml
         assert "calogica" not in packages_yml
 
-    def test_silver_model_uses_integrated_prep(
+    def test_silver_model_reads_bronze_source_directly(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
     ):
-        """Normalize mode routes Silver through its generated prep model."""
+        """Silver reads the governed Bronze source without an intermediate prep model."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=ontology_graph,
@@ -1002,16 +652,15 @@ class TestGenerateDbtArtifacts:
         )
         # Find the silver model
         silver_key = next(
-            k for k in artifacts
+            k
+            for k in artifacts
             if "models/silver/" in k and k.endswith(".sql") and "_sources" not in k
         )
         content = artifacts[silver_key]
-        assert "ref('stg_admin_pulse__tbl_client')" in content
-        assert "source('admin_pulse', 'tblClient')" not in content
+        assert "ref('stg_admin_pulse__tbl_client')" not in content
+        assert "source('admin_pulse', 'tblClient')" in content
 
-    def test_dbt_project_yml(
-        self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
-    ):
+    def test_dbt_project_yml(self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir):
         """dbt_project.yml has correct structure (no staging section)."""
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -1174,12 +823,24 @@ GOLD_ONTOLOGY_TTL = textwrap.dedent("""\
 """)
 
 GOLD_CLASSES = [
-    {"uri": "http://kairos.example/ontology/Customer",
-     "name": "Customer", "label": "Customer", "comment": "A customer entity"},
-    {"uri": "http://kairos.example/ontology/Product",
-     "name": "Product", "label": "Product", "comment": "A product entity"},
-    {"uri": "http://kairos.example/ontology/Order",
-     "name": "Order", "label": "Order", "comment": "An order entity"},
+    {
+        "uri": "http://kairos.example/ontology/Customer",
+        "name": "Customer",
+        "label": "Customer",
+        "comment": "A customer entity",
+    },
+    {
+        "uri": "http://kairos.example/ontology/Product",
+        "name": "Product",
+        "label": "Product",
+        "comment": "A product entity",
+    },
+    {
+        "uri": "http://kairos.example/ontology/Order",
+        "name": "Order",
+        "label": "Order",
+        "comment": "An order entity",
+    },
 ]
 
 GOLD_BRONZE_TTL = textwrap.dedent("""\
@@ -1349,8 +1010,9 @@ def gold_mappings_dir(tmp_path):
 class TestGoldDbtModels:
     """Tests for gold dbt model generation (thick gold — DirectLake optimized)."""
 
-    def test_gold_models_generated(self, gold_ontology_graph, template_dir,
-                                   gold_bronze_dir, gold_mappings_dir):
+    def test_gold_models_generated(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """Gold models are generated alongside silver when bronze sources exist."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -1368,8 +1030,9 @@ class TestGoldDbtModels:
         assert any("fact_order.sql" in k for k in gold_models)
         assert any("dim_date.sql" in k for k in gold_models)
 
-    def test_gold_model_refs_silver(self, gold_ontology_graph, template_dir,
-                                    gold_bronze_dir, gold_mappings_dir):
+    def test_gold_model_refs_silver(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """Gold models use ref() to reference silver models."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -1385,8 +1048,9 @@ class TestGoldDbtModels:
         assert "ref('customer')" in content
         assert "materialized='table'" in content
 
-    def test_gold_fact_model_content(self, gold_ontology_graph, template_dir,
-                                     gold_bronze_dir, gold_mappings_dir):
+    def test_gold_fact_model_content(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """Fact table gold model has correct structure."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -1399,14 +1063,15 @@ class TestGoldDbtModels:
         )
         fact_key = next(k for k in artifacts if "fact_order.sql" in k)
         content = artifacts[fact_key]
-        assert "materialized='incremental'" in content
+        assert "materialized='table'" in content
         assert "gold_sales" in content
         # Fact table should reference silver model
         assert "ref(" in content
         assert "Explicit role: fact" in content
 
-    def test_gold_dimension_scd2_framing(self, gold_ontology_graph, template_dir,
-                                         gold_bronze_dir, gold_mappings_dir):
+    def test_gold_dimension_scd2_framing(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """Current filtering is not invented without an SCD2 Silver authority."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -1421,8 +1086,9 @@ class TestGoldDbtModels:
         content = artifacts[dim_key]
         assert "is_current = 1" not in content
 
-    def test_gold_schema_yaml(self, gold_ontology_graph, template_dir,
-                              gold_bronze_dir, gold_mappings_dir):
+    def test_gold_schema_yaml(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """Gold schema YAML has correct structure with tests."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -1443,16 +1109,16 @@ class TestGoldDbtModels:
         for model in models:
             # Only the first SK column (PK) should have tests — FK SK cols may be nullable
             pk_col = next(
-                (c for c in model["columns"]
-                 if c["name"].endswith("_sk") and c.get("tests")),
+                (c for c in model["columns"] if c["name"].endswith("_sk") and c.get("tests")),
                 None,
             )
             if pk_col:
                 assert "not_null" in pk_col["tests"]
                 assert "unique" in pk_col["tests"]
 
-    def test_dbt_project_yml_has_gold(self, gold_ontology_graph, template_dir,
-                                      gold_bronze_dir, gold_mappings_dir):
+    def test_dbt_project_yml_has_gold(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """dbt_project.yml includes gold section."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -1469,8 +1135,9 @@ class TestGoldDbtModels:
         assert "+materialized" in gold_config
         assert gold_config["+materialized"] == "table"
 
-    def test_gold_dim_date_model(self, gold_ontology_graph, template_dir,
-                                 gold_bronze_dir, gold_mappings_dir):
+    def test_gold_dim_date_model(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """dim_date is auto-generated as a gold model."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -1619,18 +1286,14 @@ class TestCrossDomainFK:
     def cross_domain_bronze_dir(self, tmp_path):
         d = tmp_path / "sources" / "adminpulse"
         d.mkdir(parents=True)
-        (d / "adminpulse.vocabulary.ttl").write_text(
-            CROSS_DOMAIN_BRONZE_TTL, encoding="utf-8"
-        )
+        (d / "adminpulse.vocabulary.ttl").write_text(CROSS_DOMAIN_BRONZE_TTL, encoding="utf-8")
         return tmp_path / "sources"
 
     @pytest.fixture
     def cross_domain_mappings_dir(self, tmp_path):
         d = tmp_path / "mappings" / "adminpulse"
         d.mkdir(parents=True)
-        (d / "adminpulse-to-client.ttl").write_text(
-            CROSS_DOMAIN_MAPPING_TTL, encoding="utf-8"
-        )
+        (d / "adminpulse-to-client.ttl").write_text(CROSS_DOMAIN_MAPPING_TTL, encoding="utf-8")
         return tmp_path / "mappings"
 
     @pytest.fixture
@@ -1651,8 +1314,12 @@ class TestCrossDomainFK:
         ]
 
     def test_fk_column_generated(
-        self, cross_domain_classes, cross_domain_graph, template_dir,
-        cross_domain_bronze_dir, cross_domain_mappings_dir,
+        self,
+        cross_domain_classes,
+        cross_domain_graph,
+        template_dir,
+        cross_domain_bronze_dir,
+        cross_domain_mappings_dir,
     ):
         """Cross-domain FK generates a _sk column with a join."""
         artifacts = generate_dbt_artifacts(
@@ -1665,10 +1332,7 @@ class TestCrossDomainFK:
             mappings_dir=cross_domain_mappings_dir,
         )
         # Find client silver model
-        silver_key = next(
-            k for k in artifacts
-            if "client.sql" in k and "models/silver/" in k
-        )
+        silver_key = next(k for k in artifacts if "client.sql" in k and "models/silver/" in k)
         content = artifacts[silver_key]
 
         # Should contain a party_sk FK column
@@ -1679,8 +1343,12 @@ class TestCrossDomainFK:
         assert "left join" in content
 
     def test_fk_join_condition(
-        self, cross_domain_classes, cross_domain_graph, template_dir,
-        cross_domain_bronze_dir, cross_domain_mappings_dir,
+        self,
+        cross_domain_classes,
+        cross_domain_graph,
+        template_dir,
+        cross_domain_bronze_dir,
+        cross_domain_mappings_dir,
     ):
         """FK join condition references the source column and target NK."""
         artifacts = generate_dbt_artifacts(
@@ -1692,10 +1360,7 @@ class TestCrossDomainFK:
             bronze_dir=cross_domain_bronze_dir,
             mappings_dir=cross_domain_mappings_dir,
         )
-        silver_key = next(
-            k for k in artifacts
-            if "client.sql" in k and "models/silver/" in k
-        )
+        silver_key = next(k for k in artifacts if "client.sql" in k and "models/silver/" in k)
         content = artifacts[silver_key]
 
         # Join should reference the target natural key (party_id from naturalKey)
@@ -1704,8 +1369,12 @@ class TestCrossDomainFK:
         assert "[party_ref].[is_current] = 1" not in content
 
     def test_fk_change_never_creates_an_implicit_hash_contract(
-        self, cross_domain_classes, cross_domain_graph, template_dir,
-        cross_domain_bronze_dir, cross_domain_mappings_dir,
+        self,
+        cross_domain_classes,
+        cross_domain_graph,
+        template_dir,
+        cross_domain_bronze_dir,
+        cross_domain_mappings_dir,
     ):
         artifacts = generate_dbt_artifacts(
             classes=cross_domain_classes,
@@ -1717,83 +1386,24 @@ class TestCrossDomainFK:
             mappings_dir=cross_domain_mappings_dir,
         )
         silver_key = next(
-            key for key in artifacts
-            if "client.sql" in key and "models/silver/" in key
+            key for key in artifacts if "client.sql" in key and "models/silver/" in key
         )
         assert "party_ref.party_sk as party_sk" in artifacts[silver_key]
         assert "kairos_canonical_hash_v1" not in artifacts[silver_key]
 
-    def test_fk_can_use_as_of_parent_resolution(
-        self, cross_domain_classes, cross_domain_graph, template_dir,
-        cross_domain_bronze_dir, cross_domain_mappings_dir,
-    ):
-        prop = URIRef("http://kairos.example/ontology/representsParty")
-        ext = "https://kairos.cnext.eu/ext#"
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyTemporalMode"), Literal("as-of"))
-        )
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyAsOfColumn"), Literal("event_ts"))
-        )
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyInterval"), Literal("closed-open"))
-        )
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyTimeZone"), Literal("UTC"))
-        )
-        cross_domain_graph.add(
-            (prop, URIRef(f"{ext}silverForeignKeyPrecision"), Literal("microsecond"))
-        )
-        cross_domain_graph.add(
-            (
-                prop,
-                URIRef(f"{ext}silverForeignKeyCardinality"),
-                Literal("exactly-one"),
-            )
-        )
-        cross_domain_graph.add(
-            (
-                prop,
-                URIRef(f"{ext}silverForeignKeyMissingPolicy"),
-                Literal("quarantine"),
-            )
-        )
-        cross_domain_graph.add(
-            (
-                prop,
-                URIRef(f"{ext}silverForeignKeyAmbiguousPolicy"),
-                Literal("fail"),
-            )
-        )
-        cross_domain_graph.add(
-            (
-                prop,
-                URIRef(f"{ext}silverForeignKeyLateParentPolicy"),
-                Literal("restate"),
-            )
-        )
-        with pytest.raises(ValueError, match="history-target-required"):
-            generate_dbt_artifacts(
-                classes=cross_domain_classes,
-                graph=cross_domain_graph,
-                template_dir=template_dir,
-                namespace="http://kairos.example/ontology/",
-                ontology_name="client",
-                bronze_dir=cross_domain_bronze_dir,
-                mappings_dir=cross_domain_mappings_dir,
-            )
-
     def test_fk_change_can_be_excluded_from_scd2_hash(
-        self, cross_domain_classes, cross_domain_graph, template_dir,
-        cross_domain_bronze_dir, cross_domain_mappings_dir,
+        self,
+        cross_domain_classes,
+        cross_domain_graph,
+        template_dir,
+        cross_domain_bronze_dir,
+        cross_domain_mappings_dir,
     ):
         prop = URIRef("http://kairos.example/ontology/representsParty")
         cross_domain_graph.add(
             (
                 prop,
-                URIRef(
-                    "https://kairos.cnext.eu/ext#silverForeignKeyChangeDetection"
-                ),
+                URIRef("https://kairos.cnext.eu/ext#silverForeignKeyChangeDetection"),
                 Literal(False),
             )
         )
@@ -1807,15 +1417,18 @@ class TestCrossDomainFK:
             mappings_dir=cross_domain_mappings_dir,
         )
         silver_key = next(
-            key for key in artifacts
-            if "client.sql" in key and "models/silver/" in key
+            key for key in artifacts if "client.sql" in key and "models/silver/" in key
         )
         assert "party_ref.party_sk as party_sk" in artifacts[silver_key]
         assert "kairos_canonical_hash_v1" not in artifacts[silver_key]
 
     def test_nonportable_schema_override_is_rejected(
-        self, cross_domain_classes, cross_domain_graph, template_dir,
-        cross_domain_bronze_dir, cross_domain_mappings_dir,
+        self,
+        cross_domain_classes,
+        cross_domain_graph,
+        template_dir,
+        cross_domain_bronze_dir,
+        cross_domain_mappings_dir,
     ):
         cross_domain_graph.add(
             (
@@ -1836,8 +1449,12 @@ class TestCrossDomainFK:
             )
 
     def test_fk_column_in_schema_yaml(
-        self, cross_domain_classes, cross_domain_graph, template_dir,
-        cross_domain_bronze_dir, cross_domain_mappings_dir,
+        self,
+        cross_domain_classes,
+        cross_domain_graph,
+        template_dir,
+        cross_domain_bronze_dir,
+        cross_domain_mappings_dir,
     ):
         """FK column appears in the schema YAML with is_fk metadata."""
         artifacts = generate_dbt_artifacts(
@@ -1852,9 +1469,7 @@ class TestCrossDomainFK:
         schema_key = next(k for k in artifacts if "_models.yml" in k)
         schema = yaml.safe_load(artifacts[schema_key])
         # Find client model columns
-        client_model = next(
-            m for m in schema["models"] if m["name"] == "client"
-        )
+        client_model = next(m for m in schema["models"] if m["name"] == "client")
         col_names = [c["name"] for c in client_model["columns"]]
         assert "party_sk" in col_names
         fk_col = next(c for c in client_model["columns"] if c["name"] == "party_sk")
@@ -1967,47 +1582,57 @@ class TestFKAutoInference:
     @pytest.fixture
     def systems_with_fk_column(self):
         """Bronze systems with a TypeCode column on tblClient."""
-        return [{
-            "system_label": "AdminPulse",
-            "tables": [{
-                "uri": "https://example.com/bronze/adminpulse#tblClient",
-                "name": "tblClient",
-                "columns": [
+        return [
+            {
+                "system_label": "AdminPulse",
+                "tables": [
                     {
-                        "uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
-                        "name": "ClientID",
-                        "data_type": "int",
-                    },
-                    {
-                        "uri": "https://example.com/bronze/adminpulse#tblClient_TypeCode",
-                        "name": "TypeCode",
-                        "data_type": "int",
-                    },
+                        "uri": "https://example.com/bronze/adminpulse#tblClient",
+                        "name": "tblClient",
+                        "columns": [
+                            {
+                                "uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
+                                "name": "ClientID",
+                                "data_type": "int",
+                            },
+                            {
+                                "uri": "https://example.com/bronze/adminpulse#tblClient_TypeCode",
+                                "name": "TypeCode",
+                                "data_type": "int",
+                            },
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
 
     @pytest.fixture
     def mappings_with_nk_column(self):
         """Mappings where tblClient_TypeCode → typeCode (NK of ClientType)."""
         return {
             "table_maps": {
-                "https://example.com/bronze/adminpulse#tblClient": [{
-                    "target_uri": "http://kairos.example/ontology/Client",
-                    "mapping_type": "direct",
-                }],
+                "https://example.com/bronze/adminpulse#tblClient": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/Client",
+                        "mapping_type": "direct",
+                    }
+                ],
             },
             "column_maps": {
-                "https://example.com/bronze/adminpulse#tblClient_ClientID": [{
-                    "target_uri": "http://kairos.example/ontology/clientId",
-                    "transform": "CAST(source.ClientID AS STRING)",
-                    "match_type": "exactMatch",
-                }],
-                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [{
-                    "target_uri": "http://kairos.example/ontology/typeCode",
-                    "transform": "source.TypeCode",
-                    "match_type": "exactMatch",
-                }],
+                "https://example.com/bronze/adminpulse#tblClient_ClientID": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/clientId",
+                        "transform": "CAST(source.ClientID AS STRING)",
+                        "match_type": "exactMatch",
+                    }
+                ],
+                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/typeCode",
+                        "transform": "source.TypeCode",
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
 
@@ -2015,10 +1640,13 @@ class TestFKAutoInference:
         self, autoinfer_graph, systems_with_fk_column, mappings_with_nk_column
     ):
         """Auto-infer FK join when source column maps to NK of range class."""
-        source_refs = [(
-            "adminpulse", "tblClient",
-            "https://example.com/bronze/adminpulse#tblClient",
-        )]
+        source_refs = [
+            (
+                "adminpulse",
+                "tblClient",
+                "https://example.com/bronze/adminpulse#tblClient",
+            )
+        ]
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
             autoinfer_graph,
             "http://kairos.example/ontology/Client",
@@ -2042,50 +1670,59 @@ class TestFKAutoInference:
         # No warnings for auto-inferred FK
         assert len(warnings) == 0
 
-    def test_auto_infer_ignores_other_tables(
-        self, autoinfer_graph
-    ):
+    def test_auto_infer_ignores_other_tables(self, autoinfer_graph):
         """Auto-inference only considers columns from the current source table."""
         # tblClientType has TypeCode, but it's a different table — should NOT
         # be used for auto-inference when building the Client model from tblClient
-        systems = [{
-            "system_label": "AdminPulse",
-            "tables": [
-                {
-                    "uri": "https://example.com/bronze/adminpulse#tblClient",
-                    "name": "tblClient",
-                    "columns": [{
-                        "uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
-                        "name": "ClientID",
-                        "data_type": "int",
-                    }],
-                },
-                {
-                    "uri": "https://example.com/bronze/adminpulse#tblClientType",
-                    "name": "tblClientType",
-                    "columns": [{
-                        "uri": "https://example.com/bronze/adminpulse#tblClientType_TypeCode",
-                        "name": "TypeCode",
-                        "data_type": "int",
-                    }],
-                },
-            ],
-        }]
+        systems = [
+            {
+                "system_label": "AdminPulse",
+                "tables": [
+                    {
+                        "uri": "https://example.com/bronze/adminpulse#tblClient",
+                        "name": "tblClient",
+                        "columns": [
+                            {
+                                "uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
+                                "name": "ClientID",
+                                "data_type": "int",
+                            }
+                        ],
+                    },
+                    {
+                        "uri": "https://example.com/bronze/adminpulse#tblClientType",
+                        "name": "tblClientType",
+                        "columns": [
+                            {
+                                "uri": "https://example.com/bronze/adminpulse#tblClientType_TypeCode",
+                                "name": "TypeCode",
+                                "data_type": "int",
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
         # Mapping: tblClientType_TypeCode → typeCode (wrong table)
         mappings = {
             "table_maps": {},
             "column_maps": {
-                "https://example.com/bronze/adminpulse#tblClientType_TypeCode": [{
-                    "target_uri": "http://kairos.example/ontology/typeCode",
-                    "transform": "source.TypeCode",
-                    "match_type": "exactMatch",
-                }],
+                "https://example.com/bronze/adminpulse#tblClientType_TypeCode": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/typeCode",
+                        "transform": "source.TypeCode",
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
-        source_refs = [(
-            "adminpulse", "tblClient",
-            "https://example.com/bronze/adminpulse#tblClient",
-        )]
+        source_refs = [
+            (
+                "adminpulse",
+                "tblClient",
+                "https://example.com/bronze/adminpulse#tblClient",
+            )
+        ]
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
             autoinfer_graph,
             "http://kairos.example/ontology/Client",
@@ -2105,17 +1742,22 @@ class TestFKAutoInference:
         mappings = {
             "table_maps": {},
             "column_maps": {
-                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [{
-                    "target_uri": "http://kairos.example/ontology/typeCode",
-                    "transform": "source.TypeCode",
-                    "match_type": "exactMatch",
-                }],
+                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/typeCode",
+                        "transform": "source.TypeCode",
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
-        source_refs = [(
-            "adminpulse", "tblClient",
-            "https://example.com/bronze/adminpulse#tblClient",
-        )]
+        source_refs = [
+            (
+                "adminpulse",
+                "tblClient",
+                "https://example.com/bronze/adminpulse#tblClient",
+            )
+        ]
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
             autoinfer_graph,
             "http://kairos.example/ontology/Client",
@@ -2132,10 +1774,13 @@ class TestFKAutoInference:
     def test_improved_warning_includes_remediation(self, autoinfer_graph):
         """Warning message includes actionable remediation guidance."""
         mappings = {"table_maps": {}, "column_maps": {}}
-        source_refs = [(
-            "adminpulse", "tblClient",
-            "https://example.com/bronze/adminpulse#tblClient",
-        )]
+        source_refs = [
+            (
+                "adminpulse",
+                "tblClient",
+                "https://example.com/bronze/adminpulse#tblClient",
+            )
+        ]
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
             autoinfer_graph,
             "http://kairos.example/ontology/Client",
@@ -2225,21 +1870,30 @@ class TestAmbiguousSameRangeFK:
 
     @pytest.fixture
     def systems(self):
-        return [{
-            "system_label": "ERP",
-            "tables": [{
-                "uri": self.TBL,
-                "name": "tblParty",
-                "columns": [
-                    {"uri": f"{self.TBL}_PartyID", "name": "PartyID",
-                     "data_type": "int"},
-                    {"uri": self.COL_BILLING, "name": "BillingAddress",
-                     "data_type": "varchar"},
-                    {"uri": self.COL_SHIPPING, "name": "ShippingAddress",
-                     "data_type": "varchar"},
+        return [
+            {
+                "system_label": "ERP",
+                "tables": [
+                    {
+                        "uri": self.TBL,
+                        "name": "tblParty",
+                        "columns": [
+                            {"uri": f"{self.TBL}_PartyID", "name": "PartyID", "data_type": "int"},
+                            {
+                                "uri": self.COL_BILLING,
+                                "name": "BillingAddress",
+                                "data_type": "varchar",
+                            },
+                            {
+                                "uri": self.COL_SHIPPING,
+                                "name": "ShippingAddress",
+                                "data_type": "varchar",
+                            },
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
 
     @property
     def source_refs(self):
@@ -2256,15 +1910,25 @@ class TestAmbiguousSameRangeFK:
             "table_maps": {},
             "column_maps": {
                 self.COL_BILLING: [
-                    {"target_uri": self.BILLING_PROP,
-                     "transform": "source.BillingAddress", "match_type": "exactMatch"},
-                    {"target_uri": self.ADDRESS_CODE,
-                     "transform": "source.BillingAddress", "match_type": "exactMatch"},
+                    {
+                        "target_uri": self.BILLING_PROP,
+                        "transform": "source.BillingAddress",
+                        "match_type": "exactMatch",
+                    },
+                    {
+                        "target_uri": self.ADDRESS_CODE,
+                        "transform": "source.BillingAddress",
+                        "match_type": "exactMatch",
+                    },
                 ],
             },
         }
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
-            graph, self.PARTY_URI, mappings, self.source_refs, systems=systems,
+            graph,
+            self.PARTY_URI,
+            mappings,
+            self.source_refs,
+            systems=systems,
         )
 
         billing = self._fk_by_name(fk_columns, "billing_address_sk")
@@ -2291,17 +1955,27 @@ class TestAmbiguousSameRangeFK:
             "table_maps": {},
             "column_maps": {
                 self.COL_BILLING: [
-                    {"target_uri": self.BILLING_PROP,
-                     "transform": "source.BillingAddress", "match_type": "exactMatch"},
+                    {
+                        "target_uri": self.BILLING_PROP,
+                        "transform": "source.BillingAddress",
+                        "match_type": "exactMatch",
+                    },
                 ],
                 self.COL_SHIPPING: [
-                    {"target_uri": self.SHIPPING_PROP,
-                     "transform": "source.ShippingAddress", "match_type": "exactMatch"},
+                    {
+                        "target_uri": self.SHIPPING_PROP,
+                        "transform": "source.ShippingAddress",
+                        "match_type": "exactMatch",
+                    },
                 ],
             },
         }
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
-            graph, self.PARTY_URI, mappings, self.source_refs, systems=systems,
+            graph,
+            self.PARTY_URI,
+            mappings,
+            self.source_refs,
+            systems=systems,
         )
 
         billing = self._fk_by_name(fk_columns, "billing_address_sk")
@@ -2315,7 +1989,11 @@ class TestAmbiguousSameRangeFK:
         """Both same-range FKs unmapped → both NULL with ambiguity warnings."""
         mappings = {"table_maps": {}, "column_maps": {}}
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
-            graph, self.PARTY_URI, mappings, self.source_refs, systems=systems,
+            graph,
+            self.PARTY_URI,
+            mappings,
+            self.source_refs,
+            systems=systems,
         )
         assert all("NULL" in c["expression"] for c in fk_columns)
         assert len(joins) == 0
@@ -2326,10 +2004,13 @@ class TestAmbiguousSameRangeFK:
         self, autoinfer_graph, systems_with_fk_column, mappings_with_nk_column
     ):
         """A lone FK property to a range still auto-infers (no false ambiguity)."""
-        source_refs = [(
-            "adminpulse", "tblClient",
-            "https://example.com/bronze/adminpulse#tblClient",
-        )]
+        source_refs = [
+            (
+                "adminpulse",
+                "tblClient",
+                "https://example.com/bronze/adminpulse#tblClient",
+            )
+        ]
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
             autoinfer_graph,
             "http://kairos.example/ontology/Client",
@@ -2380,31 +2061,40 @@ class TestAmbiguousSameRangeFK:
         g = Graph()
         g.parse(data=ttl, format="turtle")
         tbl = "https://example.com/bronze/erp#tblInvoice"
-        systems = [{
-            "system_label": "ERP",
-            "tables": [{
-                "uri": tbl, "name": "tblInvoice",
-                "columns": [
-                    {"uri": f"{tbl}_InvoiceID", "name": "InvoiceID",
-                     "data_type": "int"},
-                    {"uri": f"{tbl}_PartyRef", "name": "PartyRef",
-                     "data_type": "varchar"},
+        systems = [
+            {
+                "system_label": "ERP",
+                "tables": [
+                    {
+                        "uri": tbl,
+                        "name": "tblInvoice",
+                        "columns": [
+                            {"uri": f"{tbl}_InvoiceID", "name": "InvoiceID", "data_type": "int"},
+                            {"uri": f"{tbl}_PartyRef", "name": "PartyRef", "data_type": "varchar"},
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
         # PartyRef mapped to the shared parent NK partyId — would mis-resolve both FKs
         mappings = {
             "table_maps": {},
             "column_maps": {
-                f"{tbl}_PartyRef": [{
-                    "target_uri": "http://kairos.example/ontology/partyId",
-                    "transform": "source.PartyRef", "match_type": "exactMatch",
-                }],
+                f"{tbl}_PartyRef": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/partyId",
+                        "transform": "source.PartyRef",
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
-            g, "http://kairos.example/ontology/Invoice", mappings,
-            [("erp", "tblInvoice", tbl)], systems=systems,
+            g,
+            "http://kairos.example/ontology/Invoice",
+            mappings,
+            [("erp", "tblInvoice", tbl)],
+            systems=systems,
         )
         assert all("NULL" in c["expression"] for c in fk_columns)
         assert len(joins) == 0
@@ -2446,30 +2136,40 @@ class TestAmbiguousSameRangeFK:
         g = Graph()
         g.parse(data=ttl, format="turtle")
         tbl = "https://example.com/bronze/erp#tblAddress"
-        systems = [{
-            "system_label": "ERP",
-            "tables": [{
-                "uri": tbl, "name": "tblAddress",
-                "columns": [
-                    {"uri": f"{tbl}_PartyRef", "name": "PartyRef",
-                     "data_type": "varchar"},
+        systems = [
+            {
+                "system_label": "ERP",
+                "tables": [
+                    {
+                        "uri": tbl,
+                        "name": "tblAddress",
+                        "columns": [
+                            {"uri": f"{tbl}_PartyRef", "name": "PartyRef", "data_type": "varchar"},
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
         # PartyRef mapped to the shared join-target NK partyId
         mappings = {
             "table_maps": {},
             "column_maps": {
-                f"{tbl}_PartyRef": [{
-                    "target_uri": "http://kairos.example/ontology/partyId",
-                    "transform": "source.PartyRef", "match_type": "exactMatch",
-                }],
+                f"{tbl}_PartyRef": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/partyId",
+                        "transform": "source.PartyRef",
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
         # Build the Address model — FK columns are redirected here via silverForeignKeyOn
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
-            g, "http://kairos.example/ontology/Address", mappings,
-            [("erp", "tblAddress", tbl)], systems=systems,
+            g,
+            "http://kairos.example/ontology/Address",
+            mappings,
+            [("erp", "tblAddress", tbl)],
+            systems=systems,
         )
         assert all("NULL" in c["expression"] for c in fk_columns)
         assert len(joins) == 0
@@ -2484,40 +2184,56 @@ class TestAmbiguousSameRangeFK:
 
     @pytest.fixture
     def systems_with_fk_column(self):
-        return [{
-            "system_label": "AdminPulse",
-            "tables": [{
-                "uri": "https://example.com/bronze/adminpulse#tblClient",
-                "name": "tblClient",
-                "columns": [
-                    {"uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
-                     "name": "ClientID", "data_type": "int"},
-                    {"uri": "https://example.com/bronze/adminpulse#tblClient_TypeCode",
-                     "name": "TypeCode", "data_type": "int"},
+        return [
+            {
+                "system_label": "AdminPulse",
+                "tables": [
+                    {
+                        "uri": "https://example.com/bronze/adminpulse#tblClient",
+                        "name": "tblClient",
+                        "columns": [
+                            {
+                                "uri": "https://example.com/bronze/adminpulse#tblClient_ClientID",
+                                "name": "ClientID",
+                                "data_type": "int",
+                            },
+                            {
+                                "uri": "https://example.com/bronze/adminpulse#tblClient_TypeCode",
+                                "name": "TypeCode",
+                                "data_type": "int",
+                            },
+                        ],
+                    }
                 ],
-            }],
-        }]
+            }
+        ]
 
     @pytest.fixture
     def mappings_with_nk_column(self):
         return {
             "table_maps": {
-                "https://example.com/bronze/adminpulse#tblClient": [{
-                    "target_uri": "http://kairos.example/ontology/Client",
-                    "mapping_type": "direct",
-                }],
+                "https://example.com/bronze/adminpulse#tblClient": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/Client",
+                        "mapping_type": "direct",
+                    }
+                ],
             },
             "column_maps": {
-                "https://example.com/bronze/adminpulse#tblClient_ClientID": [{
-                    "target_uri": "http://kairos.example/ontology/clientId",
-                    "transform": "CAST(source.ClientID AS STRING)",
-                    "match_type": "exactMatch",
-                }],
-                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [{
-                    "target_uri": "http://kairos.example/ontology/typeCode",
-                    "transform": "source.TypeCode",
-                    "match_type": "exactMatch",
-                }],
+                "https://example.com/bronze/adminpulse#tblClient_ClientID": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/clientId",
+                        "transform": "CAST(source.ClientID AS STRING)",
+                        "match_type": "exactMatch",
+                    }
+                ],
+                "https://example.com/bronze/adminpulse#tblClient_TypeCode": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/typeCode",
+                        "transform": "source.TypeCode",
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
 
@@ -2525,6 +2241,7 @@ class TestAmbiguousSameRangeFK:
 # ---------------------------------------------------------------------------
 # Multi-source merge: canonical superset padding (issue #175)
 # ---------------------------------------------------------------------------
+
 
 class TestMergeSupersetPadding:
     """Verify the merge superset builder produces positionally consistent,
@@ -2545,21 +2262,31 @@ class TestMergeSupersetPadding:
         fk_a = [{"expression": "ref.client_type_sk", "target_name": "client_type_sk"}]
         fk_b = [{"expression": "CAST(NULL AS x)", "target_name": "client_type_sk"}]
         type_map = {
-            "client_id": "VARCHAR(255)", "client_name": "VARCHAR(255)",
-            "vat_number": "VARCHAR(255)", "city": "VARCHAR(255)",
+            "client_id": "VARCHAR(255)",
+            "client_name": "VARCHAR(255)",
+            "vat_number": "VARCHAR(255)",
+            "city": "VARCHAR(255)",
         }
         canonical, padded = _build_merge_superset([src_a, src_b], [fk_a, fk_b], type_map)
         names = [c["target_name"] for c in canonical]
         # Data columns first (source order, de-duplicated), then FK columns
         assert names == [
-            "client_id", "client_name", "vat_number", "city", "client_type_sk",
+            "client_id",
+            "client_name",
+            "vat_number",
+            "city",
+            "client_type_sk",
         ]
 
     def test_all_sources_have_identical_column_count_and_order(self):
-        src_a = [{"expression": "a", "target_name": "client_id"},
-                 {"expression": "v", "target_name": "vat_number"}]
-        src_b = [{"expression": "b", "target_name": "client_id"},
-                 {"expression": "c", "target_name": "city"}]
+        src_a = [
+            {"expression": "a", "target_name": "client_id"},
+            {"expression": "v", "target_name": "vat_number"},
+        ]
+        src_b = [
+            {"expression": "b", "target_name": "client_id"},
+            {"expression": "c", "target_name": "city"},
+        ]
         canonical, padded = _build_merge_superset(
             [src_a, src_b], [[], []], {"vat_number": "VARCHAR(255)", "city": "INT"}
         )
@@ -2571,9 +2298,7 @@ class TestMergeSupersetPadding:
         src_a = [{"expression": "v", "target_name": "vat_number"}]
         src_b = [{"expression": "c", "target_name": "city"}]
         type_map = {"vat_number": "VARCHAR(255)", "city": "INT"}
-        _canonical, padded = _build_merge_superset(
-            [src_a, src_b], [[], []], type_map
-        )
+        _canonical, padded = _build_merge_superset([src_a, src_b], [[], []], type_map)
         # Source B is missing vat_number → CAST(NULL AS VARCHAR(255))
         b_by_name = {c["target_name"]: c["expression"] for c in padded[1]}
         assert b_by_name["vat_number"] == "CAST(NULL AS VARCHAR(255))"
@@ -2657,19 +2382,31 @@ class TestMergeFKPerSource:
         ap = "https://example.com/bronze/ap#tblClient"
         crm = "https://example.com/bronze/crm#Customers"
         return [
-            {"system_label": "ap", "tables": [{
-                "uri": ap, "name": "tblClient",
-                "columns": [
-                    {"uri": f"{ap}_ClientID", "name": "ClientID", "data_type": "int"},
-                    {"uri": f"{ap}_TypeCode", "name": "TypeCode", "data_type": "varchar"},
+            {
+                "system_label": "ap",
+                "tables": [
+                    {
+                        "uri": ap,
+                        "name": "tblClient",
+                        "columns": [
+                            {"uri": f"{ap}_ClientID", "name": "ClientID", "data_type": "int"},
+                            {"uri": f"{ap}_TypeCode", "name": "TypeCode", "data_type": "varchar"},
+                        ],
+                    }
                 ],
-            }]},
-            {"system_label": "crm", "tables": [{
-                "uri": crm, "name": "Customers",
-                "columns": [
-                    {"uri": f"{crm}_CustCode", "name": "CustCode", "data_type": "varchar"},
+            },
+            {
+                "system_label": "crm",
+                "tables": [
+                    {
+                        "uri": crm,
+                        "name": "Customers",
+                        "columns": [
+                            {"uri": f"{crm}_CustCode", "name": "CustCode", "data_type": "varchar"},
+                        ],
+                    }
                 ],
-            }]},
+            },
         ]
 
     def test_mapping_source_resolves_fk_join(self, graph, systems):
@@ -2678,27 +2415,38 @@ class TestMergeFKPerSource:
         mappings = {
             "table_maps": {},
             "column_maps": {
-                f"{ap}_TypeCode": [{
-                    "target_uri": "http://kairos.example/ontology/typeCode",
-                    "transform": "source.TypeCode", "match_type": "exactMatch",
-                }],
+                f"{ap}_TypeCode": [
+                    {
+                        "target_uri": "http://kairos.example/ontology/typeCode",
+                        "transform": "source.TypeCode",
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
-            graph, self.CLIENT_URI, mappings,
-            [("ap", "tblClient", ap)], systems=systems,
+            graph,
+            self.CLIENT_URI,
+            mappings,
+            [("ap", "tblClient", ap)],
+            systems=systems,
         )
         assert len(joins) == 1
-        assert any(c["target_name"] == "client_type_sk"
-                   and "NULL" not in c["expression"] for c in fk_columns)
+        assert any(
+            c["target_name"] == "client_type_sk" and "NULL" not in c["expression"]
+            for c in fk_columns
+        )
 
     def test_non_mapping_source_pads_null(self, graph, systems):
         """A source that does not map the FK NK emits a NULL placeholder, no join."""
         crm = "https://example.com/bronze/crm#Customers"
         mappings = {"table_maps": {}, "column_maps": {}}
         fk_columns, joins, warnings = _extract_fk_columns_and_joins(
-            graph, self.CLIENT_URI, mappings,
-            [("crm", "Customers", crm)], systems=systems,
+            graph,
+            self.CLIENT_URI,
+            mappings,
+            [("crm", "Customers", crm)],
+            systems=systems,
         )
         assert len(joins) == 0
         assert all("NULL" in c["expression"] for c in fk_columns)
@@ -2742,19 +2490,31 @@ class TestMergeExplicitFKMappingScope:
         ap = "https://example.com/bronze/ap#tblClient"
         crm = "https://example.com/bronze/crm#Customers"
         return [
-            {"system_label": "ap", "tables": [{
-                "uri": ap, "name": "tblClient",
-                "columns": [
-                    {"uri": f"{ap}_ClientID", "name": "ClientID", "data_type": "int"},
-                    {"uri": f"{ap}_TypeCode", "name": "TypeCode", "data_type": "varchar"},
+            {
+                "system_label": "ap",
+                "tables": [
+                    {
+                        "uri": ap,
+                        "name": "tblClient",
+                        "columns": [
+                            {"uri": f"{ap}_ClientID", "name": "ClientID", "data_type": "int"},
+                            {"uri": f"{ap}_TypeCode", "name": "TypeCode", "data_type": "varchar"},
+                        ],
+                    }
                 ],
-            }]},
-            {"system_label": "crm", "tables": [{
-                "uri": crm, "name": "Customers",
-                "columns": [
-                    {"uri": f"{crm}_CustCode", "name": "CustCode", "data_type": "varchar"},
+            },
+            {
+                "system_label": "crm",
+                "tables": [
+                    {
+                        "uri": crm,
+                        "name": "Customers",
+                        "columns": [
+                            {"uri": f"{crm}_CustCode", "name": "CustCode", "data_type": "varchar"},
+                        ],
+                    }
                 ],
-            }]},
+            },
         ]
 
     def _global_mappings(self):
@@ -2763,11 +2523,13 @@ class TestMergeExplicitFKMappingScope:
         return {
             "table_maps": {},
             "column_maps": {
-                f"{ap}_TypeCode": [{
-                    "target_uri": self.HAS_TYPE,
-                    "referenced_column_uris": (f"{ap}_TypeCode",),
-                    "match_type": "exactMatch",
-                }],
+                f"{ap}_TypeCode": [
+                    {
+                        "target_uri": self.HAS_TYPE,
+                        "referenced_column_uris": (f"{ap}_TypeCode",),
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
 
@@ -2775,20 +2537,28 @@ class TestMergeExplicitFKMappingScope:
         """Source ap (which declares the explicit FK mapping) keeps a real join."""
         ap = "https://example.com/bronze/ap#tblClient"
         fk_columns, joins, _ = _extract_fk_columns_and_joins(
-            graph, self.CLIENT_URI, self._global_mappings(),
-            [("ap", "tblClient", ap)], systems=systems,
+            graph,
+            self.CLIENT_URI,
+            self._global_mappings(),
+            [("ap", "tblClient", ap)],
+            systems=systems,
         )
         assert len(joins) == 1
-        assert any(c["target_name"] == "client_type_sk"
-                   and "NULL" not in c["expression"] for c in fk_columns)
+        assert any(
+            c["target_name"] == "client_type_sk" and "NULL" not in c["expression"]
+            for c in fk_columns
+        )
 
     def test_non_declaring_source_does_not_leak(self, graph, systems):
         """Source crm (does NOT declare the FK) must NOT inherit ap's explicit
         mapping: no join, NULL placeholder, no reference to ap's TypeCode column."""
         crm = "https://example.com/bronze/crm#Customers"
         fk_columns, joins, _ = _extract_fk_columns_and_joins(
-            graph, self.CLIENT_URI, self._global_mappings(),
-            [("crm", "Customers", crm)], systems=systems,
+            graph,
+            self.CLIENT_URI,
+            self._global_mappings(),
+            [("crm", "Customers", crm)],
+            systems=systems,
         )
         assert len(joins) == 0
         type_cols = [c for c in fk_columns if c["target_name"] == "client_type_sk"]
@@ -2807,28 +2577,36 @@ class TestMergeExplicitFKMappingScope:
             "column_maps": {
                 # Synthetic subject URI (not in any table's declared columns) but
                 # references ap's physical TypeCode column.
-                f"{ap}#synthetic_ClientType": [{
-                    "target_uri": self.HAS_TYPE,
-                    "referenced_column_uris": (f"{ap}_TypeCode",),
-                    "match_type": "exactMatch",
-                }],
+                f"{ap}#synthetic_ClientType": [
+                    {
+                        "target_uri": self.HAS_TYPE,
+                        "referenced_column_uris": (f"{ap}_TypeCode",),
+                        "match_type": "exactMatch",
+                    }
+                ],
             },
         }
         # Declaring source (ap) attributes via physical-column fallback → join.
         _, joins_ap, _ = _extract_fk_columns_and_joins(
-            graph, self.CLIENT_URI, mappings,
-            [("ap", "tblClient", ap)], systems=systems,
+            graph,
+            self.CLIENT_URI,
+            mappings,
+            [("ap", "tblClient", ap)],
+            systems=systems,
         )
         assert len(joins_ap) == 1
         # Non-declaring source (crm) lacks TypeCode → no leak.
         fk_crm, joins_crm, _ = _extract_fk_columns_and_joins(
-            graph, self.CLIENT_URI, mappings,
-            [("crm", "Customers", crm)], systems=systems,
+            graph,
+            self.CLIENT_URI,
+            mappings,
+            [("crm", "Customers", crm)],
+            systems=systems,
         )
         assert len(joins_crm) == 0
-        assert all("NULL" in c["expression"]
-                   for c in fk_crm if c["target_name"] == "client_type_sk")
-
+        assert all(
+            "NULL" in c["expression"] for c in fk_crm if c["target_name"] == "client_type_sk"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2885,7 +2663,13 @@ _NK_BRONZE_CRM_TTL = textwrap.dedent("""\
     bronze-crm:Customers a kairos-bronze:SourceTable ;
         rdfs:label "Customers" ;
         kairos-bronze:sourceSystem bronze-crm:CrmSystem ;
-        kairos-bronze:tableName "Customers" .
+        kairos-bronze:tableName "Customers" ;
+        kairos-bronze:primaryKeyColumns "CustomerID" .
+    bronze-crm:Customers_CustomerID a kairos-bronze:SourceColumn ;
+        kairos-bronze:sourceTable bronze-crm:Customers ;
+        kairos-bronze:columnName "CustomerID" ;
+        kairos-bronze:dataType "int" ;
+        kairos-bronze:isPrimaryKey true .
     bronze-crm:Customers_CustName a kairos-bronze:SourceColumn ;
         kairos-bronze:sourceTable bronze-crm:Customers ;
         kairos-bronze:columnName "CustName" ; kairos-bronze:dataType "nvarchar(255)" .
@@ -2936,7 +2720,10 @@ class TestMergeNKCoverageWarning:
     """A source that does not map a natural-key column triggers a loud warning."""
 
     def test_missing_nk_in_one_source_keeps_branch_identities(
-        self, tmp_path, template_dir, caplog,
+        self,
+        tmp_path,
+        template_dir,
+        caplog,
     ):
         graph = Graph()
         graph.parse(data=_NK_ONTOLOGY_TTL, format="turtle")
@@ -2948,15 +2735,23 @@ class TestMergeNKCoverageWarning:
         mappings.mkdir()
         (mappings / "to-client.ttl").write_text(_NK_MAPPING_TTL, encoding="utf-8")
 
-        classes = [{
-            "uri": "http://kairos.example/ontology/Client",
-            "name": "Client", "label": "Client", "comment": "c",
-        }]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/Client",
+                "name": "Client",
+                "label": "Client",
+                "comment": "c",
+            }
+        ]
         with caplog.at_level("WARNING"):
             artifacts = generate_dbt_artifacts(
-                classes=classes, graph=graph, template_dir=template_dir,
+                classes=classes,
+                graph=graph,
+                template_dir=template_dir,
                 namespace="http://kairos.example/ontology/",
-                ontology_name="client", bronze_dir=bronze, mappings_dir=mappings,
+                ontology_name="client",
+                bronze_dir=bronze,
+                mappings_dir=mappings,
             )
         # Both per-source views generated → merge path was exercised
         assert any("corporate" not in k and "__from_" in k for k in artifacts)
@@ -3060,68 +2855,67 @@ class TestUnprojectedClassMapping:
         graph.parse(data=ontology_ttl, format="turtle")
         bronze = tmp_path / "bronze"
         bronze.mkdir()
-        (bronze / "adminpulse.ttl").write_text(
-            _UNPROJECTED_BRONZE_TTL, encoding="utf-8"
-        )
+        (bronze / "adminpulse.ttl").write_text(_UNPROJECTED_BRONZE_TTL, encoding="utf-8")
         mappings = tmp_path / "mappings"
         mappings.mkdir()
-        (mappings / "to-client.ttl").write_text(
-            _UNPROJECTED_MAPPING_TTL, encoding="utf-8"
-        )
+        (mappings / "to-client.ttl").write_text(_UNPROJECTED_MAPPING_TTL, encoding="utf-8")
         # Only the parent Client is projected; VipClient is unclaimed/unprojected.
-        classes = [{
-            "uri": "http://kairos.example/ontology/Client",
-            "name": "Client", "label": "Client", "comment": "c",
-        }]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/Client",
+                "name": "Client",
+                "label": "Client",
+                "comment": "c",
+            }
+        ]
         return graph, bronze, mappings, classes
 
     def test_warns_when_no_projected_parent(self, tmp_path, template_dir, caplog):
-        graph, bronze, mappings, classes = self._setup(
-            tmp_path, _UNPROJECTED_ONTOLOGY_TTL
-        )
+        graph, bronze, mappings, classes = self._setup(tmp_path, _UNPROJECTED_ONTOLOGY_TTL)
         with caplog.at_level("WARNING"):
             artifacts = generate_dbt_artifacts(
-                classes=classes, graph=graph, template_dir=template_dir,
+                classes=classes,
+                graph=graph,
+                template_dir=template_dir,
                 namespace="http://kairos.example/ontology/",
-                ontology_name="client", bronze_dir=bronze, mappings_dir=mappings,
+                ontology_name="client",
+                bronze_dir=bronze,
+                mappings_dir=mappings,
             )
         msgs = " ".join(r.getMessage() for r in caplog.records)
-        assert "VipClient" in msgs and "not" in msgs.lower(), (
-            f"Expected a warning naming the unprojected class VipClient:\n{msgs}"
-        )
+        assert (
+            "VipClient" in msgs and "not" in msgs.lower()
+        ), f"Expected a warning naming the unprojected class VipClient:\n{msgs}"
         # No vip model and no rows folded into client (Client has no own mapping).
         assert not any(
-            "vip" in k.lower()
-            for k in artifacts
-            if k.startswith("models/silver/")
-        ), (
-            f"Unprojected VipClient must not produce a model:\n{list(artifacts)}"
-        )
+            "vip" in k.lower() for k in artifacts if k.startswith("models/silver/")
+        ), f"Unprojected VipClient must not produce a model:\n{list(artifacts)}"
 
-    def test_folds_onto_projected_discriminator_parent(
-        self, tmp_path, template_dir, caplog
-    ):
+    def test_folds_onto_projected_discriminator_parent(self, tmp_path, template_dir, caplog):
         graph, bronze, mappings, classes = self._setup(
             tmp_path, _UNPROJECTED_DISCRIMINATOR_ONTOLOGY_TTL
         )
         with caplog.at_level("WARNING"):
             artifacts = generate_dbt_artifacts(
-                classes=classes, graph=graph, template_dir=template_dir,
+                classes=classes,
+                graph=graph,
+                template_dir=template_dir,
                 namespace="http://kairos.example/ontology/",
-                ontology_name="client", bronze_dir=bronze, mappings_dir=mappings,
+                ontology_name="client",
+                bronze_dir=bronze,
+                mappings_dir=mappings,
             )
         msgs = " ".join(r.getMessage() for r in caplog.records)
-        assert "folded" in msgs.lower() and "Client" in msgs, (
-            f"Expected a fold warning mentioning the parent Client:\n{msgs}"
-        )
+        assert (
+            "folded" in msgs.lower() and "Client" in msgs
+        ), f"Expected a fold warning mentioning the parent Client:\n{msgs}"
         # The folded source (tblVip) drives the projected Client model.
         client_sql = "".join(
-            v for k, v in artifacts.items()
-            if k.endswith(".sql") and "client" in k.lower()
+            v for k, v in artifacts.items() if k.endswith(".sql") and "client" in k.lower()
         )
-        assert "tbl_vip" in client_sql.lower() or "tblvip" in client_sql.lower(), (
-            f"Folded VipClient source (tblVip) missing from Client model:\n{client_sql}"
-        )
+        assert (
+            "tbl_vip" in client_sql.lower() or "tblvip" in client_sql.lower()
+        ), f"Folded VipClient source (tblVip) missing from Client model:\n{client_sql}"
 
 
 # ---------------------------------------------------------------------------
@@ -3319,29 +3113,35 @@ class TestProjectedFoldedSubtypeMappings:
             classes = [
                 {
                     "uri": "http://kairos.example/ontology/booking/Booking",
-                    "name": "Booking", "label": "Booking", "comment": "booking",
+                    "name": "Booking",
+                    "label": "Booking",
+                    "comment": "booking",
                 },
                 {
                     "uri": "http://kairos.example/ontology/booking/ConfirmedBooking",
-                    "name": "ConfirmedBooking", "label": "Confirmed Booking",
+                    "name": "ConfirmedBooking",
+                    "label": "Confirmed Booking",
                     "comment": "confirmed",
                 },
                 {
                     "uri": "http://kairos.example/ontology/booking/BookingRequest",
-                    "name": "BookingRequest", "label": "Booking Request",
+                    "name": "BookingRequest",
+                    "label": "Booking Request",
                     "comment": "request",
                 },
             ]
         return graph, bronze, mappings, classes
 
-    def test_projected_folded_subtype_mappings_route_to_parent_union(
-        self, tmp_path, template_dir
-    ):
+    def test_projected_folded_subtype_mappings_route_to_parent_union(self, tmp_path, template_dir):
         graph, bronze, mappings, classes = self._setup(tmp_path)
         artifacts = generate_dbt_artifacts(
-            classes=classes, graph=graph, template_dir=template_dir,
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
             namespace="http://kairos.example/ontology/booking/",
-            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+            ontology_name="booking",
+            bronze_dir=bronze,
+            mappings_dir=mappings,
         )
 
         assert "models/silver/booking/booking.sql" in artifacts
@@ -3351,33 +3151,37 @@ class TestProjectedFoldedSubtypeMappings:
         assert "models/silver/booking/confirmed_booking.sql" not in artifacts
         assert "models/silver/booking/booking_request.sql" not in artifacts
 
-    def test_folded_subtype_sources_preserve_discriminator_columns_and_filters(
-        self, tmp_path, template_dir
-    ):
+    def test_folded_subtype_sources_preserve_discriminator_columns(self, tmp_path, template_dir):
         graph, bronze, mappings, classes = self._setup(tmp_path)
         artifacts = generate_dbt_artifacts(
-            classes=classes, graph=graph, template_dir=template_dir,
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
             namespace="http://kairos.example/ontology/booking/",
-            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+            ontology_name="booking",
+            bronze_dir=bronze,
+            mappings_dir=mappings,
         )
 
         confirmed_sql = artifacts["models/silver/booking/booking__from_qargo__bookings.sql"]
         request_sql = artifacts["models/silver/booking/booking__from_qargo__orders.sql"]
         assert "'ConfirmedBooking' as booking_type" in confirmed_sql
         assert (
-            "where ([bookings].[status_source] = "
-            "CONVERT(VARCHAR(8000), 0x636F6E6669726D6564))"
-        ) in confirmed_sql
+            "where ([bookings].[status] = CONVERT(VARCHAR(8000), 0x636F6E6669726D6564))"
+            in confirmed_sql
+        )
         assert "'request' as booking_type" in request_sql
 
-    def test_folded_subtype_specific_columns_survive_parent_union(
-        self, tmp_path, template_dir
-    ):
+    def test_folded_subtype_specific_columns_survive_parent_union(self, tmp_path, template_dir):
         graph, bronze, mappings, classes = self._setup(tmp_path)
         artifacts = generate_dbt_artifacts(
-            classes=classes, graph=graph, template_dir=template_dir,
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
             namespace="http://kairos.example/ontology/booking/",
-            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+            ontology_name="booking",
+            bronze_dir=bronze,
+            mappings_dir=mappings,
         )
 
         confirmed_sql = artifacts["models/silver/booking/booking__from_qargo__bookings.sql"]
@@ -3392,9 +3196,7 @@ class TestProjectedFoldedSubtypeMappings:
         assert "requested_at" in union_sql
         assert {"booking_type", "confirmed_at", "requested_at"} <= schema_columns
 
-    def test_single_source_folded_subtype_generates_parent_model(
-        self, tmp_path, template_dir
-    ):
+    def test_single_source_folded_subtype_generates_parent_model(self, tmp_path, template_dir):
         single_mapping = textwrap.dedent("""\
             @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
             @prefix kairos-map: <https://kairos.cnext.eu/mapping#> .
@@ -3444,9 +3246,13 @@ class TestProjectedFoldedSubtypeMappings:
         """)
         graph, bronze, mappings, classes = self._setup(tmp_path, mapping_ttl=single_mapping)
         artifacts = generate_dbt_artifacts(
-            classes=classes, graph=graph, template_dir=template_dir,
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
             namespace="http://kairos.example/ontology/booking/",
-            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+            ontology_name="booking",
+            bronze_dir=bronze,
+            mappings_dir=mappings,
         )
 
         assert "models/silver/booking/booking.sql" in artifacts
@@ -3455,26 +3261,29 @@ class TestProjectedFoldedSubtypeMappings:
         assert "'ConfirmedBooking' as booking_type" in booking_sql
         assert "confirmed_at" in booking_sql
         assert (
-            "where ([bookings].[status_source] = "
-            "CONVERT(VARCHAR(8000), 0x636F6E6669726D6564))"
-        ) in booking_sql
+            "where ([bookings].[status] = CONVERT(VARCHAR(8000), 0x636F6E6669726D6564))"
+            in booking_sql
+        )
 
-    def test_transitive_folded_subtype_mapping_routes_to_parent(
-        self, tmp_path, template_dir
-    ):
+    def test_transitive_folded_subtype_mapping_routes_to_parent(self, tmp_path, template_dir):
         transitive_ontology = _FOLDED_SUBTYPE_ONTOLOGY_TTL.replace(
             "ex:ConfirmedBooking a owl:Class ; rdfs:subClassOf ex:Booking ;",
             "ex:BookedProduct a owl:Class ; rdfs:subClassOf ex:Booking ;\n"
-            "        rdfs:label \"Booked Product\" ; rdfs:comment \"intermediate\" .\n"
+            '        rdfs:label "Booked Product" ; rdfs:comment "intermediate" .\n'
             "    ex:ConfirmedBooking a owl:Class ; rdfs:subClassOf ex:BookedProduct ;",
         )
         graph, bronze, mappings, classes = self._setup(
-            tmp_path, ontology_ttl=transitive_ontology,
+            tmp_path,
+            ontology_ttl=transitive_ontology,
         )
         artifacts = generate_dbt_artifacts(
-            classes=classes, graph=graph, template_dir=template_dir,
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
             namespace="http://kairos.example/ontology/booking/",
-            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+            ontology_name="booking",
+            bronze_dir=bronze,
+            mappings_dir=mappings,
         )
 
         assert "models/silver/booking/booking__from_qargo__bookings.sql" in artifacts
@@ -3490,12 +3299,17 @@ class TestProjectedFoldedSubtypeMappings:
             ex:BookingRequest kairos-ext:naturalKey "carrier_booking_reference" .
         """
         graph, bronze, mappings, classes = self._setup(
-            tmp_path, ontology_ttl=cpt_ontology,
+            tmp_path,
+            ontology_ttl=cpt_ontology,
         )
         artifacts = generate_dbt_artifacts(
-            classes=classes, graph=graph, template_dir=template_dir,
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
             namespace="http://kairos.example/ontology/booking/",
-            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+            ontology_name="booking",
+            bronze_dir=bronze,
+            mappings_dir=mappings,
         )
 
         assert "models/silver/booking/confirmed_booking.sql" in artifacts
@@ -3540,32 +3354,39 @@ class TestExtractionCharacterization:
         (bronze / "sources.ttl").write_text(_FOLDED_SUBTYPE_BRONZE_TTL, encoding="utf-8")
         mappings = tmp_path / "mappings"
         mappings.mkdir()
-        (mappings / "to-booking.ttl").write_text(
-            _FOLDED_SUBTYPE_MAPPING_TTL, encoding="utf-8"
-        )
+        (mappings / "to-booking.ttl").write_text(_FOLDED_SUBTYPE_MAPPING_TTL, encoding="utf-8")
         classes = [
             {
                 "uri": "http://kairos.example/ontology/booking/Booking",
-                "name": "Booking", "label": "Booking", "comment": "booking",
+                "name": "Booking",
+                "label": "Booking",
+                "comment": "booking",
             },
             {
                 "uri": "http://kairos.example/ontology/booking/ConfirmedBooking",
-                "name": "ConfirmedBooking", "label": "Confirmed Booking",
+                "name": "ConfirmedBooking",
+                "label": "Confirmed Booking",
                 "comment": "confirmed",
             },
             {
                 "uri": "http://kairos.example/ontology/booking/BookingRequest",
-                "name": "BookingRequest", "label": "Booking Request",
+                "name": "BookingRequest",
+                "label": "Booking Request",
                 "comment": "request",
             },
         ]
         artifacts = generate_dbt_artifacts(
-            classes=classes, graph=graph, template_dir=template_dir,
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
             namespace="http://kairos.example/ontology/booking/",
-            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+            ontology_name="booking",
+            bronze_dir=bronze,
+            mappings_dir=mappings,
         )
         silver_sql_keys = [
-            key for key in artifacts
+            key
+            for key in artifacts
             if key.startswith("models/silver/booking/") and key.endswith(".sql")
         ]
         expected_order = [
@@ -3574,9 +3395,9 @@ class TestExtractionCharacterization:
             "models/silver/booking/booking__from_qargo__orders.sql",
             "models/silver/booking/booking.sql",
         ]
-        assert silver_sql_keys == expected_order, (
-            f"Multi-source emission order changed:\n{silver_sql_keys}"
-        )
+        assert (
+            silver_sql_keys == expected_order
+        ), f"Multi-source emission order changed:\n{silver_sql_keys}"
 
     def test_missing_mapping_warning_order_matches_class_iteration_order(
         self, tmp_path, template_dir, caplog
@@ -3589,20 +3410,28 @@ class TestExtractionCharacterization:
         classes = [
             {
                 "uri": "http://kairos.example/ontology/gap/Alpha",
-                "name": "Alpha", "label": "Alpha", "comment": "alpha",
+                "name": "Alpha",
+                "label": "Alpha",
+                "comment": "alpha",
             },
             {
                 "uri": "http://kairos.example/ontology/gap/Bravo",
-                "name": "Bravo", "label": "Bravo", "comment": "bravo",
+                "name": "Bravo",
+                "label": "Bravo",
+                "comment": "bravo",
             },
             {
                 "uri": "http://kairos.example/ontology/gap/Charlie",
-                "name": "Charlie", "label": "Charlie", "comment": "charlie",
+                "name": "Charlie",
+                "label": "Charlie",
+                "comment": "charlie",
             },
         ]
         with caplog.at_level("WARNING"):
             generate_dbt_artifacts(
-                classes=classes, graph=graph, template_dir=template_dir,
+                classes=classes,
+                graph=graph,
+                template_dir=template_dir,
                 namespace="http://kairos.example/ontology/gap/",
                 ontology_name="gap",
             )
@@ -3615,13 +3444,15 @@ class TestExtractionCharacterization:
         # path), so the current behaviour is exactly two full passes over the
         # three classes, in class-iteration order, back to back.
         assert skipped_names == [
-            "Alpha", "Bravo", "Charlie",
-            "Alpha", "Bravo", "Charlie",
+            "Alpha",
+            "Bravo",
+            "Charlie",
+            "Alpha",
+            "Bravo",
+            "Charlie",
         ], f"Missing-mapping warning sequence changed:\n{skipped_names}"
 
-    def test_single_source_folded_subtype_schema_column_order(
-        self, tmp_path, template_dir
-    ):
+    def test_single_source_folded_subtype_schema_column_order(self, tmp_path, template_dir):
         """The folded discriminator column precedes the folded-subtype's own
         datatype columns in the generated schema YAML, matching the current
         single-source assembly + SHACL-merge column ordering."""
@@ -3660,23 +3491,31 @@ class TestExtractionCharacterization:
         classes = [
             {
                 "uri": "http://kairos.example/ontology/booking/Booking",
-                "name": "Booking", "label": "Booking", "comment": "booking",
+                "name": "Booking",
+                "label": "Booking",
+                "comment": "booking",
             },
             {
                 "uri": "http://kairos.example/ontology/booking/ConfirmedBooking",
-                "name": "ConfirmedBooking", "label": "Confirmed Booking",
+                "name": "ConfirmedBooking",
+                "label": "Confirmed Booking",
                 "comment": "confirmed",
             },
             {
                 "uri": "http://kairos.example/ontology/booking/BookingRequest",
-                "name": "BookingRequest", "label": "Booking Request",
+                "name": "BookingRequest",
+                "label": "Booking Request",
                 "comment": "request",
             },
         ]
         artifacts = generate_dbt_artifacts(
-            classes=classes, graph=graph, template_dir=template_dir,
+            classes=classes,
+            graph=graph,
+            template_dir=template_dir,
             namespace="http://kairos.example/ontology/booking/",
-            ontology_name="booking", bronze_dir=bronze, mappings_dir=mappings,
+            ontology_name="booking",
+            bronze_dir=bronze,
+            mappings_dir=mappings,
         )
         schema_yml = yaml.safe_load(artifacts["models/silver/booking/_booking__models.yml"])
         booking_model = next(m for m in schema_yml["models"] if m["name"] == "booking")
@@ -3864,9 +3703,7 @@ class TestSplitFilterCondition:
     def split_bronze_dir(self, tmp_path):
         d = tmp_path / "sources" / "adminpulse"
         d.mkdir(parents=True)
-        (d / "adminpulse.vocabulary.ttl").write_text(
-            SPLIT_BRONZE_TTL, encoding="utf-8"
-        )
+        (d / "adminpulse.vocabulary.ttl").write_text(SPLIT_BRONZE_TTL, encoding="utf-8")
         return tmp_path / "sources"
 
     @pytest.fixture
@@ -3879,20 +3716,33 @@ class TestSplitFilterCondition:
     @pytest.fixture
     def split_classes(self):
         return [
-            {"uri": "http://kairos.example/ontology/CorporateClient",
-             "name": "CorporateClient", "label": "Corporate Client",
-             "comment": "Corporate entity"},
-            {"uri": "http://kairos.example/ontology/SoleProprietorClient",
-             "name": "SoleProprietorClient", "label": "Sole Proprietor Client",
-             "comment": "Sole proprietor entity"},
-            {"uri": "http://kairos.example/ontology/IndividualClient",
-             "name": "IndividualClient", "label": "Individual Client",
-             "comment": "Individual entity"},
+            {
+                "uri": "http://kairos.example/ontology/CorporateClient",
+                "name": "CorporateClient",
+                "label": "Corporate Client",
+                "comment": "Corporate entity",
+            },
+            {
+                "uri": "http://kairos.example/ontology/SoleProprietorClient",
+                "name": "SoleProprietorClient",
+                "label": "Sole Proprietor Client",
+                "comment": "Sole proprietor entity",
+            },
+            {
+                "uri": "http://kairos.example/ontology/IndividualClient",
+                "name": "IndividualClient",
+                "label": "Individual Client",
+                "comment": "Individual entity",
+            },
         ]
 
     def test_each_split_model_has_correct_filter(
-        self, split_classes, split_graph, template_dir,
-        split_bronze_dir, split_mappings_dir,
+        self,
+        split_classes,
+        split_graph,
+        template_dir,
+        split_bronze_dir,
+        split_mappings_dir,
     ):
         """Each split model must have its own discriminator filter, not the first."""
         artifacts = generate_dbt_artifacts(
@@ -3905,21 +3755,25 @@ class TestSplitFilterCondition:
             mappings_dir=split_mappings_dir,
         )
 
-        # Corporate → prepared discriminator = 0
+        # Corporate discriminator = 0
         corp_key = next(k for k in artifacts if "corporate_client.sql" in k)
-        assert "[tbl_client].[type_source] = 0" in artifacts[corp_key]
+        assert "[tbl_client].[type] = 0" in artifacts[corp_key]
 
         # Sole proprietor → type = 1
         sole_key = next(k for k in artifacts if "sole_proprietor_client.sql" in k)
-        assert "[tbl_client].[type_source] = 1" in artifacts[sole_key]
+        assert "[tbl_client].[type] = 1" in artifacts[sole_key]
 
         # Individual → type = 2
         indiv_key = next(k for k in artifacts if "individual_client.sql" in k)
-        assert "[tbl_client].[type_source] = 2" in artifacts[indiv_key]
+        assert "[tbl_client].[type] = 2" in artifacts[indiv_key]
 
     def test_split_models_do_not_share_filter(
-        self, split_classes, split_graph, template_dir,
-        split_bronze_dir, split_mappings_dir,
+        self,
+        split_classes,
+        split_graph,
+        template_dir,
+        split_bronze_dir,
+        split_mappings_dir,
     ):
         """No split model should contain another model's filter condition."""
         artifacts = generate_dbt_artifacts(
@@ -3934,9 +3788,9 @@ class TestSplitFilterCondition:
 
         sole_key = next(k for k in artifacts if "sole_proprietor_client.sql" in k)
         content = artifacts[sole_key]
-        # Should NOT have the corporate prepared discriminator.
-        assert "[tbl_client].[type_source] = 0" not in content
-        assert "[tbl_client].[type_source] = 1" in content
+        # Should NOT have the corporate discriminator.
+        assert "[tbl_client].[type] = 0" not in content
+        assert "[tbl_client].[type] = 1" in content
 
 
 # ---------------------------------------------------------------------------
@@ -4104,9 +3958,7 @@ class TestNaturalKeyWarning:
     def nk_sources_dir(self, tmp_path):
         d = tmp_path / "sources" / "adminpulse"
         d.mkdir(parents=True)
-        (d / "adminpulse.vocabulary.ttl").write_text(
-            NK_BRONZE_TTL, encoding="utf-8"
-        )
+        (d / "adminpulse.vocabulary.ttl").write_text(NK_BRONZE_TTL, encoding="utf-8")
         return tmp_path / "sources"
 
     @pytest.fixture
@@ -4124,16 +3976,27 @@ class TestNaturalKeyWarning:
         return d
 
     def test_no_warning_when_natural_key_present(
-        self, template_dir, nk_sources_dir, nk_mappings_account, caplog,
+        self,
+        template_dir,
+        nk_sources_dir,
+        nk_mappings_account,
+        caplog,
     ):
         """Class WITH naturalKey annotation should NOT produce a warning."""
         g = Graph()
         g.parse(data=NK_ONTOLOGY_WITH_KEY_TTL, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/Account",
-                     "name": "Account", "label": "Account",
-                     "comment": "An account entity"}]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/Account",
+                "name": "Account",
+                "label": "Account",
+                "comment": "An account entity",
+            }
+        ]
 
-        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"):
+        with caplog.at_level(
+            logging.WARNING, logger="kairos_ontology.core.projections.medallion_dbt_projector"
+        ):
             generate_dbt_artifacts(
                 classes=classes,
                 graph=g,
@@ -4146,14 +4009,23 @@ class TestNaturalKeyWarning:
         assert "no kairos-ext:naturalKey" not in caplog.text
 
     def test_bound_model_without_natural_key_uses_source_scoped_join_key(
-        self, template_dir, nk_sources_dir, nk_mappings_widget, caplog,
+        self,
+        template_dir,
+        nk_sources_dir,
+        nk_mappings_widget,
+        caplog,
     ):
         """A physical join key does not require an invented business natural key."""
         g = Graph()
         g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/Widget",
-                     "name": "Widget", "label": "Widget",
-                     "comment": "A widget entity"}]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/Widget",
+                "name": "Widget",
+                "label": "Widget",
+                "comment": "A widget entity",
+            }
+        ]
 
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -4169,13 +4041,21 @@ class TestNaturalKeyWarning:
         assert "widget_iri" not in sql
 
     def test_missing_natural_key_does_not_invent_business_identity(
-        self, template_dir, nk_sources_dir, nk_mappings_widget,
+        self,
+        template_dir,
+        nk_sources_dir,
+        nk_mappings_widget,
     ):
         g = Graph()
         g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/Widget",
-                     "name": "Widget", "label": "Widget",
-                     "comment": "A widget entity"}]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/Widget",
+                "name": "Widget",
+                "label": "Widget",
+                "comment": "A widget entity",
+            }
+        ]
 
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -4187,20 +4067,25 @@ class TestNaturalKeyWarning:
             mappings_dir=nk_mappings_widget,
         )
         release = artifacts["__release_data__"]
-        assert any(
-            item["rule_id"] == "DD-108-identity"
-            for item in release["blocking_reasons"]
-        )
+        assert any(item["rule_id"] == "DD-108-identity" for item in release["blocking_reasons"])
 
     def test_fk_child_without_natural_key_keeps_source_identity(
-        self, template_dir, nk_sources_dir, nk_mappings_widget,
+        self,
+        template_dir,
+        nk_sources_dir,
+        nk_mappings_widget,
     ):
         """Weak entities no longer force an invented natural key."""
         g = Graph()
         g.parse(data=NK_ONTOLOGY_FK_CHILD_TTL, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/Widget",
-                     "name": "Widget", "label": "Widget",
-                     "comment": "A widget entity"}]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/Widget",
+                "name": "Widget",
+                "label": "Widget",
+                "comment": "A widget entity",
+            }
+        ]
 
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -4214,14 +4099,22 @@ class TestNaturalKeyWarning:
         sql = next(value for key, value in artifacts.items() if key.endswith("/widget.sql"))
         assert "_source_record_key" in sql
 
-    def test_governed_target_first_model_has_non_null_physical_key(
-        self, template_dir, nk_sources_dir, nk_mappings_widget,
+    def test_source_bound_model_has_non_null_physical_key(
+        self,
+        template_dir,
+        nk_sources_dir,
+        nk_mappings_widget,
     ):
         g = Graph()
         g.parse(data=NK_ONTOLOGY_WITHOUT_KEY_TTL, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/Widget",
-                    "name": "Widget", "label": "Widget",
-                    "comment": "A widget entity"}]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/Widget",
+                "name": "Widget",
+                "label": "Widget",
+                "comment": "A widget entity",
+            }
+        ]
 
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -4231,14 +4124,18 @@ class TestNaturalKeyWarning:
             ontology_name="widget",
             sources_dir=nk_sources_dir,
             mappings_dir=nk_mappings_widget,
-            eligible_class_uris={"http://kairos.example/ontology/Widget"},
         )
         sql = next(value for key, value in artifacts.items() if key.endswith("/widget.sql"))
         assert "generate_surrogate_key" in sql
         assert "CAST(NULL" not in sql.split(" as widget_sk", 1)[0].splitlines()[-1]
 
     def test_scd2_sequences_multiple_source_versions_per_key(
-        self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir,
+        self,
+        classes,
+        ontology_graph,
+        template_dir,
+        bronze_dir,
+        mappings_dir,
     ):
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -4254,10 +4151,7 @@ class TestNaturalKeyWarning:
         assert "replay_deduplicated" not in sql
         assert "materialized='table'" in sql
         release = artifacts["__release_data__"]
-        assert any(
-            item["rule_id"] == "DD-108-identity"
-            for item in release["blocking_reasons"]
-        )
+        assert any(item["rule_id"] == "DD-108-identity" for item in release["blocking_reasons"])
 
 
 # ---------------------------------------------------------------------------
@@ -4370,29 +4264,37 @@ class TestSilverForeignKeyAnnotation:
     def fk_sources_dir(self, tmp_path):
         d = tmp_path / "sources" / "erp"
         d.mkdir(parents=True)
-        (d / "erp.vocabulary.ttl").write_text(
-            SILVER_FK_ANNOTATION_BRONZE_TTL, encoding="utf-8"
-        )
+        (d / "erp.vocabulary.ttl").write_text(SILVER_FK_ANNOTATION_BRONZE_TTL, encoding="utf-8")
         return tmp_path / "sources"
 
     @pytest.fixture
     def fk_mappings_dir(self, tmp_path):
         d = tmp_path / "mappings" / "erp"
         d.mkdir(parents=True)
-        (d / "erp-to-order.ttl").write_text(
-            SILVER_FK_ANNOTATION_MAPPING_TTL, encoding="utf-8"
-        )
+        (d / "erp-to-order.ttl").write_text(SILVER_FK_ANNOTATION_MAPPING_TTL, encoding="utf-8")
         return tmp_path / "mappings"
 
     def test_silver_fk_annotation_generates_join(
-        self, fk_graph, fk_sources_dir, fk_mappings_dir, template_dir,
+        self,
+        fk_graph,
+        fk_sources_dir,
+        fk_mappings_dir,
+        template_dir,
     ):
         """silverForeignKey true must produce FK join even without FunctionalProperty."""
         classes = [
-            {"uri": "http://kairos.example/ontology/Order",
-             "name": "Order", "label": "Order", "comment": "An order"},
-            {"uri": "http://kairos.example/ontology/Customer",
-             "name": "Customer", "label": "Customer", "comment": "A customer"},
+            {
+                "uri": "http://kairos.example/ontology/Order",
+                "name": "Order",
+                "label": "Order",
+                "comment": "An order",
+            },
+            {
+                "uri": "http://kairos.example/ontology/Customer",
+                "name": "Customer",
+                "label": "Customer",
+                "comment": "A customer",
+            },
         ]
         artifacts = generate_dbt_artifacts(
             classes=classes,
@@ -4409,12 +4311,12 @@ class TestSilverForeignKeyAnnotation:
         )
         assert silver_key is not None, "order.sql not generated"
         content = artifacts[silver_key]
-        assert "customer_sk" in content, (
-            "silverForeignKey true should generate customer_sk FK column"
-        )
-        assert "ref('customer')" in content, (
-            "silverForeignKey true should generate a join to customer model"
-        )
+        assert (
+            "customer_sk" in content
+        ), "silverForeignKey true should generate customer_sk FK column"
+        assert (
+            "ref('customer')" in content
+        ), "silverForeignKey true should generate a join to customer model"
 
 
 # ---------------------------------------------------------------------------
@@ -4435,10 +4337,18 @@ class TestSilverModelRegistry:
     def test_registry_maps_class_uri_to_model_name(self):
         """Registry maps class URIs from entity metadata to snake_case model names."""
         meta = [
-            {"class_name": "TransportOrder", "class_uri": "http://ex.com/TransportOrder",
-             "skipped": False, "column_names": ["order_name", "status"]},
-            {"class_name": "Customer", "class_uri": "http://ex.com/Customer",
-             "skipped": False, "column_names": ["customer_name"]},
+            {
+                "class_name": "TransportOrder",
+                "class_uri": "http://ex.com/TransportOrder",
+                "skipped": False,
+                "column_names": ["order_name", "status"],
+            },
+            {
+                "class_name": "Customer",
+                "class_uri": "http://ex.com/Customer",
+                "skipped": False,
+                "column_names": ["customer_name"],
+            },
         ]
         registry = self._registry(meta)
         name_reg = dict(registry.names)
@@ -4454,8 +4364,12 @@ class TestSilverModelRegistry:
         child_uri = URIRef("http://ex.com/HubOrder")
 
         meta = [
-            {"class_name": "HubOrder", "class_uri": str(child_uri),
-             "skipped": False, "column_names": ["order_id"]},
+            {
+                "class_name": "HubOrder",
+                "class_uri": str(child_uri),
+                "skipped": False,
+                "column_names": ["order_id"],
+            },
         ]
         registry = self._registry(meta, ((str(child_uri), str(parent_uri)),))
         name_reg = dict(registry.names)
@@ -4469,10 +4383,18 @@ class TestSilverModelRegistry:
         child2_uri = URIRef("http://ex.com/Supplier")
 
         meta = [
-            {"class_name": "Customer", "class_uri": str(child1_uri),
-             "skipped": False, "column_names": []},
-            {"class_name": "Supplier", "class_uri": str(child2_uri),
-             "skipped": False, "column_names": []},
+            {
+                "class_name": "Customer",
+                "class_uri": str(child1_uri),
+                "skipped": False,
+                "column_names": [],
+            },
+            {
+                "class_name": "Supplier",
+                "class_uri": str(child2_uri),
+                "skipped": False,
+                "column_names": [],
+            },
         ]
         registry = self._registry(
             meta,
@@ -4488,8 +4410,12 @@ class TestSilverModelRegistry:
     def test_registry_skips_skipped_classes(self):
         """Skipped classes (no mapping) are not registered."""
         meta = [
-            {"class_name": "NoMapping", "class_uri": "http://ex.com/NoMapping",
-             "skipped": True, "column_names": []},
+            {
+                "class_name": "NoMapping",
+                "class_uri": "http://ex.com/NoMapping",
+                "skipped": True,
+                "column_names": [],
+            },
         ]
         name_reg = dict(self._registry(meta).names)
         assert "http://ex.com/NoMapping" not in name_reg
@@ -4498,12 +4424,17 @@ class TestSilverModelRegistry:
         """_silver_model_name_for_class uses registry over classes list."""
         registry = {"http://refmodel.org/ImportedClass": "hub_entity"}
         classes = [
-            {"uri": "http://refmodel.org/ImportedClass",
-             "name": "ImportedClass", "label": "", "comment": ""},
+            {
+                "uri": "http://refmodel.org/ImportedClass",
+                "name": "ImportedClass",
+                "label": "",
+                "comment": "",
+            },
         ]
         # Without registry, would return "imported_class"
         result = _silver_model_name_for_class(
-            "http://refmodel.org/ImportedClass", classes, registry=registry)
+            "http://refmodel.org/ImportedClass", classes, registry=registry
+        )
         assert result == "hub_entity"
 
     def test_resolver_falls_back_without_registry(self):
@@ -4516,8 +4447,7 @@ class TestSilverModelRegistry:
 
     def test_resolver_returns_none_when_not_in_registry(self):
         """When registry is present but URI not in it, returns None."""
-        result = _silver_model_name_for_class(
-            "http://unknown.org/ont#SomeClass", [], registry={})
+        result = _silver_model_name_for_class("http://unknown.org/ont#SomeClass", [], registry={})
         assert result is None
 
 
@@ -4639,19 +4569,23 @@ class TestNaturalKeyInheritance:
     def test_no_key_anywhere_returns_empty(self):
         """Class with no NK in hierarchy returns empty list."""
         g = Graph()
-        g.parse(data="""\
+        g.parse(
+            data="""\
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix ex: <http://example.com/ont#> .
 ex:Orphan a owl:Class ; rdfs:label "Orphan" .
-""", format="turtle")
+""",
+            format="turtle",
+        )
         result = _get_natural_key(g, "http://example.com/ont#Orphan")
         assert result == []
 
     def test_cyclic_subclass_does_not_loop(self):
         """Cyclic rdfs:subClassOf doesn't cause infinite recursion."""
         g = Graph()
-        g.parse(data="""\
+        g.parse(
+            data="""\
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix ex: <http://example.com/ont#> .
@@ -4659,7 +4593,9 @@ ex:Orphan a owl:Class ; rdfs:label "Orphan" .
 ex:A a owl:Class ; rdfs:subClassOf ex:B ; rdfs:label "A" .
 ex:B a owl:Class ; rdfs:subClassOf ex:A ;
     kairos-ext:inheritanceStrategy "discriminator" ; rdfs:label "B" .
-""", format="turtle")
+""",
+            format="turtle",
+        )
         # Should not raise RecursionError; returns [] since no NK declared
         result = _get_natural_key(g, "http://example.com/ont#A")
         assert result == []
@@ -4750,31 +4686,34 @@ class TestCompositeNaturalKey:
         """'addressStreet,addressZipCode' should yield two separate snake_case keys."""
         g = self._graph()
         result = _get_natural_key(g, "http://kairos.example/ontology/Address")
-        assert result == ["address_street", "address_zip_code"], (
-            f"Expected ['address_street', 'address_zip_code'], got {result}"
-        )
+        assert result == [
+            "address_street",
+            "address_zip_code",
+        ], f"Expected ['address_street', 'address_zip_code'], got {result}"
 
     def test_comma_with_space_splits_into_two(self):
         """'addressStreet, addressZipCode' (space after comma) should also split cleanly."""
         g = self._graph()
         result = _get_natural_key(g, "http://kairos.example/ontology/AddressSpaced")
-        assert result == ["address_street", "address_zip_code"], (
-            f"Expected ['address_street', 'address_zip_code'], got {result}"
-        )
+        assert result == [
+            "address_street",
+            "address_zip_code",
+        ], f"Expected ['address_street', 'address_zip_code'], got {result}"
 
     def test_composite_sk_has_two_quoted_elements(self):
         """Surrogate key expression should contain both NK columns as separate list items."""
         g = self._graph()
         nk = _get_natural_key(g, "http://kairos.example/ontology/Address")
         cols = _build_sk_iri_columns(
-            g, "http://kairos.example/ontology/Address",
+            g,
+            "http://kairos.example/ontology/Address",
             "http://kairos.example/ontology/",
             nk,
         )
         sk_expr = next(c["expression"] for c in cols if c["target_name"] == "address_sk")
-        assert "'address_street', 'address_zip_code'" in sk_expr, (
-            f"SK expression should list both keys separately:\n{sk_expr}"
-        )
+        assert (
+            "'address_street', 'address_zip_code'" in sk_expr
+        ), f"SK expression should list both keys separately:\n{sk_expr}"
         # Must NOT have a comma inside a single quoted string
         assert "'address_street,address_zip_code'" not in sk_expr
 
@@ -4783,14 +4722,15 @@ class TestCompositeNaturalKey:
         g = self._graph()
         nk = _get_natural_key(g, "http://kairos.example/ontology/Address")
         cols = _build_sk_iri_columns(
-            g, "http://kairos.example/ontology/Address",
+            g,
+            "http://kairos.example/ontology/Address",
             "http://kairos.example/ontology/",
             nk,
         )
         iri_expr = next(c["expression"] for c in cols if c["target_name"] == "address_iri")
-        assert "'_'" in iri_expr, (
-            f"IRI CONCAT should separate composite NK parts with '_':\n{iri_expr}"
-        )
+        assert (
+            "'_'" in iri_expr
+        ), f"IRI CONCAT should separate composite NK parts with '_':\n{iri_expr}"
         assert "address_street" in iri_expr
         assert "address_zip_code" in iri_expr
 
@@ -4799,25 +4739,27 @@ class TestCompositeNaturalKey:
 # CR-003: dbt.type_string() replaces dbt_utils.type_string()
 # ---------------------------------------------------------------------------
 
+
 class TestDbtTypeStringMacro:
     """CR-003 — NULL SK/IRI fallback must use dbt.type_string(), not dbt_utils.type_string()."""
 
     def test_null_sk_uses_dbt_type_string(self):
         """_build_sk_iri_columns with no natural key should emit dbt.type_string()."""
         g = Graph()
-        g.parse(data=textwrap.dedent("""\
+        g.parse(
+            data=textwrap.dedent("""\
             @prefix owl: <http://www.w3.org/2002/07/owl#> .
             @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
             @prefix ex: <http://ex.com/> .
             <http://ex.com/> a owl:Ontology ; rdfs:label "t" ; owl:versionInfo "1.0" .
             ex:Foo a owl:Class ; rdfs:label "Foo" ; rdfs:comment "f" .
-        """), format="turtle")
+        """),
+            format="turtle",
+        )
         cols = _build_sk_iri_columns(g, "http://ex.com/Foo", "http://ex.com/", [])
         for col in cols:
             expr = col["expression"]
-            assert "dbt_utils.type_string" not in expr, (
-                f"Should use dbt.type_string(), got: {expr}"
-            )
+            assert "dbt_utils.type_string" not in expr, f"Should use dbt.type_string(), got: {expr}"
             assert "dbt.type_string()" in expr
 
     def test_null_sk_not_using_deprecated_macro(self, template_dir, tmp_path):
@@ -4841,8 +4783,14 @@ class TestDbtTypeStringMacro:
         """)
         g = Graph()
         g.parse(data=no_nk_ttl, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/Item",
-                     "name": "Item", "label": "Item", "comment": "An item"}]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/Item",
+                "name": "Item",
+                "label": "Item",
+                "comment": "An item",
+            }
+        ]
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=g,
@@ -4851,24 +4799,24 @@ class TestDbtTypeStringMacro:
             ontology_name="item",
         )
         all_sql = "\n".join(
-            value
-            for value in artifacts.values()
-            if isinstance(value, str) and value
+            value for value in artifacts.values() if isinstance(value, str) and value
         )
-        assert "dbt_utils.type_string" not in all_sql, (
-            "Generated SQL must not use deprecated dbt_utils.type_string()"
-        )
+        assert (
+            "dbt_utils.type_string" not in all_sql
+        ), "Generated SQL must not use deprecated dbt_utils.type_string()"
 
 
 # ---------------------------------------------------------------------------
 # CR-004: dim_date.sql must not have nested duplicate CTE label
 # ---------------------------------------------------------------------------
 
+
 class TestDimDateNoDuplicateCte:
     """CR-004 — generated dim_date.sql must not embed a duplicate 'date_spine AS ('."""
 
-    def test_no_duplicate_cte_label(self, gold_ontology_graph, template_dir,
-                                    gold_bronze_dir, gold_mappings_dir):
+    def test_no_duplicate_cte_label(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """dim_date.sql must have exactly one occurrence of 'date_spine as (' (case-insensitive)."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -4887,8 +4835,9 @@ class TestDimDateNoDuplicateCte:
             + artifacts[date_key]
         )
 
-    def test_dim_date_select_is_top_level(self, gold_ontology_graph, template_dir,
-                                          gold_bronze_dir, gold_mappings_dir):
+    def test_dim_date_select_is_top_level(
+        self, gold_ontology_graph, template_dir, gold_bronze_dir, gold_mappings_dir
+    ):
         """The SELECT inside the date_spine CTE must not be wrapped in another CTE body."""
         artifacts = generate_dbt_artifacts(
             classes=GOLD_CLASSES,
@@ -4904,13 +4853,17 @@ class TestDimDateNoDuplicateCte:
         # Should NOT contain 'date_spine AS (' as a nested string inside the CTE
         # (i.e. the body after 'with date_spine as (' should start with SELECT)
         import re as _re
-        match = _re.search(r'with\s+date_spine\s+as\s*\((.+?)^\)', content,
-                           _re.DOTALL | _re.MULTILINE | _re.IGNORECASE)
+
+        match = _re.search(
+            r"with\s+date_spine\s+as\s*\((.+?)^\)",
+            content,
+            _re.DOTALL | _re.MULTILINE | _re.IGNORECASE,
+        )
         if match:
             inner = match.group(1)
-            assert "date_spine as (" not in inner.lower(), (
-                "CTE body must not start with another 'date_spine as (' wrapper"
-            )
+            assert (
+                "date_spine as (" not in inner.lower()
+            ), "CTE body must not start with another 'date_spine as (' wrapper"
 
 
 # ---------------------------------------------------------------------------
@@ -4996,26 +4949,27 @@ class TestSkIriUsesSourceExpression:
     def bank_sources_dir(self, tmp_path):
         d = tmp_path / "sources" / "adminpulse"
         d.mkdir(parents=True)
-        (d / "adminpulse.vocabulary.ttl").write_text(
-            BANK_ACCOUNT_BRONZE_TTL, encoding="utf-8"
-        )
+        (d / "adminpulse.vocabulary.ttl").write_text(BANK_ACCOUNT_BRONZE_TTL, encoding="utf-8")
         return tmp_path / "sources"
 
     @pytest.fixture
     def bank_mappings_dir(self, tmp_path):
         d = tmp_path / "mappings"
         d.mkdir(parents=True)
-        (d / "bank_account.ttl").write_text(
-            BANK_ACCOUNT_MAPPING_TTL, encoding="utf-8"
-        )
+        (d / "bank_account.ttl").write_text(BANK_ACCOUNT_MAPPING_TTL, encoding="utf-8")
         return d
 
     def _get_sql(self, template_dir, bank_sources_dir, bank_mappings_dir):
         g = Graph()
         g.parse(data=BANK_ACCOUNT_ONTOLOGY_TTL, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/BankAccount",
-                     "name": "BankAccount", "label": "BankAccount",
-                     "comment": "A bank account"}]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/BankAccount",
+                "name": "BankAccount",
+                "label": "BankAccount",
+                "comment": "A bank account",
+            }
+        ]
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=g,
@@ -5034,6 +4988,7 @@ class TestSkIriUsesSourceExpression:
         """In the mapped CTE, the column expression must reference the source column
         (adminpulse_relations.bankIBAN), not the snake_case alias."""
         import re as _re
+
         sql = self._get_sql(template_dir, bank_sources_dir, bank_mappings_dir)
         assert "mapped as (" in sql
         mapped_block = _re.search(
@@ -5042,9 +4997,9 @@ class TestSkIriUsesSourceExpression:
             _re.DOTALL,
         )
         assert mapped_block
-        assert "[adminpulse_relations].[bankIBAN]" in mapped_block.group(1), (
-            "mapped CTE must use the source column expression, got:\n" + mapped_block.group(1)
-        )
+        assert "[adminpulse_relations].[bankIBAN]" in mapped_block.group(
+            1
+        ), "mapped CTE must use the source column expression, got:\n" + mapped_block.group(1)
 
     def test_no_source_data_stage_is_inferred_without_runtime_authority(
         self, template_dir, bank_sources_dir, bank_mappings_dir
@@ -5052,7 +5007,7 @@ class TestSkIriUsesSourceExpression:
         """An SCD annotation alone cannot create a parallel source_data runtime."""
         sql = self._get_sql(template_dir, bank_sources_dir, bank_mappings_dir)
         assert "source_data" not in sql
-        assert "adminpulse_relations._source_record_key" in sql
+        assert "'adminpulse_relations.bankIBAN'" in sql
         assert "generate_surrogate_key(['bank_iban'])" not in sql
 
     def test_iri_expression_uses_source_column_in_mapped(
@@ -5072,7 +5027,8 @@ class TestSkIriUsesSourceExpression:
         g.parse(data=BANK_ACCOUNT_ONTOLOGY_TTL, format="turtle")
         nk = _get_natural_key(g, "http://kairos.example/ontology/BankAccount")
         cols = _build_sk_iri_columns(
-            g, "http://kairos.example/ontology/BankAccount",
+            g,
+            "http://kairos.example/ontology/BankAccount",
             "http://kairos.example/ontology/",
             nk,
             nk_source_exprs=None,
@@ -5139,13 +5095,15 @@ _CR005_PARTY_BRONZE_TTL = textwrap.dedent("""\
     bronze-ap:tblRelations a kairos-bronze:SourceTable ;
         rdfs:label "adminpulse_relations" ;
         kairos-bronze:sourceSystem bronze-ap:AdminPulse ;
-        kairos-bronze:tableName "adminpulse_relations" .
+        kairos-bronze:tableName "adminpulse_relations" ;
+        kairos-bronze:primaryKeyColumns "uniqueIdentifier" .
 
     bronze-ap:tblRelations_uniqueIdentifier a kairos-bronze:SourceColumn ;
         kairos-bronze:sourceTable bronze-ap:tblRelations ;
         kairos-bronze:columnName "uniqueIdentifier" ;
         kairos-bronze:dataType "nvarchar" ;
-        kairos-bronze:nullable "false"^^xsd:boolean .
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey true .
 
     bronze-ap:tblRelations_remark a kairos-bronze:SourceColumn ;
         kairos-bronze:sourceTable bronze-ap:tblRelations ;
@@ -5190,18 +5148,14 @@ class TestScd2SourceDataUsesAliasedColumns:
     def party_sources_dir(self, tmp_path):
         d = tmp_path / "sources" / "adminpulse"
         d.mkdir(parents=True)
-        (d / "adminpulse.vocabulary.ttl").write_text(
-            _CR005_PARTY_BRONZE_TTL, encoding="utf-8"
-        )
+        (d / "adminpulse.vocabulary.ttl").write_text(_CR005_PARTY_BRONZE_TTL, encoding="utf-8")
         return tmp_path / "sources"
 
     @pytest.fixture
     def party_mappings_dir(self, tmp_path):
         d = tmp_path / "mappings"
         d.mkdir(parents=True)
-        (d / "adminpulse-to-party.ttl").write_text(
-            _CR005_PARTY_MAPPING_TTL, encoding="utf-8"
-        )
+        (d / "adminpulse-to-party.ttl").write_text(_CR005_PARTY_MAPPING_TTL, encoding="utf-8")
         return d
 
     @pytest.fixture
@@ -5213,8 +5167,14 @@ class TestScd2SourceDataUsesAliasedColumns:
     def _get_sql(self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path):
         g = Graph()
         g.parse(data=_CR005_PARTY_ONTOLOGY_TTL, format="turtle")
-        classes = [{"uri": "http://kairos.example/ontology/party#Party",
-                    "name": "Party", "label": "Party", "comment": "A party"}]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/party#Party",
+                "name": "Party",
+                "label": "Party",
+                "comment": "A party",
+            }
+        ]
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=g,
@@ -5236,12 +5196,8 @@ class TestScd2SourceDataUsesAliasedColumns:
             template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
         )
         assert "source_data" not in sql
-        assert "adminpulse_relations._source_record_key" in sql
+        assert "'adminpulse_relations.uniqueIdentifier'" in sql
         assert "generate_surrogate_key(['party_identifier'])" not in sql
-        # The original source column must NOT appear in the SK expression
-        assert "generate_surrogate_key(['uniqueIdentifier'])" not in sql, (
-            "source_data SK must NOT use original source column 'uniqueIdentifier':\n" + sql
-        )
 
     def test_generated_iri_remains_source_scoped(
         self, template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
@@ -5262,6 +5218,7 @@ class TestScd2SourceDataUsesAliasedColumns:
             template_dir, party_sources_dir, party_mappings_dir, party_silver_ext_path
         )
         import re as _re
+
         mapped_block = _re.search(
             r"mapped\s+as\s+\((.+?)\)\s*\nselect",
             sql,
@@ -5353,13 +5310,15 @@ _ISSUE_194_BRONZE_TTL = textwrap.dedent("""\
     bronze-qargo:companies a kairos-bronze:SourceTable ;
         rdfs:label "companies" ;
         kairos-bronze:sourceSystem bronze-qargo:Qargo ;
-        kairos-bronze:tableName "companies" .
+        kairos-bronze:tableName "companies" ;
+        kairos-bronze:primaryKeyColumns "company_id" .
 
     bronze-qargo:companies_company_id a kairos-bronze:SourceColumn ;
         kairos-bronze:sourceTable bronze-qargo:companies ;
         kairos-bronze:columnName "company_id" ;
         kairos-bronze:dataType "nvarchar" ;
-        kairos-bronze:nullable "false"^^xsd:boolean .
+        kairos-bronze:nullable "false"^^xsd:boolean ;
+        kairos-bronze:isPrimaryKey true .
 
     bronze-qargo:companies_name a kairos-bronze:SourceColumn ;
         kairos-bronze:sourceTable bronze-qargo:companies ;
@@ -5431,12 +5390,14 @@ class TestIssue194Scd2InheritedFkScope:
     def _get_sql(self, template_dir, sources_dir, mappings_dir, silver_ext_path):
         graph = Graph()
         graph.parse(data=_ISSUE_194_ONTOLOGY_TTL, format="turtle")
-        classes = [{
-            "uri": "http://kairos.example/ontology/party#CargoOperator",
-            "name": "CargoOperator",
-            "label": "Cargo Operator",
-            "comment": "A cargo operator",
-        }]
+        classes = [
+            {
+                "uri": "http://kairos.example/ontology/party#CargoOperator",
+                "name": "CargoOperator",
+                "label": "Cargo Operator",
+                "comment": "A cargo operator",
+            }
+        ]
         artifacts = generate_dbt_artifacts(
             classes=classes,
             graph=graph,
@@ -5454,9 +5415,7 @@ class TestIssue194Scd2InheritedFkScope:
         self, template_dir, sources_dir, mappings_dir, silver_ext_path
     ):
         sql = self._get_sql(template_dir, sources_dir, mappings_dir, silver_ext_path)
-        mapped_block = sql.split("mapped as (", 1)[1].split(
-            "\n)\nselect", 1
-        )[0]
+        mapped_block = sql.split("mapped as (", 1)[1].split("\n)\nselect", 1)[0]
 
         assert "address_ref.address_sk as billing_address_sk" in mapped_block, (
             "FK lookup must be selected while address_ref is in scope:\n" + mapped_block
