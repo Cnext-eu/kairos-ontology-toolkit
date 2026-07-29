@@ -32,7 +32,7 @@ uv run kairos-ontology compile customer --explain
 uv run kairos-ontology compile customer --explain --format json
 
 # Atomically emit manifest-owned artifacts
-uv run kairos-ontology compile customer --emit ontology-hub/output/medallion/dbt
+uv run kairos-ontology compile customer --emit
 ```
 
 `compile` resolves the hub from `kairos.yaml`, creates one immutable, graph-free

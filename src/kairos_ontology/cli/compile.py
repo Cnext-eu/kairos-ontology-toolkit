@@ -14,7 +14,6 @@ import click
 from ..core.compiler import CompileMode, compile_domain
 from ..core.hub_utils import find_hub_root, publish_root
 
-_BARE_EMIT_SENTINEL = Path("__kairos_default_medallion_dbt_emit__")
 #: dbt project sub-path under the publish root (``<publish_root>/medallion/dbt``).
 _DBT_EMIT_SUBPATH = Path("medallion") / "dbt"
 _SHARED_MANIFEST_NAME = ".kairos-compile-manifest.shared.json"
@@ -139,12 +138,11 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
 @click.option("--explain", "explain_mode", is_flag=True, help="Explain the normalized plan.")
 @click.option(
     "--emit",
-    "emit_dir",
-    type=click.Path(path_type=Path, file_okay=False),
-    is_flag=False,
-    flag_value=str(_BARE_EMIT_SENTINEL),
-    help="Atomically emit generated dbt artifacts below DIRECTORY "
-    "(default: <repo>/ontology-hub-publish/medallion/dbt).",
+    "emit_mode",
+    is_flag=True,
+    help="Atomically emit generated dbt artifacts to the fixed canonical location "
+    "<repo>/ontology-hub-publish/medallion/dbt (sibling of the hub). The target is "
+    "not configurable.",
 )
 @click.option(
     "--format",
@@ -157,11 +155,11 @@ def compile_cmd(
     domain: str,
     check_mode: bool,
     explain_mode: bool,
-    emit_dir: Path | None,
+    emit_mode: bool,
     output_format: str,
 ) -> None:
     """Check, explain, or emit one v5 DOMAIN from the current hub."""
-    selected = int(check_mode) + int(explain_mode) + int(emit_dir is not None)
+    selected = int(check_mode) + int(explain_mode) + int(emit_mode)
     if selected != 1:
         raise click.UsageError("exactly one of --check, --explain, or --emit is required")
     mode = (
@@ -172,14 +170,10 @@ def compile_cmd(
     hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
     result = compile_domain(hub, domain, mode)
     emit_target = None
-    if emit_dir is not None and result.can_emit:
-        if emit_dir == _BARE_EMIT_SENTINEL:
-            requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
-        else:
-            # Explicit --emit DIRECTORY is the exact dbt project directory.
-            # Relative values are anchored to the hub root (never the process
-            # cwd) so the target does not wander when run from a subdirectory.
-            requested_target = emit_dir if emit_dir.is_absolute() else hub / emit_dir
+    if emit_mode and result.can_emit:
+        # The emit location is fixed and not configurable: derived dbt artifacts
+        # always land in the sibling publish root, never inside the hub.
+        requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
         emit_target = _emit_compile_artifacts(result, requested_target)
     if output_format == "json":
         click.echo(json.dumps(_payload(result), indent=2, sort_keys=True))

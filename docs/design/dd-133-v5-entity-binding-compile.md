@@ -240,10 +240,12 @@ ordinary generated dbt tests — never as a Kairos-specific runtime result contr
 
 ## 6. Atomic emission contract
 
-- **Ownership boundary:** `--emit <dir>` owns exactly the generated dbt target subtree for
-  the selected domain. A **manifest** lists every owned file; only manifest-owned files are
-  created, replaced, or removed. Files outside the manifest/target subtree are never touched.
-- **Path containment:** the resolved destination must be inside `<dir>`; path-escape and
+- **Ownership boundary:** `--emit` owns exactly the generated dbt target subtree for
+  the selected domain, at the fixed canonical location
+  `<repo>/ontology-hub-publish/medallion/dbt` (not configurable). A **manifest** lists every
+  owned file; only manifest-owned files are created, replaced, or removed. Files outside the
+  manifest/target subtree are never touched.
+- **Path containment:** the resolved destination must be inside that fixed target; path-escape and
   cross-target collisions are rejected before any write.
 - **Atomicity:** build the complete in-memory plan first; stage into a temporary sibling
   directory **on the same volume**; validate; then swap into place with a backup, removing

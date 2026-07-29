@@ -32,8 +32,7 @@ state, or release-evidence registry participates in v5 compilation.
 7. Emit atomically:
 
    ```bash
-   uv run kairos-ontology compile customer \
-     --emit ontology-hub/output/medallion/dbt
+   uv run kairos-ontology compile customer --emit
    ```
 
 8. Pin emitted artifacts immutably downstream and run `dbt deps`, `dbt parse`,
