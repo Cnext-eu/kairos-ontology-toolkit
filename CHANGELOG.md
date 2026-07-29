@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.1] — 2026-07-30
+
 ### Added
 - **Toolkit `kairos_` dbt macro pack (CHG-3):** shipped four compiler-emitted, adapter-portable
   macros — `kairos_clean_sentinel`, `kairos_normalize_key`, `kairos_survivor` (deterministic
