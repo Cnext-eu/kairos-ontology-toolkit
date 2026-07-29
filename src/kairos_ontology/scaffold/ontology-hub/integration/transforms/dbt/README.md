@@ -1,8 +1,8 @@
 # Contracted dbt Transformations
 
 Use this directory for relational logic that cannot be represented safely
-by the closed EntityBinding scalar-expression grammar, such as joins, windows, rankings, aggregations,
-fallback rules, JSON expansion, and grain changes.
+by the closed EntityBinding scalar-expression grammar, such as joins, windows,
+rankings, aggregations, fallback rules, JSON expansion, and grain changes.
 
 Authoritative inputs follow the dbt project layout:
 
@@ -12,6 +12,10 @@ models/intermediate/<area>/<model>.yml
 macros/<area>/<hub-or-domain>__<macro>.sql
 tests/<area>/assert_<model>_<behavior>.sql
 ```
+
+Name single-source intermediate models `int_<source>__<entity>` and multi-source
+survivorship models `int_merged__<entity>`. Atomic per-source `stg_<source>__<entity>`
+models may feed the final contracted `int_*` model referenced by `source.dbtModel`.
 
 The model properties YAML is the physical output contract. Include every output column and
 type plus the minimal `meta.kairos` target, grain, physical key, and adapter metadata. Use

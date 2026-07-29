@@ -48,6 +48,7 @@ from .shared import (
     silver_schema_name,
     silver_table_name,
 )
+from .dbt.capabilities import is_reserved_identifier
 
 if TYPE_CHECKING:
     from ..dbt_contracts import DbtContractModel
@@ -226,64 +227,9 @@ DEFAULT_PLATFORM = "fabric"
 # SHACL namespace
 SH = Namespace("http://www.w3.org/ns/shacl#")
 
-# T-SQL reserved keywords that must be bracket-quoted when used as identifiers.
-# This list covers the most commonly encountered keywords in bronze source columns.
-_TSQL_RESERVED_KEYWORDS: set[str] = {
-    "function",
-    "key",
-    "value",
-    "index",
-    "table",
-    "column",
-    "user",
-    "role",
-    "order",
-    "group",
-    "type",
-    "status",
-    "date",
-    "time",
-    "level",
-    "check",
-    "default",
-    "select",
-    "insert",
-    "update",
-    "delete",
-    "create",
-    "drop",
-    "alter",
-    "grant",
-    "revoke",
-    "execute",
-    "view",
-    "procedure",
-    "trigger",
-    "constraint",
-    "primary",
-    "foreign",
-    "references",
-    "identity",
-    "schema",
-    "database",
-    "transaction",
-    "commit",
-    "rollback",
-    "cursor",
-    "open",
-    "close",
-    "fetch",
-    "option",
-    "plan",
-    "rule",
-    "system",
-    "backup",
-}
-
-
-def _quote_identifier_if_reserved(name: str) -> str:
+def _quote_identifier_if_reserved(name: str, adapter: str) -> str:
     """Wrap an identifier in a kairos_quote_identifier macro call if it's a reserved keyword."""
-    if name.lower() in _TSQL_RESERVED_KEYWORDS:
+    if is_reserved_identifier(adapter, name):
         return "{{ kairos_quote_identifier('" + name + "') }}"
     return name
 
@@ -1321,6 +1267,7 @@ def _build_multi_source_silver_specs(
             systems,
             source_ref,
             _camel_to_snake(raw_tbl),
+            platform,
         )
         per_source_meta.append(
             {
@@ -1665,6 +1612,7 @@ def _build_single_source_silver_spec(
         systems,
         source_ref,
         source_ctes[0]["alias"],
+        platform,
     )
     columns.extend(
         [
@@ -1948,6 +1896,7 @@ def _source_record_key_expression(
     systems: list[dict],
     source_ref: SourceRef,
     source_alias: str,
+    adapter: str,
 ) -> tuple[str, bool]:
     """Build source-scoped row identity only from a declared Bronze primary key."""
     _, raw_table, table_uri = _source_ref_parts(source_ref)
@@ -1964,7 +1913,7 @@ def _source_record_key_expression(
                 components = [
                     f"'{table_prefix[:-1]}'",
                     *(
-                        f"{source_alias}.{_quote_identifier_if_reserved(column)}"
+                        f"{source_alias}.{_quote_identifier_if_reserved(column, adapter)}"
                         for column in primary_keys
                     ),
                 ]
@@ -2154,6 +2103,7 @@ def _build_sk_iri_columns(
 def _mapping_expression_hint(
     fact,
     bronze_col_lookup: dict[str, dict],
+    adapter: str,
 ) -> str:
     """Build a bind-only symbolic hint from AST nodes, never authored SQL text."""
 
@@ -2162,7 +2112,8 @@ def _mapping_expression_hint(
     if fact.kind == "source-column":
         column = bronze_col_lookup.get(fact.source_column_uri)
         return _quote_identifier_if_reserved(
-            column["name"] if column else extract_local_name(fact.source_column_uri)
+            column["name"] if column else extract_local_name(fact.source_column_uri),
+            adapter,
         )
     if fact.kind == "literal":
         if fact.literal_datatype.endswith(("#string", "#token", "#normalizedString")):
@@ -2171,7 +2122,9 @@ def _mapping_expression_hint(
     if fact.kind == "null":
         return "NULL"
     if fact.kind == "operator":
-        arguments = [_mapping_expression_hint(item, bronze_col_lookup) for item in fact.arguments]
+        arguments = [
+            _mapping_expression_hint(item, bronze_col_lookup, adapter) for item in fact.arguments
+        ]
         operators = {
             "add": "+",
             "subtract": "-",
@@ -2198,7 +2151,7 @@ def _mapping_expression_hint(
         return "__invalid_mapping_operator__"
     if fact.kind == "function":
         arguments = ", ".join(
-            _mapping_expression_hint(item, bronze_col_lookup) for item in fact.arguments
+            _mapping_expression_hint(item, bronze_col_lookup, adapter) for item in fact.arguments
         )
         functions = {
             "abs": "ABS",
@@ -2215,14 +2168,15 @@ def _mapping_expression_hint(
     if fact.kind == "case":
         branches = " ".join(
             (
-                f"WHEN {_mapping_expression_hint(item.condition, bronze_col_lookup)} "
-                f"THEN {_mapping_expression_hint(item.result, bronze_col_lookup)}"
+                f"WHEN {_mapping_expression_hint(item.condition, bronze_col_lookup, adapter)} "
+                f"THEN {_mapping_expression_hint(item.result, bronze_col_lookup, adapter)}"
             )
             for item in fact.branches
         )
         otherwise = _mapping_expression_hint(
             fact.else_expression,
             bronze_col_lookup,
+            adapter,
         )
         return f"CASE {branches} ELSE {otherwise} END"
     return "__mapping_macro__"
@@ -2282,13 +2236,14 @@ def _resolve_mapped_columns(
                             expr = _mapping_expression_hint(
                                 expression_fact,
                                 bronze_col_lookup,
+                                platform,
                             )
                         else:
                             bronze_col = bronze_col_lookup.get(col_uri)
                             source_col_name = (
                                 bronze_col["name"] if bronze_col else extract_local_name(col_uri)
                             )
-                            expr = _quote_identifier_if_reserved(source_col_name)
+                            expr = _quote_identifier_if_reserved(source_col_name, platform)
                         break
                 if mapped_col_uri:
                     break
@@ -2430,9 +2385,10 @@ def _extract_silver_columns(
                                 _mapping_expression_hint(
                                     expression_fact,
                                     bronze_col_lookup,
+                                    platform,
                                 )
                                 if expression_fact is not None
-                                else _quote_identifier_if_reserved(bronze_col["name"])
+                                else _quote_identifier_if_reserved(bronze_col["name"], platform)
                             )
                             mapped_identity[prop_sn] = {
                                 "expression": expression,

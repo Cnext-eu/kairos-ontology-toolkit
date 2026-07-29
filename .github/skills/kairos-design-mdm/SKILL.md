@@ -8,6 +8,10 @@ description: Author optional design-time MDM policy consumed from the canonical 
 MDM policy is an optional, runtime-neutral consumer of canonical entities in the immutable
 CompilePlan. EntityBinding remains the sole source-to-canonical execution authority. Runtime
 matching, stewardship, operational storage, and synchronization belong outside this toolkit.
+Survivorship and `in_<system>` presence flags remain deferred design-time MDM
+policy; they are not currently exposed as CompilePlan fields. Core must never
+import MDM, so any future presence-flag emission must flow through the
+CompilePlan, not a projector-to-MDM dependency.
 
 ## Design fleet mode (DD-088)
 
