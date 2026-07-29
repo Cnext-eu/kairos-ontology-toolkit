@@ -12,6 +12,7 @@ from .. import __version__ as _toolkit_version
 from ..core._provenance import provenance_comment
 from ..core.catalog_utils import sync_domain_catalog_entry
 from ..core.decision_records import build_index_markdown
+from ..core.hub_utils import publish_root
 
 # Importing the design-time MDM package registers the additive ``mdm-profile``
 # projection target with the core projector (registry pattern, MDM-DD-002).
@@ -83,9 +84,11 @@ def init(domain, company_domain, force):
     if imports_readme_src.is_file() and (not (imports_bd / "README.md").exists() or force):
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
-    # Place .gitkeep in empty output subdirs so git tracks them
+    # Place .gitkeep in empty publish subdirs (sibling <repo>/ontology-hub-publish/)
+    # so git tracks the derived-output slots.
     for target in _V5_OUTPUT_DIRECTORIES:
-        gitkeep = hub / "output" / target / ".gitkeep"
+        gitkeep = publish_root(hub) / target / ".gitkeep"
+        gitkeep.parent.mkdir(parents=True, exist_ok=True)
         if not gitkeep.exists():
             gitkeep.touch()
 
@@ -416,9 +419,10 @@ def init(domain, company_domain, force):
 def migrate(check, dry_run, hub_path):
     """Move an existing ontology hub from the flat layout to the grouped layout.
 
-    Moves files into the new model/ + integration/ + output/medallion/ structure
-    and cleans up empty old directories. This layout utility does not convert
-    legacy authoring contracts to v5; rebuild those hubs in a fresh repository.
+    Moves files into the new model/ + integration/ structure (derived output is
+    emitted to the sibling ontology-hub-publish/ publish root) and cleans up empty
+    old directories. This layout utility does not convert legacy authoring
+    contracts to v5; rebuild those hubs in a fresh repository.
 
     \b
     After migrating, run:
@@ -458,8 +462,8 @@ def migrate(check, dry_run, hub_path):
         hub / "referencemodels-unpacked",
         hub / "integration" / "sources",
         hub / "integration" / "discovery",
-        hub / "output" / "medallion" / "powerbi",
-        hub / "output" / "medallion" / "dbt",
+        publish_root(hub) / "medallion" / "powerbi",
+        publish_root(hub) / "medallion" / "dbt",
     ]
     if not check:
         for d in new_dirs:
@@ -505,21 +509,23 @@ def migrate(check, dry_run, hub_path):
                 shutil.move(str(ext_file), str(dst))
             moved_count += 1
 
-    # --- 4. Move old output/silver/ and output/dbt/ to output/medallion/ -----
+    # --- 4. Move old output/silver/ and output/dbt/ to the publish root ------
     output_dir = hub / "output"
+    publish_dir = publish_root(hub)
     if output_dir.is_dir():
         for old_target, new_rel in _MIGRATE_OUTPUT_MAP.items():
             old_target_dir = output_dir / old_target
-            new_target_dir = output_dir / new_rel
+            new_target_dir = publish_dir / new_rel
             if old_target_dir.is_dir():
                 items = list(old_target_dir.iterdir())
                 if items:
+                    new_target_dir.mkdir(parents=True, exist_ok=True)
                     for item in items:
                         dst = new_target_dir / item.name
                         if check:
                             print(
                                 f"  MOVE  output/{old_target}/{item.name}  →  "
-                                f"output/{new_rel}/{item.name}"
+                                f"ontology-hub-publish/{new_rel}/{item.name}"
                             )
                         else:
                             if dst.exists():
@@ -535,7 +541,8 @@ def migrate(check, dry_run, hub_path):
     if app_models.is_dir():
         if check:
             print(
-                "  DELETE  application-models/  (ERDs now in output/medallion/dbt/docs/diagrams/)"
+                "  DELETE  application-models/  "
+            "(ERDs now in ontology-hub-publish/medallion/dbt/docs/diagrams/)"
             )
         else:
             shutil.rmtree(app_models)
@@ -722,9 +729,11 @@ def new_repo(
     if imports_readme_src.is_file():
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
-    # Place .gitkeep in output subdirs so git tracks them
+    # Place .gitkeep in publish subdirs (sibling <repo>/ontology-hub-publish/)
+    # so git tracks the derived-output slots.
     for target in _V5_OUTPUT_DIRECTORIES:
-        gitkeep = hub / "output" / target / ".gitkeep"
+        gitkeep = publish_root(hub) / target / ".gitkeep"
+        gitkeep.parent.mkdir(parents=True, exist_ok=True)
         if not gitkeep.exists():
             gitkeep.touch()
 

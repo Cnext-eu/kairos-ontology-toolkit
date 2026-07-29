@@ -234,7 +234,7 @@ def main() -> None:
     parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
     parser.add_argument("--mappings", type=Path, default=Path("ontology-hub/model/mappings"),
                        help="Path to SKOS mappings directory")
-    parser.add_argument("--output", type=Path, default=Path("output/prompt"),
+    parser.add_argument("--output", type=Path, default=Path("ontology-hub-publish/prompt"),
                        help="Output directory")
     parser.add_argument("--templates", type=Path, default=Path("scripts/templates/prompt"),
                        help="Template directory")

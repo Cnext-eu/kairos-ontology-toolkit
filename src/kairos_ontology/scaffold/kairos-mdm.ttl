@@ -7,7 +7,7 @@
 # overlay used to declare how governed concepts are mastered and governed
 # (mdmhubdesignv2.md, ADR-1). It is DESIGN-TIME policy: the `mdm-profile` projection
 # target reads these annotations and emits an immutable, runtime-neutral profile
-# (`output/mdm/<domain>-mdm-profile.json`) consumed by the separate
+# (`ontology-hub-publish/mdm/<domain>-mdm-profile.json`) consumed by the separate
 # `kairos-mdm-runtime`. It never encodes runtime state (enterprise IDs, crosswalks,
 # scores) or environment bindings (endpoints, secrets, identity maps).
 #

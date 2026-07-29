@@ -65,7 +65,9 @@ def _authored_ttl(path: Path) -> bool:
 
 def _emitted_dbt_status(root: Path) -> InputStatus:
     """Observe the unified emitted dbt project (presence only, never freshness)."""
-    project_file = root / "output" / "medallion" / "dbt" / "dbt_project.yml"
+    from .hub_utils import publish_root
+
+    project_file = publish_root(root) / "medallion" / "dbt" / "dbt_project.yml"
     if not project_file.exists():
         return InputStatus.MISSING
     try:

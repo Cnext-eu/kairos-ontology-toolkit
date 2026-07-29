@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.1] — 2026-07-30
+
+### Added
+- **Toolkit `kairos_` dbt macro pack (CHG-3):** shipped four compiler-emitted, adapter-portable
+  macros — `kairos_clean_sentinel`, `kairos_normalize_key`, `kairos_survivor` (deterministic
+  survivorship ranking with a mandatory total order), and `kairos_source_system_label` — for use
+  in hand-authored contracted `int_*` models. The `kairos_` macro namespace is reserved.
+
+### Changed
+- **Derived output relocated to sibling `ontology-hub-publish/` (DD-142):** all emitted/derived
+  artifacts (dbt, Power BI, Neo4j, Azure Search, a2ui, prompt, reports, architecture, MDM,
+  validation reports, shapes-draft) now materialize at `<repo>/ontology-hub-publish/…` — a sibling
+  of `ontology-hub/` at the repository root — instead of inside the hub at `<hub>/output/…`. A
+  shared `publish_root(hub)` helper routes every path. Bare `--emit` targets
+  `ontology-hub-publish/medallion/dbt`; explicit `--emit DIR` uses the exact directory and anchors
+  relative values to the hub root (fixing the cwd-relative wrong-output-folder bug). `output` is no
+  longer a hub marker directory. Scaffold `.gitignore`, `packages.yml.template`, and the release
+  workflow repoint to the new location; the tree stays in the repository.
+- **Per-adapter reserved-word quoting (CHG-5):** the medallion dbt projector now selects reserved
+  identifiers from the per-adapter capability registry (`is_reserved_identifier`) instead of a
+  single hardcoded T-SQL list, so identifier quoting is correct for both `fabric` and `databricks`.
+  Fabric now also quotes `from`.
+
+### Documentation
+- **Contracted dbt naming/layering conventions (CHG-1/CHG-2):** documented single-source
+  `int_<source>__<entity>`, multi-source survivorship `int_merged__<entity>`, and the
+  `stg_<source>__<entity>` → `int_merged__<entity>` layering in the
+  `kairos-develop-dbt-transformation` skill (conventions, not linted invariants).
+- **MDM seam clarification (CHG-4):** noted that survivorship / `in_<system>` presence flags remain
+  deferred design-time MDM policy not yet exposed as CompilePlan fields, and that `core` must never
+  import `mdm`.
+
 ## [5.0.0] — 2026-07-29
 
 ### Added

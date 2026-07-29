@@ -30,7 +30,7 @@ uv run kairos-ontology compile <domain> --emit
 
 The adapter is selected in `kairos.yaml` (`fabric` or `databricks`). Every invocation
 builds one immutable `CompilePlan`; check and explain do not write. Bare `--emit`
-writes the unified dbt project to `output/medallion/dbt`.
+writes the unified dbt project to `ontology-hub-publish/medallion/dbt`.
 
 ## Ontology conventions
 

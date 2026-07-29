@@ -107,7 +107,8 @@ class HubInputSnapshot:
     ontology_only_domains: tuple[str, ...] = ()
     binding_only_domains: tuple[str, ...] = ()
     compile_ran: bool = True
-    #: Presence of the unified emitted dbt project (output/medallion/dbt/dbt_project.yml).
+    #: Presence of the unified emitted dbt project
+    #: (ontology-hub-publish/medallion/dbt/dbt_project.yml).
     #: This is the only defensible emitted-output observation; it never implies freshness or
     #: that the current CompilePlan produced it.
     emitted_dbt_project: InputStatus = InputStatus.MISSING
@@ -406,8 +407,8 @@ def _emit_gate_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 "validate-dbt",
                 ActionStatus.HUMAN_DECISION_REQUIRED,
                 rationale=(
-                    "output/medallion/dbt is present but unreadable; resolve access before "
-                    "running the offline dbt gate."
+                    "ontology-hub-publish/medallion/dbt is present but unreadable; resolve "
+                    "access before running the offline dbt gate."
                 ),
                 command="kairos-ontology validate-dbt --platform <fabric|databricks>",
                 priority=500,
@@ -425,8 +426,8 @@ def _emit_gate_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
             "validate-dbt",
             ActionStatus.OPTIONAL,
             rationale=(
-                "An emitted dbt project exists at output/medallion/dbt. Optionally run the "
-                "hub-wide offline gate (deps → parse → manifest → compile); it needs no "
+                "An emitted dbt project exists at ontology-hub-publish/medallion/dbt. Optionally "
+                "run the hub-wide offline gate (deps → parse → manifest → compile); it needs no "
                 "warehouse and is not a runtime/release guarantee."
             ),
             command=f"kairos-ontology validate-dbt --platform {platform}",

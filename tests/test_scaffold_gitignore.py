@@ -34,7 +34,7 @@ def test_scaffold_gitignore_ignores_output_but_preserves_gitkeep(tmp_path: Path)
     (tmp_path / ".gitignore").write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "init"], check=True, capture_output=True)
 
-    for root in ("output", "ontology-hub/output"):
+    for root in ("ontology-hub-publish",):
         marker = tmp_path / root / "medallion" / "dbt" / ".gitkeep"
         generated = tmp_path / root / "medallion" / "dbt" / "dbt_project.yml"
         marker.parent.mkdir(parents=True)
@@ -45,5 +45,5 @@ def test_scaffold_gitignore_ignores_output_but_preserves_gitkeep(tmp_path: Path)
         preserved = _is_ignored(tmp_path, marker.relative_to(tmp_path).as_posix())
 
         assert ignored.returncode == 0, ignored.stderr
-        assert "output/**" in ignored.stdout
+        assert "ontology-hub-publish/**" in ignored.stdout
         assert preserved.returncode == 1

@@ -15,12 +15,9 @@ venv/
 node_modules/
 
 # Generated projection output (keep scaffold slot markers)
-output/**
-!output/**/
-!output/**/.gitkeep
-ontology-hub/output/**
-!ontology-hub/output/**/
-!ontology-hub/output/**/.gitkeep
+ontology-hub-publish/**
+!ontology-hub-publish/**/
+!ontology-hub-publish/**/.gitkeep
 
 # IDE
 .vscode/

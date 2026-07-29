@@ -12,26 +12,26 @@ uv run kairos-ontology compile <domain> --emit
 ```
 
 `--check` and `--explain` are write-free. `--emit` atomically writes only
-manifest-owned artifacts to `ontology-hub/output/medallion/dbt` by default.
+manifest-owned artifacts to `ontology-hub-publish/medallion/dbt` by default.
 Compilation creates one immutable `CompilePlan` used by check, explain, emit, and
 optional Gold/MDM consumers.
 
 ## Canonical authored inputs
 
 ```text
-ontology-hub/
+ontology-hub/                           # authored inputs
 ├── kairos.yaml                         # adapter: fabric | databricks
 ├── catalog-v001.xml
 ├── model/
 │   ├── ontologies/                     # canonical TTL
 │   ├── shapes/                         # optional SHACL
 │   └── extensions/                     # optional Gold/MDM policy only
-├── integration/
-│   ├── sources/                        # authoritative source-vocabulary TTL
-│   ├── bindings/                       # one closed EntityBinding per source
-│   ├── discovery/                      # confirmed business context
-│   └── transforms/dbt/models/          # optional ordinary SQL/YAML
-└── output/                             # generated; do not edit
+└── integration/
+    ├── sources/                        # authoritative source-vocabulary TTL
+    ├── bindings/                       # one closed EntityBinding per source
+    ├── discovery/                      # confirmed business context
+    └── transforms/dbt/models/          # optional ordinary SQL/YAML
+ontology-hub-publish/                   # generated; do not edit (sibling of the hub)
 ```
 
 Claims, authored preparation policy, lifecycle/readiness state, release evidence, and

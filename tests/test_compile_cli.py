@@ -76,20 +76,32 @@ def test_compile_emit_writes_unified_dbt_project_preserving_unowned_files(tmp_pa
     assert unrelated.read_text(encoding="utf-8") == "keep"
 
 
-def test_compile_emit_warns_when_explicit_target_is_outside_hub(tmp_path, monkeypatch):
+def test_compile_emit_explicit_target_outside_hub_emits_silently(tmp_path, monkeypatch):
     hub = _hub(tmp_path / "hub")
     outside = tmp_path / "generated"
     monkeypatch.chdir(hub)
     result = CliRunner().invoke(cli, ["compile", "party", "--emit", str(outside)])
     assert result.exit_code == 0, result.output
-    assert "outside this hub" in result.stderr
+    assert "outside this hub" not in result.stderr
     assert (outside / "models/silver/party/customer.sql").is_file()
 
 
-def test_compile_bare_emit_targets_hub_output_without_warning(tmp_path, monkeypatch):
+def test_compile_bare_emit_targets_publish_root_without_warning(tmp_path, monkeypatch):
     hub = _hub(tmp_path / "hub")
     monkeypatch.chdir(hub)
     result = CliRunner().invoke(cli, ["compile", "party", "--emit"])
     assert result.exit_code == 0, result.output
     assert "outside this hub" not in result.stderr
-    assert (hub / "output/medallion/dbt/models/silver/party/customer.sql").is_file()
+    expected = hub.parent / "ontology-hub-publish/medallion/dbt/models/silver/party/customer.sql"
+    assert expected.is_file()
+
+
+def test_compile_explicit_relative_emit_anchors_to_hub_from_repo_root(tmp_path, monkeypatch):
+    repository = tmp_path / "repository"
+    hub = _hub(repository / "ontology-hub")
+    monkeypatch.chdir(repository)
+    result = CliRunner().invoke(cli, ["compile", "party", "--emit", "build/dbt"])
+    assert result.exit_code == 0, result.output
+    assert (hub / "build/dbt/models/silver/party/customer.sql").is_file()
+    assert not (repository / "build/dbt").exists()
+

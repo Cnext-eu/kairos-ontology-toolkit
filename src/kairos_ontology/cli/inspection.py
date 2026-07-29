@@ -211,7 +211,7 @@ def explain_term_cmd(iri, ontology, catalog, profile):
     "-o",
     type=click.Path(),
     default=None,
-    help="Output directory (default: output/reports/).",
+    help="Output directory (default: ontology-hub-publish/reports/).",
 )
 @click.option(
     "--format",
@@ -240,7 +240,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
     )
 
     # Auto-detect hub paths
-    from ..core.hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root, publish_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=True)
@@ -277,9 +277,9 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
 
     if output is None:
         if hub_root:
-            output_path = hub_root.parent / "output" / "reports"
+            output_path = publish_root(hub_root) / "reports"
         else:
-            output_path = Path("output/reports")
+            output_path = Path("ontology-hub-publish/reports")
     else:
         output_path = Path(output)
 

@@ -440,7 +440,7 @@ def test_v5_cli_bare_emit_defaults_to_unified_medallion_dbt(tmp_path, monkeypatc
     )
 
     assert result.exit_code == 0, result.output
-    target = hub / "output" / "medallion" / "dbt"
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
     assert (target / "dbt_project.yml").is_file()
     assert (target / "models/silver/party/customer.sql").is_file()
     assert not (target / "party").exists()

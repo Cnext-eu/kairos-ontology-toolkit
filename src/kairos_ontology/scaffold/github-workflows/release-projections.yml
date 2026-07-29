@@ -31,9 +31,8 @@ jobs:
 
       - name: Compile canonical Silver/dbt artifacts
         run: |
+          rm -rf ontology-hub-publish/medallion/dbt
           cd ontology-hub
-          rm -rf output/medallion/dbt
-          mkdir -p output/medallion/dbt
           DOMAINS=$(uv run python -c "from pathlib import Path; import yaml; print(' '.join(sorted({str(yaml.safe_load(p.read_text())['metadata']['domain']) for p in Path('integration/bindings').glob('*.binding.yaml')})))")
           for domain in $DOMAINS; do
             uv run kairos-ontology compile "$domain" --emit
@@ -56,15 +55,15 @@ jobs:
       - name: Package dbt artifacts
         run: |
           rm -f dbt-artifacts.zip
-          if [ -d "ontology-hub/output/medallion/dbt" ] && \
-             find "ontology-hub/output/medallion/dbt" -type l -print -quit | grep -q .; then
+          if [ -d "ontology-hub-publish/medallion/dbt" ] && \
+             find "ontology-hub-publish/medallion/dbt" -type l -print -quit | grep -q .; then
             echo "::error::Refusing to package symlinks from compiler output."
             exit 1
           fi
-          if [ -d "ontology-hub/output/medallion/dbt" ] && \
-             find "ontology-hub/output/medallion/dbt" -type f -print -quit | grep -q .; then
-            cd ontology-hub/output/medallion/dbt
-            zip -r ../../../../dbt-artifacts.zip .
+          if [ -d "ontology-hub-publish/medallion/dbt" ] && \
+             find "ontology-hub-publish/medallion/dbt" -type f -print -quit | grep -q .; then
+            cd ontology-hub-publish/medallion/dbt
+            zip -r ../../../dbt-artifacts.zip .
             echo "DBT_PACKAGE=true" >> "$GITHUB_ENV"
           else
             echo "DBT_PACKAGE=false" >> "$GITHUB_ENV"

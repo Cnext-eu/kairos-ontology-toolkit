@@ -299,6 +299,7 @@ class TestBronzeParsing:
             systems,
             ("adminpulse", "tbl_client", systems[0]["tables"][0]["uri"]),
             "src",
+            "fabric",
         )
         assert expression == (
             "{{ dbt_utils.generate_surrogate_key([\"'tblClient'\", 'src.ClientID']) }}"
@@ -325,6 +326,7 @@ class TestBronzeParsing:
                 systems,
                 ("source", "rows", "https://example.org/bronze#rows"),
                 "src",
+                "fabric",
             )
 
 

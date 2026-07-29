@@ -230,7 +230,7 @@ def main() -> None:
     
     parser = argparse.ArgumentParser(description="Generate A2UI message schemas from ontology")
     parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
-    parser.add_argument("--output", type=Path, default=Path("output/a2ui"),
+    parser.add_argument("--output", type=Path, default=Path("ontology-hub-publish/a2ui"),
                        help="Output directory")
     parser.add_argument("--templates", type=Path, default=Path("scripts/templates/a2ui"),
                        help="Template directory")

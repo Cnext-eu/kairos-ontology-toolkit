@@ -186,8 +186,8 @@ def test_project_from_inside_hub_no_nesting(tmp_path, monkeypatch):
 
     result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
     assert result.exit_code == 0, result.output
-    assert calls["projection"]["output_path"] == hub / "output"
-    assert calls["projection"]["output_path"] != hub / "ontology-hub" / "output"
+    assert calls["projection"]["output_path"] == hub.parent / "ontology-hub-publish"
+    assert calls["projection"]["output_path"] != hub / "ontology-hub" / "ontology-hub-publish"
 
 
 def test_project_from_repo_root(tmp_path, monkeypatch):
@@ -197,7 +197,7 @@ def test_project_from_repo_root(tmp_path, monkeypatch):
 
     result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
     assert result.exit_code == 0, result.output
-    assert calls["projection"]["output_path"] == hub / "output"
+    assert calls["projection"]["output_path"] == hub.parent / "ontology-hub-publish"
 
 
 def test_project_catalog_autodetect_from_inside_hub(tmp_path, monkeypatch):
@@ -302,7 +302,7 @@ def test_project_single_ontology_file(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert calls["projection"]["ontologies_path"] == ontology
-    assert calls["projection"]["output_path"] == hub / "output"
+    assert calls["projection"]["output_path"] == hub.parent / "ontology-hub-publish"
 
 
 def test_project_ontology_and_ontologies_are_mutually_exclusive(tmp_path, monkeypatch):

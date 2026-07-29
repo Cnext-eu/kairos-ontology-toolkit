@@ -23,6 +23,25 @@ never inherited. Record rationale, confidence, and evidence for every AI-approve
 checkpoint. Stop for ambiguity, low confidence, policy-sensitive choices,
 destructive changes, or proprietary/PII risk.
 
+
+## Model naming and layering
+
+Use these conventions for hand-authored contracted transforms:
+
+- Single-source model: `int_<source>__<entity>`, for example
+  `int_qlik__transport_routes`.
+- Multi-source survivorship model: `int_merged__<entity>`.
+- Multi-source layering: `stg_<source>__<entity>` models do atomic per-source
+  cleaning, then feed one `int_merged__<entity>` model for union and survivorship.
+  Prefer the toolkit macros `kairos_clean_sentinel`, `kairos_normalize_key`,
+  `kairos_survivor`, and `kairos_source_system_label` for portable cleanup,
+  key normalization, deterministic survivor ranking, and source labels.
+
+`stg_*` is internal to a hand-authored contracted transform and does not
+contradict the generated-Silver "no staging layer" rule. The EntityBinding
+references the final `int_*` model via `source.dbtModel`. These are conventions,
+not enforced or linted invariants.
+
 ## Workflow
 
 1. Read the target ontology, source vocabulary, PII-safe samples, current binding,

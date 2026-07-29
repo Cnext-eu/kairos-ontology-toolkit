@@ -726,19 +726,21 @@ _V5_HUB_DIRECTORIES = (
     "integration/transforms/dbt/models",
     "integration/transforms/dbt/macros",
     "integration/transforms/dbt/tests",
-    "output/medallion/dbt",
-    "output/medallion/powerbi",
-    "output/neo4j",
-    "output/azure-search",
-    "output/a2ui",
-    "output/prompt",
-    "output/reports/details",
-    "output/architecture/ddd",
-    "output/mdm",
 )
 
-_V5_OUTPUT_DIRECTORIES = tuple(
-    path.removeprefix("output/") for path in _V5_HUB_DIRECTORIES if path.startswith("output/")
+# Derived/emitted output subdirectories.  These are created under the sibling
+# publish root (``<repo>/ontology-hub-publish/``), NOT under the hub — derived
+# artifacts live outside the authored hub directory.
+_V5_OUTPUT_DIRECTORIES = (
+    "medallion/dbt",
+    "medallion/powerbi",
+    "neo4j",
+    "azure-search",
+    "a2ui",
+    "prompt",
+    "reports/details",
+    "architecture/ddd",
+    "mdm",
 )
 
 # Exact toolkit-owned paths installed by pre-v5 scaffolds.  ``update`` may
