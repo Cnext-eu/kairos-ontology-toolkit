@@ -114,7 +114,7 @@ def test_gather_snapshot_observes_emitted_project_and_adapter(hub):
     assert without.emitted_dbt_project is InputStatus.MISSING
     assert without.adapter == "fabric"
 
-    project = hub / "output" / "medallion" / "dbt"
+    project = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
     project.mkdir(parents=True)
     (project / "dbt_project.yml").write_text("name: hub\n", encoding="utf-8")
 
@@ -123,7 +123,7 @@ def test_gather_snapshot_observes_emitted_project_and_adapter(hub):
 
 
 def test_next_surfaces_optional_validate_dbt_after_emit(hub, monkeypatch):
-    project = hub / "output" / "medallion" / "dbt"
+    project = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
     project.mkdir(parents=True)
     (project / "dbt_project.yml").write_text("name: hub\n", encoding="utf-8")
 

@@ -3,7 +3,7 @@
 """Regression tests for validation report destination (PR2).
 
 `kairos-ontology validate` must write its JSON report under
-``<hub>/output/validation-report.json``, never into the process's current
+``<repo>/ontology-hub-publish/validation-report.json``, never into the process's current
 working directory, regardless of whether it is invoked from the repo root or
 from inside ``ontology-hub/``.
 """
@@ -48,7 +48,7 @@ def test_validate_report_under_hub_output_from_repo_root(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["validate", "--syntax"])
     assert result.exit_code == 0, result.output
 
-    assert (hub / "output" / "validation-report.json").exists()
+    assert (hub.parent / "ontology-hub-publish" / "validation-report.json").exists()
     assert not (tmp_path / "validation-report.json").exists()
 
 
@@ -60,7 +60,7 @@ def test_validate_report_under_hub_output_from_inside_hub(tmp_path, monkeypatch)
     result = CliRunner().invoke(cli, ["validate", "--syntax"])
     assert result.exit_code == 0, result.output
 
-    assert (hub / "output" / "validation-report.json").exists()
+    assert (hub.parent / "ontology-hub-publish" / "validation-report.json").exists()
     assert not (hub / "validation-report.json").exists()
 
 
@@ -78,8 +78,8 @@ def test_report_format_defaults_preserve_json_only_contract(tmp_path, monkeypatc
     result = CliRunner().invoke(cli, ["validate", "--syntax"])
     assert result.exit_code == 0, result.output
 
-    assert (hub / "output" / "validation-report.json").exists()
-    assert not (hub / "output" / "validation-report.md").exists()
+    assert (hub.parent / "ontology-hub-publish" / "validation-report.json").exists()
+    assert not (hub.parent / "ontology-hub-publish" / "validation-report.md").exists()
 
 
 def test_report_format_markdown_writes_only_markdown_by_default_path(tmp_path, monkeypatch):
@@ -90,8 +90,8 @@ def test_report_format_markdown_writes_only_markdown_by_default_path(tmp_path, m
     result = CliRunner().invoke(cli, ["validate", "--syntax", "--report-format", "markdown"])
     assert result.exit_code == 0, result.output
 
-    assert (hub / "output" / "validation-report.md").exists()
-    assert not (hub / "output" / "validation-report.json").exists()
+    assert (hub.parent / "ontology-hub-publish" / "validation-report.md").exists()
+    assert not (hub.parent / "ontology-hub-publish" / "validation-report.json").exists()
 
 
 def test_report_format_both_writes_json_and_markdown(tmp_path, monkeypatch):
@@ -102,8 +102,8 @@ def test_report_format_both_writes_json_and_markdown(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["validate", "--syntax", "--report-format", "both"])
     assert result.exit_code == 0, result.output
 
-    assert (hub / "output" / "validation-report.json").exists()
-    assert (hub / "output" / "validation-report.md").exists()
+    assert (hub.parent / "ontology-hub-publish" / "validation-report.json").exists()
+    assert (hub.parent / "ontology-hub-publish" / "validation-report.md").exists()
 
 
 def test_report_path_overrides_markdown_destination(tmp_path, monkeypatch):
@@ -126,8 +126,8 @@ def test_report_path_overrides_markdown_destination(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
 
     assert explicit_path.exists()
-    assert not (hub / "output" / "validation-report.md").exists()
-    assert not (hub / "output" / "validation-report.json").exists()
+    assert not (hub.parent / "ontology-hub-publish" / "validation-report.md").exists()
+    assert not (hub.parent / "ontology-hub-publish" / "validation-report.json").exists()
 
 
 def test_report_path_with_both_format_rejected(tmp_path, monkeypatch):

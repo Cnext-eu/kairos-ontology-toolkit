@@ -12,10 +12,11 @@ from pathlib import Path
 import click
 
 from ..core.compiler import CompileMode, compile_domain
-from ..core.hub_utils import find_hub_root
+from ..core.hub_utils import find_hub_root, publish_root
 
 _BARE_EMIT_SENTINEL = Path("__kairos_default_medallion_dbt_emit__")
-_DEFAULT_DBT_EMIT_DIR = Path("output") / "medallion" / "dbt"
+#: dbt project sub-path under the publish root (``<publish_root>/medallion/dbt``).
+_DBT_EMIT_SUBPATH = Path("medallion") / "dbt"
 _SHARED_MANIFEST_NAME = ".kairos-compile-manifest.shared.json"
 _PACKAGE_ARTIFACTS = frozenset({"README.md", "dbt_project.yml", "packages.yml"})
 
@@ -142,7 +143,8 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     type=click.Path(path_type=Path, file_okay=False),
     is_flag=False,
     flag_value=str(_BARE_EMIT_SENTINEL),
-    help="Atomically emit generated dbt artifacts below DIRECTORY (default: output/medallion/dbt).",
+    help="Atomically emit generated dbt artifacts below DIRECTORY "
+    "(default: <repo>/ontology-hub-publish/medallion/dbt).",
 )
 @click.option(
     "--format",
@@ -172,20 +174,12 @@ def compile_cmd(
     emit_target = None
     if emit_dir is not None and result.can_emit:
         if emit_dir == _BARE_EMIT_SENTINEL:
-            requested_target = hub / _DEFAULT_DBT_EMIT_DIR
+            requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
         else:
-            requested_target = emit_dir
-            resolved = requested_target.resolve(strict=False)
-            try:
-                resolved.relative_to(hub.resolve(strict=False))
-            except ValueError:
-                click.echo(
-                    f"⚠️  --emit target {resolved} is outside this hub "
-                    f"({hub.resolve(strict=False)}).\n"
-                    f"   The canonical emit target is {hub / _DEFAULT_DBT_EMIT_DIR}; "
-                    f"pass a bare --emit to use it.",
-                    err=True,
-                )
+            # Explicit --emit DIRECTORY is the exact dbt project directory.
+            # Relative values are anchored to the hub root (never the process
+            # cwd) so the target does not wander when run from a subdirectory.
+            requested_target = emit_dir if emit_dir.is_absolute() else hub / emit_dir
         emit_target = _emit_compile_artifacts(result, requested_target)
     if output_format == "json":
         click.echo(json.dumps(_payload(result), indent=2, sort_keys=True))

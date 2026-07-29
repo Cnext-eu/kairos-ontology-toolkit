@@ -8,8 +8,9 @@ description: >
 # Layout Migration and V5 Rebuild
 
 The retained `kairos-ontology migrate` command only moves files from the flat
-folder layout into grouped `model/`, `integration/`, and `output/medallion/`
-directories. It does not convert legacy semantic or execution metadata to v5.
+folder layout into grouped `model/` and `integration/` directories (derived
+output is emitted to the sibling `ontology-hub-publish/` publish root). It does
+not convert legacy semantic or execution metadata to v5.
 
 Before running it, use `--check`, review every planned move, and preserve a clean
 Git rollback point. Invoke it only when the requested outcome is mechanical
@@ -27,7 +28,7 @@ contract upgrade path. For a v5 conversion, never mutate the old hub in place:
    `integration/bindings/*.binding.yaml` EntityBinding documents.
 5. Move complex relational logic into ordinary contracted dbt SQL and properties YAML under
    `integration/transforms/dbt/models/`, referenced by `source.dbtModel`.
-6. Run `compile --check`, review `compile --explain`, and emit into the fresh `output/` tree.
+6. Run `compile --check`, review `compile --explain`, and emit into the fresh `ontology-hub-publish/` tree.
 7. Compare business semantics and downstream dbt/platform tests before cutover.
 
 Keep the old repository immutable for audit and rollback. Do not copy derived output or obsolete

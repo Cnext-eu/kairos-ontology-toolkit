@@ -196,7 +196,9 @@ def main() -> None:
     
     parser = argparse.ArgumentParser(description="Generate Neo4j schema from ontology")
     parser.add_argument("--ontology", type=Path, required=True, help="Path to ontology file")
-    parser.add_argument("--output", type=Path, default=Path("output/neo4j"), help="Output directory")
+    parser.add_argument(
+        "--output", type=Path, default=Path("ontology-hub-publish/neo4j"), help="Output directory"
+    )
     parser.add_argument("--templates", type=Path, default=Path("scripts/templates/neo4j"),
                        help="Template directory")
     

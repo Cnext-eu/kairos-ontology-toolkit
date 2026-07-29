@@ -32,7 +32,7 @@ from .shared import (
 @click.option(
     "--project-dir",
     type=click.Path(path_type=Path),
-    help="dbt project directory (default: output/medallion/dbt).",
+    help="dbt project directory (default: <repo>/ontology-hub-publish/medallion/dbt).",
 )
 @click.option(
     "--profiles-dir",
@@ -42,7 +42,7 @@ from .shared import (
 def validate_dbt_cmd(platform, project_dir, profiles_dir):
     """Run offline dependency, parse, graph, and compile validation for dbt."""
     from ..core.dbt_validation import DbtValidationError, validate_dbt_project
-    from ..core.hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root, publish_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False) or cwd
@@ -51,7 +51,7 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir):
         path = Path(value) if value is not None else default
         return path if path.is_absolute() else hub_root / path
 
-    project = resolve(project_dir, hub_root / "output" / "medallion" / "dbt")
+    project = resolve(project_dir, publish_root(hub_root) / "medallion" / "dbt")
     profiles = resolve(profiles_dir, None) if profiles_dir is not None else None
     try:
         result = validate_dbt_project(
@@ -133,7 +133,7 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir):
     show_default=True,
     help="Validation report format(s) to write. Additive: the default preserves "
     "the pre-existing JSON-only report contract at "
-    "<hub>/output/validation-report.json unchanged.",
+    "<repo>/ontology-hub-publish/validation-report.json unchanged.",
 )
 @click.option(
     "--report-path",
@@ -141,7 +141,8 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir):
     default=None,
     help="Explicit report output path. Only valid with a single --report-format "
     "(json or markdown) — --report-format both always writes the default "
-    "validation-report.json and validation-report.md under <hub>/output/.",
+    "validation-report.json and validation-report.md under "
+    "<repo>/ontology-hub-publish/.",
 )
 def validate(
     ontologies,
@@ -160,7 +161,7 @@ def validate(
     report_path,
 ):
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan, DDD overlays)."""
-    from ..core.hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root, publish_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -212,12 +213,16 @@ def validate(
         raise click.ClickException(
             "--report-path requires --report-format json or markdown (not 'both'); "
             "'both' always writes validation-report.json and validation-report.md "
-            "under <hub>/output/."
+            "under <repo>/ontology-hub-publish/."
         )
 
-    # Report destination: always the hub's output/ dir, never the process CWD
-    # (mirrors the `project` command's output_path resolution below).
-    output_dir = hub_root / "output" if hub_root is not None else cwd / "ontology-hub" / "output"
+    # Report destination: always the publish root (repo-root sibling), never the
+    # process CWD (mirrors the `project` command's output_path resolution below).
+    output_dir = (
+        publish_root(hub_root)
+        if hub_root is not None
+        else publish_root(cwd / "ontology-hub")
+    )
     decisions_path = (
         hub_root / "decisions" if hub_root is not None else cwd / "ontology-hub" / "decisions"
     )
@@ -510,7 +515,7 @@ def validate_silver_ext_cmd(domain, catalog, shapes_override):
     "-o",
     type=click.Path(),
     default=None,
-    help="Output draft TTL path (default: output/shapes-draft/<name>.ttl).",
+    help="Output draft TTL path (default: <repo>/ontology-hub-publish/shapes-draft/<name>.ttl).",
 )
 @click.option(
     "--enum-distinct-max",
@@ -543,7 +548,7 @@ def suggest_shapes_cmd(source, mappings, out, enum_distinct_max, no_sample_value
       kairos-ontology suggest-shapes --source integration/sources/crm/crm.vocabulary.ttl
     """
     from ..core.suggest_shapes import suggest_shapes
-    from ..core.hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root, publish_root
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -572,10 +577,11 @@ def suggest_shapes_cmd(source, mappings, out, enum_distinct_max, no_sample_value
     else:
         source_path = Path(source)
 
-    # Default output: output/shapes-draft/<name>.ttl (outside model/shapes).
+    # Default output: <repo>/ontology-hub-publish/shapes-draft/<name>.ttl (outside model/shapes).
     if out is None:
         name = source_path.name.replace(".vocabulary.ttl", "").replace(".ttl", "")
-        out_path = base / "output" / "shapes-draft" / f"{name}.ttl"
+        pub = publish_root(hub_root or cwd / "ontology-hub")
+        out_path = pub / "shapes-draft" / f"{name}.ttl"
     else:
         out_path = Path(out)
 

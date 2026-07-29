@@ -60,7 +60,7 @@ from .shared import (
     "--output",
     type=click.Path(),
     default=None,
-    help="Output directory for projections (default: <hub>/output).",
+    help="Output directory for projections (default: <repo>/ontology-hub-publish).",
 )
 @click.option(
     "--target",
@@ -126,10 +126,13 @@ def project(
 
     if output is not None:
         output_path = Path(output)
-    elif hub_root is not None:
-        output_path = hub_root / "output"
     else:
-        output_path = cwd / "ontology-hub" / "output"
+        from ..core.hub_utils import publish_root
+
+        if hub_root is not None:
+            output_path = publish_root(hub_root)
+        else:
+            output_path = publish_root(cwd / "ontology-hub")
 
     try:
         run_projections(

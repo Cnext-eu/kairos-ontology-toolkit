@@ -20,7 +20,8 @@ V5 hubs are created fresh; older authoring layouts are not upgraded automaticall
 5. Add a domain with `kairos-ontology init --company-domain <domain> --domain <name>`.
 6. Confirm the scaffold contains `model/ontologies/`, `model/shapes/`,
    `integration/discovery/`, `integration/sources/`, `integration/bindings/`,
-   `integration/transforms/dbt/models/`, `kairos.yaml`, and `output/`.
+   `integration/transforms/dbt/models/`, and `kairos.yaml` (derived output is emitted to the
+   sibling `ontology-hub-publish/`).
 7. Author source inputs, ontology meaning, and closed EntityBinding YAML through their owning skills.
 8. Run ontology validation and `kairos-ontology compile <domain> --check --format json`.
 

@@ -3,7 +3,7 @@
 """The ``mdm-profile`` projection target — emits an immutable MDM profile release.
 
 This is the 8th projection target (ADR-1).  It reads a domain ontology merged with
-its ``<domain>-mdm-ext.ttl`` policy and emits, under ``output/mdm/``:
+its ``<domain>-mdm-ext.ttl`` policy and emits, under ``ontology-hub-publish/mdm/``:
 
 * ``<domain>-mdm-profile.json`` — the canonical, runtime-neutral profile consumed by
   ``kairos-mdm-runtime`` and pinned by the dataplatform under ``contracts/mdm/``;

@@ -18,13 +18,13 @@ integration/sources/<source>/
 integration/bindings/<source>-to-<domain>.binding.yaml
 integration/transforms/dbt/models/
 kairos.yaml
-output/
+../ontology-hub-publish/
 ```
 
 `integration/bindings/` contains closed EntityBinding YAML and is the sole source-to-canonical
 execution authority. Complex joins, windows, aggregations, JSON expansion, fallback logic, or grain
 changes belong in ordinary contracted dbt SQL and properties YAML, then are referenced by
-`source.dbtModel`. `output/` is derived and safe to regenerate.
+`source.dbtModel`. `../ontology-hub-publish/` (a sibling of the hub) is derived and safe to regenerate.
 
 Configure namespace, catalog, adapters, and selected roots in `kairos.yaml`. Keep each domain in an
 OWL ontology with labels/comments and explicit imports. Add optional SHACL in `model/shapes/`.

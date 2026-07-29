@@ -36,15 +36,19 @@ V5_SCAFFOLD_DIRECTORIES = {
     "integration/transforms/dbt/models",
     "integration/transforms/dbt/macros",
     "integration/transforms/dbt/tests",
-    "output/medallion/dbt",
-    "output/medallion/powerbi",
-    "output/neo4j",
-    "output/azure-search",
-    "output/a2ui",
-    "output/prompt",
-    "output/reports/details",
-    "output/architecture/ddd",
-    "output/mdm",
+}
+
+# Derived/emitted output lives under the sibling publish root, not the hub.
+V5_PUBLISH_DIRECTORIES = {
+    "medallion/dbt",
+    "medallion/powerbi",
+    "neo4j",
+    "azure-search",
+    "a2ui",
+    "prompt",
+    "reports/details",
+    "architecture/ddd",
+    "mdm",
 }
 
 RETIRED_V5_PATHS = {
@@ -67,6 +71,9 @@ RETIRED_V5_PATHS = {
 def _assert_v5_hub_contract(hub: Path) -> None:
     for relative in V5_SCAFFOLD_DIRECTORIES:
         assert (hub / relative).is_dir(), relative
+    publish_root = hub.parent / "ontology-hub-publish"
+    for relative in V5_PUBLISH_DIRECTORIES:
+        assert (publish_root / relative).is_dir(), relative
     for relative in RETIRED_V5_PATHS:
         assert not (hub / relative).exists(), relative
 
@@ -84,11 +91,7 @@ def _assert_v5_hub_contract(hub: Path) -> None:
 
 def test_v5_scaffold_directory_contract_is_exact():
     assert set(_V5_HUB_DIRECTORIES) == V5_SCAFFOLD_DIRECTORIES
-    assert set(_V5_OUTPUT_DIRECTORIES) == {
-        path.removeprefix("output/")
-        for path in V5_SCAFFOLD_DIRECTORIES
-        if path.startswith("output/")
-    }
+    assert set(_V5_OUTPUT_DIRECTORIES) == V5_PUBLISH_DIRECTORIES
 
 
 def test_init_creates_hub_structure(tmp_path):
@@ -905,13 +908,13 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             content = wf.read_text(encoding="utf-8")
             assert "--strict" not in content
             assert "compile-plan-only consumers" in content
-            assert content.count('find "ontology-hub/output/') == 2
+            assert content.count('find "ontology-hub-publish/medallion/dbt"') == 2
             assert content.count("-type f -print -quit | grep -q .") == 1
             assert "powerbi-semantic-model.zip" not in content
             assert "POWERBI_PACKAGE" not in content
             assert "persist-credentials: false" in content
-            assert "rm -rf output/medallion/dbt" in content
-            assert 'find "ontology-hub/output/medallion/dbt"' in content
+            assert "rm -rf ontology-hub-publish/medallion/dbt" in content
+            assert 'find "ontology-hub-publish/medallion/dbt"' in content
             assert "-type l -print -quit | grep -q ." in content
             assert "rm -f dbt-artifacts.zip" in content
             assert content.index("-type l -print -quit") < content.index("-type f -print -quit")

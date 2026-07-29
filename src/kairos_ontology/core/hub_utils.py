@@ -9,11 +9,33 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Directories that a scaffolded ontology-hub should contain.
-_HUB_MARKER_DIRS = ("model", "integration", "output")
+# Directories that a scaffolded ontology-hub should contain.  ``output`` is no
+# longer a hub component — derived artifacts live in a sibling publish root (see
+# ``publish_root``), so it is not a hub marker.
+_HUB_MARKER_DIRS = ("model", "integration")
+
+# Name of the sibling folder (at the repository root, next to ``ontology-hub``)
+# that holds all derived/emitted artifacts.
+_PUBLISH_DIRNAME = "ontology-hub-publish"
 
 # Managed-file marker stamped into toolkit-managed files (.github/...).
 _MANAGED_MARKER = "kairos-ontology-toolkit:managed"
+
+
+def publish_root(hub: Path) -> Path:
+    """Return the derived-output publish root for *hub*.
+
+    Derived/emitted artifacts (the dbt project, Power BI, Neo4j, Azure Search,
+    reports, validation reports, etc.) live **outside** the authored hub
+    directory, in a sibling folder at the repository root:
+    ``<hub.parent>/ontology-hub-publish``.
+
+    Callers must pass the *hub root* (as returned by :func:`find_hub_root`), not
+    the current working directory — otherwise the sibling would resolve one level
+    too high.  For a not-yet-discovered hub, use ``publish_root(cwd /
+    "ontology-hub")``.
+    """
+    return hub.parent / _PUBLISH_DIRNAME
 
 
 def _is_managed_root(directory: Path) -> bool:
@@ -88,7 +110,7 @@ def find_hub_root(
     1. ``cwd/ontology-hub/model/ontologies/`` exists → ``cwd/ontology-hub``
     2. ``cwd/model/ontologies/`` exists → ``cwd`` (CWD is the hub root)
     3. ``cwd/ontology-hub/`` exists **and** contains at least one hub marker
-       directory (model/, integration/, or output/) → ``cwd/ontology-hub``
+       directory (model/ or integration/) → ``cwd/ontology-hub``
        *(skipped when require_model=True)*
 
     Args:

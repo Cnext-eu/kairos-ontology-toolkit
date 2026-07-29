@@ -2,7 +2,23 @@
 # Copyright 2026 Cnext.eu
 """Tests for hub_utils.find_hub_root()."""
 
-from kairos_ontology.core.hub_utils import find_hub_root, find_managed_root
+from pathlib import Path
+
+from kairos_ontology.core.hub_utils import find_hub_root, find_managed_root, publish_root
+
+
+class TestPublishRoot:
+    """Tests for publish_root() sibling resolution."""
+
+    def test_sibling_of_hub(self):
+        """publish_root returns a sibling folder next to the hub."""
+        hub = Path("/repo/ontology-hub")
+        assert publish_root(hub) == Path("/repo/ontology-hub-publish")
+
+    def test_uses_literal_name_not_hub_name(self):
+        """The publish folder name is literal, not derived from the hub folder."""
+        hub = Path("/repo/custom-hub-name")
+        assert publish_root(hub).name == "ontology-hub-publish"
 
 
 class TestFindHubRoot:
@@ -34,9 +50,9 @@ class TestFindHubRoot:
         assert find_hub_root(tmp_path) == hub
 
     def test_freshly_scaffolded_hub_single_marker(self, tmp_path):
-        """ontology-hub/ with just one marker dir (output/) → detected."""
+        """ontology-hub/ with just one marker dir (integration/) → detected."""
         hub = tmp_path / "ontology-hub"
-        (hub / "output").mkdir(parents=True)
+        (hub / "integration").mkdir(parents=True)
         assert find_hub_root(tmp_path) == hub
 
     def test_empty_ontology_hub_ignored(self, tmp_path):

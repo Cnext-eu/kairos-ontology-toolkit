@@ -18,7 +18,7 @@ immutable CompilePlan and deterministic downstream artifacts.
 - `decisions/` (`ontology-hub/decisions/`): OKF Decision Log for durable rationale of
   material ontology choices
 - `kairos.yaml`: namespace, catalog, adapters, and selected roots
-- `output/`: derived artifacts only
+- `../ontology-hub-publish/`: derived artifacts only (sibling of the hub)
 
 ## Canonical commands
 

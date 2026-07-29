@@ -24,7 +24,7 @@ integration/sources/<source>/
 integration/bindings/<source>-to-<domain>.binding.yaml
 integration/transforms/dbt/models/
 kairos.yaml
-output/
+../ontology-hub-publish/
 ```
 
 - OWL defines canonical meaning; source TTL defines physical relations and columns.
@@ -34,7 +34,7 @@ output/
   ordinary dbt SQL plus an enforced dbt properties contract, referenced by `source.dbtModel`.
 - `compile` builds one immutable, graph-free `CompilePlan`. Check, explain, emit, Gold, and MDM
   consume this plan; they must not independently resolve or rebuild canonical Silver/dbt inputs.
-- `output/` is derived. Never hand-edit compiler-owned artifacts.
+- `../ontology-hub-publish/` (a sibling of the hub) is derived. Never hand-edit compiler-owned artifacts.
 - V5 is a clean authoring break. Create older hubs again from fresh; do not invent compatibility.
 
 Canonical commands:

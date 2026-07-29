@@ -9,7 +9,7 @@
 packages:
   # - git: "https://github.com/{ORG}/{HUB_REPO}.git"
   #   revision: "{HUB_VERSION}"            # Pin to ontology-hub release tag (e.g., v1.0.0)
-  #   subdirectory: output/medallion/dbt
+  #   subdirectory: ontology-hub-publish/medallion/dbt
 
   # Transitive dependencies (pulled automatically from hub's packages.yml):
   # - dbt_utils

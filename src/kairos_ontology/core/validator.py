@@ -463,7 +463,8 @@ def run_validation(
             default), no report file is written — this keeps the contract
             explicit for direct library callers instead of silently guessing
             a location relative to the process's current working directory.
-            CLI callers should always pass ``<hub>/output/validation-report.json``.
+            CLI callers should always pass
+            ``<repo>/ontology-hub-publish/validation-report.json``.
         markdown_report_path: Additive: explicit path to also (or instead) write a
             deterministic Markdown validation report (toolkit version, effective
             command options, catalog, accelerator, scope/files, and findings — see

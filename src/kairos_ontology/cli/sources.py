@@ -792,14 +792,16 @@ def analyse_sources_cmd(
     "--dbt-output",
     type=click.Path(exists=True),
     default=None,
-    help="Path to generated dbt output directory (default: output/medallion/dbt).",
+    help="Path to generated dbt output directory "
+    "(default: <repo>/ontology-hub-publish/medallion/dbt).",
 )
 @click.option(
     "--output",
     "-o",
     type=click.Path(),
     default=None,
-    help="Report output directory (default: output/reports/silver-sample-audit).",
+    help="Report output directory "
+    "(default: <repo>/ontology-hub-publish/reports/silver-sample-audit).",
 )
 @click.option(
     "--fail-on",
@@ -814,17 +816,18 @@ def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
     only. It does not require a dbt profile, warehouse credentials, or live bronze
     data. Findings are advisory by default.
     """
-    from ..core.hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root, publish_root
     from ..core.silver_sample_audit import run_silver_sample_audit
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
     base = hub_root or cwd
+    pub = publish_root(hub_root or cwd / "ontology-hub")
 
     sources_path = Path(sources) if sources else base / "integration" / "sources"
     mappings_path = Path(mappings) if mappings else base / "model" / "mappings"
-    dbt_output_path = Path(dbt_output) if dbt_output else base / "output" / "medallion" / "dbt"
-    output_path = Path(output) if output else base / "output" / "reports" / "silver-sample-audit"
+    dbt_output_path = Path(dbt_output) if dbt_output else pub / "medallion" / "dbt"
+    output_path = Path(output) if output else pub / "reports" / "silver-sample-audit"
 
     click.echo("🔎 Running offline silver sample audit")
     click.echo(f"   Sources:    {sources_path}")
