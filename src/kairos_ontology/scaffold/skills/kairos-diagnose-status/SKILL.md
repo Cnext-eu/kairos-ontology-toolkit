@@ -47,3 +47,7 @@ uv run kairos-ontology compile <domain> --check --format json
 
 End with the proposal's recommended next action verbatim; do not compute your own.
 A clean report means only that current authored inputs pass the compiler check.
+
+Scope boundary: this skill is the hub-wide input inventory, diagnostics, and next action. For a
+per-binding explanation of policy, load mode, relationships, and each data-quality check with the
+dbt test it emits, use `kairos-execute-report` instead of expanding this diagnosis.

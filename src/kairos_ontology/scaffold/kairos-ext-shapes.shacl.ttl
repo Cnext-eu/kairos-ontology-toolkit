@@ -699,7 +699,17 @@ kairos-ext:DataQualityRuleShape a sh:NodeShape ;
     ] ;
     sh:property [ sh:path kairos-ext:dqOwnerRole ; sh:minCount 1 ; sh:maxCount 1 ] ;
     sh:property [ sh:path kairos-ext:dqEvidence ; sh:minCount 1 ] ;
-    sh:property [ sh:path kairos-ext:dqTestRef ; sh:minCount 1 ] .
+    sh:property [
+        sh:path kairos-ext:dqTestRef ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:in (
+            "kairos.dq.contract-shape.v1" "kairos.dq.freshness.v1" "kairos.dq.volume.v1"
+            "kairos.dq.duplicate-rate.v1" "kairos.dq.range.v1" "kairos.dq.distribution.v1"
+            "kairos.dq.reconciliation.v1" "kairos.dq.referential-coverage.v1"
+            "kairos.dq.cross-field.v1"
+        ) ;
+    ] .
 
 kairos-ext:AdapterSupportShape a sh:NodeShape ;
     sh:targetClass kairos-ext:AdapterSupport ;

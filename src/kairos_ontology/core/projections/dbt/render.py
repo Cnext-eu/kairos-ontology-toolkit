@@ -267,6 +267,7 @@ def render_canonical_project(
     env = Environment(loader=FileSystemLoader(plan.adapter.template_root))
     physical = {item.artifact_path: item for item in plan.models}
     document_plans = {item.artifact_path: item for item in plan.documents}
+    quality_by_model = {item.model_name: item for item in plan.quality_models}
     artifacts: dict[str, str] = {}
     canonical_models = tuple(
         model for model in shaped.silver_models if model.identity.outcome is ModelOutcome.GENERATED
@@ -292,7 +293,30 @@ def render_canonical_project(
         content = render_silver_model(model, env, model_plan, plan.adapter.platform)
         if model_plan.runtime is not None:
             validate_runtime_sql_static(content, plan.adapter.platform)
-        artifacts[path] = content
+        quality = quality_by_model.get(model.identity.model_name)
+        if quality is not None and quality.quarantines_rows:
+            artifacts[quality.evaluated_artifact_path] = content
+            marker_header = "\n".join(content.splitlines()[:2]) + "\n"
+            artifacts[path] = marker_header + render_dq_accepted_model(quality, model)
+            artifacts[quality.quarantine_artifact_path] = render_dq_quarantine(
+                quality,
+                model,
+                adapter=plan.adapter.platform,
+            )
+        else:
+            artifacts[path] = content
+    for quality in plan.quality_models:
+        for rule in quality.rules:
+            artifacts[rule.result_artifact_path] = render_dq_result(
+                rule,
+                adapter=plan.adapter.platform,
+                adapter_version=plan.adapter.version,
+            )
+            artifacts[rule.test_artifact_path] = render_dq_test(rule)
+    if plan.policy is not None and plan.quality_models:
+        artifacts["contracts/dq-runtime-result-contract.schema.json"] = render_dq_runtime_contract(
+            plan.policy.dq_runtime_result
+        )
     for document in shaped.schema_documents:
         if document.kind is not SchemaKind.SILVER:
             continue

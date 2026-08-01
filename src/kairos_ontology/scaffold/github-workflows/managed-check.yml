@@ -28,4 +28,4 @@ jobs:
         run: uv sync
 
       - name: Verify managed files
-        run: kairos-ontology update --check
+        run: uv run kairos-ontology update --check
