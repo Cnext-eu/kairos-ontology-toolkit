@@ -191,6 +191,19 @@ def compile_cmd(
                         f"  {entity.name}: {entity.source} → {entity.target_class} "
                         f"[grain: {', '.join(entity.grain)}]"
                     )
+                    for check in entity.quality:
+                        emitted = f" → {check.emitted_test}" if check.emitted_test else ""
+                        columns = f"({', '.join(check.columns)})" if check.columns else ""
+                        click.echo(f"    dq: {check.kind}{columns}{emitted}")
+                    for rule in entity.data_quality:
+                        quarantine = f" quarantine={rule.quarantine}" if rule.quarantine else ""
+                        click.echo(
+                            f"    dq-rule: {rule.rule_id} [{rule.kind}] "
+                            f"scope={rule.scope} action={rule.action} "
+                            f"severity={rule.severity}{quarantine}"
+                        )
+                        click.echo(f"      → {rule.result_model}")
+                        click.echo(f"      → {rule.result_test}")
                 for path in report.artifact_paths:
                     click.echo(f"  {path}")
             else:

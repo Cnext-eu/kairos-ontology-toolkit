@@ -30,7 +30,8 @@ from ..projections.dbt.canonical_hash import temporal_match_count_column
 from ..projections.dbt.diagnostics import ExecutionMode
 from ..projections.dbt.mapping_specs import SourceMappings
 from ..projections.dbt.mapping_renderers import quote_mapping_identifier
-from ..projections.dbt.policy_bind import bind_policy_facts
+from ..projections.dbt.policy_bind import EXT as _EXT_NS
+from ..projections.dbt.policy_bind import _data_quality_rules, bind_policy_facts
 from ..projections.dbt.policy_normalize import _source_type
 from ..projections.dbt.policy_specs import (
     AuthoredValuesFact,
@@ -68,8 +69,10 @@ from .result import (
     CompileError,
     CompileResult,
     ExplainConformance,
+    ExplainDataQuality,
     ExplainEntity,
     ExplainLoad,
+    ExplainQualityCheck,
     ExplainRelationship,
     ExplainReport,
     SourceLocation,
@@ -584,6 +587,9 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         relations=tuple(relations),
         classes=classes,
         properties=properties,
+        data_quality_rules=_data_quality_rules(
+            graph, _EXT_NS, frozenset(item.uri for item in classes)
+        ),
     )
     return scope, context
 
@@ -1152,6 +1158,7 @@ def merge_bound_sources(
             incremental=tuple(item for bound in bounds for item in bound.policy_facts.incremental),
             hashes=tuple(item for bound in bounds for item in bound.policy_facts.hashes),
             temporal_relationships=_relationship_policies(bindings, context),
+            data_quality=context.data_quality_rules,
             gold=downstream_policy.gold if downstream_policy is not None else policy.gold,
             adapter_support=(
                 downstream_policy.adapter_support
@@ -1405,6 +1412,55 @@ def _explain_field(binding: EntityBinding) -> tuple[tuple[str, str], ...]:
         )
         for field in binding.fields
     )
+
+
+def _quality_model_name(context: ResolutionContext, target_class: str) -> str:
+    """Return the deterministic silver model name for a target class, or empty."""
+    klass = context.klass(target_class)
+    if klass is None:
+        return ""
+    return "".join(char if char.isalnum() else "_" for char in klass.name).strip("_").lower()
+
+
+def _explain_quality(
+    binding: EntityBinding,
+    context: ResolutionContext,
+    emitted_paths: set[str],
+) -> tuple[tuple[ExplainQualityCheck, ...], tuple[str, ...]]:
+    """Explain authored focused DQ checks and the tests each one actually emits.
+
+    ``reconcile-rowcount`` and ``referential`` checks emit a focused singular dbt test file;
+    the returned ``emitted_test`` is set only when that file is actually in the plan's artifact
+    set (``emitted_paths``). ``not-null`` and ``unique`` become generic dbt schema tests carried
+    in the model's ``schema.yml`` rather than standalone files.
+    """
+    model_name = _quality_model_name(context, binding.target_class)
+    checks: list[ExplainQualityCheck] = []
+    emitted_tests: list[str] = []
+    referential_index = 0
+    for check in binding.quality:
+        emitted = ""
+        if check.kind == "reconcile-rowcount" and model_name:
+            candidate = f"tests/{binding.domain}/{model_name}__reconcile_rowcount.sql"
+            emitted = candidate if candidate in emitted_paths else ""
+        elif check.kind == "referential" and model_name:
+            suffix = "" if referential_index == 0 else f"_{referential_index + 1}"
+            candidate = f"tests/{binding.domain}/{model_name}__referential{suffix}.sql"
+            referential_index += 1
+            emitted = candidate if candidate in emitted_paths else ""
+        elif check.kind in {"not-null", "unique"}:
+            emitted = check.kind.replace("-", "_")
+        if emitted and emitted.endswith(".sql"):
+            emitted_tests.append(emitted)
+        checks.append(
+            ExplainQualityCheck(
+                kind=check.kind,
+                columns=check.columns,
+                pointer=check.pointer,
+                emitted_test=emitted,
+            )
+        )
+    return tuple(checks), tuple(sorted(set(emitted_tests)))
 
 
 def _adapter_safety_diagnostic(item: CompileDiagnostic) -> CompileDiagnostic:
@@ -1945,6 +2001,15 @@ def _planned_artifact_paths(
         )
     if materialized.project.emit:
         paths.update(("README.md", "dbt_project.yml", "packages.yml"))
+    for quality in materialized.quality_models:
+        for rule in quality.rules:
+            paths.add(rule.result_artifact_path)
+            paths.add(rule.test_artifact_path)
+        if quality.quarantines_rows:
+            paths.add(quality.evaluated_artifact_path)
+            paths.add(quality.quarantine_artifact_path)
+    if materialized.policy is not None and materialized.quality_models:
+        paths.add("contracts/dq-runtime-result-contract.schema.json")
     return tuple(sorted(path for path in paths if path))
 
 
@@ -2151,8 +2216,41 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     )
 
 
+def _explain_data_quality(quality: object) -> tuple[ExplainDataQuality, ...]:
+    """Explain rendered DD-115 class-attached DQ rules for one silver model."""
+    if quality is None:
+        return ()
+    quarantine = quality.quarantine_artifact_path if quality.quarantines_rows else ""
+    return tuple(
+        ExplainDataQuality(
+            rule_id=item.rule.rule_id.value,
+            kind=item.rule.check.check_kind.value.value,
+            scope=item.rule.scope.value,
+            action=item.rule.action.value.value,
+            severity=item.rule.severity.value.value,
+            result_model=item.result_artifact_path,
+            result_test=item.test_artifact_path,
+            quarantine=quarantine,
+        )
+        for item in quality.rules
+    )
+
+
 def _explain_plan(plan: CompilePlan, artifact_paths: tuple[str, ...]) -> ExplainReport:
     """Build the explicit serializable explain view of a typed compile plan."""
+    valid_bindings = tuple(entity.binding for entity in plan.entities if not entity.blocked)
+    emitted_quality_paths = _focused_quality_artifact_paths(valid_bindings, plan.resolution)
+    explained_quality = {
+        entity.binding.name: _explain_quality(
+            entity.binding, plan.resolution, emitted_quality_paths
+        )
+        for entity in plan.entities
+        if not entity.blocked
+    }
+    quality_by_model = {}
+    materialized = plan.materialization_plan
+    if materialized is not None:
+        quality_by_model = {item.model_name: item for item in materialized.quality_models}
     return ExplainReport(
         domain=plan.domain,
         provenance_hash=plan.provenance_hash,
@@ -2209,6 +2307,13 @@ def _explain_plan(plan: CompilePlan, artifact_paths: tuple[str, ...]) -> Explain
                     )
                     if entity.binding.conformance is not None
                     else None
+                ),
+                quality=explained_quality.get(entity.binding.name, ((), ()))[0],
+                emitted_tests=explained_quality.get(entity.binding.name, ((), ()))[1],
+                data_quality=_explain_data_quality(
+                    quality_by_model.get(
+                        _quality_model_name(plan.resolution, entity.binding.target_class)
+                    )
                 ),
                 blocked=entity.blocked,
             )

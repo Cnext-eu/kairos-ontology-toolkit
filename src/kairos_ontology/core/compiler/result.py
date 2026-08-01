@@ -143,6 +143,30 @@ class ExplainConformance:
 
 
 @dataclass(frozen=True, slots=True)
+class ExplainQualityCheck:
+    """Closed explain shape for one authored focused data-quality check."""
+
+    kind: str
+    columns: tuple[str, ...] = ()
+    pointer: str = ""
+    emitted_test: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ExplainDataQuality:
+    """Closed explain shape for one rendered DD-115 class-attached data-quality rule."""
+
+    rule_id: str
+    kind: str
+    scope: str
+    action: str
+    severity: str
+    result_model: str = ""
+    result_test: str = ""
+    quarantine: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ExplainEntity:
     """Resolved, deterministic explanation of one entity binding."""
 
@@ -157,6 +181,9 @@ class ExplainEntity:
     load: ExplainLoad = field(default_factory=lambda: ExplainLoad(mode="full-refresh"))
     relationship_shapes: tuple[ExplainRelationship, ...] = ()
     conformance: ExplainConformance | None = None
+    quality: tuple[ExplainQualityCheck, ...] = ()
+    emitted_tests: tuple[str, ...] = ()
+    data_quality: tuple[ExplainDataQuality, ...] = ()
     blocked: bool = False
 
 

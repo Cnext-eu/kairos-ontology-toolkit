@@ -14,6 +14,7 @@ from .policy_specs import (
     AdapterSupportFact,
     AuthoredValuesFact,
     CalendarFact,
+    DataQualityRuleFact,
     DeviationFact,
     GoldProductFact,
     GoldTablePolicyFact,
@@ -23,6 +24,14 @@ from .policy_specs import (
 )
 
 EXT = Namespace("https://kairos.cnext.eu/ext#")
+
+
+class DataQualityRuleBindingError(ValueError):
+    """A DD-115 DataQualityRule cannot be bound to exactly one governing entity."""
+
+    def __init__(self, resource_uri: str, message: str) -> None:
+        self.resource_uri = resource_uri
+        super().__init__(message)
 
 
 def _values(
@@ -246,6 +255,62 @@ def _deviations(
     )
 
 
+def _data_quality_rules(
+    graph: Graph,
+    namespace: Namespace,
+    dq_entity_uris: frozenset[str] | None,
+) -> tuple[DataQualityRuleFact, ...]:
+    """Read DD-115 DataQualityRule individuals governed by an in-scope entity.
+
+    Each rule must be attached to exactly one governing ``owl:Class`` via the inverse of
+    ``kairos-ext:dataQualityRule``. Rules governed by no in-scope entity are skipped; rules
+    governed by more than one entity are rejected. ``dqTestRef`` and every other authored slot
+    are read unchanged so the normalizer remains the single fail-closed authority.
+    """
+    rules: list[DataQualityRuleFact] = []
+    for resource in _subjects_of_type(graph, namespace.DataQualityRule):
+        owners = tuple(
+            sorted(
+                {
+                    str(owner)
+                    for owner in graph.subjects(namespace.dataQualityRule, resource)
+                    if isinstance(owner, URIRef)
+                }
+            )
+        )
+        if dq_entity_uris is not None:
+            owners = tuple(owner for owner in owners if owner in dq_entity_uris)
+        if not owners:
+            continue
+        if len(owners) > 1:
+            raise DataQualityRuleBindingError(
+                str(resource),
+                (
+                    f"DataQualityRule {str(resource)!r} is governed by multiple entities "
+                    f"{list(owners)!r}; attach it to exactly one class via "
+                    "kairos-ext:dataQualityRule"
+                ),
+            )
+        rules.append(
+            DataQualityRuleFact(
+                resource_uri=str(resource),
+                governing_entity_uri=owners[0],
+                rule_id=_required(graph, resource, namespace.dqRuleId),
+                version=_required(graph, resource, namespace.dqRuleVersion),
+                category=_required(graph, resource, namespace.dqCategory),
+                scope=_required(graph, resource, namespace.dqScope),
+                check_kind=_required(graph, resource, namespace.dqCheckType),
+                check_expression=_required(graph, resource, namespace.dqCheckExpression),
+                severity=_required(graph, resource, namespace.dqSeverity),
+                tolerance=_required(graph, resource, namespace.dqTolerance),
+                action=_required(graph, resource, namespace.dqAction),
+                owner_role=_required(graph, resource, namespace.dqOwnerRole),
+                evidence=_required(graph, resource, namespace.dqEvidence),
+                test_refs=_required(graph, resource, namespace.dqTestRef),
+            )
+        )
+    return tuple(sorted(rules, key=lambda rule: rule.resource_uri))
+
 def bind_policy_facts(
     graph: Graph,
     *,
@@ -283,7 +348,7 @@ def bind_policy_facts(
         incremental=(),
         hashes=(),
         temporal_relationships=(),
-        data_quality=(),
+        data_quality=_data_quality_rules(policy_graph, EXT, dq_entity_uris),
         gold=gold,
         adapter_support=_adapter_support(policy_graph, EXT),
         deviations=_deviations(policy_graph, EXT),

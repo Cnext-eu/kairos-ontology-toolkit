@@ -2402,6 +2402,7 @@ def _normalize_dq(
         result.append(
             DataQualityRuleSpec(
                 resource_uri=fact.resource_uri,
+                governing_entity_uri=fact.governing_entity_uri,
                 rule_id=rule_id,
                 version=version,
                 category=category,
@@ -3832,15 +3833,30 @@ def _resolve_quality_scopes(
         property_targets.setdefault(descriptor.property_uri, set()).add(descriptor.source_class)
 
     resolved: dict[str, str] = {}
+    valid_classes = set(candidate_classes.values())
     for rule in quality:
         scope = rule.scope.value
+        governing = rule.governing_entity_uri
         targets = set()
         direct = candidate_classes.get(scope)
         if direct is not None:
             targets.add(direct)
         targets.update(table_targets.get(scope, ()))
         targets.update(property_targets.get(scope, ()))
-        targets.intersection_update(candidate_classes.values())
+        targets.intersection_update(valid_classes)
+        if governing and governing in valid_classes:
+            if direct is not None and direct != governing:
+                raise PolicyNormalizationError(
+                    "dq.scope-owner-conflict",
+                    (
+                        f"DQ rule {rule.rule_id.value!r} scope {scope!r} names a different "
+                        f"entity than its governing class {governing!r}"
+                    ),
+                    rule_id="DD-115-dq-scope",
+                    resource_uri=rule.resource_uri,
+                )
+            if governing in targets or not targets:
+                targets = {governing}
         if len(targets) != 1:
             qualifier = "does not resolve" if not targets else "is ambiguous"
             raise PolicyNormalizationError(

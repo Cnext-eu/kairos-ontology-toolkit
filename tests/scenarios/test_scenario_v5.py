@@ -873,3 +873,116 @@ def test_stage2_policy_failures_are_source_located_deterministic_and_non_suppres
     assert diagnostic.location.pointer.endswith("/cdcOperation/updateValues")
     assert "models/silver/party/country.sql" in first.artifact_dict()
     assert "models/silver/party/customer.sql" not in first.artifact_dict()
+
+
+_DQ_RULES_TTL = """
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+party:Customer kairos-ext:dataQualityRule party:CustomerCountryDistribution ,
+    party:CustomerLoadFreshness ,
+    party:CustomerNameRequired .
+
+party:CustomerCountryDistribution a kairos-ext:DataQualityRule ;
+    kairos-ext:dqRuleId "customer.country-distribution" ;
+    kairos-ext:dqRuleVersion "1" ;
+    kairos-ext:dqCategory "business" ;
+    kairos-ext:dqScope party:Customer ;
+    kairos-ext:dqCheckType "distribution" ;
+    kairos-ext:dqCheckExpression "column=country_code;allowed=BE|NL" ;
+    kairos-ext:dqSeverity "warning" ;
+    kairos-ext:dqTolerance "0" ;
+    kairos-ext:dqAction "warn" ;
+    kairos-ext:dqOwnerRole "Domain Data Owner" ;
+    kairos-ext:dqEvidence "distribution policy" ;
+    kairos-ext:dqTestRef "kairos.dq.distribution.v1" .
+
+party:CustomerLoadFreshness a kairos-ext:DataQualityRule ;
+    kairos-ext:dqRuleId "customer.load-freshness" ;
+    kairos-ext:dqRuleVersion "1" ;
+    kairos-ext:dqCategory "operational" ;
+    kairos-ext:dqScope party:Customer ;
+    kairos-ext:dqCheckType "freshness" ;
+    kairos-ext:dqCheckExpression "column=_loaded_at;unit=hours" ;
+    kairos-ext:dqSeverity "warning" ;
+    kairos-ext:dqTolerance "24" ;
+    kairos-ext:dqAction "warn" ;
+    kairos-ext:dqOwnerRole "Domain Data Owner" ;
+    kairos-ext:dqEvidence "freshness policy" ;
+    kairos-ext:dqTestRef "kairos.dq.freshness.v1" .
+
+party:CustomerNameRequired a kairos-ext:DataQualityRule ;
+    kairos-ext:dqRuleId "customer.name-required" ;
+    kairos-ext:dqRuleVersion "1" ;
+    kairos-ext:dqCategory "business" ;
+    kairos-ext:dqScope party:Customer ;
+    kairos-ext:dqCheckType "contract-shape" ;
+    kairos-ext:dqCheckExpression "required=customer_name" ;
+    kairos-ext:dqSeverity "error" ;
+    kairos-ext:dqTolerance "0" ;
+    kairos-ext:dqAction "warn" ;
+    kairos-ext:dqOwnerRole "Domain Data Owner" ;
+    kairos-ext:dqEvidence "contract policy" ;
+    kairos-ext:dqTestRef "kairos.dq.contract-shape.v1" .
+"""
+
+
+def _attach_class_data_quality(hub: Path) -> None:
+    ontology = hub / "model" / "ontologies" / "party.ttl"
+    ontology.write_text(
+        ontology.read_text(encoding="utf-8") + _DQ_RULES_TTL,
+        encoding="utf-8",
+    )
+
+
+def test_class_attached_data_quality_rules_emit_dd115_artifacts(tmp_path):
+    hub = _copy_hub(tmp_path)
+    _attach_class_data_quality(hub)
+
+    plan = compile_domain(hub, "party", CompileMode.EMIT)
+    assert plan.succeeded, [item.render() for item in plan.diagnostics.items]
+
+    artifacts = plan.artifact_dict()
+    quality_models = [
+        path for path in artifacts if path.startswith("models/quality/party/customer__dq__")
+    ]
+    quality_tests = [
+        path for path in artifacts if path.startswith("tests/quality/party/test_customer__dq__")
+    ]
+    assert len(quality_models) == 3
+    assert len(quality_tests) == 3
+    assert "contracts/dq-runtime-result-contract.schema.json" in artifacts
+
+    for path in quality_tests:
+        assert "{{ config(" in artifacts[path]
+        assert "status in ('fail', 'error', 'not-evaluated')" in artifacts[path]
+    for path in quality_models:
+        assert "ref('customer')" in artifacts[path]
+
+    # Plan and emitted artifact sets stay in exact parity.
+    assert tuple(plan.plan.artifact_paths) == tuple(sorted(artifacts))
+
+
+def test_class_attached_data_quality_surfaces_in_explain(tmp_path):
+    hub = _copy_hub(tmp_path)
+    _attach_class_data_quality(hub)
+
+    result = compile_domain(hub, "party", CompileMode.EXPLAIN)
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+
+    customer = next(
+        entity for entity in result.explain.entities if entity.target_class == "party:Customer"
+    )
+    rules = {rule.rule_id: rule for rule in customer.data_quality}
+    assert set(rules) == {
+        "customer.country-distribution",
+        "customer.load-freshness",
+        "customer.name-required",
+    }
+    assert rules["customer.country-distribution"].kind == "distribution"
+    assert rules["customer.load-freshness"].kind == "freshness"
+    assert rules["customer.name-required"].kind == "contract-shape"
+    for rule in customer.data_quality:
+        assert rule.action == "warn"
+        assert rule.result_model.startswith("models/quality/party/customer__dq__")
+        assert rule.result_test.startswith("tests/quality/party/test_customer__dq__")
+        assert rule.quarantine == ""

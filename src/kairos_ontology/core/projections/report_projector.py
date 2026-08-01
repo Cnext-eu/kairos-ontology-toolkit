@@ -2,6 +2,14 @@
 # Copyright 2026 Cnext.eu
 """Report Projector — generate BA-friendly reports for ontology and mapping review.
 
+.. deprecated:: v5
+    LEGACY / non-v5. This projector is invoked only by ``core/projector.py`` (the pre-v5
+    medallion path) and is **not** part of the stateless v5 compile pipeline
+    (``core/compiler/kernel.py``). Its ``cdc-scd-fk-hash-dq`` lane is hardcoded to
+    ``not-available`` because it never receives policy/DQ data. Do not wire the v5
+    ``CompilePlan`` into it — the v5 policy/DQ report surface is
+    ``compile <domain> --explain`` plus the ``kairos-execute-report`` skill.
+
 Produces:
 - Per-source-system HTML/MD mapping reports
 - Domain model overview report (classes, properties, relationships)

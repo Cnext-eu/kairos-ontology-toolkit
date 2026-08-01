@@ -7484,6 +7484,18 @@ generated SQL has executed or that the toolkit operates a data platform.
 - Missing/stale runtime results block only profiles/rules that explicitly require them.
 - DD-089 offline sample audit remains evidence, not runtime telemetry.
 
+### v5 wiring (issue #256)
+
+The v5 stateless compiler collects `kairos-ext:DataQualityRule` individuals that are attached to a
+canonical `owl:Class` via `kairos-ext:dataQualityRule`. Collection happens inside `resolve_scope`
+while the ontology graph is still loaded; the rules are carried graph-free on
+`ResolutionContext.data_quality_rules`, set on the merged `MedallionPolicyFacts.data_quality`, and
+normalized into the same `CompilePlan.quality_models` that emit and explain consume. The governing
+class is retained on `DataQualityRuleFact`/`DataQualityRuleSpec` so scope resolution can disambiguate
+property/relationship-scoped rules and reject attachment/scope conflicts (`dq.scope-owner-conflict`).
+`compile --emit` writes the result model, singular test, quarantine relations (row-level actions),
+and runtime-result contract; `compile --explain` surfaces each rule per entity (`data_quality[]`).
+
 ---
 
 ## DD-116: Non-Writing Projection Readiness

@@ -647,6 +647,7 @@ class DqToleranceKind(str, Enum):
 @dataclass(frozen=True, slots=True)
 class DataQualityRuleFact:
     resource_uri: str
+    governing_entity_uri: str
     rule_id: AuthoredValuesFact
     version: AuthoredValuesFact
     category: AuthoredValuesFact
@@ -695,6 +696,7 @@ class QuarantineEffectSpec:
 @dataclass(frozen=True, slots=True)
 class DataQualityRuleSpec:
     resource_uri: str
+    governing_entity_uri: str
     rule_id: EffectiveValue[str]
     version: EffectiveValue[str]
     category: EffectiveValue[DqCategory]

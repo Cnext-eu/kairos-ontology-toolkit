@@ -43,6 +43,7 @@ from ..projections.dbt.policy_specs import (
     AuthoredValuesFact,
     CanonicalTypeKind,
     CanonicalTypeSpec,
+    DataQualityRuleFact,
     EntityIdentityFact,
     GoldProductFact,
     MedallionPolicyFacts,
@@ -170,6 +171,7 @@ class ResolutionContext:
     relations: tuple[ResolvedRelation, ...] = ()
     classes: tuple[ResolvedClass, ...] = ()
     properties: tuple[ResolvedProperty, ...] = ()
+    data_quality_rules: tuple[DataQualityRuleFact, ...] = ()
 
     def relation(self, ref: str) -> ResolvedRelation | None:
         """Return the resolved relation for an author ``source.relation`` token."""
