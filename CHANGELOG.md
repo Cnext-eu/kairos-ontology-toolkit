@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Standard conformance-report output format for `kairos-design-discovery` (DD-143, #257):** the
+  discovery skill now documents a standard visual archetype conformance-report template (outcome-code
+  badge legend, at-a-glance Mermaid dashboard, per-section heading badges, interview log) so
+  conformance findings render consistently across hubs.
+
+### Fixed
+- **`managed-check` workflow uses `uv run kairos-ontology update --check`:** the scaffolded GitHub
+  Actions workflow referenced the bare `kairos-ontology` command, which is not on `PATH` after
+  `uv sync`; it now calls `uv run kairos-ontology update --check` so the managed-files check runs in
+  the uv-managed venv.
+
 ## [5.0.2] — 2026-07-29
 
 ### Fixed
