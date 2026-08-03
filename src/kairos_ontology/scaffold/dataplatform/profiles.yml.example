@@ -6,14 +6,22 @@
 #
 # The .dbt/profiles.yml file is gitignored to keep secrets out of version control.
 #
+# This example was generated for the platform you passed to `init-dataplatform
+# --platform <platform>`: its block below is active (uncommented) under `dev:`.
+# The other two supported platforms are kept below as commented reference blocks
+# in case you switch platforms later — just comment out the active block and
+# uncomment the one you want instead.
+#
 # See: https://docs.getdbt.com/docs/core/connect-data-platform
 
 {PROJECT_NAME}:
   target: dev
   outputs:
 
+# --- PLATFORM: fabric-lakehouse ---
     # Microsoft Fabric Lakehouse (via Spark)
     # Requires: pip install dbt-fabric
+    # @config
     dev:
       type: fabric
       driver: "ODBC Driver 18 for SQL Server"
@@ -21,13 +29,19 @@
       database: "{your-lakehouse-name}"
       schema: "dbo"
       authentication: CLI  # or ServicePrincipal
-      # For Service Principal auth:
+    # @endconfig
+      # For Service Principal auth, replace the 3 lines above with:
+      # authentication: ServicePrincipal
       # tenant_id: "{tenant-id}"
       # client_id: "{client-id}"
       # client_secret: "{client-secret}"
+# --- END PLATFORM ---
 
+# --- PLATFORM: fabric-warehouse ---
     # Microsoft Fabric Warehouse
-    # prod:
+    # Requires: pip install dbt-fabric
+    # @config
+    # dev:
     #   type: fabric
     #   driver: "ODBC Driver 18 for SQL Server"
     #   server: "{your-workspace}.datawarehouse.fabric.microsoft.com"
@@ -37,8 +51,13 @@
     #   tenant_id: "{tenant-id}"
     #   client_id: "{client-id}"
     #   client_secret: "{client-secret}"
+    # @endconfig
+# --- END PLATFORM ---
 
+# --- PLATFORM: databricks ---
     # Databricks (Unity Catalog)
+    # Requires: pip install dbt-databricks
+    # @config
     # dev:
     #   type: databricks
     #   catalog: "{your-catalog}"
@@ -46,3 +65,5 @@
     #   host: "{workspace-url}.azuredatabricks.net"
     #   http_path: "/sql/1.0/warehouses/{warehouse-id}"
     #   token: "{personal-access-token}"
+    # @endconfig
+# --- END PLATFORM ---
