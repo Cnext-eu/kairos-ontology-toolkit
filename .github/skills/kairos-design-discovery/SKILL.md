@@ -37,22 +37,51 @@ report. The report MUST render the structure below — every element renders nat
 The report accompanies the YAML; it never replaces it as the execution authority, and the YAML
 stays the single machine authority consumed by later lifecycle stages.
 
+### Use the toolkit CLI — never hand-transcribe or hand-script
+
+The `kairos-ontology discovery-conformance` command group is the deterministic tool for this
+phase. Use it; do not re-derive its output by reading archetype YAML/markdown files by eye or by
+writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for these calls.
+
+1. `kairos-ontology discovery-conformance list-archetypes --format json` — discover valid
+   archetype ids and load the **authoritative outcome-codes enum** from the contract. Never
+   assume or hardcode which codes exist; the enum in the reference-models checkout is the only
+   source of truth and it may contain fewer or different codes than any cached example.
+2. `kairos-ontology discovery-conformance load --archetype <id> --format json` — the
+   authoritative source for `core_concepts` (uri/label/tier) and derived relationship
+   `topology` (edges with cardinality). Files can be long or truncated in an editor; the CLI
+   payload is complete and hashed (`catalog_hash`, `concept_set_hash`) — treat it as ground
+   truth over any manual read of the archetype file. Review `warnings` (version drift, missing
+   discovery doc) before proceeding.
+3. Author **only** the per-concept business judgment as data: `outcome` (one of the loaded
+   codes), `rename_to` or `deviation_reason` where applicable, `confidence`, `rationale`,
+   `references`, and `needs_confirmation`. This is the actual discovery analysis and cannot be
+   automated — everything else (the concept list, tiers, topology) comes from step 2.
+4. Assemble the artifact with `kairos_ontology.core.conformance_artifact.build_artifact()` and
+   persist it with `write_artifact()` (or hand-write YAML that matches that exact schema) —
+   don't hand-roll the envelope (`schema_version`, `scorecard`, hashes, etc.).
+5. `kairos-ontology discovery-conformance validate --file integration/discovery/core-concepts-conformance.yaml`
+   — must pass with zero errors before the report is presented as done. Fix and re-validate on
+   any failure; never present an unvalidated artifact as final.
+
 ### Outcome-code legend (badge emojis)
 
-Exactly one emoji per outcome, drawn from the contract's `outcome-codes.yaml` (loaded, never
-hardcoded):
+Build this legend from the `outcome_codes` returned in step 1 above — do not hardcode a fixed
+list here, because the contract can add or remove codes over time. As of the current contract
+version there are five codes:
 
 - ✅ `conforms` — concept matches the reference model as-is.
 - 🟩 `conforms-with-rename` — concept matches under a different local name (record `rename_to`).
 - 🟨 `partial` — concept is partially present; note the gap in the interview log.
 - 🟥 `deviates` — concept is present but diverges (record `deviation_reason`).
 - ⬜ `not-applicable` — concept does not apply to this business.
-- ❓ `open` — SME answer still pending.
-- 🏗️ `in-scope-modelling-gap` — concept is in scope but needs ontology modelling to land.
-- ⏸️ `on-hold` — explicitly parked, with a recorded reason.
 
-When a new outcome code is added to the contract, assign it an emoji here before it is used in a
-report. Unknown codes render as ⚠️ so a concept is never silently dropped.
+If the loaded enum contains a code not covered above (e.g. a future addition), assign it a
+sensible new emoji in the report rather than forcing it into `partial`/`deviates`; if you cannot
+render it meaningfully, use ⚠️ so the concept is never silently dropped. Never invent a code
+(e.g. `open`, `on-hold`) that isn't present in the loaded enum — map genuinely unresolved
+concepts to the closest loaded code (typically `partial`) with `needs_confirmation: true` and a
+note in the interview log instead.
 
 ### 📊 At a glance dashboard
 

@@ -12,6 +12,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovery skill now documents a standard visual archetype conformance-report template (outcome-code
   badge legend, at-a-glance Mermaid dashboard, per-section heading badges, interview log) so
   conformance findings render consistently across hubs.
+- **Business-friendly `kairos-help` orientation:** the skill now leads with a plain-language
+  purpose statement, a lifecycle-stage table, and a full skills reference table with example
+  prompts, so new users get oriented without needing prior ontology vocabulary.
+- **Toolkit-driven `kairos-design-discovery` conformance authoring:** the skill now mandates using
+  the `kairos-ontology discovery-conformance list-archetypes` / `load` / `validate` CLI commands
+  as the authoritative source for archetype ids, outcome codes, and the core-concept catalog,
+  instead of hand-transcribing archetype files or hand-rolling generator scripts. The outcome-code
+  legend now reflects the actual 5-code contract instead of a stale, hardcoded 8-code list.
+- **Three-tier dbt validation guidance in `kairos-execute-validate`:** clarifies the distinction
+  between canonical `compile --check` (always in scope), the offline `validate-dbt` gate
+  (opt-in, no warehouse credentials), and real `dbt build`/`dbt test` (dataplatform-only, requires
+  a live warehouse connection and is out of scope for this skill). Documents the exact
+  `uv sync --extra dbt-validate-*` commands needed before `validate-dbt` can run, and directs the
+  skill to confirm the target platform (Fabric or Databricks) with the user before the first
+  `validate-dbt` invocation in a session.
+- **Platform-aware dataplatform `profiles.yml.example`:** `init-dataplatform --platform` now
+  pre-activates the matching connection block (Fabric Lakehouse, Fabric Warehouse, or Databricks)
+  in the generated `.dbt/profiles.yml.example`, with the other two platforms kept as commented
+  reference blocks — no more manual comment-toggling to switch platforms.
 
 ### Fixed
 - **`managed-check` workflow uses `uv run kairos-ontology update --check`:** the scaffolded GitHub

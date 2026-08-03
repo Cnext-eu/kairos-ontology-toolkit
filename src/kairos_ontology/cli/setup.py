@@ -3,6 +3,7 @@
 """Focused setup CLI commands."""
 
 import click
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -542,7 +543,7 @@ def migrate(check, dry_run, hub_path):
         if check:
             print(
                 "  DELETE  application-models/  "
-            "(ERDs now in ontology-hub-publish/medallion/dbt/docs/diagrams/)"
+                "(ERDs now in ontology-hub-publish/medallion/dbt/docs/diagrams/)"
             )
         else:
             shutil.rmtree(app_models)
@@ -1004,6 +1005,74 @@ def new_repo(
     print("  kairos-ontology init --domain <your-domain>")
 
 
+_PLATFORM_MARKER_RE = re.compile(r"^\s*# --- PLATFORM: (\S+) ---\s*$")
+_PLATFORM_END_MARKER_RE = re.compile(r"^\s*# --- END PLATFORM ---\s*$")
+_CONFIG_START_RE = re.compile(r"^(\s*)# @config\s*$")
+_CONFIG_END_RE = re.compile(r"^\s*# @endconfig\s*$")
+_COMMENTED_LINE_RE = re.compile(r"^(\s*)#\s?(.*)$")
+
+
+def _toggle_config_line(line: str, *, active: bool, base_indent: str) -> str:
+    """Uncomment (active) or comment (inactive) one profile config line.
+
+    ``base_indent`` is the indentation of the enclosing ``# @config`` marker; it is
+    the fixed comment column used for every line in that config region, so
+    re-commenting an active block reproduces the template's original alignment
+    (marker at the block's base column, child indentation preserved after it).
+    Blank lines are returned unchanged either way; a config line is only ever
+    commented or uncommented, never duplicated.
+    """
+    match = _COMMENTED_LINE_RE.match(line)
+    if match:
+        indent, rest = match.group(1), match.group(2)
+        return f"{indent}{rest}" if active else line
+    if active or not line.strip():
+        return line
+    rest = line[len(base_indent) :] if line.startswith(base_indent) else line.lstrip()
+    return f"{base_indent}# {rest}"
+
+
+def _activate_profile_platform(content: str, platform: str) -> str:
+    """Activate one platform's dbt profile block, keeping the others as reference.
+
+    The template marks each platform's YAML with ``# --- PLATFORM: <id> ---`` /
+    ``# --- END PLATFORM ---`` and its toggleable lines with ``# @config`` /
+    ``# @endconfig``. This uncomments the block matching ``platform`` and ensures
+    the other platforms stay commented out; all marker lines are stripped from
+    the output since they exist only to drive this selection. Lines inside a
+    platform's region but outside its ``# @config``/``# @endconfig`` markers
+    (e.g. alternative-auth notes) are left untouched regardless of activation.
+    """
+    current_platform: str | None = None
+    in_config = False
+    base_indent = ""
+    output: list[str] = []
+    for line in content.splitlines():
+        if _PLATFORM_MARKER_RE.match(line):
+            current_platform = _PLATFORM_MARKER_RE.match(line).group(1)
+            continue
+        if _PLATFORM_END_MARKER_RE.match(line):
+            current_platform = None
+            continue
+        config_start_match = _CONFIG_START_RE.match(line)
+        if config_start_match:
+            in_config = True
+            base_indent = config_start_match.group(1)
+            continue
+        if _CONFIG_END_RE.match(line):
+            in_config = False
+            continue
+        if in_config and current_platform is not None:
+            output.append(
+                _toggle_config_line(
+                    line, active=current_platform == platform, base_indent=base_indent
+                )
+            )
+        else:
+            output.append(line)
+    return "\n".join(output) + "\n"
+
+
 @click.command(name="init-dataplatform")
 @click.argument("name", required=False, default=None)
 @click.option(
@@ -1130,6 +1199,8 @@ def init_dataplatform(name, dest, platform, org_override):
         src = _DATAPLATFORM_SCAFFOLD / src_name
         if src.exists():
             content = src.read_text(encoding="utf-8")
+            if src_name == "profiles.yml.example":
+                content = _activate_profile_platform(content, platform)
             for placeholder, value in subs.items():
                 content = content.replace(placeholder, value)
             (repo_dir / dst_name).write_text(content, encoding="utf-8")

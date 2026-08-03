@@ -5,6 +5,56 @@ description: Orientation to Kairos v5 authored inputs, canonical compilation, co
 
 # Kairos Help
 
+## 👋 Welcome to the Kairos Ontology Toolkit
+
+**Purpose:** Kairos helps your organization agree on one shared definition of your business data —
+like what a "customer," "invoice," or "product" really means — and then automatically turns that
+shared understanding into working data pipelines, reports, dashboards, and search tools. Instead of
+every team defining things their own way, Kairos keeps everyone aligned on one source of truth and
+keeps all downstream systems consistent with it, automatically.
+
+### 🔄 Lifecycle stages
+
+| Stage | What happens |
+|---|---|
+| **1. Orient** | Get oriented or check the health of your project. |
+| **2. Setup** | Set up a new project or configure an existing one. |
+| **3. Discover** | Agree on business terms and context together. |
+| **4. Design** | Connect source systems, define shared business concepts, and describe how data maps between them. |
+| **5. Validate** | Check that everything is correct and consistent. |
+| **6. Compile / Execute** | Generate the resulting pipelines and artifacts, and review the results. |
+| **7. Consume** | Connect the generated output to downstream systems that will use it. |
+| **(Toolkit)** | Maintain or release the toolkit itself — for internal maintainers only. |
+
+### 🧰 Skills reference
+
+| Skill | Purpose | Example prompt |
+|---|---|---|
+| `kairos-help` | Orientation to Kairos v5 | "What is Kairos and how do I get started?" |
+| `kairos-diagnose-status` | Read-only hub diagnostic | "Show me the current state of my hub." |
+| `kairos-setup-init` | Create a fresh v5 hub | "Scaffold a new ontology hub called acme-hub." |
+| `kairos-setup-config` | Configure hub layout | "Add a new source folder to kairos.yaml." |
+| `kairos-setup-migrate` | Migrate flat-layout hubs | "Migrate my old hub to the v5 layout." |
+| `kairos-design-discovery` | Capture business context/terms | "Document what 'customer churn' means for this domain." |
+| `kairos-design-source` | Import/document source schemas | "Import the schema for our billing Postgres table." |
+| `kairos-design-domain` | Design OWL classes/properties | "Add an Invoice class with an issuedDate property." |
+| `kairos-design-mapping` | Author EntityBinding YAML | "Bind the billing.invoices table to the Invoice entity." |
+| `kairos-develop-dbt-transformation` | Complex contracted dbt SQL | "Write a dbt model to dedupe invoice line items." |
+| `kairos-design-gold` | Design Gold/BI products | "Create a Gold model for monthly invoice summaries." |
+| `kairos-design-mdm` | Author MDM policy | "Define survivorship rules for duplicate customers." |
+| `kairos-execute-validate` | Validate syntax/SHACL/bindings | "Check my ontology and bindings for errors." |
+| `kairos-execute-project` | Compile check/explain/emit | "Compile the billing domain and show diagnostics." |
+| `kairos-execute-report` | Review bindings and compile explain | "Show me a report of all EntityBindings." |
+| `kairos-setup-dataplatform` | Scaffold downstream dbt repo | "Set up a new dbt repo to consume compiled output." |
+| `kairos-package-dataplatform` | Consume artifacts downstream | "Wire the billing dbt package into our platform repo." |
+| `kairos-toolkit-dev` | Develop the toolkit itself | "Add a new CLI flag to the compile command." |
+| `kairos-toolkit-ops` | Release/update managed files | "Bump the toolkit version and sync scaffold files." |
+| `SC-feature-branch` | Start a feature branch | "Create a feature branch for the invoice binding work." |
+| `SC-merge-pr` | Open/merge a PR | "Open a PR to merge this feature branch." |
+| `SC-document` | Manage Outline wiki docs | "Update the wiki page for our ontology conventions." |
+
+## Technical reference
+
 Kairos v5 turns authored source schemas, OWL meaning, and closed EntityBinding YAML into one
 immutable CompilePlan and deterministic downstream artifacts.
 

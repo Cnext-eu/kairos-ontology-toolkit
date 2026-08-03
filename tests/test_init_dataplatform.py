@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
+from kairos_ontology.cli.setup import _activate_profile_platform
 
 
 @pytest.fixture(scope="module")
@@ -26,16 +27,16 @@ def mock_hub(tmp_path_factory):
     # Create a vocabulary TTL with table definitions
     vocab = hub / "integration" / "sources" / "adminpulse" / "adminpulse.vocabulary.ttl"
     vocab.write_text(
-        '@prefix ap: <https://kairos.cnext.eu/source/adminpulse#> .\n'
-        '@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .\n'
-        '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n'
+        "@prefix ap: <https://kairos.cnext.eu/source/adminpulse#> .\n"
+        "@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
         'ap:adminpulse a kairos-bronze:SourceSystem ; rdfs:label "adminpulse" .\n'
-        'ap:tblClient a kairos-bronze:SourceTable ;\n'
-        '    kairos-bronze:sourceSystem ap:adminpulse ;\n'
+        "ap:tblClient a kairos-bronze:SourceTable ;\n"
+        "    kairos-bronze:sourceSystem ap:adminpulse ;\n"
         '    kairos-bronze:tableName "tblClient" ;\n'
         '    rdfs:label "tblClient" .\n'
-        'ap:tblInvoice a kairos-bronze:SourceTable ;\n'
-        '    kairos-bronze:sourceSystem ap:adminpulse ;\n'
+        "ap:tblInvoice a kairos-bronze:SourceTable ;\n"
+        "    kairos-bronze:sourceSystem ap:adminpulse ;\n"
         '    kairos-bronze:tableName "tblInvoice" ;\n'
         '    rdfs:label "tblInvoice" .\n',
         encoding="utf-8",
@@ -52,12 +53,13 @@ def mock_hub(tmp_path_factory):
     subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "init", "--allow-empty"],
-        cwd=tmp_path, capture_output=True,
+        cwd=tmp_path,
+        capture_output=True,
     )
     subprocess.run(
-        ["git", "remote", "add", "origin",
-         "https://github.com/TestOrg/test-ontology-hub.git"],
-        cwd=tmp_path, capture_output=True,
+        ["git", "remote", "add", "origin", "https://github.com/TestOrg/test-ontology-hub.git"],
+        cwd=tmp_path,
+        capture_output=True,
     )
 
     return tmp_path
@@ -72,15 +74,74 @@ def dataplatform_output(mock_hub):
     old_cwd = os.getcwd()
     try:
         os.chdir(mock_hub)
-        result = runner.invoke(cli, [
-            "init-dataplatform", "test-dataplatform",
-            "--path", str(mock_hub),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "init-dataplatform",
+                "test-dataplatform",
+                "--path",
+                str(mock_hub),
+            ],
+        )
     finally:
         os.chdir(old_cwd)
 
     assert result.exit_code == 0, result.output
     return dp_dir
+
+
+class TestActivateProfilePlatform:
+    """Unit tests for the marker-driven profiles.yml.example toggle helper."""
+
+    TEMPLATE = (
+        "{PROJECT_NAME}:\n"
+        "  target: dev\n"
+        "  outputs:\n"
+        "\n"
+        "# --- PLATFORM: alpha ---\n"
+        "    # Alpha docs\n"
+        "    # @config\n"
+        "    dev:\n"
+        "      type: alpha\n"
+        "      value: 1\n"
+        "    # @endconfig\n"
+        "      # always a comment\n"
+        "# --- END PLATFORM ---\n"
+        "\n"
+        "# --- PLATFORM: beta ---\n"
+        "    # Beta docs\n"
+        "    # @config\n"
+        "    # dev:\n"
+        "    #   type: beta\n"
+        "    #   value: 2\n"
+        "    # @endconfig\n"
+        "# --- END PLATFORM ---\n"
+    )
+
+    def test_activates_requested_platform_only(self):
+        out = _activate_profile_platform(self.TEMPLATE, "beta")
+        assert "\n      type: beta\n" in out
+        assert "\n      type: alpha" not in out
+        assert "#   type: alpha" in out
+        assert "#   type: beta" not in out
+
+    def test_leaves_non_config_comment_untouched_when_active(self):
+        out = _activate_profile_platform(self.TEMPLATE, "alpha")
+        assert "type: alpha" in out
+        assert "# always a comment" in out
+
+    def test_strips_marker_lines(self):
+        out = _activate_profile_platform(self.TEMPLATE, "alpha")
+        assert "@config" not in out
+        assert "@endconfig" not in out
+        assert "PLATFORM:" not in out
+
+    def test_only_one_active_block(self):
+        import re
+
+        out = _activate_profile_platform(self.TEMPLATE, "beta")
+        active_types = [m.group(1) for m in re.finditer(r"^\s*type:\s*(\S+)", out, re.MULTILINE)]
+        assert active_types == ["beta"]
 
 
 def _run_in_hub(runner, mock_hub, args):
@@ -107,9 +168,7 @@ class TestInitDataplatform:
         assert "TestOrg" in packages or "test-ontology-hub" in packages
 
     def test_sources_yml_populated_from_vocabulary(self, dataplatform_output):
-        sources = (dataplatform_output / "models" / "_sources.yml").read_text(
-            encoding="utf-8"
-        )
+        sources = (dataplatform_output / "models" / "_sources.yml").read_text(encoding="utf-8")
         assert "adminpulse" in sources
         assert "tblClient" in sources
         assert "tblInvoice" in sources
@@ -196,11 +255,18 @@ class TestInitDataplatformEdgeCases:
         runner = CliRunner()
         dp_dir = mock_hub / "test-dp-adapter"
 
-        _run_in_hub(runner, mock_hub, [
-            "init-dataplatform", "test-dp-adapter",
-            "--path", str(mock_hub),
-            "--platform", "fabric-warehouse",
-        ])
+        _run_in_hub(
+            runner,
+            mock_hub,
+            [
+                "init-dataplatform",
+                "test-dp-adapter",
+                "--path",
+                str(mock_hub),
+                "--platform",
+                "fabric-warehouse",
+            ],
+        )
 
         pyproject = (dp_dir / "pyproject.toml").read_text(encoding="utf-8")
         assert "dbt-fabric>=1.9.0" in pyproject
@@ -210,9 +276,15 @@ class TestInitDataplatformEdgeCases:
         runner = CliRunner()
         output_dir = tmp_path_factory.mktemp("derived")
 
-        result = _run_in_hub(runner, mock_hub, [
-            "init-dataplatform", "--path", str(output_dir),
-        ])
+        result = _run_in_hub(
+            runner,
+            mock_hub,
+            [
+                "init-dataplatform",
+                "--path",
+                str(output_dir),
+            ],
+        )
 
         assert result.exit_code == 0, result.output
         assert (output_dir / "test-dataplatform").exists()
@@ -222,13 +294,74 @@ class TestInitDataplatformEdgeCases:
         dp_dir.mkdir(exist_ok=True)
 
         runner = CliRunner()
-        result = _run_in_hub(runner, mock_hub, [
-            "init-dataplatform", "existing-dp",
-            "--path", str(mock_hub),
-        ])
+        result = _run_in_hub(
+            runner,
+            mock_hub,
+            [
+                "init-dataplatform",
+                "existing-dp",
+                "--path",
+                str(mock_hub),
+            ],
+        )
 
         assert result.exit_code != 0
         assert "already exists" in result.output
+
+
+class TestProfilesExamplePlatformSelection:
+    """The generated .dbt/profiles.yml.example is pre-activated for --platform."""
+
+    def _profiles_example(self, mock_hub, name, platform=None):
+        runner = CliRunner()
+        args = ["init-dataplatform", name, "--path", str(mock_hub)]
+        if platform is not None:
+            args += ["--platform", platform]
+        result = _run_in_hub(runner, mock_hub, args)
+        assert result.exit_code == 0, result.output
+        return (mock_hub / name / ".dbt" / "profiles.yml.example").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _active_types(content):
+        """Return the set of dbt adapter `type:` values that are NOT commented out."""
+        import re
+
+        return {
+            m.group(1)
+            for line in content.splitlines()
+            if (m := re.match(r"^\s*type:\s*(\S+)", line))
+        }
+
+    def test_default_platform_activates_fabric_lakehouse(self, mock_hub):
+        content = self._profiles_example(mock_hub, "dp-default")
+        assert self._active_types(content) == {"fabric"}
+        assert '"{your-lakehouse-name}"' in content
+        assert "authentication: CLI" in content
+
+    def test_fabric_warehouse_platform_activates_warehouse_block(self, mock_hub):
+        content = self._profiles_example(mock_hub, "dp-fabric-wh", platform="fabric-warehouse")
+        assert self._active_types(content) == {"fabric"}
+        assert '"{your-warehouse-name}"' in content
+        assert "authentication: ServicePrincipal" in content
+
+    def test_databricks_platform_activates_databricks_block(self, mock_hub):
+        content = self._profiles_example(mock_hub, "dp-databricks", platform="databricks")
+        assert self._active_types(content) == {"databricks"}
+        assert '"{your-catalog}"' in content
+
+    def test_generated_example_is_valid_yaml_with_one_active_target(self, mock_hub):
+        import yaml
+
+        content = self._profiles_example(mock_hub, "dp-yaml-check", platform="databricks")
+        parsed = yaml.safe_load(content)
+        [outputs] = [v["outputs"] for v in parsed.values()]
+        assert list(outputs.keys()) == ["dev"]
+        assert outputs["dev"]["type"] == "databricks"
+
+    def test_no_leftover_marker_lines(self, mock_hub):
+        content = self._profiles_example(mock_hub, "dp-markers", platform="fabric-lakehouse")
+        assert "@config" not in content
+        assert "PLATFORM:" not in content
 
 
 class TestUpdateDataplatform:

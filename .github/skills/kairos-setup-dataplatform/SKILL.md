@@ -11,8 +11,12 @@ deployment configuration, and runtime tests.
 1. From a v5 hub, run `kairos-ontology compile <domain> --check --format json` for each selected
    domain and resolve all errors.
 2. Set `KAIROS_SKILL_CONTEXT=1`, then run
-   `kairos-ontology init-dataplatform <name> --platform <platform>`.
-3. Configure `profiles.yml` without committing credentials.
+   `kairos-ontology init-dataplatform <name> --platform <platform>`
+   (`fabric-lakehouse`, `fabric-warehouse`, or `databricks`).
+3. `.dbt/profiles.yml.example` is already pre-activated for the chosen `--platform` — its block
+   is uncommented under `dev:`, the other two platforms remain as commented reference blocks.
+   Copy it to `.dbt/profiles.yml` and fill in real connection details/credentials only; no
+   manual comment-toggling between platforms is required.
 4. Bind physical databases, schemas, and source relations in the downstream dbt project.
 5. Consume the compiler-emitted dbt package at an immutable Git revision or artifact version.
 6. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` against the target adapter.
