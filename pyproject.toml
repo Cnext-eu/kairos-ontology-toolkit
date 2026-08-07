@@ -27,7 +27,7 @@ dependencies = [
     # Document parsing for business discovery (DD-060) and Parquet source import:
     #   pypdf   — extract text from PDF artifacts in .import/businessdiscovery/
     #   pyarrow — read Parquet source/data files (also exposed via the [parquet] extra)
-    "pypdf>=4.0.0",
+    "pypdf>=6.14.2",
     "pyarrow>=14.0.0",
     # JSON-Schema validation of archetype catalog files (issue #203 / DD-090).
     "jsonschema>=4.0.0",
