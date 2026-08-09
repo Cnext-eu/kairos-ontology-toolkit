@@ -1,0 +1,16 @@
+schema_version: 1
+id: line-item-child
+label: Line-item child
+description: >-
+  A canonical-tier child entity that belongs to a parent entity materialized by a *different*
+  domain's binding (e.g. an order line item belonging to an order in another domain). Grain
+  and identity remain sentinel-confirmed, and this archetype additionally scaffolds one
+  DD-138 `externalReference` relationship as a heavily-commented worked example the author
+  edits in place -- this is the toolkit's only generated (not hand-authored) worked example of
+  the cross-domain relationship shape.
+tier: canonical
+grainMode: sentinel
+identityMode: sentinel
+loadMode: full-refresh
+scaffoldConformance: false
+scaffoldRelationshipExample: true

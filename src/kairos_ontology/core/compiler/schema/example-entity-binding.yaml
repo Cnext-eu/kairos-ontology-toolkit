@@ -48,11 +48,19 @@ fields:
     expression:
       fn: upper
       args: [{ column: country }]
-  # FK join-local column for the cross-domain relationship below. A relationship's
-  # join.local column is NOT auto-materialized: it MUST also be mapped as a scalar field
-  # (DD-107-source-ownership), otherwise compile fails with mapping.unresolved-join-input.
-  - property: party:accountReference
+# A relationship's join.local column is NOT auto-materialized (DD-107-source-ownership):
+# it must be produced by an authored fields: entry or, as here, a technicalFields: entry
+# (DD-139). Before DD-139 the only option was mapping it as a scalar field, which invented a
+# synthetic ontology property (party:accountReference) purely to satisfy materialization. A
+# technicalFields: entry materializes the same Silver output column without asserting any
+# ontology property: it names the source expression, output name, output type, nullability,
+# and technical purpose (identity | quality | relationship) instead of a `property:`.
+technicalFields:
+  - name: account_ref
     expression: account_id
+    type: string
+    nullable: false
+    purpose: relationship
 relationships:
   - property: party:hasCountry
     target: ref:Country

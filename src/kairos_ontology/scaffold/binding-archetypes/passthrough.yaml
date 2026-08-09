@@ -1,0 +1,15 @@
+schema_version: 1
+id: passthrough
+label: Passthrough
+description: >-
+  Fully automatic, ready-to-compile scaffold for a source-system table that already maps
+  cleanly onto an accelerator (or already-authored local-extension) class. Grain and identity
+  are derived from Bronze metadata (primary key, or the non-nullable column with the highest
+  distinct_count) rather than sentineled, because a passthrough table's natural key is already
+  evidenced by the source contract.
+tier: passthrough
+grainMode: derive
+identityMode: derive
+loadMode: full-refresh
+scaffoldConformance: false
+scaffoldRelationshipExample: false

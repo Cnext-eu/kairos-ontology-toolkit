@@ -1,0 +1,14 @@
+schema_version: 1
+id: single-source-master
+label: Single-source master
+description: >-
+  A canonical-tier master entity sourced from exactly one system. Field mapping is resolved
+  automatically the same way as passthrough, but grain and identity carry irreducible
+  modeling judgement for a master entity (surrogate vs. natural key, true business grain) and
+  are always left as sentinel placeholders a human must confirm before the binding compiles.
+tier: canonical
+grainMode: sentinel
+identityMode: sentinel
+loadMode: full-refresh
+scaffoldConformance: false
+scaffoldRelationshipExample: false

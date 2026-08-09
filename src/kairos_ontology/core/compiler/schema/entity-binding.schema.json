@@ -28,6 +28,10 @@
     "quality": {
       "type": "array",
       "items": {"$ref": "#/definitions/quality"}
+    },
+    "technicalFields": {
+      "type": "array",
+      "items": {"$ref": "#/definitions/technicalField"}
     }
   },
   "definitions": {
@@ -44,7 +48,8 @@
       "required": ["name", "domain"],
       "properties": {
         "name": {"$ref": "#/definitions/nonEmptyString"},
-        "domain": {"$ref": "#/definitions/nonEmptyString"}
+        "domain": {"$ref": "#/definitions/nonEmptyString"},
+        "tier": {"enum": ["passthrough", "canonical"]}
       }
     },
     "source": {
@@ -371,6 +376,20 @@
           "uniqueItems": true,
           "items": {"$ref": "#/definitions/nonEmptyString"}
         }
+      }
+    },
+    "technicalField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "expression", "type", "nullable", "purpose"],
+      "properties": {
+        "name": {"$ref": "#/definitions/nonEmptyString"},
+        "expression": {},
+        "type": {
+          "enum": ["string", "int32", "int64", "decimal", "boolean", "date", "timestamp"]
+        },
+        "nullable": {"type": "boolean"},
+        "purpose": {"enum": ["identity", "quality", "relationship"]}
       }
     }
   }

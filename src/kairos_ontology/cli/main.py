@@ -30,6 +30,8 @@ from .projections import (
     scaffold_mapping_cmd,
     scaffold_silver_ext_cmd,
 )
+from .scaffold_binding import scaffold_binding_cmd
+from .scaffold_system import scaffold_system_cmd
 from .setup import (
     init,
     migrate,
@@ -53,12 +55,14 @@ from .inspection import (
     resolve_ontology_cmd,
     show_class_inventory_cmd,
     list_class_properties_cmd,
+    fit_report_cmd,
     explain_term_cmd,
     coverage_report_cmd,
     generate_inventory_cmd,
     check_inventory_cmd,
     draft_model_report_cmd,
     next_action_cmd,
+    design_landscape_cmd,
 )
 from .operations import (
     update,
@@ -123,6 +127,8 @@ def register_commands(group: click.Group) -> None:
     group.add_command(project)
     group.add_command(scaffold_mapping_cmd)
     group.add_command(scaffold_silver_ext_cmd)
+    group.add_command(scaffold_binding_cmd)
+    group.add_command(scaffold_system_cmd)
     group.add_command(init)
     group.add_command(migrate)
     group.add_command(new_repo)
@@ -141,12 +147,14 @@ def register_commands(group: click.Group) -> None:
     group.add_command(resolve_ontology_cmd)
     group.add_command(show_class_inventory_cmd)
     group.add_command(list_class_properties_cmd)
+    group.add_command(fit_report_cmd)
     group.add_command(explain_term_cmd)
     group.add_command(coverage_report_cmd)
     group.add_command(generate_inventory_cmd)
     group.add_command(check_inventory_cmd)
     group.add_command(draft_model_report_cmd)
     group.add_command(next_action_cmd)
+    group.add_command(design_landscape_cmd)
     group.add_command(update)
     group.add_command(update_refmodels)
 

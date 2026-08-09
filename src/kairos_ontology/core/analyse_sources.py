@@ -137,7 +137,7 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
     """Parse a bronze vocabulary TTL file into a table→columns structure.
 
     Returns dict mapping table_name → list of column dicts with
-    {name, data_type, nullable, samples}.
+    {name, data_type, nullable, samples, distinct_count}.
     """
     g = Graph()
     g.parse(vocab_path, format="turtle")
@@ -160,17 +160,42 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
             nullable = bool(g.value(col_uri, KAIROS_BRONZE.nullable))
             samples_raw = g.value(col_uri, KAIROS_BRONZE.sampleValues)
             samples = str(samples_raw).split(" | ") if samples_raw else []
+            distinct_count_raw = g.value(col_uri, KAIROS_BRONZE.distinctCount)
+            distinct_count = int(distinct_count_raw) if distinct_count_raw is not None else None
 
             columns.append({
                 "name": col_name,
                 "data_type": data_type,
                 "nullable": nullable,
                 "samples": samples,
+                "distinct_count": distinct_count,
             })
 
         tables[tbl_name] = columns
 
     return tables
+
+
+def parse_source_primary_keys(vocab_path: Path) -> dict[str, tuple[str, ...]]:
+    """Parse a bronze vocabulary TTL file's declared ``primaryKeyColumns`` per table.
+
+    Returns dict mapping table_name -> ordered tuple of primary-key column names (empty when
+    a table declares none). Kept separate from :func:`parse_source_vocabulary` (which does not
+    surface this table-level field) so callers that only need primary-key evidence -- e.g.
+    ``scaffold_binding``'s grain/technical-field heuristics -- can reuse this exempted Bronze
+    parse site instead of parsing the vocabulary graph themselves.
+    """
+    g = Graph()
+    g.parse(vocab_path, format="turtle")
+
+    keys: dict[str, tuple[str, ...]] = {}
+    for tbl_uri in g.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
+        tbl_name = str(
+            g.value(tbl_uri, KAIROS_BRONZE.tableName) or tbl_uri.split("#")[-1].split("/")[-1]
+        )
+        raw = g.value(tbl_uri, KAIROS_BRONZE.primaryKeyColumns)
+        keys[tbl_name] = tuple(str(raw).split()) if raw else ()
+    return keys
 
 
 def analyse_sample_evidence(

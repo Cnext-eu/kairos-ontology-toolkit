@@ -8,6 +8,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`design-landscape` command (Phase 0 Design Landscape, CR-7):** `kairos-ontology
+  design-landscape [--accelerator <id>] [--domain <domain>] [--format text|json]` joins,
+  per activated accelerator class, four already-existing evidence signals — source
+  coverage (generalized `fit-report` across every `propose-alignment`-aligned table),
+  business-discovery demand (the DD-090 `discovery-conformance` artifact), BI/report
+  weight (`import-tmdl`'s Concept Mapping `reference_model_match`), and current binding
+  state — into a single classification per class: `canonical-candidate`,
+  `passthrough-candidate`, `demanded-but-unbound`, `bound-but-undemanded`, or
+  `no-evidence`. A deterministic aggregation only — no LLM calls, no raw TTL reads (every
+  ontology fact is read via `ontology_loader`/`fit_report`, per DD-103). BI/TMDL evidence
+  is kept in a structurally separate, always-present `bi_weight` field and may only
+  affect ranking within the `demanded-but-unbound` backlog, never a class's
+  classification (C1) — enforced by a test that removes all BI evidence and asserts the
+  classification is unchanged. Missing inputs (no accelerator checkout, no
+  `propose-alignment` output, no conformance artifact, an unresolvable binding) are
+  reported as `gaps` rather than raised, so the report degrades gracefully instead of
+  failing outright.
+- **`scaffold-system` command (batch fast path to Silver, CR-4/CR-7):** `kairos-ontology
+  scaffold-system --system <system> [--dry-run]` runs `scaffold-binding --archetype
+  passthrough` across every unscaffolded table under `integration/sources/<system>/`, using
+  only `propose-alignment`'s already-persisted `ref_class`/`ref_class_confidence` evidence —
+  it never guesses a target class. A table is declined (with a concrete reason:
+  `already-covered`, `no-alignment-evidence`, `ambiguous-class`, `ambiguous-domain`,
+  `non-mechanical`, `scaffold-failed`) rather than scaffolded on a low-confidence or
+  multi-source-claimed match, so a human can override the call by hand. After scaffolding,
+  every touched domain is run through `compile --check` and each diagnostic is attributed
+  back to the binding file it points at, producing one review report (text or `--format
+  json`) instead of one-file-at-a-time output. `--dry-run` (also newly added to
+  `scaffold-binding` itself) previews the same decisions with zero writes under the hub.
+- **`scaffold-binding` command (fast path to Silver, DD-144):** `kairos-ontology scaffold-binding
+  --system <system> --table <table> --archetype <type> [--target-class <IRI>]` generates a
+  first-draft v5 `EntityBinding` YAML for one Bronze source table. Supports five standard
+  archetypes: `passthrough` (tier passthrough, fully automatic, ready to compile unedited),
+  `single-source-master`, `merged-master`, `event-stream`, and `line-item-child` (all tier
+  canonical, write skeletons with `<CONFIRM_...>` placeholders for grain/identity/survivorship).
+  Reuses DD-144 accelerator-direct class targeting (no local subclass minted by default), DD-139
+  technical fields for unmapped key/FK columns, and `fit-report`'s property resolution. Orphan
+  columns are reported but never auto-materialized. Also provides `--list-unscaffolded --system
+  <sys>` (read-only report of tables without bindings yet) and `--list-archetypes` (print the
+  archetype catalog). Can seed merged-master from an existing passthrough binding via
+  `--from-binding <path>`.
+- **`fit-report` command:** `kairos-ontology fit-report --class <IRI-or-qname> [--source
+  <system>.<table>] [--binding <path>]` computes, deterministically and without any LLM
+  call, the set-difference between an accelerator class's full property universe (direct +
+  inherited, via the DD-103 semantic index) and what's already populated by an existing
+  binding or `propose-alignment` evidence — `populated`, `unpopulated` ("what you can still
+  pick from"), and `orphan_columns`. Advisory input to design, not a completeness gate; its
+  core logic (`core/fit_report.py::run_fit_report`) is a plain library function reused by
+  `scaffold-binding`.
+- **`--check`/`--explain` combinable on `compile`:** both flags may now be passed together
+  in one invocation (diagnostics and the explain report both come back; `CompileResult`
+  already computed both internally, so this required no new compile mode). `--emit` stays
+  mutually exclusive, since it's the only side-effecting mode.
+- **Stable diagnostic-code catalog (`docs/design/diagnostic-codes.md`):** documents all 117
+  distinct `CompileDiagnostic` codes across the compiler, with severity and owning
+  `rule_id`/DD citation, backed by an AST-based test that fails if a new or removed code
+  drifts out of sync with the doc.
+- **Accelerator-direct binding resolution (DD-144):** an `EntityBinding`'s `target.class`
+  (and a relationship's `target`) may now resolve directly against an accelerator/
+  reference-model class with no local `rdfs:subClassOf` declaration at all — the compiler
+  already builds its semantic index over the full resolved `owl:imports` closure (DD-103),
+  it simply never looked outside the domain's own locally-declared namespace before. A
+  local subclass is now needed only for a genuine deviation, not as the default path for
+  reusing an accelerator concept as-is. Resolution is scoped to only the class/property
+  tokens a binding in the current compile scope actually references, so it never floods
+  diagnostics with an accelerator's entire term universe, and a token that resolves nowhere
+  still reports the existing `binding.unknown-class`/`binding.unknown-property` diagnostics
+  unchanged.
+- **DD-139 authored technical fields, implemented (auto-materialization stays rejected):**
+  an `EntityBinding` may now declare `technicalFields:` — an explicit, closed-schema way to
+  materialize a source column (for identity, quality, or relationship support) without
+  asserting a new ontology property. Technical fields are real Silver outputs (real dbt
+  columns, schema, and parity hash) but are never emitted as OWL and are explicitly labelled
+  as technical in `compile --explain`. A column must still be explicitly mapped by the
+  author — the compiler never adds a technical field on its own.
+- **`metadata.tier` on `EntityBinding` (passthrough / canonical):** an additive, optional
+  field distinguishing a generated, single-source "conformed passthrough" binding from a
+  hand-designed "canonical" entity binding. Absent `tier` still defaults to `canonical`
+  (today's only behavior), so every existing binding continues to validate unchanged.
+  `kairos-ontology next`'s hub-input snapshot now tallies passthrough vs. canonical bindings
+  per domain for future coverage reporting; this is data collection only and does not change
+  `next`'s readiness ladder.
+- **`distinct_count` surfaced by `parse_source_vocabulary()`:** the Bronze source-vocabulary
+  parser used by `analyse-sources`/`propose-alignment`/`suggest-shapes` now also returns each
+  column's `distinct_count` (already persisted on the Bronze TTL via
+  `KAIROS_BRONZE.distinctCount`, previously read only by `suggest-shapes`'s own parser).
+  Strictly additive — no existing key changes.
+- **DD-103 semantic-access enforcement:** `init`/`update`/`new-repo` now scaffold a
+  `.claude/settings.json` denying direct `Read`/`Grep` access to domain ontology TTL
+  (`model/ontologies/**`, `model/shapes/**`) and accelerator reference-model TTL
+  (`ontology-reference-models/**`), steering any Claude-Code-mediated session toward the
+  canonical semantic commands (`resolve-ontology`, `show-class-inventory`, `explain-term`,
+  `list-class-properties`) instead of reading raw Turtle text. A new static test
+  (`tests/test_ttl_access_boundary.py`) asserts no `core/*.py` module other than
+  `ontology_loader.py`/`catalog_utils.py` parses TTL directly going forward, with an
+  honestly-tracked, non-growing exemption list for 18 pre-existing modules already
+  migrating incrementally per DD-103's own consequences.
 - **Standard conformance-report output format for `kairos-design-discovery` (DD-143, #257):** the
   discovery skill now documents a standard visual archetype conformance-report template (outcome-code
   badge legend, at-a-glance Mermaid dashboard, per-section heading badges, interview log) so

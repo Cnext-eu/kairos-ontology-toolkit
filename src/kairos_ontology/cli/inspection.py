@@ -149,6 +149,136 @@ def list_class_properties_cmd(class_iri, ontology, domain, catalog):
     )
 
 
+_FIT_REPORT_ADVISORY = "fit-report is advisory input to design, not a completeness check."
+
+
+def _render_fit_report_text(result) -> None:
+    click.echo(f"🔎 fit-report — {_FIT_REPORT_ADVISORY}")
+    click.echo(f"   Class: {result.class_name} ({result.class_uri})")
+    evidence = result.evidence_kind
+    if evidence == "binding":
+        click.echo(f"   Evidence: binding {result.evidence_path}")
+    elif evidence == "source-alignment":
+        click.echo(
+            f"   Evidence: propose-alignment {result.evidence_path} "
+            f"(source: {result.source_system}.{result.source_table})"
+        )
+    else:
+        click.echo("   Evidence: none")
+    if result.technical_fields:
+        purposes = ", ".join(f"{item.name} [{item.purpose}]" for item in result.technical_fields)
+        click.echo(
+            f"   Technical fields (not ontology properties, DD-139): "
+            f"{len(result.technical_fields)} ({purposes})"
+        )
+    click.echo("")
+    click.echo(f"   Populated ({len(result.populated)}):")
+    for item in result.populated:
+        click.echo(f"     ✓ {item.name} [{item.origin}] ← {item.source}")
+    click.echo("")
+    click.echo(f"   Unpopulated ({len(result.unpopulated)}):")
+    for item in result.unpopulated:
+        click.echo(f"     • {item.name} [{item.origin}] ({item.property_uri})")
+    if result.orphan_columns:
+        click.echo("")
+        click.echo(f"   Orphan columns ({len(result.orphan_columns)}):")
+        for item in result.orphan_columns:
+            reason = f" — {item.reason}" if item.reason else ""
+            click.echo(f"     ? {item.column} ({item.data_type}){reason}")
+    if result.notes:
+        click.echo("")
+        click.echo("   Notes:")
+        for note in result.notes:
+            click.echo(f"     - {note}")
+
+
+@click.command(name="fit-report")
+@click.option(
+    "--class",
+    "class_token",
+    required=True,
+    help="Full class IRI or a 'prefix:Local' qname to report on.",
+)
+@click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option(
+    "--source",
+    default=None,
+    help="'<system>.<table>' to check against existing propose-alignment evidence.",
+)
+@click.option(
+    "--binding",
+    "binding_path",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Explicit EntityBinding YAML to use as evidence (default: auto-detect the one "
+    "binding under integration/bindings/ that already targets --class, if exactly one does).",
+)
+@click.option(
+    "--format",
+    "out_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text).",
+)
+def fit_report_cmd(class_token, ontology, domain, catalog, source, binding_path, out_format):
+    """Advisory set-difference between a class's full property universe and what is populated.
+
+    fit-report is advisory input to design, not a completeness check (DD-144). It answers,
+    deterministically and without any LLM call: of everything an accelerator already models
+    for --class, which properties does a binding's fields: (or --source's propose-alignment
+    evidence) already populate, which are still empty, and which source columns don't map
+    anywhere. Evidence priority: --binding (or an unambiguous auto-detected binding under
+    integration/bindings/) first, then --source's propose-alignment output.
+
+    \b
+    Examples:
+      kairos-ontology fit-report --class acc:TradeParty --domain party
+      kairos-ontology fit-report --class acc:TradeParty --source crm.organisations
+      kairos-ontology fit-report --class acc:TradeParty --binding integration/bindings/x.binding.yaml --format json
+    """
+    from ..core.fit_report import FitReportError, run_fit_report
+    from ..core.hub_utils import find_hub_root
+    from .shared import _autodetect_analysis_dir
+
+    hub_root = find_hub_root(Path.cwd(), require_model=True)
+    if ontology:
+        path = Path(ontology)
+    elif domain:
+        if hub_root is None:
+            raise click.ClickException("Cannot locate a hub for --domain.")
+        path = hub_root / "model" / "ontologies" / f"{domain}.ttl"
+    else:
+        raise click.UsageError("Provide --ontology or --domain.")
+
+    bindings_dir = None
+    analysis_dir = None
+    if hub_root is not None:
+        candidate_bindings_dir = hub_root / "integration" / "bindings"
+        if candidate_bindings_dir.is_dir():
+            bindings_dir = candidate_bindings_dir
+        analysis_dir = _autodetect_analysis_dir(Path.cwd(), hub_root)
+
+    try:
+        result = run_fit_report(
+            path,
+            class_token,
+            catalog_path=Path(catalog) if catalog else None,
+            binding_path=Path(binding_path) if binding_path else None,
+            bindings_dir=bindings_dir,
+            source=source,
+            analysis_dir=analysis_dir,
+        )
+    except FitReportError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if out_format == "json":
+        click.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return
+    _render_fit_report_text(result)
+
+
 @click.command(name="explain-term")
 @click.argument("iri")
 @click.option("--ontology", required=True, type=click.Path(exists=True, dir_okay=False))
@@ -1000,3 +1130,110 @@ def next_action_cmd(domains, output_format, no_compile):
         return
 
     _render_next_text(proposal, snapshot)
+
+
+def _render_design_landscape_text(result) -> None:
+    click.echo(f"🗺  design-landscape — {result.advisory}")
+    click.echo(f"   Accelerator: {result.accelerator or '(none)'}")
+    click.echo(f"   Domain: {result.domain or '(all activated modules)'}")
+    click.echo("")
+    if not result.classes:
+        click.echo("   No in-scope classes found (no source table, discovery, or binding "
+                    "evidence references any activated accelerator class).")
+    for entry in result.classes:
+        rank = f" (rank {entry.rank})" if entry.rank is not None else ""
+        click.echo(f"   • {entry.class_name} [{entry.classification}]{rank}")
+        click.echo(f"     {entry.class_uri}")
+        click.echo(
+            f"     Sources: {entry.source_count} table(s) | "
+            f"Properties: {entry.populated_property_count} populated / "
+            f"{entry.property_universe_size} total"
+        )
+        if entry.discovery:
+            confirmed = "confirmed" if entry.discovery.confirmed else "not confirmed"
+            click.echo(
+                f"     Discovery: outcome={entry.discovery.outcome} tier={entry.discovery.tier} "
+                f"({confirmed})"
+            )
+        if entry.bi_weight:
+            click.echo(
+                f"     BI weight (ADVISORY ONLY, never fact): {len(entry.bi_weight)} "
+                "reference(s)"
+            )
+        click.echo(
+            f"     Bound: {entry.bound} ({len(entry.bindings)} binding(s))"
+        )
+        click.echo("")
+    if result.gaps:
+        click.echo("   Gaps / degraded inputs:")
+        for gap in result.gaps:
+            click.echo(f"     - {gap}")
+
+
+@click.command(name="design-landscape")
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack id (default: [tool.kairos].accelerator, else inferred).",
+)
+@click.option(
+    "--domain",
+    default=None,
+    help="Restrict to one hub data domain's activated accelerator module(s) "
+    "(default: every module profile configured for the resolved accelerator).",
+)
+@click.option(
+    "--format",
+    "out_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text).",
+)
+def design_landscape_cmd(accelerator, domain, out_format):
+    """Read-only synthesis report: which accelerator classes to design next.
+
+    Joins already-existing evidence signals **by accelerator class** so an author can see,
+    before doing any design work, which classes have real multi-source coverage and
+    confirmed business demand versus which have none:
+
+    \b
+    1. Source coverage    - fit-report generalized across every propose-alignment table.
+    2. Discovery demand    - the committed discovery-conformance artifact (DD-090).
+    3. BI/report weight    - import-tmdl's Concept Mapping output (ADVISORY ONLY, never
+                             fact -- see the structurally separate bi_weight field).
+    4. Current binding state - existing EntityBindings' target.class / metadata.tier.
+
+    Deterministic aggregation only: no LLM calls, no raw TTL reads (DD-103). Classifies
+    each in-scope class into canonical-candidate, passthrough-candidate,
+    demanded-but-unbound, bound-but-undemanded, or no-evidence.
+
+    \b
+    Examples:
+      kairos-ontology design-landscape
+      kairos-ontology design-landscape --domain party
+      kairos-ontology design-landscape --accelerator acme --format json
+    """
+    from ..core.design_landscape import DesignLandscapeError, run_design_landscape
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=True)
+    if hub_root is None:
+        raise click.ClickException("Cannot locate a hub (model/ontologies/ not found).")
+
+    ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+
+    try:
+        result = run_design_landscape(
+            hub_root,
+            ref_models_dir=ref_models_dir,
+            accelerator=accelerator,
+            domain=domain,
+        )
+    except DesignLandscapeError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if out_format == "json":
+        click.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return
+    _render_design_landscape_text(result)

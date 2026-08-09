@@ -644,9 +644,10 @@ def _resolve_identity_output_columns(
                 CompileDiagnostic(
                     code="identity.authored-key-not-supplied",
                     message=(
-                        f"IDENTITY key source column '{column}' is not supplied by fields:; add "
-                        f"a fields: entry mapping source column '{column}' directly to a scalar "
-                        "target property so the identity key is materialized"
+                        f"IDENTITY key source column '{column}' is not supplied by fields: or "
+                        f"technicalFields:; add a fields: entry mapping source column '{column}' "
+                        "directly to a scalar target property, or an authored technicalFields: "
+                        "entry (DD-139), so the identity key is materialized"
                     ),
                     location=SourceLocation(path=path, pointer=pointer),
                 )
@@ -819,6 +820,74 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
         )
         field_records.append((field_map.expression, output_column))
 
+    # DD-139: authored technical (non-ontology) passthrough outputs. These materialize a
+    # source expression as a Silver output column, exactly like a semantic ``fields:`` entry,
+    # but assert no ontology property (``target_property_uri`` is a synthetic technical
+    # marker, never a real property URI) and are never auto-materialized -- only an explicitly
+    # authored ``technicalFields:`` entry produces one.
+    technical_records: list[tuple[Expression, str]] = []
+    for index, technical_field in enumerate(binding.technical_fields):
+        pointer = f"/technicalFields/{index}"
+        target_type = _canonical_type(technical_field.type, f"{resource_base}:technical:{index}")
+        if isinstance(technical_field.expression, ExprColumn):
+            symbol = symbols.get(technical_field.expression.column)
+            if symbol is not None and symbol.type.kind is not target_type.kind:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="technical-field.type-incompatible",
+                        message=(
+                            f"technical field '{technical_field.name}' declares type "
+                            f"'{technical_field.type}' but source column "
+                            f"'{technical_field.expression.column}' has incompatible physical "
+                            f"type '{_type_label(symbol.type)}'"
+                        ),
+                        location=SourceLocation(path=path, pointer=f"{pointer}/type"),
+                    )
+                )
+                continue
+        expr_fact, _out_type, _nullable = builder.build(technical_field.expression, target_type)
+        if isinstance(technical_field.expression, ExprColumn):
+            expression: AuthoredExpressionFact | None = None
+            source_uri = expr_fact.source_column_uri
+        else:
+            expression = expr_fact
+            source_uri = _first_source_column(expr_fact)
+            if not source_uri and not symbols:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="binding.unknown-column",
+                        message="source relation has no usable columns",
+                        location=SourceLocation(path=path, pointer=f"{pointer}/expression"),
+                    )
+                )
+                continue
+            source_uri = source_uri or sorted(symbol.uri for symbol in symbols.values())[0]
+        map_uri = f"urn:kairos:v5:technical:{resource_base}#{technical_field.name}"
+        column_mappings.append(
+            ColumnMappingFact(
+                resource_uri=map_uri,
+                source_column_uri=source_uri,
+                target_property_uri=map_uri,
+                match_type="exact",
+                expression=expression,
+                target_column_name=technical_field.name,
+                target_data_type=technical_field.type,
+                target_is_object_property=False,
+            )
+        )
+        column_specs.append(
+            ColumnSpec(
+                name=technical_field.name,
+                data_type=technical_field.type,
+                nullable=technical_field.nullable,
+                mapping_resource_uri=map_uri,
+                description=(
+                    f"Technical passthrough column (purpose: {technical_field.purpose}; DD-139)"
+                ),
+            )
+        )
+        technical_records.append((technical_field.expression, technical_field.name))
+
     diagnostics.extend(builder.diagnostics)
 
     for check in binding.quality:
@@ -840,8 +909,10 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                         code="binding.quality-column-unmapped",
                         message=(
                             f"QUALITY check column '{column}' is a source column, but no fields "
-                            f"entry maps source column '{column}' to a scalar target property; add "
-                            "a fields: entry mapping it or remove it from the quality check"
+                            f"or technicalFields entry maps source column '{column}' to a scalar "
+                            "target property or technical output; add a fields: entry, an "
+                            "authored technicalFields: entry (DD-139), or remove it from the "
+                            "quality check"
                         ),
                         location=SourceLocation(path=path, pointer=check.pointer),
                     )
@@ -883,7 +954,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
         )
         natural_key_output = _resolve_identity_output_columns(
             identity_key_columns,
-            field_records,
+            field_records + technical_records,
             identity_key_pointer,
             path,
             diagnostics,

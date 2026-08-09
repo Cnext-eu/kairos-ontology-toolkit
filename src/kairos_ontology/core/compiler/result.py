@@ -167,6 +167,22 @@ class ExplainDataQuality:
 
 
 @dataclass(frozen=True, slots=True)
+class ExplainTechnicalField:
+    """Closed explain shape for one authored technical (non-ontology) output (DD-139).
+
+    Distinct from ``ExplainEntity.fields`` (semantic ``property``/``expression`` pairs):
+    a technical field is a materialized Silver output but asserts no ontology property, so
+    it must always be surfaced separately and labelled as a technical output.
+    """
+
+    name: str
+    expression: str
+    type: str
+    nullable: bool
+    purpose: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExplainEntity:
     """Resolved, deterministic explanation of one entity binding."""
 
@@ -184,6 +200,7 @@ class ExplainEntity:
     quality: tuple[ExplainQualityCheck, ...] = ()
     emitted_tests: tuple[str, ...] = ()
     data_quality: tuple[ExplainDataQuality, ...] = ()
+    technical_fields: tuple[ExplainTechnicalField, ...] = ()
     blocked: bool = False
 
 
@@ -245,6 +262,9 @@ class CompileResult:
             "safety.relationship-endpoint",
             "safety.type-incompatible",
             "safety.adapter-unsupported",
+            "technical-field.output-collision",
+            "technical-field.duplicate-source-ambiguous",
+            "technical-field.type-incompatible",
         }
         if any(entity.blocked for entity in self.ir.entities):
             return all(

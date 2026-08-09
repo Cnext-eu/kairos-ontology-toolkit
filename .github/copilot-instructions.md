@@ -73,6 +73,17 @@ Passing compilation does not replace downstream dbt, adapter, deployment, securi
 - Validate syntax before applying ontology changes.
 - Never modify `main` directly; use a feature branch and PR.
 
+## Semantic access (DD-103)
+
+- Never read `.ttl` files directly as raw text — an LLM cannot reliably reconstruct
+  prefix-relative IRIs, transitively inherited properties across an `owl:imports` chain, or
+  equivalence/inverse relationships from serialized Turtle. Use the CLI's semantic commands
+  instead: `kairos-ontology resolve-ontology`, `kairos-ontology show-class-inventory`,
+  `kairos-ontology explain-term`, `kairos-ontology list-class-properties`.
+- `.claude/settings.json` denies `Read`/`Grep` on `model/ontologies/**/*.ttl`,
+  `model/shapes/**/*.ttl`, and `ontology-reference-models/**/*.ttl` to enforce this for
+  Claude Code sessions; other agents must follow the same rule voluntarily.
+
 ## Skill routing
 
 | User intent | Skill |

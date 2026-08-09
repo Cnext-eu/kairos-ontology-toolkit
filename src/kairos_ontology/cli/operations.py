@@ -433,6 +433,15 @@ def update(check, upgrade, test_ref, restore, force_managed):
             shutil.copy2(env_example_src, env_example_dst)
             print("  ✓ Created .env.example (AI provider configuration template)")
 
+    # --- Ensure .claude/settings.json exists (TTL access boundary — DD-103) --
+    if not check:
+        claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
+        claude_settings_dst = repo_root / ".claude" / "settings.json"
+        if not claude_settings_dst.is_file() and claude_settings_src.is_file():
+            claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(claude_settings_src, claude_settings_dst)
+            print("  ✓ Created .claude/settings.json (denies raw TTL Read/Grep)")
+
     # --- Ensure .devcontainer exists (VS Code Dev Container) -----------------
     if not check:
         devcontainer_dst = repo_root / ".devcontainer"

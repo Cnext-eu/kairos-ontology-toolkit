@@ -92,6 +92,8 @@ class DomainSnapshot:
     diagnostics: tuple[DiagnosticView, ...] = ()
     gold_policy: InputStatus = InputStatus.MISSING
     mdm_policy: InputStatus = InputStatus.MISSING
+    passthrough_count: int = 0
+    canonical_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)

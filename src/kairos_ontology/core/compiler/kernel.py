@@ -56,7 +56,13 @@ from .adapter import (
     ResolvedRelation,
     adapt_binding,
 )
-from .bindings import EntityBinding, ExprColumn, RelationshipSpec, load_entity_binding
+from .bindings import (
+    EntityBinding,
+    ExprColumn,
+    RelationshipSpec,
+    TechnicalField,
+    load_entity_binding,
+)
 from .compile import CompileMode
 from .conformance import ConformancePlan, ConformanceTypeContract, build_conformance_plan
 from .dbt_source import resolve_dbt_model_source
@@ -75,6 +81,7 @@ from .result import (
     ExplainQualityCheck,
     ExplainRelationship,
     ExplainReport,
+    ExplainTechnicalField,
     SourceLocation,
     order_compile_diagnostics,
 )
@@ -306,6 +313,60 @@ def _local_from_uri(uri: str) -> str:
     return uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
 
 
+def _declared_namespace_for_prefix(loaded, root_path: Path, prefix: str) -> str | None:
+    """Return the namespace bound to *prefix* across the resolved closure, if unambiguous.
+
+    Inverse of ``_declared_prefix_aliases`` (namespace -> qname): the loaded graph's own
+    ``namespace_manager`` does **not** carry the source Turtle's ``@prefix`` bindings (only
+    rdflib's built-in defaults), so — exactly like ``_declared_prefix_aliases`` already
+    does — prefix declarations are read directly from each closure member's raw text.
+    Root-declared prefixes take precedence; an imported prefix is usable only when every
+    declaration across the closure agrees on the same namespace.
+    """
+    root = str(root_path.resolve())
+    root_namespace: str | None = None
+    imported_namespaces: set[str] = set()
+    for source in loaded.sources:
+        path = source.manifest.source_path
+        if not path:
+            continue
+        namespaces = _declared_prefixes(path).get(prefix)
+        if not namespaces:
+            continue
+        if str(Path(path).resolve()) == root:
+            root_namespace = namespaces[-1]
+        else:
+            imported_namespaces.update(namespaces)
+    if root_namespace is not None:
+        return root_namespace
+    if len(imported_namespaces) == 1:
+        return next(iter(imported_namespaces))
+    return None
+
+
+def _index_class_by_token(loaded, root_path: Path, index, token: str):
+    """Resolve *token* (a full IRI or a ``prefix:Local`` qname) against *index*.
+
+    DD-144: ``index`` already covers the *entire* resolved ``owl:imports`` closure (DD-103
+    builds it from the full merged graph, not just the domain's own locally-declared
+    classes) — an accelerator class an author references without a local
+    ``rdfs:subClassOf`` is already indexed, it is simply never looked up unless asked for
+    directly. This is that lookup, used as a fallback only for tokens that do not match any
+    locally-declared class.
+    """
+    if index is None:
+        return None
+    if "://" in token or token.startswith("urn:"):
+        return index.class_by_uri(token)
+    if ":" not in token:
+        return None
+    prefix, _, local = token.partition(":")
+    namespace = _declared_namespace_for_prefix(loaded, root_path, prefix)
+    if namespace is None:
+        return None
+    return index.class_by_uri(namespace + local)
+
+
 def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[PropertyInfo, ...]:
     """Return direct + subclass-inherited datatype/object properties for a bound class.
 
@@ -339,7 +400,7 @@ def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[Proper
 
 
 def _ontology_symbols(
-    ontology_path: Path, hub_root: Path
+    ontology_path: Path, hub_root: Path, referenced_tokens: frozenset[str] = frozenset()
 ) -> tuple[
     Graph,
     str,
@@ -427,6 +488,43 @@ def _ontology_symbols(
                     domain_uris=domains,
                     range_uri=prop.range_uri,
                 )
+    # DD-144: accelerator-direct binding resolution. The local-namespace pass above never
+    # sees an imported (e.g. accelerator) class an author references without a local
+    # ``rdfs:subClassOf`` — but ``index``/``graph`` already cover the full resolved
+    # ``owl:imports`` closure (DD-103), so the class is already indexed. Resolve only the
+    # tokens actually referenced by a binding in this compile scope and not already covered
+    # by a local class, so this never floods ``classes``/``properties`` with an accelerator's
+    # entire term universe. A token that resolves neither locally nor here still falls
+    # through to the existing ``binding.unknown-class``/``binding.unknown-property``
+    # diagnostics unchanged.
+    resolved_refs = {item.ref for item in classes}
+    for token in sorted(referenced_tokens - resolved_refs):
+        record = _index_class_by_token(loaded, ontology_path, index, token)
+        if record is None:
+            continue
+        classes.append(
+            ResolvedClass(token, record.uri, record.name, record.label, record.comment, ())
+        )
+        for prop in _class_index_properties(index, record.uri, graph):
+            data_type = _XSD_TYPES.get(prop.range_uri, prop.range_uri)
+            property_refs = set(_qnames(graph, URIRef(prop.uri)))
+            property_refs.update(_declared_prefix_aliases(loaded, ontology_path, prop.uri))
+            for ref in sorted(property_refs):
+                key = (ref, prop.uri)
+                previous = properties.get(key)
+                domains = tuple(
+                    sorted({*(previous.domain_uris if previous else ()), record.uri})
+                )
+                properties[key] = ResolvedProperty(
+                    ref=ref,
+                    uri=prop.uri,
+                    column_name=camel_to_snake(prop.name),
+                    data_type=data_type,
+                    description=prop.comment,
+                    is_object_property=prop.is_object_property,
+                    domain_uris=domains,
+                    range_uri=prop.range_uri,
+                )
     closure_paths = tuple(
         sorted(
             str(source.manifest.source_path)
@@ -496,8 +594,13 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
                 )
             ]
         )
+    referenced_tokens = frozenset(
+        token
+        for path in binding_paths
+        for token in _binding_referenced_class_tokens(path.read_text(encoding="utf-8"))
+    )
     graph, namespace, ontology_iri, version, classes, properties, ontology_paths, prefix_warnings = (
-        _ontology_symbols(ontology_path, root)
+        _ontology_symbols(ontology_path, root, referenced_tokens)
     )
     relations = list(_source_relations(source_paths))
     template_root = Path(__file__).resolve().parents[2] / "templates" / "dbt"
@@ -1414,6 +1517,24 @@ def _explain_field(binding: EntityBinding) -> tuple[tuple[str, str], ...]:
     )
 
 
+def _explain_technical_field(binding: EntityBinding) -> tuple[ExplainTechnicalField, ...]:
+    """Return DD-139 technical outputs, explicitly labelled apart from ontology ``fields``."""
+    return tuple(
+        ExplainTechnicalField(
+            name=technical_field.name,
+            expression=(
+                technical_field.expression.column
+                if isinstance(technical_field.expression, ExprColumn)
+                else type(technical_field.expression).__name__
+            ),
+            type=technical_field.type,
+            nullable=technical_field.nullable,
+            purpose=technical_field.purpose,
+        )
+        for technical_field in binding.technical_fields
+    )
+
+
 def _quality_model_name(context: ResolutionContext, target_class: str) -> str:
     """Return the deterministic silver model name for a target class, or empty."""
     klass = context.klass(target_class)
@@ -1577,6 +1698,98 @@ def _binding_safety_diagnostics(
                     rule_id="DD-133-safety",
                 )
             )
+    diagnostics.extend(_technical_field_safety_diagnostics(binding, context, reserved))
+    return tuple(diagnostics)
+
+
+def _technical_field_safety_diagnostics(
+    binding: EntityBinding, context: ResolutionContext, reserved: set[str]
+) -> tuple[CompileDiagnostic, ...]:
+    """DD-139 technical-field validation: collisions, reserved names, ambiguous reuse.
+
+    A technical field is materialized exactly like a semantic ``fields:`` entry (DD-107), so
+    its authored output ``name`` must not collide -- case-insensitively -- with a mapped
+    property's output column, another technical field, or a compiler-owned runtime/identity
+    role. Reusing the same direct source column across multiple technical fields is allowed
+    only when each reuse asserts a distinct ``purpose``; the same (source column, purpose)
+    pair authored twice is ambiguous about which output the identity/quality/relationship
+    consumer should resolve to.
+    """
+    diagnostics: list[CompileDiagnostic] = []
+    semantic_outputs: dict[str, str] = {}
+    for field in binding.fields:
+        prop = context.property(field.property)
+        if prop is not None:
+            semantic_outputs.setdefault(prop.column_name.lower(), prop.column_name)
+    technical_seen: dict[str, TechnicalField] = {}
+    technical_by_source: dict[str, dict[str, TechnicalField]] = {}
+    for index, technical_field in enumerate(binding.technical_fields):
+        name_pointer = f"/technicalFields/{index}/name"
+        lower = technical_field.name.lower()
+        if lower in reserved:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="technical-field.output-collision",
+                    message=(
+                        f"technical field output column '{technical_field.name}' collides "
+                        "with a compiler-owned identity/runtime role"
+                    ),
+                    location=SourceLocation(path=binding.source_path, pointer=name_pointer),
+                    rule_id="DD-139",
+                )
+            )
+        semantic_match = semantic_outputs.get(lower)
+        if semantic_match is not None:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="technical-field.output-collision",
+                    message=(
+                        f"technical field output column '{technical_field.name}' collides "
+                        f"(case-insensitively) with mapped property output column "
+                        f"'{semantic_match}'"
+                    ),
+                    location=SourceLocation(path=binding.source_path, pointer=name_pointer),
+                    rule_id="DD-139",
+                )
+            )
+        previous = technical_seen.get(lower)
+        if previous is not None:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="technical-field.output-collision",
+                    message=(
+                        f"technical field output column '{technical_field.name}' collides "
+                        f"(case-insensitively) with technical field '{previous.name}'"
+                    ),
+                    location=SourceLocation(path=binding.source_path, pointer=name_pointer),
+                    rule_id="DD-139",
+                )
+            )
+        else:
+            technical_seen[lower] = technical_field
+        if isinstance(technical_field.expression, ExprColumn):
+            column = technical_field.expression.column
+            by_purpose = technical_by_source.setdefault(column, {})
+            duplicate = by_purpose.get(technical_field.purpose)
+            if duplicate is not None:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="technical-field.duplicate-source-ambiguous",
+                        message=(
+                            f"source column '{column}' is used by technical fields "
+                            f"'{duplicate.name}' and '{technical_field.name}' with the same "
+                            f"purpose '{technical_field.purpose}'; duplicate source use requires "
+                            "distinct, unambiguous purposes"
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path,
+                            pointer=f"/technicalFields/{index}/expression",
+                        ),
+                        rule_id="DD-139",
+                    )
+                )
+            else:
+                by_purpose[technical_field.purpose] = technical_field
     return tuple(diagnostics)
 
 
@@ -1592,6 +1805,23 @@ def _binding_domain(text: str) -> str | None:
     return str(metadata.get("domain", "")) if isinstance(metadata, dict) else None
 
 
+def _binding_tier(text: str) -> str:
+    """Read only the ``metadata.tier`` discriminator before full closed-schema validation.
+
+    Absence means ``canonical`` (today's only behavior before ``metadata.tier`` existed).
+    """
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return "canonical"
+    if not isinstance(document, dict):
+        return "canonical"
+    metadata = document.get("metadata")
+    if not isinstance(metadata, dict):
+        return "canonical"
+    return str(metadata.get("tier", "canonical"))
+
+
 def _binding_target_class(text: str) -> str:
     try:
         document = yaml.safe_load(text)
@@ -1601,6 +1831,35 @@ def _binding_target_class(text: str) -> str:
         return ""
     target = document.get("target")
     return str(target.get("class", "")) if isinstance(target, dict) else ""
+
+
+def _binding_referenced_class_tokens(text: str) -> tuple[str, ...]:
+    """Read every class token a binding names, before full closed-schema validation.
+
+    DD-144: the entity's own ``target.class`` plus every relationship's ``target`` — a
+    relationship may point at another entity's (possibly accelerator-direct) class, so its
+    token needs the same fallback resolution opportunity in ``_ontology_symbols`` as the
+    entity target does. Best-effort only: an unparsable or malformed document yields no
+    tokens here and is reported through the normal schema-validation diagnostics instead.
+    """
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return ()
+    if not isinstance(document, dict):
+        return ()
+    tokens: list[str] = []
+    target = document.get("target")
+    if isinstance(target, dict):
+        target_class = target.get("class")
+        if target_class:
+            tokens.append(str(target_class))
+    relationships = document.get("relationships")
+    if isinstance(relationships, list):
+        for relationship in relationships:
+            if isinstance(relationship, dict) and relationship.get("target"):
+                tokens.append(str(relationship["target"]))
+    return tuple(tokens)
 
 
 def _external_target_domain(
@@ -2271,6 +2530,7 @@ def _explain_plan(plan: CompilePlan, artifact_paths: tuple[str, ...]) -> Explain
                 grain=entity.binding.grain.columns,
                 identity_strategy=entity.binding.identity.strategy,
                 fields=_explain_field(entity.binding),
+                technical_fields=_explain_technical_field(entity.binding),
                 relationships=tuple(rel.target for rel in entity.binding.relationships),
                 source_kind=(
                     "dbt-model" if entity.binding.source.dbt_model is not None else "relation"

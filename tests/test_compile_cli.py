@@ -18,10 +18,50 @@ def test_compile_requires_exactly_one_mode(tmp_path):
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=hub):
         missing = runner.invoke(cli, ["compile", "party"])
-        conflicting = runner.invoke(cli, ["compile", "party", "--check", "--explain"])
+        conflicting = runner.invoke(cli, ["compile", "party", "--check", "--emit"])
     assert missing.exit_code == 2
     assert conflicting.exit_code == 2
     assert "exactly one" in missing.output
+    assert "cannot be combined" in conflicting.output
+
+
+def test_compile_check_and_explain_may_be_combined(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+    before = {path.relative_to(hub) for path in hub.rglob("*")}
+
+    combined = CliRunner().invoke(cli, ["compile", "party", "--check", "--explain"])
+    after = {path.relative_to(hub) for path in hub.rglob("*")}
+
+    assert combined.exit_code == 0, combined.output
+    assert "compile check passed" in combined.output
+    assert "entity binding(s)" in combined.output
+    assert before == after
+
+
+def test_compile_check_and_explain_json_includes_both(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli, ["compile", "party", "--check", "--explain", "--format", "json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "check+explain"
+    assert payload["diagnostics"] == []
+    assert payload["explain"]["entities"][0]["name"] == "crm-customer"
+
+
+def test_compile_explain_and_emit_cannot_be_combined(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--explain", "--emit"])
+
+    assert result.exit_code == 2
+    assert "cannot be combined" in result.output
 
 
 def test_compile_check_and_json_explain_are_write_free(tmp_path, monkeypatch):

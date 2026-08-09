@@ -190,11 +190,13 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-136](#dd-136-retire-v4-claim-binding-and-completeness-authority) | Retire V4 Claim Binding and Completeness Authority | Accepted | 2026-07-27 |
 | [DD-137](#dd-137-derived-stateless-readiness-proposal-kairos-ontology-next) | Derived, Stateless Readiness Proposal (`kairos-ontology next`) | Accepted | 2026-07-28 |
 | [DD-138](#dd-138-cross-domain-relationship-targets-via-external-references) | Cross-domain Relationship Targets via External References | Accepted | 2026-07-28 |
-| [DD-139](#dd-139-authored-passthrough-technical-columns--dd-107-amendment) | Authored Passthrough Technical Columns — DD-107 Amendment | Proposed (Parked) | 2026-07-28 |
+| [DD-139](#dd-139-authored-passthrough-technical-columns--dd-107-amendment) | Authored Passthrough Technical Columns — DD-107 Amendment | Accepted | 2026-07-28 |
 | [DD-140](#dd-140-canonical-emit-layout-and-dbt-package-topology) | Canonical Emit Layout and dbt-Package Topology | Accepted | 2026-07-28 |
 | [DD-141](#dd-141-adopt-okf-based-per-hub-decision-log-as-a-toolkit-capability) | Adopt OKF-based per-hub Decision Log as a toolkit capability | Accepted | 2026-07-29 |
 | [DD-142](#dd-142-derived-output-relocated-to-sibling-ontology-hub-publish-dd-140-amendment) | Derived Output Relocated to Sibling `ontology-hub-publish/` (DD-140 Amendment) | Accepted | 2026-07-30 |
 | [DD-143](#dd-143-standard-conformance-report-output-format-for-kairos-design-discovery) | Standard Conformance-Report Output Format for `kairos-design-discovery` | Accepted | 2026-08-01 |
+| [DD-144](#dd-144-accelerator-direct-binding-resolution-and-the-machine-managed-domain-stub) | Accelerator-Direct Binding Resolution and the Machine-Managed Domain Stub | Accepted | 2026-08-09 |
+| [DD-145](#dd-145-local-extension-ontology-and-shacl-derivation-narrowed-cr-2) | Local-Extension Ontology and SHACL Derivation (Narrowed CR-2) | Accepted | 2026-08-09 |
 
 ---
 
@@ -9370,14 +9372,28 @@ compile that parent.
 
 ## DD-139: Authored Passthrough Technical Columns — DD-107 Amendment
 
-**Status:** Proposed (Parked)
+**Status:** Accepted (implemented; auto-materialization stays rejected)
 **Date:** 2026-07-28
 **Affects:** DD-107 materialization authority, v5 `EntityBinding` schema, source-column
 ownership, Silver contract parity, manifest/parity hashing, and mapping diagnostics
-**Implementation:** Parked. Workstream B1 (actionable diagnostics + documentation) is shipped and
-resolves the immediate DX pain; the legitimate workaround (map the key as a scalar field) keeps
-DD-107's column contract honest. This construct is deferred and revisited only if authoring
-friction recurs.
+**Implementation:** Implemented. The closed-schema `technicalFields:` construct is authored
+alongside `fields:` (`entity-binding.schema.json` / `TechnicalField` in `bindings.py`) with a
+`name`/`expression`/`type`/`nullable`/`purpose` contract (`purpose` one of `identity`, `quality`,
+`relationship`). `adapter.py` materializes each technical field exactly like a semantic field
+(participates in the Silver schema contract, dbt SQL, and manifest/parity hash) under a synthetic
+non-property marker URI, so it is never emitted as OWL and never asserts an ontology property.
+Case-insensitive output-name collisions (against semantic fields, other technical fields, and
+reserved runtime names) and ambiguous duplicate-source-column reuse are rejected in
+`kernel.py`'s `_binding_safety_diagnostics` (`technical-field.output-collision` /
+`technical-field.duplicate-source-ambiguous`); a technical field's declared type incompatible
+with its bound physical source column is rejected in `adapter.py`
+(`technical-field.type-incompatible`). `identity.sourceKey`/`quality.columns`/relationship
+`join.local`/`join.foreign` now resolve against authored technical fields exactly as they do
+against `fields:`, so the previous "map the FK join column as a scalar field" workaround is no
+longer required. `compile --explain` labels technical outputs separately
+(`ExplainEntity.technical_fields`), distinct from the semantic `fields` pairs. As originally
+decided, implicit auto-materialization remains rejected: the compiler never creates a technical
+field on its own — every one must be explicitly authored in the binding YAML.
 
 ### Context
 
@@ -9728,23 +9744,270 @@ reference-models, matching the existing ownership split from DD-090.
 
 ---
 
+## DD-144: Accelerator-Direct Binding Resolution and the Machine-Managed Domain Stub
 
-
-**Implementation:** where the code lives
+**Status:** Accepted
+**Date:** 2026-08-09
+**Affects:** `core/compiler/kernel.py` (`resolve_scope`, `_ontology_symbols`),
+`core/compiler/adapter.py` (`ResolutionContext`), `core/next_actions.py`
+(action routing only, not the readiness ladder), `cli/inspection.py` (`coverage-report`)
+**Implementation:** a wider class/property lookup inside `_ontology_symbols`'s existing,
+already-loaded semantic index (no new resolver, no hub-level accelerator lookup at compile
+time), plus a machine-managed domain-ontology stub generated by `scaffold-binding` (new
+tooling, no separate design decision needed — see Consequences)
 
 ### Context
 
-What is the problem or requirement?
+Raised by `docs/temp/cr-fast-path-to-silver.md` (CR-3) and sharpened in review: today, an
+`EntityBinding`'s `target.class` and its properties resolve **only** against classes the
+domain's own `model/ontologies/<domain>.ttl` locally declares. `_ontology_symbols`
+(`kernel.py`) loads exactly one file (`load_ontology(ontology_path, ...)`), derives a
+namespace from that file's own first locally-declared `owl:Class`, and calls
+`list_classes(graph, namespace)` — which filters out anything outside that namespace.
+Accelerator classes only become bindable today because a local class declares
+`rdfs:subClassOf <accelerator class>`, which pulls the accelerator's properties in via the
+semantic index's `inherited_properties` (already resolved with full `owl:imports` closure,
+per DD-103). The accelerator class itself is never registered as a bindable target unless a
+human re-declares it locally — which is exactly the redundant authoring step CR-1/CR-2/CR-3
+exist to remove, and directly conflicts with the newer C2 principle (every Silver field
+must be ontology-backed, and a decorative local re-declaration of an accelerator concept is
+not "real meaning," it's restatement).
+
+A second, harder constraint surfaced during implementation review that the original CR text
+did not account for: `resolve_scope` (`kernel.py`) unconditionally requires
+`model/ontologies/<domain>.ttl` to exist (`if not binding_paths or not ontology_path.is_file():
+raise CompileError(..., code="safety.source-unresolved")`) before compilation can even begin
+— independent of whether any binding in that domain needs a local class at all. This means a
+domain can never be truly file-less; the earlier working assumption in this initiative's
+design notes (that a fully accelerator-direct domain could exist with *zero*
+`model/ontologies/<domain>.ttl` file, per DD-137's `binding_only_domains` observation) does
+not hold against the actual compiler contract and is corrected here: `binding_only_domains`
+is an honest *reporting* observation (no ontology file was found when `next` looked), not a
+compilable end state — a file must exist for `resolve_scope` to succeed regardless of this
+decision.
 
 ### Decision
 
-What did we decide?
+**1. Accelerator-direct class and property resolution — by using more of the semantic index
+this code already loads, not by adding a new resolver.** A verification pass while writing
+this decision found the mechanism is simpler than first scoped: `_ontology_symbols` already
+calls `load_ontology(ontology_path, ...)` and builds a full semantic index
+(`build_semantic_index`, DD-103) over the **entire resolved `owl:imports` closure** — every
+class and property the domain ontology transitively imports, including accelerator classes,
+is already indexed in `index`/`loaded.semantic_index`, exactly like any other imported term.
+The actual gap is narrower than "the compiler cannot see accelerator classes": it is that
+`_ontology_symbols` only ever *iterates* `list_classes(graph, namespace)` — the subset of
+that already-complete index whose URI falls under the domain's own locally-declared
+namespace — when deciding which classes to register as `ResolvedClass`/`ResolvedProperty`
+entries. An accelerator class that is imported but never locally subclassed is present in
+`index` the whole time; it is simply never looked up.
+
+The fix: `resolve_scope` continues to register local classes/properties from
+`list_classes(graph, namespace)` exactly as today (no change to that path — a local
+`rdfs:subClassOf` continues to work unmodified). Additively, for each distinct
+`target.class` (and relationship target class) among the bindings in compile scope that does
+**not** match a locally-collected `ResolvedClass.ref`, the compiler checks whether the raw
+token matches a qname/alias of any *other* class already present in the same `index` —
+computed with the exact same `_qnames`/`_declared_prefix_aliases` helpers already used for
+local classes, against the same already-loaded `graph` (which, because it is the
+merged/resolved closure, carries the accelerator ontology's own namespace/prefix bindings
+too). On a match, the compiler builds a `ResolvedClass` from the index's `ClassRecord` and
+`ResolvedProperty` entries via `_class_index_properties(index, class_uri, graph)` — a
+function that is **already fully generic** (it takes any `class_uri` and only reads from
+`index`; it does not assume the class is local) and needs no modification at all — using
+the exact token the author wrote as the `ref`, so `context.klass()`/`context.property()`
+resolve it identically to a locally-declared class. **This lookup is scoped to classes
+actually referenced by a binding in the current compile scope** — it computes qnames only
+for the (small) set of unresolved target tokens, not for every class in a 50,000-line
+accelerator index, so it never floods `context.classes`/`context.properties` or the
+diagnostics' "usable class tokens" listing. If the token resolves in neither the local
+namespace nor anywhere else in the index, the existing `binding.unknown-class`/
+`binding.unknown-property` diagnostics fire exactly as today — this decision only adds a
+resolution path, it changes no failure behavior. No hub-level accelerator identification
+(`resolve_hub_accelerator_detailed`, DD-125) is needed at compile time at all: resolution
+depends only on what the domain ontology file's own `owl:imports` already pulled into the
+closure, exactly like resolving any other imported term.
+
+**2. Local subclassing remains exactly as-is, required only for a confirmed deviation.**
+An author still may (and, for a genuine deviation — an extra property the accelerator
+doesn't model, a restricted grain, a different identity strategy — still must) declare a
+local class `rdfs:subClassOf <accelerator class>` in the domain's ontology file. This is the
+"local-extension boundary" DD-104/CR-TK-02 already names. Nothing about this path changes;
+accelerator-direct resolution is purely a fallback for the case where no local declaration
+exists.
+
+**3. The machine-managed domain-ontology stub.** Because `resolve_scope` requires the domain
+file to exist, a domain with zero deviations still needs one. `scaffold-binding` (new tooling
+built on this decision, not itself a contract change) generates `model/ontologies/<domain>.ttl`
+as a minimal, clearly labelled machine-managed
+stub — an `owl:Ontology` declaration plus an `owl:imports` triple for each accelerator module
+a binding in that domain targets, and **zero locally-declared classes** — whenever the file
+does not already exist. The stub carries a header comment identifying it as machine-managed
+and never intended for hand-editing, and is regenerated (imports added, never removed
+automatically — removal on a claim/target going out of scope is a separate, deliberately
+out-of-scope concern) whenever a binding in that domain first targets a new accelerator
+module. The moment a human adds a local-extension class to this file, it stops being purely
+machine-managed for that class (the file itself is not re-scaffolded away from human edits —
+only its managed `owl:imports` block is kept in sync, following the same "managed block,
+preserve authored content outside it" pattern DD-104/CR-TK-01 already established for
+`claims-to-silver-ext`-style managed imports). `_ontology_symbols` needs no change to handle
+an ontology file with zero locally-declared classes — it already falls back gracefully today
+(`first_class` is `None` → synthetic `urn:kairos:ontology:` namespace → `list_classes` returns
+nothing), which is precisely the correct behavior for a stub that declares no local terms.
+
+**4. Picking *which* accelerator to `owl:import` into a brand-new stub is a scaffold-time
+concern, not this decision's compile-time mechanism.** Compile-time resolution (point 1)
+never needs to know which accelerator pack is active — it only ever reads whatever
+`owl:imports` the domain file already declares, same as resolving any other imported term.
+The question "which accelerator's `data-domains.yaml` should `scaffold-binding` write an
+`owl:imports` for when a domain has no ontology file yet" belongs to DD-125's existing
+`resolve_hub_accelerator_detailed`/domain-ownership inference machinery, extended with a
+binding-derived hint (`metadata.domain` on the binding being scaffolded, since there is no
+`model/ontologies/*.ttl` stem to hint from yet) — this is scoped as part of the
+`scaffold-binding` tooling itself (Phase 2 of this initiative), not part of this compiler
+decision.
+
+**5. `next`'s readiness ladder (DD-137) needs no logic change — only its routing guidance
+does.** Since the stub is required infrastructure (point 3), "ontology missing" continues to
+correctly gate readiness exactly as DD-137 already specifies; a domain is never "done" without
+a `model/ontologies/<domain>.ttl` file, machine-managed or not. What changes is only which
+skill the `design-domain` action (`core/next_actions.py`'s `ACTION_SKILLS` routing table)
+points to: for a domain with no deviation intent, the correct next action is running
+`scaffold-binding` (which creates the stub as a side effect of scaffolding the first binding),
+not a purely-manual ontology-authoring skill. This is a routing-table update, not a change to
+`propose_next_actions`'s decision logic.
+
+**6. `coverage-report` attribution.** Because the stub still exists and still declares the
+accelerator `owl:imports` dependency, a binding targeting an accelerator class continues to
+attribute to the correct domain/accelerator pack through the same file-presence-based
+attribution `coverage-report` already uses — no bespoke new attribution logic is expected to
+be necessary. This is called out as something to confirm with a concrete test
+(`tests/test_coverage_*`) during implementation rather than asserted definitively here, since
+`coverage-report`'s exact attribution mechanics were not exhaustively traced before this
+decision was recorded.
 
 ### Rationale
 
-Why this approach over alternatives?
+The fix is smaller and lower-risk than the original CR framing suggested, because DD-103's
+semantic index was already built to cover the full resolved closure — this decision widens
+one lookup (`_ontology_symbols`'s class/property registration) to use more of an index the
+compiler already loads and pays to build, rather than adding a new resolver, a new
+hub-level accelerator lookup, or a new dependency on `reference_modules.py`/DD-125 at compile
+time. Reusing `_qnames`/`_declared_prefix_aliases` (for token matching) and
+`_class_index_properties` (already fully generic, requiring zero modification) means the
+accelerator-fallback path is exercised by exactly the same code local resolution already
+exercises — there is no second, parallel resolution implementation to keep in sync. Scoping
+the lookup to only the classes a binding actually references (rather than pre-computing
+qnames for every class in a 50,000-line accelerator index) preserves the existing
+diagnostics' usefulness (a "usable class tokens" list that stays a few dozen entries, not
+tens of thousands) and avoids new cross-accelerator name collisions. Keeping the
+local-subclass path completely unchanged means this decision has zero migration cost for
+existing hubs — every binding that already declares a local class keeps working identically.
+Making the domain stub machine-managed (rather than optional or hand-authored) is the only
+way to reconcile "no local classes for the non-deviating case" with `resolve_scope`'s
+existing hard requirement that the file exist, without weakening that requirement — which
+would be a larger, riskier change to a load-bearing safety check with no compensating
+benefit. Not changing `next`'s decision logic (only its routing) keeps DD-137's stateless,
+no-persisted-state contract completely intact.
 
 ### Consequences
 
-What are the trade-offs or follow-on effects?
+- `kernel.py`: `_ontology_symbols` gains a second, narrower lookup pass — for each
+  still-unresolved binding target token, check it against the rest of the already-loaded
+  `index` using the existing qname-computation helpers, and register a match via the
+  existing, unmodified `_class_index_properties`. `adapter.py`'s `ResolutionContext` gains no
+  new public shape — it continues to receive a `classes`/`properties` tuple, just populated
+  from two passes over the same index instead of one.
+- `reference_modules.py`/DD-125 are **not** touched by this decision — see point 4;
+  `scaffold-binding` (Phase 2) is where a binding-derived domain hint for accelerator-pack
+  selection belongs, when it writes a brand-new stub's `owl:imports`.
+- `next_actions.py`: `ACTION_SKILLS` routing entry for `design-domain` updated; no change to
+  `propose_next_actions`'s ladder logic or `HubInputSnapshot`/`DomainSnapshot` shape beyond
+  what this initiative's `metadata.tier` work already added.
+- New tests required: a binding whose `target.class` is an accelerator IRI with no matching
+  local `rdfs:subClassOf` anywhere in the domain resolves both the class and its full
+  inherited property set and compiles; the same binding still fails with
+  `binding.unknown-class` when the class exists in neither the local ontology nor any
+  activated accelerator module; a domain with only a machine-managed stub (zero local
+  classes) compiles successfully end-to-end; `coverage-report` attributes an
+  accelerator-direct binding to the correct domain (confirming point 6 empirically).
+- Superseded working assumption: the earlier design-notes premise that a domain could exist
+  with *no* `model/ontologies/<domain>.ttl` file at all is corrected — `resolve_scope`'s
+  existing requirement is not relaxed by this decision.
+
+---
+
+## DD-145: Local-Extension Ontology and SHACL Derivation (Narrowed CR-2)
+
+**Status:** Accepted
+**Date:** 2026-08-09
+**Affects:** `core/suggest_shapes.py`, `core/compiler/result.py` (`ExplainEntity`), a new
+`derive-ontology --from-binding` CLI surface
+**Implementation:** deferred pending accelerator-pack Silver/SHACL defaults content; toolkit
+mechanism scoped here with a documented fallback
+
+### Context
+
+CR-2 (`docs/temp/cr-fast-path-to-silver.md`) originally proposed deriving a domain's
+ontology TTL and SHACL shapes wholesale from its `EntityBinding` YAML, to stop hand-authoring
+three mutually-redundant artifacts per entity. Read literally, this contradicts DD-133's
+explicit statement that an `EntityBinding` is "validated ... then converted directly into
+frozen dataclasses and the existing graph-free mapping AST — never serialized to intermediate
+RDF." Once DD-144 makes accelerator-direct binding the default for both tiers, the scope of
+what CR-2 actually needs to solve shrinks: in the non-deviating case there is no local class
+or shape to keep in sync with the binding at all (DD-144's machine-managed stub declares no
+local terms), so there is nothing to derive. CR-2 only still matters for the **local-extension
+case** — a binding whose target class genuinely deviates from the accelerator and therefore
+does declare a local subclass with one or more extension properties, which do need *some*
+ontology declaration and, if SHACL validation is desired, a shape.
+
+### Decision
+
+Narrow CR-2 to local-extension properties only, and adopt the CR's "option 2" shape uniformly
+(never the "derive in place as a reviewable diff" alternative), so DD-133's authored-input
+invariant never has an exception to remember: a `derive-ontology --from-binding <path>`
+command reads an `EntityBinding`'s local-extension `fields:` (properties whose class is a
+locally-declared subclass, per DD-144) and **scaffolds** — never silently writes into the
+authored tree — a small TTL fragment (one `owl:DatatypeProperty` per extension field, domain/
+range inferred from the source contract and the binding's resolved expression type) for a
+human to review and merge into the domain's ontology file by hand. The same command, when
+the accelerator pack ships a reviewed SHACL shape for the parent accelerator class (content
+that is `docs/temp/logistics-accelerator-dbt-silver-design-plan.md` §7's "pending"
+`silver-defaults/*.ttl`, not yet available for logistics), scaffolds a small SHACL fragment
+**extending** that shape with constraints for the extension properties only — never a full
+per-hub shape derived from scratch. When no accelerator shape default exists, the command
+scaffolds a shape for the local-extension properties alone, with the same "advisory, human
+reviews" framing `suggest-shapes` (DD-076) already uses, and does not attempt to describe the
+accelerator-owned portion of the class at all.
+
+`suggest-shapes`'s existing, currently-unused `mappings:` extension point
+(`core/suggest_shapes.py`, "Extension point for DD-076+: mappings may later retarget shapes to
+domain properties") is the intended seam: retargeted from raw bronze-profiling input to the
+compiler's already-resolved `ExplainEntity.fields`/`target_class`/`grain`
+(`compiler/result.py`), scoped to local-extension fields only.
+
+### Rationale
+
+Narrowing to the local-extension case is what DD-144 makes possible: it was the introduction
+of accelerator-direct binding that removed the non-deviating case from CR-2's scope entirely,
+not a separate decision. Choosing the explicit-scaffold shape uniformly (rather than CR-2's
+original per-tier split) means DD-133's "authored TTL is an input, never an output" rule holds
+without a carve-out to track and re-justify later. Reusing `suggest-shapes`'s existing,
+already-designed-for-this extension point avoids building a second SHACL-generation code path
+next to the one that already exists for the bronze-profiling case.
+
+### Consequences
+
+- No change to DD-133's authored-input contract; no intermediate RDF is ever produced from a
+  binding except as an explicitly-requested, human-reviewed scaffold output, matching how
+  `suggest-shapes` and `scaffold-mapping`'s legacy scaffolds already behave.
+- This decision records the mechanism; **implementation is deferred**. The toolkit-side
+  scaffold command can be built without waiting on the accelerator pack, with a documented
+  fallback (no reused shape, extension-only shape) when no accelerator default exists — but
+  the full value of "extend, don't derive" is gated on that content shipping.
+- Full CR-2 (deriving a shape for the accelerator-owned portion of a class) is explicitly
+  **not** adopted — DD-144 makes it unnecessary, and attempting it would recreate the
+  cross-file consistency burden this whole initiative exists to remove.
+
+---
 ```

@@ -263,6 +263,17 @@ def init(domain, company_domain, force):
             shutil.copy2(gitignore_src, gitignore_dst)
             print("  ✓ Installed .gitignore")
 
+    # 4d-ii. Copy .claude/settings.json (denies raw TTL Read/Grep — DD-103)
+    claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
+    claude_settings_dst = cwd / ".claude" / "settings.json"
+    if claude_settings_src.is_file():
+        if claude_settings_dst.exists() and not force:
+            print("  ⏭  .claude/settings.json already exists (use --force to overwrite)")
+        else:
+            claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(claude_settings_src, claude_settings_dst)
+            print("  ✓ Installed .claude/settings.json (TTL access boundary)")
+
     # 4e-bis. Copy .env.example into repo root
     env_example_src = _SCAFFOLD_DIR / ".env.example"
     env_example_dst = cwd / ".env.example"
@@ -911,6 +922,14 @@ def new_repo(
     if gitignore_src.is_file():
         shutil.copy2(gitignore_src, repo_dir / ".gitignore")
         print("  ✓ .gitignore")
+
+    # .claude/settings.json (denies raw TTL Read/Grep — DD-103)
+    claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
+    if claude_settings_src.is_file():
+        claude_settings_dst = repo_dir / ".claude" / "settings.json"
+        claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(claude_settings_src, claude_settings_dst)
+        print("  ✓ .claude/settings.json (TTL access boundary)")
 
     # README.md
     readme_src = _SCAFFOLD_DIR / "README.md.template"

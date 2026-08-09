@@ -88,6 +88,9 @@ def test_packaged_example_loads() -> None:
     assert binding.conformance is not None
     assert binding.conformance.union.mode == "deduplicate"
     assert binding.quality[0].kind == "not-null"
+    assert binding.technical_fields[0].name == "account_ref"
+    assert binding.technical_fields[0].purpose == "relationship"
+    assert binding.technical_fields[0].type == "string"
 
 
 def test_external_reference_relationship_parses_closed_key_contract() -> None:

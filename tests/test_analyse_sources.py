@@ -79,6 +79,7 @@ testapp:tblClient_VATNumber a kairos-bronze:SourceColumn ;
     kairos-bronze:dataType "varchar(50)" ;
     kairos-bronze:nullable true ;
     kairos-bronze:sampleValues "BE0123456789 | NL987654321B01" ;
+    kairos-bronze:distinctCount 42 ;
     kairos-bronze:belongsToTable testapp:tblClient .
 
 testapp:tblClient_Email a kairos-bronze:SourceColumn ;
@@ -435,6 +436,14 @@ class TestLoadDataDomains:
         # Check samples parsed
         client_name = next(c for c in cols if c["name"] == "ClientName")
         assert "Acme NV" in client_name["samples"]
+
+        # distinct_count is surfaced when present on the TTL graph, and None
+        # when the (hand-authored/older) vocabulary doesn't carry a value.
+        vat_number = next(c for c in cols if c["name"] == "VATNumber")
+        assert vat_number["distinct_count"] == 42
+        assert client_name["distinct_count"] is None
+        email = next(c for c in cols if c["name"] == "Email")
+        assert email["distinct_count"] is None
 
     def test_empty_file_returns_empty(self, tmp_path):
         vocab_file = tmp_path / "empty.vocabulary.ttl"
