@@ -77,5 +77,6 @@ def test_cli_exceptions_are_not_gated():
         "catalog-test",
         "scaffold-silver-ext",
         "validate-silver-ext",
+        "guard-scope",
     ):
         assert cmd not in _SKILL_COVERED_COMMANDS

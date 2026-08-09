@@ -134,6 +134,28 @@ _DATAPLATFORM_SKILLS = [
 ]
 
 
+def _git_status_snapshot(repo_dir: Path) -> str:
+    """Return ``git status --porcelain --untracked-files=all`` output for *repo_dir*.
+
+    ``--untracked-files=all`` is required — plain ``--porcelain`` omits
+    untracked files entirely, which would let a new file outside a guarded
+    scope slip past undetected. Used by the ``guard-scope`` command to compare
+    a before/after snapshot; not a generic git-runner abstraction — every
+    other git call in this module stays inline as-is.
+    """
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git status failed in {repo_dir}: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    return result.stdout
+
+
 _REF_MODELS_PATH = "ontology-reference-models"
 
 

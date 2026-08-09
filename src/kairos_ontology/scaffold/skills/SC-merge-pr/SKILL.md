@@ -8,7 +8,12 @@ description: >
 # SC — Merge via Pull Request
 
 You are helping the user finish a feature branch and create a pull request
-to merge into `main`.
+to merge into `main`. The mechanical git/gh choreography below is delegated to
+`python scripts/finish_pr.py` (toolkit-repo-only tooling — it is not shipped
+to hub repos). Everything that requires judgment — commit wording, conflict
+resolution, the security review, which issues this PR fully resolves, PR
+title/body prose, and whether/how to bump the version — stays your call; the
+script only executes what you've already decided.
 
 ## Before you start
 
@@ -18,7 +23,7 @@ to merge into `main`.
    `python -m kairos_ontology validate`
 4. **Release intent (toolkit repo only):** if this change will ship a release,
    decide the version bump **now** and commit it to the feature branch *before*
-   creating the PR — see [Step 7b](#step-7b--tag-the-release-version-bump-already-on-the-branch).
+   creating the PR — see [Step 8](#step-8--tag-the-release-version-bump-already-on-the-branch).
    Because `main` is protected, bundling the bump into the feature PR avoids a
    separate bump-only PR and keeps the release tag reachable from `main`.
 
@@ -27,16 +32,17 @@ to merge into `main`.
 ### Step 1 — Verify branch and status
 
 ```bash
-git branch --show-current
-git status
+python scripts/finish_pr.py pre-pr --check
 ```
 
-- If on `main`: stop — tell the user to switch to their feature branch.
-- If uncommitted changes exist: ask user to commit or stash first.
+Reports the current branch and whether the working tree is clean. If on
+`main`, stop and tell the user to switch to their feature branch. If
+uncommitted changes exist, ask the user to commit or stash first.
 
 ### Step 2 — Ensure all changes are committed
 
-If there are staged or unstaged changes:
+If there are staged or unstaged changes, decide the commit message yourself
+(the wording is your judgment call — the script does not commit for you):
 
 ```bash
 git add .
@@ -61,7 +67,8 @@ git fetch origin main
 git rebase origin/main
 ```
 
-If conflicts arise, help the user resolve them before continuing.
+If conflicts arise, help the user resolve them before continuing — this
+requires reading the actual conflicting changes and is not scriptable.
 
 ### Step 4 — Security review
 
@@ -93,20 +100,22 @@ git diff main --name-only
 | **Sensitive data in ontology** | PII, credentials, or internal URLs embedded in `.ttl` labels/comments |
 | **No proprietary content** | No client-specific or proprietary information in examples or sample data |
 
-If any issues are found, fix them before proceeding.  Do NOT create the PR
-with known security problems.
+If any issues are found, fix them before proceeding. Do NOT create the PR
+with known security problems — this review requires reading the actual diff
+and is not scriptable.
 
 ### Step 5 — Push the branch
 
 ```bash
-git push -u origin HEAD
+python scripts/finish_pr.py pre-pr --push
 ```
 
-### Step 4b — Link issues with closing keywords (MANDATORY)
+### Step 6 — Link issues with closing keywords (MANDATORY)
 
-Before writing the PR body, identify which open issues this PR **fully
-resolves**. For each one, the PR **body** (description) MUST contain a GitHub
-**closing keyword** so the issue auto-closes when the PR merges:
+Before creating the PR, identify which open issues this PR **fully
+resolves** — this is your judgment call, not the script's. For each one, the
+PR **body** must contain a GitHub **closing keyword** so the issue auto-closes
+when the PR merges:
 
 ```
 Closes #175
@@ -118,65 +127,44 @@ Resolves #166
 > reference in the PR **title** — does **NOT** auto-close the issue on merge.
 > Without a closing keyword the issue stays open after the fix ships (this is
 > exactly what left #174/#175 open after PR #177 merged). Only the keywords
-> below, in the PR **body** or a commit message, trigger auto-close.
+> above, in the PR **body** or a commit message, trigger auto-close.
 
 | Use | Keyword (any case) | When |
 |-----|--------------------|------|
 | **Auto-close** | `close` / `closes` / `closed`, `fix` / `fixes` / `fixed`, `resolve` / `resolves` / `resolved` followed by `#NNN` | The PR **fully fixes** the issue |
 | **Reference only** (no close) | plain `#NNN` (no keyword) | The PR is *related to* / *partially addresses* the issue, or the issue is a follow-up that should stay open |
 
-- One keyword **per issue** (`Closes #1, #2` does NOT close #2 — write
-  `Closes #1` and `Closes #2`).
-- For a follow-up/spin-off issue that must stay open, reference it as a plain
-  `#NNN` (e.g. "follow-up: #176") so it is linked but **not** closed.
+- One keyword **per issue** (`Closes #1, #2` does NOT close #2 — pass
+  `--closes 1 --closes 2`).
+- For a follow-up/spin-off issue that must stay open, pass it as `--follow-up`
+  so it is linked but **not** closed.
 
-### Step 5 — Create the pull request
+### Step 7 — Create the pull request
 
-Use the GitHub CLI (`gh`):
-
-```bash
-gh pr create --base main --fill
-```
-
-Or with explicit title and body (note the **`Closes:` section** — see
-[Step 4b](#step-4b--link-issues-with-closing-keywords-mandatory)):
+The script renders the `## Changes` / `## Closes` / `## Checklist` body
+structure; you supply the title, bullet summary, and issue numbers decided in
+Step 6:
 
 ```bash
-gh pr create --base main \
+python scripts/finish_pr.py pre-pr --create \
   --title "<type>: <short description>" \
-  --body "## Changes
-
-- <bullet summary of what changed>
-
-## Closes
-Closes #<issue fully fixed by this PR>
-Fixes #<another issue fully fixed by this PR>
-
-<!-- Follow-up / related issues that should STAY OPEN: reference without a
-     keyword, e.g. 'Follow-up: #176' -->
-
-## Checklist
-- [ ] Closing keywords (\`Closes/Fixes/Resolves #NNN\`) added for every issue this PR fully fixes
-- [ ] \`python -m kairos_ontology validate\` passes
-- [ ] \`python -m kairos_ontology project\` regenerated (if ontology changed)
-- [ ] \`_master.ttl\` updated (if new domain added)
-- [ ] Hub README domain table updated (if new domain added)
-- [ ] Security review passed (no path traversal, no secrets, no shell=True)"
+  --body-bullet "<bullet summary of what changed>" \
+  --closes 175 --closes 174 \
+  --follow-up 176
 ```
 
-### Step 5b — Merge the pull request
+### Step 7b — Merge the pull request
 
-After the PR has been reviewed and approved, merge it with `--delete-branch`
-so the remote branch is cleaned up automatically:
+After the PR has been reviewed and approved:
 
 ```bash
-gh pr merge --squash --delete-branch
+python scripts/finish_pr.py post-merge --merge
 ```
 
-> `--delete-branch` tells GitHub to delete the remote branch automatically
-> after the merge completes.
+This merges with `--squash --delete-branch`, so the remote branch is cleaned
+up automatically.
 
-### Step 6 — Confirm
+### Step 7c — Confirm
 
 Print a summary:
 
@@ -188,8 +176,7 @@ Print a summary:
 
 Next steps:
   - Review the PR on GitHub
-  - After merge, run local cleanup:
-      git checkout main && git pull origin main && git branch -d feature/add-order-domain
+  - After merge, run: python scripts/finish_pr.py post-merge --cleanup
 ```
 
 After the PR is merged, **verify the linked issues actually closed**. If any
@@ -205,23 +192,19 @@ gh issue close <number> --comment "Fixed by #<pr-number>"   # manual fallback
 
 After the PR is merged, perform **all** of the following steps automatically.
 
-### Step 7a — Clean up local branch
+### Step 8a — Clean up local branch
 
-The remote branch is already deleted (via `--delete-branch`).
-Clean up the local branch:
+The remote branch is already deleted (via `--delete-branch`). Clean up the
+local branch:
 
 ```bash
-BRANCH=$(git branch --show-current)
-git checkout main
-git pull origin main
-git branch -d "$BRANCH"
+python scripts/finish_pr.py post-merge --cleanup
 ```
 
-Do NOT ask for confirmation — the branch was already merged, so `-d`
-(safe delete) will succeed.  If the user is already on `main`, detect
-the merged branch from context or the PR URL and delete it.
+Do NOT ask for confirmation — the branch was already merged, so the safe
+delete will succeed.
 
-### Step 7b — Tag the release (version bump already on the branch)
+### Step 8 — Tag the release (version bump already on the branch)
 
 > **Only applies to the `kairos-ontology-toolkit` repo itself.**
 > Skip this step for ontology hub repos (they don't publish packages).
@@ -232,9 +215,9 @@ the merged branch from context or the PR URL and delete it.
 > branch, before the PR** (see the pre-flight below), so the bump lands on `main`
 > in the same merge. After merge you only **tag the merged commit**.
 
-**Pre-flight (do this on the feature branch, before Step 5 "Create the PR"):**
-If this change should ship a release, ask the user which bump to apply, then commit
-the bump as part of the feature branch so it is included in the PR:
+**Pre-flight (do this on the feature branch, before Step 7 "Create the PR"):**
+If this change should ship a release, ask the user which bump to apply — this
+decision is yours, not the script's:
 
 | Type | When |
 |------|------|
@@ -244,21 +227,18 @@ the bump as part of the feature branch so it is included in the PR:
 
 ```bash
 # On the feature branch, BEFORE creating the PR:
-# 1. Bump __version__ in src/kairos_ontology/__init__.py to X.Y.Z
-# 2. Move CHANGELOG [Unreleased] items under a new [X.Y.Z] — YYYY-MM-DD heading
-# 3. Refresh the lock + sanity-build
+python scripts/finish_pr.py tag-release --bump <patch|minor|major>
 uv lock && uv build
 git add uv.lock src/kairos_ontology/__init__.py CHANGELOG.md
 git commit -m "chore: bump version to X.Y.Z"
 ```
 
-**After the PR is merged** (Step 5b) and local `main` is synced (Step 7a),
-tag the merged commit on `main` and push only the tag:
+**After the PR is merged** (Step 7b) and local `main` is synced (Step 8a),
+tag the merged commit on `main`:
 
 ```bash
 git checkout main && git pull origin main      # main now contains the bump
-git tag -a vX.Y.Z -m "Release vX.Y.Z"
-git push origin vX.Y.Z                          # tag only — never push to main
+python scripts/finish_pr.py tag-release --tag  # tags v<current __version__>, pushes only the tag
 ```
 
 This keeps the tag reachable from `main` and needs no extra branch.
@@ -297,7 +277,8 @@ Print a summary:
 | PR already exists for branch | Show URL: `gh pr view --web` |
 | Push rejected (behind remote) | `git pull --rebase origin <branch>` then retry |
 | Merge conflicts with main | Help resolve: `git fetch origin main && git rebase origin/main` |
-| Push to `main` rejected (protected branch hook) | Expected — never push to `main`. Land changes via a PR; for a release, only `git push origin vX.Y.Z` (tag) after merge. |
+| Push to `main` rejected (protected branch hook) | Expected — never push to `main`. Land changes via a PR; for a release, only the tag push (Step 8) after merge. |
+| Unsure what a `finish_pr.py` step will do | Add `--dry-run` — every subcommand prints what it would run instead of calling git/gh. |
 
 ## Ontology-specific checklist
 

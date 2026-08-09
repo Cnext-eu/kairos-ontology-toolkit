@@ -154,7 +154,9 @@ inferred types/null behavior, identity, relationships, blocked behavior,
 capabilities, and planned artifacts. If explain reveals an unintended result,
 return to the proposal/check loop.
 
-Do not call `compile --emit` from this design skill.
+Do not call `compile --emit` from this design skill — it is hard-gated behind
+`--confirm-emit`, which only **kairos-execute-project** passes, so a bare
+`--emit` here fails immediately with a `UsageError`.
 
 ## Closed YAML contract
 
@@ -333,9 +335,17 @@ authority and does not replace compiler safety.
 
 ### 7. Review and persist the YAML patch
 
-Present the complete closed YAML and a focused diff. In interactive mode, wait
-for explicit approval before writing. In fleet mode, record rationale,
-confidence, and evidence for the AI approval.
+Before writing anything, snapshot the workspace scope:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology guard-scope --snapshot
+```
+
+Keep the printed token — it is compared at step 9. Present the complete
+closed YAML and a focused diff. In interactive mode, wait for explicit
+approval before writing. In fleet mode, record rationale, confidence, and
+evidence for the AI approval.
 
 Write only the accepted
 `integration/bindings/<source>-to-<domain>.binding.yaml` change. Never write an
@@ -354,14 +364,22 @@ or explain output.
 
 ### 9. Complete
 
-Reread the saved YAML, rerun `compile --check`, then `compile --explain`.
+Reread the saved YAML, rerun `compile --check`, then `compile --explain`, and
+confirm the workspace guard passes:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology guard-scope --check-since <token> --allow "integration/bindings/<source>-to-<domain>.binding.yaml"
+```
+
 Completion requires:
 
 - the entity passes the static safety kernel;
 - explain output matches the approved semantics;
 - source samples exposed to the LLM were PII-safe;
 - only accepted binding/dbt authoring changes remain;
-- no generated artifacts or state/report files were written.
+- the workspace guard reports no unexpected file changes (a non-zero exit
+  names every offending path — not a self-report).
 
 Report the binding path, compiler result, focused checks, and any unresolved
 out-of-scope work. Artifact generation is a separate execution step.

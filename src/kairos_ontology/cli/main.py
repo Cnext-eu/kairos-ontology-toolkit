@@ -63,6 +63,7 @@ from .inspection import (
     draft_model_report_cmd,
     next_action_cmd,
     design_landscape_cmd,
+    guard_scope_cmd,
 )
 from .operations import (
     update,
@@ -155,6 +156,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(draft_model_report_cmd)
     group.add_command(next_action_cmd)
     group.add_command(design_landscape_cmd)
+    group.add_command(guard_scope_cmd)
     group.add_command(update)
     group.add_command(update_refmodels)
 

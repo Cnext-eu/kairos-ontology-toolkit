@@ -435,7 +435,7 @@ def test_v5_cli_bare_emit_defaults_to_unified_medallion_dbt(tmp_path, monkeypatc
 
     result = CliRunner().invoke(
         cli,
-        ["compile", "party", "--emit"],
+        ["compile", "party", "--emit", "--confirm-emit"],
         env={"KAIROS_SKILL_CONTEXT": "1"},
     )
 
@@ -462,7 +462,7 @@ def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
     for domain in ("party", "billing"):
         result = runner.invoke(
             cli,
-            ["compile", domain, "--emit"],
+            ["compile", domain, "--emit", "--confirm-emit"],
             env={"KAIROS_SKILL_CONTEXT": "1"},
         )
         assert result.exit_code == 0, result.output
@@ -470,7 +470,7 @@ def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
     for domain in ("billing", "party"):
         result = runner.invoke(
             cli,
-            ["compile", domain, "--emit"],
+            ["compile", domain, "--emit", "--confirm-emit"],
             env={"KAIROS_SKILL_CONTEXT": "1"},
         )
         assert result.exit_code == 0, result.output

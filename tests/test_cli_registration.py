@@ -24,6 +24,7 @@ RETAINED_COMMANDS = {
     "explain-term",
     "fit-report",
     "generate-inventory",
+    "guard-scope",
     "import-flatfile",
     "import-source",
     "import-tmdl",

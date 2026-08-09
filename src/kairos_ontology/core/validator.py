@@ -3,10 +3,11 @@
 """Ontology validation module - syntax, SHACL, consistency, GDPR PII scanning."""
 
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
-from rdflib import Graph, Namespace
+from typing import Any, Optional
+from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from pyshacl import validate as shacl_validate
 import json
@@ -241,6 +242,205 @@ def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = No
     return total_warnings
 
 
+_PASCAL_CASE_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
+_CAMEL_CASE_RE = re.compile(r"^[a-z][A-Za-z0-9]*$")
+
+
+@dataclass(frozen=True)
+class NamingDiagnostic:
+    """Structured naming/annotation-convention diagnostic."""
+
+    level: str
+    code: str
+    message: str
+    term_uri: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _local_name(term_uri: str) -> str:
+    if "#" in term_uri:
+        return term_uri.rsplit("#", 1)[-1]
+    return term_uri.rsplit("/", 1)[-1]
+
+
+def validate_naming_conventions(ontology_content: str) -> dict:
+    """Check ontology naming and annotation conventions for one domain file.
+
+    Every rule below is already documented as authoring convention (scaffold
+    ``ontologies/README.md`` and ``copilot-instructions.md``) but was previously
+    enforced only by an LLM re-deriving the checks by hand each design session.
+    This validates the whole file every run, matching every other check in this
+    module — there is no "new vs existing" scoping.
+
+    Checks (scoped to terms this file itself declares — safe because this
+    parses only *ontology_content*, a single file, with no ``owl:imports``
+    resolution, so every ``owl:Class``/``owl:DatatypeProperty``/
+    ``owl:ObjectProperty`` type-assertion found here was authored here; there
+    is no imported/accelerator content in this graph to accidentally flag):
+      - exactly one ``owl:Ontology`` declaration, with ``rdfs:label`` and
+        ``owl:versionInfo``;
+      - every class has ``rdfs:label`` and ``rdfs:comment``;
+      - every ``owl:DatatypeProperty``/``owl:ObjectProperty`` has
+        ``rdfs:label``, ``rdfs:domain``, and ``rdfs:range``;
+      - class names are PascalCase; property names are camelCase;
+      - no term is declared as more than one of
+        {Class, DatatypeProperty, ObjectProperty}.
+
+    Not checked here (requires judgment, stays in the design skill's prose):
+    whether a class is an accidental reference-model specialization, and
+    whether source types can feasibly populate a proposed property's range.
+
+    Returns dict: {"passed": bool, "errors": list[dict], "warnings": list[dict]}
+    (errors/warnings are ``NamingDiagnostic.to_dict()`` entries).
+    """
+    graph = Graph()
+    graph.parse(data=ontology_content, format="turtle")
+
+    errors: list[NamingDiagnostic] = []
+
+    ontology_subjects = [
+        s for s in graph.subjects(RDF.type, OWL.Ontology) if isinstance(s, URIRef)
+    ]
+    if not ontology_subjects:
+        errors.append(
+            NamingDiagnostic(
+                level="error",
+                code="missing_ontology_declaration",
+                message="No owl:Ontology declaration found in this file.",
+            )
+        )
+    else:
+        if len(ontology_subjects) > 1:
+            for extra in ontology_subjects[1:]:
+                errors.append(
+                    NamingDiagnostic(
+                        level="error",
+                        code="multiple_ontology_declarations",
+                        message=f"Multiple owl:Ontology declarations found: {extra}",
+                        term_uri=str(extra),
+                    )
+                )
+        primary = ontology_subjects[0]
+        if graph.value(primary, RDFS.label) is None:
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="ontology_missing_label",
+                    message=f"owl:Ontology {primary} is missing rdfs:label.",
+                    term_uri=str(primary),
+                )
+            )
+        if graph.value(primary, OWL.versionInfo) is None:
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="ontology_missing_version_info",
+                    message=f"owl:Ontology {primary} is missing owl:versionInfo.",
+                    term_uri=str(primary),
+                )
+            )
+
+    class_uris = {
+        str(s) for s in graph.subjects(RDF.type, OWL.Class) if isinstance(s, URIRef)
+    }
+    property_uris = {
+        str(s)
+        for s in graph.subjects(RDF.type, OWL.DatatypeProperty)
+        if isinstance(s, URIRef)
+    } | {
+        str(s)
+        for s in graph.subjects(RDF.type, OWL.ObjectProperty)
+        if isinstance(s, URIRef)
+    }
+
+    for term_uri in sorted(class_uris & property_uris):
+        errors.append(
+            NamingDiagnostic(
+                level="error",
+                code="term_declared_as_multiple_types",
+                message=f"{term_uri} is declared as both a class and a property.",
+                term_uri=term_uri,
+            )
+        )
+
+    for class_uri in sorted(class_uris):
+        subject = URIRef(class_uri)
+        if graph.value(subject, RDFS.label) is None:
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="class_missing_label",
+                    message=f"Class {class_uri} is missing rdfs:label.",
+                    term_uri=class_uri,
+                )
+            )
+        if graph.value(subject, RDFS.comment) is None:
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="class_missing_comment",
+                    message=f"Class {class_uri} is missing rdfs:comment.",
+                    term_uri=class_uri,
+                )
+            )
+        if not _PASCAL_CASE_RE.match(_local_name(class_uri)):
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="class_name_not_pascal_case",
+                    message=f"Class {class_uri} is not PascalCase.",
+                    term_uri=class_uri,
+                )
+            )
+
+    for property_uri in sorted(property_uris):
+        subject = URIRef(property_uri)
+        if graph.value(subject, RDFS.label) is None:
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="property_missing_label",
+                    message=f"Property {property_uri} is missing rdfs:label.",
+                    term_uri=property_uri,
+                )
+            )
+        if graph.value(subject, RDFS.domain) is None:
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="property_missing_domain",
+                    message=f"Property {property_uri} is missing rdfs:domain.",
+                    term_uri=property_uri,
+                )
+            )
+        if graph.value(subject, RDFS.range) is None:
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="property_missing_range",
+                    message=f"Property {property_uri} is missing rdfs:range.",
+                    term_uri=property_uri,
+                )
+            )
+        if not _CAMEL_CASE_RE.match(_local_name(property_uri)):
+            errors.append(
+                NamingDiagnostic(
+                    level="error",
+                    code="property_name_not_camel_case",
+                    message=f"Property {property_uri} is not camelCase.",
+                    term_uri=property_uri,
+                )
+            )
+
+    return {
+        "passed": len(errors) == 0,
+        "errors": [e.to_dict() for e in errors],
+        "warnings": [],
+    }
+
+
 def validate_managed_imports(
     ontology_file: Path,
     *,
@@ -303,6 +503,7 @@ def propose_lifecycle_state(
     """
     total_failed = (
         results["syntax"]["failed"]
+        + results.get("naming", {}).get("failed", 0)
         + results["imports"]["failed"]
         + results["shacl"]["failed"]
         + results["consistency"]["failed"]
@@ -406,11 +607,11 @@ def render_validation_markdown(
     lines.append("")
     lines.append("| Check | Passed | Failed |")
     lines.append("|-------|--------|--------|")
-    for section in ("syntax", "imports", "shacl", "consistency", "decisions"):
+    for section in ("syntax", "naming", "imports", "shacl", "consistency", "decisions"):
         data = results.get(section, {})
         lines.append(f"| {section} | {data.get('passed', 0)} | {data.get('failed', 0)} |")
     lines.append("")
-    for section in ("syntax", "imports", "shacl", "consistency", "decisions"):
+    for section in ("syntax", "naming", "imports", "shacl", "consistency", "decisions"):
         errors = results.get(section, {}).get("errors", [])
         if not errors:
             continue
@@ -478,6 +679,7 @@ def run_validation(
 
     results = {
         "syntax": {"passed": 0, "failed": 0, "errors": []},
+        "naming": {"passed": 0, "failed": 0, "errors": [], "warnings": []},
         "imports": {"passed": 0, "failed": 0, "errors": [], "warnings": []},
         "shacl": {"passed": 0, "failed": 0, "errors": []},
         "consistency": {"passed": 0, "failed": 0, "errors": []},
@@ -615,8 +817,31 @@ def run_validation(
                 results["syntax"]["failed"] += 1
                 results["syntax"]["errors"].append({"file": str(ontology_file), "error": str(e)})
                 print(f"  ✗ {ontology_file.name}: {e}")
+                continue
+
+            naming_result = validate_naming_conventions(
+                ontology_file.read_text(encoding="utf-8")
+            )
+            if naming_result["errors"]:
+                results["naming"]["failed"] += 1
+                results["naming"]["errors"].extend(
+                    {"file": str(ontology_file), **e} for e in naming_result["errors"]
+                )
+                print(
+                    f"    ✗ {len(naming_result['errors'])} naming/annotation error(s) "
+                    f"in {ontology_file.name}"
+                )
+            else:
+                results["naming"]["passed"] += 1
+            results["naming"]["warnings"].extend(
+                {"file": str(ontology_file), **w} for w in naming_result["warnings"]
+            )
 
         print(f"\n  Passed: {results['syntax']['passed']}, Failed: {results['syntax']['failed']}\n")
+        print(
+            f"  Naming/annotation — Passed: {results['naming']['passed']}, "
+            f"Failed: {results['naming']['failed']}\n"
+        )
 
     # Level 2: SHACL Validation
     if do_shacl and shapes_path.exists():
@@ -720,6 +945,7 @@ def run_validation(
     # Exit code
     total_failed = (
         results["syntax"]["failed"]
+        + results["naming"]["failed"]
         + results["imports"]["failed"]
         + results["shacl"]["failed"]
         + results["consistency"]["failed"]
