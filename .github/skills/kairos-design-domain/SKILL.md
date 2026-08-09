@@ -154,18 +154,23 @@ rules.
 
 ### Gate 5: Ontology integrity
 
-Before applying a patch, parse the complete candidate graph in memory with
-`rdflib.Graph`; do not validate Turtle by string inspection alone. Confirm:
+Before applying a patch, run `kairos-ontology validate --syntax` (or the
+hub's effective `validate` invocation) against the candidate file and treat
+its `syntax` and `naming` findings as authoritative. The CLI deterministically
+enforces: one `owl:Ontology` declaration with `rdfs:label` and
+`owl:versionInfo`; every class has `rdfs:label` and `rdfs:comment`; every
+property has `rdfs:label`, `rdfs:domain`, and `rdfs:range`; PascalCase classes
+and camelCase properties; no term declared as more than one of
+{Class, DatatypeProperty, ObjectProperty}. Do not hand-write rdflib checks for
+any of these — the CLI check is the authority.
 
-- one `owl:Ontology` declaration with `rdfs:label` and `owl:versionInfo`;
-- every new class has `rdfs:label` and `rdfs:comment`;
-- every new property has `rdfs:label`, `rdfs:domain`, and `rdfs:range`;
-- PascalCase classes and camelCase properties;
+Still confirm manually, since these require judgment the CLI cannot supply:
+
 - catalog-resolved imports and terms;
-- no duplicate local term or accidental reference-model specialization;
+- no accidental reference-model specialization;
 - source types can feasibly populate proposed property ranges.
 
-Do not apply a candidate with syntax or convention errors.
+Do not apply a candidate with syntax, naming, or convention errors.
 
 ## Canonical design loop
 
@@ -264,19 +269,35 @@ are reviewed like code.
 
 ### 8. Prepare and validate the patch
 
-Create a reviewable unified diff limited to
-`model/ontologies/<domain>.ttl`. Parse the full post-patch graph in memory and run
-Gate 5. Summarize added, changed, and intentionally omitted terms plus their
-evidence.
+Before writing anything, snapshot the workspace scope:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology guard-scope --snapshot
+```
+
+Keep the printed token — it is compared at step 9.
+
+Create a reviewable unified diff limited to `model/ontologies/<domain>.ttl`
+and run Gate 5. Summarize added, changed, and intentionally omitted terms plus
+their evidence.
 
 In interactive mode, show the validated diff and wait for final approval. In
 fleet mode, record the AI approval with rationale, confidence, and evidence.
 
 ### 9. Apply and verify
 
-Apply only the approved diff. Reread and parse the saved ontology, repeat Gate 5,
-and confirm no other authored file changed. If validation fails, restore the
-pre-patch content and report the failure.
+Apply only the approved diff. Reread and parse the saved ontology, repeat
+Gate 5, and confirm the workspace guard passes:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology guard-scope --check-since <token> --allow "model/ontologies/<domain>.ttl"
+```
+
+A non-zero exit names every path that changed outside the accepted patch —
+treat that as blocking, not a self-report. If validation or the guard fails,
+restore the pre-patch content and report the failure.
 
 ### 10. Hand off
 

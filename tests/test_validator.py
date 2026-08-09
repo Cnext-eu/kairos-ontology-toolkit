@@ -5,7 +5,12 @@
 import json
 
 import pytest
-from kairos_ontology.core.validator import run_validation, validate_gdpr, run_gdpr_validation
+from kairos_ontology.core.validator import (
+    run_validation,
+    validate_gdpr,
+    run_gdpr_validation,
+    validate_naming_conventions,
+)
 
 
 class TestValidator:
@@ -319,6 +324,214 @@ class TestLifecycleStateProposal:
         proposal = propose_lifecycle_state(results, do_syntax=True, do_shacl=True)
         # Must not raise — proves the value is a plain, JSON-serializable dict.
         json.dumps(proposal.to_dict())
+
+
+# -----------------------------------------------------------------------
+# Naming/annotation convention tests
+# -----------------------------------------------------------------------
+
+
+class TestNamingConventions:
+    """Test the naming/annotation convention checks (validate_naming_conventions)."""
+
+    def test_valid_ontology_passes(self, sample_ontology):
+        result = validate_naming_conventions(sample_ontology)
+        assert result["passed"] is True
+        assert result["errors"] == []
+
+    def test_missing_ontology_declaration_fails(self):
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is False
+        codes = {e["code"] for e in result["errors"]}
+        assert "missing_ontology_declaration" in codes
+
+    def test_multiple_ontology_declarations_fails(self):
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:FirstOntology a owl:Ontology ;
+    rdfs:label "First" ;
+    owl:versionInfo "1.0" .
+
+:SecondOntology a owl:Ontology ;
+    rdfs:label "Second" ;
+    owl:versionInfo "1.0" .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is False
+        codes = {e["code"] for e in result["errors"]}
+        assert "multiple_ontology_declarations" in codes
+
+    def test_ontology_missing_label_and_version_fails(self):
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is False
+        codes = {e["code"] for e in result["errors"]}
+        assert "ontology_missing_label" in codes
+        assert "ontology_missing_version_info" in codes
+
+    def test_class_missing_label_or_comment_fails(self):
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:Customer a owl:Class .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is False
+        codes = {e["code"] for e in result["errors"]}
+        assert "class_missing_label" in codes
+        assert "class_missing_comment" in codes
+
+    def test_property_missing_label_domain_range_fails(self):
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+
+:customerName a owl:DatatypeProperty .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is False
+        codes = {e["code"] for e in result["errors"]}
+        assert "property_missing_label" in codes
+        assert "property_missing_domain" in codes
+        assert "property_missing_range" in codes
+
+    def test_non_pascal_case_class_fails(self):
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is False
+        codes = {e["code"] for e in result["errors"]}
+        assert "class_name_not_pascal_case" in codes
+
+    def test_non_camel_case_property_fails(self):
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+
+:CustomerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Name" .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is False
+        codes = {e["code"] for e in result["errors"]}
+        assert "property_name_not_camel_case" in codes
+
+    def test_term_declared_as_class_and_property_fails(self):
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:Customer a owl:Class, owl:DatatypeProperty ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is False
+        codes = {e["code"] for e in result["errors"]}
+        assert "term_declared_as_multiple_types" in codes
+
+    def test_naming_failure_propagates_through_run_validation(self, temp_dir, capsys):
+        """Integration: a naming violation surfaces in results/exit code, distinct
+        from syntax (the file still parses fine — only naming fails)."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(
+            """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+""",
+            encoding="utf-8",
+        )
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        report_path = temp_dir / "output" / "validation-report.json"
+
+        with pytest.raises(SystemExit):
+            run_validation(
+                ontologies_path=ontologies_dir,
+                shapes_path=shapes_dir,
+                catalog_path=None,
+                do_syntax=True,
+                do_shacl=False,
+                do_consistency=False,
+                report_path=report_path,
+            )
+
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        assert payload["syntax"]["passed"] == 1
+        assert payload["syntax"]["failed"] == 0
+        assert payload["naming"]["failed"] == 1
 
 
 # -----------------------------------------------------------------------

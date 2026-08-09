@@ -142,7 +142,15 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     is_flag=True,
     help="Atomically emit generated dbt artifacts to the fixed canonical location "
     "<repo>/ontology-hub-publish/medallion/dbt (sibling of the hub). The target is "
-    "not configurable.",
+    "not configurable. Requires --confirm-emit.",
+)
+@click.option(
+    "--confirm-emit",
+    "confirm_emit",
+    is_flag=True,
+    help="Required alongside --emit. Confirms this is an explicit, execution-phase "
+    "invocation (owned by kairos-execute-project) — prevents design-time skills "
+    "from accidentally emitting compiled artifacts.",
 )
 @click.option(
     "--format",
@@ -156,6 +164,7 @@ def compile_cmd(
     check_mode: bool,
     explain_mode: bool,
     emit_mode: bool,
+    confirm_emit: bool,
     output_format: str,
 ) -> None:
     """Check, explain, or emit one v5 DOMAIN from the current hub.
@@ -169,6 +178,14 @@ def compile_cmd(
     if not emit_mode and not check_mode and not explain_mode:
         raise click.UsageError(
             "exactly one of --emit, or at least one of --check/--explain, is required"
+        )
+    if emit_mode and not confirm_emit:
+        raise click.UsageError(
+            "--emit requires --confirm-emit. Emitting is an execution-phase action "
+            "owned by kairos-execute-project — design skills (kairos-design-mapping, "
+            "kairos-design-domain) must never pass --emit. If you are "
+            "kairos-execute-project running after a successful check and explicit "
+            "output-path confirmation, pass --confirm-emit."
         )
     mode = (
         CompileMode.EMIT

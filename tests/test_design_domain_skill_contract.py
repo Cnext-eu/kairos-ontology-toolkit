@@ -26,7 +26,8 @@ DOMAIN_ANCHORS = [
     "PII-safe",
     "reviewable unified diff",
     "model/ontologies/<domain>.ttl",
-    "rdflib.Graph",
+    "kairos-ontology validate --syntax",
+    "guard-scope",
     "Source keys",
     "**kairos-design-mapping**",
 ]

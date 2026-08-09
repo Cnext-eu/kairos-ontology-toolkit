@@ -25,7 +25,9 @@ Use `compile` directly; do not add orchestration around it.
    normalized entities, sources, grain, identity, relationships, capabilities,
    and planned artifact paths.
 5. After a successful check and explicit output-path confirmation, run
-   `uv run kairos-ontology compile <domain> --emit`.
+   `uv run kairos-ontology compile <domain> --emit --confirm-emit`. `--confirm-emit`
+   is required alongside `--emit` — this is the one skill that legitimately
+   passes it.
 6. Verify the command succeeded and report emitted paths from the current result.
 
 Compiler input is the authored ontology, source/dbt contracts, and closed

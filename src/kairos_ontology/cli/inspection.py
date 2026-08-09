@@ -2,7 +2,10 @@
 # Copyright 2026 Cnext.eu
 """Focused inspection CLI commands."""
 
+import fnmatch
 import json
+import os
+import tempfile
 import click
 from pathlib import Path
 
@@ -14,6 +17,7 @@ from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target regist
 from .shared import (
     _autodetect_analysis_dir,
     _format_refmodels_fetch_provenance,
+    _git_status_snapshot,
     _resolve_ref_models_dir,
     _resolve_semantic_input,
     _warn_if_no_skill_context,
@@ -1237,3 +1241,109 @@ def design_landscape_cmd(accelerator, domain, out_format):
         click.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         return
     _render_design_landscape_text(result)
+
+
+def _parse_porcelain_paths(status_text: str) -> set[str]:
+    """Extract the repo-root-relative path(s) from ``git status --porcelain`` lines.
+
+    Each line is ``XY PATH`` (status code, space, path); a rename line is
+    ``XY OLD -> NEW``, and both sides are returned so a rename can't slip past
+    an allowlist that only names one side.
+    """
+    paths: set[str] = set()
+    for line in status_text.splitlines():
+        if not line:
+            continue
+        entry = line[3:] if len(line) > 3 else line.lstrip()
+        if " -> " in entry:
+            old, _, new = entry.partition(" -> ")
+            paths.add(old.strip())
+            paths.add(new.strip())
+        else:
+            paths.add(entry.strip())
+    return paths
+
+
+@click.command(name="guard-scope")
+@click.option(
+    "--snapshot",
+    is_flag=True,
+    help="Capture the current git working-tree status to a token file and print its path.",
+)
+@click.option(
+    "--check-since",
+    "check_since",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Compare current git status against the snapshot at this token path.",
+)
+@click.option(
+    "--allow",
+    "allow_globs",
+    multiple=True,
+    help="Glob (relative to the git repo root) allowed to have changed since the "
+    "snapshot. Repeatable. Only valid with --check-since.",
+)
+def guard_scope_cmd(
+    snapshot: bool, check_since: Path | None, allow_globs: tuple[str, ...]
+) -> None:
+    """Deterministic 'no unexpected file changed' guard for a bounded skill gate.
+
+    Replaces a self-reported "confirm no other file changed" instruction with
+    a code-enforced check. No persisted hub state is involved: the snapshot is
+    a throwaway file in the OS temp directory, never written into the hub or
+    repo, and git's own working-tree status is the only source of truth.
+
+    \b
+    --snapshot
+        Capture the current working-tree status (tracked and untracked
+        changes) and print the token path to stdout. Pass that path to
+        --check-since at the end of the bounded work.
+    --check-since TOKEN --allow GLOB [--allow GLOB ...]
+        Compare current status against the snapshot at TOKEN. Any path that
+        changed or newly appeared since the snapshot and does not match at
+        least one --allow glob fails the command (non-zero exit, every
+        offending path is named). On success, the token file is removed.
+    """
+    if snapshot and check_since is not None:
+        raise click.UsageError("--snapshot and --check-since are mutually exclusive.")
+    if not snapshot and check_since is None:
+        raise click.UsageError("exactly one of --snapshot or --check-since is required.")
+    if snapshot and allow_globs:
+        raise click.UsageError("--allow is only valid with --check-since.")
+
+    repo_dir = Path.cwd()
+
+    if snapshot:
+        status_text = _git_status_snapshot(repo_dir)
+        fd, token_name = tempfile.mkstemp(prefix="kairos-guard-scope-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(status_text)
+        click.echo(token_name)
+        return
+
+    baseline_paths = _parse_porcelain_paths(check_since.read_text(encoding="utf-8"))
+    current_paths = _parse_porcelain_paths(_git_status_snapshot(repo_dir))
+
+    new_paths = current_paths - baseline_paths
+    offending = sorted(
+        path
+        for path in new_paths
+        if not any(fnmatch.fnmatch(path, glob) for glob in allow_globs)
+    )
+    if offending:
+        click.echo(
+            "❌ guard-scope: unexpected file(s) changed outside the allowed scope:", err=True
+        )
+        for path in offending:
+            click.echo(f"   {path}", err=True)
+        raise click.ClickException(
+            "Scope guard failed — restrict changes to the allowed paths, or pass "
+            "--allow for each additional path that legitimately changed."
+        )
+
+    try:
+        check_since.unlink()
+    except OSError:
+        pass
+    click.echo("✓ guard-scope passed — no unexpected file changes.")
