@@ -2,7 +2,6 @@
 # Copyright 2026 Cnext.eu
 """Tests for scripts/finish_pr.py (mechanical git/gh choreography for SC-merge-pr)."""
 
-import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch
