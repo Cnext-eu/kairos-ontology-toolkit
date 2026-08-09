@@ -1,0 +1,19 @@
+schema_version: 1
+id: event-stream
+label: Event stream
+description: >-
+  A canonical-tier immutable-event or fact table. Field mapping resolves automatically; grain
+  and identity remain sentinel-confirmed, but the grain sentinel embeds a detected
+  event-time-like column and a detected subject-like column as a hint (still an obviously
+  invalid placeholder, never the real grain) when either can be identified from the Bronze
+  column names. `load.mode` is fixed at full-refresh for this catalog version: the schema's
+  `incremental` mode requires source-specific operational fields (CDC column/values, watermark
+  columns, lookback policy) this scaffolder cannot safely default for any archetype -- upgrade
+  to `incremental` by hand once those are known from the real event source.
+tier: canonical
+grainMode: sentinel
+grainHintMode: event-subject
+identityMode: sentinel
+loadMode: full-refresh
+scaffoldConformance: false
+scaffoldRelationshipExample: false

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./ontology-hub/model/ontologies/**/*.ttl)",
+      "Read(./ontology-hub/model/shapes/**/*.ttl)",
+      "Read(./ontology-reference-models/**/*.ttl)",
+      "Grep(./ontology-hub/model/ontologies/**/*.ttl)",
+      "Grep(./ontology-hub/model/shapes/**/*.ttl)",
+      "Grep(./ontology-reference-models/**/*.ttl)"
+    ]
+  }
+}

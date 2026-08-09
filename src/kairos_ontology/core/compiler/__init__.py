@@ -48,6 +48,7 @@ from .bindings import (
     RelationshipJoin,
     RelationshipSpec,
     SourceRef,
+    TechnicalField,
     TemporalRelationshipPolicy,
     UnionPolicy,
     load_entity_binding,
@@ -100,6 +101,7 @@ from .result import (
     ExplainQualityCheck,
     ExplainRelationship,
     ExplainReport,
+    ExplainTechnicalField,
     order_compile_diagnostics,
 )
 from .scope import BuildScope, ProvenanceInput
@@ -149,6 +151,7 @@ __all__ = [
     "ExplainQualityCheck",
     "ExplainRelationship",
     "ExplainReport",
+    "ExplainTechnicalField",
     "ExprCase",
     "ExprCaseBranch",
     "ExprColumn",
@@ -177,6 +180,7 @@ __all__ = [
     "SAFETY_RULE_CODES",
     "SourceLocation",
     "SourceRef",
+    "TechnicalField",
     "TemporalRelationshipPolicy",
     "UnionPolicy",
     "adapt_binding",

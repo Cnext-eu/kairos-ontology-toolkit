@@ -1,0 +1,17 @@
+schema_version: 1
+id: merged-master
+label: Merged master (first slice)
+description: >-
+  The first contributing slice of a canonical-tier master entity that will eventually merge
+  several sources under a conformance policy. This archetype only scaffolds one slice plus the
+  sentinel conformance block; a human adds the remaining source slices and confirms grain,
+  identity, and survivorship (source precedence, union/dedup policy) by hand -- automated
+  multi-source merging is explicitly out of scope. Use `--from-binding` to seed this slice's
+  fields: from an existing passthrough binding when promoting a tier-1 table into a merge.
+tier: canonical
+grainMode: sentinel
+identityMode: sentinel
+loadMode: full-refresh
+scaffoldConformance: true
+scaffoldRelationshipExample: false
+promotableFrom: [passthrough]

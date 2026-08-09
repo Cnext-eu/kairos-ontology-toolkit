@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://kairos.eu/v5/scaffold/binding-archetype.schema.json",
+  "title": "Kairos scaffold-binding archetype catalog entry",
+  "description": "One EntityBinding scaffold shape consumed by `kairos-ontology scaffold-binding`. Distinct from, and not coupled to, the DD-090 business-discovery concept-archetype catalog (core/archetype_loader.py) -- only the versioned-catalog-plus-loader shape is shared in spirit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "label", "description", "tier", "grainMode", "identityMode", "loadMode"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {
+      "enum": ["passthrough", "single-source-master", "merged-master", "event-stream", "line-item-child"]
+    },
+    "label": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "tier": {"enum": ["passthrough", "canonical"]},
+    "grainMode": {
+      "description": "'derive' computes grain.columns from Bronze metadata; 'sentinel' emits an obviously-invalid placeholder a human must confirm (grain is one of the three things scaffold-binding never silently guesses).",
+      "enum": ["derive", "sentinel"]
+    },
+    "grainHintMode": {
+      "description": "When grainMode is 'sentinel', an optional richer sentinel that embeds detected candidate column names as a hint without using them as the real grain (still invalid, still confirmation-gated).",
+      "enum": ["none", "event-subject"],
+      "default": "none"
+    },
+    "identityMode": {
+      "description": "'derive' reuses the derived grain as identity.sourceKey (passthrough only); 'sentinel' emits a placeholder identity key a human must confirm.",
+      "enum": ["derive", "sentinel"]
+    },
+    "loadMode": {
+      "description": "Fixed at 'full-refresh' for every archetype in this catalog version: 'incremental' requires 14 additional operational sub-fields (CDC column/values, watermark columns, lookback policy, ...) that cannot be safely defaulted without human input for any archetype, including event-stream. Authors upgrade to incremental by hand once those are known.",
+      "const": "full-refresh"
+    },
+    "scaffoldConformance": {
+      "description": "Emit a sentinel conformance: block (merged-master only) -- survivorship policy is never silently guessed.",
+      "type": "boolean",
+      "default": false
+    },
+    "scaffoldRelationshipExample": {
+      "description": "Emit a sentinel DD-138 externalReference relationships: entry as a worked, heavily-commented example (line-item-child only).",
+      "type": "boolean",
+      "default": false
+    },
+    "promotableFrom": {
+      "description": "Archetype ids this archetype's fields: may be seeded from via --from-binding.",
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

@@ -340,6 +340,25 @@ class QualityCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class TechnicalField:
+    """One authored, non-ontology technical passthrough output (DD-139).
+
+    Materializes a source expression as a Silver output column without asserting a new
+    ontology property. Distinguishable from a semantic :class:`FieldMapping`: it carries its
+    own closed-enum ``type``/``nullable`` contract and a ``purpose`` label (``identity``,
+    ``quality``, or ``relationship``) instead of an ontology ``property`` reference. Never
+    auto-materialized -- only ever produced by an authored ``technicalFields:`` entry.
+    """
+
+    name: str
+    expression: Expression
+    type: str
+    nullable: bool
+    purpose: str
+    pointer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class EntityBinding:
     """A fully parsed, closed v5 EntityBinding document."""
 
@@ -356,6 +375,8 @@ class EntityBinding:
     conformance: ConformanceSpec | None = None
     quality: tuple[QualityCheck, ...] = ()
     source_path: str = ""
+    tier: str = "canonical"
+    technical_fields: tuple[TechnicalField, ...] = ()
 
     @property
     def load_mode(self) -> str:
@@ -754,6 +775,21 @@ def _build_binding(data: dict, resolver: _MarkResolver, path: str) -> EntityBind
             )
         )
 
+    technical_fields: list[TechnicalField] = []
+    for index, raw in enumerate(data.get("technicalFields", ())):
+        pointer = f"/technicalFields/{index}/expression"
+        expression = _parse_expression(raw["expression"], pointer, resolver, diagnostics, depth=0)
+        technical_fields.append(
+            TechnicalField(
+                name=str(raw["name"]),
+                expression=expression,
+                type=str(raw["type"]),
+                nullable=bool(raw["nullable"]),
+                purpose=str(raw["purpose"]),
+                pointer=f"/technicalFields/{index}",
+            )
+        )
+
     if diagnostics:
         raise CompileError(diagnostics)
 
@@ -771,6 +807,8 @@ def _build_binding(data: dict, resolver: _MarkResolver, path: str) -> EntityBind
         conformance=conformance,
         quality=tuple(quality),
         source_path=path,
+        tier=str(data["metadata"].get("tier", "canonical")),
+        technical_fields=tuple(technical_fields),
     )
 
 

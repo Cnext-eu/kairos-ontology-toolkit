@@ -37,6 +37,40 @@ The override applies only to this skill invocation. It expires when the skill
 ends or pauses, is never inherited by another skill or later resume, and does
 not authorize another design skill.
 
+## Fast path: scaffold-binding and fit-report
+
+Most bindings start with a mechanical structure that automation can handle. Two tools
+accelerate the common case:
+
+- **`scaffold-binding`** generates a first-draft binding YAML automatically from source
+  metadata and target class shape. It supports five standard archetypes (passthrough,
+  single-source-master, merged-master, event-stream, line-item-child) and respects the
+  core principle below: `target.class` points directly at an accelerator class with **no
+  local subclass** — local subclasses are needed only for genuine deviations, not as the
+  default. The `passthrough` archetype is fully automatic and ready to compile unedited;
+  the four canonical archetypes generate skeletons with sentinel placeholders for
+  irreducible human judgment (grain, identity, survivorship) that compilation rejects
+  until confirmed. Use: `kairos-ontology scaffold-binding --system <sys> --table <tbl>
+  --archetype <type> --target-class <IRI>`.
+
+- **`fit-report`** shows (deterministically, without any LLM call) which properties an
+  accelerator class already models and which a binding's fields already populate. It
+  reports populated properties, unpopulated ones (what you can still choose from), and
+  orphan columns that don't map anywhere. Use it to inspect coverage before hand-authoring
+  a complex binding: `kairos-ontology fit-report --class <IRI> --binding
+  <path>` or `--source <system>.<table>`.
+
+**When to reach for scaffold-binding vs. hand-authoring:** Use scaffold-binding for
+mechanical, single-source patterns. Hand-author (this skill) when you need complex joins,
+aggregation, survivorship policy, or multi-source fusion — scaffold is a skeleton, not a
+finished design. Both paths share the same compiler gates and YAML contract.
+
+**Core principle — direct accelerator targeting:** An `EntityBinding`'s `target.class` can
+now resolve directly to an accelerator or reference-model class (via the compiler's
+semantic-index closure, DD-144). A local subclass is needed only when you are genuinely
+deviating from the accelerator's shape, not as boilerplate. This simplification applies
+to all bindings, scaffolded or hand-authored.
+
 ## Decision Log materiality
 
 If a mapping choice resolves a genuine tension or real gap, persist it with

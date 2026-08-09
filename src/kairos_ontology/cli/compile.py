@@ -158,17 +158,30 @@ def compile_cmd(
     emit_mode: bool,
     output_format: str,
 ) -> None:
-    """Check, explain, or emit one v5 DOMAIN from the current hub."""
-    selected = int(check_mode) + int(explain_mode) + int(emit_mode)
-    if selected != 1:
-        raise click.UsageError("exactly one of --check, --explain, or --emit is required")
+    """Check, explain, or emit one v5 DOMAIN from the current hub.
+
+    ``--check`` and ``--explain`` may be combined in a single invocation to get both
+    the diagnostic stream and the structured explain report together. ``--emit`` is
+    the only side-effecting mode and remains mutually exclusive with the other two.
+    """
+    if emit_mode and (check_mode or explain_mode):
+        raise click.UsageError("--emit cannot be combined with --check or --explain")
+    if not emit_mode and not check_mode and not explain_mode:
+        raise click.UsageError(
+            "exactly one of --emit, or at least one of --check/--explain, is required"
+        )
     mode = (
-        CompileMode.CHECK
-        if check_mode
-        else CompileMode.EXPLAIN if explain_mode else CompileMode.EMIT
+        CompileMode.EMIT
+        if emit_mode
+        else CompileMode.CHECK if check_mode else CompileMode.EXPLAIN
     )
     hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
     result = compile_domain(hub, domain, mode)
+    if check_mode and explain_mode:
+        # Both diagnostics and the explain report are already computed as part of the
+        # same plan (CompileResult always carries both), so this is a free relabel —
+        # not a second compile.
+        result = replace(result, mode="check+explain")
     emit_target = None
     if emit_mode and result.can_emit:
         # The emit location is fixed and not configurable: derived dbt artifacts
@@ -181,9 +194,9 @@ def compile_cmd(
         for diagnostic in result.diagnostics.ordered:
             click.echo(diagnostic.render(), err=not result.succeeded)
         if result.succeeded:
-            if mode is CompileMode.CHECK:
+            if check_mode:
                 click.echo(f"✓ {domain}: compile check passed")
-            elif mode is CompileMode.EXPLAIN:
+            if explain_mode:
                 report = result.explain
                 click.echo(f"✓ {domain}: {len(report.entities)} entity binding(s)")
                 for entity in report.entities:
@@ -206,7 +219,7 @@ def compile_cmd(
                         click.echo(f"      → {rule.result_test}")
                 for path in report.artifact_paths:
                     click.echo(f"  {path}")
-            else:
+            if emit_mode:
                 click.echo(
                     f"✓ {domain}: emitted {len(result.artifacts)} artifact(s) to {emit_target}"
                 )

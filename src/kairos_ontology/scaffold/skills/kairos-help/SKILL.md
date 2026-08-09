@@ -39,6 +39,8 @@ keeps all downstream systems consistent with it, automatically.
 | `kairos-design-source` | Import/document source schemas | "Import the schema for our billing Postgres table." |
 | `kairos-design-domain` | Design OWL classes/properties | "Add an Invoice class with an issuedDate property." |
 | `kairos-design-mapping` | Author EntityBinding YAML | "Bind the billing.invoices table to the Invoice entity." |
+| `scaffold-binding` | Auto-scaffold first-draft bindings | "Generate a skeleton binding for the crm.organisations table." |
+| `fit-report` | Inspect property coverage before mapping | "Show me which Invoice properties my data already populates." |
 | `kairos-develop-dbt-transformation` | Complex contracted dbt SQL | "Write a dbt model to dedupe invoice line items." |
 | `kairos-design-gold` | Design Gold/BI products | "Create a Gold model for monthly invoice summaries." |
 | `kairos-design-mdm` | Author MDM policy | "Define survivorship rules for duplicate customers." |

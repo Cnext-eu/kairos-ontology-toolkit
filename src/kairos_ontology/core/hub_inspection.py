@@ -23,7 +23,7 @@ from .compiler import (
     compile_plan_result,
     order_compile_diagnostics,
 )
-from .compiler.kernel import _binding_domain
+from .compiler.kernel import _binding_domain, _binding_tier
 from .next_actions import (
     CompileStatus,
     DiagnosticView,
@@ -108,11 +108,18 @@ def _ontology_domains(ontologies_dir: Path) -> tuple[set[str], set[str]]:
     return domains, unreadable
 
 
-def _binding_domains(bindings_dir: Path) -> dict[str, int]:
-    """Return a count of readable bindings per declared ``metadata.domain``."""
+def _binding_domains(bindings_dir: Path) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+    """Return (count per declared ``metadata.domain``, tier tally per domain).
+
+    The tier tally carries ``metadata.tier`` (DD-1xx two-tier Silver) alongside the
+    existing domain count so ``next``/``coverage-report`` can report tier-1 (passthrough)
+    vs. tier-2 (canonical) coverage separately without a second pass over the bindings
+    directory. This is data collection only — it does not change the readiness ladder.
+    """
     counts: dict[str, int] = {}
+    tier_counts: dict[str, dict[str, int]] = {}
     if not bindings_dir.is_dir():
-        return counts
+        return counts, tier_counts
     for path in sorted(bindings_dir.glob("*.binding.yaml")):
         try:
             text = path.read_text(encoding="utf-8")
@@ -122,7 +129,10 @@ def _binding_domains(bindings_dir: Path) -> dict[str, int]:
         if not domain:
             continue
         counts[domain] = counts.get(domain, 0) + 1
-    return counts
+        tier = _binding_tier(text)
+        domain_tiers = tier_counts.setdefault(domain, {})
+        domain_tiers[tier] = domain_tiers.get(tier, 0) + 1
+    return counts, tier_counts
 
 
 def _extension_status(extensions_dir: Path, domain: str, suffix: str) -> InputStatus:
@@ -195,7 +205,7 @@ def gather_hub_input_snapshot(
     ontologies_dir = root / "model" / "ontologies"
     extensions_dir = root / "model" / "extensions"
     ontology_domains, unreadable_domains = _ontology_domains(ontologies_dir)
-    binding_counts = _binding_domains(root / "integration" / "bindings")
+    binding_counts, binding_tier_counts = _binding_domains(root / "integration" / "bindings")
 
     all_domains = sorted(
         ontology_domains | unreadable_domains | set(binding_counts)
@@ -223,6 +233,9 @@ def gather_hub_input_snapshot(
             ontology = InputStatus.MISSING
         binding_count = binding_counts.get(name, 0)
         has_bindings = binding_count > 0
+        domain_tiers = binding_tier_counts.get(name, {})
+        passthrough_count = domain_tiers.get("passthrough", 0)
+        canonical_count = domain_tiers.get("canonical", 0)
 
         if not run_compile or not has_bindings:
             compile_status: CompileStatus = CompileStatus.NOT_RUN
@@ -240,6 +253,8 @@ def gather_hub_input_snapshot(
                 diagnostics=diagnostics,
                 gold_policy=_extension_status(extensions_dir, name, "-gold-ext.ttl"),
                 mdm_policy=_extension_status(extensions_dir, name, "-mdm-ext.ttl"),
+                passthrough_count=passthrough_count,
+                canonical_count=canonical_count,
             )
         )
 
