@@ -38,6 +38,9 @@ DOMAIN_ANCHORS = [
     "`mode_bindings`",
     "do not invent a class",
     "`grain_collisions`",
+    # grain_collisions ships as mappings in one pattern and bare prose strings in two others,
+    # so the instruction must not assume the against/reason keys exist.
+    "two shapes",
 ]
 
 MAPPING_ANCHORS = [

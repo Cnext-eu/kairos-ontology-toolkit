@@ -280,8 +280,11 @@ not stop at the naming table:
   **do not invent a class** — record it as an extension point;
   `status: pattern-only` → no standard forces a shape, follow the pattern alone.
 - **`grain_collisions`** — read each as an explicit *do not subclass and do not
-  merge* instruction against the named class, and repeat the stated `reason` when
-  you explain the boundary to the user.
+  merge* boundary. Entries ship in **two shapes** and you must handle both: a
+  mapping with `against` (the class IRI not to collapse into) plus `reason`, or a
+  bare prose string describing the collision. Quote whichever you find when you
+  explain the boundary to the user; never assume the `against`/`reason` keys are
+  present.
 
 Obtain explicit decisions for every item in Gate 4. When evidence conflicts,
 prefer confirmed business meaning, explain the trade-off, and do not hide

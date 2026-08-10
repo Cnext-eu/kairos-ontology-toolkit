@@ -74,6 +74,80 @@ class TestLoadPattern:
         path.write_text("id: temporal-quartet\nproblem: minimal\n", encoding="utf-8")
         assert load_pattern(root, "temporal-quartet").grain_collisions == []
 
+    def test_grain_collisions_tolerate_both_published_shapes(self, tmp_path):
+        """The published library mixes mappings and bare prose strings.
+
+        ``multimodal-order-leg`` ships ``{against, reason}`` mappings while
+        ``governed-code-list`` and ``qualified-role-assignment`` ship plain strings. Nothing
+        may assume one shape — the field stays untyped and consumers must handle both.
+        """
+        root = build_refmodels_root(tmp_path)
+        path = root / "blueprints" / "patterns" / "temporal-quartet" / "pattern.yaml"
+        path.write_text(
+            "id: temporal-quartet\n"
+            "problem: minimal\n"
+            "grain_collisions:\n"
+            '  - against: "https://example.org/ont/x#Thing"\n'
+            '    reason: "distinct grain"\n'
+            '  - "A bare prose collision with no keys at all."\n',
+            encoding="utf-8",
+        )
+        collisions = load_pattern(root, "temporal-quartet").grain_collisions
+        assert isinstance(collisions[0], dict) and collisions[0]["against"].endswith("#Thing")
+        assert isinstance(collisions[1], str)
+
+
+class TestPatternQualityWarnings:
+    """Valid YAML is only the floor — a pattern can parse and still be hollow (#262)."""
+
+    def _write(self, root, body: str):
+        path = root / "blueprints" / "patterns" / "temporal-quartet" / "pattern.yaml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_normative_naming_without_conventions_warns(self, tmp_path):
+        root = build_refmodels_root(tmp_path)
+        self._write(
+            root,
+            "id: temporal-quartet\nproblem: p\nnormativity:\n  naming: normative\n",
+        )
+        patterns, warnings = load_patterns(root)
+        assert len(patterns) == 1  # still returned — advisory, never fatal
+        assert any("ships no naming_conventions" in w for w in warnings)
+
+    def test_anti_pattern_without_rejection_reason_warns(self, tmp_path):
+        root = build_refmodels_root(tmp_path)
+        self._write(
+            root,
+            "id: temporal-quartet\nproblem: p\nanti_patterns:\n"
+            "  - id: synonym-for-estimated\n    description: d\n",
+        )
+        _, warnings = load_patterns(root)
+        assert any(
+            "synonym-for-estimated" in w and "no rejection_reason" in w for w in warnings
+        )
+
+    def test_naming_conventions_as_mapping_warns(self, tmp_path):
+        """The library's own structural rule: naming_conventions is a list of entries."""
+        root = build_refmodels_root(tmp_path)
+        self._write(
+            root,
+            "id: temporal-quartet\nproblem: p\nnaming_conventions:\n  qualifiers: [requested]\n",
+        )
+        _, warnings = load_patterns(root)
+        assert any("expected a list of entries" in w for w in warnings)
+
+    def test_advisory_naming_without_conventions_is_quiet(self, tmp_path):
+        """Only a *normative* naming claim with nothing behind it is a defect."""
+        root = build_refmodels_root(tmp_path)
+        self._write(root, "id: temporal-quartet\nproblem: p\nnormativity:\n  naming: advisory\n")
+        _, warnings = load_patterns(root)
+        assert warnings == []
+
+    def test_healthy_fixture_pattern_warns_about_nothing(self, refroot):
+        _, warnings = load_patterns(refroot)
+        assert warnings == []
+
     def test_missing_pattern_raises(self, refroot):
         with pytest.raises(PatternError):
             load_pattern(refroot, "does-not-exist")

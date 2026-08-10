@@ -45,6 +45,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carrying the do-not-subclass / do-not-merge boundaries.
 
 ### Fixed
+- **`kairos-design-domain` assumed one shape for `grain_collisions`.** The instruction added
+  earlier in this release told the skill to read each entry "against the named class" and quote
+  "the stated `reason`" — but the published library ships **two shapes**: `multimodal-order-leg`
+  uses `{against, reason}` mappings while `governed-code-list` and `qualified-role-assignment`
+  ship bare prose strings. The guidance was wrong for two of the three patterns that have
+  content. It now handles both and never assumes the keys exist. The test fixture was also
+  corrected: it used a `naming_conventions` **mapping**, which no published pattern does.
+- **Hollow patterns are no longer silent.** `pattern_quality_warnings()` flags a pattern that
+  parses but cannot deliver what it claims — `normativity.naming: normative` with no
+  `naming_conventions`, an `anti_patterns` entry with no `rejection_reason` for the skill to
+  cite, or `naming_conventions` that is not a list of entries. Warnings surface in
+  `list-patterns` (whole library **and** `--pattern <id>`, which previously reported none at
+  all). Deliberately **consumer-side detection, not enforcement**: patterns are still returned
+  and nothing raises, because breaking the authoring loop over advisory craft would be worse.
+  Valid YAML is only the floor, and reference-models still owes
+  `blueprints/patterns/_schema/pattern.schema.json` — the authoring-time fix. The five
+  currently-published patterns pass these checks cleanly.
 - **`compute_scorecard` silently dropped concepts.** Tier buckets were seeded from `VALID_TIERS`
   and any other tier was skipped, so a concept carrying a tier this toolkit predated was counted
   in `total` but omitted from every bucket — `total` no longer equalled the sum of `by_tier`, with
