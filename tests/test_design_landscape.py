@@ -277,8 +277,7 @@ def _build_hub(tmp_path: Path) -> tuple[Path, Path]:
 
     (hub_root / "model" / "ontologies").mkdir(parents=True)
     (hub_root / "integration" / "sources" / "_analysis").mkdir(parents=True)
-    (hub_root / "integration" / "sources" / "powerbi").mkdir(parents=True)
-    (hub_root / "integration" / "discovery").mkdir(parents=True)
+    (hub_root / "integration" / "discovery" / "bi").mkdir(parents=True)
     (hub_root / "integration" / "bindings").mkdir(parents=True)
 
     (hub_root / "model" / "ontologies" / "party.ttl").write_text(
@@ -321,7 +320,7 @@ def _build_hub(tmp_path: Path) -> tuple[Path, Path]:
     (hub_root / "integration" / "bindings" / "ship-to.binding.yaml").write_text(
         _SHIP_TO_BINDING, encoding="utf-8"
     )
-    (hub_root / "integration" / "sources" / "powerbi" / "salesmodel-concept-mapping.yaml").write_text(
+    (hub_root / "integration" / "discovery" / "bi" / "salesmodel-concept-mapping.yaml").write_text(
         _CONCEPT_MAPPING_YAML, encoding="utf-8"
     )
 
@@ -453,7 +452,7 @@ def test_bi_weight_never_used_for_classification(tmp_path):
     # Proof BI weight is not a classification input: re-run with the BI concept-mapping
     # file removed entirely -- TradeParty's classification (driven only by source_count and
     # confirmed discovery demand) must be unchanged.
-    (hub_root / "integration" / "sources" / "powerbi" / "salesmodel-concept-mapping.yaml").unlink()
+    (hub_root / "integration" / "discovery" / "bi" / "salesmodel-concept-mapping.yaml").unlink()
     result_without_bi = run_design_landscape(hub_root=hub_root, ref_models_dir=ref_models_dir)
     trade_party_without_bi = _by_name(result_without_bi, "TradeParty")
     assert trade_party_without_bi.classification == "canonical-candidate"

@@ -98,6 +98,7 @@ def init(domain, company_domain, force):
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/bindings": "integration/bindings",
+        "integration/discovery/bi": "integration/discovery/bi",
         "integration/sources": "integration/sources",
         "integration/transforms/dbt": "integration/transforms/dbt",
     }
@@ -730,6 +731,7 @@ def new_repo(
         "businessdiscovery": "businessdiscovery",
         "businessdiscovery/_extractions": "businessdiscovery/_extractions",
         "integration/bindings": "integration/bindings",
+        "integration/discovery/bi": "integration/discovery/bi",
         "integration/sources": "integration/sources",
         "integration/transforms/dbt": "integration/transforms/dbt",
     }

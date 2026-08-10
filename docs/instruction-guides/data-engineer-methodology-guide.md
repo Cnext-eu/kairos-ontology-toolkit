@@ -15,8 +15,9 @@ state, or release-evidence registry participates in v5 compilation.
 
 ## Workflow
 
-1. Import and review source metadata with `import-source`, `import-flatfile`, or
-   `import-tmdl`. Persist only redacted or synthetic samples.
+1. Import and review source metadata with `import-source` or `import-flatfile`. Persist
+   only redacted or synthetic samples. Optionally capture Power BI/TMDL analysis with
+   `import-tmdl` as **demand evidence** under `integration/discovery/bi/` — never a source.
 2. Confirm ontology classes/properties and source relation/column types.
 3. Create one EntityBinding for each source relation or contracted dbt model.
 4. Put joins, windows, aggregation, JSON expansion, fallback rules, and grain changes in

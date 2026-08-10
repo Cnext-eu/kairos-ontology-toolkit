@@ -15,7 +15,8 @@ have none:
    (``integration/discovery/core-concepts-conformance.yaml``, DD-090), whose
    ``core_concepts[].uri`` are already full accelerator class URIs.
 3. **BI/report weight** — ``import-tmdl``'s Concept Mapping YAML output
-   (``integration/sources/**/*-concept-mapping.yaml``), read for whichever
+   (``integration/discovery/bi/**/*-concept-mapping.yaml``; the legacy
+   ``integration/sources/**`` location is still read for back-compat), for whichever
    ``reference_model_match`` a modeler has already filled in.
 4. **Current binding state** — ``EntityBinding``s' ``target.class``/``metadata.tier``.
 
@@ -70,6 +71,7 @@ NON_EVIDENCE_DISCOVERY_OUTCOMES = frozenset({"not-applicable"})
 _ANALYSIS_SUBDIR = Path("integration") / "sources" / "_analysis"
 _SOURCES_SUBDIR = Path("integration") / "sources"
 _BINDINGS_SUBDIR = Path("integration") / "bindings"
+_BI_DISCOVERY_SUBDIR = Path("integration") / "discovery" / "bi"
 
 
 class DesignLandscapeError(ValueError):
@@ -559,9 +561,15 @@ def run_design_landscape(
 
     # --- 3. BI/report weight (import-tmdl Concept Mapping) -- ADVISORY ONLY ---------------
     bi_weight_by_class: dict[str, list[BiWeightSignal]] = {}
-    sources_dir = hub_root / _SOURCES_SUBDIR
-    if sources_dir.is_dir():
-        mapping_files = sorted(sources_dir.rglob("*-concept-mapping.yaml"))
+    bi_dir = hub_root / _BI_DISCOVERY_SUBDIR
+    legacy_bi_dir = hub_root / _SOURCES_SUBDIR
+    if bi_dir.is_dir() or legacy_bi_dir.is_dir():
+        mapping_files: list[Path] = []
+        if bi_dir.is_dir():
+            mapping_files.extend(bi_dir.rglob("*-concept-mapping.yaml"))
+        if legacy_bi_dir.is_dir():
+            mapping_files.extend(legacy_bi_dir.rglob("*-concept-mapping.yaml"))
+        mapping_files = sorted(set(mapping_files))
         unfilled = 0
         for mapping_path in mapping_files:
             try:
@@ -603,7 +611,9 @@ def run_design_landscape(
                 "itself -- no LLM classification is performed in this pass."
             )
     else:
-        gaps.append(f"no {sources_dir} directory found; BI/report weight evidence is unavailable.")
+        gaps.append(
+            f"no {bi_dir} directory found; BI/report weight evidence is unavailable."
+        )
 
     # --- 4. Current binding state -----------------------------------------------------------
     bindings_by_class: dict[str, list[BoundBinding]] = {}

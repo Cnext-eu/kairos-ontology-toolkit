@@ -130,7 +130,8 @@ table, `discovery-conformance` entry, or existing `EntityBinding` references, it
   `deviates` still count as real evidence, and `not-applicable` (an SME explicitly said "we
   don't need this") never counts as demand.
 * **BI/report weight** -- `import-tmdl`'s Concept Mapping YAML output
-  (`integration/sources/**/*-concept-mapping.yaml`), read only for rows where a modeler has
+  (`integration/discovery/bi/**/*-concept-mapping.yaml`; the legacy `integration/sources/**`
+  location is still read for back-compat), read only for rows where a modeler has
   already filled in `reference_model_match`. **Advisory only, never fact**: this evidence is
   always reported in its own structurally separate `bi_weight` field and may only nudge a
   class's rank within the `demanded-but-unbound` backlog -- it never contributes to a class's

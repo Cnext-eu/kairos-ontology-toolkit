@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Power BI/TMDL analysis is demand evidence, not a source (DD-147):** `import-tmdl` now
+  defaults its output to `integration/discovery/bi/` instead of `integration/sources/powerbi/`,
+  matching its semantics as downstream demand evidence rather than a canonical input source.
+  `design-landscape` reads BI concept-mappings from `integration/discovery/bi/**` (still reading
+  the legacy `integration/sources/**` location for back-compat), `draft-model-report --tmdl-dir`
+  auto-detects the new folder with a legacy fallback, and `init`/`new-repo` scaffold it with a
+  README. The `kairos-design-source` import skill now offers a Power BI/TMDL import step after
+  sources, explicitly as demand evidence — never a source relation.
+- **`kairos-design-source` batch import:** the source-import skill now enumerates every available
+  source up front, asks whether to import all sources in one batch, continues past individual
+  failures, and shows a short report of which sources were imported and which remain.
+
 ### Added
 - **`validate --domain <domain>`:** the `validate` command now accepts `--domain` for
   parity with `compile`, using it as the domain hint that resolves the accelerator so a
