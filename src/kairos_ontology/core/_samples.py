@@ -274,9 +274,24 @@ def _kind_from_nested(value: Any) -> str | None:
     return _kind_from_text(value)
 
 
-def detect_sample_pii_kind(column_name: str | None, value: Any) -> str | None:
-    """Classify supported PII in one source value without returning the value."""
-    return _kind_from_name(column_name) or _kind_from_nested(value)
+def detect_sample_pii_kind(
+    column_name: str | None,
+    value: Any,
+    *,
+    context_name: str | None = None,
+) -> str | None:
+    """Classify supported PII in one source value without returning the value.
+
+    ``context_name`` carries the source table/relation name so token-aware
+    classification can suppress false positives on generic ``Name`` columns in
+    relations that have no person/driver subject (e.g. ``TransportStop``). It must
+    be threaded through by every caller that has table context; omitting it
+    reverts to the column-name-only classification.
+    """
+    return (
+        _kind_from_name(column_name, context_name=context_name)
+        or _kind_from_nested(value)
+    )
 
 
 def redact_sample_value(

@@ -688,6 +688,31 @@ class TestGenerateVocabularyPerTable:
         ns = Namespace("https://kairos.cnext.eu/source/testapp#")
         assert (ns["testapp"], RDF.type, KAIROS_BRONZE.SourceSystem) in g
 
+    def test_per_table_with_whitespace_in_table_name_serializes(self):
+        """A table name containing whitespace must not break Turtle serialization.
+
+        Regression: ``generate_vocabulary_per_table`` built the per-table
+        ``owl:Ontology`` URI by interpolating the raw table name, so a sheet name
+        like ``"Location empty units Excel version - Drop Data here"``
+        produced an invalid URI and rdflib raised during ``serialize``.
+        """
+        data = copy.deepcopy(VALID_YAML_DATA)
+        data["tables"] = [
+            {
+                "name": "Location empty units - Drop Data here",
+                "columns": [
+                    {"name": "Id", "data_type": "int", "nullable": False, "is_primary_key": True},
+                ],
+            }
+        ]
+        result = generate_vocabulary_per_table(data)
+        assert len(result) == 1
+        g = Graph()
+        g.parse(data=result["Location empty units - Drop Data here"], format="turtle")
+        ontologies = list(g.subjects(RDF.type, OWL.Ontology))
+        assert len(ontologies) == 1
+        assert " " not in str(ontologies[0])
+
 
 class TestRunImportSourceSplitTables:
     def test_split_tables_creates_vocabulary_dir(self, valid_yaml_file, tmp_path):

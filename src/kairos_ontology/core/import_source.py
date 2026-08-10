@@ -545,7 +545,7 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
         g.bind("owl", OWL)
 
         # Ontology declaration per table
-        ont_uri = URIRef(f"https://kairos.cnext.eu/source/{system_name}/vocabulary/{tbl['name']}")
+        ont_uri = URIRef(f"https://kairos.cnext.eu/source/{system_name}/vocabulary/{_sanitize_uri_part(tbl['name'])}")
         g.add((ont_uri, RDF.type, OWL.Ontology))
         g.add((ont_uri, RDFS.label, Literal(f"{system_name} — {tbl['name']} Vocabulary")))
         if extracted_at:

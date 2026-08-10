@@ -190,3 +190,34 @@ def test_fix_rolls_back_all_files_when_publication_fails(tmp_path, monkeypatch):
 
     assert samples_path.read_text(encoding="utf-8") == original_samples
     assert ttl_path.read_text(encoding="utf-8") == original_ttl
+
+
+def test_generic_name_column_not_flagged_on_non_person_table(tmp_path):
+    """A bare ``Name`` column on a table with no person/driver subject must not
+    be flagged as PII by ``find_source_data_privacy_issues``.
+
+    Regression: ``import-source`` called ``detect_sample_pii_kind`` without the
+    table context that ``import-flatfile`` uses, so generic ``Name`` columns on
+    tables such as ``TransportStop`` (value ``"Loading place"``) were false
+    positives that blocked source import.
+    """
+    from kairos_ontology.core.source_privacy import find_source_data_privacy_issues
+    from kairos_ontology.core._samples import detect_sample_pii_kind
+
+    data = {
+        "tables": [
+            {
+                "name": "TransportStop",
+                "columns": [
+                    {
+                        "name": "Name",
+                        "data_type": "nvarchar(100)",
+                        "samples": ["Loading place", "Unloading place"],
+                    }
+                ],
+            }
+        ]
+    }
+
+    assert find_source_data_privacy_issues(data) == []
+    assert detect_sample_pii_kind("Name", "Loading place", context_name="TransportStop") is None

@@ -75,7 +75,7 @@ def sanitize_samples_document(
         for column, value in row.items():
             if is_redaction_token(value):
                 continue
-            kind = detect_sample_pii_kind(str(column), value)
+            kind = detect_sample_pii_kind(str(column), value, context_name=table)
             if kind:
                 residual.append(
                     SamplePrivacyFinding(table=table, column=str(column), kind=kind)
@@ -99,7 +99,7 @@ def find_samples_document_privacy_issues(
         for column, value in row.items():
             if is_redaction_token(value):
                 continue
-            kind = detect_sample_pii_kind(str(column), value)
+            kind = detect_sample_pii_kind(str(column), value, context_name=table)
             if kind:
                 findings.append(
                     SamplePrivacyFinding(table=table, column=str(column), kind=kind)
@@ -194,7 +194,7 @@ def find_source_data_privacy_issues(
                 for value in column.get(sample_field, []) or []:
                     if is_redaction_token(value):
                         continue
-                    kind = detect_sample_pii_kind(column_name, value)
+                    kind = detect_sample_pii_kind(column_name, value, context_name=table_name)
                     if kind:
                         findings.append(
                             SamplePrivacyFinding(
@@ -209,7 +209,7 @@ def find_source_data_privacy_issues(
                     continue
                 key = str(structure.get("key", "unknown-key"))
                 source_column = f"{column_name}.{key}"
-                kind = detect_sample_pii_kind(source_column, value)
+                kind = detect_sample_pii_kind(source_column, value, context_name=table_name)
                 if kind:
                     findings.append(
                         SamplePrivacyFinding(
@@ -259,7 +259,7 @@ def find_vocabulary_privacy_issues(
             if is_redaction_token(value):
                 continue
             table, column, _ = _graph_source_context(graph, subject)
-            kind = detect_sample_pii_kind(column, str(value))
+            kind = detect_sample_pii_kind(column, str(value), context_name=table)
             if kind:
                 findings.append(
                     SamplePrivacyFinding(table=table, column=column, kind=kind)
