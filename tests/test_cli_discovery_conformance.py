@@ -78,6 +78,7 @@ def test_validate_valid_artifact(tmp_path, refroot):
         archetype=archetype, refmodels_version="1.11.0",
         outcomes=[{"uri": "https://example.org/ont/booking#Booking", "label": "Booking",
                    "tier": "required", "outcome": "conforms"}],
+        mode="interactive",
     )
     hub = tmp_path / "hub"
     path = write_artifact(hub, art)
@@ -92,6 +93,7 @@ def test_validate_invalid_artifact_exits_one(tmp_path, refroot):
     art = build_artifact(
         archetype=archetype, refmodels_version="1.11.0",
         outcomes=[{"uri": "u", "tier": "required", "outcome": "bogus"}],
+        mode="interactive",
     )
     hub = tmp_path / "hub"
     path = write_artifact(hub, art)

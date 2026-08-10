@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ..core.validator import run_validation, run_gdpr_validation
 from ..core.catalog_test import test_catalog_resolution
+from ..core.conformance_artifact import check_discovery_gate
 
 # Importing the design-time MDM package registers the additive ``mdm-profile``
 # projection target with the core projector (registry pattern, MDM-DD-002).
@@ -186,6 +187,13 @@ def validate(
             "Run from the hub root (or inside ontology-hub/), or pass --ontologies.",
             err=True,
         )
+        raise SystemExit(1)
+
+    effective_hub_root = hub_root if hub_root is not None else cwd / "ontology-hub"
+    discovery_errors = check_discovery_gate(effective_hub_root)
+    if discovery_errors:
+        for error in discovery_errors:
+            click.echo(f"❌ {error}", err=True)
         raise SystemExit(1)
 
     if shapes is not None:

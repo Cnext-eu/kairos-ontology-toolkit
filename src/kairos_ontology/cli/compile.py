@@ -12,6 +12,7 @@ from pathlib import Path
 import click
 
 from ..core.compiler import CompileMode, compile_domain
+from ..core.conformance_artifact import check_discovery_gate
 from ..core.hub_utils import find_hub_root, publish_root
 
 #: dbt project sub-path under the publish root (``<publish_root>/medallion/dbt``).
@@ -193,6 +194,11 @@ def compile_cmd(
         else CompileMode.CHECK if check_mode else CompileMode.EXPLAIN
     )
     hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
+    discovery_errors = check_discovery_gate(hub)
+    if discovery_errors:
+        for error in discovery_errors:
+            click.echo(f"✗ {error}", err=True)
+        raise click.exceptions.Exit(1)
     result = compile_domain(hub, domain, mode)
     if check_mode and explain_mode:
         # Both diagnostics and the explain report are already computed as part of the

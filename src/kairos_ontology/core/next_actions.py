@@ -41,6 +41,21 @@ class CompileStatus(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class DiscoveryConformanceStatus(str, Enum):
+    """Observed state of the discovery conformance artifact (DD-148).
+
+    A defensible presence/validity observation, same spirit as :class:`InputStatus` —
+    never "complete". The real hard gate lives in ``kairos-ontology compile``/``validate``
+    (``check_discovery_gate()``); this is only the advisory signal mirrored into
+    ``kairos-ontology next``.
+    """
+
+    NOT_RUN = "not_run"
+    VALID = "valid"
+    INVALID = "invalid"
+    UNRESOLVED_FLEET = "unresolved_fleet"
+
+
 class ActionStatus(str, Enum):
     """Why an action appears and how strongly it is proposed."""
 
@@ -55,6 +70,7 @@ class ActionStatus(str, Enum):
 #: mapping instead of re-encoding their own routing decision tree (DD-137).
 ACTION_SKILLS: dict[str, str] = {
     "design-discovery": "kairos-design-discovery",
+    "resolve-discovery-open-questions": "kairos-design-discovery",
     "design-source": "kairos-design-source",
     "design-domain": "kairos-design-domain",
     "author-binding": "kairos-design-mapping",
@@ -116,6 +132,8 @@ class HubInputSnapshot:
     emitted_dbt_project: InputStatus = InputStatus.MISSING
     #: Configured adapter from kairos.yaml, used only to render the validate-dbt command.
     adapter: str = ""
+    #: Validity of the discovery conformance artifact, when present (DD-148).
+    discovery_conformance: DiscoveryConformanceStatus = DiscoveryConformanceStatus.NOT_RUN
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,16 +202,51 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
             )
         )
     elif snapshot.discovery is InputStatus.MISSING:
+        # DD-148: kairos-ontology compile/validate accept EITHER a businessdiscovery/
+        # narrative (this check) OR a conformance artifact (discovery_conformance) as
+        # evidence discovery ran — only block here when neither exists.
+        no_conformance_either = (
+            snapshot.discovery_conformance is DiscoveryConformanceStatus.NOT_RUN
+        )
         actions.append(
             _action(
                 "design-discovery",
-                ActionStatus.HUMAN_DECISION_REQUIRED,
+                ActionStatus.BLOCKING if no_conformance_either else ActionStatus.HUMAN_DECISION_REQUIRED,
                 rationale=(
-                    "No authored business-discovery context found. Completeness cannot be "
-                    "inferred from files; confirm and capture business terms."
+                    (
+                        "No business discovery evidence found — neither a "
+                        "businessdiscovery/ narrative nor a discovery conformance "
+                        "artifact (DD-148). kairos-ontology compile/validate now "
+                        "hard-fail on this — run kairos-design-discovery before design "
+                        "proceeds."
+                    )
+                    if no_conformance_either
+                    else (
+                        "No authored businessdiscovery/ narrative found, though a "
+                        "discovery conformance artifact exists and satisfies the "
+                        "compile/validate gate (DD-148). Still recommended for full "
+                        "business-terminology alignment."
+                    )
                 ),
                 command="kairos-ontology (invoke kairos-design-discovery)",
                 priority=10,
+                blocking=no_conformance_either,
+            )
+        )
+    if snapshot.discovery_conformance is DiscoveryConformanceStatus.UNRESOLVED_FLEET:
+        actions.append(
+            _action(
+                "resolve-discovery-open-questions",
+                ActionStatus.BLOCKING,
+                rationale=(
+                    "The discovery conformance artifact was produced under fleet mode "
+                    "(DD-088) and has unresolved AI-decided concept judgments (DD-148). "
+                    "kairos-ontology compile/validate hard-fail until a human confirms "
+                    "them via kairos-design-discovery."
+                ),
+                command="kairos-ontology discovery-conformance validate",
+                priority=25,
+                blocking=True,
             )
         )
     if snapshot.sources is InputStatus.UNREADABLE:
@@ -220,16 +273,26 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
             )
         )
     if not snapshot.domains:
+        discovery_blocks = (
+            snapshot.discovery is InputStatus.MISSING
+            and snapshot.discovery_conformance is DiscoveryConformanceStatus.NOT_RUN
+        ) or snapshot.discovery_conformance is DiscoveryConformanceStatus.UNRESOLVED_FLEET
         actions.append(
             _action(
                 "design-domain",
-                ActionStatus.HUMAN_DECISION_REQUIRED,
+                ActionStatus.BLOCKING if discovery_blocks else ActionStatus.HUMAN_DECISION_REQUIRED,
                 rationale=(
                     "No canonical ontology or binding domain found yet. Author a canonical "
                     "OWL/Turtle domain model to begin."
+                    + (
+                        " Blocked on discovery (DD-148) — resolve it first."
+                        if discovery_blocks
+                        else ""
+                    )
                 ),
                 command="kairos-ontology (invoke kairos-design-domain)",
                 priority=30,
+                blocking=discovery_blocks,
             )
         )
     return actions

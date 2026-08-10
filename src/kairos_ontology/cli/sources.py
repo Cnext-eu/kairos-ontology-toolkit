@@ -1443,13 +1443,22 @@ def conformance_load(archetype_id, refmodels_root, output_format):
     help="Conformance artifact (default: <hub>/integration/discovery/"
     "core-concepts-conformance.yaml).",
 )
+@click.option(
+    "--allow-unresolved",
+    is_flag=True,
+    default=False,
+    help="Do not fail when the artifact (mode: fleet) has unresolved AI-decided "
+    "concept judgments (DD-148). Off by default — unresolved is unsafe everywhere, "
+    "including CI.",
+)
 @_REFMODELS_OPTION
-def conformance_validate(artifact_file, refmodels_root):
+def conformance_validate(artifact_file, allow_unresolved, refmodels_root):
     """Validate a conformance artifact against the shared outcome-codes enum."""
     from ..core.archetype_loader import load_outcome_codes
     from ..core.conformance_artifact import (
         ARTIFACT_RELPATH,
         ConformanceArtifactError,
+        open_questions,
         read_artifact,
         validate_artifact,
     )
@@ -1477,6 +1486,19 @@ def conformance_validate(artifact_file, refmodels_root):
         for e in errors:
             click.echo(f"   • {e}", err=True)
         raise SystemExit(1)
+
+    if not allow_unresolved:
+        questions = open_questions(artifact)
+        if questions:
+            click.echo(
+                f"❌ Conformance artifact has {len(questions)} unresolved fleet-mode "
+                "item(s) (DD-148) — a human must confirm these via kairos-design-discovery:",
+                err=True,
+            )
+            for q in questions:
+                click.echo(f"   • {q.get('label') or q.get('uri')} ({q['reason']})", err=True)
+            raise SystemExit(1)
+
     click.echo(f"✅ Conformance artifact valid: {path}", err=True)
 
 

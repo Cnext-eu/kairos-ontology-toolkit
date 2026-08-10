@@ -21,6 +21,8 @@ from kairos_ontology.core.compiler import (
     render_compile_plan,
 )
 
+from discovery_fixtures import write_minimal_discovery_artifact
+
 
 def _hub(tmp_path: Path, *, broken_column: bool = False) -> Path:
     ontology_dir = tmp_path / "model" / "ontologies"
@@ -91,6 +93,7 @@ def _hub(tmp_path: Path, *, broken_column: bool = False) -> Path:
             """).strip(),
         encoding="utf-8",
     )
+    write_minimal_discovery_artifact(tmp_path)
     return tmp_path
 
 

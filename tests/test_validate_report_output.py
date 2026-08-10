@@ -14,6 +14,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from discovery_fixtures import write_minimal_discovery_artifact
 from kairos_ontology.cli.main import cli
 
 VALID_TTL = """\
@@ -37,6 +38,7 @@ def _make_hub(root: Path) -> Path:
     ont = hub / "model" / "ontologies"
     ont.mkdir(parents=True)
     (ont / "client.ttl").write_text(VALID_TTL, encoding="utf-8")
+    write_minimal_discovery_artifact(hub)
     return hub
 
 
