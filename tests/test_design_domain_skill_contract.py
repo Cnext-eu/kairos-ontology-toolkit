@@ -30,6 +30,7 @@ DOMAIN_ANCHORS = [
     "guard-scope",
     "Source keys",
     "**kairos-design-mapping**",
+    "kairos-ontology list-patterns --format json",
 ]
 
 MAPPING_ANCHORS = [

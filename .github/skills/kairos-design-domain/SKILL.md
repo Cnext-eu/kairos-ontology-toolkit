@@ -231,6 +231,23 @@ v5 EntityBinding authored by **kairos-design-mapping**.
 
 ### 6. Review naming and structure
 
+Before finalising property and relationship names, consult the reference-models
+**pattern library** — sector-neutral naming conventions and anti-patterns
+harvested from prior hubs (#262 §3):
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology list-patterns --format json
+```
+
+This is advisory, authoring-time craft, not a hard gate. For a pattern whose
+`applicability` matches the slice, **prefer its normative `naming_conventions`**
+(e.g. the requested/planned/estimated/actual timestamp quartet) over inventing a
+synonym, and **reject its `anti_patterns`**, citing the pattern `id` and
+`rejection_reason` when you steer the user away from a name. Treat each pattern's
+`normativity` block per section: naming ships normative, structural guidance
+ships advisory. An absent or empty library is a silent no-op — never block on it.
+
 Obtain explicit decisions for every item in Gate 4. When evidence conflicts,
 prefer confirmed business meaning, explain the trade-off, and do not hide
 source-feasibility limitations. For each user-facing choice, summarize the

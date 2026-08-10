@@ -151,14 +151,60 @@ Maps to: Booking, CargoItem
 How many cargo items per booking?
 """
 
+# A well-formed pattern-library entry (mirrors the real temporal-quartet shape but with
+# valid YAML — the real repo file currently has a list/mapping indentation bug).
+_TEMPORAL_QUARTET_PATTERN_YAML = """id: temporal-quartet
+problem: >
+  Transport aggregates distinguish requested, planned, estimated, and actual timestamps
+  for start/arrival and end/departure events.
+applicability: >
+  Any class distinguishing what was asked for, planned, estimated, or actually observed.
+closes_gap: [8]
+normativity:
+  naming: normative
+  participants: advisory
+  cardinality_rules: advisory
+naming_conventions:
+  qualifiers:
+    - requested
+    - planned
+    - estimated
+    - actual
+  rule: >
+    Use Start/End for durations and Arrival/Departure for point events. Never mix
+    vocabularies on one class; never substitute a synonym (eta, expected, due).
+anti_patterns:
+  - id: synonym-for-estimated-or-requested
+    description: "A property named eta, expectedTime, or due_date instead of estimated*/requested*."
+    rejection_reason: "This is the exact naming drift this pattern ships normative to stop."
+grain_collisions: []
+"""
+
+# A pattern.yaml with a deliberate list/mapping indentation error (exercises the lenient
+# skip-with-warning path of load_patterns).
+_MALFORMED_PATTERN_YAML = """id: broken-pattern
+problem: A pattern whose YAML does not parse.
+naming_conventions:
+  - qualifier: requested
+    start: requestedStart
+  rule: >
+    A sequence item and a mapping key cannot be siblings at the same indent.
+"""
+
 
 def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
                          booking_version: str = "1.2.0",
-                         add_duplicate_discovery: bool = False) -> Path:
+                         add_duplicate_discovery: bool = False,
+                         with_patterns: bool = True,
+                         add_malformed_pattern: bool = False) -> Path:
     """Create a minimal reference-models root under *tmp_path* and return the inner root.
 
     Layout mirrors the real repo: an outer repo dir containing ``ontology-reference-models/``
     (so :func:`normalize_refmodels_root` resolves either level) and a ``VERSION`` file.
+
+    When *with_patterns* is set (default), a ``blueprints/patterns/`` library with a valid
+    ``temporal-quartet`` entry is written.  *add_malformed_pattern* additionally writes a
+    pattern whose YAML does not parse, to exercise the lenient loader's warning path.
     """
     repo = tmp_path / "refmodels-repo"
     inner = repo / "ontology-reference-models"
@@ -186,6 +232,22 @@ def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
     (archetypes / "VERSION").write_text("0.1.0\n", encoding="utf-8")
     (archetypes / "README.md").write_text("# archetypes\n", encoding="utf-8")
     (discovery / "test-carrier.md").write_text(_DISCOVERY_MD, encoding="utf-8")
+
+    if with_patterns:
+        patterns = inner / "blueprints" / "patterns"
+        pattern_schema = patterns / "_schema"
+        (patterns / "temporal-quartet").mkdir(parents=True, exist_ok=True)
+        pattern_schema.mkdir(parents=True, exist_ok=True)
+        (patterns / "temporal-quartet" / "pattern.yaml").write_text(
+            _TEMPORAL_QUARTET_PATTERN_YAML, encoding="utf-8")
+        # Excluded-from-glob noise (mirrors the real library layout).
+        (patterns / "VERSION").write_text("0.1.0\n", encoding="utf-8")
+        (patterns / "README.md").write_text("# patterns\n", encoding="utf-8")
+        (pattern_schema / ".gitkeep").write_text("", encoding="utf-8")
+        if add_malformed_pattern:
+            (patterns / "broken-pattern").mkdir(parents=True, exist_ok=True)
+            (patterns / "broken-pattern" / "pattern.yaml").write_text(
+                _MALFORMED_PATTERN_YAML, encoding="utf-8")
 
     if add_duplicate_discovery:
         dup = inner / "accelerator-packs" / "financial-services" / "discovery"
