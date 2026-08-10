@@ -151,8 +151,10 @@ Maps to: Booking, CargoItem
 How many cargo items per booking?
 """
 
-# A well-formed pattern-library entry (mirrors the real temporal-quartet shape but with
-# valid YAML — the real repo file currently has a list/mapping indentation bug).
+# A well-formed pattern-library entry, mirroring the real temporal-quartet shape. That file
+# shipped with a list/mapping indentation bug in reference-models v1.13.0 and was fixed in
+# v1.14.0; the equivalent broken shape is kept below as _MALFORMED_PATTERN_YAML so the lenient
+# loader's skip-with-warning path stays covered.
 _TEMPORAL_QUARTET_PATTERN_YAML = """id: temporal-quartet
 problem: >
   Transport aggregates distinguish requested, planned, estimated, and actual timestamps
@@ -177,7 +179,9 @@ anti_patterns:
   - id: synonym-for-estimated-or-requested
     description: "A property named eta, expectedTime, or due_date instead of estimated*/requested*."
     rejection_reason: "This is the exact naming drift this pattern ships normative to stop."
-grain_collisions: []
+grain_collisions:
+  - against: "https://example.org/ont/booking#RequestedWindow"
+    reason: "A service window is its own grain, not a timestamp on the aggregate."
 """
 
 # A pattern.yaml with a deliberate list/mapping indentation error (exercises the lenient
@@ -196,7 +200,9 @@ def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
                          booking_version: str = "1.2.0",
                          add_duplicate_discovery: bool = False,
                          with_patterns: bool = True,
-                         add_malformed_pattern: bool = False) -> Path:
+                         add_malformed_pattern: bool = False,
+                         blueprint_version: str | None = None,
+                         authoritative_version: str | None = None) -> Path:
     """Create a minimal reference-models root under *tmp_path* and return the inner root.
 
     Layout mirrors the real repo: an outer repo dir containing ``ontology-reference-models/``
@@ -205,6 +211,12 @@ def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
     When *with_patterns* is set (default), a ``blueprints/patterns/`` library with a valid
     ``temporal-quartet`` entry is written.  *add_malformed_pattern* additionally writes a
     pattern whose YAML does not parse, to exercise the lenient loader's warning path.
+
+    *blueprint_version* writes ``blueprints/ontology/VERSION`` (the Kairos-authored tier, which
+    versions as one unit on its own 0.x cadence) and *authoritative_version* writes
+    ``authoritative-ontologies/fibo/VERSION``.  Both are off by default so existing tests keep
+    exercising the derived-only layout; they let the drift check be tested across all three
+    ontology tiers (#276 Q3/Q6).
     """
     repo = tmp_path / "refmodels-repo"
     inner = repo / "ontology-reference-models"
@@ -232,6 +244,16 @@ def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
     (archetypes / "VERSION").write_text("0.1.0\n", encoding="utf-8")
     (archetypes / "README.md").write_text("# archetypes\n", encoding="utf-8")
     (discovery / "test-carrier.md").write_text(_DISCOVERY_MD, encoding="utf-8")
+
+    if blueprint_version is not None:
+        blueprint_ontology = inner / "blueprints" / "ontology"
+        blueprint_ontology.mkdir(parents=True, exist_ok=True)
+        (blueprint_ontology / "VERSION").write_text(blueprint_version + "\n", encoding="utf-8")
+
+    if authoritative_version is not None:
+        authoritative = inner / "authoritative-ontologies" / "fibo"
+        authoritative.mkdir(parents=True, exist_ok=True)
+        (authoritative / "VERSION").write_text(authoritative_version + "\n", encoding="utf-8")
 
     if with_patterns:
         patterns = inner / "blueprints" / "patterns"

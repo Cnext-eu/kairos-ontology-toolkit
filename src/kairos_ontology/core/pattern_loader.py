@@ -66,6 +66,16 @@ class Pattern:
     ``pattern.yaml`` and defaults to empty when absent, because the library ships
     markdown-first without a JSON Schema.  ``extra`` preserves any additional top-level
     keys so nothing declared by an author is silently dropped.
+
+    ``naming_conventions`` is deliberately untyped: published patterns use a different key set
+    each (``qualifier``/``start_or_arrival`` in ``temporal-quartet``, ``element``/``convention``
+    in ``deferred-relationship``, ``link``/``property`` in ``multimodal-order-leg``), so no
+    fixed-column table can be derived from it generically — consumers must read it as-is.
+
+    Only keys the whole library ships are promoted to fields.  Pattern-specific blocks
+    (``mode_bindings``, ``participants``, ``naming_rule``, ``closes_gap``, …) stay in ``extra``
+    and still reach consumers, because :meth:`to_payload` flattens it — promoting a key that
+    only one pattern declares would make every other pattern emit an empty placeholder.
     """
 
     id: str
@@ -75,6 +85,7 @@ class Pattern:
     naming_conventions: Any
     anti_patterns: list[Any]
     source_path: Path
+    grain_collisions: list[Any] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
@@ -86,6 +97,7 @@ class Pattern:
             "normativity": self.normativity,
             "naming_conventions": self.naming_conventions,
             "anti_patterns": self.anti_patterns,
+            "grain_collisions": self.grain_collisions,
         }
         payload.update(self.extra)
         return payload
@@ -126,9 +138,11 @@ def _build_pattern(pattern_id: str, data: dict[str, Any], source_path: Path) -> 
         "normativity",
         "naming_conventions",
         "anti_patterns",
+        "grain_collisions",
     }
     normativity = data.get("normativity") or {}
     anti_patterns = data.get("anti_patterns") or []
+    grain_collisions = data.get("grain_collisions") or []
     return Pattern(
         id=str(data.get("id") or pattern_id),
         problem=str(data.get("problem") or "").strip(),
@@ -137,6 +151,7 @@ def _build_pattern(pattern_id: str, data: dict[str, Any], source_path: Path) -> 
         naming_conventions=data.get("naming_conventions"),
         anti_patterns=anti_patterns if isinstance(anti_patterns, list) else [],
         source_path=source_path,
+        grain_collisions=grain_collisions if isinstance(grain_collisions, list) else [],
         extra={k: v for k, v in data.items() if k not in known},
     )
 

@@ -4,16 +4,20 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import yaml
 
 from archetype_fixtures import build_refmodels_root
 from kairos_ontology.core.archetype_loader import (
+    VALID_TIERS,
     ArchetypeError,
     check_version_drift,
     list_archetypes,
     load_archetype,
     load_outcome_codes,
+    load_valid_tiers,
     locate_discovery_doc,
     normalize_refmodels_root,
     resolve_refmodels_root,
@@ -65,6 +69,46 @@ class TestListAndOutcomeCodes:
         (refroot / "blueprints" / "archetypes" / "_schema" / "outcome-codes.yaml").unlink()
         with pytest.raises(ArchetypeError):
             load_outcome_codes(refroot)
+
+
+class TestValidTiers:
+    """The tier enum is owned by reference-models (#276 Q4) — resolve, don't hardcode."""
+
+    _SCHEMA_RELPATH = ("blueprints", "archetypes", "_schema", "archetype.schema.json")
+
+    def _schema_path(self, refroot):
+        return refroot.joinpath(*self._SCHEMA_RELPATH)
+
+    def test_resolves_published_enum(self, refroot):
+        assert load_valid_tiers(refroot) == ("required", "recommended", "optional")
+
+    def test_picks_up_a_newly_published_tier_without_a_toolkit_release(self, refroot):
+        path = self._schema_path(refroot)
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        schema["$defs"]["tier"]["enum"].append("not_applicable")
+        path.write_text(json.dumps(schema), encoding="utf-8")
+        assert load_valid_tiers(refroot) == (
+            "required", "recommended", "optional", "not_applicable",
+        )
+
+    def test_falls_back_when_schema_absent(self, refroot):
+        self._schema_path(refroot).unlink()
+        assert load_valid_tiers(refroot) == VALID_TIERS
+
+    def test_falls_back_on_malformed_schema(self, refroot):
+        self._schema_path(refroot).write_text("{not json", encoding="utf-8")
+        assert load_valid_tiers(refroot) == VALID_TIERS
+
+    def test_falls_back_when_enum_is_missing_or_wrong_shape(self, refroot):
+        path = self._schema_path(refroot)
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        schema["$defs"]["tier"] = {"type": "string"}  # no enum
+        path.write_text(json.dumps(schema), encoding="utf-8")
+        assert load_valid_tiers(refroot) == VALID_TIERS
+
+    def test_accepts_an_outer_repo_root(self, refroot):
+        """The schema loader normalizes its root like every other entry point does."""
+        assert load_valid_tiers(refroot.parent) == ("required", "recommended", "optional")
 
 
 class TestLoadArchetype:
@@ -179,3 +223,39 @@ class TestVersionDrift:
         # Only the repo_tag_range warning fires; behaviour unchanged from pre-fix.
         assert any("repo_tag_range" in w for w in warnings)
         assert not any("ontology_versions" in w for w in warnings)
+
+
+class TestModuleVersionAcrossTiers:
+    """A pin can name a module in any ontology tier, not just ``derived-ontologies/`` (#276 Q3).
+
+    Before this, a blueprint-tier pin resolved to ``None`` and was skipped silently — so the one
+    module on a 0.x cadence, already declared ``required`` by ``freight-forwarder``, had no drift
+    coverage whatsoever.
+    """
+
+    def test_blueprint_tier_pin_is_checked(self, tmp_path):
+        root = build_refmodels_root(tmp_path, blueprint_version="0.1.0")
+        a = load_archetype(root, "test-carrier")
+        a.compatible_with["ontology_versions"] = {"Blueprint": ">=1.0.0,<2"}
+        warnings = check_version_drift(a, root)
+        assert any("Blueprint" in w and "0.1.0" in w for w in warnings)
+
+    def test_blueprint_tier_pin_in_range_is_quiet(self, tmp_path):
+        root = build_refmodels_root(tmp_path, blueprint_version="0.1.0")
+        a = load_archetype(root, "test-carrier")
+        a.compatible_with["ontology_versions"] = {"blueprints": ">=0.1.0,<1"}
+        assert check_version_drift(a, root) == []
+
+    def test_authoritative_tier_pin_is_checked(self, tmp_path):
+        root = build_refmodels_root(tmp_path, authoritative_version="1.0.0")
+        a = load_archetype(root, "test-carrier")
+        a.compatible_with["ontology_versions"] = {"FIBO": ">=2.0.0,<3"}
+        warnings = check_version_drift(a, root)
+        assert any("FIBO" in w and "1.0.0" in w for w in warnings)
+
+    def test_blueprint_pin_without_a_blueprint_tier_stays_silent(self, tmp_path):
+        # No blueprints/ontology/VERSION in this checkout — still "no signal", never a crash.
+        root = build_refmodels_root(tmp_path)
+        a = load_archetype(root, "test-carrier")
+        a.compatible_with["ontology_versions"] = {"Blueprint": ">=9.0.0,<10"}
+        assert check_version_drift(a, root) == []

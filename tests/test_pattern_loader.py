@@ -45,7 +45,8 @@ class TestLoadPattern:
 
     def test_preserves_unknown_keys_in_extra(self, refroot):
         pattern = load_pattern(refroot, "temporal-quartet")
-        # closes_gap / grain_collisions are not first-class fields but must survive.
+        # closes_gap is pattern-specific: not a first-class field, but it must survive and
+        # still reach consumers through the payload flatten.
         assert "closes_gap" in pattern.extra
         assert pattern.extra["closes_gap"] == [8]
         assert "closes_gap" in pattern.to_payload()
@@ -54,6 +55,24 @@ class TestLoadPattern:
         pattern = load_pattern(refroot, "temporal-quartet")
         ids = [a["id"] for a in pattern.anti_patterns]
         assert "synonym-for-estimated-or-requested" in ids
+
+    def test_grain_collisions_are_first_class(self, refroot):
+        """Every published pattern ships ``grain_collisions``, so it is a field, not ``extra``.
+
+        It carries the "do not subclass / do not merge" boundaries the design skill must state
+        (#276 Q1), and is the field a future attestation's ``grain_collisions_encountered``
+        mirrors.
+        """
+        pattern = load_pattern(refroot, "temporal-quartet")
+        assert "grain_collisions" not in pattern.extra
+        assert pattern.grain_collisions[0]["against"].endswith("#RequestedWindow")
+        assert pattern.to_payload()["grain_collisions"] == pattern.grain_collisions
+
+    def test_grain_collisions_default_to_empty_when_absent(self, tmp_path):
+        root = build_refmodels_root(tmp_path)
+        path = root / "blueprints" / "patterns" / "temporal-quartet" / "pattern.yaml"
+        path.write_text("id: temporal-quartet\nproblem: minimal\n", encoding="utf-8")
+        assert load_pattern(root, "temporal-quartet").grain_collisions == []
 
     def test_missing_pattern_raises(self, refroot):
         with pytest.raises(PatternError):

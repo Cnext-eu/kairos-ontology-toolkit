@@ -257,13 +257,31 @@ $env:KAIROS_SKILL_CONTEXT = "1"
 uv run kairos-ontology list-patterns --format json
 ```
 
-This is advisory, authoring-time craft, not a hard gate. For a pattern whose
-`applicability` matches the slice, **prefer its normative `naming_conventions`**
-(e.g. the requested/planned/estimated/actual timestamp quartet) over inventing a
-synonym, and **reject its `anti_patterns`**, citing the pattern `id` and
-`rejection_reason` when you steer the user away from a name. Treat each pattern's
+This is advisory, authoring-time craft, not a hard gate. Treat each pattern's
 `normativity` block per section: naming ships normative, structural guidance
 ships advisory. An absent or empty library is a silent no-op — never block on it.
+Read `naming_conventions` as-is: each pattern uses its own key set, so there is no
+fixed table to fill in.
+
+For a pattern whose `applicability` matches the slice, consult **all four** of its
+surfaces — the structural guidance is the part that cost the most to derive, so do
+not stop at the naming table:
+
+- **`naming_conventions`** — prefer these normative names (e.g. the
+  requested/planned/estimated/actual timestamp quartet) over inventing a synonym.
+- **`anti_patterns`** — reject these on **structure as well as names**, citing the
+  pattern `id` and `rejection_reason`. The structural ones are the high-value
+  rejections: mode-typed subclasses of an aggregate (`OceanOrder`/`RoadOrder`),
+  subclassing a mode-bound standard class at the wrong grain, a shortcut link that
+  bypasses a reified intermediate, or a document standing in for a reservation.
+- **`mode_bindings`** — when a pattern declares them, they decide the binding
+  target per mode. `status: modelled` → bind to the named `target`;
+  `status: extension-point` → the standard exists but is not modelled here, so
+  **do not invent a class** — record it as an extension point;
+  `status: pattern-only` → no standard forces a shape, follow the pattern alone.
+- **`grain_collisions`** — read each as an explicit *do not subclass and do not
+  merge* instruction against the named class, and repeat the stated `reason` when
+  you explain the boundary to the user.
 
 Obtain explicit decisions for every item in Gate 4. When evidence conflicts,
 prefer confirmed business meaning, explain the trade-off, and do not hide

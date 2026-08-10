@@ -31,6 +31,13 @@ DOMAIN_ANCHORS = [
     "Source keys",
     "**kairos-design-mapping**",
     "kairos-ontology list-patterns --format json",
+    # Pattern guidance must reach beyond the naming table (#276 Q1/Q2): the structural
+    # anti-patterns, the per-mode binding decision, and the grain boundaries are the
+    # expensive half of what the library encodes.
+    "structure as well as names",
+    "`mode_bindings`",
+    "do not invent a class",
+    "`grain_collisions`",
 ]
 
 MAPPING_ANCHORS = [

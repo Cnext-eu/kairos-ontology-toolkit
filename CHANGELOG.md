@@ -19,12 +19,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kairos-design-domain` flow while both CIs stayed green. Skipped when no checkout is present,
   so CI here gains no cross-repo dependency; set `KAIROS_REFMODELS_ROOT` or keep a sibling
   checkout. A mirror ships in the reference-models repo as `tests/test_toolkit_contract.py`.
-- The suite asserts `VALID_TIERS` still matches the published `archetype.schema.json`
-  `$defs/tier` enum. That duplication is deliberate but was unenforced, so a tier added on the
-  publishing side (e.g. the proposed `not_applicable`) would have broken this loader at the next
-  reference-model bump with no warning.
+- The suite asserts the published `archetype.schema.json` `$defs/tier` enum **resolves**, and that
+  the offline `VALID_TIERS` fallback never lists a tier the published enum has *dropped*. (An
+  earlier form of this entry asserted strict equality; that became a false alarm once the enum is
+  resolved at runtime — see below.)
+- `load_valid_tiers()` resolves the conformance-tier enum from the checkout's published
+  `archetype.schema.json`, with `VALID_TIERS` as an offline fallback, mirroring the existing
+  `load_outcome_codes` precedent. Reference-models owns that enum, so the proposed
+  `not_applicable` tier — letting a catalog say "this concept is deliberately out of scope for
+  this archetype" — now needs no toolkit release. **This closes a forward-compat break:**
+  `validate_artifact` hard-rejected any tier outside the hardcoded tuple, so the first discovery
+  run against a catalog using a new tier produced an artifact this toolkit called invalid.
+- A contract test pins `design_landscape`'s hardcoded `CONFIRMED_DISCOVERY_OUTCOMES` /
+  `NON_EVIDENCE_DISCOVERY_OUTCOMES` against the published `outcome-codes.yaml`.
+  `load_outcome_codes` deliberately never hardcodes the *list*, but the *semantics* built on it
+  were literals with no test — a published rename would have left them silently matching nothing
+  (a class quietly losing its confirmed-demand evidence) with green CI.
+- `ontology_tier` (`blueprint` / `derived` / `authoritative` / `unknown`) per module in
+  `discovery-conformance load`, derived from the path the catalog resolves each module to. This is
+  what lets a consumer distinguish "subclassing a blueprint class is expected" from "subclassing a
+  derived, mode-bound class outside its own mode is the error to flag". Deliberately a **separate
+  key** from `tier`, which in that same dict already means the archetype's *conformance*
+  obligation level.
+- `grain_collisions` is now a first-class `Pattern` field (all five published patterns ship it),
+  carrying the do-not-subclass / do-not-merge boundaries.
+
+### Fixed
+- **`compute_scorecard` silently dropped concepts.** Tier buckets were seeded from `VALID_TIERS`
+  and any other tier was skipped, so a concept carrying a tier this toolkit predated was counted
+  in `total` but omitted from every bucket — `total` no longer equalled the sum of `by_tier`, with
+  no warning. Buckets are now seeded from the supplied tiers *union the tiers actually present*,
+  and no concept is ever skipped.
+- **Scorecard validation no longer depends on ambient checkout state.** `validate_artifact`
+  recomputes the scorecard and demanded exact equality, so an artifact built where the tier enum
+  resolved to four tiers and validated where it fell back to three (no `KAIROS_REFMODELS_ROOT`)
+  differed only in an *empty* bucket yet failed with "'scorecard' contradicts 'core_concepts';
+  regenerate it" — pointing the user at something that was not wrong. Empty buckets are now
+  normalised away before comparison; a genuinely inconsistent scorecard is still caught.
+- **Version drift now covers every ontology tier, not just `derived-ontologies/`.**
+  `check_version_drift` resolved `compatible_with.ontology_versions` pins only under
+  `derived-ontologies/<KEY>/VERSION`, so a `Blueprint` or `FIBO` pin resolved to `None` and was
+  skipped silently. `freight-forwarder` already declares the blueprint module **`required`** and
+  `blueprints/ontology/` is at 0.1.0 on its own cadence, so the one dependency most likely to
+  move under a hub had no drift coverage at all. Also probes
+  `authoritative-ontologies/<KEY>/VERSION` and `blueprints/ontology/VERSION`.
+- `_load_archetype_schema` now normalizes its root like every other entry point in
+  `archetype_loader`; it was the module's only raw path join, safe only because its one caller
+  pre-normalized.
 
 ### Changed
+- **`kairos-design-domain` pattern guidance now covers structure, not just naming (DD-150).**
+  `mode_bindings`, `grain_collisions` and `participants` already reached the CLI payload via the
+  `extra` flatten, but the skill only instructed on `naming_conventions` / `anti_patterns`, so the
+  most expensive guidance in the library never reached a designer. Step 6 now reads four surfaces:
+  normative naming; `anti_patterns` rejected on **structure as well as names** (mode-typed
+  subclasses of an aggregate, subclassing a mode-bound standard at the wrong grain, shortcut links
+  bypassing a reified intermediate, a document standing in for a reservation); `mode_bindings` as
+  the per-mode binding decision (`modelled` → bind, `extension-point` → **do not invent a class**,
+  `pattern-only` → pattern alone); and `grain_collisions` as do-not-subclass boundaries. Still
+  advisory and still a silent no-op on an absent library.
+- Reference-models **v1.14.0 resolves the `temporal-quartet` finding** recorded under DD-146 — all
+  five published patterns now parse under `yaml.safe_load`. A
+  `blueprints/patterns/_schema/pattern.schema.json` is still absent and remains the standing ask.
 - `pattern_loader` module docstring records that leniency is correct for callers and useless as a
   quality signal — a skipped pattern is an absent pattern — and points callers wanting a
   guarantee at `load_pattern` or at asserting `load_patterns` returned no warnings. Also corrects

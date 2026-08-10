@@ -247,3 +247,105 @@ def test_check_discovery_gate_flags_unresolved_fleet_items(tmp_path, archetype):
     errors = check_discovery_gate(tmp_path)
     assert len(errors) == 1
     assert "Unresolved fleet-mode discovery item" in errors[0]
+
+
+# --- Tier-enum ownership (#276 Q4/Q5) -------------------------------------------------
+
+#: A tier reference-models has proposed but not yet published. The point of these tests is that
+#: the toolkit must not need a release to handle it.
+_FUTURE_TIER = "not_applicable"
+
+
+def _outcomes_with_future_tier():
+    outcomes = _outcomes()
+    outcomes.append(
+        {
+            "uri": "https://example.org/ont/booking#OutOfScopeThing",
+            "label": "Out Of Scope Thing",
+            "tier": _FUTURE_TIER,
+            "outcome": "not-applicable",
+        }
+    )
+    return outcomes
+
+
+def test_scorecard_never_drops_a_concept_carrying_an_unseeded_tier():
+    """``total`` must equal the sum of ``by_tier`` even for a tier we predate.
+
+    Regression: ``compute_scorecard`` used to seed buckets from ``VALID_TIERS`` and skip any
+    outcome whose tier was not in it, so the concept was counted in ``total`` but silently
+    omitted from every bucket — a scorecard that under-reports with no warning.
+    """
+    sc = compute_scorecard(_outcomes_with_future_tier())
+    assert sc["total"] == 4
+    counted = sum(sum(counts.values()) for counts in sc["by_tier"].values())
+    assert counted == sc["total"]
+    assert sc["by_tier"][_FUTURE_TIER]["not-applicable"] == 1
+
+
+def test_scorecard_keeps_canonical_tiers_even_when_empty():
+    """Historical shape is preserved: the three canonical buckets always appear."""
+    sc = compute_scorecard(
+        [{"uri": "https://example.org/ont/x#A", "label": "A", "tier": "required",
+          "outcome": "conforms"}]
+    )
+    assert set(sc["by_tier"]) == {"required", "recommended", "optional"}
+
+
+def test_validate_accepts_a_tier_published_by_reference_models(refroot, archetype):
+    """A tier resolved from the checkout is accepted without a toolkit release."""
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_outcomes_with_future_tier(),
+        mode="interactive",
+        valid_tiers=("required", "recommended", "optional", _FUTURE_TIER),
+    )
+    errors = validate_artifact(
+        art,
+        load_outcome_codes(refroot),
+        ("required", "recommended", "optional", _FUTURE_TIER),
+    )
+    assert errors == []
+
+
+def test_validate_rejects_an_unpublished_tier_on_the_offline_fallback(refroot, archetype):
+    """Without a resolvable enum the fallback still refuses an unknown tier."""
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_outcomes_with_future_tier(),
+        mode="interactive",
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any(_FUTURE_TIER in e and "invalid or missing tier" in e for e in errors)
+
+
+def test_scorecard_equality_survives_a_tier_seed_mismatch(refroot, archetype):
+    """Validation must not depend on which checkout happened to be resolvable.
+
+    Regression: an artifact built where the tier enum resolved to four tiers, then validated
+    where it fell back to three (no ``KAIROS_REFMODELS_ROOT``), differed only in an *empty*
+    bucket — but strict equality reported "'scorecard' contradicts 'core_concepts'; regenerate
+    it", sending the user to fix something that was not wrong.
+    """
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_outcomes(),  # no concept actually uses the extra tier
+        mode="interactive",
+        valid_tiers=("required", "recommended", "optional", _FUTURE_TIER),
+    )
+    assert art["scorecard"]["by_tier"][_FUTURE_TIER] == {}
+    # Validated against the narrower fallback enum — must still be valid.
+    assert validate_artifact(art, load_outcome_codes(refroot)) == []
+
+
+def test_scorecard_equality_still_catches_a_genuinely_wrong_scorecard(refroot, archetype):
+    """Normalising empty buckets must not blunt the real consistency check."""
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=_outcomes(), mode="interactive"
+    )
+    art["scorecard"]["by_tier"]["required"]["conforms"] = 99
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("contradicts 'core_concepts'" in e for e in errors)
