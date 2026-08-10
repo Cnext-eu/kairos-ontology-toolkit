@@ -1683,7 +1683,12 @@ def list_patterns_cmd(pattern_id, refmodels_root, output_format):
       kairos-ontology list-patterns
       kairos-ontology list-patterns --pattern temporal-quartet
     """
-    from ..core.pattern_loader import PatternError, load_pattern, load_patterns
+    from ..core.pattern_loader import (
+        PatternError,
+        load_pattern,
+        load_patterns,
+        pattern_quality_warnings,
+    )
 
     root = _resolve_conformance_root(refmodels_root)
     click.echo(f"🔎 Reference-models root: {root}", err=True)
@@ -1694,7 +1699,17 @@ def list_patterns_cmd(pattern_id, refmodels_root, output_format):
         except PatternError as exc:
             click.echo(f"❌ {exc}", err=True)
             raise SystemExit(2) from exc
-        _emit({"refmodels_root": str(root), "pattern": pattern.to_payload()}, output_format)
+        quality = pattern_quality_warnings(pattern)
+        for w in quality:
+            click.echo(f"⚠ {w}", err=True)
+        _emit(
+            {
+                "refmodels_root": str(root),
+                "pattern": pattern.to_payload(),
+                "warnings": quality,
+            },
+            output_format,
+        )
         return
 
     patterns, warnings = load_patterns(root)

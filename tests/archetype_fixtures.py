@@ -151,10 +151,12 @@ Maps to: Booking, CargoItem
 How many cargo items per booking?
 """
 
-# A well-formed pattern-library entry, mirroring the real temporal-quartet shape. That file
-# shipped with a list/mapping indentation bug in reference-models v1.13.0 and was fixed in
-# v1.14.0; the equivalent broken shape is kept below as _MALFORMED_PATTERN_YAML so the lenient
-# loader's skip-with-warning path stays covered.
+# A well-formed pattern-library entry, mirroring the real temporal-quartet shape: a
+# ``naming_conventions`` **list of entries** plus a top-level ``naming_rule`` (the library's own
+# structural rule — an earlier version of this fixture used a mapping, which no published pattern
+# does). That file shipped with a list/mapping indentation bug in reference-models v1.13.0 and was
+# fixed in v1.14.0; the equivalent broken shape is kept below as _MALFORMED_PATTERN_YAML so the
+# lenient loader's skip-with-warning path stays covered.
 _TEMPORAL_QUARTET_PATTERN_YAML = """id: temporal-quartet
 problem: >
   Transport aggregates distinguish requested, planned, estimated, and actual timestamps
@@ -167,14 +169,15 @@ normativity:
   participants: advisory
   cardinality_rules: advisory
 naming_conventions:
-  qualifiers:
-    - requested
-    - planned
-    - estimated
-    - actual
-  rule: >
-    Use Start/End for durations and Arrival/Departure for point events. Never mix
-    vocabularies on one class; never substitute a synonym (eta, expected, due).
+  - qualifier: requested
+    start_or_arrival: requestedStart
+    end_or_departure: requestedEnd
+  - qualifier: actual
+    start_or_arrival: actualStart
+    end_or_departure: actualEnd
+naming_rule: >
+  Use Start/End for durations and Arrival/Departure for point events. Never mix
+  vocabularies on one class; never substitute a synonym (eta, expected, due).
 anti_patterns:
   - id: synonym-for-estimated-or-requested
     description: "A property named eta, expectedTime, or due_date instead of estimated*/requested*."

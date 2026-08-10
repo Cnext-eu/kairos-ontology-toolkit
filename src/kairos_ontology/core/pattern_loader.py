@@ -183,6 +183,56 @@ def load_pattern(refmodels_root: Path, pattern_id: str) -> Pattern:
     return _build_pattern(pattern_id, data, pattern_file)
 
 
+def pattern_quality_warnings(pattern: Pattern) -> list[str]:
+    """Return advisory warnings about a pattern that *parses* but is not usable as authored.
+
+    Valid YAML is only the floor. A pattern can parse, carry the right ``id``, and still be
+    hollow — declaring ``normativity.naming: normative`` while shipping no
+    ``naming_conventions``, or an anti-pattern with no ``rejection_reason`` for the design
+    skill to cite. Reference-models has no ``_schema/pattern.schema.json`` yet, so nothing
+    catches that at authoring time and this loader's leniency means nothing catches it at
+    load time either: the pattern is simply *quietly useless*.
+
+    This is deliberately **consumer-side detection, not enforcement**. It makes a hollow
+    pattern visible instead of silent; it cannot prevent a bad publish. The authoring-time
+    fix belongs in reference-models (#262).
+
+    Never raises — a quality problem is a warning, exactly like a parse failure.
+    """
+    warnings: list[str] = []
+    naming_normativity = str((pattern.normativity or {}).get("naming") or "").strip()
+
+    if pattern.naming_conventions is not None and not isinstance(
+        pattern.naming_conventions, list
+    ):
+        warnings.append(
+            f"Pattern '{pattern.id}': naming_conventions is "
+            f"{type(pattern.naming_conventions).__name__}, expected a list of entries — "
+            "the library's own structural rule. Consumers reading it as a list will see nothing."
+        )
+    elif naming_normativity == "normative" and not pattern.naming_conventions:
+        warnings.append(
+            f"Pattern '{pattern.id}': declares normativity.naming 'normative' but ships no "
+            "naming_conventions, so there is no normative name for the design skill to prefer."
+        )
+
+    for index, entry in enumerate(pattern.anti_patterns):
+        if not isinstance(entry, dict):
+            warnings.append(
+                f"Pattern '{pattern.id}': anti_patterns[{index}] is "
+                f"{type(entry).__name__}, expected a mapping with id/description/"
+                "rejection_reason."
+            )
+            continue
+        if not str(entry.get("rejection_reason") or "").strip():
+            label = str(entry.get("id") or f"index {index}")
+            warnings.append(
+                f"Pattern '{pattern.id}': anti_pattern '{label}' has no rejection_reason — "
+                "the design skill is told to cite one when steering a user away."
+            )
+    return warnings
+
+
 def load_patterns(refmodels_root: Path) -> tuple[list[Pattern], list[str]]:
     """Load every pattern, best-effort.
 
@@ -190,13 +240,20 @@ def load_patterns(refmodels_root: Path) -> tuple[list[Pattern], list[str]]:
     sorted by id; a directory whose ``pattern.yaml`` is malformed contributes a warning
     string and is skipped rather than raising, so advisory surfacing never breaks the
     design loop.  An absent library yields ``([], [])``.
+
+    Warnings also cover patterns that parsed but are hollow — see
+    :func:`pattern_quality_warnings`. Those patterns are still returned; only the warning
+    tells you they cannot deliver what they claim.
     """
     patterns: list[Pattern] = []
     warnings: list[str] = []
     for pattern_id in list_patterns(refmodels_root):
         try:
-            patterns.append(load_pattern(refmodels_root, pattern_id))
+            pattern = load_pattern(refmodels_root, pattern_id)
         except PatternError as exc:
             warnings.append(f"Skipped pattern '{pattern_id}': {exc}")
             logger.debug("Skipping malformed pattern '%s': %s", pattern_id, exc)
+            continue
+        patterns.append(pattern)
+        warnings.extend(pattern_quality_warnings(pattern))
     return patterns, warnings
