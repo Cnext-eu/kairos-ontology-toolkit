@@ -14,6 +14,11 @@ Default is interactive. An explicit fleet override applies only to this skill in
 never inherited. Record rationale, confidence, and references for every AI-approved choice. Stop
 for ambiguity, low confidence, sensitive data, or consequential policy choices.
 
+Archetype selection (Gate A below) is never fleet-eligible: always confirmed by the human, even
+under an active fleet-mode override for this invocation. It scopes the entire downstream
+reference-model import closure, so getting it wrong is effectively irreversible once modeling
+begins (DD-149).
+
 ## Workflow
 
 1. Read existing discovery inputs and the hub README before proposing changes.
@@ -37,6 +42,16 @@ report. The report MUST render the structure below — every element renders nat
 The report accompanies the YAML; it never replaces it as the execution authority, and the YAML
 stays the single machine authority consumed by later lifecycle stages.
 
+### Gate A: Archetype confirmation (DD-149)
+
+Before step 1 below, run `kairos-ontology discovery-conformance list-archetypes --format json`
+to get the candidate archetype ids + labels, present the full list to the human, and STOP —
+require an explicit human reply naming the archetype id, recorded in the interview log. Never
+auto-select or AI-approve this choice, even in fleet mode. Only proceed to step 2 (`load
+--archetype <id>`) once the human has confirmed. Record `archetype.confirmed_by: "human"` in the
+artifact (step 4) — `kairos-ontology compile`/`validate` and `discovery-conformance validate`
+reject artifacts missing this.
+
 ### Use the toolkit CLI — never hand-transcribe or hand-script
 
 The `kairos-ontology discovery-conformance` command group is the deterministic tool for this
@@ -55,14 +70,21 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
    discovery doc) before proceeding.
 3. Author **only** the per-concept business judgment as data: `outcome` (one of the loaded
    codes), `rename_to` or `deviation_reason` where applicable, `confidence`, `rationale`,
-   `references`, and `needs_confirmation`. This is the actual discovery analysis and cannot be
-   automated — everything else (the concept list, tiers, topology) comes from step 2.
-4. Assemble the artifact with `kairos_ontology.core.conformance_artifact.build_artifact()` and
-   persist it with `write_artifact()` (or hand-write YAML that matches that exact schema) —
-   don't hand-roll the envelope (`schema_version`, `scorecard`, hashes, etc.).
+   `references`, `needs_confirmation`, and `decided_by` (`"user"` or `"ai"` — mark every
+   AI-approved choice `"ai"`; never mark an AI choice `"user"`). This is the actual discovery
+   analysis and cannot be automated — everything else (the concept list, tiers, topology) comes
+   from step 2.
+4. Assemble the artifact with `kairos_ontology.core.conformance_artifact.build_artifact()`,
+   passing `mode="interactive"` or `mode="fleet"` to match this session (DD-088) and
+   `archetype_confirmed_by="human"` per Gate A above, and persist it with `write_artifact()` (or
+   hand-write YAML that matches that exact schema) — don't hand-roll the envelope
+   (`schema_version`, `scorecard`, hashes, etc.).
 5. `kairos-ontology discovery-conformance validate --file integration/discovery/core-concepts-conformance.yaml`
    — must pass with zero errors before the report is presented as done. Fix and re-validate on
-   any failure; never present an unvalidated artifact as final.
+   any failure; never present an unvalidated artifact as final. If `mode: fleet`, this also
+   fails while any concept has an unresolved AI-decided judgment (`needs_confirmation: true`, or
+   no recorded `confidence`) — resolve those with the human (or pass `--allow-unresolved` only
+   for a diagnostic dry run, never for the final artifact) before presenting the report as done.
 
 ### Outcome-code legend (badge emojis)
 

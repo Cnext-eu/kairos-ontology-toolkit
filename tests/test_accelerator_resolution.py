@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from discovery_fixtures import write_minimal_discovery_artifact
 import kairos_ontology.cli.projections as projection_commands
 import kairos_ontology.cli.validation as validation_commands
 from kairos_ontology.cli.main import cli
@@ -333,6 +334,7 @@ class TestCrossCommandResolverParity:
         ref_models = tmp_path / "ontology-reference-models"
         _write_pack(ref_models, "finance", _empty_pack_yaml())
         _write_pack(ref_models, "logistics", NESTED_DATA_DOMAINS_YAML)
+        write_minimal_discovery_artifact(hub)
         return hub
 
     def test_validate_and_project_infer_same_accelerator_from_ontology_name(

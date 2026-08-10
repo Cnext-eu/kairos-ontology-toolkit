@@ -14,6 +14,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from discovery_fixtures import write_minimal_discovery_artifact
 import kairos_ontology.cli.projections as projection_commands
 import kairos_ontology.cli.validation as validation_commands
 from kairos_ontology.cli.main import cli
@@ -46,6 +47,7 @@ def _make_hub(root: Path, *, with_shapes: bool = True, with_catalog: bool = Fals
             '<?xml version="1.0"?><catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"/>',
             encoding="utf-8",
         )
+    write_minimal_discovery_artifact(hub)
     return hub
 
 

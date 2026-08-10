@@ -12,6 +12,7 @@ from kairos_ontology.core.next_actions import (
     ActionStatus,
     CompileStatus,
     DiagnosticView,
+    DiscoveryConformanceStatus,
     DomainSnapshot,
     HubInputSnapshot,
     InputStatus,
@@ -49,16 +50,77 @@ def _kinds(proposal) -> list[str]:
     return [action.kind for action in proposal.actions]
 
 
-def test_fresh_hub_requires_human_decisions_for_discovery_and_source():
+def test_fresh_hub_blocks_on_discovery_but_leaves_source_and_domain_advisory():
+    # DD-148: missing discovery is a hard block (mirrored as BLOCKING here; the real
+    # enforcement is in `kairos-ontology compile`/`validate`). Design-domain inherits the
+    # block transitively since discovery hasn't run; source stays advisory as before.
     proposal = propose_next_actions(
         _hub(discovery=InputStatus.MISSING, sources=InputStatus.MISSING, domains=())
     )
-    kinds = _kinds(proposal)
-    assert "design-discovery" in kinds
-    assert "design-source" in kinds
-    assert "design-domain" in kinds
-    for action in proposal.actions:
-        assert action.status is ActionStatus.HUMAN_DECISION_REQUIRED
+    by_kind = {action.kind: action for action in proposal.actions}
+    assert set(by_kind) == {"design-discovery", "design-source", "design-domain"}
+    assert by_kind["design-discovery"].status is ActionStatus.BLOCKING
+    assert by_kind["design-discovery"].blocking is True
+    assert by_kind["design-domain"].status is ActionStatus.BLOCKING
+    assert by_kind["design-domain"].blocking is True
+    assert by_kind["design-source"].status is ActionStatus.HUMAN_DECISION_REQUIRED
+    assert by_kind["design-source"].blocking is False
+
+
+def test_conformance_artifact_alone_satisfies_discovery_without_narrative():
+    # DD-148: businessdiscovery/ (DD-048) and the conformance artifact (DD-090) are
+    # independent — a valid conformance artifact downgrades the missing-narrative
+    # signal from BLOCKING to advisory, matching what check_discovery_gate() enforces.
+    proposal = propose_next_actions(
+        _hub(
+            discovery=InputStatus.MISSING,
+            discovery_conformance=DiscoveryConformanceStatus.VALID,
+            domains=(),
+        )
+    )
+    by_kind = {action.kind: action for action in proposal.actions}
+    assert by_kind["design-discovery"].status is ActionStatus.HUMAN_DECISION_REQUIRED
+    assert by_kind["design-discovery"].blocking is False
+    assert by_kind["design-domain"].status is ActionStatus.HUMAN_DECISION_REQUIRED
+    assert by_kind["design-domain"].blocking is False
+
+
+def test_present_discovery_with_domains_stays_advisory():
+    # Discovery ran and is valid; a hub with existing domains sees no discovery-related
+    # blocking action at all.
+    proposal = propose_next_actions(
+        _hub(domains=(_domain("party", has_bindings=False, binding_count=0,
+                              compile_status=CompileStatus.NOT_RUN),))
+    )
+    assert "design-discovery" not in _kinds(proposal)
+    assert "resolve-discovery-open-questions" not in _kinds(proposal)
+
+
+def test_unresolved_fleet_discovery_blocks_independently_of_domain_state():
+    # DD-148: a fleet-mode discovery artifact with unresolved AI-decided judgments blocks
+    # regardless of whether domains already exist.
+    proposal = propose_next_actions(
+        _hub(
+            discovery_conformance=DiscoveryConformanceStatus.UNRESOLVED_FLEET,
+            domains=(_domain("party"),),
+        )
+    )
+    by_kind = {action.kind: action for action in proposal.actions}
+    assert "resolve-discovery-open-questions" in by_kind
+    action = by_kind["resolve-discovery-open-questions"]
+    assert action.status is ActionStatus.BLOCKING
+    assert action.blocking is True
+    assert action.skill == "kairos-design-discovery"
+    assert action.priority == 25
+
+
+def test_unresolved_fleet_discovery_also_blocks_design_domain_when_no_domains_yet():
+    proposal = propose_next_actions(
+        _hub(discovery_conformance=DiscoveryConformanceStatus.UNRESOLVED_FLEET, domains=())
+    )
+    by_kind = {action.kind: action for action in proposal.actions}
+    assert by_kind["design-domain"].status is ActionStatus.BLOCKING
+    assert by_kind["design-domain"].blocking is True
 
 
 def test_ontology_without_binding_recommends_authoring():

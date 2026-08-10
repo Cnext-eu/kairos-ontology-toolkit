@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failures, and shows a short report of which sources were imported and which remain.
 
 ### Added
+- **Discovery-before-design hard gate and human-confirmed archetype selection (DD-148,
+  DD-149):** `kairos-ontology compile`/`validate` now hard-fail unless a
+  `businessdiscovery/` narrative (DD-048) or a discovery conformance artifact (DD-090)
+  exists, and always hard-fail when a fleet-mode (DD-088) conformance artifact has
+  unresolved AI-decided concept judgments — `discovery-conformance validate` gets the
+  same check plus a `--allow-unresolved` escape hatch for diagnostic use.
+  `kairos-ontology next` mirrors both as advisory `blocking` signals. Archetype selection
+  in `kairos-design-discovery` is now a human-only confirmation gate (never fleet-eligible),
+  recorded as `archetype.confirmed_by` in the conformance artifact, which bumps to
+  schema v2 (breaking change; no hub in production yet).
 - **`validate --domain <domain>`:** the `validate` command now accepts `--domain` for
   parity with `compile`, using it as the domain hint that resolves the accelerator so a
   multi-pack hub no longer trips on accelerator ambiguity between Gate 0 and Gate 5. The

@@ -1,12 +1,14 @@
-schema_version: 1
+schema_version: 2
 generated_by: kairos-design-discovery
 generated_at: 2026-06-22T10:00:00Z
+mode: interactive
 archetype:
   id: acme-billing
   label: ACME Billing Provider
   source: acme-billing.yaml
   catalog_hash: sha256:acme-billing-catalog-0001
   concept_set_hash: sha256:acme-billing-concepts-0001
+  confirmed_by: human
 refmodels_version: 1.11.0
 discovery_doc: accelerator-packs/financial-services/discovery/acme-billing.md
 ref_model_modules:

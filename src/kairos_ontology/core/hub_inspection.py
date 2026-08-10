@@ -24,9 +24,11 @@ from .compiler import (
     order_compile_diagnostics,
 )
 from .compiler.kernel import _binding_domain, _binding_tier
+from .conformance_artifact import ARTIFACT_RELPATH, ConformanceArtifactError, has_unresolved_fleet_items, read_artifact
 from .next_actions import (
     CompileStatus,
     DiagnosticView,
+    DiscoveryConformanceStatus,
     DomainSnapshot,
     HubInputSnapshot,
     InputStatus,
@@ -75,6 +77,25 @@ def _emitted_dbt_status(root: Path) -> InputStatus:
     except OSError:
         return InputStatus.UNREADABLE
     return InputStatus.PRESENT
+
+
+def _discovery_conformance_status(root: Path) -> DiscoveryConformanceStatus:
+    """Observe the discovery conformance artifact's validity (DD-148), read defensively.
+
+    Deliberately lighter than full ``validate_artifact()`` (no outcome-codes catalog
+    resolution) — same rationale as ``check_discovery_gate()``: this must never crash
+    ``kairos-ontology next``, and it only needs to detect unresolved fleet-mode items.
+    """
+    path = root / ARTIFACT_RELPATH
+    if not path.is_file():
+        return DiscoveryConformanceStatus.NOT_RUN
+    try:
+        artifact = read_artifact(path)
+    except ConformanceArtifactError:
+        return DiscoveryConformanceStatus.INVALID
+    if has_unresolved_fleet_items(artifact):
+        return DiscoveryConformanceStatus.UNRESOLVED_FLEET
+    return DiscoveryConformanceStatus.VALID
 
 
 def _configured_adapter(root: Path) -> str:
@@ -270,4 +291,5 @@ def gather_hub_input_snapshot(
         compile_ran=run_compile,
         emitted_dbt_project=_emitted_dbt_status(root),
         adapter=_configured_adapter(root),
+        discovery_conformance=_discovery_conformance_status(root),
     )

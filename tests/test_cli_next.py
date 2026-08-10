@@ -13,7 +13,7 @@ from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
-from kairos_ontology.core.next_actions import CompileStatus, InputStatus
+from kairos_ontology.core.next_actions import CompileStatus, DiscoveryConformanceStatus, InputStatus
 
 _HUB = Path(__file__).parent / "scenarios" / "v5-hub"
 
@@ -120,6 +120,60 @@ def test_gather_snapshot_observes_emitted_project_and_adapter(hub):
 
     with_emit = gather_hub_input_snapshot(hub)
     assert with_emit.emitted_dbt_project is InputStatus.PRESENT
+
+
+def test_gather_snapshot_observes_discovery_conformance(hub):
+    # v5-hub ships a resolved (mode: interactive) discovery artifact.
+    resolved = gather_hub_input_snapshot(hub)
+    assert resolved.discovery_conformance is DiscoveryConformanceStatus.VALID
+
+    artifact_path = hub / "integration" / "discovery" / "core-concepts-conformance.yaml"
+    artifact_path.write_text(
+        "\n".join(
+            [
+                "schema_version: 2",
+                "generated_by: test",
+                "mode: fleet",
+                "archetype:\n  id: x\n  confirmed_by: human",
+                "core_concepts:",
+                "  - uri: u1",
+                "    label: One",
+                "    decided_by: ai",
+                "    needs_confirmation: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    unresolved = gather_hub_input_snapshot(hub)
+    assert unresolved.discovery_conformance is DiscoveryConformanceStatus.UNRESOLVED_FLEET
+
+
+def test_next_surfaces_resolve_discovery_open_questions_action(hub, monkeypatch):
+    artifact_path = hub / "integration" / "discovery" / "core-concepts-conformance.yaml"
+    artifact_path.write_text(
+        "\n".join(
+            [
+                "schema_version: 2",
+                "generated_by: test",
+                "mode: fleet",
+                "archetype:\n  id: x\n  confirmed_by: human",
+                "core_concepts:",
+                "  - uri: u1",
+                "    label: One",
+                "    decided_by: ai",
+                "    needs_confirmation: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    action = next(
+        a for a in payload["actions"] if a["kind"] == "resolve-discovery-open-questions"
+    )
+    assert action["status"] == "blocking"
+    assert action["blocking"] is True
+    assert action["skill"] == "kairos-design-discovery"
 
 
 def test_next_surfaces_optional_validate_dbt_after_emit(hub, monkeypatch):

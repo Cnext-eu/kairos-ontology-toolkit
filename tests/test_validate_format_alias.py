@@ -4,6 +4,7 @@
 
 from click.testing import CliRunner
 
+from discovery_fixtures import write_minimal_discovery_artifact
 from kairos_ontology.cli import validation as validation_commands
 from kairos_ontology.cli.validation import validate
 from kairos_ontology.core import reference_modules
@@ -15,6 +16,7 @@ def _prepare_hub(tmp_path):
     (hub / "model" / "ontologies").mkdir(parents=True)
     (hub / "model" / "shapes").mkdir(parents=True)
     (hub / "model" / "ontologies" / "sales.ttl").write_text("", encoding="utf-8")
+    write_minimal_discovery_artifact(hub)
     return hub
 
 

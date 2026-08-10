@@ -93,10 +93,20 @@ Run this gate on every modeling pass, including the first:
 3. ask whether additional or newer sources must be imported first.
 
 If no relevant source vocabulary exists, or the user says more evidence is
-needed, stop and invoke **kairos-design-source**. Offer
-**kairos-design-discovery** when confirmed business context is absent. Return
-here only after the evidence is available. Never model against an empty source
-set.
+needed, stop and invoke **kairos-design-source**. Return here only after the
+evidence is available. Never model against an empty source set.
+
+Discovery is no longer optional (DD-148): if there is neither a `businessdiscovery/`
+narrative (DD-048) nor a discovery conformance artifact at
+`integration/discovery/core-concepts-conformance.yaml` (DD-090), STOP and invoke
+**kairos-design-discovery** first — do not proceed on inferred business terms. The
+two are independent; either is enough to pass this baseline check. If a conformance
+artifact exists, additionally read its `mode` field. When `mode: fleet`, check for
+unresolved AI-decided concept judgments (`needs_confirmation: true`, or no recorded
+`confidence`); if any exist, STOP and invoke **kairos-design-discovery** so a human
+confirms them before design proceeds — this check applies regardless of whether a
+`businessdiscovery/` narrative exists. `kairos-ontology compile`/`validate` enforce
+both checks and hard-fail otherwise — this gate only lets you catch it earlier.
 
 ### Gate 2: PII-safe, source-grounded evidence
 
