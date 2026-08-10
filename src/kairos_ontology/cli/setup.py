@@ -32,12 +32,10 @@ from .shared import (
     _configure_branch_protection,
     _copy_managed,
     _create_github_repo,
-    _create_repo_from_template,
     _detect_hub_context,
     _is_old_layout,
     _resolve_channel,
     _run_reference_models_update,
-    _run_smartcoding_update,
     _slugify,
     _tag_to_version,
 )
@@ -232,15 +230,8 @@ def init(domain, company_domain, force):
                     shutil.copy2(tpl_file, dst_file)
                     print(f"  ✓ Installed .github/ISSUE_TEMPLATE/{tpl_file.name}")
 
-    # 4c. Copy update-referencemodels.ps1
-    refscript_src = _SCAFFOLD_DIR / "update-referencemodels.ps1"
-    refscript_dst = cwd / "update-referencemodels.ps1"
-    if refscript_src.is_file():
-        if refscript_dst.exists() and not force:
-            print("  ⏭  update-referencemodels.ps1 already exists (use --force to overwrite)")
-        else:
-            shutil.copy2(refscript_src, refscript_dst)
-            print("  ✓ Installed update-referencemodels.ps1")
+    # update-referencemodels.ps1 is no longer installed; reference models are
+    # populated by the `kairos-ontology update-refmodels` command instead.
 
     # 4c-ii. Copy setup-env scripts (uv-based environment bootstrap)
     for script_name in ("setup-env.ps1", "setup-env.sh"):
@@ -406,9 +397,6 @@ def init(domain, company_domain, force):
             )
             print(f"  ✓ Registered {ontology_iri} in ontology-hub/catalog-v001.xml")
 
-    # 9. Run smartcoding update if the script exists
-    _run_smartcoding_update(cwd)
-
     print("\n✅ Ontology hub initialized!")
     print("\nNext steps:")
     print(
@@ -471,7 +459,6 @@ def migrate(check, dry_run, hub_path):
         hub / "model" / "extensions",
         hub / "model" / "mappings",
         hub / "model" / "planning",
-        hub / "referencemodels-unpacked",
         hub / "integration" / "sources",
         hub / "integration" / "discovery",
         publish_root(hub) / "medallion" / "powerbi",
@@ -636,14 +623,6 @@ def migrate(check, dry_run, hub_path):
     help="Git ref (tag/branch) for reference models (default: latest).",
 )
 @click.option(
-    "--template",
-    "template",
-    type=str,
-    default="kairos-app-template",
-    help="GitHub repo template to use (default: kairos-app-template). "
-    "Pass empty string to skip.",
-)
-@click.option(
     "--company-domain",
     "company_domain",
     type=str,
@@ -659,7 +638,7 @@ def migrate(check, dry_run, hub_path):
     help="Skip configuring branch protection on main (useful if no admin rights).",
 )
 def new_repo(
-    name, desc, dest, org, is_private, ref_models_version, template, company_domain, skip_protection
+    name, desc, dest, org, is_private, ref_models_version, company_domain, skip_protection
 ):
     """Create a new ontology hub GitHub repository.
 
@@ -690,7 +669,7 @@ def new_repo(
 
     \b
       uv sync
-      kairos-ontology init --domain customer
+      kairos-ontology init --company-domain <domain>
     """
     repo_slug = _slugify(name)
     description = desc or f"{name.replace('-', ' ').title()} domain ontologies"
@@ -719,13 +698,8 @@ def new_repo(
     print(f"🚀 Creating ontology hub repository: {repo_slug}")
     print(f"   Location: {repo_dir}\n")
 
-    # When using a template, create the remote first and clone it.
-    # Otherwise, create the local directory from scratch.
-    use_template = bool(template)
-    if use_template:
-        _create_repo_from_template(repo_dir, repo_slug, org, template, description, is_private)
-    else:
-        repo_dir.mkdir(parents=True)
+    # Create the local directory from scratch (no GitHub template).
+    repo_dir.mkdir(parents=True)
 
     # --- Scaffold the hub structure (reuse init logic) -----------------------
     hub = repo_dir / "ontology-hub"
@@ -939,11 +913,8 @@ def new_repo(
         (repo_dir / "README.md").write_text(content, encoding="utf-8")
         print("  ✓ README.md")
 
-    # update-referencemodels.ps1
-    refscript_src = _SCAFFOLD_DIR / "update-referencemodels.ps1"
-    if refscript_src.is_file():
-        shutil.copy2(refscript_src, repo_dir / "update-referencemodels.ps1")
-        print("  ✓ update-referencemodels.ps1")
+    # update-referencemodels.ps1 is no longer installed; reference models are
+    # populated by the `kairos-ontology update-refmodels` command instead.
 
     # setup-env.ps1 (venv bootstrap)
     setup_env_src = _SCAFFOLD_DIR / "setup-env.ps1"
@@ -972,13 +943,12 @@ def new_repo(
 
     # --- Git + commit -------------------------------------------
     try:
-        if not use_template:
-            subprocess.run(
-                ["git", "init", "-b", "main"],
-                cwd=repo_dir,
-                capture_output=True,
-                check=True,
-            )
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
+        )
         subprocess.run(["git", "add", "."], cwd=repo_dir, capture_output=True, check=True)
         subprocess.run(
             ["git", "commit", "-m", "Initial ontology hub scaffold"],
@@ -987,25 +957,13 @@ def new_repo(
             check=True,
         )
         print("  ✓ git repo initialised with initial commit")
-        if use_template:
-            subprocess.run(
-                ["git", "push"],
-                cwd=repo_dir,
-                capture_output=True,
-                check=True,
-            )
-            print("  ✓ Pushed scaffold to remote")
     except FileNotFoundError:
         raise click.ClickException("git not found — install git before using new-repo")
     except subprocess.CalledProcessError as exc:
         raise click.ClickException(f"git command failed: {exc.stderr.decode().strip()}")
 
-    # --- GitHub repo creation (non-template flow) ----------------------------
-    if not use_template:
-        _create_github_repo(repo_dir, repo_slug, org, description, is_private)
-
-    # --- Run smartcoding update if template provided the script ---------------
-    _run_smartcoding_update(repo_dir)
+    # --- GitHub repo creation ------------------------------------------------
+    _create_github_repo(repo_dir, repo_slug, org, description, is_private)
 
     # --- Populate reference models -------------------------------------------
     _run_reference_models_update(repo_dir, ref_models_version)
@@ -1021,7 +979,6 @@ def new_repo(
     print("\nNext steps:")
     print(f"  cd {repo_dir}")
     print("  uv sync")
-    print("  kairos-ontology init --domain <your-domain>")
 
 
 _PLATFORM_MARKER_RE = re.compile(r"^\s*# --- PLATFORM: (\S+) ---\s*$")

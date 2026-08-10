@@ -26,7 +26,6 @@ from kairos_ontology.cli.shared import (
 V5_SCAFFOLD_DIRECTORIES = {
     "model/ontologies",
     "model/shapes",
-    "referencemodels-unpacked",
     "businessdiscovery",
     "businessdiscovery/_extractions",
     "decisions",
@@ -253,7 +252,7 @@ def test_new_repo_creates_full_structure(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
 
@@ -330,7 +329,7 @@ def test_new_repo_rejects_inside_git_repo(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=fake_run):
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(subdir), "--template", ""],
+            ["new-repo", "contoso", "--path", str(subdir)],
         )
     assert result.exit_code != 0
     assert "inside an existing git repo" in result.output
@@ -350,7 +349,7 @@ def test_new_repo_allows_git_root_as_parent(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=fake_run):
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     # Should NOT be blocked by the git check (may fail later for other reasons,
     # but the exit should not mention "inside an existing git repo")
@@ -364,7 +363,7 @@ def test_new_repo_default_org_is_cnext(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
 
@@ -381,7 +380,7 @@ def test_new_repo_creates_git_and_pushes(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "test-client", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "test-client", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
 
@@ -404,7 +403,7 @@ def test_new_repo_without_domain(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "empty-client", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "empty-client", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
     repo = tmp_path / "empty-client-ontology-hub"
@@ -430,8 +429,6 @@ def test_new_repo_custom_org(tmp_path):
                 str(tmp_path),
                 "--org",
                 "Acme-Corp",
-                "--template",
-                "",
             ],
         )
     assert result.exit_code == 0, result.output
@@ -449,7 +446,7 @@ def test_new_repo_default_private(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
     gh_create_call = [
@@ -468,7 +465,7 @@ def test_new_repo_public_flag(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--public", "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path), "--public"],
         )
     assert result.exit_code == 0, result.output
     gh_create_call = [
@@ -535,7 +532,7 @@ def test_new_repo_stamps_managed_files(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
 
@@ -872,7 +869,7 @@ def test_new_repo_includes_workflow(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
     wf = tmp_path / "contoso-ontology-hub" / ".github" / "workflows" / "managed-check.yml"
@@ -939,8 +936,6 @@ def test_new_repo_ref_models_version(tmp_path):
                 str(tmp_path),
                 "--ref-models-version",
                 "v1.2.0",
-                "--template",
-                "",
             ],
         )
     assert result.exit_code == 0, result.output
@@ -974,7 +969,7 @@ def test_new_repo_workflow_no_submodules(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
     wf = tmp_path / "contoso-ontology-hub" / ".github" / "workflows" / "managed-check.yml"
@@ -983,133 +978,16 @@ def test_new_repo_workflow_no_submodules(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Template + SmartCoding
+# SmartCoding
 # ---------------------------------------------------------------------------
 
 
-def test_new_repo_template_creates_from_template(tmp_path):
-    """new-repo with default --template should use gh repo create --template --clone."""
+
+def test_new_repo_never_runs_smartcoding(tmp_path):
+    """new-repo must not run any update-smartcoding-latest.ps1 script (template removed)."""
     runner = CliRunner()
-    repo_dir = tmp_path / "contoso-ontology-hub"
-
-    def _side_effect(cmd, **kwargs):
-        # gh repo create --clone creates the directory
-        if cmd[0] == "gh" and "create" in cmd and "--clone" in cmd:
-            repo_dir.mkdir(parents=True, exist_ok=True)
-        return mock.MagicMock(returncode=0)
-
-    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect):
-        result = runner.invoke(
-            cli,
-            ["new-repo", "contoso", "--path", str(tmp_path)],
-        )
-    assert result.exit_code == 0, result.output
-    assert repo_dir.is_dir()
-    assert (repo_dir / "ontology-hub" / "model" / "ontologies").is_dir()
-
-
-def test_new_repo_template_gh_create_has_template_flag(tmp_path):
-    """new-repo with --template should pass --template and --clone to gh repo create."""
-    runner = CliRunner()
-    repo_dir = tmp_path / "contoso-ontology-hub"
-
-    def _side_effect(cmd, **kwargs):
-        if cmd[0] == "gh" and "create" in cmd and "--clone" in cmd:
-            repo_dir.mkdir(parents=True, exist_ok=True)
-        return mock.MagicMock(returncode=0)
-
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect
-    ) as mock_run:
-        result = runner.invoke(
-            cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", "my-custom-template"],
-        )
-    assert result.exit_code == 0, result.output
-
-    call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    gh_create_call = [c for c in call_args_list if "gh" in c and "create" in c]
-    assert len(gh_create_call) == 1
-    assert "--template" in gh_create_call[0]
-    assert "--clone" in gh_create_call[0]
-    assert "Cnext-eu/my-custom-template" in gh_create_call[0]
-
-
-def test_new_repo_template_no_git_init(tmp_path):
-    """new-repo with --template should NOT run git init (--clone does that)."""
-    runner = CliRunner()
-    repo_dir = tmp_path / "contoso-ontology-hub"
-
-    def _side_effect(cmd, **kwargs):
-        if cmd[0] == "gh" and "create" in cmd and "--clone" in cmd:
-            repo_dir.mkdir(parents=True, exist_ok=True)
-        return mock.MagicMock(returncode=0)
-
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect
-    ) as mock_run:
-        result = runner.invoke(
-            cli,
-            ["new-repo", "contoso", "--path", str(tmp_path)],
-        )
-    assert result.exit_code == 0, result.output
-
-    call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    assert ["git", "init", "-b", "main"] not in call_args_list
-    # Should still commit + push (at least once; ref-models update may add a second push)
-    assert ["git", "add", "."] in call_args_list
-    push_calls = [c for c in call_args_list if c == ["git", "push"]]
-    assert len(push_calls) >= 1
-
-
-def test_new_repo_template_full_org_slash(tmp_path):
-    """new-repo --template owner/repo should use the full ref as-is."""
-    runner = CliRunner()
-    repo_dir = tmp_path / "contoso-ontology-hub"
-
-    def _side_effect(cmd, **kwargs):
-        if cmd[0] == "gh" and "create" in cmd and "--clone" in cmd:
-            repo_dir.mkdir(parents=True, exist_ok=True)
-        return mock.MagicMock(returncode=0)
-
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect
-    ) as mock_run:
-        result = runner.invoke(
-            cli,
-            [
-                "new-repo",
-                "contoso",
-                "--path",
-                str(tmp_path),
-                "--template",
-                "OtherOrg/other-template",
-            ],
-        )
-    assert result.exit_code == 0, result.output
-
-    call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    gh_create_call = [c for c in call_args_list if "gh" in c and "create" in c]
-    assert "OtherOrg/other-template" in gh_create_call[0]
-
-
-def test_new_repo_smartcoding_runs_when_script_exists(tmp_path):
-    """new-repo should run update-smartcoding-latest.ps1 when present."""
-    runner = CliRunner()
-    repo_dir = tmp_path / "contoso-ontology-hub"
-
-    def _side_effect(cmd, **kwargs):
-        if cmd[0] == "gh" and "create" in cmd and "--clone" in cmd:
-            repo_dir.mkdir(parents=True, exist_ok=True)
-            # Template would provide this script
-            (repo_dir / "update-smartcoding-latest.ps1").write_text(
-                "# smartcoding", encoding="utf-8"
-            )
-        return mock.MagicMock(returncode=0)
-
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run", side_effect=_side_effect
-    ) as mock_run:
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
             ["new-repo", "contoso", "--path", str(tmp_path)],
@@ -1118,30 +996,13 @@ def test_new_repo_smartcoding_runs_when_script_exists(tmp_path):
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
     pwsh_calls = [c for c in call_args_list if c[0] == "pwsh"]
-    # Smartcoding script still runs via pwsh
-    assert any("update-smartcoding-latest.ps1" in str(c) for c in pwsh_calls)
-    # Reference models are now fetched via Python sparse-clone, NOT via pwsh script
-    assert not any("update-referencemodels.ps1" in str(c) for c in pwsh_calls)
+    assert pwsh_calls == []
+    assert not any("update-smartcoding-latest.ps1" in str(c) for c in call_args_list)
+    assert not any("update-referencemodels.ps1" in str(c) for c in call_args_list)
 
 
-def test_init_smartcoding_runs_when_script_exists(tmp_path):
-    """init should run update-smartcoding-latest.ps1 when present in cwd."""
-    runner = CliRunner()
-    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(returncode=0)
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            # Pre-create the script (as if repo was created from template)
-            Path("update-smartcoding-latest.ps1").write_text("# smartcoding", encoding="utf-8")
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-            assert result.exit_code == 0
-
-            call_args_list = [call.args[0] for call in mock_run.call_args_list]
-            pwsh_calls = [c for c in call_args_list if c[0] == "pwsh"]
-            assert len(pwsh_calls) == 1
-
-
-def test_init_smartcoding_skipped_when_no_script(tmp_path):
-    """init should NOT run smartcoding update when script is absent."""
+def test_init_never_runs_smartcoding(tmp_path):
+    """init must not run any update-smartcoding-latest.ps1 script (template removed)."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
@@ -1151,7 +1012,8 @@ def test_init_smartcoding_skipped_when_no_script(tmp_path):
 
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
             pwsh_calls = [c for c in call_args_list if c[0] == "pwsh"]
-            assert len(pwsh_calls) == 0
+            assert pwsh_calls == []
+            assert not any("update-smartcoding-latest.ps1" in str(c) for c in call_args_list)
 
 
 # ---------------------------------------------------------------------------
@@ -1231,7 +1093,7 @@ def test_new_repo_generates_hub_readme(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
 
@@ -1250,7 +1112,7 @@ def test_new_repo_generates_master_ontology(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
 
@@ -1276,8 +1138,6 @@ def test_new_repo_custom_company_domain(tmp_path):
                 str(tmp_path),
                 "--company-domain",
                 "contoso.io",
-                "--template",
-                "",
             ],
         )
     assert result.exit_code == 0, result.output
@@ -1323,7 +1183,7 @@ def test_new_repo_configures_branch_protection(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
     assert "Branch protection enabled on main" in result.output
@@ -1352,7 +1212,7 @@ def test_new_repo_skip_protection_flag(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", "", "--skip-protection"],
+            ["new-repo", "contoso", "--path", str(tmp_path), "--skip-protection"],
         )
     assert result.exit_code == 0, result.output
     assert "Branch protection" not in result.output
@@ -1377,7 +1237,7 @@ def test_new_repo_protection_failure_is_non_fatal(tmp_path):
     with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
         result = runner.invoke(
             cli,
-            ["new-repo", "contoso", "--path", str(tmp_path), "--template", ""],
+            ["new-repo", "contoso", "--path", str(tmp_path)],
         )
     assert result.exit_code == 0, result.output
     assert "Could not set branch protection" in result.output
