@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Gold Power BI output is now a complete PBIP project** (#206). The projector emitted only the
+  inner `{Domain}.SemanticModel/` TMDL, so Fabric git-integration worked but Power BI Desktop
+  could not open the result — Desktop opens a *report*, not a semantic model. It now also emits
+  the top-level `{Domain}.pbip` (artifacts pointer), plus a `{Domain}.Report/` sibling carrying
+  `.platform` (`type: Report`), `definition.pbir` binding the report to `../{Domain}.SemanticModel`
+  by relative path, and a minimal single-blank-page PBIR definition. Kairos generates the model,
+  not the visuals; the blank report exists only so the project opens with an empty canvas already
+  bound to the generated model. Page name is content-derived, so re-projection stays byte-identical.
+  **Desktop-opening is not verifiable in CI** — tests assert the wrapper's structure and that both
+  relative references resolve to emitted folders; the round-trip needs one manual open per format
+  change.
 - **Cross-repo contract tests** at `tests/test_refmodels_contract.py`, running the pattern and
   archetype loaders against a **real** `kairos-ontology-referencemodels` checkout rather than the
   synthetic fixtures every other loader test uses. Fixtures prove the loaders behave correctly
@@ -59,6 +70,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining importers.
 
 ### Fixed
+- **Fabric packaging helper corrupted Databricks semantic models** (#206). `_sanitize_tmdl` in
+  `scaffold/dataplatform/scripts/package_fabric_semantic_model.py` rewrote `" = m"` → `" = entity"`
+  on **every** line containing `partition `, to fix a Direct Lake partition older projector
+  releases mislabelled. But `= m` is the *correct* TMDL source-type keyword for a Power Query
+  partition, which is exactly what the Databricks/directQuery path emits — so the helper stamped an
+  entity-partition header over a `let … in` M body, producing an unloadable model. The rewrite is
+  now block-aware: it inspects the partition body and only converts blocks that are genuinely
+  Direct Lake shaped (bare `source` + `entityName:`), never one carrying a `source =` M expression.
+  Also anchored to end-of-line, so a partition named e.g. `= model` is no longer mangled to
+  `= entityodel`.
+- **The PBIP wrapper had two writers that had already diverged** (#206). Both the gold projector and
+  the packaging helper wrote `.platform` and `definition.pbism`, with different contents — the
+  projector emitted a bare `{"version": "4.2"}` pbism while the helper wrote one with `$schema` and
+  `settings`. The projector is now the single source of truth and emits the complete, schema-stamped
+  files; the helper only *backfills* them when absent, for hand-authored or imported models. That
+  also stops it resetting a `logicalId` Fabric has since assigned.
 - **`init` scaffolded a nested second hub when run from a content subdirectory** (#187, DD-062).
   `init` took `Path.cwd()` as the repo root unconditionally, so running it from the `ontology-hub/`
   content root of a split-layout hub fabricated an entire second hub inside it — a nested

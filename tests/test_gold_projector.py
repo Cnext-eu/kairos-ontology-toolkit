@@ -522,3 +522,69 @@ def test_ddl_tmdl_dax_erd_and_report_are_deterministic(invoice_gold):
         "fact_invoice",
         "fact_invoice_line",
     }
+
+
+def test_pbip_wrapper_is_complete_and_schema_stamped(invoice_gold):
+    """The projector owns the full PBIP wrapper, not a bare marker file.
+
+    ``package_fabric_semantic_model.py`` used to write a richer
+    ``definition.pbism`` than the projector, so the two writers disagreed on
+    the same file. The projector is now authoritative.
+    """
+    prefix = "invoice/Invoice.SemanticModel"
+
+    platform = json.loads(invoice_gold[f"{prefix}/.platform"])
+    assert platform["metadata"] == {"displayName": "Invoice", "type": "SemanticModel"}
+    assert platform["config"]["version"] == "2.0"
+    assert "gitIntegration/platformProperties" in platform["$schema"]
+
+    pbism = json.loads(invoice_gold[f"{prefix}/definition.pbism"])
+    assert pbism["version"] == "4.2"
+    assert pbism["settings"] == {}
+    assert "semanticModel/definitionProperties" in pbism["$schema"]
+
+    assert invoice_gold[f"{prefix}/definition/database.tmdl"] == (
+        "database\n\tcompatibilityLevel: 1604\n"
+    )
+
+
+def test_pbip_project_and_report_wrapper_resolve_to_the_local_model(invoice_gold):
+    """Desktop opens a report, so the project points at .Report which binds the model.
+
+    Asserts the two relative references actually line up with emitted folders —
+    a wrapper whose paths dangle is worse than no wrapper.
+    """
+    pbip = json.loads(invoice_gold["invoice/Invoice.pbip"])
+    assert pbip["version"] == "1.0"
+    assert pbip["artifacts"] == [{"report": {"path": "Invoice.Report"}}]
+
+    # The referenced .Report folder exists.
+    report_dir = f"invoice/{pbip['artifacts'][0]['report']['path']}"
+    assert f"{report_dir}/definition.pbir" in invoice_gold
+    assert json.loads(invoice_gold[f"{report_dir}/.platform"])["metadata"]["type"] == "Report"
+
+    # …and its dataset reference resolves back to the emitted SemanticModel.
+    pbir = json.loads(invoice_gold[f"{report_dir}/definition.pbir"])
+    target = pbir["datasetReference"]["byPath"]["path"]
+    assert target == "../Invoice.SemanticModel"
+    resolved = f"invoice/{target.removeprefix('../')}"
+    assert f"{resolved}/definition.pbism" in invoice_gold
+    assert f"{resolved}/definition/model.tmdl" in invoice_gold
+
+
+def test_blank_report_has_exactly_one_page_and_is_deterministic(invoice_gold):
+    """Kairos generates the model, not visuals — the report is an empty bound canvas."""
+    report_dir = "invoice/Invoice.Report"
+    pages = json.loads(invoice_gold[f"{report_dir}/definition/pages/pages.json"])
+    assert len(pages["pageOrder"]) == 1
+    page_name = pages["pageOrder"][0]
+    assert pages["activePageName"] == page_name
+
+    # The page folder named in pages.json is the one actually emitted.
+    page = json.loads(invoice_gold[f"{report_dir}/definition/pages/{page_name}/page.json"])
+    assert page["name"] == page_name
+
+    page_files = [p for p in invoice_gold if p.startswith(f"{report_dir}/definition/pages/")]
+    assert len(page_files) == 2  # pages.json + the single page.json
+
+    assert json.loads(invoice_gold[f"{report_dir}/definition/version.json"])["version"] == "4.0"

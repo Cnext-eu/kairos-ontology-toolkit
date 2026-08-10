@@ -20,6 +20,28 @@ from .gold_specs import (
 )
 
 
+# PBIP wrapper schemas. The projector is the single source of truth for these
+# files; ``scaffold/dataplatform/scripts/package_fabric_semantic_model.py`` only
+# backfills them for hand-authored or imported models and must not overwrite
+# what is emitted here.
+_PLATFORM_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/"
+    "platformProperties/2.0.0/schema.json"
+)
+_PBISM_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/item/semanticModel/"
+    "definitionProperties/1.0.0/schema.json"
+)
+_PBIP_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/item/pbipProperties/1.0.0/schema.json"
+)
+_PBIR_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/item/report/"
+    "definitionProperties/1.0.0/schema.json"
+)
+_DEFAULT_LOGICAL_ID = "00000000-0000-0000-0000-000000000000"
+
+
 def _json(payload: object) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
@@ -351,20 +373,81 @@ def _erd(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _platform(display_name: str) -> str:
+def _platform(display_name: str, *, artifact_type: str = "SemanticModel") -> str:
     return _json(
         {
-            "$schema": (
-                "https://developer.microsoft.com/json-schemas/fabric/"
-                "gitIntegration/platformProperties/2.0.0/schema.json"
-            ),
+            "$schema": _PLATFORM_SCHEMA,
             "config": {
-                "logicalId": "00000000-0000-0000-0000-000000000000",
+                "logicalId": _DEFAULT_LOGICAL_ID,
                 "version": "2.0",
             },
-            "metadata": {"displayName": display_name, "type": "SemanticModel"},
+            "metadata": {"displayName": display_name, "type": artifact_type},
         }
     )
+
+
+def _pbism() -> str:
+    """Semantic-model definition marker (``definition.pbism``)."""
+    return _json({"$schema": _PBISM_SCHEMA, "version": "4.2", "settings": {}})
+
+
+def _pbip(model_name: str) -> str:
+    """Top-level Power BI project file.
+
+    Power BI Desktop opens a *report*, not a semantic model, so the project
+    file points at the sibling ``.Report`` folder; that report in turn binds to
+    the semantic model by relative path (see :func:`_pbir`).
+    """
+    return _json(
+        {
+            "$schema": _PBIP_SCHEMA,
+            "version": "1.0",
+            "artifacts": [{"report": {"path": f"{model_name}.Report"}}],
+            "settings": {"enableAutoRecovery": True},
+        }
+    )
+
+
+def _pbir(model_name: str) -> str:
+    """Report definition properties binding the report to the local model."""
+    return _json(
+        {
+            "$schema": _PBIR_SCHEMA,
+            "version": "4.0",
+            "datasetReference": {"byPath": {"path": f"../{model_name}.SemanticModel"}},
+        }
+    )
+
+
+def _blank_report(model_name: str) -> dict[str, str]:
+    """A single-blank-page PBIR report definition.
+
+    Kairos generates the semantic model, not the visuals — this exists only so
+    the project is openable, giving an author an empty canvas already bound to
+    the generated model. Deterministic page name so re-projection is a no-op.
+    """
+    page = _guid(f"{model_name}.Report/page")
+    return {
+        "definition/report.json": _json(
+            {
+                "themeCollection": {"baseTheme": {"name": "CY24SU10"}},
+                "layoutOptimization": "None",
+            }
+        ),
+        "definition/version.json": _json({"version": "4.0"}),
+        "definition/pages/pages.json": _json(
+            {"pageOrder": [page], "activePageName": page},
+        ),
+        f"definition/pages/{page}/page.json": _json(
+            {
+                "name": page,
+                "displayName": "Page 1",
+                "displayOption": "FitToPage",
+                "height": 720,
+                "width": 1280,
+            }
+        ),
+    }
 
 
 def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
@@ -755,6 +838,7 @@ def render_powerbi_artifacts(
     model_name = "".join(item.capitalize() for item in domain.replace("-", "_").split("_"))
     prefix = f"{domain}/{model_name}.SemanticModel"
     definition = f"{prefix}/definition"
+    report = f"{domain}/{model_name}.Report"
     physical_by_name = {item.name: item for item in physical.tables}
     artifacts: dict[str, str] = {
         physical.ddl_artifact_path: _ddl(spec, physical),
@@ -766,8 +850,11 @@ def render_powerbi_artifacts(
                 silver_parity=silver_parity,
             )
         ),
+        f"{domain}/{model_name}.pbip": _pbip(model_name),
+        f"{report}/.platform": _platform(model_name, artifact_type="Report"),
+        f"{report}/definition.pbir": _pbir(model_name),
         f"{prefix}/.platform": _platform(model_name),
-        f"{prefix}/definition.pbism": _json({"version": "4.2"}),
+        f"{prefix}/definition.pbism": _pbism(),
         f"{definition}/database.tmdl": "database\n\tcompatibilityLevel: 1604\n",
         f"{definition}/model.tmdl": _model_tmdl(spec, physical),
         (f"{definition}/relationships/relationships.tmdl"): _relationships_tmdl(spec),
@@ -796,6 +883,8 @@ def render_powerbi_artifacts(
     perspectives = _perspectives_tmdl(spec)
     if perspectives:
         artifacts[f"{definition}/perspectives/perspectives.tmdl"] = perspectives
+    for path, content in _blank_report(model_name).items():
+        artifacts[f"{report}/{path}"] = content
     dax = _dax(spec)
     if dax:
         artifacts[f"{domain}/measures/{domain}-measures.dax"] = dax

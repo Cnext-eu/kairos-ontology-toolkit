@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 
@@ -24,14 +25,45 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+_PARTITION_M_RE = re.compile(r"^(?P<indent>\s*)partition\s+(?P<name>.+?)\s*=\s*m\s*$")
+_M_EXPRESSION_RE = re.compile(r"^\s*source\s*=")
+
+
+def _is_m_partition(lines: list[str], start: int) -> bool:
+    """Return True when the partition block opening at *start* is a real M partition.
+
+    A Power Query / M partition carries an ``source =`` expression body (``= m``
+    is the correct TMDL source-type keyword for it). A Direct Lake partition
+    instead carries a bare ``source`` block with ``entityName:``, and must be
+    declared ``= entity`` — that is the only case worth rewriting.
+    """
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    for line in lines[start + 1 :]:
+        if not line.strip():
+            continue
+        # Dedent back to (or past) the partition keyword ends the block.
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        if _M_EXPRESSION_RE.match(line):
+            return True
+    return False
+
+
 def _sanitize_tmdl(path: Path) -> None:
     lines = path.read_text(encoding="utf-8").splitlines()
     out: list[str] = []
-    for line in lines:
+    for index, line in enumerate(lines):
         if line.lstrip().startswith("///"):
             continue
-        # Fabric parser does not accept Kairos shorthand "partition <name> = m".
-        out.append(line.replace(" = m", " = entity") if "partition " in line else line)
+        # Direct Lake partitions must be declared "= entity", not the "= m"
+        # shorthand older projector releases emitted. Never touch a genuine M
+        # partition: "= m" is correct there, and rewriting it would leave an
+        # entity-partition header over a Power Query "let ... in" body.
+        match = _PARTITION_M_RE.match(line)
+        if match and not _is_m_partition(lines, index):
+            out.append(f"{match['indent']}partition {match['name']} = entity")
+            continue
+        out.append(line)
 
     while out and not out[0].strip():
         out = out[1:]
@@ -52,29 +84,37 @@ def package_semantic_model(root: Path) -> int:
 
         display_name = model_dir.name.removesuffix(".SemanticModel")
 
-        _write_json(
-            model_dir / ".platform",
-            {
-                "$schema": _PLATFORM_SCHEMA,
-                "metadata": {
-                    "type": "SemanticModel",
-                    "displayName": display_name,
+        # Backfill only. The Kairos gold projector already emits a complete
+        # wrapper, and overwriting would (a) re-diverge the two writers and
+        # (b) reset a logicalId that Fabric has since assigned. Hand-authored
+        # and imported models still get one written for them.
+        platform = model_dir / ".platform"
+        if not platform.exists():
+            _write_json(
+                platform,
+                {
+                    "$schema": _PLATFORM_SCHEMA,
+                    "metadata": {
+                        "type": "SemanticModel",
+                        "displayName": display_name,
+                    },
+                    "config": {
+                        "version": "2.0",
+                        "logicalId": _DEFAULT_LOGICAL_ID,
+                    },
                 },
-                "config": {
-                    "version": "2.0",
-                    "logicalId": _DEFAULT_LOGICAL_ID,
-                },
-            },
-        )
+            )
 
-        _write_json(
-            model_dir / "definition.pbism",
-            {
-                "$schema": _PBISM_SCHEMA,
-                "version": "4.2",
-                "settings": {},
-            },
-        )
+        pbism = model_dir / "definition.pbism"
+        if not pbism.exists():
+            _write_json(
+                pbism,
+                {
+                    "$schema": _PBISM_SCHEMA,
+                    "version": "4.2",
+                    "settings": {},
+                },
+            )
 
         db_tmdl = definition_dir / "database.tmdl"
         if not db_tmdl.exists():
