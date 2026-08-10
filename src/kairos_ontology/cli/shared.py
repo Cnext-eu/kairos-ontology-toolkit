@@ -738,7 +738,6 @@ _MANAGED_MARKER_TEMPLATE = "<!-- kairos-ontology-toolkit:managed v{version} -->"
 _V5_HUB_DIRECTORIES = (
     "model/ontologies",
     "model/shapes",
-    "referencemodels-unpacked",
     "businessdiscovery",
     "businessdiscovery/_extractions",
     "decisions",
@@ -769,6 +768,9 @@ _V5_OUTPUT_DIRECTORIES = (
 # remove these files, then prune only directories that are empty; user content
 # in any retired directory is therefore preserved.
 _RETIRED_MANAGED_SCAFFOLD_FILES = {
+    "ontology-hub/update-referencemodels.ps1": (
+        "61b4f1c8584365c1b1805afa8eeb7ef958f5ae7a222fa1a07432cc85b499b25e",
+    ),
     "ontology-hub/integration/sources/custom-transformations/README.md": (
         "5107ce76e390542b1699fa5e98faffde59eb07be12254c4bafe54ca91d9907b2",
     ),
@@ -822,6 +824,7 @@ _RETIRED_MANAGED_SCAFFOLD_FILES = {
 }
 
 _RETIRED_SCAFFOLD_DIRECTORIES = (
+    "ontology-hub/referencemodels-unpacked",
     "ontology-hub/.kairos-state/phases/dbt-transformation",
     "ontology-hub/.kairos-state/phases/mapping",
     "ontology-hub/.kairos-state/phases/domain",
@@ -1388,84 +1391,6 @@ def _slugify(name: str) -> str:
     if not slug.endswith("-ontology-hub"):
         slug = f"{slug}-ontology-hub"
     return slug
-
-
-def _create_repo_from_template(
-    repo_dir: Path,
-    repo_slug: str,
-    org: str,
-    template: str,
-    description: str,
-    is_private: bool,
-):
-    """Create a GitHub repo from a template, then clone it to *repo_dir*."""
-    visibility = "--private" if is_private else "--public"
-    full_name = f"{org}/{repo_slug}"
-    template_ref = template if "/" in template else f"{org}/{template}"
-
-    try:
-        subprocess.run(["gh", "--version"], capture_output=True, check=True)
-    except FileNotFoundError:
-        raise click.ClickException(
-            "gh CLI is required for --template. " "Install from https://cli.github.com"
-        )
-
-    # --clone tells gh to clone the new repo into the current directory
-    # after creating it on GitHub from the template.
-    try:
-        subprocess.run(
-            [
-                "gh",
-                "repo",
-                "create",
-                full_name,
-                "--template",
-                template_ref,
-                visibility,
-                "--description",
-                description,
-                "--clone",
-            ],
-            cwd=repo_dir.parent,
-            capture_output=True,
-            check=True,
-        )
-        print(f"  ✓ GitHub repo created from template {template_ref}")
-        print(f"  ✓ Cloned {full_name} to {repo_dir.name}")
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode().strip() if exc.stderr else str(exc)
-        raise click.ClickException(f"Failed to create repo from template: {stderr}")
-
-
-_SMARTCODING_SCRIPT = "update-smartcoding-latest.ps1"
-
-
-def _run_smartcoding_update(repo_dir: Path):
-    """Run update-smartcoding-latest.ps1 if it exists in *repo_dir*."""
-    script = repo_dir / _SMARTCODING_SCRIPT
-    if not script.is_file():
-        return
-
-    print(f"  ▶ Running {_SMARTCODING_SCRIPT} …")
-    try:
-        subprocess.run(
-            [
-                "pwsh",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script),
-                "-SkipSelfUpdateCheck",
-            ],
-            cwd=repo_dir,
-            check=True,
-        )
-        print("  ✓ SmartCoding updated to latest")
-    except FileNotFoundError:
-        print(f"  ⚠  pwsh not found — run {_SMARTCODING_SCRIPT} manually")
-    except subprocess.CalledProcessError:
-        print(f"  ⚠  {_SMARTCODING_SCRIPT} failed — run it manually")
 
 
 _REFMODELS_REMOTE = "https://github.com/Cnext-eu/kairos-ontology-referencemodels.git"
