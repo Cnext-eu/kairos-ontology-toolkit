@@ -31,6 +31,7 @@ V5_SCAFFOLD_DIRECTORIES = {
     "decisions",
     "integration/bindings",
     "integration/discovery",
+    "integration/discovery/bi",
     "integration/sources",
     "integration/transforms/dbt/models",
     "integration/transforms/dbt/macros",

@@ -27,8 +27,8 @@ from .shared import (
     "--output",
     "-o",
     type=click.Path(),
-    default="integration/sources/powerbi",
-    help="Output directory (default: integration/sources/powerbi/)",
+    default="integration/discovery/bi",
+    help="Output directory (default: integration/discovery/bi/)",
 )
 def import_tmdl(source, output):
     """Import and inventory TMDL/PBIP files for ontology modeling.
@@ -39,6 +39,10 @@ def import_tmdl(source, output):
     \b
     - An Engineering Pack (markdown) with table/column/measure inventory
     - A Concept Mapping template (YAML) for reference model alignment
+
+    Power BI/TMDL is downstream **demand evidence**, not a canonical input
+    source, so output lands under ``integration/discovery/bi/`` (alongside the
+    other demand/discovery artifacts) — never under ``integration/sources/``.
     """
     from ..core.import_tmdl import run_import_tmdl
 

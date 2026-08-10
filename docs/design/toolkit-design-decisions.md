@@ -198,6 +198,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-144](#dd-144-accelerator-direct-binding-resolution-and-the-machine-managed-domain-stub) | Accelerator-Direct Binding Resolution and the Machine-Managed Domain Stub | Accepted | 2026-08-09 |
 | [DD-145](#dd-145-local-extension-ontology-and-shacl-derivation-narrowed-cr-2) | Local-Extension Ontology and SHACL Derivation (Narrowed CR-2) | Accepted | 2026-08-09 |
 | [DD-146](#dd-146-pattern-library-as-an-advisory-authoring-time-consumer) | Pattern library as an advisory, authoring-time consumer | Accepted | 2026-08-10 |
+| [DD-147](#dd-147-power-bitmdl-analysis-is-demand-evidence-under-integrationdiscoverybi) | Power BI/TMDL analysis is demand evidence under integration/discovery/bi | Accepted | 2026-08-10 |
 
 ---
 
@@ -10074,3 +10075,43 @@ Patterns are consumed as **advisory, authoring-time craft owned by
   pattern is unusable until the reference-models repo fixes the file. Tracked on #262.
 
 ---
+
+## DD-147: Power BI/TMDL analysis is demand evidence under integration/discovery/bi
+
+**Status:** Accepted
+**Date:** 2026-08-10
+
+### Context
+
+`import-tmdl` parses Power BI PBIP/TMDL semantic models into an Engineering Pack and a
+Concept Mapping template. This is **downstream demand evidence** — how the business already
+reports on its data — and `design-landscape` consumes it strictly as an advisory `bi_weight`
+signal that may only re-rank the `demanded-but-unbound` backlog, never as a canonical input
+source or a class-classification input (DD's C1 guard).
+
+Despite that, the command's default output was `integration/sources/powerbi/`, physically
+placing BI evidence under `integration/sources/` where authored source vocabularies live.
+That location invited treating a Power BI model as a source system and binding it as a source
+relation in an `EntityBinding`, contradicting the intended demand-evidence semantics.
+
+### Decision
+
+Relocate Power BI/TMDL analysis to the demand/discovery tree:
+
+- `import-tmdl --output` defaults to **`integration/discovery/bi/`** (a sibling of the DD-090
+  `core-concepts-conformance.yaml` demand artifact), never `integration/sources/`.
+- `design-landscape` reads concept-mapping BI weight from `integration/discovery/bi/**` first,
+  and still reads the legacy `integration/sources/**` location for back-compat.
+- `draft-model-report --tmdl-dir` auto-detects `integration/discovery/bi/`, falling back to the
+  legacy `integration/sources/powerbi/` when present.
+- `init`/`new-repo` scaffold the folder with a README stating BI/TMDL is demand evidence, not a
+  source.
+- The `kairos-design-source` import skill offers a Power BI/TMDL import step **after** sources,
+  explicitly as demand evidence landing under `integration/discovery/bi/` — never a source.
+
+### Consequences
+
+- Additive and backward-compatible: existing hubs with mappings under
+  `integration/sources/powerbi/` continue to work via the legacy read/fallback paths.
+- The physical layout now matches the semantics: a Power BI model can no longer be mistaken for
+  an authored source relation.

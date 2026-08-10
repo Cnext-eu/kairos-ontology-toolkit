@@ -933,7 +933,7 @@ def check_inventory_cmd(
     "--tmdl-dir",
     type=click.Path(),
     default=None,
-    help="Path to import-tmdl output (default: integration/sources/powerbi/).",
+    help="Path to import-tmdl output (default: integration/discovery/bi/).",
 )
 @click.option(
     "--glossary-dir",
@@ -991,7 +991,14 @@ def draft_model_report_cmd(
 
     analysis_path = Path(analysis_dir) if analysis_dir else _autodetect_analysis_dir(cwd, hub_root)
     mappings_path = Path(mappings) if mappings else base / "model" / "mappings"
-    tmdl_path = Path(tmdl_dir) if tmdl_dir else base / "integration" / "sources" / "powerbi"
+    if tmdl_dir:
+        tmdl_path = Path(tmdl_dir)
+    else:
+        tmdl_path = base / "integration" / "discovery" / "bi"
+        if not tmdl_path.is_dir():
+            legacy_tmdl_path = base / "integration" / "sources" / "powerbi"
+            if legacy_tmdl_path.is_dir():
+                tmdl_path = legacy_tmdl_path
     glossary_path = Path(glossary_dir) if glossary_dir else base / "businessdiscovery"
     contract_path = Path(contract) if contract else None
     if data_product and not contract_path:
