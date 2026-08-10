@@ -106,6 +106,12 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir):
 @click.option(
     "--all", "validate_all", is_flag=True, help="Validate all: syntax + SHACL + consistency"
 )
+@click.option(
+    "--domain",
+    default=None,
+    help="Data domain to resolve the accelerator against (parity with compile). "
+    "When omitted, domains are inferred from the ontology file stems.",
+)
 @click.option("--syntax", is_flag=True, help="Validate syntax only")
 @click.option("--shacl", is_flag=True, help="Validate SHACL only")
 @click.option("--consistency", is_flag=True, help="Validate consistency only")
@@ -152,6 +158,7 @@ def validate(
     accelerator,
     validate_all,
     syntax,
+    domain,
     shacl,
     consistency,
     gdpr,
@@ -197,7 +204,7 @@ def validate(
             explicit=accelerator,
             hub_root=hub_root,
             ref_models_dir=ref_models_path,
-            domain_hint=_ontology_domain_hints(ontologies_path),
+            domain_hint=[domain] if domain else _ontology_domain_hints(ontologies_path),
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc

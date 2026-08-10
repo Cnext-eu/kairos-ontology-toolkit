@@ -72,6 +72,10 @@ $env:KAIROS_SKILL_CONTEXT = "1"
 uv run kairos-ontology check-inventory --domains <active-domain> --explain-scope
 ```
 
+If the hub installs more than one accelerator pack and pins none, this aborts with
+`Accelerator selection is ambiguous`; pass `--accelerator <pack>` or pin
+`[tool.kairos].accelerator` in the hub `pyproject.toml` (see **kairos-setup-config**).
+
 This is the only freshness authority for selected reference inventories. Missing
 or stale in-scope inventories are blocking: **STOP**. Unrelated repository-wide
 failures are non-blocking when the scoped command exits zero. Report the
@@ -156,7 +160,10 @@ rules.
 
 Before applying a patch, run `kairos-ontology validate --syntax` (or the
 hub's effective `validate` invocation) against the candidate file and treat
-its `syntax` and `naming` findings as authoritative. The CLI deterministically
+its `syntax` and `naming` findings as authoritative. Pass the active domain with
+`validate --syntax --domain <active-domain>` (parity with `compile`, resolves the
+accelerator); on a multi-pack hub that pins no accelerator, add `--accelerator
+<pack>` (same ambiguity as Gate 0). The CLI deterministically
 enforces: one `owl:Ontology` declaration with `rdfs:label` and
 `owl:versionInfo`; every class has `rdfs:label` and `rdfs:comment`; every
 property has `rdfs:label`, `rdfs:domain`, and `rdfs:range`; PascalCase classes

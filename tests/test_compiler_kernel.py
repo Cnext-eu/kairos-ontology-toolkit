@@ -180,7 +180,7 @@ def test_compile_domain_collects_binding_error_without_writing(tmp_path):
 def test_missing_scope_is_a_diagnostic(tmp_path):
     result = compile_domain(tmp_path, "missing")
     assert not result.succeeded
-    assert result.diagnostics.items[0].code == "safety.source-unresolved"
+    assert result.diagnostics.items[0].code == "scope.no-bindings-authored"
 
 
 def test_invalid_entity_is_blocked_while_safe_entity_still_plans(tmp_path):
@@ -230,7 +230,7 @@ def test_empty_selected_domain_is_non_emittable(tmp_path):
     result = compile_domain(hub, "party")
     assert not result.succeeded
     assert not result.can_emit
-    assert result.diagnostics.items[0].code == "safety.source-unresolved"
+    assert result.diagnostics.items[0].code == "scope.no-bindings-authored"
 
 
 def test_all_malformed_selected_bindings_are_non_emittable(tmp_path):

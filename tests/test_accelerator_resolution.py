@@ -262,7 +262,7 @@ class TestScopedInventoryWording:
         result = runner.invoke(cli, ["check-inventory", "--domains", "unregistered-domain"])
         assert result.exit_code == 0, result.output
         assert "(none matched)" not in result.output
-        assert "no profile found" in result.output
+        assert "no reference-model profile" in result.output
 
     def test_accelerator_diagnostics_include_resolved_path(self, tmp_path, monkeypatch):
         self._build_hub(tmp_path)
@@ -361,6 +361,30 @@ class TestCrossCommandResolverParity:
         project_result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
         assert project_result.exit_code == 0, project_result.output
         assert project_calls["projection"]["accelerator"] == "logistics"
+
+    def test_validate_domain_flag_drives_accelerator_resolution(self, tmp_path, monkeypatch):
+        """``validate --domain`` resolves the accelerator by domain ownership even when
+        the ontology file stem is not itself an owned domain (parity with compile)."""
+        hub = self._build_hub(tmp_path)
+        # Rename the ontology so its stem owns no domain: bare inference is ambiguous.
+        ont = hub / "model" / "ontologies"
+        (ont / "booking.ttl").rename(ont / "misc.ttl")
+        validate_calls: dict[str, dict] = {}
+        monkeypatch.setattr(
+            validation_commands,
+            "run_validation",
+            lambda **kw: validate_calls.update(validation=kw),
+        )
+        monkeypatch.setattr(validation_commands, "run_gdpr_validation", lambda **kw: None)
+        monkeypatch.chdir(hub)
+
+        ambiguous = CliRunner().invoke(cli, ["validate", "--syntax"])
+        assert ambiguous.exit_code != 0
+        assert "ambiguous" in ambiguous.output.lower()
+
+        scoped = CliRunner().invoke(cli, ["validate", "--syntax", "--domain", "booking"])
+        assert scoped.exit_code == 0, scoped.output
+        assert validate_calls["validation"]["accelerator"] == "logistics"
 
     def test_check_inventory_infers_same_accelerator(self, tmp_path, monkeypatch):
         hub = self._build_hub(tmp_path)

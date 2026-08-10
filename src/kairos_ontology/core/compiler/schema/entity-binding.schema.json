@@ -386,7 +386,7 @@
         "name": {"$ref": "#/definitions/nonEmptyString"},
         "expression": {},
         "type": {
-          "enum": ["string", "int32", "int64", "decimal", "boolean", "date", "timestamp"]
+          "enum": ["string", "boolean", "int16", "int32", "int64", "decimal", "float64", "date", "time", "timestamp", "binary", "json"]
         },
         "nullable": {"type": "boolean"},
         "purpose": {"enum": ["identity", "quality", "relationship"]}

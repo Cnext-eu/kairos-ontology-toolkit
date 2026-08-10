@@ -138,6 +138,36 @@ def test_technical_field_type_is_a_closed_enum(bad_type: str) -> None:
     assert "binding.schema" in _codes(excinfo.value)
 
 
+def test_technical_field_type_enum_matches_canonical_type_kind() -> None:
+    """The schema's ``technicalFields[].type`` enum must equal the full
+    ``CanonicalTypeKind`` vocabulary so the two cannot drift again (DD-107/DD-139).
+
+    Previously the enum listed only 7 of the 12 canonical kinds, so tokens the
+    normalizer accepts (e.g. ``float64``) were rejected by the schema.
+    """
+    from kairos_ontology.core.compiler.bindings import _load_schema
+    from kairos_ontology.core.projections.dbt.policy_normalize import CanonicalTypeKind
+
+    schema = _load_schema()
+    enum = set(schema["definitions"]["technicalField"]["properties"]["type"]["enum"])
+    assert enum == {kind.value for kind in CanonicalTypeKind}
+
+
+@pytest.mark.parametrize("token", ["int16", "float64", "time", "binary", "json"])
+def test_technical_field_accepts_previously_missing_canonical_tokens(token: str) -> None:
+    """Canonical kinds that the earlier 7-token enum omitted now parse."""
+    doc = VALID + textwrap.dedent(f"""\
+        technicalFields:
+          - name: account_ref
+            expression: account_id
+            type: {token}
+            nullable: true
+            purpose: relationship
+        """)
+    binding = load_entity_binding(doc, path="technical.binding.yaml")
+    assert binding.technical_fields[0].type == token
+
+
 @pytest.mark.parametrize("bad_purpose", ["technical", "join", ""])
 def test_technical_field_purpose_is_a_closed_enum(bad_purpose: str) -> None:
     doc = VALID + textwrap.dedent(f"""\

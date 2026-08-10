@@ -9776,9 +9776,14 @@ not "real meaning," it's restatement).
 
 A second, harder constraint surfaced during implementation review that the original CR text
 did not account for: `resolve_scope` (`kernel.py`) unconditionally requires
-`model/ontologies/<domain>.ttl` to exist (`if not binding_paths or not ontology_path.is_file():
-raise CompileError(..., code="safety.source-unresolved")`) before compilation can even begin
-— independent of whether any binding in that domain needs a local class at all. This means a
+`model/ontologies/<domain>.ttl` to exist (`if not binding_paths or not ontology_path.is_file():`)
+before compilation can even begin — independent of whether any binding in that domain needs a
+local class at all. The two arms of that guard now emit **distinct** codes: a missing ontology
+file raises `safety.source-unresolved`, while the ontology-only waypoint (a valid slice exists
+but no `EntityBinding` is authored yet, and likewise the case where no authored binding selects
+the domain) raises `scope.no-bindings-authored`. Both remain **blocking** (an un-emittable hub
+still exits non-zero), but the distinct code lets a CI gate tell an expected early authoring
+stage apart from a genuinely broken source, without weakening the guardrail. This means a
 domain can never be truly file-less; the earlier working assumption in this initiative's
 design notes (that a fully accelerator-direct domain could exist with *zero*
 `model/ontologies/<domain>.ttl` file, per DD-137's `binding_only_domains` observation) does

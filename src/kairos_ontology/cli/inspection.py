@@ -694,6 +694,15 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
     default=False,
     help="Report problems but always exit 0 (never block).",
 )
+@click.option(
+    "--verbose",
+    "--all",
+    "verbose",
+    is_flag=True,
+    default=False,
+    help="With --domains, also list every out-of-scope module inventory instead of "
+    "collapsing them to a one-line, non-blocking summary.",
+)
 def check_inventory_cmd(
     ontology_dir,
     ref_models_dir,
@@ -703,6 +712,7 @@ def check_inventory_cmd(
     explain_scope,
     strict,
     warn_only,
+    verbose,
 ):
     """Verify that materialized inventories exist and are up to date (DD-047).
 
@@ -785,23 +795,26 @@ def check_inventory_cmd(
         provenance = _format_refmodels_fetch_provenance(ref_path)
         if provenance:
             click.echo(f"   Reference models provenance: {provenance}")
+    # F5: parse the domain filter early so the global missing/stale wall can be
+    # collapsed when scoping is active (it is reclassified as out-of-scope below).
+    filter_list = None
+    if domains_filter:
+        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
+    collapse_out_of_scope = bool(filter_list) and not verbose
+
     for stem in report.ok:
         click.echo(f"   ✓ {stem}: up to date")
-    for stem in report.missing:
-        click.echo(f"   ❌ {stem}: MISSING inventory", err=True)
-    for stem in report.stale:
-        click.echo(f"   ❌ {stem}: STALE (source changed since generation)", err=True)
+    if not collapse_out_of_scope:
+        for stem in report.missing:
+            click.echo(f"   ❌ {stem}: MISSING inventory", err=True)
+        for stem in report.stale:
+            click.echo(f"   ❌ {stem}: STALE (source changed since generation)", err=True)
     for stem in report.unverifiable:
         click.echo(f"   ⚠ {stem}: cannot verify freshness (no stored hash — regenerate)")
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan inventory (no matching source TTL)")
     for diagnostic in report.migration_required:
         click.echo(f"   ❌ MIGRATION REQUIRED: {diagnostic}", err=True)
-
-    # F5: scope the blocking decision to the selected domains when --domains is set.
-    filter_list = None
-    if domains_filter:
-        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
 
     scope = None
     if filter_list:
@@ -846,19 +859,25 @@ def check_inventory_cmd(
             elif status == DIRECT_PROFILE:
                 label = "matched direct inventory"
             else:
-                label = "no profile found"
+                label = "no reference-model profile — no in-scope inventories to check"
             key_list = ", ".join(sorted(keys)) if keys else "(none)"
             click.echo(f"   • {domain}: {label} — inventories: {key_list}")
+        out_of_scope = sorted((set(report.missing) | set(report.stale)) - scope.keys)
         if explain_scope:
             for domain in scope.domains:
                 keys = sorted(keys_by_domain.get(domain, set()))
                 click.echo(f"   • {domain}: {', '.join(keys) if keys else '(no inventories)'}")
-            out_of_scope = sorted((set(report.missing) | set(report.stale)) - scope.keys)
             if out_of_scope:
                 click.echo(
                     f"   ↪ out-of-scope global failures (not blocking here): "
                     f"{', '.join(out_of_scope)}"
                 )
+        elif collapse_out_of_scope and out_of_scope:
+            click.echo(
+                f"   ○ {len(out_of_scope)} out-of-scope module "
+                f"{'inventory' if len(out_of_scope) == 1 else 'inventories'} "
+                "not checked (not blocking; pass --verbose or --explain-scope to list)."
+            )
         for stem in scope.missing:
             click.echo(f"   ❌ {stem}: MISSING (in scope)", err=True)
         for stem in scope.stale:
