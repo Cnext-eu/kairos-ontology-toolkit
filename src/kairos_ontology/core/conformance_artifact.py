@@ -394,20 +394,6 @@ def read_artifact(path: Path) -> dict[str, Any]:
     return data
 
 
-def load_validated_artifact(
-    path: Path, outcome_codes: list[str], valid_tiers: tuple[str, ...] | None = None
-) -> dict[str, Any]:
-    """Read and validate *path*, raising one explicit error for all findings."""
-    artifact = read_artifact(path)
-    errors = validate_artifact(artifact, outcome_codes, valid_tiers)
-    if errors:
-        details = "\n".join(f"- {error}" for error in errors)
-        raise ConformanceArtifactError(
-            f"Invalid conformance artifact {Path(path)} ({len(errors)} error(s)):\n{details}"
-        )
-    return artifact
-
-
 def open_questions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     """Return unresolved fleet-mode concept judgments (DD-148).
 

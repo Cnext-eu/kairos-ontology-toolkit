@@ -1201,6 +1201,7 @@ def _resolve_semantic_input(
     return resolved, catalog_path
 
 
+@click.command(name="extract-schema")
 @click.option(
     "--profile", "profile_name", required=True, help="dbt profile name (from profiles.yml)."
 )

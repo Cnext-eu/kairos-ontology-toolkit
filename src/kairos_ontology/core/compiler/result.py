@@ -107,10 +107,6 @@ class CompileDiagnostics:
         """Return True when any diagnostic is an error."""
         return any(item.severity is DiagnosticSeverity.ERROR for item in self.items)
 
-    def with_added(self, *diagnostics: CompileDiagnostic) -> "CompileDiagnostics":
-        """Return a new stream with the given diagnostics appended."""
-        return CompileDiagnostics(items=(*self.items, *diagnostics))
-
 
 @dataclass(frozen=True, slots=True)
 class ExplainLoad:

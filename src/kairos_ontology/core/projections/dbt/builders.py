@@ -19,7 +19,6 @@ from .specs import (
     ModelIdentity,
     ModelOutcome,
     OntologyMetadataSpec,
-    Scalar,
     SchemaModelSpec,
     SilverModelOutcome,
     SilverModelSpec,
@@ -368,8 +367,3 @@ def schema_model_from_context(context: Mapping[str, object]) -> SchemaModelSpec:
         ontology_iri=str(context.get("ontology_iri") or ""),
         ontology_version=str(context.get("ontology_version") or ""),
     )
-
-
-def scalar(value: Scalar) -> Scalar:
-    """Identity helper that keeps scalar typing explicit at call sites."""
-    return value

@@ -577,18 +577,6 @@ def _canonical_type(fact: AuthoredValuesFact, rule_id: str) -> EffectiveValue[Ca
     return _effective(CanonicalTypeSpec(kind), fact, rule_id)
 
 
-def _safe_identifier(fact: AuthoredValuesFact, label: str, rule_id: str) -> EffectiveValue[str]:
-    value = _single(fact, label, rule_id)
-    if not _SAFE_NAME.fullmatch(value):
-        raise _error(
-            "prep.unsafe-identifier",
-            f"{label} {value!r} is not a portable unquoted identifier",
-            fact,
-            rule_id,
-        )
-    return _effective(value, fact, rule_id)
-
-
 def _source_type(value: str) -> CanonicalTypeSpec | None:
     match = _DECLARED_SOURCE_TYPE.fullmatch(value)
     if match is None:

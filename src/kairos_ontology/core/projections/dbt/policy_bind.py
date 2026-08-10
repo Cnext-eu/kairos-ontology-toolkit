@@ -317,7 +317,6 @@ def bind_policy_facts(
     *,
     ontology_uri: str,
     gold_extension: str | None,
-    entity_uris: frozenset[str] | None = None,
     dq_entity_uris: frozenset[str] | None = None,
 ) -> MedallionPolicyFacts:
     """Read retained extension authoring and emit graph-free immutable facts."""

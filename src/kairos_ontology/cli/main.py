@@ -75,6 +75,7 @@ from .shared import (
     _warn_if_no_skill_context,
     _warn_if_outside_venv,
     _warn_if_version_mismatch,
+    extract_schema,
 )
 
 
@@ -137,6 +138,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(init_dataplatform)
     group.add_command(import_tmdl)
     group.add_command(show_source_schema_cmd)
+    group.add_command(extract_schema)
     group.add_command(import_source)
     group.add_command(source_privacy_cmd)
     group.add_command(import_flatfile)

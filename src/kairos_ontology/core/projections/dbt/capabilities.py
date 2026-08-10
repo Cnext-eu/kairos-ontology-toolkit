@@ -502,15 +502,6 @@ def is_reserved_identifier(
     return identifier.lower() in adapter_spec(adapter, registry).reserved_identifiers
 
 
-def supports_preparation_feature(
-    adapter: str | AdapterName,
-    feature: str,
-    registry: AdapterCapabilityRegistry = ADAPTER_CAPABILITY_REGISTRY,
-) -> bool:
-    """Check a fine-grained preparation behavior in the capability registry."""
-    return feature in adapter_spec(adapter, registry).preparation_features
-
-
 def physical_canonical_type(
     adapter: str | AdapterName,
     value: CanonicalTypeSpec,
@@ -546,76 +537,6 @@ _DECLARED_TYPE = re.compile(
     r"^\s*([a-zA-Z0-9_]+)\s*(?:\(\s*([0-9]+|max)\s*(?:,\s*([0-9]+)\s*)?\))?\s*$",
     re.I,
 )
-
-
-def physical_source_type(
-    adapter: str | AdapterName,
-    declared_type: str,
-    registry: AdapterCapabilityRegistry = ADAPTER_CAPABILITY_REGISTRY,
-) -> str:
-    """Map a declared source type without inventing an unknown fallback."""
-    match = _DECLARED_TYPE.fullmatch(declared_type)
-    if match is None:
-        raise ValueError(f"Unsupported declared source type {declared_type!r}")
-    base, first, second = match.groups()
-    base = base.lower()
-    aliases = {
-        "bigint": CanonicalTypeKind.INT64,
-        "binary": CanonicalTypeKind.BINARY,
-        "bit": CanonicalTypeKind.BOOLEAN,
-        "bool": CanonicalTypeKind.BOOLEAN,
-        "boolean": CanonicalTypeKind.BOOLEAN,
-        "char": CanonicalTypeKind.STRING,
-        "date": CanonicalTypeKind.DATE,
-        "datetime": CanonicalTypeKind.TIMESTAMP,
-        "datetime2": CanonicalTypeKind.TIMESTAMP,
-        "decimal": CanonicalTypeKind.DECIMAL,
-        "double": CanonicalTypeKind.FLOAT64,
-        "float": CanonicalTypeKind.FLOAT64,
-        "image": CanonicalTypeKind.BINARY,
-        "int": CanonicalTypeKind.INT32,
-        "integer": CanonicalTypeKind.INT32,
-        "money": CanonicalTypeKind.DECIMAL,
-        "nchar": CanonicalTypeKind.STRING,
-        "ntext": CanonicalTypeKind.STRING,
-        "numeric": CanonicalTypeKind.DECIMAL,
-        "nvarchar": CanonicalTypeKind.STRING,
-        "real": CanonicalTypeKind.FLOAT64,
-        "smallint": CanonicalTypeKind.INT16,
-        "string": CanonicalTypeKind.STRING,
-        "text": CanonicalTypeKind.STRING,
-        "time": CanonicalTypeKind.TIME,
-        "timestamp": CanonicalTypeKind.TIMESTAMP,
-        "tinyint": CanonicalTypeKind.INT16,
-        "uniqueidentifier": CanonicalTypeKind.STRING,
-        "varbinary": CanonicalTypeKind.BINARY,
-        "varchar": CanonicalTypeKind.STRING,
-        "variant": CanonicalTypeKind.JSON,
-        "json": CanonicalTypeKind.JSON,
-        "xml": CanonicalTypeKind.STRING,
-    }
-    kind = aliases.get(base)
-    if kind is None:
-        raise ValueError(f"Unsupported declared source type {declared_type!r}")
-    if kind is CanonicalTypeKind.DECIMAL:
-        precision = int(first) if first and first != "max" else 18
-        scale = int(second) if second is not None else 4
-        return physical_canonical_type(
-            adapter,
-            CanonicalTypeSpec(kind, precision=precision, scale=scale),
-            registry,
-        )
-    if kind is CanonicalTypeKind.STRING and first:
-        profile = adapter_spec(adapter, registry)
-        if profile.name is AdapterName.DATABRICKS:
-            return "STRING"
-        if first.lower() != "max" and int(first) > 8000:
-            raise ValueError(
-                "Fabric preparation strings require an authored length of 8000 "
-                f"or less, not {first}"
-            )
-        return f"VARCHAR({first.upper()})"
-    return physical_canonical_type(adapter, CanonicalTypeSpec(kind), registry)
 
 
 def _matching_deviation(

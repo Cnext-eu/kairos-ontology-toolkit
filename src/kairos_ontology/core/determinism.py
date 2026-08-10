@@ -109,9 +109,3 @@ def generated_at_iso(dt: datetime | None = None) -> str:
     """Return the canonical ``YYYY-MM-DDThh:mm:ssZ`` string for content stamps."""
     dt = resolve_generated_at() if dt is None else dt
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def generated_at_slug(dt: datetime | None = None) -> str:
-    """Return a filesystem-safe ``YYYY-MM-DD-HHMMSS`` slug for report filenames."""
-    dt = resolve_generated_at() if dt is None else dt
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d-%H%M%S")

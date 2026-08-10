@@ -37,18 +37,6 @@ class MappingContractError(ValueError):
         self.diagnostic = diagnostic_from_exception(self, stage="mapping")
 
 
-class MappingExpressionKind(str, Enum):
-    """The closed v2 scalar-expression node kinds."""
-
-    SOURCE_COLUMN = "source-column"
-    LITERAL = "literal"
-    NULL = "null"
-    OPERATOR = "operator"
-    FUNCTION = "function"
-    CASE = "case"
-    MACRO = "macro"
-
-
 class MappingNullPolicy(str, Enum):
     """Declared SQL-null behavior for one scalar node."""
 

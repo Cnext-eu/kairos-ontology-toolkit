@@ -264,14 +264,6 @@ class CatalogResolver:
 
         return CatalogResolution(uri, None, "unresolved")
 
-    def is_mapped(self, uri: str) -> bool:
-        """Check if URI has a catalog mapping."""
-        return self.resolve(uri) is not None
-
-    def get_all_mappings(self) -> Dict[str, Path]:
-        """Get all URI → path mappings."""
-        return self.mappings.copy()
-
 
 def load_graph_with_catalog(
     ontology_path: Path,
@@ -429,22 +421,3 @@ def sync_domain_catalog_entry(
     ET.indent(tree, space="  ")
     tree.write(catalog_path, encoding="utf-8", xml_declaration=True)
     return ontology_iri
-
-
-def validate_catalog(catalog_path: Path) -> Dict[str, bool]:
-    """
-    Validate that all catalog mappings point to existing files.
-
-    Args:
-        catalog_path: Path to catalog file
-
-    Returns:
-        Dict mapping URI → file_exists (bool)
-    """
-    resolver = CatalogResolver(catalog_path)
-    results = {}
-
-    for uri, path in resolver.get_all_mappings().items():
-        results[uri] = path.exists()
-
-    return results
