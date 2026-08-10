@@ -356,13 +356,43 @@ def _refmodels_version(refmodels_root: Path) -> str | None:
     return None
 
 
+#: Subdirectory under a normalized reference-models root that holds per-module version pins.
+_DERIVED_ONTOLOGIES_SUBDIR = Path("derived-ontologies")
+
+
+def _derived_ontology_version(refmodels_root: Path, module_key: str) -> str | None:
+    """Best-effort read of a derived ontology module's declared version.
+
+    Resolution is deliberately lightweight and offline-only, mirroring
+    :func:`_refmodels_version`: it reads the per-module ``VERSION`` file under
+    ``derived-ontologies/<KEY>/`` (key matched case-insensitively against the folder name)
+    rather than loading the ontology through the catalog.  Returns ``None`` when the module
+    folder or its ``VERSION`` file is absent — callers treat that as "no drift signal
+    available" and must not raise.
+    """
+    root = normalize_refmodels_root(refmodels_root)
+    modules_dir = root / _DERIVED_ONTOLOGIES_SUBDIR
+    if not modules_dir.is_dir():
+        return None
+    target = module_key.casefold()
+    for entry in modules_dir.iterdir():
+        if entry.is_dir() and entry.name.casefold() == target:
+            version_file = entry / "VERSION"
+            if version_file.is_file():
+                return version_file.read_text(encoding="utf-8").strip() or None
+            return None
+    return None
+
+
 def check_version_drift(archetype: Archetype, refmodels_root: Path) -> list[str]:
     """Return warning strings for repo-tag and per-ontology version drift (contract row 12).
 
     Compares the archetype's ``compatible_with.repo_tag_range`` against the resolved
     reference-models ``VERSION`` and (best-effort) each ``compatible_with.ontology_versions``
-    pin against the corresponding module's ``owl:versionInfo``.  Never raises — drift is a
-    warning, not a hard fail.
+    pin against the corresponding derived ontology module's declared version.  Never raises
+    — drift is a warning, not a hard fail.  A module whose version cannot be resolved
+    (missing folder or ``VERSION`` file) is skipped silently rather than flagged, so the
+    check stays robust against partial or evolving reference-models checkouts.
     """
     warnings: list[str] = []
     compat = archetype.compatible_with or {}
@@ -374,6 +404,19 @@ def check_version_drift(archetype: Archetype, refmodels_root: Path) -> list[str]
             warnings.append(
                 f"Reference-models version {repo_version} is outside the archetype's "
                 f"compatible repo_tag_range '{repo_range}'."
+            )
+
+    ontology_versions = compat.get("ontology_versions") or {}
+    for module_key, pin in ontology_versions.items():
+        if not isinstance(pin, str) or not pin.strip():
+            continue
+        module_version = _derived_ontology_version(refmodels_root, str(module_key))
+        if not module_version:
+            continue
+        if not _version_in_range(module_version, pin):
+            warnings.append(
+                f"Derived ontology '{module_key}' version {module_version} is outside the "
+                f"archetype's compatible ontology_versions pin '{pin}'."
             )
 
     return warnings

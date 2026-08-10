@@ -150,3 +150,32 @@ class TestVersionDrift:
         a = load_archetype(root, "test-carrier")
         warnings = check_version_drift(a, root)
         assert any("repo_tag_range" in w for w in warnings)
+
+    def test_ontology_versions_in_range_no_warning(self, refroot):
+        # Fixture pins booking >=1.0.0,<2 with VERSION 1.2.0.
+        a = load_archetype(refroot, "test-carrier")
+        assert check_version_drift(a, refroot) == []
+
+    def test_warns_when_ontology_version_out_of_range(self, tmp_path):
+        root = build_refmodels_root(tmp_path, booking_version="2.0.0")
+        a = load_archetype(root, "test-carrier")
+        warnings = check_version_drift(a, root)
+        assert any("ontology_versions" in w and "booking" in w for w in warnings)
+
+    def test_ontology_versions_missing_module_no_crash(self, tmp_path):
+        # Build a root without the derived-ontologies tree by using a custom archetype
+        # whose ontology_versions key has no matching folder.
+        root = build_refmodels_root(tmp_path)
+        a = load_archetype(root, "test-carrier")
+        a.compatible_with["ontology_versions"] = {"UnknownModule": ">=1.0.0,<2"}
+        # No crash, no false positive.
+        assert check_version_drift(a, root) == []
+
+    def test_ontology_versions_omitted_backward_compatible(self, tmp_path):
+        root = build_refmodels_root(tmp_path, repo_version="2.5.0")
+        a = load_archetype(root, "test-carrier")
+        del a.compatible_with["ontology_versions"]
+        warnings = check_version_drift(a, root)
+        # Only the repo_tag_range warning fires; behaviour unchanged from pre-fix.
+        assert any("repo_tag_range" in w for w in warnings)
+        assert not any("ontology_versions" in w for w in warnings)
