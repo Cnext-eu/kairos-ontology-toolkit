@@ -64,6 +64,31 @@ def init(domain, company_domain, force):
     optionally scaffolds a starter ontology domain.
     """
     cwd = Path.cwd()
+
+    # --- Refuse to scaffold a nested hub (DD-062) ----------------------------
+    # `init` writes the repo-root scaffold (pyproject.toml pin, managed .github/,
+    # .gitignore, setup-env.*) plus ontology-hub/.  Run from a *content*
+    # subdirectory of an existing hub it would fabricate an entire second,
+    # nested hub with a divergent toolkit pin.  Unlike `update` — which only
+    # touches the pin and managed files and can safely re-root — `init` creates
+    # ~15 paths and honours --force, so silently re-rooting could overwrite the
+    # real hub.  Refuse instead and point at the right command.
+    from ..core.hub_utils import find_managed_root
+
+    managed_root = find_managed_root(cwd)
+    if managed_root is not None and managed_root != cwd.resolve():
+        raise click.ClickException(
+            f"An existing Kairos hub was detected at {managed_root}\n"
+            f"   (you ran `init` from {cwd}, a subdirectory of it).\n\n"
+            "   `init` scaffolds a NEW hub root and would create a nested second hub\n"
+            "   here with its own divergent toolkit pin. Refusing.\n\n"
+            "   Did you mean, from the hub root:\n"
+            f"     cd {managed_root}\n"
+            "     kairos-ontology update                 # refresh managed files / toolkit pin\n"
+            "     kairos-ontology init --domain <name> --company-domain <domain>\n"
+            "                                            # backfill scaffold / add a domain"
+        )
+
     company_name = company_domain.split(".")[0].replace("-", " ").title()
     print("🚀 Initializing Kairos ontology hub")
     print(f"   Directory: {cwd}")

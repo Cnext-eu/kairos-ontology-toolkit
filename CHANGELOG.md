@@ -59,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining importers.
 
 ### Fixed
+- **`init` scaffolded a nested second hub when run from a content subdirectory** (#187, DD-062).
+  `init` took `Path.cwd()` as the repo root unconditionally, so running it from the `ontology-hub/`
+  content root of a split-layout hub fabricated an entire second hub inside it — a nested
+  `ontology-hub/ontology-hub/`, a duplicate managed `.github/` (skills + copilot-instructions), and
+  a second `pyproject.toml` pinning a **different** toolkit version and channel than the
+  authoritative repo-root pin. The DD-062 resolver `find_managed_root()` already existed but was
+  wired only into `update`. `init` now refuses when an enclosing managed root is detected, naming
+  it and pointing at `update`. It **refuses rather than re-roots** (unlike `update`, which safely
+  re-roots): `init` creates ~15 paths and honours `--force`, so silently re-rooting could overwrite
+  a live hub's managed files. Re-running `init` at the hub root itself stays supported, so the
+  documented `new-repo` → `init --company-domain` backfill flow is unaffected.
 - **`extract-schema` CLI command was unreachable.** `cli/shared.py::extract_schema` carried a full
   `@click.option` stack and a tested `core.extract_schema.run_extract_schema` implementation, but
   was missing its `@click.command` decorator and was never registered, so
