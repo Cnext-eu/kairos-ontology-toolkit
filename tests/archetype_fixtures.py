@@ -153,6 +153,7 @@ How many cargo items per booking?
 
 
 def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
+                         booking_version: str = "1.2.0",
                          add_duplicate_discovery: bool = False) -> Path:
     """Create a minimal reference-models root under *tmp_path* and return the inner root.
 
@@ -167,13 +168,16 @@ def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
     archetypes = inner / "blueprints" / "archetypes"
     schema_dir = archetypes / "_schema"
     modules = inner / "modules"
+    derived = inner / "derived-ontologies" / "booking"
     discovery = inner / "accelerator-packs" / "logistics" / "discovery"
-    for d in (archetypes, schema_dir, modules, discovery):
+    for d in (archetypes, schema_dir, modules, derived, discovery):
         d.mkdir(parents=True, exist_ok=True)
 
     (inner / "catalog-v001.xml").write_text(_CATALOG_XML, encoding="utf-8")
     (modules / "booking.ttl").write_text(_BOOKING_TTL, encoding="utf-8")
     (modules / "party.ttl").write_text(_PARTY_TTL, encoding="utf-8")
+    # Per-module version pin consumed by check_version_drift's ontology_versions loop.
+    (derived / "VERSION").write_text(booking_version + "\n", encoding="utf-8")
     (archetypes / "test-carrier.yaml").write_text(_ARCHETYPE_YAML, encoding="utf-8")
     (schema_dir / "archetype.schema.json").write_text(
         json.dumps(_ARCHETYPE_SCHEMA), encoding="utf-8")
