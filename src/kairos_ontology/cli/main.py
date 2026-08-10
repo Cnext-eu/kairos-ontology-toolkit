@@ -50,6 +50,7 @@ from .sources import (
     discovery_status_cmd,
     discovery_conformance,
     build_glossary_cmd,
+    list_patterns_cmd,
 )
 from .inspection import (
     resolve_ontology_cmd,
@@ -145,6 +146,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(discovery_status_cmd)
     group.add_command(discovery_conformance)
     group.add_command(build_glossary_cmd)
+    group.add_command(list_patterns_cmd)
     group.add_command(resolve_ontology_cmd)
     group.add_command(show_class_inventory_cmd)
     group.add_command(list_class_properties_cmd)

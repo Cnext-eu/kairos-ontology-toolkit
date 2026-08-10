@@ -1614,3 +1614,60 @@ def build_glossary_cmd(
     if result.skipped_terms:
         click.echo(f"   ⏭ Skipped {result.skipped_terms} term(s) (no prefLabel or filtered).")
     click.echo("\n✅ Glossary built.")
+
+
+@click.command(name="list-patterns")
+@click.option(
+    "--pattern",
+    "pattern_id",
+    default=None,
+    help="Load a single pattern by id instead of the whole library.",
+)
+@_REFMODELS_OPTION
+@_FORMAT_OPTION
+def list_patterns_cmd(pattern_id, refmodels_root, output_format):
+    """Surface the reference-models pattern library for the design-domain skill (#262 §3).
+
+    Emits sector-neutral modelling craft — normative naming conventions and anti-patterns
+    for recurring shapes (temporal quartets, qualified roles, governed code lists,
+    deferred relationships) — so ``kairos-design-domain`` prefers the shared vocabulary
+    when naming properties instead of inventing synonyms.  This is advisory,
+    authoring-time guidance, deliberately separate from the ``discovery-conformance``
+    concept flow.  Human progress goes to stderr; stdout is machine output only.
+
+    \\b
+    Examples:
+      kairos-ontology list-patterns
+      kairos-ontology list-patterns --pattern temporal-quartet
+    """
+    from ..core.pattern_loader import PatternError, load_pattern, load_patterns
+
+    root = _resolve_conformance_root(refmodels_root)
+    click.echo(f"🔎 Reference-models root: {root}", err=True)
+
+    if pattern_id:
+        try:
+            pattern = load_pattern(root, pattern_id)
+        except PatternError as exc:
+            click.echo(f"❌ {exc}", err=True)
+            raise SystemExit(2) from exc
+        _emit({"refmodels_root": str(root), "pattern": pattern.to_payload()}, output_format)
+        return
+
+    patterns, warnings = load_patterns(root)
+    for w in warnings:
+        click.echo(f"⚠ {w}", err=True)
+    if not patterns:
+        click.echo(
+            "⚠ No patterns found — this reference-models checkout has no "
+            "'blueprints/patterns/' library.",
+            err=True,
+        )
+    _emit(
+        {
+            "refmodels_root": str(root),
+            "patterns": [p.to_payload() for p in patterns],
+            "warnings": warnings,
+        },
+        output_format,
+    )

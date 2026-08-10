@@ -31,6 +31,7 @@ RETAINED_COMMANDS = {
     "init",
     "init-dataplatform",
     "list-class-properties",
+    "list-patterns",
     "mdm-validate",
     "migrate",
     "new-repo",
