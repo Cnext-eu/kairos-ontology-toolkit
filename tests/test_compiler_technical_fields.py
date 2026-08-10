@@ -294,6 +294,117 @@ def test_technical_field_type_incompatible_with_physical_column_is_rejected() ->
     assert diagnostic.location.pointer == "/technicalFields/0/type"
 
 
+@pytest.mark.parametrize(
+    "token,kind",
+    [
+        ("int32", "int32"),
+        ("int64", "int64"),
+        ("string", "string"),
+        ("decimal", "decimal"),
+        ("date", "date"),
+        ("timestamp", "timestamp"),
+        ("boolean", "boolean"),
+    ],
+)
+def test_target_type_resolves_canonical_kind_tokens(token: str, kind: str) -> None:
+    """`_target_type` must accept the canonical kind tokens the entity-binding schema
+    enum allows (e.g. ``int32``/``int64``), not only XSD IRIs and SQL aliases.
+
+    Regression guard for the schema/normalizer vocabulary mismatch where
+    ``technicalFields[].type: int32`` compiled to ``mapping.unknown-target-type``.
+    """
+    from kairos_ontology.core.projections.dbt.policy_normalize import (
+        CanonicalTypeKind,
+        _target_type,
+    )
+
+    spec = _target_type(token)
+    assert spec is not None
+    assert spec.kind is CanonicalTypeKind(kind)
+
+
+def test_technical_field_canonical_kind_token_compiles_for_integer_source() -> None:
+    """An ``int32`` technicalField over a physical ``int`` source column must compile.
+
+    Before the fix, the schema-allowed ``int32`` token reached the normalizer and raised
+    ``mapping.unknown-target-type``; the SQL alias ``int`` was rejected by the schema enum.
+    This test pins the resolved happy path end-to-end through ``adapt_binding`` with an
+    integer-typed primary key and identity-claim technical field.
+    """
+    context = ResolutionContext(
+        domain="party",
+        namespace=_NS,
+        ontology_name="party",
+        ontology_iri=_IRI,
+        ontology_version="0.1.0",
+        template_root=str(
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "kairos_ontology"
+            / "templates"
+            / "dbt"
+        ),
+        target_platform="fabric",
+        relations=(
+            ResolvedRelation(
+                ref="crm.customers",
+                uri="https://acme.example/bronze/crm#customers",
+                system_label="crm",
+                table_name="customers",
+                columns=(
+                    ResolvedColumn("customer_id", "int", nullable=False, is_primary_key=True),
+                    ResolvedColumn("account_id", "varchar(50)", nullable=True),
+                ),
+            ),
+        ),
+        classes=(
+            ResolvedClass(ref="party:Customer", uri=f"{_NS}Customer", name="Customer"),
+        ),
+        properties=(
+            ResolvedProperty(
+                ref="party:customerId",
+                uri=f"{_NS}customerId",
+                column_name="customer_id",
+                data_type="int32",
+            ),
+        ),
+    )
+    doc = textwrap.dedent("""
+        apiVersion: kairos.eu/v5
+        kind: EntityBinding
+        metadata:
+          name: crm-customer-to-party
+          domain: party
+        source:
+          relation: crm.customers
+        target:
+          class: party:Customer
+        grain:
+          columns: [customer_id]
+        identity:
+          strategy: surrogate
+          sourceKey: [customer_id]
+        load:
+          mode: full-refresh
+        fields:
+          - property: party:customerId
+            expression: customer_id
+        technicalFields:
+          - name: source_id
+            expression: customer_id
+            type: int32
+            nullable: false
+            purpose: identity
+        """)
+    binding = load_entity_binding(doc, path="crm.binding.yaml")
+    bound = adapt_binding(binding, context)
+    mapping = next(
+        item for item in bound.mappings.columns if item.target_column_name == "source_id"
+    )
+    assert mapping.target_data_type == "int32"
+    assert not mapping.target_is_object_property
+
+
 def test_technical_field_is_not_emitted_as_an_ontology_property() -> None:
     """The synthetic technical marker URI is never mistaken for a real ontology property."""
     binding = load_entity_binding(VALID + TECHNICAL_FIELD, path="crm.binding.yaml")

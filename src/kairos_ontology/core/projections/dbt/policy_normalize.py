@@ -177,6 +177,8 @@ _XSD_TYPE_KINDS = {
     "http://www.w3.org/2001/XMLSchema#token": CanonicalTypeKind.STRING,
 }
 
+_CANONICAL_KIND_ALIASES = {kind.value: kind for kind in CanonicalTypeKind}
+
 
 class PolicyNormalizationError(ValueError):
     """An actionable, deterministic authored-policy failure."""
@@ -644,6 +646,9 @@ def _target_type(value: str) -> CanonicalTypeSpec | None:
         return None
     if value in _XSD_TYPE_KINDS:
         return CanonicalTypeSpec(_XSD_TYPE_KINDS[value])
+    kind = _CANONICAL_KIND_ALIASES.get(value.strip().lower())
+    if kind is not None:
+        return CanonicalTypeSpec(kind)
     return _source_type(value)
 
 
