@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Cross-repo contract tests** at `tests/test_refmodels_contract.py`, running the pattern and
+  archetype loaders against a **real** `kairos-ontology-referencemodels` checkout rather than the
+  synthetic fixtures every other loader test uses. Fixtures prove the loaders behave correctly
+  given well-formed input; they cannot prove that what the reference models actually publish *is*
+  well-formed. Reference-models `temporal-quartet/pattern.yaml` shipped unparseable in their
+  v1.13.0 and stayed broken for two minor versions — nothing here misbehaved (`load_patterns`
+  warned, `list-patterns` printed it) but no test in either repo ever pointed a loader at a real
+  checkout, so the library's only *normative* naming pattern was absent from the
+  `kairos-design-domain` flow while both CIs stayed green. Skipped when no checkout is present,
+  so CI here gains no cross-repo dependency; set `KAIROS_REFMODELS_ROOT` or keep a sibling
+  checkout. A mirror ships in the reference-models repo as `tests/test_toolkit_contract.py`.
+- The suite asserts `VALID_TIERS` still matches the published `archetype.schema.json`
+  `$defs/tier` enum. That duplication is deliberate but was unenforced, so a tier added on the
+  publishing side (e.g. the proposed `not_applicable`) would have broken this loader at the next
+  reference-model bump with no warning.
+
 ### Changed
+- `pattern_loader` module docstring records that leniency is correct for callers and useless as a
+  quality signal — a skipped pattern is an absent pattern — and points callers wanting a
+  guarantee at `load_pattern` or at asserting `load_patterns` returned no warnings. Also corrects
+  a stale cross-repo reference: the pattern library is `v0.2 — markdown-first, parse-guarded`,
+  not `v0.1 — no JSON Schema`. That exact class of stale reference is what let the defect above
+  survive: this repo's loader was written lenient *because* the reference-models README said the
+  library had no schema, while that README said there was no toolkit consumer for the library.
+  Each repo was relying on the other's assumption.
 - **Power BI/TMDL analysis is demand evidence, not a source (DD-147):** `import-tmdl` now
   defaults its output to `integration/discovery/bi/` instead of `integration/sources/powerbi/`,
   matching its semantics as downstream demand evidence rather than a canonical input source.
