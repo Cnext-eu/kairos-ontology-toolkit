@@ -13,12 +13,22 @@ designer copies the shared vocabulary (e.g. the requested/planned/estimated/actu
 timestamp quartet) instead of inventing synonyms, and surfaces anti-patterns as
 rejection guidance.
 
-The library is ``v0.1 — markdown-first, no JSON Schema`` (see the folder README), so this
-loader is deliberately **lenient**: it reads whatever keys a ``pattern.yaml`` declares,
-tolerates optional/unknown fields, and *skips* a malformed pattern directory with a
-warning rather than raising — advisory surfacing must never break the design loop.  Like
-:mod:`kairos_ontology.core.archetype_loader`, it never fetches over the network and uses
-``yaml.safe_load`` only.
+The library is ``v0.2 — markdown-first, parse-guarded, no JSON Schema yet`` (see the
+folder README), so this loader is deliberately **lenient**: it reads whatever keys a
+``pattern.yaml`` declares, tolerates optional/unknown fields, and *skips* a malformed
+pattern directory with a warning rather than raising — advisory surfacing must never
+break the design loop.  Like :mod:`kairos_ontology.core.archetype_loader`, it never
+fetches over the network and uses ``yaml.safe_load`` only.
+
+.. warning::
+   Leniency is correct for callers and useless as a quality signal: a skipped pattern is
+   an *absent* pattern, and a caller cannot tell "the library has four patterns" from
+   "the library has five, one of which will not parse".  Reference-models
+   ``temporal-quartet`` shipped unparseable in v1.13.0 and stayed that way for two minor
+   versions — :func:`load_patterns` warned and ``list-patterns`` printed it, exactly as
+   designed, and nobody was looking.  Callers wanting a *guarantee* rather than best
+   effort must use :func:`load_pattern` (fail-fast) or assert that :func:`load_patterns`
+   returned no warnings; see ``tests/test_refmodels_contract.py``.
 """
 
 from __future__ import annotations
