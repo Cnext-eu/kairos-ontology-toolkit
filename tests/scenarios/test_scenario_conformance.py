@@ -9,7 +9,6 @@ the skill prescribes: read the ref-model modules to pre-seed imports, read renam
 deviations / not-applicable exclusions, and surface the coverage scorecard.
 """
 
-
 from kairos_ontology.core.conformance_artifact import (
     ARTIFACT_RELPATH,
     read_artifact,

@@ -73,7 +73,9 @@ def show_source_schema_cmd(system, sources):
     source_root = (
         Path(sources)
         if sources
-        else hub / "integration" / "sources" if hub else Path("integration") / "sources"
+        else hub / "integration" / "sources"
+        if hub
+        else Path("integration") / "sources"
     )
     system_dir = source_root / system
     if not system_dir.is_dir():
@@ -657,8 +659,7 @@ def analyse_sources_cmd(
         ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
         if ref_models_path is None:
             click.echo(
-                "❌ Cannot find ontology-reference-models/ directory. "
-                "Use --ref-models to specify.",
+                "❌ Cannot find ontology-reference-models/ directory. Use --ref-models to specify.",
                 err=True,
             )
             raise SystemExit(1)
@@ -682,8 +683,7 @@ def analyse_sources_cmd(
             click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
         if domains_filter:
             click.echo(
-                f"   Domain filter: {domains_filter} "
-                f"(output focus only — full set is classified)"
+                f"   Domain filter: {domains_filter} (output focus only — full set is classified)"
             )
         click.echo()
 
@@ -767,7 +767,7 @@ def analyse_sources_cmd(
         )
         if not quiet:
             click.echo(
-                f"\n✅ Analysis complete! Written {len(output_files)} file(s) " f"to: {output_path}"
+                f"\n✅ Analysis complete! Written {len(output_files)} file(s) to: {output_path}"
             )
             for f in output_files:
                 click.echo(f"   📄 {f.name}")

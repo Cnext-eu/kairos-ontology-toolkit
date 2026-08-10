@@ -47,13 +47,11 @@ def _materialize_dimensional_powerbi(
     blockers = tuple(
         result
         for result in capability_results
-        if result.scope == "gold"
-        and result.disposition is CapabilityDisposition.BLOCKING
+        if result.scope == "gold" and result.disposition is CapabilityDisposition.BLOCKING
     )
     if blockers:
         detail = "; ".join(
-            result.message
-            or f"{result.capability.value} is unsupported for Gold"
+            result.message or f"{result.capability.value} is unsupported for Gold"
             for result in blockers
         )
         raise GoldContractError(
@@ -92,11 +90,7 @@ def _materialize_dimensional_powerbi(
                 role=table.role,
                 columns=columns,
                 primary_key=table.primary_key,
-                materialization=(
-                    "incremental"
-                    if table.incremental_policy_ref
-                    else "table"
-                ),
+                materialization=("incremental" if table.incremental_policy_ref else "table"),
                 unique_key=table.incremental_unique_key,
                 updated_at=table.incremental_updated_at,
                 current_filter=current_filter,
@@ -124,9 +118,7 @@ def _materialize_dimensional_powerbi(
         tables=tuple(tables),
         approved_deviations=deviations,
         ddl_artifact_path=f"{domain}/{domain}-gold-ddl.sql",
-        dbt_schema_artifact_path=(
-            f"models/gold/{domain}/_{domain}__gold_models.yml"
-        ),
+        dbt_schema_artifact_path=(f"models/gold/{domain}/_{domain}__gold_models.yml"),
         erd_artifact_path=f"{domain}/{domain}-gold-erd.mmd",
         report_artifact_path=f"{domain}/{domain}-gold-product.json",
     )

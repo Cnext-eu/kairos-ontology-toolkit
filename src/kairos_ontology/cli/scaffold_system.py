@@ -16,7 +16,9 @@ def _render_scaffold_system_text(result, *, limit: int) -> None:
     verb = "Would scaffold" if result.dry_run else "Scaffolded"
     suffix = " (dry-run -- nothing was written)" if result.dry_run else ""
     click.echo(f"kairos-ontology scaffold-system — {result.system}{suffix}")
-    click.echo(f"{verb} {len(result.scaffolded)} table(s); declined {len(result.declined)} table(s).")
+    click.echo(
+        f"{verb} {len(result.scaffolded)} table(s); declined {len(result.declined)} table(s)."
+    )
 
     if result.scaffolded:
         click.echo("")
@@ -30,7 +32,9 @@ def _render_scaffold_system_text(result, *, limit: int) -> None:
                     f"{', '.join(item.orphan_columns)}"
                 )
             for diag in item.compile_diagnostics:
-                click.echo(f"      ⚠ [{diag.severity}] {diag.code}: {diag.message} ({diag.pointer})")
+                click.echo(
+                    f"      ⚠ [{diag.severity}] {diag.code}: {diag.message} ({diag.pointer})"
+                )
 
     if result.declined:
         click.echo("")
@@ -60,10 +64,10 @@ def _render_scaffold_system_text(result, *, limit: int) -> None:
 
 
 @click.command(name="scaffold-system")
+@click.option("--system", required=True, help="Source system id (integration/sources/<system>/).")
 @click.option(
-    "--system", required=True, help="Source system id (integration/sources/<system>/)."
+    "--accelerator", default=None, help="Accelerator pack (default: resolved from hub config)."
 )
-@click.option("--accelerator", default=None, help="Accelerator pack (default: resolved from hub config).")
 @click.option(
     "--dry-run",
     is_flag=True,
@@ -93,7 +97,9 @@ def _render_scaffold_system_text(result, *, limit: int) -> None:
     help="Max declined-table rows printed per reason in text mode (0 = unlimited; --format json "
     "is always complete).",
 )
-def scaffold_system_cmd(system, accelerator, dry_run, ref_models_dir_opt, catalog, out_format, limit):
+def scaffold_system_cmd(
+    system, accelerator, dry_run, ref_models_dir_opt, catalog, out_format, limit
+):
     """Scaffold every good ``passthrough`` candidate under one source system in one pass.
 
     Composes ``list-unscaffolded`` table discovery, ``propose-alignment`` evidence (its

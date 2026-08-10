@@ -126,9 +126,7 @@ class TestPersistenceRedaction:
             column="email",
             data_type="varchar(255)",
         )
-        assert token == (
-            "<redacted kind=email source=contacts.email datatype=varchar(255)>"
-        )
+        assert token == ("<redacted kind=email source=contacts.email datatype=varchar(255)>")
         assert is_redaction_token(token)
 
     def test_redacts_complete_free_text_cell_with_embedded_email(self):
@@ -139,9 +137,7 @@ class TestPersistenceRedaction:
             column="body",
             data_type="text",
         )
-        assert redacted == (
-            "<redacted kind=email source=comments.body datatype=text>"
-        )
+        assert redacted == ("<redacted kind=email source=comments.body datatype=text>")
         assert finding is not None and finding.kind == "email"
         assert "Jane" not in redacted
         assert "example.com" not in redacted
@@ -165,9 +161,7 @@ class TestPersistenceRedaction:
             column="payload",
             data_type="json",
         )
-        assert redacted == (
-            "<redacted kind=email source=events.payload datatype=json>"
-        )
+        assert redacted == ("<redacted kind=email source=events.payload datatype=json>")
         assert finding is not None
 
     def test_non_pii_value_is_preserved(self):
@@ -181,9 +175,7 @@ class TestPersistenceRedaction:
         assert finding is None
 
     def test_redaction_is_idempotent(self):
-        token = (
-            "<redacted kind=email source=contacts.email datatype=varchar(255)>"
-        )
+        token = "<redacted kind=email source=contacts.email datatype=varchar(255)>"
         value, finding = redact_sample_value(
             token,
             table="contacts",
@@ -201,10 +193,7 @@ class TestPersistenceRedaction:
         )
         assert rows == [
             {
-                "email": (
-                    "<redacted kind=email source=contacts.email "
-                    "datatype=varchar(255)>"
-                ),
+                "email": ("<redacted kind=email source=contacts.email datatype=varchar(255)>"),
                 "status": "active",
             }
         ]

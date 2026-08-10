@@ -227,6 +227,7 @@ DEFAULT_PLATFORM = "fabric"
 # SHACL namespace
 SH = Namespace("http://www.w3.org/ns/shacl#")
 
+
 def _quote_identifier_if_reserved(name: str, adapter: str) -> str:
     """Wrap an identifier in a kairos_quote_identifier macro call if it's a reserved keyword."""
     if is_reserved_identifier(adapter, name):

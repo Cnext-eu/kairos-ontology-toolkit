@@ -65,10 +65,7 @@ class TestReadCsvTable:
     def test_basic_csv(self, tmp_path):
         csv_file = tmp_path / "customers.csv"
         csv_file.write_text(
-            "id,name,age,active\n"
-            "1,Alice,30,true\n"
-            "2,Bob,25,false\n"
-            "3,Charlie,,true\n",
+            "id,name,age,active\n1,Alice,30,true\n2,Bob,25,false\n3,Charlie,,true\n",
             encoding="utf-8",
         )
         result = read_csv_table(csv_file)
@@ -91,9 +88,7 @@ class TestReadCsvTable:
     def test_semicolon_delimiter(self, tmp_path):
         csv_file = tmp_path / "data.csv"
         csv_file.write_text(
-            "col1;col2;col3\n"
-            "a;1;2024-01-01\n"
-            "b;2;2024-02-01\n",
+            "col1;col2;col3\na;1;2024-01-01\nb;2;2024-02-01\n",
             encoding="utf-8",
         )
         result = read_csv_table(csv_file)
@@ -129,77 +124,96 @@ class TestReadCsvTable:
 
 class TestWriteSourceDir:
     def test_writes_manifest(self, tmp_path):
-        tables = [{
-            "name": "orders",
-            "row_count": 10,
-            "columns": [{"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}],
-            "sample_rows": [{"id": "1"}],
-        }]
+        tables = [
+            {
+                "name": "orders",
+                "row_count": 10,
+                "columns": [
+                    {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+                ],
+                "sample_rows": [{"id": "1"}],
+            }
+        ]
         output = write_source_dir(tables, "erp", tmp_path / "erp")
 
         import yaml
+
         manifest = yaml.safe_load((output / "_manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["system"] == "erp"
         assert manifest["version"] == "1.1"
         assert manifest["tables"] == ["orders"]
 
     def test_writes_table_yaml_without_samples(self, tmp_path):
-        tables = [{
-            "name": "orders",
-            "row_count": 5,
-            "columns": [
-                {"name": "id", "data_type": "int", "ordinal_position": 1,
-                 "nullable": False, "samples": ["1", "2", "3"]},
-            ],
-            "sample_rows": [{"id": "1"}],
-        }]
+        tables = [
+            {
+                "name": "orders",
+                "row_count": 5,
+                "columns": [
+                    {
+                        "name": "id",
+                        "data_type": "int",
+                        "ordinal_position": 1,
+                        "nullable": False,
+                        "samples": ["1", "2", "3"],
+                    },
+                ],
+                "sample_rows": [{"id": "1"}],
+            }
+        ]
         output = write_source_dir(tables, "test", tmp_path / "test")
 
         import yaml
+
         table_data = yaml.safe_load((output / "orders.yaml").read_text(encoding="utf-8"))
         # Table YAML should NOT have inline samples (they go to .samples.yaml)
         assert "samples" not in table_data["columns"][0]
 
     def test_writes_samples_yaml(self, tmp_path):
-        tables = [{
-            "name": "orders",
-            "row_count": 5,
-            "columns": [{"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}],
-            "sample_rows": [{"id": "1"}, {"id": "2"}],
-        }]
+        tables = [
+            {
+                "name": "orders",
+                "row_count": 5,
+                "columns": [
+                    {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+                ],
+                "sample_rows": [{"id": "1"}, {"id": "2"}],
+            }
+        ]
         output = write_source_dir(tables, "test", tmp_path / "test")
 
         import yaml
+
         samples = yaml.safe_load((output / "orders.samples.yaml").read_text(encoding="utf-8"))
         assert samples["table"] == "orders"
         assert len(samples["rows"]) == 2
 
     def test_redacts_detected_pii_before_writing(self, tmp_path):
-        tables = [{
-            "name": "contacts",
-            "row_count": 1,
-            "columns": [
-                {
-                    "name": "email",
-                    "data_type": "varchar(255)",
-                    "ordinal_position": 1,
-                    "nullable": False,
-                },
-                {
-                    "name": "status",
-                    "data_type": "varchar(20)",
-                    "ordinal_position": 2,
-                    "nullable": False,
-                },
-            ],
-            "sample_rows": [
-                {"email": "person@example.com", "status": "active"}
-            ],
-        }]
+        tables = [
+            {
+                "name": "contacts",
+                "row_count": 1,
+                "columns": [
+                    {
+                        "name": "email",
+                        "data_type": "varchar(255)",
+                        "ordinal_position": 1,
+                        "nullable": False,
+                    },
+                    {
+                        "name": "status",
+                        "data_type": "varchar(20)",
+                        "ordinal_position": 2,
+                        "nullable": False,
+                    },
+                ],
+                "sample_rows": [{"email": "person@example.com", "status": "active"}],
+            }
+        ]
 
         output = write_source_dir(tables, "crm", tmp_path / "crm")
 
         import yaml
+
         raw = (output / "contacts.samples.yaml").read_text(encoding="utf-8")
         samples = yaml.safe_load(raw)
         assert "person@example.com" not in raw
@@ -209,9 +223,7 @@ class TestWriteSourceDir:
         assert samples["rows"][0]["status"] == "active"
         assert samples["sample_privacy"]["policy"] == "redact-detected-pii"
 
-        manifest = yaml.safe_load(
-            (output / "_manifest.yaml").read_text(encoding="utf-8")
-        )
+        manifest = yaml.safe_load((output / "_manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["sample_privacy"]["version"] == "1"
 
     def test_removes_stale_samples_when_rerun_has_no_rows(self, tmp_path):
@@ -219,12 +231,14 @@ class TestWriteSourceDir:
         output_dir.mkdir()
         stale = output_dir / "empty.samples.yaml"
         stale.write_text("rows:\n  - email: person@example.com\n", encoding="utf-8")
-        tables = [{
-            "name": "empty",
-            "row_count": 0,
-            "columns": [{"name": "email", "data_type": "varchar(255)"}],
-            "sample_rows": [],
-        }]
+        tables = [
+            {
+                "name": "empty",
+                "row_count": 0,
+                "columns": [{"name": "email", "data_type": "varchar(255)"}],
+                "sample_rows": [],
+            }
+        ]
 
         write_source_dir(tables, "erp", output_dir)
 
@@ -260,6 +274,7 @@ class TestRunImportFlatfile:
         result = run_import_flatfile(input_dir, system_name="legacy", output_dir=output_dir)
 
         import yaml
+
         manifest = yaml.safe_load((result / "_manifest.yaml").read_text(encoding="utf-8"))
         assert sorted(manifest["tables"]) == ["items", "orders"]
 
@@ -277,10 +292,7 @@ class TestNoneValuesInCsv:
         csv_file = tmp_path / "trailing.csv"
         # Trailing commas cause DictReader to have None values
         csv_file.write_text(
-            "id,name,extra\n"
-            "1,Alice,\n"
-            "2,,\n"
-            "3,Charlie,\n",
+            "id,name,extra\n1,Alice,\n2,,\n3,Charlie,\n",
             encoding="utf-8",
         )
         result = read_csv_table(csv_file)
@@ -293,9 +305,7 @@ class TestNoneValuesInCsv:
         csv_file = tmp_path / "extra_col.csv"
         # Row with more fields than headers → restkey captures extra, but missing cols are None
         csv_file.write_text(
-            "a,b\n"
-            "1,2\n"
-            "3,4\n",
+            "a,b\n1,2\n3,4\n",
             encoding="utf-8",
         )
         result = read_csv_table(csv_file)
@@ -331,6 +341,7 @@ class TestCsvFieldSizeLimitWindows:
         """csv.field_size_limit(min(sys.maxsize, 2**31-1)) should never overflow."""
         import importlib
         import kairos_ontology.core.import_flatfile as mod
+
         # Re-import should succeed without OverflowError
         importlib.reload(mod)
 
@@ -370,16 +381,20 @@ class TestDetectTechnicalColumns:
 
     def test_detects_known_technical_columns(self):
         tables = [
-            {"columns": [
-                {"name": "id", "distinct_count": 100},
-                {"name": "volume", "distinct_count": 1},
-                {"name": "subfolder", "distinct_count": 1},
-            ]},
-            {"columns": [
-                {"name": "id", "distinct_count": 50},
-                {"name": "volume", "distinct_count": 1},
-                {"name": "subfolder", "distinct_count": 1},
-            ]},
+            {
+                "columns": [
+                    {"name": "id", "distinct_count": 100},
+                    {"name": "volume", "distinct_count": 1},
+                    {"name": "subfolder", "distinct_count": 1},
+                ]
+            },
+            {
+                "columns": [
+                    {"name": "id", "distinct_count": 50},
+                    {"name": "volume", "distinct_count": 1},
+                    {"name": "subfolder", "distinct_count": 1},
+                ]
+            },
         ]
         result = detect_technical_columns(tables)
         assert result == {"volume", "subfolder"}
@@ -387,12 +402,16 @@ class TestDetectTechnicalColumns:
     def test_skips_non_universal_columns(self):
         """Column appearing in only one table is not flagged."""
         tables = [
-            {"columns": [
-                {"name": "volume", "distinct_count": 1},
-            ]},
-            {"columns": [
-                {"name": "id", "distinct_count": 50},
-            ]},
+            {
+                "columns": [
+                    {"name": "volume", "distinct_count": 1},
+                ]
+            },
+            {
+                "columns": [
+                    {"name": "id", "distinct_count": 50},
+                ]
+            },
         ]
         result = detect_technical_columns(tables)
         assert result == set()
@@ -456,9 +475,12 @@ class TestRunImportFlatfileExclusion:
         output_dir = tmp_path / "output"
 
         result = run_import_flatfile(
-            csv_file, output_dir=output_dir, exclude_columns={"volume"},
+            csv_file,
+            output_dir=output_dir,
+            exclude_columns={"volume"},
         )
         import yaml
+
         tbl = yaml.safe_load((result / "data.yaml").read_text(encoding="utf-8"))
         col_names = [c["name"] for c in tbl["columns"]]
         assert "volume" not in col_names
@@ -473,9 +495,13 @@ class TestRunImportFlatfileExclusion:
         output_dir = tmp_path / "output"
 
         result = run_import_flatfile(
-            input_dir, system_name="test", output_dir=output_dir, keep_technical=True,
+            input_dir,
+            system_name="test",
+            output_dir=output_dir,
+            keep_technical=True,
         )
         import yaml
+
         tbl = yaml.safe_load((result / "a.yaml").read_text(encoding="utf-8"))
         col_names = [c["name"] for c in tbl["columns"]]
         assert "volume" in col_names
@@ -495,17 +521,18 @@ class TestSameFileCopyGuard:
 
         manifest = {"system": "test_sys", "tables": ["orders"]}
         import yaml
-        (src_dir / "_manifest.yaml").write_text(
-            yaml.dump(manifest), encoding="utf-8"
-        )
+
+        (src_dir / "_manifest.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
         (src_dir / "orders.yaml").write_text(
-            yaml.dump({
-                "name": "orders",
-                "row_count": 2,
-                "columns": [
-                    {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
-                ],
-            }),
+            yaml.dump(
+                {
+                    "name": "orders",
+                    "row_count": 2,
+                    "columns": [
+                        {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
         # Add a samples file in the SAME directory (triggers same-file copy)
@@ -514,14 +541,18 @@ class TestSameFileCopyGuard:
         )
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "import-source",
-            "--from", str(src_dir),
-            "--output", str(src_dir / "test.vocabulary.ttl"),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "import-source",
+                "--from",
+                str(src_dir),
+                "--output",
+                str(src_dir / "test.vocabulary.ttl"),
+            ],
+        )
         # Should not crash with PermissionError
         assert result.exit_code == 0, f"Failed with: {result.output}"
-
 
     def test_unsupported_extension_raises(self, tmp_path):
         bad_file = tmp_path / "data.json"
@@ -543,6 +574,7 @@ class TestSameFileCopyGuard:
         run_import_flatfile(csv_file, output_dir=output_dir)
 
         import yaml
+
         manifest = yaml.safe_load((output_dir / "_manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["system"] == "my-erp"
 
@@ -555,7 +587,10 @@ class TestSameFileCopyGuard:
 class TestFlatfileToImportSourcePipeline:
     def test_csv_to_vocabulary_ttl(self, tmp_path):
         """Full pipeline: CSV → YAML → TTL."""
-        from kairos_ontology.core.import_source import parse_source_schema_dir, generate_vocabulary_ttl
+        from kairos_ontology.core.import_source import (
+            parse_source_schema_dir,
+            generate_vocabulary_ttl,
+        )
 
         # Step 1: Create CSV
         csv_file = tmp_path / "accounts.csv"
@@ -575,6 +610,7 @@ class TestFlatfileToImportSourcePipeline:
         ttl = generate_vocabulary_ttl(data)
 
         from rdflib import Graph
+
         g = Graph()
         g.parse(data=ttl, format="turtle")
         assert len(g) > 0
@@ -634,12 +670,15 @@ class TestArrowTypeToSql:
 class TestReadParquetTable:
     def test_basic_parquet(self, tmp_path):
         pq_file = tmp_path / "customers.parquet"
-        _write_parquet(pq_file, {
-            "id": pa.array([1, 2, 3], type=pa.int64()),
-            "name": pa.array(["Alice", "Bob", "Carol"], type=pa.string()),
-            "active": pa.array([True, False, True], type=pa.bool_()),
-            "score": pa.array([1.5, 2.5, 3.5], type=pa.float64()),
-        })
+        _write_parquet(
+            pq_file,
+            {
+                "id": pa.array([1, 2, 3], type=pa.int64()),
+                "name": pa.array(["Alice", "Bob", "Carol"], type=pa.string()),
+                "active": pa.array([True, False, True], type=pa.bool_()),
+                "score": pa.array([1.5, 2.5, 3.5], type=pa.float64()),
+            },
+        )
 
         table = read_parquet_table(pq_file)
 
@@ -657,10 +696,13 @@ class TestReadParquetTable:
 
     def test_nullable_column(self, tmp_path):
         pq_file = tmp_path / "data.parquet"
-        _write_parquet(pq_file, {
-            "id": pa.array([1, 2, 3], type=pa.int64()),
-            "email": pa.array(["a@x.com", None, "c@x.com"], type=pa.string()),
-        })
+        _write_parquet(
+            pq_file,
+            {
+                "id": pa.array([1, 2, 3], type=pa.int64()),
+                "email": pa.array(["a@x.com", None, "c@x.com"], type=pa.string()),
+            },
+        )
 
         table = read_parquet_table(pq_file)
         by_name = {c["name"]: c for c in table["columns"]}
@@ -670,18 +712,24 @@ class TestReadParquetTable:
     def test_max_rows_caps_sampling(self, tmp_path):
         """Only sample data is read — never the whole file."""
         pq_file = tmp_path / "huge.parquet"
-        _write_parquet(pq_file, {
-            "id": pa.array(list(range(5000)), type=pa.int64()),
-        })
+        _write_parquet(
+            pq_file,
+            {
+                "id": pa.array(list(range(5000)), type=pa.int64()),
+            },
+        )
 
         table = read_parquet_table(pq_file, max_rows=100)
         assert table["row_count"] == 100
 
     def test_sample_rows_limited(self, tmp_path):
         pq_file = tmp_path / "big.parquet"
-        _write_parquet(pq_file, {
-            "id": pa.array(list(range(50)), type=pa.int64()),
-        })
+        _write_parquet(
+            pq_file,
+            {
+                "id": pa.array(list(range(50)), type=pa.int64()),
+            },
+        )
 
         table = read_parquet_table(pq_file, sample_size=3)
         assert len(table["sample_rows"]) == 3
@@ -690,10 +738,13 @@ class TestReadParquetTable:
         import datetime as dt
 
         pq_file = tmp_path / "events.parquet"
-        _write_parquet(pq_file, {
-            "d": pa.array([dt.date(2024, 1, 15)], type=pa.date32()),
-            "ts": pa.array([dt.datetime(2024, 1, 15, 10, 30)], type=pa.timestamp("s")),
-        })
+        _write_parquet(
+            pq_file,
+            {
+                "d": pa.array([dt.date(2024, 1, 15)], type=pa.date32()),
+                "ts": pa.array([dt.datetime(2024, 1, 15, 10, 30)], type=pa.timestamp("s")),
+            },
+        )
 
         table = read_parquet_table(pq_file)
         by_name = {c["name"]: c for c in table["columns"]}
@@ -722,10 +773,13 @@ class TestRunImportFlatfileParquet:
     def test_single_parquet(self, tmp_path):
         pq_file = tmp_path / "input" / "orders.parquet"
         pq_file.parent.mkdir()
-        _write_parquet(pq_file, {
-            "id": pa.array([1, 2], type=pa.int64()),
-            "total": pa.array([99.5, 12.0], type=pa.float64()),
-        })
+        _write_parquet(
+            pq_file,
+            {
+                "id": pa.array([1, 2], type=pa.int64()),
+                "total": pa.array([99.5, 12.0], type=pa.float64()),
+            },
+        )
 
         output_dir = tmp_path / "output" / "orders"
         result = run_import_flatfile(pq_file, output_dir=output_dir)
@@ -739,13 +793,17 @@ class TestRunImportFlatfileParquet:
         input_dir = tmp_path / "exports"
         input_dir.mkdir()
         (input_dir / "items.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
-        _write_parquet(input_dir / "orders.parquet", {
-            "id": pa.array([1], type=pa.int64()),
-        })
+        _write_parquet(
+            input_dir / "orders.parquet",
+            {
+                "id": pa.array([1], type=pa.int64()),
+            },
+        )
 
         output_dir = tmp_path / "output" / "legacy"
         result = run_import_flatfile(input_dir, system_name="legacy", output_dir=output_dir)
 
         import yaml
+
         manifest = yaml.safe_load((result / "_manifest.yaml").read_text(encoding="utf-8"))
         assert sorted(manifest["tables"]) == ["items", "orders"]

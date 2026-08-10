@@ -66,7 +66,7 @@ def resolve_ontology_cmd(ontology, catalog, degraded, as_json):
     click.echo(f"Profile: {loaded.profile.value}")
     click.echo(f"Import complete: {loaded.complete}")
     for entry in loaded.manifest:
-        click.echo(f"  {'  ' * entry.import_depth}{entry.source_identity} " f"[{entry.rdf_format}]")
+        click.echo(f"  {'  ' * entry.import_depth}{entry.source_identity} [{entry.rdf_format}]")
     for diagnostic in loaded.diagnostics:
         click.echo(f"  {diagnostic.level.upper()}: {diagnostic.message}")
 
@@ -384,7 +384,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
             ont_path = hub_root / "model" / "ontologies"
         else:
             click.echo(
-                "❌ Cannot find model/ontologies/ directory. " "Use --ontology to specify.",
+                "❌ Cannot find model/ontologies/ directory. Use --ontology to specify.",
                 err=True,
             )
             raise SystemExit(1)
@@ -395,8 +395,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
         ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
         if ref_models_path is None:
             click.echo(
-                "❌ Cannot find ontology-reference-models/ directory. "
-                "Use --ref-models to specify.",
+                "❌ Cannot find ontology-reference-models/ directory. Use --ref-models to specify.",
                 err=True,
             )
             raise SystemExit(1)
@@ -1085,10 +1084,7 @@ def _render_next_text(proposal, snapshot) -> None:
     click.echo("   Next actions:")
     for action in proposal.actions:
         scope = f" [{action.domain}]" if action.domain else ""
-        click.echo(
-            f"     • [{action.status.value}] {action.kind}{scope} "
-            f"→ skill: {action.skill}"
-        )
+        click.echo(f"     • [{action.status.value}] {action.kind}{scope} → skill: {action.skill}")
         click.echo(f"         {action.rationale}")
         click.echo(f"         run: {action.command}")
 
@@ -1130,9 +1126,7 @@ def next_action_cmd(domains, output_format, no_compile):
                 )
             )
         else:
-            click.echo(
-                "❌ No Kairos hub found from the current directory.", err=True
-            )
+            click.echo("❌ No Kairos hub found from the current directory.", err=True)
         raise click.exceptions.Exit(2)
 
     snapshot = gather_hub_input_snapshot(
@@ -1168,8 +1162,10 @@ def _render_design_landscape_text(result) -> None:
     click.echo(f"   Domain: {result.domain or '(all activated modules)'}")
     click.echo("")
     if not result.classes:
-        click.echo("   No in-scope classes found (no source table, discovery, or binding "
-                    "evidence references any activated accelerator class).")
+        click.echo(
+            "   No in-scope classes found (no source table, discovery, or binding "
+            "evidence references any activated accelerator class)."
+        )
     for entry in result.classes:
         rank = f" (rank {entry.rank})" if entry.rank is not None else ""
         click.echo(f"   • {entry.class_name} [{entry.classification}]{rank}")
@@ -1187,12 +1183,9 @@ def _render_design_landscape_text(result) -> None:
             )
         if entry.bi_weight:
             click.echo(
-                f"     BI weight (ADVISORY ONLY, never fact): {len(entry.bi_weight)} "
-                "reference(s)"
+                f"     BI weight (ADVISORY ONLY, never fact): {len(entry.bi_weight)} reference(s)"
             )
-        click.echo(
-            f"     Bound: {entry.bound} ({len(entry.bindings)} binding(s))"
-        )
+        click.echo(f"     Bound: {entry.bound} ({len(entry.bindings)} binding(s))")
         click.echo("")
     if result.gaps:
         click.echo("   Gaps / degraded inputs:")
@@ -1310,9 +1303,7 @@ def _parse_porcelain_paths(status_text: str) -> set[str]:
     help="Glob (relative to the git repo root) allowed to have changed since the "
     "snapshot. Repeatable. Only valid with --check-since.",
 )
-def guard_scope_cmd(
-    snapshot: bool, check_since: Path | None, allow_globs: tuple[str, ...]
-) -> None:
+def guard_scope_cmd(snapshot: bool, check_since: Path | None, allow_globs: tuple[str, ...]) -> None:
     """Deterministic 'no unexpected file changed' guard for a bounded skill gate.
 
     Replaces a self-reported "confirm no other file changed" instruction with
@@ -1353,9 +1344,7 @@ def guard_scope_cmd(
 
     new_paths = current_paths - baseline_paths
     offending = sorted(
-        path
-        for path in new_paths
-        if not any(fnmatch.fnmatch(path, glob) for glob in allow_globs)
+        path for path in new_paths if not any(fnmatch.fnmatch(path, glob) for glob in allow_globs)
     )
     if offending:
         click.echo(

@@ -76,7 +76,7 @@ uv run ruff check src/ tests/
 
 ### Code style
 
-- **Formatter:** Black (line length 100)
+- **Formatter:** Ruff (`uv run ruff format src/ tests/`, line length 100)
 - **Linter:** Ruff (`uv run ruff check src/ tests/`)
 - Source layout: `src/kairos_ontology/`
 - All new functions and endpoints must have unit tests

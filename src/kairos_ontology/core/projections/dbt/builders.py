@@ -19,7 +19,6 @@ from .specs import (
     ModelIdentity,
     ModelOutcome,
     OntologyMetadataSpec,
-    Scalar,
     SchemaModelSpec,
     SilverModelOutcome,
     SilverModelSpec,
@@ -202,7 +201,9 @@ def outcome_from_context(context: Mapping[str, object]) -> SilverModelOutcome:
     outcome = (
         ModelOutcome.FOLDED
         if skipped and reason and "discriminator subclass" in reason
-        else ModelOutcome.SKIPPED if skipped else ModelOutcome.GENERATED
+        else ModelOutcome.SKIPPED
+        if skipped
+        else ModelOutcome.GENERATED
     )
     class_name = str(context.get("class_name") or "")
     model_name = str(context.get("model_name") or "")
@@ -366,8 +367,3 @@ def schema_model_from_context(context: Mapping[str, object]) -> SchemaModelSpec:
         ontology_iri=str(context.get("ontology_iri") or ""),
         ontology_version=str(context.get("ontology_version") or ""),
     )
-
-
-def scalar(value: Scalar) -> Scalar:
-    """Identity helper that keeps scalar typing explicit at call sites."""
-    return value

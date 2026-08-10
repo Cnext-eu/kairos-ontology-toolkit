@@ -1134,7 +1134,9 @@ def build_activation_inventory(
                 "selection": (
                     "selected"
                     if record.uri in selected
-                    else "excluded" if availability == "excluded" else "unselected"
+                    else "excluded"
+                    if availability == "excluded"
+                    else "unselected"
                 ),
                 "inherited": bool(inherited_by.get(record.uri)),
                 "inherited_by": sorted(inherited_by.get(record.uri, set())),

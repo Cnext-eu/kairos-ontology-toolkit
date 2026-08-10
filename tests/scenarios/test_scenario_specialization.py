@@ -53,15 +53,13 @@ class TestRefModelSpecializationParsing:
         assert "Person" in spec_names
 
         # Organisation specialization should expose registrationNumber
-        org_spec = next(s for s in party["specializations"]
-                        if s["class"] == "Organisation")
+        org_spec = next(s for s in party["specializations"] if s["class"] == "Organisation")
         org_prop_names = {p["name"] for p in org_spec["properties"]}
         assert "registrationNumber" in org_prop_names
         assert org_spec["distance"] == 1
 
         # Person specialization should expose firstName, lastName
-        person_spec = next(s for s in party["specializations"]
-                           if s["class"] == "Person")
+        person_spec = next(s for s in party["specializations"] if s["class"] == "Person")
         person_prop_names = {p["name"] for p in person_spec["properties"]}
         assert "firstName" in person_prop_names
         assert "lastName" in person_prop_names
@@ -118,8 +116,7 @@ class TestInventorySpecializations:
         assert "Person" in spec_names
 
         # Verify deep property structure
-        org_spec = next(s for s in party["specializations"]
-                        if s["class"] == "Organisation")
+        org_spec = next(s for s in party["specializations"] if s["class"] == "Organisation")
         org_prop_names = {p["name"] for p in org_spec["properties"]}
         assert "registrationNumber" in org_prop_names
 
@@ -188,8 +185,7 @@ class TestCoverageSpecialization:
 
         # registrationNumber should be a specialization match
         reg_align = next(
-            pa for pa in prop_alignments
-            if pa["ontology_property"] == "registrationNumber"
+            pa for pa in prop_alignments if pa["ontology_property"] == "registrationNumber"
         )
         assert reg_align["alignment"] == "specialization"
         assert reg_align["confidence"] == 0.5
@@ -197,10 +193,7 @@ class TestCoverageSpecialization:
         assert "Organisation" in reg_align["refinement_suggestion"]
 
         # companyName should NOT match as specialization (no ref counterpart)
-        name_align = next(
-            pa for pa in prop_alignments
-            if pa["ontology_property"] == "companyName"
-        )
+        name_align = next(pa for pa in prop_alignments if pa["ontology_property"] == "companyName")
         assert name_align["alignment"] == "custom"
 
     def test_coverage_specialization_excluded_from_percentage(self, tmp_path):
@@ -248,15 +241,12 @@ test:registrationNumber a owl:DatatypeProperty ;
         assert name_pa["alignment"] == "name-match"
 
         # registrationNumber → specialization
-        reg_pa = next(
-            p for p in prop_alignments if p["ontology_property"] == "registrationNumber"
-        )
+        reg_pa = next(p for p in prop_alignments if p["ontology_property"] == "registrationNumber")
         assert reg_pa["alignment"] == "specialization"
 
         # Coverage should count only non-custom, non-specialization
         aligned = sum(
-            1 for p in prop_alignments
-            if p["alignment"] not in ("custom", "specialization")
+            1 for p in prop_alignments if p["alignment"] not in ("custom", "specialization")
         )
         total = len(prop_alignments)
         pct = round(aligned / total * 100)

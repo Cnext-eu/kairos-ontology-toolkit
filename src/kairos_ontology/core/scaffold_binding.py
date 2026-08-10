@@ -79,7 +79,9 @@ _TECHNICAL_FIELD_TYPES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _FK_SHAPED_NAME = re.compile(r"(_id|_fk|_code)$", re.IGNORECASE)
-_EVENT_TIME_NAME = re.compile(r"(event.?time|occurred.?at|created.?at|event.?date|timestamp)", re.IGNORECASE)
+_EVENT_TIME_NAME = re.compile(
+    r"(event.?time|occurred.?at|created.?at|event.?date|timestamp)", re.IGNORECASE
+)
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
 
 
@@ -140,8 +142,10 @@ def load_table_columns(hub_root: Path, system: str, table: str) -> tuple[SourceC
             ``integration/sources/<system>/``.
     """
     tables = list_source_tables(hub_root, system)
-    matched = table if table in tables else next(
-        (name for name in tables if name.lower() == table.lower()), None
+    matched = (
+        table
+        if table in tables
+        else next((name for name in tables if name.lower() == table.lower()), None)
     )
     if matched is None:
         available = ", ".join(sorted(tables)) or "(none)"
@@ -186,9 +190,7 @@ def list_unscaffolded_tables(hub_root: Path, system: str) -> tuple[str, ...]:
                 if isinstance(relation, str) and relation:
                     bound_relations.add(relation.lower())
     return tuple(
-        table
-        for table in sorted(tables)
-        if f"{system}.{table}".lower() not in bound_relations
+        table for table in sorted(tables) if f"{system}.{table}".lower() not in bound_relations
     )
 
 
@@ -380,9 +382,7 @@ def _derive_domain_ontology_iri(
                 )
             except Exception:  # noqa: BLE001 - a malformed/unresolvable sibling must not block
                 continue
-            root_entry = next(
-                (item for item in loaded.manifest if item.import_depth == 0), None
-            )
+            root_entry = next((item for item in loaded.manifest if item.import_depth == 0), None)
             iri = root_entry.ontology_iri if root_entry else None
             if not iri:
                 continue
@@ -493,9 +493,7 @@ _STUB_HEADER = (
 
 def _write_preview_ttl(text: str) -> Path:
     """Write dry-run-preview Turtle *text* to a fresh temp file and return its path."""
-    handle = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".ttl", delete=False, encoding="utf-8"
-    )
+    handle = tempfile.NamedTemporaryFile(mode="w", suffix=".ttl", delete=False, encoding="utf-8")
     try:
         handle.write(text)
     finally:
@@ -568,13 +566,19 @@ def ensure_domain_ontology_stub(
         combined = text.rstrip("\n") + "\n" + addition.lstrip("\n")
         if dry_run:
             return OntologyStubOutcome(
-                path, False, True, accelerator_ontology_iri,
-                dry_run=True, preview_path=_write_preview_ttl(combined),
+                path,
+                False,
+                True,
+                accelerator_ontology_iri,
+                dry_run=True,
+                preview_path=_write_preview_ttl(combined),
             )
         path.write_text(combined, encoding="utf-8")
         return OntologyStubOutcome(path, False, True, accelerator_ontology_iri)
 
-    ontology_iri, base_notes = _derive_domain_ontology_iri(hub_root, domain, catalog_path=catalog_path)
+    ontology_iri, base_notes = _derive_domain_ontology_iri(
+        hub_root, domain, catalog_path=catalog_path
+    )
     label = domain.replace("-", " ").replace("_", " ").title()
     predicates = [f'rdfs:label "{label} domain ontology"@en']
     if accelerator_ontology_iri:
@@ -591,13 +595,22 @@ def ensure_domain_ontology_stub(
     )
     if dry_run:
         return OntologyStubOutcome(
-            path, True, accelerator_ontology_iri is not None, accelerator_ontology_iri,
-            tuple(base_notes), dry_run=True, preview_path=_write_preview_ttl(text),
+            path,
+            True,
+            accelerator_ontology_iri is not None,
+            accelerator_ontology_iri,
+            tuple(base_notes),
+            dry_run=True,
+            preview_path=_write_preview_ttl(text),
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return OntologyStubOutcome(
-        path, True, accelerator_ontology_iri is not None, accelerator_ontology_iri, tuple(base_notes)
+        path,
+        True,
+        accelerator_ontology_iri is not None,
+        accelerator_ontology_iri,
+        tuple(base_notes),
     )
 
 
@@ -646,7 +659,9 @@ def _expression_to_yaml_value(expr: Expression) -> Any:
         if expr.null_policy:
             node["nullPolicy"] = expr.null_policy
         return node
-    raise TypeError(f"unsupported expression node: {type(expr)!r}")  # pragma: no cover - closed grammar
+    raise TypeError(
+        f"unsupported expression node: {type(expr)!r}"
+    )  # pragma: no cover - closed grammar
 
 
 # --------------------------------------------------------------------------------------
@@ -685,7 +700,9 @@ def render_staging_sql(
     select_lines: list[str] = []
     for column in columns:
         target_type = _source_type_to_target(column.data_type, platform)
-        is_stringy = target_type.upper().startswith(("VARCHAR", "STRING", "TEXT", "CHAR", "NCHAR", "NVARCHAR"))
+        is_stringy = target_type.upper().startswith(
+            ("VARCHAR", "STRING", "TEXT", "CHAR", "NCHAR", "NVARCHAR")
+        )
         cast_expr = f"CAST({column.name} AS {target_type})"
         expr = f"NULLIF(TRIM({cast_expr}), '')" if is_stringy else cast_expr
         select_lines.append(f"        {expr} as {column.name}")
@@ -869,9 +886,7 @@ def run_scaffold_binding(
     stub_outcome: OntologyStubOutcome | None = None
     reload_path = ontology_path
     preview_ttl_path: Path | None = None
-    needs_import_check = loaded is None or (
-        loaded.semantic_index.class_by_uri(class_uri) is None
-    )
+    needs_import_check = loaded is None or (loaded.semantic_index.class_by_uri(class_uri) is None)
     if not ontology_path.is_file() or needs_import_check:
         accelerator_ontology_iri, accel_notes = resolve_accelerator_import(
             hub_root=hub_root,
@@ -966,7 +981,9 @@ def run_scaffold_binding(
         "grain": {"columns": list(grain_columns)},
         "identity": {"strategy": "source-natural", "sourceKey": list(identity_key)},
         "load": {"mode": archetype.load_mode},
-        "fields": seed_fields if seed_fields is not None else _build_field_entries(columns, matches),
+        "fields": seed_fields
+        if seed_fields is not None
+        else _build_field_entries(columns, matches),
     }
     if technical_entries:
         doc["technicalFields"] = technical_entries
@@ -981,7 +998,9 @@ def run_scaffold_binding(
                     "domain": SENTINEL_PARENT_DOMAIN,
                     "key": [{"column": SENTINEL_PARENT_KEY_COLUMN, "type": "string"}],
                 },
-                "join": [{"local": SENTINEL_LOCAL_FK_COLUMN, "foreign": SENTINEL_PARENT_KEY_COLUMN}],
+                "join": [
+                    {"local": SENTINEL_LOCAL_FK_COLUMN, "foreign": SENTINEL_PARENT_KEY_COLUMN}
+                ],
                 "cardinality": "many-to-one",
                 "mode": "non-temporal",
                 "missingParent": "error",
@@ -1043,7 +1062,9 @@ def run_scaffold_binding(
         ]
         comment_hooks.setdefault("grain", []).extend(confirm_lines)
 
-    rendered = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, allow_unicode=True, width=100)
+    rendered = yaml.safe_dump(
+        doc, sort_keys=False, default_flow_style=False, allow_unicode=True, width=100
+    )
     for key, comment_lines in comment_hooks.items():
         rendered = _insert_comment_before(rendered, key, comment_lines)
 
@@ -1052,7 +1073,9 @@ def run_scaffold_binding(
         f"# Source: {system}.{table}   Domain: {resolved_domain}   Target: {target_class_token}",
     ]
     if mapped_columns:
-        header_lines.append(f"# Mapped columns ({len(mapped_columns)}): {', '.join(mapped_columns)}")
+        header_lines.append(
+            f"# Mapped columns ({len(mapped_columns)}): {', '.join(mapped_columns)}"
+        )
     if technical_columns:
         header_lines.append(
             f"# Technical fields, DD-139, not ontology properties ({len(technical_columns)}): "

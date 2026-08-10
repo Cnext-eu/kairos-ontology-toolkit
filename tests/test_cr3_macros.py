@@ -23,12 +23,7 @@ from kairos_ontology.core.projections.dbt import (
 from tests.test_dbt_phases import _client_inputs
 
 MACRO_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "kairos_ontology"
-    / "templates"
-    / "dbt"
-    / "macros"
+    Path(__file__).resolve().parents[1] / "src" / "kairos_ontology" / "templates" / "dbt" / "macros"
 )
 NEW_MACROS = (
     "kairos_clean_sentinel",

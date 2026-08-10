@@ -115,14 +115,6 @@ class CanonicalTypeSpec:
 
 
 @dataclass(frozen=True, slots=True)
-class SourceTableIdentitySpec:
-    source_system_uri: str
-    source_table_uri: str
-    source_name: str
-    table_name: str
-
-
-@dataclass(frozen=True, slots=True)
 class SchemaEvolutionSpec:
     action: EffectiveValue[SchemaEvolutionAction]
 

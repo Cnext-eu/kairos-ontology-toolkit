@@ -113,13 +113,19 @@ def _build_hub(tmp_path: Path) -> tuple[Path, Path]:
     (hub_root / "model" / "ontologies").mkdir(parents=True)
     (hub_root / "integration" / "sources" / "crm").mkdir(parents=True)
     (hub_root / "integration" / "bindings").mkdir(parents=True)
-    (hub_root / "kairos.yaml").write_text("version: 5\nname: acmehub\nadapter: fabric\n", encoding="utf-8")
+    (hub_root / "kairos.yaml").write_text(
+        "version: 5\nname: acmehub\nadapter: fabric\n", encoding="utf-8"
+    )
 
-    accelerator_ttl_path = ref_models_dir / "accelerator-packs" / "acme" / "ontologies" / "party.ttl"
+    accelerator_ttl_path = (
+        ref_models_dir / "accelerator-packs" / "acme" / "ontologies" / "party.ttl"
+    )
     accelerator_ttl_path.parent.mkdir(parents=True)
     accelerator_ttl_path.write_text(_ACCELERATOR_TTL, encoding="utf-8")
 
-    data_domains_path = ref_models_dir / "accelerator-packs" / "acme" / "client-hub-blueprint" / "data-domains.yaml"
+    data_domains_path = (
+        ref_models_dir / "accelerator-packs" / "acme" / "client-hub-blueprint" / "data-domains.yaml"
+    )
     data_domains_path.parent.mkdir(parents=True)
     data_domains_path.write_text(_DATA_DOMAINS_YAML, encoding="utf-8")
 
@@ -420,7 +426,7 @@ def test_event_stream_grain_hint_embeds_detected_columns(tmp_path):
     vocab_path = hub_root / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
     vocab_path.write_text(
         vocab_path.read_text(encoding="utf-8")
-        + '\nsrc:createdat a kb:SourceColumn ; kb:sourceTable src:orgs ;\n'
+        + "\nsrc:createdat a kb:SourceColumn ; kb:sourceTable src:orgs ;\n"
         '  kb:columnName "created_at" ; kb:dataType "datetime" ;\n'
         '  kb:nullable "false"^^xsd:boolean .\n',
         encoding="utf-8",
@@ -487,7 +493,12 @@ def test_from_binding_seeds_merged_master_fields(tmp_path):
 # ---------------------------------------------------------------------------
 def _col(name, *, nullable=False, distinct_count=None, pk=False):
     return SourceColumn(
-        name=name, data_type="varchar(50)", nullable=nullable, samples=(), distinct_count=distinct_count, is_primary_key=pk
+        name=name,
+        data_type="varchar(50)",
+        nullable=nullable,
+        samples=(),
+        distinct_count=distinct_count,
+        is_primary_key=pk,
     )
 
 

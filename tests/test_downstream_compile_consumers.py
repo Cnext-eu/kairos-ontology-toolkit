@@ -234,8 +234,7 @@ def test_registry_wires_mdm_plan_consumer_without_core_importing_mdm(tmp_path):
 def test_registry_dispatches_gold_alias_to_typed_consumer(tmp_path, monkeypatch):
     plan = build_compile_plan(_copy_hub(tmp_path), "party")
     monkeypatch.setattr(
-        "kairos_ontology.core.projections.medallion_gold_projector."
-        "generate_gold_from_compile_plan",
+        "kairos_ontology.core.projections.medallion_gold_projector.generate_gold_from_compile_plan",
         lambda compile_plan: {"party/gold.sql": compile_plan.provenance_hash},
     )
 

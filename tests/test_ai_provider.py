@@ -203,8 +203,10 @@ class TestResolveProviderConfig:
     def test_azure_no_key_no_identity(self):
         """Azure without key and without azure-identity should error."""
         env = {"KAIROS_AI_PROVIDER": "azure", "AZURE_AI_ENDPOINT": "https://az.com"}
-        with patch.dict(os.environ, env, clear=True), \
-             patch.dict("sys.modules", {"azure": None, "azure.identity": None}):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.dict("sys.modules", {"azure": None, "azure.identity": None}),
+        ):
             with pytest.raises(EnvironmentError):
                 resolve_provider_config()
 
@@ -254,6 +256,7 @@ class TestPerRoleEndpoints:
 
     def test_resolve_role_model_helper(self):
         from kairos_ontology.core.ai_provider import resolve_role_model
+
         with patch.dict(os.environ, {"KAIROS_AI_AFFINITY_MODEL": "mini-x"}, clear=True):
             assert resolve_role_model("affinity", "fallback") == "mini-x"
             assert resolve_role_model("alignment", "fallback") == "fallback"
@@ -327,6 +330,7 @@ class TestCreateFoundryClient:
     def test_foundry_missing_sdk_raises(self):
         """Missing azure-ai-projects package should raise EnvironmentError."""
         from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
+
         config = AIProviderConfig(
             provider="foundry",
             endpoint="https://my.ai.azure.com/api/projects/proj",
@@ -334,8 +338,7 @@ class TestCreateFoundryClient:
             model="gpt-5.4-mini",
         )
         # Simulate ImportError for azure.ai.projects
-        real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') \
-            else __import__
+        real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
         def fail_import(name, *args, **kwargs):
             if name == "azure.ai.projects":
@@ -366,10 +369,13 @@ class TestCreateFoundryClient:
             model="gpt-5.4-mini",
         )
 
-        with patch.dict("sys.modules", {
-            "azure.ai.projects": mock_projects_module,
-            "azure.core.credentials": mock_key_cred_module,
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "azure.ai.projects": mock_projects_module,
+                "azure.core.credentials": mock_key_cred_module,
+            },
+        ):
             client = _create_foundry_client(config)
 
         mock_projects_module.AIProjectClient.assert_called_once()
@@ -415,11 +421,14 @@ class TestCreateFoundryClient:
             model="gpt-5.4-mini",
         )
 
-        with patch.dict("sys.modules", {
-            "azure.ai.projects": mock_projects_module,
-            "azure.core.credentials": mock_key_cred_module,
-            "azure.identity": mock_identity_module,
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "azure.ai.projects": mock_projects_module,
+                "azure.core.credentials": mock_key_cred_module,
+                "azure.identity": mock_identity_module,
+            },
+        ):
             client = _create_foundry_client(config)
 
         assert client is mock_openai
@@ -448,18 +457,20 @@ class TestCreateFoundryClient:
             model="gpt-5.4-mini",
         )
 
-        real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') \
-            else __import__
+        real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
         def selective_import(name, *args, **kwargs):
             if name == "azure.identity":
                 raise ImportError("No module named 'azure.identity'")
             return real_import(name, *args, **kwargs)
 
-        with patch.dict("sys.modules", {
-            "azure.ai.projects": mock_projects_module,
-            "azure.core.credentials": mock_key_cred_module,
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "azure.ai.projects": mock_projects_module,
+                "azure.core.credentials": mock_key_cred_module,
+            },
+        ):
             with patch("builtins.__import__", side_effect=selective_import):
                 with pytest.raises(EnvironmentError, match="azure-identity"):
                     _create_foundry_client(config)
@@ -467,6 +478,7 @@ class TestCreateFoundryClient:
     def test_foundry_no_key_no_identity_raises(self):
         """Foundry without API key and without azure-identity should error."""
         from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
+
         config = AIProviderConfig(
             provider="foundry",
             endpoint="https://my.ai.azure.com/api/projects/proj",
@@ -475,8 +487,7 @@ class TestCreateFoundryClient:
         )
         mock_projects_module = MagicMock()
 
-        real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') \
-            else __import__
+        real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
         def selective_import(name, *args, **kwargs):
             if name == "azure.identity":
@@ -552,7 +563,9 @@ class TestCreateChatCompletion:
 
         client = self._client(return_value="ok")
         result = create_chat_completion(
-            client, model="m", messages=[{"role": "user", "content": "hi"}],
+            client,
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
             temperature=0.1,
         )
         assert result == "ok"
@@ -570,8 +583,11 @@ class TestCreateChatCompletion:
             ]
         )
         result = create_chat_completion(
-            client, model="m", messages=[{"role": "user", "content": "hi"}],
-            temperature=0.1, response_format={"type": "json_object"},
+            client,
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.1,
+            response_format={"type": "json_object"},
         )
         assert result == "ok-without-temperature"
         assert client.chat.completions.create.call_count == 2
@@ -585,7 +601,9 @@ class TestCreateChatCompletion:
         client = self._client(side_effect=RuntimeError("network timeout"))
         with pytest.raises(RuntimeError, match="network timeout"):
             create_chat_completion(
-                client, model="m", messages=[{"role": "user", "content": "hi"}],
+                client,
+                model="m",
+                messages=[{"role": "user", "content": "hi"}],
                 temperature=0.1,
             )
         client.chat.completions.create.assert_called_once()
@@ -599,7 +617,9 @@ class TestCreateChatCompletion:
         )
         with pytest.raises(RuntimeError, match="top_p"):
             create_chat_completion(
-                client, model="m", messages=[{"role": "user", "content": "hi"}],
+                client,
+                model="m",
+                messages=[{"role": "user", "content": "hi"}],
                 temperature=0.1,
             )
         client.chat.completions.create.assert_called_once()
@@ -616,7 +636,9 @@ class TestCreateChatCompletion:
         )
         with pytest.raises(RuntimeError):
             create_chat_completion(
-                client, model="m", messages=[{"role": "user", "content": "hi"}],
+                client,
+                model="m",
+                messages=[{"role": "user", "content": "hi"}],
                 temperature=0.1,
             )
         assert client.chat.completions.create.call_count == 2

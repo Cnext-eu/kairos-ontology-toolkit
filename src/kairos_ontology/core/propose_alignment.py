@@ -585,9 +585,7 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
         for p in props[:MAX_REF_PROPERTIES_PER_PROMPT]:
             range_str = f" ({p['range']})" if p.get("range") else ""
             prop_lines.append(f"    - {p['name']} [{p.get('label', p['name'])}]{range_str}")
-        lines.append(
-            f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})" f"{_module_tag(cls)}"
-        )
+        lines.append(f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])}){_module_tag(cls)}")
         if cls.get("comment"):
             lines.append(f"    Description: {cls['comment']}")
         if prop_lines:
@@ -2716,8 +2714,7 @@ def _propose_alignments(
     alias_index = load_confirmed_alias_index(conformance_artifact_path)
     if alias_index:
         report(
-            f"  🔗 Confirmed anchors: {len(alias_index)} alias(es) from "
-            f"{conformance_artifact_path}"
+            f"  🔗 Confirmed anchors: {len(alias_index)} alias(es) from {conformance_artifact_path}"
         )
 
     if cost_warning:
@@ -2802,9 +2799,7 @@ def _propose_alignments(
                 existing_hash = _read_alignment_affinity_hash(out_path)
                 if existing_hash and existing_hash == affinity_hash:
                     if _read_alignment_params_hash(out_path) == params_hash:
-                        report(
-                            f"     ⏭  Up to date (affinity unchanged) — " f"skipped {out_path.name}"
-                        )
+                        report(f"     ⏭  Up to date (affinity unchanged) — skipped {out_path.name}")
                         staged_outputs.append({"kind": "cached", "path": out_path})
                         continue
 
@@ -2957,7 +2952,7 @@ def _propose_alignments(
                             resolved_name=str(resolved_cls.get("name", "")),
                             candidate_uris=(prior_uri,),
                             evidence=(
-                                f"human-resolved unresolved_anchor {anchor_id} -> " f"{prior_uri}",
+                                f"human-resolved unresolved_anchor {anchor_id} -> {prior_uri}",
                             ),
                         )
 
@@ -3387,8 +3382,7 @@ def _propose_alignments(
                 run_attempted += 1
                 run_provider_failures += 1
                 report(
-                    f"     ⚠ {system}.{table} → semantic generation FAILED: "
-                    f"{ta.generation_error}"
+                    f"     ⚠ {system}.{table} → semantic generation FAILED: {ta.generation_error}"
                 )
             elif ta.generation_outcome == OUTCOME_SEMANTIC_SUCCESS:
                 run_attempted += 1
@@ -3432,9 +3426,7 @@ def _propose_alignments(
             alignment.cross_module_matches = sorted(
                 matches, key=lambda r: (r["ref_module"], r["ref_class"])
             )
-            report(
-                f"     🔗 Cross-module matches: {len(alignment.cross_module_matches)} " "class(es)"
-            )
+            report(f"     🔗 Cross-module matches: {len(alignment.cross_module_matches)} class(es)")
 
         # Stage output (Claim Registry — DD-094); committed after the loop.
         merged_anchors = merge_preserving_anchor_resolutions(unresolved_records, existing_anchors)

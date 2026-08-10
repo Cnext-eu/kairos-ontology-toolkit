@@ -56,7 +56,9 @@ from .shared import _autodetect_analysis_dir, _resolve_ref_models_dir
     default=False,
     help="Compute and report what would be scaffolded without writing any file.",
 )
-@click.option("--accelerator", default=None, help="Accelerator pack (default: resolved from hub config).")
+@click.option(
+    "--accelerator", default=None, help="Accelerator pack (default: resolved from hub config)."
+)
 @click.option(
     "--ref-models",
     "ref_models_dir_opt",
@@ -141,8 +143,7 @@ def scaffold_binding_cmd(
             )
             return
         click.echo(
-            f"Tables under integration/sources/{system}/ with no EntityBinding yet "
-            f"({len(tables)}):"
+            f"Tables under integration/sources/{system}/ with no EntityBinding yet ({len(tables)}):"
         )
         for name in tables:
             click.echo(f"  - {name}")
@@ -154,7 +155,9 @@ def scaffold_binding_cmd(
         if not value
     ]
     if missing:
-        raise click.UsageError(f"{', '.join(missing)} required (or use --list-unscaffolded/--list-archetypes).")
+        raise click.UsageError(
+            f"{', '.join(missing)} required (or use --list-unscaffolded/--list-archetypes)."
+        )
 
     cwd = Path.cwd()
     ref_models_dir = (

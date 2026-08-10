@@ -31,6 +31,7 @@ from ._samples import (
     redact_sample_value,
 )
 
+
 def _az_cmd() -> str:
     """Return the correct az CLI executable name for the platform.
 
@@ -43,6 +44,7 @@ def _az_cmd() -> str:
         return resolved
     # Fallback: let subprocess raise FileNotFoundError with a clear message
     return "az"
+
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +80,9 @@ class ColumnInfo:
     distinct_count: int | None = None
     samples: list[str] = field(default_factory=list)
     json_detected: bool = False
-    json_classification: str | None = None  # flat, nested, array_object, array_primitive, polymorphic
+    json_classification: str | None = (
+        None  # flat, nested, array_object, array_primitive, polymorphic
+    )
     json_structure: list[JsonKeyInfo] = field(default_factory=list)
 
 
@@ -175,8 +179,7 @@ def extract_json_structure(samples: list[str], classification: str) -> list[Json
                 elif k not in key_types:
                     key_types[k] = ("null", None)
         return [
-            JsonKeyInfo(key=k, type=t, sample=_sample_repr(s))
-            for k, (t, s) in key_types.items()
+            JsonKeyInfo(key=k, type=t, sample=_sample_repr(s)) for k, (t, s) in key_types.items()
         ]
 
     elif classification == "array_object":
@@ -243,10 +246,18 @@ def _connect_fabric(profile: dict) -> Any:
         # Azure CLI authentication
         try:
             import subprocess as _sp
+
             result = _sp.run(
-                [_az_cmd(), "account", "get-access-token",
-                 "--resource", "https://database.windows.net/"],
-                capture_output=True, text=True, timeout=30,
+                [
+                    _az_cmd(),
+                    "account",
+                    "get-access-token",
+                    "--resource",
+                    "https://database.windows.net/",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"az CLI token failed: {result.stderr}")
@@ -257,6 +268,7 @@ def _connect_fabric(profile: dict) -> Any:
 
         # pyodbc token-based auth for Fabric
         import struct
+
         token_bytes = access_token.encode("utf-16-le")
         token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
 
@@ -277,19 +289,23 @@ def _connect_fabric(profile: dict) -> Any:
         # Get token via client credentials
         import urllib.request
         import urllib.parse
+
         token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-        data = urllib.parse.urlencode({
-            "grant_type": "client_credentials",
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "scope": "https://database.windows.net/.default",
-        }).encode()
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://database.windows.net/.default",
+            }
+        ).encode()
         req = urllib.request.Request(token_url, data=data)
         with urllib.request.urlopen(req, timeout=30) as resp:
             token_data = json.loads(resp.read())
         access_token = token_data["access_token"]
 
         import struct
+
         token_bytes = access_token.encode("utf-16-le")
         token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
 
@@ -348,10 +364,18 @@ def _connect_databricks(profile: dict) -> Any:
         # Try Azure CLI token for Databricks
         try:
             import subprocess as _sp
+
             result = _sp.run(
-                [_az_cmd(), "account", "get-access-token",
-                 "--resource", "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"],
-                capture_output=True, text=True, timeout=30,
+                [
+                    _az_cmd(),
+                    "account",
+                    "get-access-token",
+                    "--resource",
+                    "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"az CLI token failed: {result.stderr}")
@@ -400,9 +424,7 @@ def _introspect_tables_databricks(
     result = []
     for table_name in tables:
         logger.info(f"Introspecting {schema}.{table_name}...")
-        table_info = _introspect_single_table_databricks(
-            cursor, schema, table_name, sample_size
-        )
+        table_info = _introspect_single_table_databricks(cursor, schema, table_name, sample_size)
         result.append(table_info)
 
     cursor.close()
@@ -471,9 +493,7 @@ def _enrich_with_samples_databricks(
 
     # Get samples (LIMIT N)
     try:
-        cursor.execute(
-            f"SELECT {col_names} FROM `{schema}`.`{table_name}` LIMIT {sample_size}"
-        )
+        cursor.execute(f"SELECT {col_names} FROM `{schema}`.`{table_name}` LIMIT {sample_size}")
         rows = cursor.fetchall()
     except Exception as e:
         logger.warning(f"Could not sample {schema}.{table_name}: {e}")
@@ -498,13 +518,9 @@ def _enrich_with_samples_databricks(
         col.samples = list(dict.fromkeys(col.samples))[:sample_size]
 
     # Get distinct counts
-    distinct_parts = ", ".join(
-        f"COUNT(DISTINCT `{c.name}`)" for c in columns
-    )
+    distinct_parts = ", ".join(f"COUNT(DISTINCT `{c.name}`)" for c in columns)
     try:
-        cursor.execute(
-            f"SELECT {distinct_parts} FROM `{schema}`.`{table_name}`"
-        )
+        cursor.execute(f"SELECT {distinct_parts} FROM `{schema}`.`{table_name}`")
         distinct_row = cursor.fetchone()
         for col_idx, col in enumerate(columns):
             col.distinct_count = distinct_row[col_idx]
@@ -527,18 +543,13 @@ def _detect_json_columns_databricks(columns: list[ColumnInfo]) -> None:
         if not col.samples:
             continue
 
-        json_samples = [
-            s for s in col.samples
-            if s.strip().startswith(("{", "["))
-        ]
+        json_samples = [s for s in col.samples if s.strip().startswith(("{", "["))]
         if len(json_samples) < len(col.samples) * 0.5:
             continue
 
         col.json_detected = True
         col.json_classification = classify_json_column(json_samples)
-        col.json_structure = extract_json_structure(
-            json_samples, col.json_classification
-        )
+        col.json_structure = extract_json_structure(json_samples, col.json_classification)
 
 
 def introspect_tables(
@@ -664,9 +675,7 @@ def _enrich_with_samples(
 
     # Get samples (TOP N)
     try:
-        cursor.execute(
-            f"SELECT TOP {sample_size} {col_names} FROM [{schema}].[{table_name}]"
-        )
+        cursor.execute(f"SELECT TOP {sample_size} {col_names} FROM [{schema}].[{table_name}]")
         rows = cursor.fetchall()
     except Exception as e:
         logger.warning(f"Could not sample {schema}.{table_name}: {e}")
@@ -692,13 +701,9 @@ def _enrich_with_samples(
         col.samples = list(dict.fromkeys(col.samples))[:sample_size]
 
     # Get distinct counts (batch query)
-    distinct_parts = ", ".join(
-        f"COUNT(DISTINCT [{c.name}])" for c in columns
-    )
+    distinct_parts = ", ".join(f"COUNT(DISTINCT [{c.name}])" for c in columns)
     try:
-        cursor.execute(
-            f"SELECT {distinct_parts} FROM [{schema}].[{table_name}]"
-        )
+        cursor.execute(f"SELECT {distinct_parts} FROM [{schema}].[{table_name}]")
         distinct_row = cursor.fetchone()
         for col_idx, col in enumerate(columns):
             col.distinct_count = distinct_row[col_idx]
@@ -718,18 +723,13 @@ def _detect_json_columns(columns: list[ColumnInfo]) -> None:
             continue
 
         # Check if samples look like JSON
-        json_samples = [
-            s for s in col.samples
-            if s.strip().startswith(("{", "["))
-        ]
+        json_samples = [s for s in col.samples if s.strip().startswith(("{", "["))]
         if len(json_samples) < len(col.samples) * 0.5:
             continue  # Less than half look like JSON
 
         col.json_detected = True
         col.json_classification = classify_json_column(json_samples)
-        col.json_structure = extract_json_structure(
-            json_samples, col.json_classification
-        )
+        col.json_structure = extract_json_structure(json_samples, col.json_classification)
 
 
 # --------------------------------------------------------------------------- #
@@ -757,9 +757,7 @@ def parse_dbt_profile(profiles_dir: Path, profile_name: str, target: str = "dev"
 
     if profile_name not in profiles:
         available = list(profiles.keys())
-        raise ValueError(
-            f"Profile '{profile_name}' not found. Available: {available}"
-        )
+        raise ValueError(f"Profile '{profile_name}' not found. Available: {available}")
 
     profile = profiles[profile_name]
     target_name = target or profile.get("target", "dev")
@@ -768,8 +766,7 @@ def parse_dbt_profile(profiles_dir: Path, profile_name: str, target: str = "dev"
     if target_name not in outputs:
         available = list(outputs.keys())
         raise ValueError(
-            f"Target '{target_name}' not found in profile '{profile_name}'. "
-            f"Available: {available}"
+            f"Target '{target_name}' not found in profile '{profile_name}'. Available: {available}"
         )
 
     return outputs[target_name]

@@ -96,8 +96,10 @@ class TestYamlOutput:
                 columns=[
                     ColumnInfo(name="id", data_type="int", ordinal_position=1, nullable=False),
                     ColumnInfo(
-                        name="name", data_type="varchar(200)",
-                        ordinal_position=2, nullable=True,
+                        name="name",
+                        data_type="varchar(200)",
+                        ordinal_position=2,
+                        nullable=True,
                         samples=["Acme", "Baker"],
                     ),
                 ],
@@ -128,6 +130,7 @@ class TestYamlOutput:
 
         # Check manifest content
         import yaml
+
         with open(result_dir / "_manifest.yaml") as f:
             manifest = yaml.safe_load(f)
         assert manifest["version"] == "1.1"
@@ -159,13 +162,12 @@ class TestProfileParsing:
                         "schema": "dbo",
                         "authentication": "CLI",
                     }
-                }
+                },
             }
         }
         import yaml
-        (tmp_path / "profiles.yml").write_text(
-            yaml.dump(profiles_content), encoding="utf-8"
-        )
+
+        (tmp_path / "profiles.yml").write_text(yaml.dump(profiles_content), encoding="utf-8")
 
         result = parse_dbt_profile(tmp_path, "myproject", "dev")
         assert result["type"] == "fabric"
@@ -173,6 +175,7 @@ class TestProfileParsing:
 
     def test_profile_not_found(self, tmp_path):
         import yaml
+
         (tmp_path / "profiles.yml").write_text(
             yaml.dump({"other": {"target": "dev", "outputs": {"dev": {}}}}),
             encoding="utf-8",
@@ -186,6 +189,7 @@ class TestProfileParsing:
 
     def test_parse_databricks_profile(self, tmp_path):
         import yaml
+
         profiles_content = {
             "myproject": {
                 "target": "dev",
@@ -198,12 +202,10 @@ class TestProfileParsing:
                         "schema": "bronze",
                         "token": "dapiXYZ",
                     }
-                }
+                },
             }
         }
-        (tmp_path / "profiles.yml").write_text(
-            yaml.dump(profiles_content), encoding="utf-8"
-        )
+        (tmp_path / "profiles.yml").write_text(yaml.dump(profiles_content), encoding="utf-8")
 
         result = parse_dbt_profile(tmp_path, "myproject", "dev")
         assert result["type"] == "databricks"
@@ -307,6 +309,7 @@ class TestSamplesYamlOutput:
         assert samples_path.exists()
 
         import yaml
+
         with open(samples_path) as f:
             data = yaml.safe_load(f)
 
@@ -361,9 +364,7 @@ class TestSamplesYamlOutput:
                         ordinal_position=2,
                     ),
                 ],
-                sample_rows=[
-                    {"email": "person@example.com", "status": "active"}
-                ],
+                sample_rows=[{"email": "person@example.com", "status": "active"}],
             ),
         ]
 
@@ -377,6 +378,7 @@ class TestSamplesYamlOutput:
         )
 
         import yaml
+
         raw = (result_dir / "contacts.samples.yaml").read_text(encoding="utf-8")
         samples = yaml.safe_load(raw)
         assert "person@example.com" not in raw
@@ -422,13 +424,10 @@ class TestSamplesYamlOutput:
         )
 
         import yaml
-        table_data = yaml.safe_load(
-            (result_dir / "events.yaml").read_text(encoding="utf-8")
-        )
+
+        table_data = yaml.safe_load((result_dir / "events.yaml").read_text(encoding="utf-8"))
         sample = table_data["columns"][0]["json_structure"][0]["sample"]
-        assert sample == (
-            "<redacted kind=email source=events.payload.owner_email datatype=string>"
-        )
+        assert sample == ("<redacted kind=email source=events.payload.owner_email datatype=string>")
 
     def test_row_context_preserved_across_columns(self, tmp_path):
         """Verify that row[0] values for all columns belong to the same source row."""
@@ -458,6 +457,7 @@ class TestSamplesYamlOutput:
         )
 
         import yaml
+
         with open(result_dir / "tblAddress.samples.yaml") as f:
             data = yaml.safe_load(f)
 
@@ -493,8 +493,10 @@ class TestImportSourceCwdGuard:
         runner = CliRunner()
         result = runner.invoke(cli, ["import-source", "--from", str(source_yaml)])
 
-        assert "You appear to be in a dataplatform repo" in result.output or \
-               "You appear to be in a dataplatform repo" in (result.stderr or "")
+        assert (
+            "You appear to be in a dataplatform repo" in result.output
+            or "You appear to be in a dataplatform repo" in (result.stderr or "")
+        )
 
     def test_no_warning_when_in_hub_repo(self, tmp_path, monkeypatch):
         """No warning when CWD has model/ directory (hub repo)."""
@@ -517,4 +519,6 @@ class TestImportSourceCwdGuard:
         runner = CliRunner()
         result = runner.invoke(cli, ["import-source", "--from", str(source_yaml)])
 
-        assert "You appear to be in a dataplatform repo" not in (result.output + (result.stderr or ""))
+        assert "You appear to be in a dataplatform repo" not in (
+            result.output + (result.stderr or "")
+        )

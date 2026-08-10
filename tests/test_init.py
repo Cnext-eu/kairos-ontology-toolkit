@@ -983,7 +983,6 @@ def test_new_repo_workflow_no_submodules(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-
 def test_new_repo_never_runs_smartcoding(tmp_path):
     """new-repo must not run any update-smartcoding-latest.ps1 script (template removed)."""
     runner = CliRunner()

@@ -132,11 +132,7 @@ class SemanticIndex:
         if cls is None:
             return []
         direct = {item.uri: item for item in cls.direct_properties}
-        inherited = {
-            item.uri: item
-            for item in cls.inherited_properties
-            if item.uri not in direct
-        }
+        inherited = {item.uri: item for item in cls.inherited_properties if item.uri not in direct}
         rows = []
         for origin, links in (("direct", direct), ("inherited", inherited)):
             for uri, link in sorted(links.items()):
@@ -174,9 +170,7 @@ class SemanticIndex:
     ) -> dict[str, Any]:
         """Return a bounded class slice with mandatory coverage disclosure."""
         requested = set(class_uris or ())
-        candidates = [
-            item for item in self.classes if not requested or item.uri in requested
-        ]
+        candidates = [item for item in self.classes if not requested or item.uri in requested]
         included = candidates[:max_classes] if max_classes is not None else candidates
         included_uris = {item.uri for item in included}
         omitted_modules = sorted(
@@ -244,11 +238,7 @@ def _is_asserted(
 
 
 def _uri_objects(graph: Graph, subject: Any, predicate: URIRef) -> set[URIRef]:
-    return {
-        value
-        for value in graph.objects(subject, predicate)
-        if isinstance(value, URIRef)
-    }
+    return {value for value in graph.objects(subject, predicate) if isinstance(value, URIRef)}
 
 
 def _transitive_links(
@@ -266,9 +256,7 @@ def _transitive_links(
     while queue:
         current, distance = queue.popleft()
         values = (
-            graph.subjects(predicate, current)
-            if inverse
-            else graph.objects(current, predicate)
+            graph.subjects(predicate, current) if inverse else graph.objects(current, predicate)
         )
         for value in values:
             if not isinstance(value, URIRef) or value in visited:
@@ -415,10 +403,7 @@ def _collection_links(
         head = graph.value(expression, predicate)
         members.update(_list_members(graph, head))
     provenance = _term_provenance(result, cls)
-    return tuple(
-        SemanticLink(str(member), provenance)
-        for member in sorted(members, key=str)
-    )
+    return tuple(SemanticLink(str(member), provenance) for member in sorted(members, key=str))
 
 
 def _property_type(graph: Graph, prop: URIRef) -> str:
@@ -439,14 +424,10 @@ def _class_uris(graph: Graph) -> set[URIRef]:
         if isinstance(subject, URIRef)
     }
     classes.update(
-        subject
-        for subject in graph.subjects(RDFS.subClassOf, None)
-        if isinstance(subject, URIRef)
+        subject for subject in graph.subjects(RDFS.subClassOf, None) if isinstance(subject, URIRef)
     )
     classes.update(
-        value
-        for value in graph.objects(None, RDFS.subClassOf)
-        if isinstance(value, URIRef)
+        value for value in graph.objects(None, RDFS.subClassOf) if isinstance(value, URIRef)
     )
     return classes
 
@@ -465,9 +446,7 @@ def _property_uris(graph: Graph) -> set[URIRef]:
     }
     for predicate in (RDFS.domain, RDFS.range, RDFS.subPropertyOf, SCHEMA.domainIncludes):
         properties.update(
-            subject
-            for subject in graph.subjects(predicate, None)
-            if isinstance(subject, URIRef)
+            subject for subject in graph.subjects(predicate, None) if isinstance(subject, URIRef)
         )
     return properties
 
@@ -557,20 +536,14 @@ def build_semantic_index(
                 ancestors=ancestors,
                 descendants=descendants,
                 direct_properties=direct,
-                inherited_properties=tuple(
-                    sorted(inherited.values(), key=lambda item: item.uri)
-                ),
+                inherited_properties=tuple(sorted(inherited.values(), key=lambda item: item.uri)),
                 equivalent_classes=equivalents,
                 restrictions=_restriction_records(graph, result, cls) if design else (),
                 intersection_members=(
-                    _collection_links(graph, result, cls, OWL.intersectionOf)
-                    if design
-                    else ()
+                    _collection_links(graph, result, cls, OWL.intersectionOf) if design else ()
                 ),
                 union_members=(
-                    _collection_links(graph, result, cls, OWL.unionOf)
-                    if design
-                    else ()
+                    _collection_links(graph, result, cls, OWL.unionOf) if design else ()
                 ),
             )
         )
@@ -589,12 +562,8 @@ def build_semantic_index(
         ranges = _uri_objects(graph, prop, RDFS.range)
         if transitive:
             for superproperty in superproperties:
-                domains.update(
-                    effective_domain_classes(graph, URIRef(superproperty.uri))
-                )
-                ranges.update(
-                    _uri_objects(graph, URIRef(superproperty.uri), RDFS.range)
-                )
+                domains.update(effective_domain_classes(graph, URIRef(superproperty.uri)))
+                ranges.update(_uri_objects(graph, URIRef(superproperty.uri), RDFS.range))
         property_records.append(
             PropertyRecord(
                 uri=str(prop),
@@ -611,9 +580,7 @@ def build_semantic_index(
                             prop,
                             RDFS.domain,
                             uri,
-                            asserted=_is_asserted(
-                                result, prop, RDFS.domain, uri
-                            ),
+                            asserted=_is_asserted(result, prop, RDFS.domain, uri),
                         ),
                     )
                     for uri in sorted(domains, key=str)
@@ -626,9 +593,7 @@ def build_semantic_index(
                             prop,
                             RDFS.range,
                             uri,
-                            asserted=_is_asserted(
-                                result, prop, RDFS.range, uri
-                            ),
+                            asserted=_is_asserted(result, prop, RDFS.range, uri),
                         ),
                     )
                     for uri in sorted(ranges, key=str)
@@ -698,10 +663,7 @@ def build_semantic_index(
                 IndividualRecord(
                     uri=str(individual),
                     name=_local_name(str(individual)),
-                    label=str(
-                        graph.value(individual, RDFS.label)
-                        or _local_name(str(individual))
-                    ),
+                    label=str(graph.value(individual, RDFS.label) or _local_name(str(individual))),
                     provenance=provenance,
                     classes=tuple(
                         SemanticLink(

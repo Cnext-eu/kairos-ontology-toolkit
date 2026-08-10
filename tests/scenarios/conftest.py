@@ -23,13 +23,7 @@ SHAPES_DIR = HUB_ROOT / "model" / "shapes"
 MAPPINGS_DIR = HUB_ROOT / "model" / "mappings"
 SOURCES_DIR = HUB_ROOT / "integration" / "sources"
 
-TEMPLATE_DIR = (
-    Path(__file__).parent.parent.parent
-    / "src"
-    / "kairos_ontology"
-    / "templates"
-    / "dbt"
-)
+TEMPLATE_DIR = Path(__file__).parent.parent.parent / "src" / "kairos_ontology" / "templates" / "dbt"
 
 
 def _load_ontology(name: str) -> tuple[Graph, str, list[dict]]:
@@ -63,20 +57,24 @@ def _load_ontology(name: str) -> tuple[Graph, str, list[dict]]:
         if not cls_uri.startswith(namespace):
             continue
         from kairos_ontology.core.projections.uri_utils import extract_local_name
+
         local = extract_local_name(cls_uri)
         label = g.value(cls, OWL.Class) or local
         for lbl in g.objects(cls, OWL.Class):
             break
         # Use rdfs:label
         from rdflib import RDFS
+
         label = str(g.value(cls, RDFS.label) or local)
         comment = str(g.value(cls, RDFS.comment) or f"{local} entity")
-        classes.append({
-            "uri": cls_uri,
-            "name": local,
-            "label": label,
-            "comment": comment,
-        })
+        classes.append(
+            {
+                "uri": cls_uri,
+                "name": local,
+                "label": label,
+                "comment": comment,
+            }
+        )
 
     return g, namespace, classes
 
@@ -116,6 +114,7 @@ def _load_ontology_with_imports(name: str) -> tuple[Graph, str, list[dict]]:
 
     # Extract local classes (domain namespace)
     from kairos_ontology.core.projections.uri_utils import extract_local_name
+
     classes = []
     for cls in g.subjects(RDF.type, OWL.Class):
         cls_uri = str(cls)
@@ -124,9 +123,14 @@ def _load_ontology_with_imports(name: str) -> tuple[Graph, str, list[dict]]:
         local = extract_local_name(cls_uri)
         label = str(g.value(cls, RDFS.label) or local)
         comment = str(g.value(cls, RDFS.comment) or f"{local} entity")
-        classes.append({
-            "uri": cls_uri, "name": local, "label": label, "comment": comment,
-        })
+        classes.append(
+            {
+                "uri": cls_uri,
+                "name": local,
+                "label": label,
+                "comment": comment,
+            }
+        )
 
     # DD-021: Discover whitelisted imports
     from kairos_ontology.core.projector import _discover_whitelisted_imports
@@ -145,7 +149,7 @@ def _load_ontology_with_imports(name: str) -> tuple[Graph, str, list[dict]]:
     }
     """
     for row in g.query(query):
-        all_class_rows.append((str(row['class']), row))
+        all_class_rows.append((str(row["class"]), row))
 
     # Collect hub domain namespaces (peer exclusion)
     hub_ns = set()
@@ -161,7 +165,9 @@ def _load_ontology_with_imports(name: str) -> tuple[Graph, str, list[dict]]:
             hub_ns.add(ns.rstrip("#"))
 
     imported = _discover_whitelisted_imports(
-        g, namespace, all_class_rows,
+        g,
+        namespace,
+        all_class_rows,
         projection_ext_path=ext_path if ext_path.exists() else None,
         gold_ext_path=None,
         target="silver",
@@ -175,6 +181,7 @@ def _load_ontology_with_imports(name: str) -> tuple[Graph, str, list[dict]]:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def client_ontology():

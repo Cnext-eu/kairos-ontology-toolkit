@@ -419,7 +419,9 @@ def run_design_landscape(
         raise DesignLandscapeError(str(exc)) from exc
     resolved_accelerator = resolution.accelerator
     if resolved_accelerator is None:
-        raise DesignLandscapeError("no accelerator could be resolved; pass --accelerator explicitly.")
+        raise DesignLandscapeError(
+            "no accelerator could be resolved; pass --accelerator explicitly."
+        )
 
     context = build_reference_module_context(
         ref_models_dir,
@@ -433,7 +435,9 @@ def run_design_landscape(
             f"accelerator {resolved_accelerator!r} has no resolvable activated module(s){scope}."
         )
     for diagnostic in context.diagnostics:
-        gaps.append(f"module diagnostic [{diagnostic.level}] {diagnostic.code}: {diagnostic.message}")
+        gaps.append(
+            f"module diagnostic [{diagnostic.level}] {diagnostic.code}: {diagnostic.message}"
+        )
 
     # --- Activated accelerator class universe (module-scoped, never the whole registry) --
     class_owner: dict[str, str] = {}
@@ -497,7 +501,9 @@ def run_design_landscape(
     if analysis_dir.is_dir():
         alignment_files = sorted(analysis_dir.glob("*-alignment.yaml"))
         if not alignment_files:
-            gaps.append(f"no propose-alignment output (*-alignment.yaml) found under {analysis_dir}.")
+            gaps.append(
+                f"no propose-alignment output (*-alignment.yaml) found under {analysis_dir}."
+            )
         for alignment_path in alignment_files:
             try:
                 document = yaml.safe_load(alignment_path.read_text(encoding="utf-8"))
@@ -513,7 +519,9 @@ def run_design_landscape(
                 table = str(table_dict.get("table") or "").strip()
                 if not system or not table:
                     continue
-                resolved_uri = _resolve_alignment_class(table_dict, class_record, name_to_uris, gaps)
+                resolved_uri = _resolve_alignment_class(
+                    table_dict, class_record, name_to_uris, gaps
+                )
                 if resolved_uri is None:
                     continue
                 tables_by_class.setdefault(resolved_uri, set()).add((system, table))
@@ -611,9 +619,7 @@ def run_design_landscape(
                 "itself -- no LLM classification is performed in this pass."
             )
     else:
-        gaps.append(
-            f"no {bi_dir} directory found; BI/report weight evidence is unavailable."
-        )
+        gaps.append(f"no {bi_dir} directory found; BI/report weight evidence is unavailable.")
 
     # --- 4. Current binding state -----------------------------------------------------------
     bindings_by_class: dict[str, list[BoundBinding]] = {}
@@ -660,7 +666,10 @@ def run_design_landscape(
         universe_size = len(universe)
 
         source_tables = tuple(
-            sorted(source_coverage_by_class.get(class_uri, ()), key=lambda item: (item.system, item.table))
+            sorted(
+                source_coverage_by_class.get(class_uri, ()),
+                key=lambda item: (item.system, item.table),
+            )
         )
         source_count = len({(item.system, item.table) for item in source_tables})
         populated_count = len(populated_union.get(class_uri, ()))
@@ -670,7 +679,9 @@ def run_design_landscape(
         bi_weight = tuple(bi_weight_by_class.get(class_uri, ()))
         bindings = tuple(bindings_by_class.get(class_uri, ()))
         bound = bool(bindings)
-        has_discovery_evidence = demand is not None and demand.outcome not in NON_EVIDENCE_DISCOVERY_OUTCOMES
+        has_discovery_evidence = (
+            demand is not None and demand.outcome not in NON_EVIDENCE_DISCOVERY_OUTCOMES
+        )
         has_confirmed_demand = bool(demand and demand.confirmed)
 
         if not bound and source_count == 0 and not has_discovery_evidence:
@@ -717,7 +728,9 @@ def run_design_landscape(
     )
     rank_by_uri = {entry.class_uri: index + 1 for index, entry in enumerate(backlog_order)}
     ranked_entries = tuple(
-        replace(entry, rank=rank_by_uri[entry.class_uri]) if entry.class_uri in rank_by_uri else entry
+        replace(entry, rank=rank_by_uri[entry.class_uri])
+        if entry.class_uri in rank_by_uri
+        else entry
         for entry in sorted(entries, key=lambda entry: entry.class_name)
     )
 

@@ -48,9 +48,7 @@ def effective_domain_classes(graph: Graph, prop: URIRef) -> set[URIRef]:
             continue
         union = graph.value(domain, OWL.unionOf)
         if union is not None:
-            classes.update(
-                member for member in graph.items(union) if isinstance(member, URIRef)
-            )
+            classes.update(member for member in graph.items(union) if isinstance(member, URIRef))
     for domain in graph.objects(prop, SCHEMA.domainIncludes):
         if isinstance(domain, URIRef):
             classes.add(domain)
@@ -255,8 +253,7 @@ def extract_foreign_key_facts(graph: Graph) -> tuple[ForeignKeyAuthoringFact, ..
         ForeignKeyAuthoringFact(
             property_uri=str(prop),
             domain_value=(
-                str(domain) if (domain := graph.value(prop, RDFS.domain)) is not None
-                else None
+                str(domain) if (domain := graph.value(prop, RDFS.domain)) is not None else None
             ),
             domain_is_uri=isinstance(domain, URIRef),
             range_value=(
@@ -267,26 +264,26 @@ def extract_foreign_key_facts(graph: Graph) -> tuple[ForeignKeyAuthoringFact, ..
             range_is_uri=isinstance(range_value, URIRef),
             foreign_key_on=(
                 str(fk_on)
-                if (fk_on := graph.value(prop, KAIROS_EXT.silverForeignKeyOn))
-                is not None
+                if (fk_on := graph.value(prop, KAIROS_EXT.silverForeignKeyOn)) is not None
                 else None
             ),
             silver_foreign_key=bool_val(
-                graph, prop, KAIROS_EXT.silverForeignKey, False,
+                graph,
+                prop,
+                KAIROS_EXT.silverForeignKey,
+                False,
             ),
-            silver_column_name=(
-                str_val(graph, prop, KAIROS_EXT.silverColumnName) or None
-            ),
+            silver_column_name=(str_val(graph, prop, KAIROS_EXT.silverColumnName) or None),
             is_functional=(prop, RDF.type, OWL.FunctionalProperty) in graph,
             max_cardinality_classes=frozenset(
                 str(owner) for owner in _max_cardinality_classes(graph, prop)
             ),
-            junction_table_name=(
-                str_val(graph, prop, KAIROS_EXT.junctionTableName) or None
-            ),
+            junction_table_name=(str_val(graph, prop, KAIROS_EXT.junctionTableName) or None),
             nullable=_nullable_annotation(graph, prop),
             conditional_on_type=str_val(
-                graph, prop, KAIROS_EXT.conditionalOnType,
+                graph,
+                prop,
+                KAIROS_EXT.conditionalOnType,
             ),
         )
         for prop in sorted(graph.subjects(RDF.type, OWL.ObjectProperty), key=str)
@@ -316,14 +313,16 @@ def normalize_foreign_key_facts(
 
         if domain is None or range_class is None:
             if fk_on is not None:
-                diagnostics.append(ForeignKeyDiagnostic(
-                    kind="incomplete_silver_foreign_key_on",
-                    property_uri=prop,
-                    message=(
-                        f"silverForeignKeyOn on {prop_local} skipped "
-                        "— missing rdfs:domain or rdfs:range."
-                    ),
-                ))
+                diagnostics.append(
+                    ForeignKeyDiagnostic(
+                        kind="incomplete_silver_foreign_key_on",
+                        property_uri=prop,
+                        message=(
+                            f"silverForeignKeyOn on {prop_local} skipped "
+                            "— missing rdfs:domain or rdfs:range."
+                        ),
+                    )
+                )
             elif silver_foreign_key:
                 if domain is None and range_class is None:
                     missing = "rdfs:domain and rdfs:range"
@@ -331,14 +330,16 @@ def normalize_foreign_key_facts(
                     missing = "rdfs:domain"
                 else:
                     missing = "rdfs:range"
-                diagnostics.append(ForeignKeyDiagnostic(
-                    kind="incomplete_silver_foreign_key",
-                    property_uri=prop,
-                    message=(
-                        f"silverForeignKey on {prop_local} will be skipped "
-                        f"— missing {missing}. Resolve via: kairos-design-domain"
-                    ),
-                ))
+                diagnostics.append(
+                    ForeignKeyDiagnostic(
+                        kind="incomplete_silver_foreign_key",
+                        property_uri=prop,
+                        message=(
+                            f"silverForeignKey on {prop_local} will be skipped "
+                            f"— missing {missing}. Resolve via: kairos-design-domain"
+                        ),
+                    )
+                )
             continue
 
         if not fact.domain_is_uri or not fact.range_is_uri:
@@ -357,16 +358,18 @@ def normalize_foreign_key_facts(
                     # Preserve the established Gold heuristic for an invalid
                     # annotation while still excluding it from FK projection.
                     outgoing_relationship_sources.append(domain)
-                diagnostics.append(ForeignKeyDiagnostic(
-                    kind="invalid_silver_foreign_key_on",
-                    property_uri=prop,
-                    message=(
-                        f"silverForeignKeyOn on {prop_local} specifies "
-                        f"{local_name(str(fk_on))} which is neither domain "
-                        f"({local_name(str(domain))}) nor range "
-                        f"({local_name(str(range_class))}) — skipped."
-                    ),
-                ))
+                diagnostics.append(
+                    ForeignKeyDiagnostic(
+                        kind="invalid_silver_foreign_key_on",
+                        property_uri=prop,
+                        message=(
+                            f"silverForeignKeyOn on {prop_local} specifies "
+                            f"{local_name(str(fk_on))} which is neither domain "
+                            f"({local_name(str(domain))}) nor range "
+                            f"({local_name(str(range_class))}) — skipped."
+                        ),
+                    )
+                )
                 continue
             if fk_on == range_class:
                 source_class = range_class
@@ -376,24 +379,26 @@ def normalize_foreign_key_facts(
         if not junction_table_name:
             outgoing_relationship_sources.append(source_class)
 
-        descriptors.append(ForeignKeyDescriptor(
-            property_uri=prop,
-            domain_class=domain,
-            range_class=range_class,
-            source_class=source_class,
-            target_class=target_class,
-            is_functional=fact.is_functional,
-            max_cardinality_classes=frozenset(
-                URIRef(owner) for owner in fact.max_cardinality_classes
-            ),
-            silver_foreign_key=silver_foreign_key,
-            silver_column_name=fact.silver_column_name,
-            redirected=redirected,
-            reverse=reverse,
-            junction_table_name=junction_table_name,
-            nullable=fact.nullable,
-            conditional_on_type=fact.conditional_on_type,
-        ))
+        descriptors.append(
+            ForeignKeyDescriptor(
+                property_uri=prop,
+                domain_class=domain,
+                range_class=range_class,
+                source_class=source_class,
+                target_class=target_class,
+                is_functional=fact.is_functional,
+                max_cardinality_classes=frozenset(
+                    URIRef(owner) for owner in fact.max_cardinality_classes
+                ),
+                silver_foreign_key=silver_foreign_key,
+                silver_column_name=fact.silver_column_name,
+                redirected=redirected,
+                reverse=reverse,
+                junction_table_name=junction_table_name,
+                nullable=fact.nullable,
+                conditional_on_type=fact.conditional_on_type,
+            )
+        )
 
     return ForeignKeyClassification(
         tuple(descriptors),
@@ -416,6 +421,7 @@ KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
 # ---------------------------------------------------------------------------
 # Name conversion helpers
 # ---------------------------------------------------------------------------
+
 
 def camel_to_snake(name: str) -> str:
     """Convert CamelCase or camelCase to snake_case (R4).
@@ -482,7 +488,9 @@ def silver_schema_name(graph: "Graph", onto_uri: "URIRef", ontology_name: str) -
 
 
 def silver_table_name(
-    graph: "Graph", cls_uri: "URIRef", local: str,
+    graph: "Graph",
+    cls_uri: "URIRef",
+    local: str,
     naming_convention: str = "camel-to-snake",
 ) -> str:
     """Resolve the physical silver table/model name for a class.
@@ -494,7 +502,8 @@ def silver_table_name(
     override = str_val(graph, cls_uri, KAIROS_EXT.silverTableName)
     if override:
         return portable_sql_identifier(
-            override, annotation="kairos-ext:silverTableName",
+            override,
+            annotation="kairos-ext:silverTableName",
         )
     if naming_convention == "camel-to-snake":
         name = camel_to_snake(local)
@@ -521,15 +530,14 @@ def portable_sql_identifier(value: str, *, annotation: str) -> str:
 # RDF graph value accessors
 # ---------------------------------------------------------------------------
 
-def str_val(graph: Graph, subject: URIRef, predicate: URIRef,
-            default: str = "") -> str:
+
+def str_val(graph: Graph, subject: URIRef, predicate: URIRef, default: str = "") -> str:
     """Get a string literal value from the graph, with a default."""
     val = graph.value(subject, predicate)
     return str(val) if val is not None else default
 
 
-def bool_val(graph: Graph, subject: URIRef, predicate: URIRef,
-             default: bool = False) -> bool:
+def bool_val(graph: Graph, subject: URIRef, predicate: URIRef, default: bool = False) -> bool:
     """Get a boolean literal value from the graph, with a default."""
     val = graph.value(subject, predicate)
     if val is None:
@@ -537,8 +545,7 @@ def bool_val(graph: Graph, subject: URIRef, predicate: URIRef,
     return str(val).lower() in ("true", "1", "yes")
 
 
-def int_val(graph: Graph, subject: URIRef, predicate: URIRef,
-            default: int = 0) -> int:
+def int_val(graph: Graph, subject: URIRef, predicate: URIRef, default: int = 0) -> int:
     """Get an integer literal value from the graph, with a default.
 
     Returns *default* if the value is missing or cannot be parsed as int.
@@ -556,6 +563,7 @@ def int_val(graph: Graph, subject: URIRef, predicate: URIRef,
 # Ontology URI detection
 # ---------------------------------------------------------------------------
 
+
 def detect_ontology_uri(graph: Graph, namespace: str) -> URIRef:
     """Return the owl:Ontology URI declared in the graph for *namespace*."""
     for s in graph.subjects(RDF.type, OWL.Ontology):
@@ -567,6 +575,7 @@ def detect_ontology_uri(graph: Graph, namespace: str) -> URIRef:
 # ---------------------------------------------------------------------------
 # Mermaid helpers
 # ---------------------------------------------------------------------------
+
 
 def mmd_type(sql_type: str) -> str:
     """Sanitise a SQL type for use as a Mermaid erDiagram attribute type.
@@ -583,6 +592,7 @@ def mmd_type(sql_type: str) -> str:
 # ---------------------------------------------------------------------------
 # Graph merge utility
 # ---------------------------------------------------------------------------
+
 
 def merge_ext_graph(
     base_graph: Graph,
@@ -640,8 +650,11 @@ def merge_ext_graph(
                             peer_triples.append((s, p, o))
                 except Exception as exc:
                     import logging
+
                     logging.getLogger(__name__).warning(
-                        "Could not parse peer ext file %s: %s", peer_path, exc,
+                        "Could not parse peer ext file %s: %s",
+                        peer_path,
+                        exc,
                     )
 
     # Add fallback triples — lowest priority: skip if domain ext OR peers define s+p

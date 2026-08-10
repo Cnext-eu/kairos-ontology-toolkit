@@ -20,6 +20,7 @@ from kairos_ontology.core.projections.shared import (
     silver_table_name,
 )
 
+
 def _client_silver_ddl(client_dbt_artifacts) -> str:
     return client_dbt_artifacts["analyses/client/client-ddl.sql"]
 
@@ -29,8 +30,7 @@ class TestNamingParity:
         # client-silver-ext sets kairos-ext:silverSchema "silver" — dbt must use it
         # (previously it hardcoded "silver_client").
         model = next(
-            v for k, v in client_dbt_artifacts.items()
-            if k.endswith("corporate_client.sql")
+            v for k, v in client_dbt_artifacts.items() if k.endswith("corporate_client.sql")
         )
         m = re.search(r"schema\s*=\s*'([^']+)'", model)
         assert m is not None
@@ -41,9 +41,7 @@ class TestNamingParity:
         paths = "\n".join(client_dbt_artifacts.keys())
         assert "models/silver/client/client_type.sql" in paths
 
-    def test_silver_and_dbt_agree_on_schema_and_tables(
-        self, client_dbt_artifacts
-    ):
+    def test_silver_and_dbt_agree_on_schema_and_tables(self, client_dbt_artifacts):
         ddl = _client_silver_ddl(client_dbt_artifacts)
         # Silver DDL schema-qualifies tables as silver.<table>; client_pii and
         # identifier both carry silverTableName overrides.
@@ -52,9 +50,7 @@ class TestNamingParity:
         # dbt emits the identical physical table names as model files.
         dbt_paths = "\n".join(client_dbt_artifacts.keys())
         for tbl in ("client_pii", "identifier"):
-            assert f"models/silver/client/{tbl}.sql" in dbt_paths, (
-                f"dbt missing model for {tbl}"
-            )
+            assert f"models/silver/client/{tbl}.sql" in dbt_paths, f"dbt missing model for {tbl}"
 
     def test_sk_key_parity(self, client_dbt_artifacts):
         # The SK/unique_key derives from the (shared) physical table name, so the
@@ -62,10 +58,7 @@ class TestNamingParity:
         # primary key column (silver names the PK <table>_sk).
         ddl = _client_silver_ddl(client_dbt_artifacts)
         assert "identifier_sk" in ddl
-        model = next(
-            v for k, v in client_dbt_artifacts.items()
-            if k.endswith("/identifier.sql")
-        )
+        model = next(v for k, v in client_dbt_artifacts.items() if k.endswith("/identifier.sql"))
         assert "identifier_sk" in model
 
 
@@ -74,6 +67,7 @@ class TestSharedNamingHelper:
 
     def test_schema_default_is_byte_identical(self):
         from rdflib import Graph, URIRef
+
         g = Graph()
         onto = URIRef("https://ex.org/ont/foo")
         # No silverSchema annotation → default silver_{ontology_name}.
@@ -81,6 +75,7 @@ class TestSharedNamingHelper:
 
     def test_table_default_is_byte_identical(self):
         from rdflib import Graph, URIRef
+
         g = Graph()
         cls = URIRef("https://ex.org/ont/foo#InvoiceLine")
         # No override, default naming convention → camel_to_snake.
@@ -89,6 +84,7 @@ class TestSharedNamingHelper:
     def test_override_and_reference_prefix(self):
         from rdflib import Graph, Literal, URIRef
         from kairos_ontology.core.projections.shared import KAIROS_EXT
+
         g = Graph()
         cls = URIRef("https://ex.org/ont/foo#Country")
         # isReferenceData without silverTableName → ref_ prefix.

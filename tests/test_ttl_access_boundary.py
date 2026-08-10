@@ -107,7 +107,9 @@ def _find_violations(path: Path) -> list[str]:
         if isinstance(func, ast.Attribute) and func.attr == "parse":
             base = _base_name(func.value)
             if base not in _NON_RDFLIB_PARSE_RECEIVERS:
-                findings.append(f"{path.name}:{node.lineno}: `.parse(...)` call (receiver={base!r})")
+                findings.append(
+                    f"{path.name}:{node.lineno}: `.parse(...)` call (receiver={base!r})"
+                )
         elif isinstance(func, ast.Name) and func.id == "open":
             if node.args and isinstance(node.args[0], ast.Constant):
                 value = node.args[0].value
@@ -148,11 +150,14 @@ def test_no_new_direct_ttl_parsing_outside_canonical_loader_and_known_violations
     loader and must be routed through ``load_ontology()`` / ``SemanticIndex`` instead.
     """
     flagged = _scan_core_top_level()
-    unexpected = {name: findings for name, findings in flagged.items() if name not in _EXEMPT_MODULES}
+    unexpected = {
+        name: findings for name, findings in flagged.items() if name not in _EXEMPT_MODULES
+    }
 
     if unexpected:
         details = "\n".join(
-            f"  {name}:\n" + "\n".join(f"    {f}" for f in findings) for name, findings in sorted(unexpected.items())
+            f"  {name}:\n" + "\n".join(f"    {f}" for f in findings)
+            for name, findings in sorted(unexpected.items())
         )
         pytest.fail(
             "Found module(s) in src/kairos_ontology/core/ parsing TTL directly, bypassing "

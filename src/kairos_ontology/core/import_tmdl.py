@@ -119,13 +119,15 @@ def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
     lines.append("")
 
     # Global inventory
-    lines.extend([
-        "## Global Inventory",
-        f"- Tables: {len(model.tables)}",
-        f"- Columns: {total_columns}",
-        f"- Measures: {total_measures}",
-        f"- Relationships: {len(model.relationships)}",
-    ])
+    lines.extend(
+        [
+            "## Global Inventory",
+            f"- Tables: {len(model.tables)}",
+            f"- Columns: {total_columns}",
+            f"- Measures: {total_measures}",
+            f"- Relationships: {len(model.relationships)}",
+        ]
+    )
     if model.compatibility_level:
         lines.append(f"- Compatibility Level: {model.compatibility_level}")
     if model.default_mode:
@@ -133,11 +135,13 @@ def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
     lines.append("")
 
     # Table summary
-    lines.extend([
-        "## Table Summary",
-        "| Table | Type | Columns | Measures | Partition |",
-        "|---|---|---:|---:|---|",
-    ])
+    lines.extend(
+        [
+            "## Table Summary",
+            "| Table | Type | Columns | Measures | Partition |",
+            "|---|---|---:|---:|---|",
+        ]
+    )
     for t in model.tables:
         lines.append(
             f"| {t.name} | {t.table_type} | {len(t.columns)} "
@@ -176,10 +180,12 @@ def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
 
     # Relationships
     if model.relationships:
-        lines.extend([
-            "## Relationships (Ontology Edges)",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Relationships (Ontology Edges)",
+                "",
+            ]
+        )
         for rel in model.relationships:
             active = "" if rel.is_active else " *(inactive)*"
             card = f"{rel.from_cardinality}-to-{rel.to_cardinality}"

@@ -44,7 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `grain_collisions` is now a first-class `Pattern` field (all five published patterns ship it),
   carrying the do-not-subclass / do-not-merge boundaries.
 
+### Removed
+- **Dead code cleanup.** Removed verified-unreachable functions, methods, and classes with no
+  callers in `src/` or `tests/`: `read_provenance_version`, `running_toolkit_version`
+  (`_provenance`), `validate_catalog`, `is_mapped`, `get_all_mappings` (`catalog_utils`),
+  `load_validated_artifact` (`conformance_artifact`), `generated_at_slug` (`determinism`),
+  `remove_property` (`ontology_ops`), `CompileDiagnostics.with_added` (`compiler/result`),
+  `_one` (`dbt/bind`), `scalar` (`dbt/builders`), `supports_preparation_feature`,
+  `physical_source_type` (`dbt/capabilities`), `_safe_identifier` (`dbt/policy_normalize`),
+  `MappingExpressionKind` (`dbt/mapping_specs`), and `SourceTableIdentitySpec`
+  (`dbt/policy_specs`). Also dropped the ignored `entity_uris` parameter of `bind_policy_facts`
+  (and the caller-side set it was fed). Deleted the orphaned `core/managed_text_block.py` module
+  entirely — it was infrastructure for the retired `claims-to-silver-ext` command and had no
+  remaining importers.
+
 ### Fixed
+- **`extract-schema` CLI command was unreachable.** `cli/shared.py::extract_schema` carried a full
+  `@click.option` stack and a tested `core.extract_schema.run_extract_schema` implementation, but
+  was missing its `@click.command` decorator and was never registered, so
+  `kairos-ontology extract-schema` returned "No such command" despite being referenced as an
+  upstream step by `import-source`/`import-flatfile`. It is now decorated and registered.
 - **`kairos-design-domain` assumed one shape for `grain_collisions`.** The instruction added
   earlier in this release told the skill to read each entry "against the named class" and quote
   "the stated `reason`" — but the published library ships **two shapes**: `multimodal-order-leg`
@@ -85,6 +104,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-normalized.
 
 ### Changed
+- **Removed `black` as the formatter; `ruff format` is now the sole formatter.** Black was a
+  declared dev dependency and documented formatter but was never enforced in CI, leaving the code
+  drifted from its own config. The redundant tool and `[tool.black]` config are removed, the whole
+  `src/` and `tests/` tree is reformatted with `ruff format` (black-compatible, 100-char), and
+  `CONTRIBUTING.md` now names `ruff format` as the formatter.
 - **`kairos-design-domain` pattern guidance now covers structure, not just naming (DD-150).**
   `mode_bindings`, `grain_collisions` and `participants` already reached the CLI payload via the
   `extra` flatten, but the skill only instructed on `naming_conventions` / `anti_patterns`, so the

@@ -71,24 +71,21 @@ def validate_mdm_extension(
 
     # -- Mastered concepts -------------------------------------------------
     mastered_classes = [
-        s for s in graph.subjects(V.MASTERED, None)
+        s
+        for s in graph.subjects(V.MASTERED, None)
         if _as_bool(graph.value(s, V.MASTERED)) and _in_ns(s)
     ]
     for cls in mastered_classes:
         style = graph.value(cls, V.MDM_STYLE)
         if style is not None and str(style) not in V.MDM_STYLES:
-            errors.append(
-                f"{_local(cls)}: mdmStyle '{style}' not in {sorted(V.MDM_STYLES)}"
-            )
+            errors.append(f"{_local(cls)}: mdmStyle '{style}' not in {sorted(V.MDM_STYLES)}")
         # Match capability: at least one match attribute / identifier on any property.
         has_match_attr = any(
-            _as_bool(graph.value(p, V.MATCH_ATTRIBUTE))
-            or _as_bool(graph.value(p, V.IS_IDENTIFIER))
+            _as_bool(graph.value(p, V.MATCH_ATTRIBUTE)) or _as_bool(graph.value(p, V.IS_IDENTIFIER))
             for p in _domain_properties(graph, cls)
         )
         has_rule = any(
-            _class_of_rule(graph, r) == cls
-            for r in graph.subjects(RDF.type, V.MATCH_RULE)
+            _class_of_rule(graph, r) == cls for r in graph.subjects(RDF.type, V.MATCH_RULE)
         )
         if not has_match_attr and not has_rule:
             warnings.append(
@@ -101,8 +98,7 @@ def validate_mdm_extension(
         strat = str(graph.value(prop, V.SURVIVORSHIP))
         if strat not in V.SURVIVORSHIP_STRATEGIES:
             errors.append(
-                f"{_local(prop)}: survivorship '{strat}' not in "
-                f"{sorted(V.SURVIVORSHIP_STRATEGIES)}"
+                f"{_local(prop)}: survivorship '{strat}' not in {sorted(V.SURVIVORSHIP_STRATEGIES)}"
             )
 
     # -- Deterministic match rules ----------------------------------------
@@ -144,19 +140,14 @@ def validate_mdm_extension(
         dim = graph.value(dq, V.DQ_DIMENSION)
         if dim is None or str(dim) not in V.DQ_DIMENSIONS:
             errors.append(
-                f"{_local(dq)}: DataQualityRule dimension '{dim}' not in "
-                f"{sorted(V.DQ_DIMENSIONS)}"
+                f"{_local(dq)}: DataQualityRule dimension '{dim}' not in {sorted(V.DQ_DIMENSIONS)}"
             )
         sev = graph.value(dq, V.DQ_SEVERITY)
         if sev is not None and str(sev) not in V.DQ_SEVERITIES:
-            errors.append(
-                f"{_local(dq)}: DQ severity '{sev}' not in {sorted(V.DQ_SEVERITIES)}"
-            )
+            errors.append(f"{_local(dq)}: DQ severity '{sev}' not in {sorted(V.DQ_SEVERITIES)}")
         score = _as_float(graph.value(dq, V.DQ_SCORECARD_THRESHOLD))
         if score is not None and not (0.0 <= score <= 1.0):
-            errors.append(
-                f"{_local(dq)}: scorecardThreshold {score} out of range 0..1"
-            )
+            errors.append(f"{_local(dq)}: scorecardThreshold {score} out of range 0..1")
 
     return {"passed": not errors, "errors": errors, "warnings": warnings}
 
@@ -169,9 +160,7 @@ def _domain_properties(graph: Graph, cls: URIRef) -> List[URIRef]:
     classes.add(cls)
     props: List[URIRef] = []
     for c in classes:
-        props.extend(
-            p for p in graph.subjects(RDFS.domain, c) if isinstance(p, URIRef)
-        )
+        props.extend(p for p in graph.subjects(RDFS.domain, c) if isinstance(p, URIRef))
     return props
 
 

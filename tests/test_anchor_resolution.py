@@ -31,27 +31,39 @@ def _artifact(*concepts: dict) -> dict:
 
 class TestBuildConfirmedAliasIndex:
     def test_confirms_outcome_indexed_by_label_and_local_name(self):
-        artifact = _artifact({
-            "uri": CLASS_A_URI, "label": "Class A", "outcome": "conforms",
-        })
+        artifact = _artifact(
+            {
+                "uri": CLASS_A_URI,
+                "label": "Class A",
+                "outcome": "conforms",
+            }
+        )
         index = build_confirmed_alias_index(artifact)
         assert "classa" in index
         keys = {k for k in index}
         assert any(k for k in keys)  # both "class a" and "classa" normalize the same
 
     def test_rename_to_is_indexed_as_an_additional_alias(self):
-        artifact = _artifact({
-            "uri": CLASS_A_URI, "label": "ClassA", "outcome": "conforms-with-rename",
-            "rename_to": "LegacyThing",
-        })
+        artifact = _artifact(
+            {
+                "uri": CLASS_A_URI,
+                "label": "ClassA",
+                "outcome": "conforms-with-rename",
+                "rename_to": "LegacyThing",
+            }
+        )
         index = build_confirmed_alias_index(artifact)
         assert "legacything" in index
         assert index["legacything"][0].canonical_uri == CLASS_A_URI
 
     def test_non_confirmed_outcome_is_ignored(self):
-        artifact = _artifact({
-            "uri": CLASS_A_URI, "label": "ClassA", "outcome": "rejected",
-        })
+        artifact = _artifact(
+            {
+                "uri": CLASS_A_URI,
+                "label": "ClassA",
+                "outcome": "rejected",
+            }
+        )
         index = build_confirmed_alias_index(artifact)
         assert index == {}
 
@@ -69,9 +81,12 @@ class TestBuildConfirmedAliasIndex:
         assert build_confirmed_alias_index(None) == {}
         assert build_confirmed_alias_index({}) == {}
         assert build_confirmed_alias_index({"core_concepts": "not-a-list"}) == {}
-        assert build_confirmed_alias_index(
-            {"core_concepts": [{"outcome": "conforms"}]}  # missing uri
-        ) == {}
+        assert (
+            build_confirmed_alias_index(
+                {"core_concepts": [{"outcome": "conforms"}]}  # missing uri
+            )
+            == {}
+        )
 
     def test_missing_label_falls_back_to_uri_local_name(self):
         artifact = _artifact({"uri": CLASS_A_URI, "outcome": "conforms"})
@@ -108,9 +123,15 @@ class TestLoadConfirmedAliasIndex:
 
 class TestResolveTableAnchor:
     def test_confirmed_single_match(self):
-        index = build_confirmed_alias_index(_artifact({
-            "uri": CLASS_A_URI, "label": "ClassA", "outcome": "conforms",
-        }))
+        index = build_confirmed_alias_index(
+            _artifact(
+                {
+                    "uri": CLASS_A_URI,
+                    "label": "ClassA",
+                    "outcome": "conforms",
+                }
+            )
+        )
         res = resolve_table_anchor("ClassA", index, REF_CLASSES)
         assert res.status == "confirmed"
         assert res.resolved_uri == CLASS_A_URI
@@ -119,19 +140,27 @@ class TestResolveTableAnchor:
         assert res.evidence
 
     def test_confirmed_via_rename_to_alias(self):
-        index = build_confirmed_alias_index(_artifact({
-            "uri": CLASS_A_URI, "label": "ClassA", "outcome": "conforms-with-rename",
-            "rename_to": "LegacyThing",
-        }))
+        index = build_confirmed_alias_index(
+            _artifact(
+                {
+                    "uri": CLASS_A_URI,
+                    "label": "ClassA",
+                    "outcome": "conforms-with-rename",
+                    "rename_to": "LegacyThing",
+                }
+            )
+        )
         res = resolve_table_anchor("LegacyThing", index, REF_CLASSES)
         assert res.status == "confirmed"
         assert res.resolved_uri == CLASS_A_URI
 
     def test_ambiguous_never_silently_picks_nearest_class(self):
-        index = build_confirmed_alias_index(_artifact(
-            {"uri": CLASS_A_URI, "label": "Shared", "outcome": "conforms"},
-            {"uri": CLASS_B_URI, "label": "Shared", "outcome": "conforms"},
-        ))
+        index = build_confirmed_alias_index(
+            _artifact(
+                {"uri": CLASS_A_URI, "label": "Shared", "outcome": "conforms"},
+                {"uri": CLASS_B_URI, "label": "Shared", "outcome": "conforms"},
+            )
+        )
         res = resolve_table_anchor("Shared", index, REF_CLASSES)
         assert res.status == "ambiguous"
         assert res.is_ambiguous
@@ -141,9 +170,15 @@ class TestResolveTableAnchor:
         assert len(res.evidence) == 2
 
     def test_no_match_falls_through(self):
-        index = build_confirmed_alias_index(_artifact({
-            "uri": CLASS_A_URI, "label": "ClassA", "outcome": "conforms",
-        }))
+        index = build_confirmed_alias_index(
+            _artifact(
+                {
+                    "uri": CLASS_A_URI,
+                    "label": "ClassA",
+                    "outcome": "conforms",
+                }
+            )
+        )
         res = resolve_table_anchor("SomethingElseEntirely", index, REF_CLASSES)
         assert res.status == "none"
         assert not res.is_confirmed
@@ -152,17 +187,28 @@ class TestResolveTableAnchor:
     def test_confirmed_uri_not_in_ref_classes_pool_resolves_to_none(self):
         # Confirmed evidence exists, but the class' module isn't in this
         # table's candidate pool this run — must not fail, must fall through.
-        index = build_confirmed_alias_index(_artifact({
-            "uri": "https://ex.org/ont/other-module#ClassZ",
-            "label": "ClassZ", "outcome": "conforms",
-        }))
+        index = build_confirmed_alias_index(
+            _artifact(
+                {
+                    "uri": "https://ex.org/ont/other-module#ClassZ",
+                    "label": "ClassZ",
+                    "outcome": "conforms",
+                }
+            )
+        )
         res = resolve_table_anchor("ClassZ", index, REF_CLASSES)
         assert res.status == "none"
 
     def test_empty_likely_entity_resolves_to_none(self):
-        index = build_confirmed_alias_index(_artifact({
-            "uri": CLASS_A_URI, "label": "ClassA", "outcome": "conforms",
-        }))
+        index = build_confirmed_alias_index(
+            _artifact(
+                {
+                    "uri": CLASS_A_URI,
+                    "label": "ClassA",
+                    "outcome": "conforms",
+                }
+            )
+        )
         assert resolve_table_anchor("", index, REF_CLASSES).status == "none"
 
     def test_empty_alias_index_resolves_to_none(self):
@@ -178,7 +224,9 @@ class TestResolveTableAnchor:
 class TestConfirmedAlias:
     def test_is_frozen_and_carries_outcome(self):
         alias = ConfirmedAlias(
-            alias="ClassA", canonical_uri=CLASS_A_URI, canonical_label="ClassA",
+            alias="ClassA",
+            canonical_uri=CLASS_A_URI,
+            canonical_label="ClassA",
             outcome="conforms",
         )
         assert alias.outcome == "conforms"

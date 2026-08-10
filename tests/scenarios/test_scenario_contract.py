@@ -442,10 +442,9 @@ class TestSilverExtTypesMatchCasts:
             if not re.search(rf"\bas\s+{re.escape(col_name)}\b", all_sql, re.IGNORECASE):
                 missing_columns.append(f"{prop} (expected column '{col_name}')")
 
-        assert (
-            not missing_columns
-        ), "silverDataType-annotated columns missing from SQL output:\n" + "\n".join(
-            f"  - {c}" for c in sorted(missing_columns)
+        assert not missing_columns, (
+            "silverDataType-annotated columns missing from SQL output:\n"
+            + "\n".join(f"  - {c}" for c in sorted(missing_columns))
         )
 
         # Check 2: Where CAST exists for a column, verify it uses the correct type
@@ -467,11 +466,10 @@ class TestSilverExtTypesMatchCasts:
                 }.get(expected_type.upper(), {expected_type.upper()})
                 if actual_type not in accepted_types:
                     type_mismatches.append(
-                        f"{prop}: silverDataType={expected_type}, " f"SQL CAST uses {actual_type}"
+                        f"{prop}: silverDataType={expected_type}, SQL CAST uses {actual_type}"
                     )
 
-        assert (
-            not type_mismatches
-        ), "silverDataType annotations inconsistent with SQL CASTs:\n" + "\n".join(
-            f"  - {m}" for m in sorted(type_mismatches)
+        assert not type_mismatches, (
+            "silverDataType annotations inconsistent with SQL CASTs:\n"
+            + "\n".join(f"  - {m}" for m in sorted(type_mismatches))
         )

@@ -26,10 +26,25 @@ from typing import Any
 # these substrings, the column is treated as personal data.
 # ---------------------------------------------------------------------------
 PII_KEYWORDS: list[str] = [
-    "first_name", "last_name", "date_of_birth", "national_id", "iban",
-    "phone", "email", "address", "ssn", "passport", "tax_id", "gender",
-    "ethnicity", "religion", "health", "maiden_name", "birth_place",
-    "nationality", "marital_status",
+    "first_name",
+    "last_name",
+    "date_of_birth",
+    "national_id",
+    "iban",
+    "phone",
+    "email",
+    "address",
+    "ssn",
+    "passport",
+    "tax_id",
+    "gender",
+    "ethnicity",
+    "religion",
+    "health",
+    "maiden_name",
+    "birth_place",
+    "nationality",
+    "marital_status",
 ]
 
 #: Bounds for human-facing example rendering.
@@ -46,9 +61,7 @@ _LONG_DIGITS_RE = re.compile(r"^\d{9,}$")
 # Persistence-time detectors intentionally match inside free text. Human-facing
 # masking above keeps limited shape hints; committed source artifacts use opaque
 # typed tokens and therefore need broader detection.
-_EMBEDDED_EMAIL_RE = re.compile(
-    r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])"
-)
+_EMBEDDED_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
 _EMBEDDED_IBAN_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Za-z0-9 ]{8,30}")
 _EMBEDDED_PHONE_RE = re.compile(r"(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)")
 _EMBEDDED_LONG_ID_RE = re.compile(r"(?<!\d)\d{9,}(?!\d)")
@@ -82,8 +95,7 @@ class SamplePrivacyError(ValueError):
         preview = ", ".join(locations[:8])
         suffix = f" (+{len(locations) - 8} more)" if len(locations) > 8 else ""
         super().__init__(
-            f"Unredacted source sample PII remains in {len(findings)} value(s): "
-            f"{preview}{suffix}"
+            f"Unredacted source sample PII remains in {len(findings)} value(s): {preview}{suffix}"
         )
 
 
@@ -146,10 +158,7 @@ def redaction_token(
     safe_table = _component(table, "unknown-table")
     safe_column = _component(column, "unknown-column")
     safe_type = _component(data_type, "unknown")
-    return (
-        f"<redacted kind={safe_kind} source={safe_table}.{safe_column} "
-        f"datatype={safe_type}>"
-    )
+    return f"<redacted kind={safe_kind} source={safe_table}.{safe_column} datatype={safe_type}>"
 
 
 _PERSON_CONTEXT_TOKENS = {"contact", "person", "employee", "chauffeur"}
@@ -288,10 +297,7 @@ def detect_sample_pii_kind(
     be threaded through by every caller that has table context; omitting it
     reverts to the column-name-only classification.
     """
-    return (
-        _kind_from_name(column_name, context_name=context_name)
-        or _kind_from_nested(value)
-    )
+    return _kind_from_name(column_name, context_name=context_name) or _kind_from_nested(value)
 
 
 def redact_sample_value(
@@ -362,9 +368,7 @@ def find_unredacted_sample_pii(
                 continue
             kind = _kind_from_name(str(column), context_name=table) or _kind_from_nested(value)
             if kind:
-                findings.append(
-                    SamplePrivacyFinding(table=table, column=str(column), kind=kind)
-                )
+                findings.append(SamplePrivacyFinding(table=table, column=str(column), kind=kind))
     return findings
 
 

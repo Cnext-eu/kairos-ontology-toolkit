@@ -311,12 +311,12 @@ def _data_quality_rules(
         )
     return tuple(sorted(rules, key=lambda rule: rule.resource_uri))
 
+
 def bind_policy_facts(
     graph: Graph,
     *,
     ontology_uri: str,
     gold_extension: str | None,
-    entity_uris: frozenset[str] | None = None,
     dq_entity_uris: frozenset[str] | None = None,
 ) -> MedallionPolicyFacts:
     """Read retained extension authoring and emit graph-free immutable facts."""

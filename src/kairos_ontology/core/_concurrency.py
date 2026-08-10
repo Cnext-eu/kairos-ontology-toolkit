@@ -74,10 +74,12 @@ def call_with_backoff(
         except Exception as exc:  # noqa: BLE001 — re-raised below if not 429
             if not _is_rate_limit_error(exc) or attempt >= retries:
                 raise
-            delay = base_delay * (2 ** attempt)
+            delay = base_delay * (2**attempt)
             logger.warning(
                 "Rate-limited (attempt %d/%d); backing off %.1fs",
-                attempt + 1, retries, delay,
+                attempt + 1,
+                retries,
+                delay,
             )
             sleep(delay)
             attempt += 1

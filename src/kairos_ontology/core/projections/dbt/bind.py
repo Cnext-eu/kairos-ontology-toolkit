@@ -312,11 +312,6 @@ def _mapping_target_metadata(
     )
 
 
-def _one(fact) -> str:
-    """Return one unambiguous authored bind value without applying a default."""
-    return fact.values[0] if fact is not None and len(fact.values) == 1 else ""
-
-
 def _source_ref(value: tuple[str, ...]) -> SourceRefFact:
     return SourceRefFact(
         source_name=value[0],
@@ -514,21 +509,10 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
                     if contract.virtual_source_iri == table["uri"]
                 )
     foreign_key_facts = extract_foreign_key_facts(graph)
-    policy_entity_uris = {item.uri for item in bound_classes} | {
-        class_uri
-        for fact in foreign_key_facts
-        for class_uri in (
-            fact.domain_value,
-            fact.range_value,
-            fact.foreign_key_on,
-        )
-        if class_uri is not None
-    }
     policy_facts = bind_policy_facts(
         graph,
         ontology_uri=str(ontology_uri),
         gold_extension=inputs.gold_extension,
-        entity_uris=frozenset(policy_entity_uris),
         dq_entity_uris=frozenset(item.uri for item in bound_classes),
     )
     ontology_base = str(ontology_uri).rstrip("#/")

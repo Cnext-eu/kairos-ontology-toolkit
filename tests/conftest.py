@@ -124,19 +124,15 @@ def ontology_files(temp_dir, sample_ontology, sample_ontology_with_subclass):
     """Create sample ontology files in a temporary directory."""
     ontologies_dir = temp_dir / "ontologies"
     ontologies_dir.mkdir()
-    
+
     # Create multiple ontology files
     customer_file = ontologies_dir / "customer.ttl"
-    customer_file.write_text(sample_ontology, encoding='utf-8')
-    
+    customer_file.write_text(sample_ontology, encoding="utf-8")
+
     person_file = ontologies_dir / "person.ttl"
-    person_file.write_text(sample_ontology_with_subclass, encoding='utf-8')
-    
-    return {
-        'dir': ontologies_dir,
-        'customer': customer_file,
-        'person': person_file
-    }
+    person_file.write_text(sample_ontology_with_subclass, encoding="utf-8")
+
+    return {"dir": ontologies_dir, "customer": customer_file, "person": person_file}
 
 
 @pytest.fixture
@@ -289,5 +285,3 @@ def sample_shacl_shapes():
         sh:datatype xsd:string ;
     ] .
 """
-
-

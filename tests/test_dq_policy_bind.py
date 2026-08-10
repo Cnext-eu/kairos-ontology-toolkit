@@ -72,9 +72,7 @@ def test_rejects_multiple_governing_entities() -> None:
 def test_missing_required_slot_yields_empty_values() -> None:
     # The reader is not the fail-closed authority: a missing slot produces an empty-values
     # fact that the normalizer later rejects. The reader itself must not raise here.
-    turtle = _BASE.replace(
-        '    kairos-ext:dqTestRef "kairos.dq.cross-field.v1" .', "    ."
-    )
+    turtle = _BASE.replace('    kairos-ext:dqTestRef "kairos.dq.cross-field.v1" .', "    .")
     rules = _data_quality_rules(_graph(turtle), EXT, frozenset({CLIENT}))
     assert len(rules) == 1
     assert rules[0].test_refs.values == ()

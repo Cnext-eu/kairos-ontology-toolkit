@@ -64,8 +64,10 @@ def classify_ontology_tier(local_path: Path | str, refmodels_root: Path) -> str:
     reference-models has been asked to declare the tier explicitly.
     """
     try:
-        relative = Path(local_path).resolve().relative_to(
-            normalize_refmodels_root(refmodels_root).resolve()
+        relative = (
+            Path(local_path)
+            .resolve()
+            .relative_to(normalize_refmodels_root(refmodels_root).resolve())
         )
     except (ValueError, OSError):
         return UNKNOWN_ONTOLOGY_TIER
@@ -147,7 +149,10 @@ def build_concept_graph(
 
     if not catalog_path.is_file():
         diagnostics.append(
-            {"level": "error", "message": f"Catalog not found at {catalog_path}; cannot resolve modules."}
+            {
+                "level": "error",
+                "message": f"Catalog not found at {catalog_path}; cannot resolve modules.",
+            }
         )
         return graph, loaded, diagnostics, module_tiers
 
@@ -156,7 +161,10 @@ def build_concept_graph(
         local = resolver.resolve(module.iri)
         if local is None or not Path(local).is_file():
             diagnostics.append(
-                {"level": "warning", "message": f"Could not resolve module <{module.iri}> via catalog; skipped."}
+                {
+                    "level": "warning",
+                    "message": f"Could not resolve module <{module.iri}> via catalog; skipped.",
+                }
             )
             continue
         module_tiers[module.iri] = classify_ontology_tier(local, root)
@@ -172,7 +180,10 @@ def build_concept_graph(
             loaded.append(module.iri)
         except Exception as exc:  # noqa: BLE001 - one bad module must not abort the rest
             diagnostics.append(
-                {"level": "warning", "message": f"Failed to parse module <{module.iri}> ({local}): {exc}"}
+                {
+                    "level": "warning",
+                    "message": f"Failed to parse module <{module.iri}> ({local}): {exc}",
+                }
             )
     return graph, loaded, diagnostics, module_tiers
 
@@ -285,7 +296,10 @@ def derive_archetype_topology(refmodels_root: Path, archetype: Archetype) -> Top
     result.diagnostics = diagnostics + result.diagnostics
     for uri in result.missing_concepts:
         result.diagnostics.append(
-            {"level": "warning", "message": f"Core concept <{uri}> not found in resolved modules; skipped."}
+            {
+                "level": "warning",
+                "message": f"Core concept <{uri}> not found in resolved modules; skipped.",
+            }
         )
     return result
 

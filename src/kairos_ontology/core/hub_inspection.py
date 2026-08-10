@@ -24,7 +24,12 @@ from .compiler import (
     order_compile_diagnostics,
 )
 from .compiler.kernel import _binding_domain, _binding_tier
-from .conformance_artifact import ARTIFACT_RELPATH, ConformanceArtifactError, has_unresolved_fleet_items, read_artifact
+from .conformance_artifact import (
+    ARTIFACT_RELPATH,
+    ConformanceArtifactError,
+    has_unresolved_fleet_items,
+    read_artifact,
+)
 from .next_actions import (
     CompileStatus,
     DiagnosticView,
@@ -163,17 +168,13 @@ def _extension_status(extensions_dir: Path, domain: str, suffix: str) -> InputSt
     return InputStatus.MISSING
 
 
-def _check_domain(
-    hub_root: Path, domain: str
-) -> tuple[CompileStatus, tuple[DiagnosticView, ...]]:
+def _check_domain(hub_root: Path, domain: str) -> tuple[CompileStatus, tuple[DiagnosticView, ...]]:
     """Run the canonical compile check for *domain* without rendering artifacts."""
     try:
         plan = build_compile_plan(hub_root, domain)
         result = compile_plan_result(plan, CompileMode.CHECK, render=False)
         diagnostics = result.diagnostics.ordered
-        status = (
-            CompileStatus.FAILED if result.diagnostics.has_errors else CompileStatus.PASSED
-        )
+        status = CompileStatus.FAILED if result.diagnostics.has_errors else CompileStatus.PASSED
     except CompileError as exc:
         diagnostics = order_compile_diagnostics(exc.diagnostics)
         status = CompileStatus.FAILED
@@ -228,9 +229,7 @@ def gather_hub_input_snapshot(
     ontology_domains, unreadable_domains = _ontology_domains(ontologies_dir)
     binding_counts, binding_tier_counts = _binding_domains(root / "integration" / "bindings")
 
-    all_domains = sorted(
-        ontology_domains | unreadable_domains | set(binding_counts)
-    )
+    all_domains = sorted(ontology_domains | unreadable_domains | set(binding_counts))
     requested = set(domains) if domains else None
     ontology_only = tuple(
         name for name in all_domains if name in ontology_domains and name not in binding_counts
@@ -238,7 +237,8 @@ def gather_hub_input_snapshot(
     binding_only = tuple(
         name
         for name in all_domains
-        if name in binding_counts and name not in ontology_domains
+        if name in binding_counts
+        and name not in ontology_domains
         and name not in unreadable_domains
     )
 

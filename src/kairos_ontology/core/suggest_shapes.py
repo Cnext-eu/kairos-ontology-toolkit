@@ -207,14 +207,16 @@ def build_shapes_graph(
             graph.add((property_shape, SH.name, Literal(column_name)))
             graph.add((property_shape, RDFS.label, Literal(f"{table_name}.{column_name}")))
             graph.add((property_shape, SH.datatype, datatype))
-            graph.add((
-                property_shape,
-                RDFS.comment,
-                Literal(
-                    "DRAFT advisory PropertyShape derived from source profiling metadata "
-                    "and samples; requires human review."
-                ),
-            ))
+            graph.add(
+                (
+                    property_shape,
+                    RDFS.comment,
+                    Literal(
+                        "DRAFT advisory PropertyShape derived from source profiling metadata "
+                        "and samples; requires human review."
+                    ),
+                )
+            )
 
             if _literal_to_bool(column.get("nullable")) is False:
                 graph.add((property_shape, SH.minCount, Literal(1)))
@@ -222,19 +224,23 @@ def build_shapes_graph(
             pattern = _detected_pattern(samples)
             if pattern:
                 graph.add((property_shape, SH.pattern, Literal(pattern)))
-                graph.add((
-                    property_shape,
-                    RDFS.comment,
-                    Literal("Sample-derived format pattern; advisory and requires review."),
-                ))
+                graph.add(
+                    (
+                        property_shape,
+                        RDFS.comment,
+                        Literal("Sample-derived format pattern; advisory and requires review."),
+                    )
+                )
 
             examples = example_values(samples, is_pii=pii, include=include_sample_values)
             if examples:
-                graph.add((
-                    property_shape,
-                    RDFS.comment,
-                    Literal(f"Example values: {', '.join(examples)}"),
-                ))
+                graph.add(
+                    (
+                        property_shape,
+                        RDFS.comment,
+                        Literal(f"Example values: {', '.join(examples)}"),
+                    )
+                )
 
             if (
                 not pii
@@ -249,20 +255,30 @@ def build_shapes_graph(
                     [_literal_for_value(value, datatype) for value in unique_samples],
                 )
                 graph.add((property_shape, SH["in"], values_node))
-                graph.add((
-                    property_shape,
-                    RDFS.comment,
-                    Literal(
-                        f"Enum constraint backed by bronze distinctCount={distinct_count}; "
-                        "review before publishing."
-                    ),
-                ))
-            elif distinct_count is None and unique_samples and len(unique_samples) <= enum_distinct_max:
-                graph.add((
-                    property_shape,
-                    RDFS.comment,
-                    Literal(f"possible enum (unverified: only {len(unique_samples)} sampled values)"),
-                ))
+                graph.add(
+                    (
+                        property_shape,
+                        RDFS.comment,
+                        Literal(
+                            f"Enum constraint backed by bronze distinctCount={distinct_count}; "
+                            "review before publishing."
+                        ),
+                    )
+                )
+            elif (
+                distinct_count is None
+                and unique_samples
+                and len(unique_samples) <= enum_distinct_max
+            ):
+                graph.add(
+                    (
+                        property_shape,
+                        RDFS.comment,
+                        Literal(
+                            f"possible enum (unverified: only {len(unique_samples)} sampled values)"
+                        ),
+                    )
+                )
 
     return graph
 

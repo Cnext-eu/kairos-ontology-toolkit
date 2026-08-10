@@ -77,9 +77,7 @@ def sanitize_samples_document(
                 continue
             kind = detect_sample_pii_kind(str(column), value, context_name=table)
             if kind:
-                residual.append(
-                    SamplePrivacyFinding(table=table, column=str(column), kind=kind)
-                )
+                residual.append(SamplePrivacyFinding(table=table, column=str(column), kind=kind))
     if residual:
         raise SamplePrivacyError(residual)
     return safe_document, findings
@@ -101,9 +99,7 @@ def find_samples_document_privacy_issues(
                 continue
             kind = detect_sample_pii_kind(str(column), value, context_name=table)
             if kind:
-                findings.append(
-                    SamplePrivacyFinding(table=table, column=str(column), kind=kind)
-                )
+                findings.append(SamplePrivacyFinding(table=table, column=str(column), kind=kind))
     return findings
 
 
@@ -261,9 +257,7 @@ def find_vocabulary_privacy_issues(
             table, column, _ = _graph_source_context(graph, subject)
             kind = detect_sample_pii_kind(column, str(value), context_name=table)
             if kind:
-                findings.append(
-                    SamplePrivacyFinding(table=table, column=column, kind=kind)
-                )
+                findings.append(SamplePrivacyFinding(table=table, column=column, kind=kind))
     return findings
 
 
@@ -450,9 +444,7 @@ def run_source_privacy(
                         table=table,
                     )
                 else:
-                    unresolved = find_source_data_privacy_issues(
-                        {"tables": [document]}
-                    )
+                    unresolved = find_source_data_privacy_issues({"tables": [document]})
             if unresolved:
                 raise SamplePrivacyError(unresolved)
 

@@ -119,9 +119,7 @@ def _qnames(graph: Graph, uri: URIRef) -> tuple[str, ...]:
     return tuple(sorted(values))
 
 
-_PREFIX_DECLARATION = re.compile(
-    r"(?im)^\s*@prefix\s+([^:\s]*)\s*:\s*<([^>]*)>\s*\."
-)
+_PREFIX_DECLARATION = re.compile(r"(?im)^\s*@prefix\s+([^:\s]*)\s*:\s*<([^>]*)>\s*\.")
 
 
 def _namespace_local(uri: str) -> tuple[str, str]:
@@ -414,9 +412,7 @@ def _ontology_symbols(
     # DD-108/DD-103: resolve binding symbols against a non-asserted (RDFS) profile so that
     # subclass-inherited and cross-namespace imported properties become bindable via the
     # semantic index closure. ASSERTED would leave inherited_properties empty.
-    loaded = load_ontology(
-        ontology_path, identity_root=hub_root, profile=SemanticProfile.RDFS
-    )
+    loaded = load_ontology(ontology_path, identity_root=hub_root, profile=SemanticProfile.RDFS)
     # DD-133: same-file prefix conflicts remain blocking errors, but an imported-only ambiguous
     # prefix is never bound for resolution (see ``_declared_prefix_aliases``), so it is surfaced
     # as a non-fatal warning with candidate ``@prefix`` declarations rather than failing compile.
@@ -512,9 +508,7 @@ def _ontology_symbols(
             for ref in sorted(property_refs):
                 key = (ref, prop.uri)
                 previous = properties.get(key)
-                domains = tuple(
-                    sorted({*(previous.domain_uris if previous else ()), record.uri})
-                )
+                domains = tuple(sorted({*(previous.domain_uris if previous else ()), record.uri}))
                 properties[key] = ResolvedProperty(
                     ref=ref,
                     uri=prop.uri,
@@ -615,9 +609,16 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         for path in binding_paths
         for token in _binding_referenced_class_tokens(path.read_text(encoding="utf-8"))
     )
-    graph, namespace, ontology_iri, version, classes, properties, ontology_paths, prefix_warnings = (
-        _ontology_symbols(ontology_path, root, referenced_tokens)
-    )
+    (
+        graph,
+        namespace,
+        ontology_iri,
+        version,
+        classes,
+        properties,
+        ontology_paths,
+        prefix_warnings,
+    ) = _ontology_symbols(ontology_path, root, referenced_tokens)
     relations = list(_source_relations(source_paths))
     template_root = Path(__file__).resolve().parents[2] / "templates" / "dbt"
     inputs = [
@@ -776,9 +777,7 @@ def _relationship_target_class(
             (
                 f"{namespaces[0]}{local}"
                 for source in loaded.sources
-                for namespaces in (
-                    _declared_prefixes(source.manifest.source_path).get(prefix, ()),
-                )
+                for namespaces in (_declared_prefixes(source.manifest.source_path).get(prefix, ()),)
                 if namespaces
             ),
             "",
@@ -825,7 +824,9 @@ def _conformance_contract(
                 (
                     _source_type(prop.data_type).kind.value
                     if prop is not None and _source_type(prop.data_type) is not None
-                    else prop.data_type if prop is not None else ""
+                    else prop.data_type
+                    if prop is not None
+                    else ""
                 ),
             )
             for field in binding.fields
@@ -1339,7 +1340,9 @@ def _wire_relationships(
             if external is None:
                 join = relationship.on[0]
                 assert target_binding is not None
-                target_columns = (_relationship_output_column(target_binding, join.foreign, context),)
+                target_columns = (
+                    _relationship_output_column(target_binding, join.foreign, context),
+                )
                 if target_columns[0] is None:
                     continue
                 target_model = target_class.name.lower()
@@ -1347,9 +1350,7 @@ def _wire_relationships(
             else:
                 target_columns = tuple(item.column for item in external.key)
                 target_model = external.name
-                description = (
-                    f"Surrogate reference to external {external.domain}.{external.name}"
-                )
+                description = f"Surrogate reference to external {external.domain}.{external.name}"
             fk_column = f"{target_model}_sk"
             joins.append(
                 JoinSpec(
@@ -1440,7 +1441,9 @@ def _project_relationship_match_counts(shaped, bindings, context):
                 target_model = (
                     external.name
                     if external is not None
-                    else target.name.lower() if target is not None else ""
+                    else target.name.lower()
+                    if target is not None
+                    else ""
                 )
                 if prop is not None and target_model:
                     replacements[temporal_match_count_column(prop.uri)] = (
@@ -1878,9 +1881,7 @@ def _binding_referenced_class_tokens(text: str) -> tuple[str, ...]:
     return tuple(tokens)
 
 
-def _external_target_domain(
-    hub_root: str, current_domain: str, target_class: str
-) -> str | None:
+def _external_target_domain(hub_root: str, current_domain: str, target_class: str) -> str | None:
     binding_dir = Path(hub_root) / "integration" / "bindings"
     for path in sorted(binding_dir.glob("*.binding.yaml")):
         text = path.read_text(encoding="utf-8")
@@ -1917,9 +1918,7 @@ def _relationship_diagnostics(
         source_class = context.klass(binding.target_class)
         target_class = _relationship_target_class(relationship, context, hub_root)
         if external is None and target_binding is None:
-            external_domain = _external_target_domain(
-                hub_root, context.domain, relationship.target
-            )
+            external_domain = _external_target_domain(hub_root, context.domain, relationship.target)
             if external_domain:
                 message = (
                     f"relationship '{relationship.property}' target "
@@ -2232,12 +2231,8 @@ def _focused_quality_artifact_paths(
                 ),
                 None,
             )
-            if (
-                relationship is None
-                or (
-                    relationship.external_reference is None
-                    and targets.get(relationship.target) is None
-                )
+            if relationship is None or (
+                relationship.external_reference is None and targets.get(relationship.target) is None
             ):
                 continue
             suffix = "" if check_index == 0 else f"_{check_index + 1}"

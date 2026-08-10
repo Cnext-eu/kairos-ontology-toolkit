@@ -442,8 +442,7 @@ def migrate(check, dry_run, hub_path):
 
     if not _is_old_layout(hub):
         raise click.ClickException(
-            f"Cannot detect old flat layout in {hub}. "
-            f"Expected ontology-hub/ontologies/ to exist."
+            f"Cannot detect old flat layout in {hub}. Expected ontology-hub/ontologies/ to exist."
         )
 
     if check:
@@ -561,8 +560,7 @@ def migrate(check, dry_run, hub_path):
                     old_dir.rmdir()
             else:
                 print(
-                    f"  ⚠  {old_name}/ still has files — not removed: "
-                    f"{[f.name for f in remaining]}"
+                    f"  ⚠  {old_name}/ still has files — not removed: {[f.name for f in remaining]}"
                 )
 
     # Clean up old output subdirs
@@ -628,8 +626,7 @@ def migrate(check, dry_run, hub_path):
     "company_domain",
     type=str,
     default=None,
-    help='Company internet domain (e.g., "contoso.com"). '
-    "Defaults to <name>.com if not provided.",
+    help='Company internet domain (e.g., "contoso.com"). Defaults to <name>.com if not provided.',
 )
 @click.option(
     "--skip-protection",

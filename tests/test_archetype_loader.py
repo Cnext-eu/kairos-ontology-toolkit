@@ -62,7 +62,11 @@ class TestListAndOutcomeCodes:
     def test_outcome_codes_loaded_from_contract(self, refroot):
         codes = load_outcome_codes(refroot)
         assert codes == [
-            "conforms", "conforms-with-rename", "partial", "deviates", "not-applicable",
+            "conforms",
+            "conforms-with-rename",
+            "partial",
+            "deviates",
+            "not-applicable",
         ]
 
     def test_outcome_codes_missing_raises(self, refroot):
@@ -88,7 +92,10 @@ class TestValidTiers:
         schema["$defs"]["tier"]["enum"].append("not_applicable")
         path.write_text(json.dumps(schema), encoding="utf-8")
         assert load_valid_tiers(refroot) == (
-            "required", "recommended", "optional", "not_applicable",
+            "required",
+            "recommended",
+            "optional",
+            "not_applicable",
         )
 
     def test_falls_back_when_schema_absent(self, refroot):

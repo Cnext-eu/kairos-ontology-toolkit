@@ -213,9 +213,7 @@ def test_ontology_tier_prefixes_still_match_the_published_layout() -> None:
 
 def test_every_published_archetype_loads() -> None:
     """Published catalogs must survive our schema validation and URI resolution."""
-    archetypes_dir = (
-        REFMODELS_ROOT / "ontology-reference-models" / "blueprints" / "archetypes"
-    )
+    archetypes_dir = REFMODELS_ROOT / "ontology-reference-models" / "blueprints" / "archetypes"
     ids = sorted(
         path.stem for path in archetypes_dir.glob("*.yaml") if not path.name.startswith(".")
     )

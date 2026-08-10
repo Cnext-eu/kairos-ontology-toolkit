@@ -56,9 +56,7 @@ def test_logical_records_are_frozen_slotted_dataclasses(record_type):
 
 
 def test_nested_template_values_are_deeply_immutable():
-    frozen = freeze_value(
-        {"relationships": {"to": "ref('client')", "fields": ["client_sk"]}}
-    )
+    frozen = freeze_value({"relationships": {"to": "ref('client')", "fields": ["client_sk"]}})
     assert isinstance(frozen, FrozenMapping)
     with pytest.raises(dataclasses.FrozenInstanceError):
         frozen.entries = ()  # type: ignore[misc]
@@ -213,9 +211,7 @@ def test_registry_records_ambiguous_parents_in_sorted_order():
         outcomes,
         (("urn:Return", "urn:Transaction"), ("urn:Order", "urn:Transaction")),
     )
-    assert registry.ambiguous_parents == (
-        ("urn:Transaction", ("order", "return")),
-    )
+    assert registry.ambiguous_parents == (("urn:Transaction", ("order", "return")),)
     assert ("urn:Transaction", "order") not in registry.names
 
 
@@ -239,7 +235,5 @@ def test_registry_uses_actual_materialized_columns_and_version():
         materialized_models=(model,),
     )
 
-    assert registry.columns == (
-        ("client", frozenset({"client_id", "client_name"})),
-    )
+    assert registry.columns == (("client", frozenset({"client_id", "client_name"})),)
     assert registry.versions == (("client", "2.0"),)

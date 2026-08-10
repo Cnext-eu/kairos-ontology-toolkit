@@ -52,8 +52,7 @@ def test_list_patterns_yaml_format(refroot):
 
 
 def test_single_pattern_by_id(refroot):
-    res = _run(["list-patterns", "--pattern", "temporal-quartet",
-                "--refmodels-root", str(refroot)])
+    res = _run(["list-patterns", "--pattern", "temporal-quartet", "--refmodels-root", str(refroot)])
     assert res.exit_code == 0, res.output
     payload = json.loads(res.stdout)
     assert payload["pattern"]["id"] == "temporal-quartet"

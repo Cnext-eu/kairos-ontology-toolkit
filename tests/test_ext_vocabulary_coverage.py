@@ -72,7 +72,7 @@ def _annotations_declared_in_vocabulary() -> set[str]:
     for subject in graph.subjects(rdf_type, owl_annotation):
         subject_str = str(subject)
         if subject_str.startswith(EXT_NS):
-            declared.add(subject_str[len(EXT_NS):])
+            declared.add(subject_str[len(EXT_NS) :])
     return declared
 
 

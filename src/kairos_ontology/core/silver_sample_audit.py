@@ -118,9 +118,7 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
         samples = _split_samples(graph.value(col_uri, KAIROS_BRONZE.sampleValues))
         columns[col_key] = SourceColumnSample(
             uri=col_key,
-            name=str(
-                graph.value(col_uri, KAIROS_BRONZE.columnName) or extract_local_name(col_key)
-            ),
+            name=str(graph.value(col_uri, KAIROS_BRONZE.columnName) or extract_local_name(col_key)),
             table_uri=table_key,
             table_name=table_names.get(table_key, extract_local_name(table_key)),
             system=table_systems.get(table_key, ""),
@@ -163,7 +161,7 @@ def _target_sql_tokens(target_uri: str, mapping_ns: dict[str, str] | None = None
     }
     for prefix, namespace in (mapping_ns or {}).items():
         if target_uri.startswith(namespace):
-            local = target_uri[len(namespace):]
+            local = target_uri[len(namespace) :]
             if local:
                 tokens.add(f"{prefix}:{local}")
     return {token for token in tokens if token}
@@ -184,9 +182,7 @@ def _sql_contains_token(sql: str, token: str) -> bool:
 
 def _sql_contains_any_token(sql_artifacts: dict[str, str], tokens: set[str]) -> bool:
     return any(
-        _sql_contains_token(sql, token)
-        for sql in sql_artifacts.values()
-        for token in tokens
+        _sql_contains_token(sql, token) for sql in sql_artifacts.values() for token in tokens
     )
 
 
@@ -205,7 +201,9 @@ def _samples_parse_as(sql_type: str, samples: list[str]) -> tuple[int, int]:
             except ValueError:
                 pass
         elif "date" in type_text or "time" in type_text:
-            if re.match(r"^\d{4}-\d{2}-\d{2}", text) or re.match(r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", text):
+            if re.match(r"^\d{4}-\d{2}-\d{2}", text) or re.match(
+                r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", text
+            ):
                 ok += 1
         elif "bool" in type_text or "bit" in type_text:
             if text.lower() in {"0", "1", "true", "false", "yes", "no", "y", "n"}:
@@ -322,80 +320,88 @@ def run_silver_sample_audit(
             mapped_columns += 1
             target = col_map.get("target_uri", "")
             if column is None:
-                findings.append(AuditFinding(
-                    severity=SEVERITY_ERROR,
-                    code="missing_source_column",
-                    message="Mapping references a source column that is not present in source vocabularies.",
-                    target=target,
-                    evidence={"source_column_uri": col_uri},
-                ))
+                findings.append(
+                    AuditFinding(
+                        severity=SEVERITY_ERROR,
+                        code="missing_source_column",
+                        message="Mapping references a source column that is not present in source vocabularies.",
+                        target=target,
+                        evidence={"source_column_uri": col_uri},
+                    )
+                )
                 continue
 
             if column.samples:
                 sampled_mapped_columns += 1
-                grouped_shapes.setdefault(target, []).append((column, _dominant_shape(column.samples)))
+                grouped_shapes.setdefault(target, []).append(
+                    (column, _dominant_shape(column.samples))
+                )
             else:
-                findings.append(AuditFinding(
-                    severity=SEVERITY_WARNING,
-                    code="missing_mapped_samples",
-                    message="Mapped column has no sample values; semantic and expression checks are limited.",
-                    source=column.system,
-                    table=column.table_name,
-                    column=column.name,
-                    target=target,
-                ))
+                findings.append(
+                    AuditFinding(
+                        severity=SEVERITY_WARNING,
+                        code="missing_mapped_samples",
+                        message="Mapped column has no sample values; semantic and expression checks are limited.",
+                        source=column.system,
+                        table=column.table_name,
+                        column=column.name,
+                        target=target,
+                    )
+                )
 
             for referenced_uri in col_map.get("referenced_column_uris") or ():
                 referenced = source_columns.get(referenced_uri)
                 if referenced is None or referenced.table_uri != column.table_uri:
-                    findings.append(AuditFinding(
-                        severity=SEVERITY_ERROR,
-                        code="invalid_expression_source_column",
+                    findings.append(
+                        AuditFinding(
+                            severity=SEVERITY_ERROR,
+                            code="invalid_expression_source_column",
+                            message=(
+                                f"Expression references source column IRI {referenced_uri!r} "
+                                "that is not on the mapped table."
+                            ),
+                            source=column.system,
+                            table=column.table_name,
+                            column=column.name,
+                            target=target,
+                            evidence={"mapping_resource_uri": col_map.get("mapping_resource_uri")},
+                        )
+                    )
+
+            target_tokens = _target_sql_tokens(target, mapping_ns)
+            if sql_artifacts and not _sql_contains_any_token(sql_artifacts, target_tokens):
+                findings.append(
+                    AuditFinding(
+                        severity=SEVERITY_WARNING,
+                        code="target_alias_not_found_in_sql",
                         message=(
-                            f"Expression references source column IRI {referenced_uri!r} "
-                            "that is not on the mapped table."
+                            "Expected mapped target alias or lineage token was not found "
+                            "in generated dbt SQL."
                         ),
                         source=column.system,
                         table=column.table_name,
                         column=column.name,
                         target=target,
-                        evidence={
-                            "mapping_resource_uri": col_map.get(
-                                "mapping_resource_uri"
-                            )
-                        },
-                    ))
-
-            target_tokens = _target_sql_tokens(target, mapping_ns)
-            if sql_artifacts and not _sql_contains_any_token(sql_artifacts, target_tokens):
-                findings.append(AuditFinding(
-                    severity=SEVERITY_WARNING,
-                    code="target_alias_not_found_in_sql",
-                    message=(
-                        "Expected mapped target alias or lineage token was not found "
-                        "in generated dbt SQL."
-                    ),
-                    source=column.system,
-                    table=column.table_name,
-                    column=column.name,
-                    target=target,
-                    evidence={"expected_tokens": sorted(target_tokens)},
-                ))
+                        evidence={"expected_tokens": sorted(target_tokens)},
+                    )
+                )
 
     for target, entries in grouped_shapes.items():
         shapes = {shape for _, shape in entries}
         systems = {col.system or col.table_name for col, _ in entries}
         if len(entries) > 1 and len(shapes) > 1:
-            findings.append(AuditFinding(
-                severity=SEVERITY_WARNING,
-                code="cross_source_sample_shape_mismatch",
-                message="Multiple sources mapped to the same target property have different sample shapes.",
-                target=target,
-                evidence={
-                    "shapes": sorted(shapes),
-                    "sources": sorted(systems),
-                },
-            ))
+            findings.append(
+                AuditFinding(
+                    severity=SEVERITY_WARNING,
+                    code="cross_source_sample_shape_mismatch",
+                    message="Multiple sources mapped to the same target property have different sample shapes.",
+                    target=target,
+                    evidence={
+                        "shapes": sorted(shapes),
+                        "sources": sorted(systems),
+                    },
+                )
+            )
 
     report = SilverSampleAuditReport(
         generated_at=datetime.now(timezone.utc).isoformat(),

@@ -161,8 +161,7 @@ def _runtime_context(
     incremental = authority.incremental
     history = authority.history
     relationships = {
-        relationship.property_uri: relationship
-        for relationship in runtime.temporal_relationships
+        relationship.property_uri: relationship for relationship in runtime.temporal_relationships
     }
     columns = [
         _column_context(
@@ -185,20 +184,12 @@ def _runtime_context(
                     for column in columns
                     if column["target_name"] == merge_column
                 ),
-                (
-                    f"{join.source_alias}.{merge_column}"
-                    if join.source_alias
-                    else merge_column
-                ),
+                (f"{join.source_alias}.{merge_column}" if join.source_alias else merge_column),
             )
             for merge_column in incremental.merge_identity.value
         )
         parent_key = next(
-            (
-                column["expression"]
-                for column in columns
-                if column["target_name"] == join.fk_column
-            ),
+            (column["expression"] for column in columns if column["target_name"] == join.fk_column),
             f"{join.alias}.{join.fk_column}",
         )
         match_count = temporal_match_count_column(relationship.property_uri)
@@ -223,14 +214,10 @@ def _runtime_context(
                 in {"quarantine", "retry"},
                 "quarantine_ambiguous": relationship.ambiguous_action.value.value
                 in {"quarantine", "retry"},
-                "unknown_member": (
-                    relationship.missing_action.value.value == "unknown-member"
-                ),
+                "unknown_member": (relationship.missing_action.value.value == "unknown-member"),
             }
         )
-    joined_relationships = {
-        join.relationship_uri for join in spec.joins if join.relationship_uri
-    }
+    joined_relationships = {join.relationship_uri for join in spec.joins if join.relationship_uri}
     for relationship in runtime.temporal_relationships:
         if relationship.property_uri in joined_relationships:
             continue
@@ -239,9 +226,7 @@ def _runtime_context(
                 "property_uri": relationship.property_uri,
                 "join": {"fk_column": ""},
                 "parent_key": "NULL",
-                "match_count_column": temporal_match_count_column(
-                    relationship.property_uri
-                ),
+                "match_count_column": temporal_match_count_column(relationship.property_uri),
                 "match_count_expression": "0",
                 "mode": relationship.mode.value.value,
                 "cardinality": relationship.cardinality.value.value,
@@ -268,9 +253,7 @@ def _runtime_context(
             None,
         )
         if lookup is not None and lookup["unknown_member"]:
-            column["expression"] = (
-                f"COALESCE({column['expression']}, '__KAIROS_UNKNOWN__')"
-            )
+            column["expression"] = f"COALESCE({column['expression']}, '__KAIROS_UNKNOWN__')"
 
     canonical_hash = (
         canonical_hash_macro_call(
@@ -284,24 +267,20 @@ def _runtime_context(
     )
     lookback = incremental.lookback.value
     diagnostic_columns = [
-        temporal_match_count_column(item.property_uri)
-        for item in runtime.temporal_relationships
+        temporal_match_count_column(item.property_uri) for item in runtime.temporal_relationships
     ]
     temporal_actions = [
         {
             "match_count_column": temporal_match_count_column(item.property_uri),
-            "quarantine_missing": item.missing_action.value.value
-            in {"quarantine", "retry"},
-            "quarantine_ambiguous": item.ambiguous_action.value.value
-            in {"quarantine", "retry"},
+            "quarantine_missing": item.missing_action.value.value in {"quarantine", "retry"},
+            "quarantine_ambiguous": item.ambiguous_action.value.value in {"quarantine", "retry"},
         }
         for item in runtime.temporal_relationships
     ]
     newer_terms = []
     for index, column in enumerate(runtime.ordering_columns):
         equal_prefix = " AND ".join(
-            f"source.{prior} = target.{prior}"
-            for prior in runtime.ordering_columns[:index]
+            f"source.{prior} = target.{prior}" for prior in runtime.ordering_columns[:index]
         )
         newer = f"source.{column} > target.{column}"
         newer_terms.append(f"({equal_prefix} AND {newer})" if equal_prefix else newer)
@@ -370,8 +349,7 @@ def _runtime_context(
             "schema_evolution": incremental.schema_evolution.action.value.value,
             "on_schema_change": (
                 "sync_all_columns"
-                if incremental.schema_evolution.action.value.value
-                == "approved-contract-update"
+                if incremental.schema_evolution.action.value.value == "approved-contract-update"
                 else "fail"
             ),
             "business_valid_from": history.business_valid_from_column,
@@ -385,19 +363,13 @@ def _runtime_context(
             "columns": columns,
             "input_columns": input_columns,
             "input_select_columns": [
-                column_by_name[name]
-                for name in input_columns
-                if name in column_by_name
+                column_by_name[name] for name in input_columns if name in column_by_name
             ],
             "base_columns": [
-                column
-                for column in columns
-                if not column.get("generated_after_mapping", False)
+                column for column in columns if not column.get("generated_after_mapping", False)
             ],
             "generated_columns": [
-                column
-                for column in columns
-                if column.get("generated_after_mapping", False)
+                column for column in columns if column.get("generated_after_mapping", False)
             ],
             "temporal_lookups": temporal_lookups,
             "diagnostic_columns": diagnostic_columns,
@@ -435,71 +407,61 @@ def render_silver_model(
         "ontology_metadata": metadata_context(spec.ontology_metadata),
     }
     if spec.kind is SilverModelKind.ENTITY:
-        context.update({
-            "materialization": materialization,
-            "unique_key": unique_key,
-            "source_ctes": [
-                _source_context(source, adapter) for source in spec.sources
-            ],
-            "joins": [_join_context(join, adapter) for join in spec.joins],
-            "where_clause": spec.where_clause,
-        })
+        context.update(
+            {
+                "materialization": materialization,
+                "unique_key": unique_key,
+                "source_ctes": [_source_context(source, adapter) for source in spec.sources],
+                "joins": [_join_context(join, adapter) for join in spec.joins],
+                "where_clause": spec.where_clause,
+            }
+        )
     elif spec.kind is SilverModelKind.SOURCE_BRANCH:
         source = spec.sources[0]
         source_context = _source_context(source, adapter)
-        context.update({
-            "source_name": source.source_name,
-            "raw_table_name": source.table_name,
-            "source_alias": source.alias,
-            "joins": [_join_context(join, adapter) for join in spec.joins],
-            "filter_condition": source_context.get("filter", ""),
-            "source_record_key_expression": spec.source_record_key_expression,
-            "source_record_key_generated_after_mapping": (
-                spec.source_record_key_generated_after_mapping
-            ),
-            "parent_model": spec.parent_model,
-            "ref_model": source.ref_model,
-            "source_identity_ref": spec.source_identity_ref,
-        })
+        context.update(
+            {
+                "source_name": source.source_name,
+                "raw_table_name": source.table_name,
+                "source_alias": source.alias,
+                "joins": [_join_context(join, adapter) for join in spec.joins],
+                "filter_condition": source_context.get("filter", ""),
+                "source_record_key_expression": spec.source_record_key_expression,
+                "source_record_key_generated_after_mapping": (
+                    spec.source_record_key_generated_after_mapping
+                ),
+                "parent_model": spec.parent_model,
+                "ref_model": source.ref_model,
+                "source_identity_ref": spec.source_identity_ref,
+            }
+        )
     elif spec.kind is SilverModelKind.UNION:
-        entity_identity = (
-            spec.authority.entity_identity
-            if spec.authority is not None
-            else None
+        entity_identity = spec.authority.entity_identity if spec.authority is not None else None
+        multi_source = spec.authority.multi_source if spec.authority is not None else None
+        context.update(
+            {
+                "materialization": materialization,
+                "unique_key": unique_key,
+                "source_models": list(spec.source_models),
+                "sk_expression": spec.surrogate_key_expression,
+                "integration_key_expression": spec.integration_key_expression,
+                "iri_expression": spec.iri_expression,
+                "identity_strategy": (
+                    entity_identity.strategy.value.value if entity_identity is not None else ""
+                ),
+                "key_scope": (
+                    entity_identity.key_scope.value.value if entity_identity is not None else ""
+                ),
+                "branch_relationship": (
+                    multi_source.relationship.value.value if multi_source is not None else ""
+                ),
+                "source_precedence": (
+                    list(multi_source.precedence.ordered_sources.value)
+                    if multi_source is not None
+                    else []
+                ),
+            }
         )
-        multi_source = (
-            spec.authority.multi_source
-            if spec.authority is not None
-            else None
-        )
-        context.update({
-            "materialization": materialization,
-            "unique_key": unique_key,
-            "source_models": list(spec.source_models),
-            "sk_expression": spec.surrogate_key_expression,
-            "integration_key_expression": spec.integration_key_expression,
-            "iri_expression": spec.iri_expression,
-            "identity_strategy": (
-                entity_identity.strategy.value.value
-                if entity_identity is not None
-                else ""
-            ),
-            "key_scope": (
-                entity_identity.key_scope.value.value
-                if entity_identity is not None
-                else ""
-            ),
-            "branch_relationship": (
-                multi_source.relationship.value.value
-                if multi_source is not None
-                else ""
-            ),
-            "source_precedence": (
-                list(multi_source.precedence.ordered_sources.value)
-                if multi_source is not None
-                else []
-            ),
-        })
     elif spec.kind in {
         SilverModelKind.CONTRIBUTION_LINEAGE,
         SilverModelKind.RECONCILIATION,
@@ -509,80 +471,65 @@ def render_silver_model(
         multi_source = authority.multi_source if authority is not None else None
         driving_source = (
             identity.driving_source.source_ref.value
-            if identity is not None
-            and identity.driving_source.source_ref is not None
+            if identity is not None and identity.driving_source.source_ref is not None
             else ""
         )
-        context.update({
-            "parent_model": spec.parent_model,
-            "parent_key_column": f"{spec.parent_model}_sk",
-            "parent_key_expression": (
-                f"{spec.parent_model}_sk"
-                if spec.source_models == (spec.parent_model,)
-                else spec.surrogate_key_expression
-            ),
-            "source_models": [
-                {
-                    "name": source.model_name,
-                    "identity_ref": source.table_uri,
-                    "role": (
-                        "driving"
-                        if source.table_uri == driving_source
-                        else "contributor"
-                    ),
-                }
-                for source in spec.sources
-            ],
-            "integration_key_expression": spec.integration_key_expression,
-            "branch_relationship": (
-                multi_source.relationship.value.value
-                if multi_source is not None
-                else ""
-            ),
-            "normalization_policy": (
-                multi_source.normalization.statement.value
-                if multi_source is not None
-                else ""
-            ),
-            "source_precedence": (
-                list(multi_source.precedence.ordered_sources.value)
-                if multi_source is not None
-                else []
-            ),
-            "conflict_action": (
-                multi_source.conflict.value.value
-                if multi_source is not None
-                else ""
-            ),
-            "collision_action": (
-                multi_source.collision.value.value
-                if multi_source is not None
-                else ""
-            ),
-            "deletion_action": (
-                multi_source.deletion.value.value
-                if multi_source is not None
-                else ""
-            ),
-            "late_arrival_action": (
-                multi_source.late_arrival.value.value
-                if multi_source is not None
-                else ""
-            ),
-            "reconciliation_tests": (
-                list(multi_source.reconciliation_tests.value)
-                if multi_source is not None
-                else []
-            ),
-        })
+        context.update(
+            {
+                "parent_model": spec.parent_model,
+                "parent_key_column": f"{spec.parent_model}_sk",
+                "parent_key_expression": (
+                    f"{spec.parent_model}_sk"
+                    if spec.source_models == (spec.parent_model,)
+                    else spec.surrogate_key_expression
+                ),
+                "source_models": [
+                    {
+                        "name": source.model_name,
+                        "identity_ref": source.table_uri,
+                        "role": (
+                            "driving" if source.table_uri == driving_source else "contributor"
+                        ),
+                    }
+                    for source in spec.sources
+                ],
+                "integration_key_expression": spec.integration_key_expression,
+                "branch_relationship": (
+                    multi_source.relationship.value.value if multi_source is not None else ""
+                ),
+                "normalization_policy": (
+                    multi_source.normalization.statement.value if multi_source is not None else ""
+                ),
+                "source_precedence": (
+                    list(multi_source.precedence.ordered_sources.value)
+                    if multi_source is not None
+                    else []
+                ),
+                "conflict_action": (
+                    multi_source.conflict.value.value if multi_source is not None else ""
+                ),
+                "collision_action": (
+                    multi_source.collision.value.value if multi_source is not None else ""
+                ),
+                "deletion_action": (
+                    multi_source.deletion.value.value if multi_source is not None else ""
+                ),
+                "late_arrival_action": (
+                    multi_source.late_arrival.value.value if multi_source is not None else ""
+                ),
+                "reconciliation_tests": (
+                    list(multi_source.reconciliation_tests.value)
+                    if multi_source is not None
+                    else []
+                ),
+            }
+        )
     if (
         spec.kind is SilverModelKind.SOURCE_BRANCH
         and spec.authority is not None
         and spec.authority.foreign_keys
     ):
-        relationship_by_uri = {
-            item.property_uri: item for item in spec.authority.foreign_keys
-        }
+        relationship_by_uri = {item.property_uri: item for item in spec.authority.foreign_keys}
         column_contexts = context["columns"]
         temporal_lookups = []
         for join in spec.joins:
@@ -610,11 +557,7 @@ def render_silver_model(
                         for column in column_contexts
                         if column["target_name"] == merge_column
                     ),
-                    (
-                        f"{join.source_alias}.{merge_column}"
-                        if join.source_alias
-                        else merge_column
-                    ),
+                    (f"{join.source_alias}.{merge_column}" if join.source_alias else merge_column),
                 )
                 for merge_column in merge_identity
             )
@@ -624,17 +567,13 @@ def render_silver_model(
                     "join": _join_context(join, adapter),
                     "match_count_column": diagnostic,
                     "match_count_expression": (
-                        f"COUNT({parent_key}) OVER "
-                        f"(PARTITION BY {source_partition})"
+                        f"COUNT({parent_key}) OVER (PARTITION BY {source_partition})"
                     ),
-                    "unknown_member": (
-                        relationship.missing_action.value.value == "unknown-member"
-                    ),
+                    "unknown_member": (relationship.missing_action.value.value == "unknown-member"),
                     "quarantine_missing": relationship.missing_action.value.value
                     in {"quarantine", "retry"},
                     "quarantine_ambiguous": (
-                        relationship.ambiguous_action.value.value
-                        in {"quarantine", "retry"}
+                        relationship.ambiguous_action.value.value in {"quarantine", "retry"}
                     ),
                 }
             )
@@ -647,16 +586,13 @@ def render_silver_model(
             temporal_lookups.append(
                 {
                     "join": {"fk_column": ""},
-                    "match_count_column": temporal_match_count_column(
-                        relationship.property_uri
-                    ),
+                    "match_count_column": temporal_match_count_column(relationship.property_uri),
                     "match_count_expression": "0",
                     "unknown_member": False,
                     "quarantine_missing": relationship.missing_action.value.value
                     in {"quarantine", "retry"},
                     "quarantine_ambiguous": (
-                        relationship.ambiguous_action.value.value
-                        in {"quarantine", "retry"}
+                        relationship.ambiguous_action.value.value in {"quarantine", "retry"}
                     ),
                 }
             )
@@ -670,9 +606,7 @@ def render_silver_model(
                 None,
             )
             if lookup is not None and lookup["unknown_member"]:
-                column["expression"] = (
-                    f"COALESCE({column['expression']}, '__KAIROS_UNKNOWN__')"
-                )
+                column["expression"] = f"COALESCE({column['expression']}, '__KAIROS_UNKNOWN__')"
         context["temporal_lookups"] = temporal_lookups
     context.update(_runtime_context(spec, adapter))
     content = env.get_template(plan.template_name).render(**context)
@@ -687,9 +621,9 @@ def _schema_context(
     model: SchemaModelSpec,
     physical: SilverModelPhysicalPlan | None,
 ) -> dict[str, object]:
-    physical_columns = {
-        column.name: column for column in physical.columns
-    } if physical is not None else {}
+    physical_columns = (
+        {column.name: column for column in physical.columns} if physical is not None else {}
+    )
     return {
         "name": model.name,
         "description": model.description,
@@ -723,9 +657,5 @@ def render_schema_models(
     """Render immutable schema specs through the existing YAML template."""
     physical = {model.model_name: model for model in physical_models}
     return env.get_template(template_name).render(
-        models=[
-            _schema_context(model, physical.get(model.name))
-            for model in models
-        ]
+        models=[_schema_context(model, physical.get(model.name)) for model in models]
     )
-

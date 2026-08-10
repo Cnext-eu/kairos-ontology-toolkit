@@ -30,7 +30,9 @@ def topology(refroot):
 def test_all_present_concepts_resolved(topology):
     # 3 real concepts present; the GhostConcept is declared but absent from the graph.
     assert sorted(c.split("#")[-1] for c in topology.present_concepts) == [
-        "Booking", "BookingParty", "CargoItem",
+        "Booking",
+        "BookingParty",
+        "CargoItem",
     ]
 
 

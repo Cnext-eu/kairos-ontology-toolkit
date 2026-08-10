@@ -337,9 +337,7 @@ def validate_silver_extension(
             profile="rdfs",
         )
     except OntologyLoadError as exc:
-        root_errors = [
-            item for item in exc.result.diagnostics if item.code == "root_parse_error"
-        ]
+        root_errors = [item for item in exc.result.diagnostics if item.code == "root_parse_error"]
         if root_errors:
             error = root_errors[0]
             diagnostic = DesignDiagnostic(
@@ -350,9 +348,7 @@ def validate_silver_extension(
             )
         else:
             details = "; ".join(
-                item.message
-                for item in exc.result.diagnostics
-                if item.level == "error"
+                item.message for item in exc.result.diagnostics if item.level == "error"
             )
             diagnostic = DesignDiagnostic(
                 "silver.domain-closure-error",

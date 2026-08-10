@@ -15,6 +15,7 @@ from .projections.uri_utils import extract_local_name
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PropertyInfo:
     uri: str
@@ -56,6 +57,7 @@ class OntologyInfo:
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
+
 
 def _detect_namespace(graph: Graph) -> str:
     """Detect the base namespace of an ontology graph."""
@@ -113,6 +115,7 @@ def _graph_to_info(graph: Graph) -> OntologyInfo:
 # DD-103 semantic index (``SemanticIndex.class_properties``), as the v5 compiler kernel does.
 # ---------------------------------------------------------------------------
 
+
 def list_classes(graph: Graph, namespace: Optional[str] = None) -> List[ClassInfo]:
     """Return all ``owl:Class`` instances in *namespace* (or all if ``None``)."""
     namespace = namespace or _detect_namespace(graph)
@@ -130,8 +133,16 @@ def list_classes(graph: Graph, namespace: Optional[str] = None) -> List[ClassInf
             if str(sc).startswith(namespace)
         ]
         props = list_properties(graph, uri)
-        results.append(ClassInfo(uri=uri, name=name, label=label, comment=comment,
-                                 superclasses=supers, properties=props))
+        results.append(
+            ClassInfo(
+                uri=uri,
+                name=name,
+                label=label,
+                comment=comment,
+                superclasses=supers,
+                properties=props,
+            )
+        )
     return results
 
 
@@ -152,10 +163,17 @@ def list_properties(graph: Graph, class_uri: str) -> List[PropertyInfo]:
             rng = _first_object(graph, prop, RDFS.range)
             rng_uri = str(rng) if rng else str(XSD.string)
             rng_name = extract_local_name(rng_uri)
-            results.append(PropertyInfo(
-                uri=uri, name=name, label=label, comment=comment,
-                range_uri=rng_uri, range_name=rng_name, is_object_property=is_obj,
-            ))
+            results.append(
+                PropertyInfo(
+                    uri=uri,
+                    name=name,
+                    label=label,
+                    comment=comment,
+                    range_uri=rng_uri,
+                    range_name=rng_name,
+                    is_object_property=is_obj,
+                )
+            )
     return results
 
 
@@ -172,17 +190,23 @@ def list_relationships(graph: Graph, namespace: Optional[str] = None) -> List[Re
         comment = _first_literal(graph, prop, RDFS.comment) or ""
         domain = _first_object(graph, prop, RDFS.domain)
         rng = _first_object(graph, prop, RDFS.range)
-        results.append(RelationshipInfo(
-            uri=uri, name=name, label=label, comment=comment,
-            domain=extract_local_name(str(domain)) if domain else "Any",
-            range=extract_local_name(str(rng)) if rng else "Any",
-        ))
+        results.append(
+            RelationshipInfo(
+                uri=uri,
+                name=name,
+                label=label,
+                comment=comment,
+                domain=extract_local_name(str(domain)) if domain else "Any",
+                range=extract_local_name(str(rng)) if rng else "Any",
+            )
+        )
     return results
 
 
 # ---------------------------------------------------------------------------
 # Mutation helpers
 # ---------------------------------------------------------------------------
+
 
 def add_class(
     graph: Graph,
@@ -252,17 +276,10 @@ def remove_class(graph: Graph, class_uri: str) -> Graph:
     return graph
 
 
-def remove_property(graph: Graph, property_uri: str) -> Graph:
-    """Remove a property and all triples where it appears as subject or object."""
-    prop = URIRef(property_uri)
-    graph.remove((prop, None, None))
-    graph.remove((None, None, prop))
-    return graph
-
-
 # ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------
+
 
 def serialize_graph(graph: Graph, format: str = "turtle") -> str:
     """Serialize a graph back to a string (default Turtle)."""
@@ -272,6 +289,7 @@ def serialize_graph(graph: Graph, format: str = "turtle") -> str:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
 
 def _first_literal(graph: Graph, subject, predicate) -> Optional[str]:
     for obj in graph.objects(subject, predicate):

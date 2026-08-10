@@ -276,7 +276,7 @@ def _whl_url(tag: str) -> str:
     """Build the GitHub Releases download URL for the .whl artifact."""
     version = _tag_to_version(tag)
     filename = f"kairos_ontology_toolkit-{version}-py3-none-any.whl"
-    return f"https://github.com/{_TOOLKIT_REPO}/releases/download/" f"{tag}/{filename}"
+    return f"https://github.com/{_TOOLKIT_REPO}/releases/download/{tag}/{filename}"
 
 
 _COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -1201,6 +1201,7 @@ def _resolve_semantic_input(
     return resolved, catalog_path
 
 
+@click.command(name="extract-schema")
 @click.option(
     "--profile", "profile_name", required=True, help="dbt profile name (from profiles.yml)."
 )

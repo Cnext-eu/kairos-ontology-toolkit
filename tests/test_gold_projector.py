@@ -318,19 +318,25 @@ def test_measure_lifecycle_controls_emission_and_release(
 
 
 def test_measure_cycle_and_missing_measure_dependency_block(tmp_path: Path):
-    cycle = _gold_text("invoice") + """
+    cycle = (
+        _gold_text("invoice")
+        + """
 acme-inv:TotalInvoiceAmount
     kairos-ext:measureDependency acme-inv:TotalLineAmount .
 acme-inv:TotalLineAmount
     kairos-ext:measureDependency acme-inv:TotalInvoiceAmount .
 """
+    )
     with pytest.raises(PolicyNormalizationError, match="dependency cycle"):
         _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", cycle))
 
-    missing = _gold_text("invoice") + """
+    missing = (
+        _gold_text("invoice")
+        + """
 acme-inv:TotalInvoiceAmount
     kairos-ext:measureDependency acme-inv:MissingMeasure .
 """
+    )
     with pytest.raises(PolicyNormalizationError, match="do not resolve"):
         _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", missing))
 
@@ -348,7 +354,7 @@ def test_approved_measure_requires_owner_tests_and_evidence(tmp_path: Path):
         ),
         (
             original.replace(
-                "    kairos-ext:measureValidationTest " '"invoice-total-reconciliation" ;\n',
+                '    kairos-ext:measureValidationTest "invoice-total-reconciliation" ;\n',
                 "",
                 1,
             ),
@@ -356,11 +362,11 @@ def test_approved_measure_requires_owner_tests_and_evidence(tmp_path: Path):
         ),
         (
             original.replace(
-                "    kairos-ext:measureValidationTest " '"invoice-total-reconciliation" ;\n',
-                "    kairos-ext:measureValidationTest " '"invoice-total-reconciliation" .\n',
+                '    kairos-ext:measureValidationTest "invoice-total-reconciliation" ;\n',
+                '    kairos-ext:measureValidationTest "invoice-total-reconciliation" .\n',
                 1,
             ).replace(
-                "    kairos-ext:measureValidationEvidence " '"dq-run:invoice-total-v1" .\n',
+                '    kairos-ext:measureValidationEvidence "dq-run:invoice-total-v1" .\n',
                 "",
                 1,
             ),
@@ -386,7 +392,7 @@ def test_calendar_is_only_generated_when_explicit_and_approved(
     assert not any("dim_date" in path for path in client_gold)
     assert "invoice/dbt/models/gold/shared/dim_date.sql" in invoice_gold
     assert (
-        "invoice/Invoice.SemanticModel/definition/" "calculationGroups/time-intelligence.tmdl"
+        "invoice/Invoice.SemanticModel/definition/calculationGroups/time-intelligence.tmdl"
     ) in invoice_gold
     calendar = _report(invoice_gold, "invoice")["calendar"]
     assert calendar["bounds"] == ["2020-01-01", "2035-12-31"]
@@ -461,7 +467,9 @@ def test_databricks_requires_declared_downstream_powerbi_deviations(tmp_path: Pa
     with pytest.raises(GoldContractError, match="adapter-capability-blocking"):
         _generate("client", platform="databricks")
 
-    text = _gold_text("client") + """
+    text = (
+        _gold_text("client")
+        + """
 acme:DatabricksTmdlDeviation a kairos-ext:Deviation ;
     kairos-ext:adapterName "databricks" ;
     kairos-ext:policyReference "DD-113-tmdl" ;
@@ -484,6 +492,7 @@ acme:DatabricksSecurityDeviation a kairos-ext:Deviation ;
     kairos-ext:expiryDate "2099-12-31" ;
     kairos-ext:deviationEvidence "review:databricks-security" .
 """
+    )
     artifacts = _generate(
         "client",
         gold_path=_write_gold(tmp_path, "client", text),

@@ -189,9 +189,7 @@ def compile_cmd(
             "output-path confirmation, pass --confirm-emit."
         )
     mode = (
-        CompileMode.EMIT
-        if emit_mode
-        else CompileMode.CHECK if check_mode else CompileMode.EXPLAIN
+        CompileMode.EMIT if emit_mode else CompileMode.CHECK if check_mode else CompileMode.EXPLAIN
     )
     hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
     discovery_errors = check_discovery_gate(hub)

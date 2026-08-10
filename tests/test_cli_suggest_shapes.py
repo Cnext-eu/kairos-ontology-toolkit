@@ -32,9 +32,7 @@ def _write_vocab(tmp_path: Path) -> Path:
 def test_suggest_shapes_writes_draft(tmp_path):
     src = _write_vocab(tmp_path)
     out = tmp_path / "draft.ttl"
-    result = CliRunner().invoke(
-        cli, ["suggest-shapes", "--source", str(src), "--out", str(out)]
-    )
+    result = CliRunner().invoke(cli, ["suggest-shapes", "--source", str(src), "--out", str(out)])
     assert result.exit_code == 0, result.output
     assert out.exists()
     text = out.read_text(encoding="utf-8")

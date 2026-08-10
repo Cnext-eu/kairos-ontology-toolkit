@@ -545,9 +545,9 @@ class TestProjector:
         model = schema_content["models"][0]
 
         # Verify model has correct name (lowercase snake_case)
-        assert (
-            model.get("name") == "customer"
-        ), f"Model name should be 'customer', got {model.get('name')}"
+        assert model.get("name") == "customer", (
+            f"Model name should be 'customer', got {model.get('name')}"
+        )
         assert "description" in model, "Model should have description"
         assert "columns" in model, "Model should have columns"
 
@@ -572,9 +572,9 @@ class TestProjector:
         assert "not_null" in test_str, f"Should have not_null test from minCount, got: {tests}"
 
         # Check for length constraints (from sh:minLength/maxLength)
-        assert (
-            "length" in test_str.lower() or "expression_is_true" in test_str.lower()
-        ), f"Should have length constraint tests, got: {tests}"
+        assert "length" in test_str.lower() or "expression_is_true" in test_str.lower(), (
+            f"Should have length constraint tests, got: {tests}"
+        )
 
         # Check customer_email column
         assert "customer_email" in columns, "Should have customer_email column"
@@ -710,9 +710,9 @@ class TestProjector:
         # Verify entity structure (first entity)
         first_entity_name = list(compact_data["entities"].keys())[0]
         first_entity = compact_data["entities"][first_entity_name]
-        assert (
-            "description" in first_entity or "fields" in first_entity
-        ), "Entity should have description or fields"
+        assert "description" in first_entity or "fields" in first_entity, (
+            "Entity should have description or fields"
+        )
 
         if "fields" in first_entity:
             # Verify field structure
@@ -1161,9 +1161,9 @@ class TestAutoDetectNamespace:
         g.add((cls_uri, RDF.type, OWL.Class))
 
         ns = _auto_detect_namespace(g)
-        assert (
-            ns == "https://pkf-bofidi.com/ont/client#"
-        ), f"Expected 'https://pkf-bofidi.com/ont/client#', got '{ns}'"
+        assert ns == "https://pkf-bofidi.com/ont/client#", (
+            f"Expected 'https://pkf-bofidi.com/ont/client#', got '{ns}'"
+        )
 
     def test_hash_fragment_does_not_match_other_domains(self):
         """Two domains with shared path prefix must produce distinct namespaces."""
@@ -1394,7 +1394,9 @@ class TestDD021ImportWhitelisting:
         """)
         g = Graph()
         g.parse(data=ttl, format="turtle")
-        rows = [(str(row["class"]), row) for row in g.query("""
+        rows = [
+            (str(row["class"]), row)
+            for row in g.query("""
             PREFIX owl: <http://www.w3.org/2002/07/owl#>
             PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
             SELECT ?class ?label ?comment WHERE {
@@ -1403,7 +1405,8 @@ class TestDD021ImportWhitelisting:
                 OPTIONAL { ?class rdfs:comment ?comment }
                 FILTER(isIRI(?class))
             }
-        """)]
+        """)
+        ]
         result = _discover_whitelisted_imports(
             g,
             SLASH_HUB,

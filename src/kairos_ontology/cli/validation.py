@@ -234,9 +234,7 @@ def validate(
     # Report destination: always the publish root (repo-root sibling), never the
     # process CWD (mirrors the `project` command's output_path resolution below).
     output_dir = (
-        publish_root(hub_root)
-        if hub_root is not None
-        else publish_root(cwd / "ontology-hub")
+        publish_root(hub_root) if hub_root is not None else publish_root(cwd / "ontology-hub")
     )
     decisions_path = (
         hub_root / "decisions" if hub_root is not None else cwd / "ontology-hub" / "decisions"

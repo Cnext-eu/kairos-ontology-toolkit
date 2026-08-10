@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-_DD_FILE = Path(__file__).resolve().parent.parent / "docs" / "design" / "toolkit-design-decisions.md"
+_DD_FILE = (
+    Path(__file__).resolve().parent.parent / "docs" / "design" / "toolkit-design-decisions.md"
+)
 
 
 def _github_anchor(heading: str) -> str:
@@ -71,9 +73,7 @@ def test_toc_entries_match_body_headings(dd_content):
             clean_toc = re.sub(r"`([^`]*)`", r"\1", toc_title)
             clean_body = re.sub(r"`([^`]*)`", r"\1", body_by_id[dd_id])
             if clean_toc != clean_body:
-                mismatches.append(
-                    f"{dd_id}: TOC title '{clean_toc}' ≠ body title '{clean_body}'"
-                )
+                mismatches.append(f"{dd_id}: TOC title '{clean_toc}' ≠ body title '{clean_body}'")
 
     assert not mismatches, "TOC ↔ body title mismatches:\n" + "\n".join(mismatches)
 
@@ -104,9 +104,7 @@ def test_toc_anchors_resolve(dd_content):
         if dd_id in body_anchors:
             expected = body_anchors[dd_id]
             if toc_anchor != expected:
-                broken.append(
-                    f"{dd_id}: anchor '#{toc_anchor}' should be '#{expected}'"
-                )
+                broken.append(f"{dd_id}: anchor '#{toc_anchor}' should be '#{expected}'")
 
     assert not broken, "Broken TOC anchor links:\n" + "\n".join(broken)
 

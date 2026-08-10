@@ -22,6 +22,7 @@ RETAINED_COMMANDS = {
     "discovery-status",
     "draft-model-report",
     "explain-term",
+    "extract-schema",
     "fit-report",
     "generate-inventory",
     "guard-scope",

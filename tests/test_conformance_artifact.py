@@ -35,12 +35,26 @@ def archetype(refroot):
 
 def _outcomes():
     return [
-        {"uri": "https://example.org/ont/booking#Booking", "label": "Booking",
-         "tier": "required", "outcome": "conforms"},
-        {"uri": "https://example.org/ont/booking#CargoItem", "label": "Cargo Item",
-         "tier": "required", "outcome": "conforms-with-rename", "rename_to": "CargoLine"},
-        {"uri": "https://example.org/ont/party#BookingParty", "label": "Booking Party",
-         "tier": "recommended", "outcome": "deviates", "deviation_reason": "bank acts as party"},
+        {
+            "uri": "https://example.org/ont/booking#Booking",
+            "label": "Booking",
+            "tier": "required",
+            "outcome": "conforms",
+        },
+        {
+            "uri": "https://example.org/ont/booking#CargoItem",
+            "label": "Cargo Item",
+            "tier": "required",
+            "outcome": "conforms-with-rename",
+            "rename_to": "CargoLine",
+        },
+        {
+            "uri": "https://example.org/ont/party#BookingParty",
+            "label": "Booking Party",
+            "tier": "recommended",
+            "outcome": "deviates",
+            "deviation_reason": "bank acts as party",
+        },
     ]
 
 
@@ -168,8 +182,13 @@ def test_open_questions_flags_ai_decided_needs_confirmation():
     art = {
         "mode": "fleet",
         "core_concepts": [
-            {"uri": "u1", "label": "One", "decided_by": "ai", "needs_confirmation": True,
-             "confidence": 0.9},
+            {
+                "uri": "u1",
+                "label": "One",
+                "decided_by": "ai",
+                "needs_confirmation": True,
+                "confidence": 0.9,
+            },
         ],
     }
     questions = open_questions(art)
@@ -195,8 +214,13 @@ def test_open_questions_ignores_user_decided_entries():
         "mode": "fleet",
         "core_concepts": [
             {"uri": "u1", "label": "One", "decided_by": "user"},
-            {"uri": "u2", "label": "Two", "decided_by": "ai", "confidence": 0.95,
-             "needs_confirmation": False},
+            {
+                "uri": "u2",
+                "label": "Two",
+                "decided_by": "ai",
+                "confidence": 0.95,
+                "needs_confirmation": False,
+            },
         ],
     }
     assert open_questions(art) == []
@@ -286,8 +310,14 @@ def test_scorecard_never_drops_a_concept_carrying_an_unseeded_tier():
 def test_scorecard_keeps_canonical_tiers_even_when_empty():
     """Historical shape is preserved: the three canonical buckets always appear."""
     sc = compute_scorecard(
-        [{"uri": "https://example.org/ont/x#A", "label": "A", "tier": "required",
-          "outcome": "conforms"}]
+        [
+            {
+                "uri": "https://example.org/ont/x#A",
+                "label": "A",
+                "tier": "required",
+                "outcome": "conforms",
+            }
+        ]
     )
     assert set(sc["by_tier"]) == {"required", "recommended", "optional"}
 

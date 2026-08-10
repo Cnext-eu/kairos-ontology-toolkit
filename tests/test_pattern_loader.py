@@ -123,9 +123,7 @@ class TestPatternQualityWarnings:
             "  - id: synonym-for-estimated\n    description: d\n",
         )
         _, warnings = load_patterns(root)
-        assert any(
-            "synonym-for-estimated" in w and "no rejection_reason" in w for w in warnings
-        )
+        assert any("synonym-for-estimated" in w and "no rejection_reason" in w for w in warnings)
 
     def test_naming_conventions_as_mapping_warns(self, tmp_path):
         """The library's own structural rule: naming_conventions is a list of entries."""

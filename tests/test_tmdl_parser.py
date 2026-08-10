@@ -2,7 +2,6 @@
 # Copyright 2026 Cnext.eu
 """Unit tests for the TMDL parser."""
 
-
 from kairos_ontology.core.tmdl_parser import (
     TmdlColumn,
     TmdlMeasure,

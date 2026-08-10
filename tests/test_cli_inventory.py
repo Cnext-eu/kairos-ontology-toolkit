@@ -34,7 +34,6 @@ ref-party:regNumber a owl:DatatypeProperty ;
 
 
 class TestGenerateInventoryCLI:
-
     def test_generates_ref_model_inventory(self, tmp_path):
         ref_dir = tmp_path / "model" / "reference-models"
         ref_dir.mkdir(parents=True)
@@ -140,7 +139,6 @@ class TestGenerateInventoryCLI:
 
 
 class TestCheckInventoryCLI:
-
     def test_autodetects_repo_root_refmodels(self, tmp_path, monkeypatch):
         ref_dir = tmp_path / "ontology-reference-models"
         ref_dir.mkdir(parents=True)
@@ -263,7 +261,6 @@ class TestInventoryCollisionRegression:
 
 
 class TestResolveRefModelsDir:
-
     def test_returns_none_when_missing(self, tmp_path):
         from kairos_ontology.cli.main import _resolve_ref_models_dir
 

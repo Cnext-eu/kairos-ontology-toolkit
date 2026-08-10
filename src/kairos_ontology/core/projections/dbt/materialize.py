@@ -219,10 +219,10 @@ def _quality_physical_plans(
                     evaluated_model_name=evaluated_model_name,
                     result_model_name=result_name,
                     result_artifact_path=(
-                        f"models/quality/{model.identity.domain_name}/" f"{result_name}.sql"
+                        f"models/quality/{model.identity.domain_name}/{result_name}.sql"
                     ),
                     test_artifact_path=(
-                        f"tests/quality/{model.identity.domain_name}/" f"test_{result_name}.sql"
+                        f"tests/quality/{model.identity.domain_name}/test_{result_name}.sql"
                     ),
                     row_level=row_level,
                 )
@@ -390,8 +390,7 @@ def _runtime_physical_plan(
             "fabric-merge" if adapter_name.value == "fabric" else "databricks-delta-merge"
         ),
         delete_strategy=(
-            f"hard:{incremental.hard_delete.value.value};"
-            f"soft:{incremental.soft_delete.value.value}"
+            f"hard:{incremental.hard_delete.value.value};soft:{incremental.soft_delete.value.value}"
         ),
         hash_strategy=(
             "canonical-sha256-v1"

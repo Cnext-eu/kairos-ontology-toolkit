@@ -128,6 +128,7 @@ def resolve_role_model(role: str | None, default: str = DEFAULT_MODEL) -> str:
 @dataclass
 class AIProviderConfig:
     """Resolved AI provider configuration."""
+
     provider: str  # "github", "azure", or "foundry"
     endpoint: str
     api_key: str
@@ -254,6 +255,7 @@ def _get_azure_managed_identity_token() -> str:
     """Attempt to get a token via Azure managed identity."""
     try:
         from azure.identity import DefaultAzureCredential
+
         credential = DefaultAzureCredential()
         token = credential.get_token("https://cognitiveservices.azure.com/.default")
         return token.token
@@ -319,6 +321,7 @@ def get_ai_client(model: str = DEFAULT_MODEL, *, role: str | None = None):
         return _create_foundry_client(config)
 
     from openai import OpenAI
+
     return OpenAI(
         base_url=config.endpoint,
         api_key=config.api_key,
@@ -490,7 +493,8 @@ def create_chat_completion(
             raise
         logger.info(
             "Model %s rejected request parameter '%s'; retrying once without it.",
-            model, param,
+            model,
+            param,
         )
         retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
         return client.chat.completions.create(model=model, messages=messages, **retry_kwargs)

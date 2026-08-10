@@ -188,7 +188,7 @@ def test_accelerator_direct_binding_with_full_iri_tokens(tmp_path):
         load:
           mode: full-refresh
         fields:
-          - property: "{_TRADE_PARTY_URI.rsplit('#', 1)[0]}#tradePartyId"
+          - property: "{_TRADE_PARTY_URI.rsplit("#", 1)[0]}#tradePartyId"
             expression: trade_party_id
         """
     ).strip()

@@ -300,9 +300,7 @@ def validate_naming_conventions(ontology_content: str) -> dict:
 
     errors: list[NamingDiagnostic] = []
 
-    ontology_subjects = [
-        s for s in graph.subjects(RDF.type, OWL.Ontology) if isinstance(s, URIRef)
-    ]
+    ontology_subjects = [s for s in graph.subjects(RDF.type, OWL.Ontology) if isinstance(s, URIRef)]
     if not ontology_subjects:
         errors.append(
             NamingDiagnostic(
@@ -342,18 +340,10 @@ def validate_naming_conventions(ontology_content: str) -> dict:
                 )
             )
 
-    class_uris = {
-        str(s) for s in graph.subjects(RDF.type, OWL.Class) if isinstance(s, URIRef)
-    }
+    class_uris = {str(s) for s in graph.subjects(RDF.type, OWL.Class) if isinstance(s, URIRef)}
     property_uris = {
-        str(s)
-        for s in graph.subjects(RDF.type, OWL.DatatypeProperty)
-        if isinstance(s, URIRef)
-    } | {
-        str(s)
-        for s in graph.subjects(RDF.type, OWL.ObjectProperty)
-        if isinstance(s, URIRef)
-    }
+        str(s) for s in graph.subjects(RDF.type, OWL.DatatypeProperty) if isinstance(s, URIRef)
+    } | {str(s) for s in graph.subjects(RDF.type, OWL.ObjectProperty) if isinstance(s, URIRef)}
 
     for term_uri in sorted(class_uris & property_uris):
         errors.append(
@@ -819,9 +809,7 @@ def run_validation(
                 print(f"  ✗ {ontology_file.name}: {e}")
                 continue
 
-            naming_result = validate_naming_conventions(
-                ontology_file.read_text(encoding="utf-8")
-            )
+            naming_result = validate_naming_conventions(ontology_file.read_text(encoding="utf-8"))
             if naming_result["errors"]:
                 results["naming"]["failed"] += 1
                 results["naming"]["errors"].extend(

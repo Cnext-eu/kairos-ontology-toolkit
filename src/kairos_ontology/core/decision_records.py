@@ -766,7 +766,7 @@ def build_index_markdown(records: list[DecisionRecord]) -> str:
         "| ID | Title | Domain | State | Superseded by |",
         "|----|-------|--------|-------|---------------|",
     ]
-    for record in sorted(records, key=lambda r: (r.id or "")):
+    for record in sorted(records, key=lambda r: r.id or ""):
         rid = record.id or record.path.stem
         title = (record.title or "").replace("|", "\\|")
         domain = record.domain or ""

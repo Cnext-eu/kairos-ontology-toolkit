@@ -150,9 +150,7 @@ def test_unknown_property_is_reported_with_location():
     broken = BINDING.replace("party:customerName", "party:doesNotExist")
     with pytest.raises(CompileError) as excinfo:
         adapt_binding(load_entity_binding(broken, path="b.yaml"), context)
-    diagnostic = next(
-        d for d in excinfo.value.diagnostics if d.code == "binding.unknown-property"
-    )
+    diagnostic = next(d for d in excinfo.value.diagnostics if d.code == "binding.unknown-property")
     assert "usable property tokens" in diagnostic.message
     assert "party:customerName" in diagnostic.message
 

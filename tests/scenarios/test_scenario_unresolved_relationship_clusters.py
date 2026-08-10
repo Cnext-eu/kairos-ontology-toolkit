@@ -24,16 +24,24 @@ from kairos_ontology.core.propose_alignment import (
 )
 
 REF_CLASSES = [
-    {"name": "SalesContract", "label": "Sales Contract", "comment": "",
-     "uri": "https://example.com/ont/commercial#SalesContract",
-     "properties": [
-         {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
-     ]},
-    {"name": "TradeTerms", "label": "Trade Terms", "comment": "",
-     "uri": "https://example.com/ont/commercial#TradeTerms",
-     "properties": [
-         {"name": "incoterm", "label": "Incoterm", "range": "string"},
-     ]},
+    {
+        "name": "SalesContract",
+        "label": "Sales Contract",
+        "comment": "",
+        "uri": "https://example.com/ont/commercial#SalesContract",
+        "properties": [
+            {"name": "contractIdentifier", "label": "Contract ID", "range": "string"},
+        ],
+    },
+    {
+        "name": "TradeTerms",
+        "label": "Trade Terms",
+        "comment": "",
+        "uri": "https://example.com/ont/commercial#TradeTerms",
+        "properties": [
+            {"name": "incoterm", "label": "Incoterm", "range": "string"},
+        ],
+    },
 ]
 
 
@@ -43,10 +51,14 @@ def _write_affinity(analysis_dir):
         "system": "adminpulse",
         "schema_version": 2,
         "tables": [
-            {"table": "tblContracts", "total_columns": 3, "domain": "commercial",
-             "domain_uris": ["https://example.com/ont/commercial#"],
-             "likely_entity": "SalesContract",
-             "indicative_columns": ["billing_street"]},
+            {
+                "table": "tblContracts",
+                "total_columns": 3,
+                "domain": "commercial",
+                "domain_uris": ["https://example.com/ont/commercial#"],
+                "likely_entity": "SalesContract",
+                "indicative_columns": ["billing_street"],
+            },
         ],
         "domain_summary": [
             {"domain": "commercial", "table_count": 1, "tables": ["tblContracts"]},
@@ -82,15 +94,26 @@ def _write_conformance(tmp_path):
     # which propose_alignment always downgrades to ref_class_status
     # "unresolved" (never guesses the nearest class).
     path = tmp_path / "core-concepts-conformance.yaml"
-    path.write_text(yaml.safe_dump({
-        "schema_version": 1,
-        "core_concepts": [
-            {"uri": "https://example.com/ont/commercial#SalesContract",
-             "label": "SalesContract", "outcome": "conforms"},
-            {"uri": "https://example.com/ont/commercial#TradeTerms",
-             "label": "SalesContract", "outcome": "conforms"},
-        ],
-    }), encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "core_concepts": [
+                    {
+                        "uri": "https://example.com/ont/commercial#SalesContract",
+                        "label": "SalesContract",
+                        "outcome": "conforms",
+                    },
+                    {
+                        "uri": "https://example.com/ont/commercial#TradeTerms",
+                        "label": "SalesContract",
+                        "outcome": "conforms",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -111,16 +134,22 @@ class TestUnresolvedAnchorEmitsNoRelationshipClusters:
         _write_sources(sources)
         conformance = _write_conformance(tmp_path)
         client = _mock_client_never_called()
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=client,
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=REF_CLASSES,
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=client,
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=REF_CLASSES,
+            ),
         ):
             alignments = build_domain_alignments(
-                analysis_dir=analysis, sources_dir=sources, catalog_path=None,
-                domains_filter=["commercial"], conformance_artifact_path=conformance,
+                analysis_dir=analysis,
+                sources_dir=sources,
+                catalog_path=None,
+                domains_filter=["commercial"],
+                conformance_artifact_path=conformance,
             )
         return alignment_to_dict(alignments[0])["tables"][0]
 

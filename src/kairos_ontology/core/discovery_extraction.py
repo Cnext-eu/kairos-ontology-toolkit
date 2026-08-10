@@ -124,7 +124,7 @@ def normalize_source_key(source_path: Any, import_dir: Path) -> str | None:
 
     idx = s.rfind(_IMPORT_MARKER)
     if idx != -1:
-        return s[idx + len(_IMPORT_MARKER):].strip("/")
+        return s[idx + len(_IMPORT_MARKER) :].strip("/")
 
     try:
         return Path(s).resolve().relative_to(Path(import_dir).resolve()).as_posix()

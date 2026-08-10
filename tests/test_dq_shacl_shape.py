@@ -41,9 +41,7 @@ party:Rule a kairos-ext:DataQualityRule ;
 
 
 def _validate(test_ref: str) -> bool:
-    data = Graph().parse(
-        data=_PREFIX + _RULE_TEMPLATE.format(test_ref=test_ref), format="turtle"
-    )
+    data = Graph().parse(data=_PREFIX + _RULE_TEMPLATE.format(test_ref=test_ref), format="turtle")
     shapes = Graph().parse(_SHAPES, format="turtle")
     conforms, _report_graph, _report_text = shacl_validate(
         data_graph=data, shacl_graph=shapes, inference="none"
@@ -60,6 +58,4 @@ def test_unknown_test_reference_violates_shape() -> None:
 
 
 def test_duplicate_test_reference_violates_max_count() -> None:
-    assert (
-        _validate('"kairos.dq.distribution.v1" , "kairos.dq.range.v1"') is False
-    )
+    assert _validate('"kairos.dq.distribution.v1" , "kairos.dq.range.v1"') is False

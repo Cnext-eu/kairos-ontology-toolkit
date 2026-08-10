@@ -33,14 +33,14 @@ class TestScaffoldSync:
                 "",
             ]
             for src, dst in drifted:
-                msg_lines.append(
-                    f"  {src.relative_to(REPO_ROOT)} ≠ {dst.relative_to(REPO_ROOT)}"
-                )
-            msg_lines.extend([
-                "",
-                "Fix: run `python scripts/sync-dev-skills.py`",
-                "Or install the pre-commit hook: `powershell scripts/install-hooks.ps1`",
-            ])
+                msg_lines.append(f"  {src.relative_to(REPO_ROOT)} ≠ {dst.relative_to(REPO_ROOT)}")
+            msg_lines.extend(
+                [
+                    "",
+                    "Fix: run `python scripts/sync-dev-skills.py`",
+                    "Or install the pre-commit hook: `powershell scripts/install-hooks.ps1`",
+                ]
+            )
             pytest.fail("\n".join(msg_lines))
 
     def test_sync_pairs_exist(self):
@@ -51,7 +51,5 @@ class TestScaffoldSync:
     def test_copilot_instructions_pair(self):
         """copilot-instructions.md must be in the sync pairs."""
         pairs = get_sync_pairs()
-        instr_pairs = [
-            (s, d) for s, d in pairs if "copilot-instructions" in s.name
-        ]
+        instr_pairs = [(s, d) for s, d in pairs if "copilot-instructions" in s.name]
         assert len(instr_pairs) == 1

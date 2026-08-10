@@ -237,10 +237,7 @@ def _shape_measures(
             if not home_table:
                 _fail(
                     "measure.home-table-missing",
-                    (
-                        f"measure {source.measure_id.value!r} has no resolvable "
-                        "emitted home table"
-                    ),
+                    (f"measure {source.measure_id.value!r} has no resolvable emitted home table"),
                     rule_id="DD-113-measure-dependencies",
                     resource_uri=source.resource_uri,
                 )
@@ -300,7 +297,7 @@ def _shape_calendar(
         if match is None:
             _fail(
                 "calendar.invalid-role-binding",
-                (f"rolePlayingDate {value!r} must use " "RoleName=GoldOrSilverTable.date_column"),
+                (f"rolePlayingDate {value!r} must use RoleName=GoldOrSilverTable.date_column"),
                 rule_id="DD-113-calendar",
                 resource_uri=source.resource_uri,
             )
@@ -371,7 +368,7 @@ def _shape_security(
         if match is None:
             _fail(
                 "security.invalid-binding",
-                (f"securityBinding {value!r} must use " "Table.column=Role:RLS|OLS"),
+                (f"securityBinding {value!r} must use Table.column=Role:RLS|OLS"),
                 rule_id="DD-113-security",
                 resource_uri=source.resource_uri,
             )

@@ -201,8 +201,7 @@ def _parse_source_systems(sources_dir: Path) -> list[dict]:
             if (tbl_uri, RDF.type, KAIROS_BRONZE.SourceTable) not in g:
                 continue
             tbl_name = str(
-                g.value(tbl_uri, KAIROS_BRONZE.tableName)
-                or _extract_local_name(str(tbl_uri))
+                g.value(tbl_uri, KAIROS_BRONZE.tableName) or _extract_local_name(str(tbl_uri))
             )
             tbl_label = str(g.value(tbl_uri, RDFS.label) or tbl_name)
 
@@ -211,32 +210,37 @@ def _parse_source_systems(sources_dir: Path) -> list[dict]:
                 if (col_uri, RDF.type, KAIROS_BRONZE.SourceColumn) not in g:
                     continue
                 col_name = str(
-                    g.value(col_uri, KAIROS_BRONZE.columnName)
-                    or _extract_local_name(str(col_uri))
+                    g.value(col_uri, KAIROS_BRONZE.columnName) or _extract_local_name(str(col_uri))
                 )
                 col_type = str(g.value(col_uri, KAIROS_BRONZE.dataType) or "")
 
-                columns.append({
-                    "uri": str(col_uri),
-                    "name": col_name,
-                    "data_type": col_type,
-                })
+                columns.append(
+                    {
+                        "uri": str(col_uri),
+                        "name": col_name,
+                        "data_type": col_type,
+                    }
+                )
 
-            tables.append({
-                "uri": str(tbl_uri),
-                "name": tbl_name,
-                "label": tbl_label,
-                "columns": columns,
-            })
+            tables.append(
+                {
+                    "uri": str(tbl_uri),
+                    "name": tbl_name,
+                    "label": tbl_label,
+                    "columns": columns,
+                }
+            )
 
-        systems.append({
-            "system_uri": str(sys_uri),
-            "system_label": label,
-            "database": db,
-            "schema": schema,
-            "connection_type": conn,
-            "tables": tables,
-        })
+        systems.append(
+            {
+                "system_uri": str(sys_uri),
+                "system_label": label,
+                "database": db,
+                "schema": schema,
+                "connection_type": conn,
+                "tables": tables,
+            }
+        )
 
     return systems
 
@@ -348,30 +352,35 @@ def _build_entity_view(
 
         for tbl_map in tbl_maps:
             target_uri = tbl_map["target_uri"]
-            entity = entity_map.setdefault(target_uri, {
-                "uri": target_uri,
-                "name": _extract_local_name(target_uri),
-                "label": "",
-                "comment": "",
-                "domain_prefix": _extract_domain_prefix(target_uri),
-                "source_tables": [],
-                "column_mappings": [],
-            })
+            entity = entity_map.setdefault(
+                target_uri,
+                {
+                    "uri": target_uri,
+                    "name": _extract_local_name(target_uri),
+                    "label": "",
+                    "comment": "",
+                    "domain_prefix": _extract_domain_prefix(target_uri),
+                    "source_tables": [],
+                    "column_mappings": [],
+                },
+            )
 
             cls_info = ontology_classes.get(target_uri)
             if cls_info:
                 entity["label"] = cls_info.get("label", entity["name"])
                 entity["comment"] = cls_info.get("comment", "")
 
-            entity["source_tables"].append({
-                "table_name": table["name"],
-                "table_label": table["label"],
-                "match_type": tbl_map["match_type"],
-                "match_label": MATCH_LABELS.get(tbl_map["match_type"], "?"),
-                "match_color": MATCH_COLORS.get(tbl_map["match_type"], "#888"),
-                "mapping_type": tbl_map.get("mapping_type"),
-                "filter_condition": tbl_map.get("filter_condition"),
-            })
+            entity["source_tables"].append(
+                {
+                    "table_name": table["name"],
+                    "table_label": table["label"],
+                    "match_type": tbl_map["match_type"],
+                    "match_label": MATCH_LABELS.get(tbl_map["match_type"], "?"),
+                    "match_color": MATCH_COLORS.get(tbl_map["match_type"], "#888"),
+                    "mapping_type": tbl_map.get("mapping_type"),
+                    "filter_condition": tbl_map.get("filter_condition"),
+                }
+            )
 
         for col in table["columns"]:
             col_uri = col["uri"]
@@ -379,21 +388,22 @@ def _build_entity_view(
 
             for col_map in col_maps:
                 target_prop_uri = col_map["target_uri"]
-                target_entity_uri = _find_entity_for_property(
-                    target_prop_uri, ontology_classes
-                )
+                target_entity_uri = _find_entity_for_property(target_prop_uri, ontology_classes)
                 if not target_entity_uri:
                     target_entity_uri = target_prop_uri
 
-                entity = entity_map.setdefault(target_entity_uri, {
-                    "uri": target_entity_uri,
-                    "name": _extract_local_name(target_entity_uri),
-                    "label": "",
-                    "comment": "",
-                    "domain_prefix": _extract_domain_prefix(target_entity_uri),
-                    "source_tables": [],
-                    "column_mappings": [],
-                })
+                entity = entity_map.setdefault(
+                    target_entity_uri,
+                    {
+                        "uri": target_entity_uri,
+                        "name": _extract_local_name(target_entity_uri),
+                        "label": "",
+                        "comment": "",
+                        "domain_prefix": _extract_domain_prefix(target_entity_uri),
+                        "source_tables": [],
+                        "column_mappings": [],
+                    },
+                )
 
                 cls_info = ontology_classes.get(target_entity_uri)
                 if cls_info:
@@ -410,20 +420,22 @@ def _build_entity_view(
                         "comment": "",
                     }
 
-                entity["column_mappings"].append({
-                    "source_table": table["name"],
-                    "source_column": col["name"],
-                    "source_type": col["data_type"],
-                    "match_type": col_map["match_type"],
-                    "match_label": MATCH_LABELS.get(col_map["match_type"], "?"),
-                    "match_color": MATCH_COLORS.get(col_map["match_type"], "#888"),
-                    "target_property": target_prop_info["name"],
-                    "target_label": target_prop_info["label"],
-                    "target_comment": target_prop_info["comment"],
-                    "domain_prefix": _extract_domain_prefix(target_prop_uri),
-                    "expression_contract": col_map.get("expression_contract"),
-                    "filter_condition": col_map.get("filter_condition"),
-                })
+                entity["column_mappings"].append(
+                    {
+                        "source_table": table["name"],
+                        "source_column": col["name"],
+                        "source_type": col["data_type"],
+                        "match_type": col_map["match_type"],
+                        "match_label": MATCH_LABELS.get(col_map["match_type"], "?"),
+                        "match_color": MATCH_COLORS.get(col_map["match_type"], "#888"),
+                        "target_property": target_prop_info["name"],
+                        "target_label": target_prop_info["label"],
+                        "target_comment": target_prop_info["comment"],
+                        "domain_prefix": _extract_domain_prefix(target_prop_uri),
+                        "expression_contract": col_map.get("expression_contract"),
+                        "filter_condition": col_map.get("filter_condition"),
+                    }
+                )
 
     entities = sorted(entity_map.values(), key=lambda e: e["name"])
     for entity in entities:
@@ -456,18 +468,18 @@ def _calculate_coverage(
         for prop_uri, prop_info in cls_info["properties"].items():
             total_domain_properties += 1
             if prop_uri not in all_mapped_properties:
-                uncovered_properties.append({
-                    "entity": cls_info["name"],
-                    "property": prop_info["name"],
-                    "label": prop_info["label"],
-                })
+                uncovered_properties.append(
+                    {
+                        "entity": cls_info["name"],
+                        "property": prop_info["name"],
+                        "label": prop_info["label"],
+                    }
+                )
 
     domain_coverage_pct = (
-        round(
-            (total_domain_properties - len(uncovered_properties))
-            / total_domain_properties * 100
-        )
-        if total_domain_properties > 0 else 0
+        round((total_domain_properties - len(uncovered_properties)) / total_domain_properties * 100)
+        if total_domain_properties > 0
+        else 0
     )
 
     overall_pct = round(total_mapped / total_columns * 100) if total_columns > 0 else 0
@@ -507,8 +519,11 @@ def _build_report_data(
     total_mapped = 0
     action_items: list[dict] = []
     match_distribution: dict[str, int] = {
-        "exactMatch": 0, "closeMatch": 0, "narrowMatch": 0,
-        "broadMatch": 0, "relatedMatch": 0,
+        "exactMatch": 0,
+        "closeMatch": 0,
+        "narrowMatch": 0,
+        "broadMatch": 0,
+        "relatedMatch": 0,
     }
     out_of_scope_tables: list[dict] = []
 
@@ -520,12 +535,15 @@ def _build_report_data(
         target_class = None
         if tbl_map:
             target_uri = tbl_map["target_uri"]
-            target_class = ontology_classes.get(target_uri, {
-                "name": _extract_local_name(target_uri),
-                "label": _extract_local_name(target_uri),
-                "comment": "",
-                "properties": {},
-            })
+            target_class = ontology_classes.get(
+                target_uri,
+                {
+                    "name": _extract_local_name(target_uri),
+                    "label": _extract_local_name(target_uri),
+                    "comment": "",
+                    "properties": {},
+                },
+            )
 
         col_reports: list[dict] = []
         mapped_count = 0
@@ -556,58 +574,67 @@ def _build_report_data(
                         "comment": "",
                     }
 
-                col_reports.append({
-                    "source_name": col["name"],
-                    "source_type": col["data_type"],
-                    "mapped": True,
-                    "match_type": col_map["match_type"],
-                    "match_color": MATCH_COLORS.get(col_map["match_type"], "#888"),
-                    "match_label": MATCH_LABELS.get(col_map["match_type"], "?"),
-                    "target_name": target_prop["name"],
-                    "target_label": target_prop["label"],
-                    "target_comment": target_prop["comment"],
-                    "domain_prefix": _extract_domain_prefix(target_prop_uri),
-                    "expression_contract": col_map.get("expression_contract"),
-                    "filter_condition": col_map.get("filter_condition"),
-                })
+                col_reports.append(
+                    {
+                        "source_name": col["name"],
+                        "source_type": col["data_type"],
+                        "mapped": True,
+                        "match_type": col_map["match_type"],
+                        "match_color": MATCH_COLORS.get(col_map["match_type"], "#888"),
+                        "match_label": MATCH_LABELS.get(col_map["match_type"], "?"),
+                        "target_name": target_prop["name"],
+                        "target_label": target_prop["label"],
+                        "target_comment": target_prop["comment"],
+                        "domain_prefix": _extract_domain_prefix(target_prop_uri),
+                        "expression_contract": col_map.get("expression_contract"),
+                        "filter_condition": col_map.get("filter_condition"),
+                    }
+                )
 
                 if col_map["match_type"] != "exactMatch":
-                    action_items.append({
-                        "type": "review_match",
-                        "severity": "warning" if col_map["match_type"] == "closeMatch"
-                                    else "error",
+                    action_items.append(
+                        {
+                            "type": "review_match",
+                            "severity": "warning"
+                            if col_map["match_type"] == "closeMatch"
+                            else "error",
+                            "table": table["name"],
+                            "column": col["name"],
+                            "match_type": MATCH_LABELS[col_map["match_type"]],
+                            "message": (
+                                f"{col['name']} → {target_prop['name']}: "
+                                f"{MATCH_LABELS[col_map['match_type']]} match — "
+                                f"review alignment"
+                            ),
+                        }
+                    )
+            else:
+                col_reports.append(
+                    {
+                        "source_name": col["name"],
+                        "source_type": col["data_type"],
+                        "mapped": False,
+                        "match_type": None,
+                        "match_color": "#888",
+                        "match_label": "Unmapped",
+                        "target_name": "",
+                        "target_label": "",
+                        "target_comment": "",
+                        "domain_prefix": "",
+                        "expression_contract": None,
+                        "filter_condition": None,
+                    }
+                )
+                action_items.append(
+                    {
+                        "type": "unmapped_column",
+                        "severity": "info",
                         "table": table["name"],
                         "column": col["name"],
-                        "match_type": MATCH_LABELS[col_map["match_type"]],
-                        "message": (
-                            f"{col['name']} → {target_prop['name']}: "
-                            f"{MATCH_LABELS[col_map['match_type']]} match — "
-                            f"review alignment"
-                        ),
-                    })
-            else:
-                col_reports.append({
-                    "source_name": col["name"],
-                    "source_type": col["data_type"],
-                    "mapped": False,
-                    "match_type": None,
-                    "match_color": "#888",
-                    "match_label": "Unmapped",
-                    "target_name": "",
-                    "target_label": "",
-                    "target_comment": "",
-                    "domain_prefix": "",
-                    "expression_contract": None,
-                    "filter_condition": None,
-                })
-                action_items.append({
-                    "type": "unmapped_column",
-                    "severity": "info",
-                    "table": table["name"],
-                    "column": col["name"],
-                    "match_type": "",
-                    "message": f"{table['name']}.{col['name']} — no mapping defined",
-                })
+                        "match_type": "",
+                        "message": f"{table['name']}.{col['name']} — no mapping defined",
+                    }
+                )
 
         col_count = len(table["columns"])
         coverage_pct = round(mapped_count / col_count * 100) if col_count > 0 else 0
@@ -617,37 +644,45 @@ def _build_report_data(
                 mappings["column_maps"].get(c["uri"]) for c in table["columns"]
             )
             if not has_any_col_mapping:
-                out_of_scope_tables.append({
-                    "name": table["name"],
-                    "label": table["label"],
-                    "column_count": col_count,
-                })
-            action_items.append({
-                "type": "unmapped_table",
-                "severity": "error",
-                "table": table["name"],
-                "column": "",
-                "match_type": "",
-                "message": f"Table {table['name']} has no mapping to a domain entity",
-            })
+                out_of_scope_tables.append(
+                    {
+                        "name": table["name"],
+                        "label": table["label"],
+                        "column_count": col_count,
+                    }
+                )
+            action_items.append(
+                {
+                    "type": "unmapped_table",
+                    "severity": "error",
+                    "table": table["name"],
+                    "column": "",
+                    "match_type": "",
+                    "message": f"Table {table['name']} has no mapping to a domain entity",
+                }
+            )
 
-        table_reports.append({
-            "source_table": table["name"],
-            "source_label": table["label"],
-            "target_entity": target_class["name"] if target_class else "",
-            "target_label": target_class["label"] if target_class else "",
-            "table_match_type": tbl_map["match_type"] if tbl_map else None,
-            "table_match_color": MATCH_COLORS.get(
-                tbl_map["match_type"], "#888") if tbl_map else "#888",
-            "table_match_label": MATCH_LABELS.get(
-                tbl_map["match_type"], "Unmapped") if tbl_map else "Unmapped",
-            "table_mapping_type": tbl_map.get("mapping_type") if tbl_map else None,
-            "table_filter": tbl_map.get("filter_condition") if tbl_map else None,
-            "columns": col_reports,
-            "column_count": col_count,
-            "mapped_count": mapped_count,
-            "coverage_pct": coverage_pct,
-        })
+        table_reports.append(
+            {
+                "source_table": table["name"],
+                "source_label": table["label"],
+                "target_entity": target_class["name"] if target_class else "",
+                "target_label": target_class["label"] if target_class else "",
+                "table_match_type": tbl_map["match_type"] if tbl_map else None,
+                "table_match_color": MATCH_COLORS.get(tbl_map["match_type"], "#888")
+                if tbl_map
+                else "#888",
+                "table_match_label": MATCH_LABELS.get(tbl_map["match_type"], "Unmapped")
+                if tbl_map
+                else "Unmapped",
+                "table_mapping_type": tbl_map.get("mapping_type") if tbl_map else None,
+                "table_filter": tbl_map.get("filter_condition") if tbl_map else None,
+                "columns": col_reports,
+                "column_count": col_count,
+                "mapped_count": mapped_count,
+                "coverage_pct": coverage_pct,
+            }
+        )
 
     coverage = _calculate_coverage(
         ontology_classes, all_mapped_properties, total_columns, total_mapped
@@ -662,81 +697,91 @@ def _build_report_data(
     decisions: list[dict] = []
     for tbl in table_reports:
         if tbl["target_entity"]:
-            decisions.append({
-                "table": tbl["source_table"],
-                "target": tbl["target_entity"],
-                "match_label": tbl["table_match_label"],
-                "mapping_type": tbl.get("table_mapping_type"),
-                "filter": tbl.get("table_filter"),
-            })
+            decisions.append(
+                {
+                    "table": tbl["source_table"],
+                    "target": tbl["target_entity"],
+                    "match_label": tbl["table_match_label"],
+                    "mapping_type": tbl.get("table_mapping_type"),
+                    "filter": tbl.get("table_filter"),
+                }
+            )
 
     # Open questions (unmapped tables/columns that need BA input)
     open_questions: list[dict] = []
     for tbl in table_reports:
         if not tbl["target_entity"]:
-            open_questions.append({
-                "category": "🗂️ Table",
-                "question": f"Which domain entity should `{tbl['source_table']}` map to?",
-                "context": f"{tbl['column_count']} columns, currently unmapped",
-            })
+            open_questions.append(
+                {
+                    "category": "🗂️ Table",
+                    "question": f"Which domain entity should `{tbl['source_table']}` map to?",
+                    "context": f"{tbl['column_count']} columns, currently unmapped",
+                }
+            )
     for tbl in table_reports:
         if tbl["target_entity"]:
             unmapped_cols = [c for c in tbl["columns"] if not c["mapped"]]
             if unmapped_cols and len(unmapped_cols) <= 10:
                 for col in unmapped_cols:
-                    open_questions.append({
-                        "category": "📋 Column",
-                        "question": (
-                            f"Should `{tbl['source_table']}.{col['source_name']}` "
-                            f"map to a domain property?"
-                        ),
-                        "context": f"Type: {col['source_type']}, table maps to {tbl['target_entity']}",
-                    })
+                    open_questions.append(
+                        {
+                            "category": "📋 Column",
+                            "question": (
+                                f"Should `{tbl['source_table']}.{col['source_name']}` "
+                                f"map to a domain property?"
+                            ),
+                            "context": f"Type: {col['source_type']}, table maps to {tbl['target_entity']}",
+                        }
+                    )
             elif unmapped_cols:
-                open_questions.append({
-                    "category": "📋 Columns",
-                    "question": (
-                        f"`{tbl['source_table']}` has {len(unmapped_cols)} unmapped columns "
-                        f"— review needed"
-                    ),
-                    "context": f"Table maps to {tbl['target_entity']} ({tbl['coverage_pct']}% covered)",
-                })
+                open_questions.append(
+                    {
+                        "category": "📋 Columns",
+                        "question": (
+                            f"`{tbl['source_table']}` has {len(unmapped_cols)} unmapped columns "
+                            f"— review needed"
+                        ),
+                        "context": f"Table maps to {tbl['target_entity']} ({tbl['coverage_pct']}% covered)",
+                    }
+                )
 
     # Suggested next actions
     next_actions: list[dict] = []
     unmapped_tables = [t for t in table_reports if not t["target_entity"]]
     if unmapped_tables:
-        next_actions.append({
-            "title": "Define table-level mappings",
-            "description": (
-                f"{len(unmapped_tables)} table(s) have no domain entity assignment. "
-                f"Create SKOS mappings to assign each to a domain class."
-            ),
-        })
-    partially_mapped = [
-        t for t in table_reports
-        if t["target_entity"] and t["coverage_pct"] < 80
-    ]
+        next_actions.append(
+            {
+                "title": "Define table-level mappings",
+                "description": (
+                    f"{len(unmapped_tables)} table(s) have no domain entity assignment. "
+                    f"Create SKOS mappings to assign each to a domain class."
+                ),
+            }
+        )
+    partially_mapped = [t for t in table_reports if t["target_entity"] and t["coverage_pct"] < 80]
     if partially_mapped:
-        next_actions.append({
-            "title": "Complete column-level mappings",
-            "description": (
-                f"{len(partially_mapped)} table(s) have <80% column coverage. "
-                f"Review unmapped columns and add SKOS column mappings."
-            ),
-        })
+        next_actions.append(
+            {
+                "title": "Complete column-level mappings",
+                "description": (
+                    f"{len(partially_mapped)} table(s) have <80% column coverage. "
+                    f"Review unmapped columns and add SKOS column mappings."
+                ),
+            }
+        )
     non_exact = [
-        a for a in action_items
-        if a["type"] == "review_match" and a["severity"] == "error"
+        a for a in action_items if a["type"] == "review_match" and a["severity"] == "error"
     ]
     if non_exact:
-        next_actions.append({
-            "title": "Review non-exact matches",
-            "description": (
-                f"{len(non_exact)} column(s) have narrow/broad/related matches. "
-                f"Confirm alignment or refine the mapping."
-            ),
-        })
+        next_actions.append(
+            {
+                "title": "Review non-exact matches",
+                "description": (
+                    f"{len(non_exact)} column(s) have narrow/broad/related matches. "
+                    f"Confirm alignment or refine the mapping."
+                ),
+            }
+        )
 
     report_contract = _build_mapping_report_contract(
         system=system,
@@ -892,13 +937,9 @@ def _build_mapping_report_contract(
             "prep-routing-transformations",
             "available" if prep_items else "not-available",
             (
-                "Typed table mapping types, filters, and scalar expressions are "
-                "projection inputs."
+                "Typed table mapping types, filters, and scalar expressions are projection inputs."
                 if prep_items
-                else (
-                    "No typed table mapping types, filters, or scalar expressions "
-                    "were provided."
-                )
+                else ("No typed table mapping types, filters, or scalar expressions were provided.")
             ),
             tuple(prep_items),
         ),
@@ -1176,11 +1217,13 @@ def generate_domain_overview_report(
                 imp_str = str(imp)
                 standard = _detect_standard(imp_str)
                 reference_models.add(standard)
-                imports.append({
-                    "uri": imp_str,
-                    "local_name": _extract_local_name(imp_str),
-                    "standard": standard,
-                })
+                imports.append(
+                    {
+                        "uri": imp_str,
+                        "local_name": _extract_local_name(imp_str),
+                        "standard": standard,
+                    }
+                )
             break
 
         domain_ns = ont_uri + "#" if ont_uri and "#" not in ont_uri else (ont_uri or "")
@@ -1212,29 +1255,35 @@ def generate_domain_overview_report(
                 pcomment = str(g.value(prop_uri, RDFS.comment) or "")
                 pcomment_short = pcomment.split("\n")[0][:100] if pcomment else ""
                 prange = str(g.value(prop_uri, RDFS.range) or "xsd:string")
-                cls_data_props.append({
-                    "name": pname,
-                    "label": plabel,
-                    "comment": pcomment_short,
-                    "range": prange,
-                    "range_short": _range_short(prange),
-                })
+                cls_data_props.append(
+                    {
+                        "name": pname,
+                        "label": plabel,
+                        "comment": pcomment_short,
+                        "range": prange,
+                        "range_short": _range_short(prange),
+                    }
+                )
 
-            classes.append({
-                "uri": uri_str,
-                "name": name,
-                "label": label,
-                "comment": comment_short,
-                "parent": parent,
-                "data_properties": sorted(cls_data_props, key=lambda p: p["name"]),
-            })
+            classes.append(
+                {
+                    "uri": uri_str,
+                    "name": name,
+                    "label": label,
+                    "comment": comment_short,
+                    "parent": parent,
+                    "data_properties": sorted(cls_data_props, key=lambda p: p["name"]),
+                }
+            )
 
-            all_glossary.append({
-                "label": label,
-                "domain": ont_label,
-                "type": "Class",
-                "comment": comment_short,
-            })
+            all_glossary.append(
+                {
+                    "label": label,
+                    "domain": ont_label,
+                    "type": "Class",
+                    "comment": comment_short,
+                }
+            )
 
         # Extract object properties
         domain_obj_props: list[dict] = []
@@ -1270,17 +1319,19 @@ def generate_domain_overview_report(
         total_data_props += data_prop_count
         total_obj_props += len(domain_obj_props)
 
-        domains.append({
-            "uri": ont_uri,
-            "label": ont_label,
-            "comment": ont_comment.split("\n")[0][:200] if ont_comment else "",
-            "version": ont_version,
-            "imports": imports,
-            "classes": sorted(classes, key=lambda c: c["name"]),
-            "object_properties": domain_obj_props,
-            "data_properties_count": data_prop_count,
-            "object_properties_count": len(domain_obj_props),
-        })
+        domains.append(
+            {
+                "uri": ont_uri,
+                "label": ont_label,
+                "comment": ont_comment.split("\n")[0][:200] if ont_comment else "",
+                "version": ont_version,
+                "imports": imports,
+                "classes": sorted(classes, key=lambda c: c["name"]),
+                "object_properties": domain_obj_props,
+                "data_properties_count": data_prop_count,
+                "object_properties_count": len(domain_obj_props),
+            }
+        )
 
     if not domains:
         return {}
@@ -1339,10 +1390,7 @@ def generate_source_landscape_report(
             continue
 
     for sys_uri in all_source_g.subjects(RDF.type, KAIROS_BRONZE.SourceSystem):
-        label = str(
-            all_source_g.value(sys_uri, RDFS.label)
-            or _extract_local_name(str(sys_uri))
-        )
+        label = str(all_source_g.value(sys_uri, RDFS.label) or _extract_local_name(str(sys_uri)))
         db = str(all_source_g.value(sys_uri, KAIROS_BRONZE.database) or "")
         schema = str(all_source_g.value(sys_uri, KAIROS_BRONZE.schema) or "")
         conn = str(all_source_g.value(sys_uri, KAIROS_BRONZE.connectionType) or "")
@@ -1356,20 +1404,19 @@ def generate_source_landscape_report(
                 all_source_g.value(tbl_uri, KAIROS_BRONZE.tableName)
                 or _extract_local_name(str(tbl_uri))
             )
-            tbl_cols = list(
-                all_source_g.subjects(KAIROS_BRONZE.sourceTable, tbl_uri)
-            )
+            tbl_cols = list(all_source_g.subjects(KAIROS_BRONZE.sourceTable, tbl_uri))
             tbl_col_count = sum(
-                1 for c in tbl_cols
-                if (c, RDF.type, KAIROS_BRONZE.SourceColumn) in all_source_g
+                1 for c in tbl_cols if (c, RDF.type, KAIROS_BRONZE.SourceColumn) in all_source_g
             )
             col_count += tbl_col_count
-            tables.append({
-                "uri": str(tbl_uri),
-                "name": tbl_name,
-                "column_count": tbl_col_count,
-                "mapped_to": None,
-            })
+            tables.append(
+                {
+                    "uri": str(tbl_uri),
+                    "name": tbl_name,
+                    "column_count": tbl_col_count,
+                    "mapped_to": None,
+                }
+            )
 
         table_count = len(tables)
         total_tables += table_count
@@ -1386,24 +1433,28 @@ def generate_source_landscape_report(
         slug = label.lower().replace(" ", "_").replace("-", "_")
         slug = "".join(c for c in slug if c.isalnum() or c == "_")
 
-        sources.append({
-            "system_uri": str(sys_uri),
-            "label": label,
-            "slug": slug,
-            "database": db,
-            "schema": schema,
-            "connection_type": conn or "—",
-            "table_count": table_count,
-            "column_count": col_count,
-            "tables": sorted(tables, key=lambda t: t["name"]),
-            "complexity": complexity,
-            "mapped_tables": 0,
-            "mapped_columns": 0,
-            "domain_coverage": {},
-        })
+        sources.append(
+            {
+                "system_uri": str(sys_uri),
+                "label": label,
+                "slug": slug,
+                "database": db,
+                "schema": schema,
+                "connection_type": conn or "—",
+                "table_count": table_count,
+                "column_count": col_count,
+                "tables": sorted(tables, key=lambda t: t["name"]),
+                "complexity": complexity,
+                "mapped_tables": 0,
+                "mapped_columns": 0,
+                "domain_coverage": {},
+            }
+        )
 
     # Parse mappings to determine coverage
-    mappings = _parse_mappings(mappings_dir) if mappings_dir else {"table_maps": {}, "column_maps": {}}
+    mappings = (
+        _parse_mappings(mappings_dir) if mappings_dir else {"table_maps": {}, "column_maps": {}}
+    )
 
     # Get domain list
     domains: list[dict] = []
@@ -1437,18 +1488,29 @@ def generate_source_landscape_report(
             sources_with_table += 1
         # Column mapping check
         for tbl in src["tables"]:
-            for col_uri in all_source_g.subjects(KAIROS_BRONZE.sourceTable,
-                                                  all_source_g.value(
-                                                      predicate=KAIROS_BRONZE.tableName,
-                                                      object=None)):
+            for col_uri in all_source_g.subjects(
+                KAIROS_BRONZE.sourceTable,
+                all_source_g.value(predicate=KAIROS_BRONZE.tableName, object=None),
+            ):
                 pass  # simplified - count from mappings dict
         col_mapped = sum(
-            1 for tbl in src["tables"]
-            for col_uri in [str(c) for c in all_source_g.subjects(
-                KAIROS_BRONZE.sourceTable,
-                next((t for t in all_source_g.subjects(
-                    KAIROS_BRONZE.tableName, None) if str(t) == tbl["uri"]), None)
-            ) if (c, RDF.type, KAIROS_BRONZE.SourceColumn) in all_source_g]
+            1
+            for tbl in src["tables"]
+            for col_uri in [
+                str(c)
+                for c in all_source_g.subjects(
+                    KAIROS_BRONZE.sourceTable,
+                    next(
+                        (
+                            t
+                            for t in all_source_g.subjects(KAIROS_BRONZE.tableName, None)
+                            if str(t) == tbl["uri"]
+                        ),
+                        None,
+                    ),
+                )
+                if (c, RDF.type, KAIROS_BRONZE.SourceColumn) in all_source_g
+            ]
             if col_uri in mappings["column_maps"]
         )
         if col_mapped:
@@ -1503,17 +1565,16 @@ def generate_mapping_progress_report(
         except (SyntaxError, ValueError):
             continue
 
-    mappings = _parse_mappings(mappings_dir) if mappings_dir else {"table_maps": {}, "column_maps": {}}
+    mappings = (
+        _parse_mappings(mappings_dir) if mappings_dir else {"table_maps": {}, "column_maps": {}}
+    )
 
     sources: list[dict] = []
     total_columns = 0
     mapped_columns = 0
 
     for sys_uri in all_source_g.subjects(RDF.type, KAIROS_BRONZE.SourceSystem):
-        label = str(
-            all_source_g.value(sys_uri, RDFS.label)
-            or _extract_local_name(str(sys_uri))
-        )
+        label = str(all_source_g.value(sys_uri, RDFS.label) or _extract_local_name(str(sys_uri)))
 
         tables: list[str] = []
         col_count = 0
@@ -1553,15 +1614,17 @@ def generate_mapping_progress_report(
             status = "Not Started"
             status_emoji = "⬜"
 
-        sources.append({
-            "label": label,
-            "table_count": table_count,
-            "column_count": col_count,
-            "table_mapping_pct": tbl_pct,
-            "column_mapping_pct": col_pct,
-            "status": status,
-            "status_emoji": status_emoji,
-        })
+        sources.append(
+            {
+                "label": label,
+                "table_count": table_count,
+                "column_count": col_count,
+                "table_mapping_pct": tbl_pct,
+                "column_mapping_pct": col_pct,
+                "status": status,
+                "status_emoji": status_emoji,
+            }
+        )
 
     sources_sorted = sorted(sources, key=lambda s: s["label"])
     unmapped = total_columns - mapped_columns
@@ -1583,17 +1646,20 @@ def generate_mapping_progress_report(
                 dlabel = str(g.value(s, RDFS.label) or ttl.parent.name.capitalize())
                 slug = ttl.parent.name
                 # Count properties
-                props = list(g.subjects(RDF.type, OWL.DatatypeProperty)) + \
-                        list(g.subjects(RDF.type, OWL.ObjectProperty))
-                domains.append({
-                    "label": dlabel,
-                    "slug": slug,
-                    "total_properties": len(props),
-                    "properties_covered": 0,
-                    "sources_mapped": 0,
-                    "sources_total": len(sources),
-                    "coverage_pct": 0,
-                })
+                props = list(g.subjects(RDF.type, OWL.DatatypeProperty)) + list(
+                    g.subjects(RDF.type, OWL.ObjectProperty)
+                )
+                domains.append(
+                    {
+                        "label": dlabel,
+                        "slug": slug,
+                        "total_properties": len(props),
+                        "properties_covered": 0,
+                        "sources_mapped": 0,
+                        "sources_total": len(sources),
+                        "coverage_pct": 0,
+                    }
+                )
                 break
 
     # Priority list (sorted by column count desc — biggest systems first)
@@ -1611,13 +1677,15 @@ def generate_mapping_progress_report(
             bv = "🟢 Low"
             complexity = "Low"
             rec = "Quick win — map all at once"
-        priority_list.append({
-            "label": src["label"],
-            "column_count": src["column_count"],
-            "business_value": bv,
-            "complexity": complexity,
-            "recommendation": rec,
-        })
+        priority_list.append(
+            {
+                "label": src["label"],
+                "column_count": src["column_count"],
+                "business_value": bv,
+                "complexity": complexity,
+                "recommendation": rec,
+            }
+        )
 
     # Suggested next actions
     not_started = [s for s in sources_sorted if s["status"] == "Not Started"]
@@ -1625,23 +1693,29 @@ def generate_mapping_progress_report(
     if not_started:
         # Suggest smallest not-started source first (quick win)
         smallest = min(not_started, key=lambda s: s["column_count"])
-        next_actions.append({
-            "title": f"Map {smallest['label']}",
-            "description": f"Quick win — only {smallest['column_count']} columns. "
-                           f"Start with table-level mappings.",
-        })
+        next_actions.append(
+            {
+                "title": f"Map {smallest['label']}",
+                "description": f"Quick win — only {smallest['column_count']} columns. "
+                f"Start with table-level mappings.",
+            }
+        )
     if len(not_started) > 1:
         largest = max(not_started, key=lambda s: s["column_count"])
-        next_actions.append({
-            "title": f"Plan {largest['label']} mapping",
-            "description": f"Largest unmapped source ({largest['column_count']} columns). "
-                           f"Identify core tables for phase 1.",
-        })
+        next_actions.append(
+            {
+                "title": f"Plan {largest['label']} mapping",
+                "description": f"Largest unmapped source ({largest['column_count']} columns). "
+                f"Identify core tables for phase 1.",
+            }
+        )
     if not next_actions:
-        next_actions.append({
-            "title": "All sources mapped!",
-            "description": "Review mapping quality and fill column-level gaps.",
-        })
+        next_actions.append(
+            {
+                "title": "All sources mapped!",
+                "description": "Review mapping quality and fill column-level gaps.",
+            }
+        )
 
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=False)
     template = env.get_template("report/mapping-progress.md.jinja2")

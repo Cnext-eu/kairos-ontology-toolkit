@@ -8,11 +8,11 @@ from .ontology_loader import load_ontology
 
 def test_catalog_resolution(catalog_path: Path, ontology_path: Path = None):
     """Test catalog resolution."""
-    
+
     print("🔍 Catalog Resolution Test")
     print("=" * 50)
     print(f"\nCatalog: {catalog_path}\n")
-    
+
     if ontology_path:
         print(f"Testing with: {ontology_path}")
         try:
@@ -28,5 +28,5 @@ def test_catalog_resolution(catalog_path: Path, ontology_path: Path = None):
     else:
         print("No ontology specified - catalog file validated")
         print("  ✓ Catalog file exists and is readable")
-    
+
     print("\n✅ Catalog test completed")
