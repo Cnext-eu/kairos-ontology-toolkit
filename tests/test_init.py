@@ -221,6 +221,61 @@ def test_init_force_overwrites(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# nested-hub refusal (DD-062)
+# ---------------------------------------------------------------------------
+
+
+def test_init_refuses_to_nest_inside_existing_hub(tmp_path, monkeypatch):
+    """init from a content subdir of a split-layout hub must refuse, not nest.
+
+    Regression for the case where `init` treated the content root as a fresh
+    repo root and scaffolded an entire second hub inside it, including a
+    ``pyproject.toml`` pinning a different toolkit version than the real
+    repo-root pin.
+    """
+    runner = CliRunner()
+    hub_root = tmp_path / "cldn-ontology-hub"
+    content_root = hub_root / "ontology-hub" / "model" / "ontologies"
+    content_root.mkdir(parents=True)
+    (hub_root / "pyproject.toml").write_text(
+        '[project]\nname = "cldn-ontology-hub"\n\n[tool.kairos]\nchannel = "preview"\n',
+        encoding="utf-8",
+    )
+
+    content_hub = hub_root / "ontology-hub"
+    monkeypatch.chdir(content_hub)
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(cli, ["init", "--company-domain", "cldn.com"])
+
+    assert result.exit_code != 0
+    assert "existing Kairos hub was detected" in result.output
+    assert str(hub_root.resolve()) in result.output
+
+    # Nothing was scaffolded into the content root.
+    assert not (content_hub / "ontology-hub").exists()
+    assert not (content_hub / "pyproject.toml").exists()
+    assert not (content_hub / ".github").exists()
+    assert not (content_hub / ".gitignore").exists()
+    # The authoritative repo-root pin is untouched.
+    assert 'channel = "preview"' in (hub_root / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_init_allowed_at_the_hub_root_itself(tmp_path):
+    """Re-running init at an existing hub *root* stays supported (backfill)."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert first.exit_code == 0
+            # cwd is now a managed root (pyproject.toml carries the toolkit pin).
+            second = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert second.exit_code == 0, second.output
+            assert "existing Kairos hub was detected" not in second.output
+
+
+# ---------------------------------------------------------------------------
 # _slugify helper
 # ---------------------------------------------------------------------------
 
