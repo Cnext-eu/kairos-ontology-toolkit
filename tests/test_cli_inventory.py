@@ -417,3 +417,25 @@ class TestCheckInventoryDomainScope:
         # Scoped to party: the missing inventory is in scope → blocks.
         party = runner.invoke(cli, ["check-inventory", "--domains", "party"])
         assert party.exit_code == 1, party.output
+
+    def test_domains_collapses_out_of_scope_noise_by_default(self, tmp_path, monkeypatch):
+        """Without --verbose/--explain-scope, out-of-scope missing inventories are
+        collapsed to a one-line non-blocking summary instead of a wall of ❌ lines."""
+        self._build_hub(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+
+        gen = runner.invoke(cli, ["generate-inventory"])
+        assert gen.exit_code == 0, gen.output
+        (tmp_path / "referencemodels-unpacked" / "party-inventory.yaml").unlink()
+
+        # Default (collapsed): no per-module ❌ MISSING line, just the summary.
+        booking = runner.invoke(cli, ["check-inventory", "--domains", "booking"])
+        assert booking.exit_code == 0, booking.output
+        assert "MISSING inventory" not in booking.output
+        assert "out-of-scope module" in booking.output
+
+        # --verbose restores the full per-module listing.
+        verbose = runner.invoke(cli, ["check-inventory", "--domains", "booking", "--verbose"])
+        assert verbose.exit_code == 0, verbose.output
+        assert "MISSING inventory" in verbose.output

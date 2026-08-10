@@ -29,3 +29,19 @@ changes belong in ordinary contracted dbt SQL and properties YAML, then are refe
 Configure namespace, catalog, adapters, and selected roots in `kairos.yaml`. Keep each domain in an
 OWL ontology with labels/comments and explicit imports. Add optional SHACL in `model/shapes/`.
 Validate ontology inputs, then run `compile --check` before emission.
+
+## Pin the accelerator (multi-pack hubs)
+
+When the hub ships more than one reference-model accelerator pack, `check-inventory`,
+`validate`, and `compile` cannot guess which pack to resolve inventories against and abort
+with an `Accelerator selection is ambiguous` error. Pin the pack once in the hub
+`pyproject.toml` (not `kairos.yaml`) so every command resolves it without a per-invocation
+`--accelerator` flag:
+
+```toml
+[tool.kairos]
+accelerator = "logistics"
+```
+
+An explicit `--accelerator <pack>` on any single command still overrides the pin. A hub with
+exactly one installed pack needs neither the pin nor the flag.

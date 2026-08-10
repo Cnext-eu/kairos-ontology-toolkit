@@ -573,12 +573,28 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         if requested_sources & {relation.ref for relation in _source_relations((path,))}
     )
     if not binding_paths or not ontology_path.is_file():
-        missing = "bindings" if not binding_paths else str(ontology_path)
+        if not binding_paths:
+            # Ontology-only waypoint: the hub has a valid ontology slice but no
+            # EntityBinding authored yet. Distinct from a genuine source-resolution
+            # failure so a CI gate can tell an expected early stage apart from a
+            # broken binding. Still blocking (an un-emittable hub stays non-zero).
+            raise CompileError(
+                [
+                    CompileDiagnostic(
+                        code="scope.no-bindings-authored",
+                        message=(
+                            "compile scope is incomplete: no EntityBinding documents "
+                            "authored yet (author a binding to resolve a source)"
+                        ),
+                        location=SourceLocation(path=str(root)),
+                    )
+                ]
+            )
         raise CompileError(
             [
                 CompileDiagnostic(
                     code="safety.source-unresolved",
-                    message=f"compile scope is incomplete: missing {missing}",
+                    message=f"compile scope is incomplete: missing {ontology_path}",
                     location=SourceLocation(path=str(root)),
                 )
             ]
@@ -2297,7 +2313,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     if not selected_bindings and not diagnostics:
         diagnostics.append(
             CompileDiagnostic(
-                code="safety.source-unresolved",
+                code="scope.no-bindings-authored",
                 message=f"no EntityBinding documents select domain '{domain}'",
                 location=SourceLocation(path=scope.hub_root),
             )

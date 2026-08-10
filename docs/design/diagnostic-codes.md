@@ -162,6 +162,7 @@ canonical `safety.*` form. `technical-field.*` rows come from
 | `safety.relationship-endpoint` | error | DD-133 (default) | also constructed directly in `quality.py` |
 | `safety.source-unresolved` | error | DD-133 (default) | |
 | `safety.type-incompatible` | error | DD-133 (default) | |
+| `scope.no-bindings-authored` | error | DD-133 (default) | ontology-only waypoint: a valid ontology slice exists but no EntityBinding is authored yet (or none selects the domain). Blocking, but distinct from `safety.source-unresolved` so a CI gate can tell an expected early stage from a broken source. |
 | `technical-field.duplicate-source-ambiguous` | error | DD-139 | |
 | `technical-field.output-collision` | error | DD-139 | three call sites |
 

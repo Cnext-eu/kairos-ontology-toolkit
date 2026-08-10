@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`validate --domain <domain>`:** the `validate` command now accepts `--domain` for
+  parity with `compile`, using it as the domain hint that resolves the accelerator so a
+  multi-pack hub no longer trips on accelerator ambiguity between Gate 0 and Gate 5. The
+  validation target is unchanged when omitted.
+- **`check-inventory --verbose` / `--all`:** with `--domains`, out-of-scope module
+  inventories are collapsed to a single non-blocking summary line instead of a wall of
+  `❌ MISSING` output; `--verbose` restores the full per-module listing. A domain with no
+  reference-model profile now says so explicitly rather than listing every module as
+  missing.
+- **`scope.no-bindings-authored` diagnostic:** the ontology-only waypoint (a valid
+  ontology slice exists but no `EntityBinding` is authored yet, or none selects the domain)
+  now raises a distinct, still-blocking code instead of `safety.source-unresolved`, so a CI
+  gate can tell an expected early authoring stage from a broken source.
+- **Docs:** `kairos-setup-config` documents pinning `[tool.kairos].accelerator` in the hub
+  `pyproject.toml`; `kairos-design-domain` shows the `--domain`/`--accelerator` forms on
+  Gate 0 and Gate 5.
 - **`design-landscape` command (Phase 0 Design Landscape, CR-7):** `kairos-ontology
   design-landscape [--accelerator <id>] [--domain <domain>] [--format text|json]` joins,
   per activated accelerator class, four already-existing evidence signals — source
@@ -130,6 +146,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference blocks — no more manual comment-toggling to switch platforms.
 
 ### Fixed
+- **`technicalFields[].type` schema/normalizer drift:** the entity-binding schema enum now
+  covers the full `CanonicalTypeKind` vocabulary (`int16`, `float64`, `time`, `binary`,
+  `json`, …) that the normalizer already accepts, closing the reverse drift left after the
+  earlier canonical-token fix. A test asserts the enum equals the enum's value set so the
+  two cannot diverge again.
 - **`managed-check` workflow uses `uv run kairos-ontology update --check`:** the scaffolded GitHub
   Actions workflow referenced the bare `kairos-ontology` command, which is not on `PATH` after
   `uv sync`; it now calls `uv run kairos-ontology update --check` so the managed-files check runs in
