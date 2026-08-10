@@ -41,6 +41,10 @@ DOMAIN_ANCHORS = [
     # grain_collisions ships as mappings in one pattern and bare prose strings in two others,
     # so the instruction must not assume the against/reason keys exist.
     "two shapes",
+    # mode_bindings status values are open-ended and import_policy constrains a
+    # 'modelled' binding independently (reference-models has both in flight).
+    "not closed",
+    "`import_policy`",
 ]
 
 MAPPING_ANCHORS = [

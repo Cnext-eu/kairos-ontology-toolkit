@@ -279,6 +279,11 @@ not stop at the naming table:
   `status: extension-point` → the standard exists but is not modelled here, so
   **do not invent a class** — record it as an extension point;
   `status: pattern-only` → no standard forces a shape, follow the pattern alone.
+  The status list is **not closed** — the library evolves, so for any value you do
+  not recognise, treat the binding as advisory, state what the entry says, and ask
+  rather than guessing. Independently, honour an `import_policy` when present:
+  `reference-only` means resolve and cite the IRI but **never add it to an
+  accelerator pack's includes**, even though the status is `modelled`.
 - **`grain_collisions`** — read each as an explicit *do not subclass and do not
   merge* boundary. Entries ship in **two shapes** and you must handle both: a
   mapping with `against` (the class IRI not to collapse into) plus `reason`, or a
