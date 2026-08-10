@@ -94,8 +94,7 @@ def deduplicate_replay(events: tuple[RuntimeEvent, ...]) -> tuple[RuntimeEvent, 
         event = _validated_event(raw_event)
         previous = by_event.get(event.event_identity)
         if previous is not None and (
-            previous.operation is not event.operation
-            or previous.change_hash != event.change_hash
+            previous.operation is not event.operation or previous.change_hash != event.change_hash
         ):
             raise RuntimeSemanticsError(
                 "the same complete event order carries contradictory values"
@@ -122,11 +121,7 @@ def bounded_lookback(
     normalized_watermark = _utc(watermark, "watermark")
     delta = timedelta(hours=amount) if unit == "hours" else timedelta(days=amount)
     floor = normalized_watermark - delta
-    return tuple(
-        event
-        for event in deduplicate_replay(events)
-        if event.ingested_at >= floor
-    )
+    return tuple(event for event in deduplicate_replay(events) if event.ingested_at >= floor)
 
 
 def range_replay(
@@ -166,10 +161,7 @@ def _apply_delete(
         raise RuntimeSemanticsError(
             f"{delete_kind} requires {delete_action.value} handling outside the main relation"
         )
-    if (
-        event.operation is CdcOperation.DELETE
-        and delete_action is DeleteAction.APPLY_OPERATION
-    ):
+    if event.operation is CdcOperation.DELETE and delete_action is DeleteAction.APPLY_OPERATION:
         raise RuntimeSemanticsError(
             "physical/absence-based hard delete is unsupported; use tombstone or ignore"
         )
@@ -242,9 +234,7 @@ def materialize_scd2(
         CorrectionAction.REPLACE_BY_TOTAL_ORDER,
         CorrectionAction.REVISE_VALID_TIME,
     }:
-        raise RuntimeSemanticsError(
-            f"correction event requires {correction_action.value} handling"
-        )
+        raise RuntimeSemanticsError(f"correction event requires {correction_action.value} handling")
 
     grouped: dict[tuple[str, ...], list[RuntimeEvent]] = {}
     for event in replayed:
@@ -293,18 +283,14 @@ def materialize_scd2(
         )
         system_to = {
             event.event_identity: (
-                system_order[index + 1].ingested_at
-                if index + 1 < len(system_order)
-                else None
+                system_order[index + 1].ingested_at if index + 1 < len(system_order) else None
             )
             for index, event in enumerate(system_order)
         }
         current_event = system_order[-1] if system_order else None
         for index, (event, deleted) in enumerate(changed):
             business_from = (
-                event.source_effective_at
-                if time_basis is Scd2TimeBasis.BUSINESS_VALID
-                else None
+                event.source_effective_at if time_basis is Scd2TimeBasis.BUSINESS_VALID else None
             )
             business_to = (
                 changed[index + 1][0].source_effective_at

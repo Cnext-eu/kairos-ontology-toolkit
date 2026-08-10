@@ -87,9 +87,7 @@ def test_design_profile_exposes_equivalence_inverse_individuals_and_restrictions
     index = _load(tmp_path, SemanticProfile.KAIROS_DESIGN)
     company = index.class_by_uri("https://example.org/main#Company")
     legal_name = index.property_by_uri("https://example.org/main#legalName")
-    alternate_legal_name = index.property_by_uri(
-        "https://example.org/alternate#legalName"
-    )
+    alternate_legal_name = index.property_by_uri("https://example.org/alternate#legalName")
     owns = index.property_by_uri("https://example.org/main#owns")
     alternate_party = index.class_by_uri("https://example.org/alternate#Party")
 
@@ -98,9 +96,7 @@ def test_design_profile_exposes_equivalence_inverse_individuals_and_restrictions
     ]
     assert company.restrictions[0].kind == "minCardinality"
     assert company.restrictions[0].value == 1
-    assert [item.uri for item in legal_name.superproperties] == [
-        "https://example.org/main#name"
-    ]
+    assert [item.uri for item in legal_name.superproperties] == ["https://example.org/main#name"]
     assert [item.uri for item in legal_name.equivalent_properties] == [
         "https://example.org/alternate#legalName"
     ]
@@ -114,12 +110,8 @@ def test_design_profile_exposes_equivalence_inverse_individuals_and_restrictions
         "https://example.org/main#Organisation",
         "https://example.org/main#Party",
     }
-    assert [item.uri for item in owns.inverse_properties] == [
-        "https://example.org/main#ownedBy"
-    ]
-    assert [item.uri for item in index.individuals] == [
-        "https://example.org/main#active"
-    ]
+    assert [item.uri for item in owns.inverse_properties] == ["https://example.org/main#ownedBy"]
+    assert [item.uri for item in index.individuals] == ["https://example.org/main#active"]
 
 
 def test_design_profile_exposes_rdf_list_members(tmp_path):
@@ -136,9 +128,7 @@ def test_asserted_profile_does_not_leak_design_or_transitive_facts(tmp_path):
     index = _load(tmp_path, SemanticProfile.ASSERTED)
     company = index.class_by_uri("https://example.org/main#Company")
 
-    assert [item.uri for item in company.ancestors] == [
-        "https://example.org/main#Organisation"
-    ]
+    assert [item.uri for item in company.ancestors] == ["https://example.org/main#Organisation"]
     assert company.inherited_properties == ()
     assert company.equivalent_classes == ()
     assert company.restrictions == ()

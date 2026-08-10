@@ -59,7 +59,6 @@ def _generate(ref_dir: Path, inv_dir: Path) -> None:
 
 
 class TestComputeSourceHash:
-
     def test_hash_changes_with_content(self, tmp_path):
         f = tmp_path / "a.ttl"
         f.write_text("one", encoding="utf-8")
@@ -98,7 +97,7 @@ class TestComputeSourceHash:
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
             '  <uri name="urn:child" uri="child.ttl"/>\n'
-            '</catalog>\n',
+            "</catalog>\n",
             encoding="utf-8",
         )
         inventory_dir = tmp_path / "inventory"
@@ -130,13 +129,10 @@ class TestComputeSourceHash:
 
 
 class TestCheckInventories:
-
     def test_ok_when_fresh(self, tmp_path):
         ref_dir, inv_dir = _make_ref(tmp_path)
         _generate(ref_dir, inv_dir)
-        report = check_inventories(
-            ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir
-        )
+        report = check_inventories(ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir)
         assert report.ok == ["party"]
         assert not report.is_blocking
         assert not report.has_warnings
@@ -144,9 +140,7 @@ class TestCheckInventories:
     def test_missing_inventory_blocks(self, tmp_path):
         ref_dir, inv_dir = _make_ref(tmp_path)
         # No inventory generated.
-        report = check_inventories(
-            ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir
-        )
+        report = check_inventories(ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir)
         assert report.missing == ["party"]
         assert report.is_blocking
 
@@ -155,12 +149,10 @@ class TestCheckInventories:
         _generate(ref_dir, inv_dir)
         # Mutate the source after generation.
         (ref_dir / "party.ttl").write_text(
-            SAMPLE_REF_TTL + "\nref-party:extra a owl:Class ; rdfs:label \"Extra\" .\n",
+            SAMPLE_REF_TTL + '\nref-party:extra a owl:Class ; rdfs:label "Extra" .\n',
             encoding="utf-8",
         )
-        report = check_inventories(
-            ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir
-        )
+        report = check_inventories(ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir)
         assert report.stale == ["party"]
         assert report.is_blocking
 
@@ -172,9 +164,7 @@ class TestCheckInventories:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         data.pop("closure_hash", None)
         path.write_text(yaml.dump(data), encoding="utf-8")
-        report = check_inventories(
-            ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir
-        )
+        report = check_inventories(ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir)
         assert report.unverifiable == ["party"]
         assert not report.is_blocking
         assert report.has_warnings
@@ -183,9 +173,7 @@ class TestCheckInventories:
         ref_dir, inv_dir = _make_ref(tmp_path)
         _generate(ref_dir, inv_dir)
         (ref_dir / "empty.ttl").write_text(EMPTY_TTL, encoding="utf-8")
-        report = check_inventories(
-            ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir
-        )
+        report = check_inventories(ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir)
         # empty.ttl yields no classes → not flagged as missing.
         assert "empty" not in report.missing
         assert report.ok == ["party"]
@@ -194,13 +182,15 @@ class TestCheckInventories:
         ref_dir, inv_dir = _make_ref(tmp_path)
         _generate(ref_dir, inv_dir)
         write_inventory(
-            {"version": "1.0", "source_sha256": "x", "domain_name": "Ghost",
-             "classes": [{"name": "Ghost"}]},
+            {
+                "version": "1.0",
+                "source_sha256": "x",
+                "domain_name": "Ghost",
+                "classes": [{"name": "Ghost"}],
+            },
             inv_dir / "ghost-inventory.yaml",
         )
-        report = check_inventories(
-            ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir
-        )
+        report = check_inventories(ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir)
         assert "ghost-inventory.yaml" in report.orphan
         assert report.has_warnings
 
@@ -252,8 +242,7 @@ class TestCollisionFreshness:
         inv_dir.mkdir(parents=True)
         current = self._write(ref_root, "BSP", "CurrentTradeParty")
         archived = (
-            ref_root / "derived-ontologies" / "BSP" / "archive" / "1.4.0"
-            / "party" / "party.ttl"
+            ref_root / "derived-ontologies" / "BSP" / "archive" / "1.4.0" / "party" / "party.ttl"
         )
         archived.parent.mkdir(parents=True, exist_ok=True)
         archived.write_text(
@@ -279,36 +268,50 @@ class TestCollisionFreshness:
 
 
 class TestCheckInventoryCLI:
-
     def test_cli_passes_when_fresh(self, tmp_path):
         ref_dir, inv_dir = _make_ref(tmp_path)
         _generate(ref_dir, inv_dir)
-        result = CliRunner().invoke(cli, [
-            "check-inventory",
-            "--ref-models-dir", str(ref_dir),
-            "--inventory-dir", str(inv_dir),
-        ])
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-inventory",
+                "--ref-models-dir",
+                str(ref_dir),
+                "--inventory-dir",
+                str(inv_dir),
+            ],
+        )
         assert result.exit_code == 0, result.output
         assert "up to date" in result.output
 
     def test_cli_fails_when_missing(self, tmp_path):
         ref_dir, inv_dir = _make_ref(tmp_path)
-        result = CliRunner().invoke(cli, [
-            "check-inventory",
-            "--ref-models-dir", str(ref_dir),
-            "--inventory-dir", str(inv_dir),
-        ])
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-inventory",
+                "--ref-models-dir",
+                str(ref_dir),
+                "--inventory-dir",
+                str(inv_dir),
+            ],
+        )
         assert result.exit_code == 1
         assert "MISSING" in result.output
 
     def test_cli_warn_only_never_blocks(self, tmp_path):
         ref_dir, inv_dir = _make_ref(tmp_path)
-        result = CliRunner().invoke(cli, [
-            "check-inventory",
-            "--ref-models-dir", str(ref_dir),
-            "--inventory-dir", str(inv_dir),
-            "--warn-only",
-        ])
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-inventory",
+                "--ref-models-dir",
+                str(ref_dir),
+                "--inventory-dir",
+                str(inv_dir),
+                "--warn-only",
+            ],
+        )
         assert result.exit_code == 0
         assert "MISSING" in result.output
 
@@ -319,10 +322,15 @@ class TestCheckInventoryCLI:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         data.pop("closure_hash", None)
         path.write_text(yaml.dump(data), encoding="utf-8")
-        result = CliRunner().invoke(cli, [
-            "check-inventory",
-            "--ref-models-dir", str(ref_dir),
-            "--inventory-dir", str(inv_dir),
-            "--strict",
-        ])
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-inventory",
+                "--ref-models-dir",
+                str(ref_dir),
+                "--inventory-dir",
+                str(inv_dir),
+                "--strict",
+            ],
+        )
         assert result.exit_code == 1

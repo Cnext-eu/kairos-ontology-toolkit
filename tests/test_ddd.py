@@ -30,6 +30,7 @@ def _write(tmp_path: Path, body: str) -> Path:
 # Vocabulary + packaged assets
 # ---------------------------------------------------------------------------
 
+
 class TestPackagedAssets:
     def test_vocabulary_parses(self):
         assert ddd.DDD_VOCAB_PATH.exists()
@@ -45,9 +46,14 @@ class TestPackagedAssets:
 
     def test_vocabulary_defines_core_classes(self):
         from rdflib.namespace import OWL, RDF
+
         g = ddd.load_ddd_vocabulary()
-        for cls in ("BoundedContext", "ContextRelationship", "TacticalPattern",
-                    "ContextRelationshipPattern"):
+        for cls in (
+            "BoundedContext",
+            "ContextRelationship",
+            "TacticalPattern",
+            "ContextRelationshipPattern",
+        ):
             assert (ddd.DDD_NS[cls], RDF.type, OWL.Class) in g, f"missing {cls}"
 
     def test_vocabulary_has_tactical_individuals(self):
@@ -60,6 +66,7 @@ class TestPackagedAssets:
 # ---------------------------------------------------------------------------
 # Discovery helpers
 # ---------------------------------------------------------------------------
+
 
 class TestDiscovery:
     def test_discovers_overlays(self):
@@ -82,6 +89,7 @@ class TestDiscovery:
 # Validation — happy path
 # ---------------------------------------------------------------------------
 
+
 class TestValidationPass:
     @pytest.mark.parametrize("domain", ["client", "invoice"])
     def test_scenario_overlays_pass(self, domain):
@@ -103,6 +111,7 @@ class TestValidationPass:
 # Validation — failures
 # ---------------------------------------------------------------------------
 
+
 class TestValidationFailures:
     def test_syntax_error(self, tmp_path):
         p = tmp_path / "bad-ddd-ext.ttl"
@@ -118,25 +127,30 @@ class TestValidationFailures:
         assert not res["shacl"]["passed"]
 
     def test_aggregate_member_without_root(self, tmp_path):
-        p = _write(tmp_path,
-                   "acme:Identifier kairos-ddd:tacticalPattern kairos-ddd:AggregateMember .\n")
+        p = _write(
+            tmp_path, "acme:Identifier kairos-ddd:tacticalPattern kairos-ddd:AggregateMember .\n"
+        )
         res = ddd.validate_ddd_overlay(p, ONTOLOGIES / "client.ttl")
         assert not res["passed"]
         assert not res["shacl"]["passed"]
 
     def test_aggregate_root_unknown_class(self, tmp_path):
-        p = _write(tmp_path,
-                   "acme:Identifier kairos-ddd:tacticalPattern kairos-ddd:AggregateMember ; "
-                   "kairos-ddd:aggregateRoot acme:NoSuchClass .\n")
+        p = _write(
+            tmp_path,
+            "acme:Identifier kairos-ddd:tacticalPattern kairos-ddd:AggregateMember ; "
+            "kairos-ddd:aggregateRoot acme:NoSuchClass .\n",
+        )
         res = ddd.validate_ddd_overlay(p, ONTOLOGIES / "client.ttl")
         assert not res["passed"]
         assert not res["shacl"]["passed"]
 
     def test_context_relationship_missing_parts(self, tmp_path):
-        p = _write(tmp_path,
-                   'acme-ddd:R a kairos-ddd:ContextRelationship ; '
-                   'kairos-ddd:sourceContext acme-ddd:C1 .\n'
-                   'acme-ddd:C1 a kairos-ddd:BoundedContext ; rdfs:label "C1" .\n')
+        p = _write(
+            tmp_path,
+            "acme-ddd:R a kairos-ddd:ContextRelationship ; "
+            "kairos-ddd:sourceContext acme-ddd:C1 .\n"
+            'acme-ddd:C1 a kairos-ddd:BoundedContext ; rdfs:label "C1" .\n',
+        )
         res = ddd.validate_ddd_overlay(p, ONTOLOGIES / "client.ttl")
         assert not res["passed"]
         assert not res["shacl"]["passed"]
@@ -148,18 +162,22 @@ class TestValidationFailures:
         assert not res["shacl"]["passed"]
 
     def test_silver_projection_leak_fails(self, tmp_path):
-        p = _write(tmp_path,
-                   'acme:Client kairos-ddd:tacticalPattern kairos-ddd:Entity ; '
-                   '<https://kairos.cnext.eu/ext#silverTableName> "x" .\n')
+        p = _write(
+            tmp_path,
+            "acme:Client kairos-ddd:tacticalPattern kairos-ddd:Entity ; "
+            '<https://kairos.cnext.eu/ext#silverTableName> "x" .\n',
+        )
         res = ddd.validate_ddd_overlay(p, ONTOLOGIES / "client.ttl")
         assert not res["passed"]
         assert not res["ext_leak"]["passed"]
         assert "kairos-ext:silverTableName" in res["ext_leak"]["predicates"]
 
     def test_gold_projection_leak_fails(self, tmp_path):
-        p = _write(tmp_path,
-                   'acme:Client kairos-ddd:tacticalPattern kairos-ddd:Entity ; '
-                   '<https://kairos.cnext.eu/ext#goldTableType> "fact" .\n')
+        p = _write(
+            tmp_path,
+            "acme:Client kairos-ddd:tacticalPattern kairos-ddd:Entity ; "
+            '<https://kairos.cnext.eu/ext#goldTableType> "fact" .\n',
+        )
         res = ddd.validate_ddd_overlay(p, ONTOLOGIES / "client.ttl")
         assert not res["ext_leak"]["passed"]
 
@@ -173,6 +191,7 @@ class TestValidationFailures:
 # ---------------------------------------------------------------------------
 # Domain-inherited kairos-ext annotations must NOT count as a leak
 # ---------------------------------------------------------------------------
+
 
 class TestLeakScope:
     def test_domain_naturalkey_not_flagged(self):

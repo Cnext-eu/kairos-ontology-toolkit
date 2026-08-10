@@ -194,8 +194,7 @@ def test_audit_accepts_object_property_fk_lineage_comment(tmp_path):
     )
 
     assert not [
-        finding for finding in report.findings
-        if finding.code == "target_alias_not_found_in_sql"
+        finding for finding in report.findings if finding.code == "target_alias_not_found_in_sql"
     ]
 
 
@@ -213,8 +212,7 @@ def test_audit_warns_when_alias_and_lineage_are_missing(tmp_path):
     )
 
     warning = next(
-        finding for finding in report.findings
-        if finding.code == "target_alias_not_found_in_sql"
+        finding for finding in report.findings if finding.code == "target_alias_not_found_in_sql"
     )
     assert "booking:hasTransportPlan" in warning.evidence["expected_tokens"]
     assert "has_transport_plan" in warning.evidence["expected_tokens"]
@@ -233,10 +231,7 @@ def test_audit_alias_matching_uses_identifier_boundaries(tmp_path):
         dbt_output_dir=dbt,
     )
 
-    assert any(
-        finding.code == "target_alias_not_found_in_sql"
-        for finding in report.findings
-    )
+    assert any(finding.code == "target_alias_not_found_in_sql" for finding in report.findings)
 
 
 def test_audit_accepts_full_uri_lineage_comment(tmp_path):
@@ -254,8 +249,7 @@ def test_audit_accepts_full_uri_lineage_comment(tmp_path):
     )
 
     assert not [
-        finding for finding in report.findings
-        if finding.code == "target_alias_not_found_in_sql"
+        finding for finding in report.findings if finding.code == "target_alias_not_found_in_sql"
     ]
 
 
@@ -268,10 +262,14 @@ def test_cli_audit_silver_samples_non_blocking_by_default(tmp_path):
         cli,
         [
             "audit-silver-samples",
-            "--sources", str(sources),
-            "--mappings", str(mappings),
-            "--dbt-output", str(dbt),
-            "--output", str(out),
+            "--sources",
+            str(sources),
+            "--mappings",
+            str(mappings),
+            "--dbt-output",
+            str(dbt),
+            "--output",
+            str(out),
         ],
     )
 
@@ -289,11 +287,16 @@ def test_cli_audit_silver_samples_can_fail_on_warning(tmp_path):
         cli,
         [
             "audit-silver-samples",
-            "--sources", str(sources),
-            "--mappings", str(mappings),
-            "--dbt-output", str(dbt),
-            "--output", str(out),
-            "--fail-on", "warning",
+            "--sources",
+            str(sources),
+            "--mappings",
+            str(mappings),
+            "--dbt-output",
+            str(dbt),
+            "--output",
+            str(out),
+            "--fail-on",
+            "warning",
         ],
     )
 

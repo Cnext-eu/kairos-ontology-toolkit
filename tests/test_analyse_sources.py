@@ -1698,8 +1698,7 @@ testapp:tblExtra_Code a kairos-bronze:SourceColumn ;
         )
         out_dir.mkdir()
         (out_dir / "extra-affinity.yaml").write_text(
-            "schema_version: 2\nsystem: extra\ntables:\n"
-            "  - table: tblExtra\n    domain: party\n",
+            "schema_version: 2\nsystem: extra\ntables:\n  - table: tblExtra\n    domain: party\n",
             encoding="utf-8",
         )
         calls: list[int] = []

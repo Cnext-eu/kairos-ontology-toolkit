@@ -94,7 +94,9 @@ def test_packaged_example_loads() -> None:
 
 
 def test_external_reference_relationship_parses_closed_key_contract() -> None:
-    doc = VALID + """\
+    doc = (
+        VALID
+        + """\
 relationships:
   - property: party:account
     target: billing:Account
@@ -112,6 +114,7 @@ relationships:
     missingParent: error
     ambiguousParent: error
 """
+    )
     binding = load_entity_binding(doc, path="external.binding.yaml")
     relationship = binding.relationships[0]
     assert relationship.external_reference is not None
@@ -490,7 +493,9 @@ def test_non_temporal_relationship_rejects_temporal_policy() -> None:
 
 
 def test_conformance_dedup_policy_parses() -> None:
-    doc = VALID + """\
+    doc = (
+        VALID
+        + """\
 conformance:
   group: party-customer
   sourcePrecedence: 2
@@ -500,6 +505,7 @@ conformance:
     deduplicateBy: [customer_id]
     orderBy: [{column: source_updated_at, direction: descending}]
 """
+    )
     binding = load_entity_binding(doc, path="conformance.binding.yaml")
     assert binding.conformance is not None
     assert binding.conformance.source_precedence == 2
@@ -507,7 +513,9 @@ conformance:
 
 
 def test_conformance_dedup_rejects_incomplete_ordering() -> None:
-    bad = VALID + """\
+    bad = (
+        VALID
+        + """\
 conformance:
   group: party-customer
   sourcePrecedence: 1
@@ -516,13 +524,16 @@ conformance:
     mode: deduplicate
     deduplicateBy: [customer_id]
 """
+    )
     with pytest.raises(CompileError) as excinfo:
         load_entity_binding(bad, path="conformance.binding.yaml")
     assert "binding.schema" in _codes(excinfo.value)
 
 
 def test_conformance_union_all_is_closed_and_typed() -> None:
-    doc = VALID + """\
+    doc = (
+        VALID
+        + """\
 conformance:
   group: party-customer
   sourcePrecedence: 1
@@ -530,6 +541,7 @@ conformance:
   union:
     mode: union-all
 """
+    )
     binding = load_entity_binding(doc, path="conformance.binding.yaml")
     assert binding.conformance is not None
     assert binding.conformance.union.deduplicate_by == ()

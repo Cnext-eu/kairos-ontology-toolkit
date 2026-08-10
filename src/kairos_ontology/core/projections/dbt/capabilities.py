@@ -529,7 +529,7 @@ def physical_canonical_type(
         scale = value.scale if value.scale is not None else 4
         if precision > 38 or scale > precision:
             raise ValueError(
-                f"Adapter {profile.name.value!r} cannot represent " f"decimal({precision},{scale})"
+                f"Adapter {profile.name.value!r} cannot represent decimal({precision},{scale})"
             )
         return f"DECIMAL({precision},{scale})"
     if value.kind is CanonicalTypeKind.STRING and value.length:

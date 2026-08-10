@@ -334,9 +334,7 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
     return measure, i
 
 
-def _parse_partition(
-    lines: list[str], start: int, parent_indent: int
-) -> tuple[TmdlPartition, int]:
+def _parse_partition(lines: list[str], start: int, parent_indent: int) -> tuple[TmdlPartition, int]:
     """Parse a partition block."""
     header = lines[start].strip()
     match = re.match(r"partition\s+['\"]?(.+?)['\"]?\s*$", header)
@@ -373,9 +371,7 @@ def _parse_partition(
     return partition, i
 
 
-def _parse_relationship(
-    lines: list[str], start: int
-) -> tuple[TmdlRelationship, int]:
+def _parse_relationship(lines: list[str], start: int) -> tuple[TmdlRelationship, int]:
     """Parse a relationship block."""
     header = lines[start].strip()
     match = re.match(r"relationship\s+['\"]?(.+?)['\"]?\s*$", header)

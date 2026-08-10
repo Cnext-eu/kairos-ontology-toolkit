@@ -34,6 +34,7 @@ KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 @dataclass
 class PropertyAlignment:
     """Alignment result for a single ontology property."""
+
     name: str
     label: str
     ref_property: str | None  # None = custom (no match)
@@ -46,6 +47,7 @@ class PropertyAlignment:
 @dataclass
 class ClassAlignment:
     """Alignment result for a single ontology class."""
+
     name: str
     label: str
     ref_class: str | None
@@ -58,6 +60,7 @@ class ClassAlignment:
 @dataclass
 class DomainCoverage:
     """Coverage result for one ontology domain."""
+
     domain: str
     classes: list[ClassAlignment] = field(default_factory=list)
     class_coverage_pct: float = 0.0
@@ -67,6 +70,7 @@ class DomainCoverage:
 @dataclass
 class CoverageReport:
     """Complete coverage report."""
+
     generated_at: str
     total_classes: int = 0
     aligned_classes: int = 0
@@ -122,8 +126,7 @@ def parse_domain_ontology(
         if not isinstance(cls_uri, URIRef):
             continue
         if root_iri and not (
-            str(cls_uri).startswith(root_iri + "#")
-            or str(cls_uri).startswith(root_iri + "/")
+            str(cls_uri).startswith(root_iri + "#") or str(cls_uri).startswith(root_iri + "/")
         ):
             continue
         cls_name = cls_uri.split("#")[-1].split("/")[-1]
@@ -141,19 +144,23 @@ def parse_domain_ontology(
             prop_name = prop_uri.split("#")[-1].split("/")[-1]
             prop_label = str(g.value(prop_uri, RDFS.label) or prop_name)
             prop_see_also = [str(sa) for sa in g.objects(prop_uri, RDFS.seeAlso)]
-            properties.append({
-                "name": prop_name,
-                "label": prop_label,
-                "see_also": prop_see_also,
-            })
+            properties.append(
+                {
+                    "name": prop_name,
+                    "label": prop_label,
+                    "see_also": prop_see_also,
+                }
+            )
 
-        classes.append({
-            "name": cls_name,
-            "label": cls_label,
-            "uri": str(cls_uri),
-            "see_also": see_also,
-            "properties": properties,
-        })
+        classes.append(
+            {
+                "name": cls_name,
+                "label": cls_label,
+                "uri": str(cls_uri),
+                "see_also": see_also,
+                "properties": properties,
+            }
+        )
 
     return {
         "domain_name": domain_name,
@@ -246,14 +253,16 @@ def align_classes_deterministic(
         # Align properties
         prop_alignments = _align_properties(cls, ref_cls, ref_index)
 
-        results.append({
-            "ontology_class": cls["name"],
-            "ref_class": ref_cls["name"] if ref_cls else None,
-            "ref_domain": ref_cls["domain"] if ref_cls else None,
-            "alignment": alignment,
-            "confidence": confidence,
-            "property_alignments": prop_alignments,
-        })
+        results.append(
+            {
+                "ontology_class": cls["name"],
+                "ref_class": ref_cls["name"] if ref_cls else None,
+                "ref_domain": ref_cls["domain"] if ref_cls else None,
+                "alignment": alignment,
+                "confidence": confidence,
+                "property_alignments": prop_alignments,
+            }
+        )
 
     return results
 
@@ -358,6 +367,7 @@ def trace_source_evidence(
 
             # Look for skos:exactMatch / skos:closeMatch triples
             from rdflib.namespace import SKOS
+
             for s, p, o in g.triples((None, None, None)):
                 if str(p) in (str(SKOS.exactMatch), str(SKOS.closeMatch)):
                     # s = source column URI, o = domain property URI
@@ -435,39 +445,44 @@ def run_coverage_report(
             props = []
             for pa in cls_align.get("property_alignments", []):
                 prop_name = pa["ontology_property"]
-                props.append(PropertyAlignment(
-                    name=prop_name,
-                    label=prop_name,
-                    ref_property=pa.get("ref_property"),
-                    alignment=pa.get("alignment", "custom"),
-                    confidence=pa.get("confidence", 0.0),
-                    source_columns=evidence.get(prop_name, []),
-                    suggestion=pa.get("refinement_suggestion", ""),
-                ))
+                props.append(
+                    PropertyAlignment(
+                        name=prop_name,
+                        label=prop_name,
+                        ref_property=pa.get("ref_property"),
+                        alignment=pa.get("alignment", "custom"),
+                        confidence=pa.get("confidence", 0.0),
+                        source_columns=evidence.get(prop_name, []),
+                        suggestion=pa.get("refinement_suggestion", ""),
+                    )
+                )
 
-            domain_cov.classes.append(ClassAlignment(
-                name=cls_align["ontology_class"],
-                label=cls_align["ontology_class"],
-                ref_class=cls_align.get("ref_class"),
-                alignment=cls_align.get("alignment", "custom"),
-                confidence=cls_align.get("confidence", 0.0),
-                properties=props,
-            ))
+            domain_cov.classes.append(
+                ClassAlignment(
+                    name=cls_align["ontology_class"],
+                    label=cls_align["ontology_class"],
+                    ref_class=cls_align.get("ref_class"),
+                    alignment=cls_align.get("alignment", "custom"),
+                    confidence=cls_align.get("confidence", 0.0),
+                    properties=props,
+                )
+            )
 
         # Calculate coverage percentages
         total_cls = len(domain_cov.classes)
         aligned_cls = sum(1 for c in domain_cov.classes if c.alignment != "custom")
-        domain_cov.class_coverage_pct = round(
-            aligned_cls / total_cls * 100) if total_cls else 0.0
+        domain_cov.class_coverage_pct = round(aligned_cls / total_cls * 100) if total_cls else 0.0
 
         total_props = sum(len(c.properties) for c in domain_cov.classes)
         aligned_props = sum(
-            1 for c in domain_cov.classes
+            1
+            for c in domain_cov.classes
             for p in c.properties
             if p.alignment not in ("custom", "specialization")
         )
-        domain_cov.property_coverage_pct = round(
-            aligned_props / total_props * 100) if total_props else 0.0
+        domain_cov.property_coverage_pct = (
+            round(aligned_props / total_props * 100) if total_props else 0.0
+        )
 
         report.domains.append(domain_cov)
         report.total_classes += total_cls
@@ -476,12 +491,14 @@ def run_coverage_report(
         report.aligned_properties += aligned_props
 
     # Final percentages
-    report.class_coverage_pct = round(
-        report.aligned_classes / report.total_classes * 100
-    ) if report.total_classes else 0.0
-    report.property_coverage_pct = round(
-        report.aligned_properties / report.total_properties * 100
-    ) if report.total_properties else 0.0
+    report.class_coverage_pct = (
+        round(report.aligned_classes / report.total_classes * 100) if report.total_classes else 0.0
+    )
+    report.property_coverage_pct = (
+        round(report.aligned_properties / report.total_properties * 100)
+        if report.total_properties
+        else 0.0
+    )
 
     return report
 
@@ -500,6 +517,7 @@ def write_coverage_yaml(report: CoverageReport, output_path: Path) -> Path:
     """
     if output_path.is_dir() or not output_path.suffix:
         from datetime import datetime as _dt, timezone as _tz
+
         ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
         output_path = output_path / f"coverage-industry-{ts}.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -566,6 +584,7 @@ def write_coverage_markdown(report: CoverageReport, output_path: Path) -> Path:
     """
     if output_path.is_dir() or not output_path.suffix:
         from datetime import datetime as _dt, timezone as _tz
+
         ts = _dt.now(_tz.utc).strftime("%Y-%m-%d-%H%M%S")
         output_path = output_path / f"coverage-industry-{ts}.md"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -589,8 +608,10 @@ def write_coverage_markdown(report: CoverageReport, output_path: Path) -> Path:
     for domain in report.domains:
         lines.append(f"## {domain.domain}")
         lines.append("")
-        lines.append(f"Class coverage: {domain.class_coverage_pct}% | "
-                     f"Property coverage: {domain.property_coverage_pct}%")
+        lines.append(
+            f"Class coverage: {domain.class_coverage_pct}% | "
+            f"Property coverage: {domain.property_coverage_pct}%"
+        )
         lines.append("")
         lines.append("| Class | Ref Model | Alignment | Properties Aligned |")
         lines.append("|-------|-----------|-----------|-------------------|")
@@ -600,8 +621,7 @@ def write_coverage_markdown(report: CoverageReport, output_path: Path) -> Path:
             total_props = len(cls.properties)
             ref_str = cls.ref_class or "—"
             lines.append(
-                f"| {cls.name} | {ref_str} | {cls.alignment} | "
-                f"{aligned_props}/{total_props} |"
+                f"| {cls.name} | {ref_str} | {cls.alignment} | {aligned_props}/{total_props} |"
             )
         lines.append("")
 

@@ -311,6 +311,7 @@ def _data_quality_rules(
         )
     return tuple(sorted(rules, key=lambda rule: rule.resource_uri))
 
+
 def bind_policy_facts(
     graph: Graph,
     *,

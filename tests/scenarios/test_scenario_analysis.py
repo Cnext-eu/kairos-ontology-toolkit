@@ -142,14 +142,16 @@ class TestAnalyseSourcesScenario:
         def side_effect(**kwargs):
             response = MagicMock()
             response.choices = [MagicMock()]
-            response.choices[0].message.content = json.dumps({
-                "domain": "Party",
-                "secondary_domains": [],
-                "confidence": 0.75,
-                "likely_entity": "Party",
-                "rationale": "Customer table contains party-related data",
-                "indicative_columns": ["CustName", "CustEmail"],
-            })
+            response.choices[0].message.content = json.dumps(
+                {
+                    "domain": "Party",
+                    "secondary_domains": [],
+                    "confidence": 0.75,
+                    "likely_entity": "Party",
+                    "rationale": "Customer table contains party-related data",
+                    "indicative_columns": ["CustName", "CustEmail"],
+                }
+            )
             return response
 
         mock_client.chat.completions.create.side_effect = side_effect
@@ -176,14 +178,16 @@ class TestAnalyseSourcesScenario:
         mock_client = MagicMock()
         response = MagicMock()
         response.choices = [MagicMock()]
-        response.choices[0].message.content = json.dumps({
-            "domain": "Party",
-            "secondary_domains": [],
-            "confidence": 0.6,
-            "likely_entity": "Party",
-            "rationale": "Table has some party-related data",
-            "indicative_columns": ["col1"],
-        })
+        response.choices[0].message.content = json.dumps(
+            {
+                "domain": "Party",
+                "secondary_domains": [],
+                "confidence": 0.6,
+                "likely_entity": "Party",
+                "rationale": "Table has some party-related data",
+                "indicative_columns": ["col1"],
+            }
+        )
         mock_client.chat.completions.create.return_value = response
         mock_get_client.return_value = mock_client
 

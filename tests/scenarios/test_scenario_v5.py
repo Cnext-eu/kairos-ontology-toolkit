@@ -113,9 +113,9 @@ billing:account_region a owl:DatatypeProperty ;
             "@prefix billing: <https://example.test/ontology/billing#> .",
         )
         .replace(
-            '<https://example.test/ontology/party> a owl:Ontology ;',
-            '<https://example.test/ontology/party> a owl:Ontology ;\n'
-            '  owl:imports <https://example.test/ontology/billing> ;',
+            "<https://example.test/ontology/party> a owl:Ontology ;",
+            "<https://example.test/ontology/party> a owl:Ontology ;\n"
+            "  owl:imports <https://example.test/ontology/billing> ;",
         )
         + "\nparty:billingAccount a owl:ObjectProperty ;\n"
         "  rdfs:domain party:Customer ; rdfs:range billing:Account .\n"
@@ -308,9 +308,10 @@ def test_v5_external_reference_resolves_cross_domain_parent_and_emits_ref(tmp_pa
     assert "[src].[billing_account_id] = [account].[account_id]" in sql
     assert "account_sk" in sql
     assert "tests/party/customer__referential.sql" in artifacts
-    assert "left join {{ ref(\"account\") }} as parent" in artifacts[
-        "tests/party/customer__referential.sql"
-    ].lower()
+    assert (
+        'left join {{ ref("account") }} as parent'
+        in artifacts["tests/party/customer__referential.sql"].lower()
+    )
     schema = yaml.safe_load(artifacts["models/silver/party/_party__models.yml"])
     customer = next(model for model in schema["models"] if model["name"] == "customer")
     dumped = yaml.safe_dump(customer, sort_keys=True)

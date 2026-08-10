@@ -30,9 +30,12 @@ DEFAULT_ENUM_RATIO = 0.1  # max distinct/row_count ratio for enum suggestion
 # --------------------------------------------------------------------------- #
 
 FORMAT_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("uuid", re.compile(
-        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-    )),
+    (
+        "uuid",
+        re.compile(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        ),
+    ),
     ("email", re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")),
     ("date", re.compile(r"^\d{4}-\d{2}-\d{2}")),
     ("url", re.compile(r"^https?://")),
@@ -112,12 +115,14 @@ def detect_enums(
         if distinct <= enum_threshold and distinct / row_count < enum_ratio:
             # Collect sample values as enum candidates
             samples = col.get("samples", [])
-            suggestions.append(EnumSuggestion(
-                table=table_name,
-                column=col["name"],
-                distinct_count=distinct,
-                values=samples[:enum_threshold],
-            ))
+            suggestions.append(
+                EnumSuggestion(
+                    table=table_name,
+                    column=col["name"],
+                    distinct_count=distinct,
+                    values=samples[:enum_threshold],
+                )
+            )
 
     return suggestions
 
@@ -146,11 +151,13 @@ def detect_formats(table_name: str, columns: list[dict]) -> list[FormatSuggestio
 
         for fmt_name, pattern in FORMAT_PATTERNS:
             if all(pattern.match(s) for s in check_samples):
-                suggestions.append(FormatSuggestion(
-                    table=table_name,
-                    column=col["name"],
-                    format_hint=fmt_name,
-                ))
+                suggestions.append(
+                    FormatSuggestion(
+                        table=table_name,
+                        column=col["name"],
+                        format_hint=fmt_name,
+                    )
+                )
                 break  # First matching pattern wins
 
     return suggestions
@@ -197,8 +204,10 @@ def infer_foreign_keys(tables: list[dict]) -> list[FKSuggestion]:
                         "tbl" + base + "s",
                     ]
                     for candidate in candidates:
-                        if candidate in table_names_lower and \
-                                table_names_lower[candidate] != tbl_name:
+                        if (
+                            candidate in table_names_lower
+                            and table_names_lower[candidate] != tbl_name
+                        ):
                             matched_target = table_names_lower[candidate]
                             break
 
@@ -206,12 +215,14 @@ def infer_foreign_keys(tables: list[dict]) -> list[FKSuggestion]:
                         break
 
             if matched_target:
-                suggestions.append(FKSuggestion(
-                    table=tbl_name,
-                    column=col_name,
-                    target_table=matched_target,
-                    confidence="high",
-                ))
+                suggestions.append(
+                    FKSuggestion(
+                        table=tbl_name,
+                        column=col_name,
+                        target_table=matched_target,
+                        confidence="high",
+                    )
+                )
             else:
                 # Cardinality-based inference (looser)
                 distinct = col.get("distinct_count")
@@ -223,12 +234,14 @@ def infer_foreign_keys(tables: list[dict]) -> list[FKSuggestion]:
                         if abs(distinct - other_count) / max(other_count, 1) <= 0.05:
                             # Only if column name has some FK-like pattern
                             if any(col_lower.endswith(s) for s in FK_SUFFIXES):
-                                suggestions.append(FKSuggestion(
-                                    table=tbl_name,
-                                    column=col_name,
-                                    target_table=other_name,
-                                    confidence="medium",
-                                ))
+                                suggestions.append(
+                                    FKSuggestion(
+                                        table=tbl_name,
+                                        column=col_name,
+                                        target_table=other_name,
+                                        confidence="medium",
+                                    )
+                                )
                                 break
 
     return suggestions
@@ -267,9 +280,7 @@ def enrich_source_schema(
         columns = tbl.get("columns", [])
 
         # Enum detection
-        enum_suggestions = detect_enums(
-            tbl_name, columns, row_count, enum_threshold=enum_threshold
-        )
+        enum_suggestions = detect_enums(tbl_name, columns, row_count, enum_threshold=enum_threshold)
         all_enum_suggestions.extend(enum_suggestions)
         enum_cols = {s.column: s for s in enum_suggestions}
 

@@ -56,38 +56,38 @@ class CatalogResolution:
 def _get_rdf_format(file_path: Path) -> str:
     """
     Detect RDF format from file extension.
-    
+
     Args:
         file_path: Path to the RDF file
-        
+
     Returns:
         Format string for rdflib.Graph.parse()
     """
     suffix = file_path.suffix.lower()
     format_map = {
-        '.ttl': 'turtle',
-        '.turtle': 'turtle',
-        '.rdf': 'xml',
-        '.xml': 'xml',
-        '.owl': 'xml',
-        '.n3': 'n3',
-        '.nt': 'nt',
-        '.ntriples': 'nt',
-        '.jsonld': 'json-ld',
-        '.json': 'json-ld',
+        ".ttl": "turtle",
+        ".turtle": "turtle",
+        ".rdf": "xml",
+        ".xml": "xml",
+        ".owl": "xml",
+        ".n3": "n3",
+        ".nt": "nt",
+        ".ntriples": "nt",
+        ".jsonld": "json-ld",
+        ".json": "json-ld",
     }
-    return format_map.get(suffix, 'turtle')  # Default to turtle
+    return format_map.get(suffix, "turtle")  # Default to turtle
 
 
 class CatalogResolver:
     """Resolves ontology URIs to local files using XML catalog."""
-    
+
     CATALOG_NS = "{urn:oasis:names:tc:entity:xmlns:xml:catalog}"
-    
+
     def __init__(self, catalog_path: Path):
         """
         Initialize resolver with catalog file.
-        
+
         Args:
             catalog_path: Path to catalog-v001.xml file
         """
@@ -99,7 +99,7 @@ class CatalogResolver:
         self._visited_catalogs: set[Path] = set()
         self.diagnostics: List[Dict[str, str]] = []
         self._load_catalog()
-    
+
     def _load_catalog(self):
         """Parse XML catalog and build URI → local path mappings."""
         self._load_catalog_file(self.catalog_path)
@@ -138,16 +138,16 @@ class CatalogResolver:
                 self.mappings[uri_name] = local_path
 
                 # Normalize URI (ensure trailing slash consistency)
-                normalized_uri = uri_name.rstrip('/#') + '/'
+                normalized_uri = uri_name.rstrip("/#") + "/"
                 self.mappings[normalized_uri] = local_path
 
                 # Also add without trailing slash for flexibility
-                self.mappings[normalized_uri.rstrip('/')] = local_path
+                self.mappings[normalized_uri.rstrip("/")] = local_path
 
                 # Hash normalization: store both with and without trailing #
-                bare = uri_name.rstrip('#')
+                bare = uri_name.rstrip("#")
                 self.mappings[bare] = local_path
-                self.mappings[bare + '#'] = local_path
+                self.mappings[bare + "#"] = local_path
 
         # Follow <nextCatalog> references
         for next_elem in root.findall(f"{self.CATALOG_NS}nextCatalog"):
@@ -171,14 +171,14 @@ class CatalogResolver:
             rewrite_prefix = rewrite_elem.get("rewritePrefix")
             if start_string and rewrite_prefix:
                 self._rewrite_rules.append((start_string, rewrite_prefix, catalog_dir))
-    
+
     def resolve(self, uri: str) -> Optional[Path]:
         """
         Resolve an ontology URI to a local file path.
-        
+
         Args:
             uri: Ontology URI (e.g., https://spec.edmcouncil.org/fibo/...)
-            
+
         Returns:
             Local file path if mapping exists, None otherwise
         """
@@ -192,23 +192,23 @@ class CatalogResolver:
         # Try exact match first
         if uri in self.mappings:
             return CatalogResolution(uri, self.mappings[uri], "exact")
-        
+
         # Try with/without trailing slash
-        uri_with_slash = uri.rstrip('/') + '/'
+        uri_with_slash = uri.rstrip("/") + "/"
         if uri_with_slash in self.mappings:
             return CatalogResolution(uri, self.mappings[uri_with_slash], "slash_fallback")
-        
-        uri_without_slash = uri.rstrip('/')
+
+        uri_without_slash = uri.rstrip("/")
         if uri_without_slash in self.mappings:
             return CatalogResolution(uri, self.mappings[uri_without_slash], "slash_fallback")
 
         # Try with/without trailing hash
-        uri_with_hash = uri.rstrip('#') + '#'
+        uri_with_hash = uri.rstrip("#") + "#"
         if uri_with_hash in self.mappings:
             self._hash_fallback_used = True
             return CatalogResolution(uri, self.mappings[uri_with_hash], "hash_fallback")
 
-        uri_without_hash = uri.rstrip('#')
+        uri_without_hash = uri.rstrip("#")
         if uri_without_hash in self.mappings:
             self._hash_fallback_used = True
             return CatalogResolution(uri, self.mappings[uri_without_hash], "hash_fallback")
@@ -229,7 +229,7 @@ class CatalogResolver:
                 continue
 
             # Apply prefix replacement
-            suffix = uri[len(start_string):]
+            suffix = uri[len(start_string) :]
             candidate = (catalog_dir / rewrite_prefix / suffix).resolve()
 
             # Direct match — rewritten path is an existing file
@@ -263,11 +263,11 @@ class CatalogResolver:
                 )
 
         return CatalogResolution(uri, None, "unresolved")
-    
+
     def is_mapped(self, uri: str) -> bool:
         """Check if URI has a catalog mapping."""
         return self.resolve(uri) is not None
-    
+
     def get_all_mappings(self) -> Dict[str, Path]:
         """Get all URI → path mappings."""
         return self.mappings.copy()
@@ -281,12 +281,12 @@ def load_graph_with_catalog(
 ) -> CatalogLoadResult:
     """
     Load an RDF graph and resolve owl:imports using XML catalog.
-    
+
     Args:
         ontology_path: Path to main ontology file
         catalog_path: Path to catalog-v001.xml
         quiet: Suppress human-readable import progress while retaining diagnostics.
-        
+
     Returns:
         CatalogLoadResult with the loaded graph and any diagnostics collected
         during import resolution.
@@ -304,10 +304,7 @@ def load_graph_with_catalog(
             message = f"No catalog mapping for: {diagnostic.import_uri}"
             level = "warning"
         elif diagnostic.code == "unsupported_file_import":
-            message = (
-                f"Skipping file:// import (use catalog instead): "
-                f"{diagnostic.import_uri}"
-            )
+            message = f"Skipping file:// import (use catalog instead): {diagnostic.import_uri}"
             level = "warning"
         elif diagnostic.code == "import_parse_error":
             message = diagnostic.message
@@ -328,9 +325,7 @@ def load_graph_with_catalog(
     return CatalogLoadResult(graph=loaded.graph, diagnostics=diagnostics)
 
 
-def resolve_import_paths(
-    ontology_path: Path, catalog_path: Path
-) -> Dict[str, Path]:
+def resolve_import_paths(ontology_path: Path, catalog_path: Path) -> Dict[str, Path]:
     """Resolve direct owl:imports URIs to local file paths.
 
     This is useful for discovering sibling files (e.g., extension defaults)
@@ -439,17 +434,17 @@ def sync_domain_catalog_entry(
 def validate_catalog(catalog_path: Path) -> Dict[str, bool]:
     """
     Validate that all catalog mappings point to existing files.
-    
+
     Args:
         catalog_path: Path to catalog file
-        
+
     Returns:
         Dict mapping URI → file_exists (bool)
     """
     resolver = CatalogResolver(catalog_path)
     results = {}
-    
+
     for uri, path in resolver.get_all_mappings().items():
         results[uri] = path.exists()
-    
+
     return results

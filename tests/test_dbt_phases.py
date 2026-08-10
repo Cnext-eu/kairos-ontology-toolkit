@@ -54,9 +54,7 @@ EXTENSIONS_DIR = HUB_ROOT / "model" / "extensions"
 SHAPES_DIR = HUB_ROOT / "model" / "shapes"
 MAPPINGS_DIR = HUB_ROOT / "model" / "mappings"
 SOURCES_DIR = HUB_ROOT / "integration" / "sources"
-TEMPLATE_DIR = (
-    Path(__file__).parent.parent / "src" / "kairos_ontology" / "templates" / "dbt"
-)
+TEMPLATE_DIR = Path(__file__).parent.parent / "src" / "kairos_ontology" / "templates" / "dbt"
 
 
 def _load_client() -> tuple[Graph, str, list[dict]]:
@@ -66,11 +64,7 @@ def _load_client() -> tuple[Graph, str, list[dict]]:
     if extension.exists():
         graph.parse(extension, format="turtle")
     namespace = next(
-        (
-            str(ontology) + "#"
-            if "#" not in str(ontology)
-            else str(ontology).rsplit("#", 1)[0] + "#"
-        )
+        (str(ontology) + "#" if "#" not in str(ontology) else str(ontology).rsplit("#", 1)[0] + "#")
         for ontology in graph.subjects(RDF.type, OWL.Ontology)
     )
     classes = []
@@ -84,9 +78,7 @@ def _load_client() -> tuple[Graph, str, list[dict]]:
                 "uri": uri,
                 "name": local,
                 "label": str(graph.value(class_uri, RDFS.label) or local),
-                "comment": str(
-                    graph.value(class_uri, RDFS.comment) or f"{local} entity"
-                ),
+                "comment": str(graph.value(class_uri, RDFS.comment) or f"{local} entity"),
             }
         )
     return graph, namespace, classes
@@ -220,12 +212,8 @@ def test_bind_consumes_rdf_into_domain_specific_facts():
     assert bound.mappings.tables
     assert bound.source_bindings.class_to_sources
     assert bound.foreign_key_facts
-    assert all(
-        isinstance(item, BoundSilverModel) for item in bound.silver_candidates
-    )
-    assert all(
-        isinstance(item, BoundSchemaModel) for item in bound.schema_candidates
-    )
+    assert all(isinstance(item, BoundSilverModel) for item in bound.silver_candidates)
+    assert all(isinstance(item, BoundSchemaModel) for item in bound.schema_candidates)
     assert isinstance(bound.coverage, BoundCoverage)
     assert not _contains_type(
         bound,
@@ -242,14 +230,8 @@ def test_normalize_is_the_effective_policy_boundary():
             assert contract.binding_policy.is_bound(class_uri)
     assert contract.fk_classification.descriptors
     assert contract.naming_convention
-    assert all(
-        isinstance(item, NormalizedSilverModel)
-        for item in contract.project.silver_models
-    )
-    assert all(
-        isinstance(item, NormalizedSchemaModel)
-        for item in contract.project.schema_models
-    )
+    assert all(isinstance(item, NormalizedSilverModel) for item in contract.project.silver_models)
+    assert all(isinstance(item, NormalizedSchemaModel) for item in contract.project.schema_models)
     assert isinstance(contract.project.coverage, NormalizedCoverage)
     assert not _contains_type(
         contract,
@@ -264,9 +246,7 @@ def test_shape_contains_logical_specs_and_no_artifact_maps():
     assert shaped.source_catalogs
     assert all(isinstance(item, SourceCatalogSpec) for item in shaped.source_catalogs)
     assert all(isinstance(item, SilverModelSpec) for item in shaped.silver_models)
-    assert all(
-        isinstance(item, SchemaDocumentSpec) for item in shaped.schema_documents
-    )
+    assert all(isinstance(item, SchemaDocumentSpec) for item in shaped.schema_documents)
     assert isinstance(shaped.gold_product, DimensionalGoldSpec)
     assert not any(field.name.endswith("artifacts") for field in dataclasses.fields(shaped))
     assert list(inspect.signature(shape_project).parameters) == ["contract"]

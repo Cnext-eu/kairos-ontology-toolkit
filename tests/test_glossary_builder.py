@@ -185,12 +185,8 @@ def test_build_graph_emits_valid_skos():
 
 def test_build_graph_stamps_non_authoritative_disclaimer():
     """DD-071: every generated glossary scheme carries a non-authoritative note."""
-    concepts, _ = aggregate_concepts(
-        [{"prefLabel": "Transport Document", "definition": "doc"}]
-    )
-    graph = build_glossary_graph(
-        concepts, glossary_namespace=GLOSSARY_NS, scheme_label="L"
-    )
+    concepts, _ = aggregate_concepts([{"prefLabel": "Transport Document", "definition": "doc"}])
+    graph = build_glossary_graph(concepts, glossary_namespace=GLOSSARY_NS, scheme_label="L")
     scheme = URIRef(GLOSSARY_NS)
     comments = [str(o) for _, _, o in graph.triples((scheme, RDFS.comment, None))]
     notes = [str(o) for _, _, o in graph.triples((scheme, SKOS.editorialNote, None))]
@@ -207,9 +203,7 @@ def test_build_graph_related_match_relation():
         }
     ]
     concepts, _ = aggregate_concepts(terms)
-    graph = build_glossary_graph(
-        concepts, glossary_namespace=GLOSSARY_NS, scheme_label="L"
-    )
+    graph = build_glossary_graph(concepts, glossary_namespace=GLOSSARY_NS, scheme_label="L")
     node = URIRef(GLOSSARY_NS + "ShipManager")
     assert (node, SKOS.relatedMatch, URIRef("https://ref.example/ont/party#ShipManager")) in graph
     assert (node, RDFS.seeAlso, URIRef("https://ref.example/ont/party#ShipManager")) not in graph
@@ -261,8 +255,7 @@ def test_cli_build_glossary(tmp_path: Path, monkeypatch):
     hub = tmp_path / "ontology-hub"
     (hub / "model" / "ontologies").mkdir(parents=True)
     (hub / "README.md").write_text(
-        "| **Company name**   | Acme Logistics |\n"
-        "| **Company domain** | acme.com |\n",
+        "| **Company name**   | Acme Logistics |\n| **Company domain** | acme.com |\n",
         encoding="utf-8",
     )
     ext = hub / "businessdiscovery" / "_extractions"

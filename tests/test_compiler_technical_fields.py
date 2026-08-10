@@ -211,11 +211,7 @@ def _context() -> ResolutionContext:
         ontology_iri=_IRI,
         ontology_version="0.1.0",
         template_root=str(
-            Path(__file__).resolve().parents[1]
-            / "src"
-            / "kairos_ontology"
-            / "templates"
-            / "dbt"
+            Path(__file__).resolve().parents[1] / "src" / "kairos_ontology" / "templates" / "dbt"
         ),
         target_platform="fabric",
         relations=(
@@ -232,9 +228,7 @@ def _context() -> ResolutionContext:
                 ),
             ),
         ),
-        classes=(
-            ResolvedClass(ref="party:Customer", uri=f"{_NS}Customer", name="Customer"),
-        ),
+        classes=(ResolvedClass(ref="party:Customer", uri=f"{_NS}Customer", name="Customer"),),
         properties=(
             ResolvedProperty(
                 ref="party:customerId",
@@ -318,7 +312,9 @@ def test_technical_field_type_incompatible_with_physical_column_is_rejected() ->
     with pytest.raises(CompileError) as excinfo:
         adapt_binding(binding, _context())
     diagnostic = next(
-        item for item in excinfo.value.diagnostics if item.code == "technical-field.type-incompatible"
+        item
+        for item in excinfo.value.diagnostics
+        if item.code == "technical-field.type-incompatible"
     )
     assert "account_ref" in diagnostic.message
     assert diagnostic.location.pointer == "/technicalFields/0/type"
@@ -368,11 +364,7 @@ def test_technical_field_canonical_kind_token_compiles_for_integer_source() -> N
         ontology_iri=_IRI,
         ontology_version="0.1.0",
         template_root=str(
-            Path(__file__).resolve().parents[1]
-            / "src"
-            / "kairos_ontology"
-            / "templates"
-            / "dbt"
+            Path(__file__).resolve().parents[1] / "src" / "kairos_ontology" / "templates" / "dbt"
         ),
         target_platform="fabric",
         relations=(
@@ -387,9 +379,7 @@ def test_technical_field_canonical_kind_token_compiles_for_integer_source() -> N
                 ),
             ),
         ),
-        classes=(
-            ResolvedClass(ref="party:Customer", uri=f"{_NS}Customer", name="Customer"),
-        ),
+        classes=(ResolvedClass(ref="party:Customer", uri=f"{_NS}Customer", name="Customer"),),
         properties=(
             ResolvedProperty(
                 ref="party:customerId",
@@ -461,7 +451,9 @@ def _customer_binding_path(hub: Path) -> Path:
     return hub / "integration" / "bindings" / "customer.binding.yaml"
 
 
-def _replace_country_code_field_with_technical_field(hub: Path, *, name: str = "country_code") -> None:
+def _replace_country_code_field_with_technical_field(
+    hub: Path, *, name: str = "country_code"
+) -> None:
     """Swap the old DD-107 "map the FK join column as a scalar field" workaround for DD-139."""
     binding_path = _customer_binding_path(hub)
     text = binding_path.read_text(encoding="utf-8")

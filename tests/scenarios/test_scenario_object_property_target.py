@@ -32,10 +32,12 @@ def _mock_client(table_responses: dict[str, dict]):
         prompt = kwargs["messages"][1]["content"]
         for table_name, response in table_responses.items():
             if table_name in prompt:
-                return mock.MagicMock(choices=[mock.MagicMock(
-                    message=mock.MagicMock(content=json.dumps(response)))])
-        return mock.MagicMock(choices=[mock.MagicMock(
-            message=mock.MagicMock(content=json.dumps({})))])
+                return mock.MagicMock(
+                    choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(response)))]
+                )
+        return mock.MagicMock(
+            choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps({})))]
+        )
 
     client = mock.MagicMock()
     client.chat.completions.create = create_completion
@@ -48,9 +50,14 @@ def _write_affinity(analysis_dir):
         "system": "qargo",
         "schema_version": 2,
         "tables": [
-            {"table": "tblShipment", "total_columns": 2, "domain": "logistics",
-             "domain_uris": ["https://ex.org/ont/logistics#"],
-             "likely_entity": "Shipment", "indicative_columns": ["ShipmentRef"]},
+            {
+                "table": "tblShipment",
+                "total_columns": 2,
+                "domain": "logistics",
+                "domain_uris": ["https://ex.org/ont/logistics#"],
+                "likely_entity": "Shipment",
+                "indicative_columns": ["ShipmentRef"],
+            },
         ],
         "domain_summary": [
             {"domain": "logistics", "table_count": 1, "tables": ["tblShipment"]},
@@ -84,12 +91,22 @@ _RESPONSE = {
         "ref_class": "Shipment",
         "ref_class_confidence": 0.9,
         "column_alignments": [
-            {"column": "ShipmentRef", "ref_class": "Shipment",
-             "ref_property": "shipmentReference", "alignment": "exact",
-             "confidence": 0.95, "rationale": "Direct match"},
-            {"column": "PlaceOfReceipt", "ref_class": "Shipment",
-             "ref_property": "hasPlaceOfReceipt", "alignment": "semantic",
-             "confidence": 0.6, "rationale": "Location cluster"},
+            {
+                "column": "ShipmentRef",
+                "ref_class": "Shipment",
+                "ref_property": "shipmentReference",
+                "alignment": "exact",
+                "confidence": 0.95,
+                "rationale": "Direct match",
+            },
+            {
+                "column": "PlaceOfReceipt",
+                "ref_class": "Shipment",
+                "ref_property": "hasPlaceOfReceipt",
+                "alignment": "semantic",
+                "confidence": 0.6,
+                "rationale": "Location cluster",
+            },
         ],
     },
 }
@@ -102,15 +119,20 @@ class TestObjectPropertyTargetScenario:
         _write_affinity(analysis)
         _write_sources(sources)
         client = _mock_client(_RESPONSE)
-        with mock.patch(
-            "kairos_ontology.core.propose_alignment.get_ai_client",
-            return_value=client,
-        ), mock.patch(
-            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-            return_value=inventory,
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=client,
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=inventory,
+            ),
         ):
             alignments = build_domain_alignments(
-                analysis_dir=analysis, sources_dir=sources, catalog_path=None,
+                analysis_dir=analysis,
+                sources_dir=sources,
+                catalog_path=None,
                 domains_filter=["logistics"],
             )
         return alignment_to_dict(alignments[0])
@@ -119,12 +141,16 @@ class TestObjectPropertyTargetScenario:
         # Shipment has hasPlaceOfReceipt (range Location) but Location is NOT a
         # governed class in the inventory → target unresolved.
         inventory = [
-            {"name": "Shipment", "uri": "https://ex.org/ont/logistics#Shipment",
-             "label": "Shipment", "comment": "", "properties": [
-                 {"name": "shipmentReference", "label": "Ref", "range": "string"},
-                 {"name": "hasPlaceOfReceipt", "label": "Place of receipt",
-                  "range": "Location"},
-             ]},
+            {
+                "name": "Shipment",
+                "uri": "https://ex.org/ont/logistics#Shipment",
+                "label": "Shipment",
+                "comment": "",
+                "properties": [
+                    {"name": "shipmentReference", "label": "Ref", "range": "string"},
+                    {"name": "hasPlaceOfReceipt", "label": "Place of receipt", "range": "Location"},
+                ],
+            },
         ]
         tbl = self._run(tmp_path, inventory)["tables"][0]
         mapped = [c["column"] for c in tbl["columns"]]
@@ -136,8 +162,11 @@ class TestObjectPropertyTargetScenario:
         assert "PlaceOfReceipt" in custom
         assert custom["PlaceOfReceipt"]["object_property_passthrough"] is True
         # …and a relationship candidate carries the target + cardinality.
-        cands = [c for c in tbl.get("relationship_candidates", [])
-                 if c.get("type") == "object_property_relationship_candidate"]
+        cands = [
+            c
+            for c in tbl.get("relationship_candidates", [])
+            if c.get("type") == "object_property_relationship_candidate"
+        ]
         assert len(cands) == 1
         assert cands[0]["suggested_relationship"] == "hasPlaceOfReceipt"
         assert cands[0]["target_resolved"] is False
@@ -146,18 +175,30 @@ class TestObjectPropertyTargetScenario:
     def test_resolved_object_property_keeps_mapping(self, tmp_path):
         # Location IS governed → the mapping is kept (byte-identical behaviour).
         inventory = [
-            {"name": "Shipment", "uri": "https://ex.org/ont/logistics#Shipment",
-             "label": "Shipment", "comment": "", "properties": [
-                 {"name": "shipmentReference", "label": "Ref", "range": "string"},
-                 {"name": "hasPlaceOfReceipt", "label": "Place of receipt",
-                  "range": "Location"},
-             ]},
-            {"name": "Location", "uri": "https://ex.org/ont/logistics#Location",
-             "label": "Location", "comment": "", "properties": []},
+            {
+                "name": "Shipment",
+                "uri": "https://ex.org/ont/logistics#Shipment",
+                "label": "Shipment",
+                "comment": "",
+                "properties": [
+                    {"name": "shipmentReference", "label": "Ref", "range": "string"},
+                    {"name": "hasPlaceOfReceipt", "label": "Place of receipt", "range": "Location"},
+                ],
+            },
+            {
+                "name": "Location",
+                "uri": "https://ex.org/ont/logistics#Location",
+                "label": "Location",
+                "comment": "",
+                "properties": [],
+            },
         ]
         tbl = self._run(tmp_path, inventory)["tables"][0]
         mapped = [c["column"] for c in tbl["columns"]]
         assert "PlaceOfReceipt" in mapped
-        cands = [c for c in tbl.get("relationship_candidates", [])
-                 if c.get("type") == "object_property_relationship_candidate"]
+        cands = [
+            c
+            for c in tbl.get("relationship_candidates", [])
+            if c.get("type") == "object_property_relationship_candidate"
+        ]
         assert cands == []

@@ -76,8 +76,13 @@ _ARCHETYPE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": [
-        "schema_version", "id", "label", "description",
-        "compatible_with", "ref_model_modules", "core_concepts",
+        "schema_version",
+        "id",
+        "label",
+        "description",
+        "compatible_with",
+        "ref_model_modules",
+        "core_concepts",
     ],
     "properties": {
         "schema_version": {"const": 1},
@@ -199,13 +204,17 @@ naming_conventions:
 """
 
 
-def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
-                         booking_version: str = "1.2.0",
-                         add_duplicate_discovery: bool = False,
-                         with_patterns: bool = True,
-                         add_malformed_pattern: bool = False,
-                         blueprint_version: str | None = None,
-                         authoritative_version: str | None = None) -> Path:
+def build_refmodels_root(
+    tmp_path: Path,
+    *,
+    repo_version: str = "1.11.0",
+    booking_version: str = "1.2.0",
+    add_duplicate_discovery: bool = False,
+    with_patterns: bool = True,
+    add_malformed_pattern: bool = False,
+    blueprint_version: str | None = None,
+    authoritative_version: str | None = None,
+) -> Path:
     """Create a minimal reference-models root under *tmp_path* and return the inner root.
 
     Layout mirrors the real repo: an outer repo dir containing ``ontology-reference-models/``
@@ -241,7 +250,8 @@ def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
     (derived / "VERSION").write_text(booking_version + "\n", encoding="utf-8")
     (archetypes / "test-carrier.yaml").write_text(_ARCHETYPE_YAML, encoding="utf-8")
     (schema_dir / "archetype.schema.json").write_text(
-        json.dumps(_ARCHETYPE_SCHEMA), encoding="utf-8")
+        json.dumps(_ARCHETYPE_SCHEMA), encoding="utf-8"
+    )
     (schema_dir / "outcome-codes.yaml").write_text(_OUTCOME_CODES_YAML, encoding="utf-8")
     # Excluded-from-glob noise files (contract row 5).
     (archetypes / "VERSION").write_text("0.1.0\n", encoding="utf-8")
@@ -264,7 +274,8 @@ def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
         (patterns / "temporal-quartet").mkdir(parents=True, exist_ok=True)
         pattern_schema.mkdir(parents=True, exist_ok=True)
         (patterns / "temporal-quartet" / "pattern.yaml").write_text(
-            _TEMPORAL_QUARTET_PATTERN_YAML, encoding="utf-8")
+            _TEMPORAL_QUARTET_PATTERN_YAML, encoding="utf-8"
+        )
         # Excluded-from-glob noise (mirrors the real library layout).
         (patterns / "VERSION").write_text("0.1.0\n", encoding="utf-8")
         (patterns / "README.md").write_text("# patterns\n", encoding="utf-8")
@@ -272,7 +283,8 @@ def build_refmodels_root(tmp_path: Path, *, repo_version: str = "1.11.0",
         if add_malformed_pattern:
             (patterns / "broken-pattern").mkdir(parents=True, exist_ok=True)
             (patterns / "broken-pattern" / "pattern.yaml").write_text(
-                _MALFORMED_PATTERN_YAML, encoding="utf-8")
+                _MALFORMED_PATTERN_YAML, encoding="utf-8"
+            )
 
     if add_duplicate_discovery:
         dup = inner / "accelerator-packs" / "financial-services" / "discovery"

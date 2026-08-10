@@ -89,8 +89,16 @@ def test_present_discovery_with_domains_stays_advisory():
     # Discovery ran and is valid; a hub with existing domains sees no discovery-related
     # blocking action at all.
     proposal = propose_next_actions(
-        _hub(domains=(_domain("party", has_bindings=False, binding_count=0,
-                              compile_status=CompileStatus.NOT_RUN),))
+        _hub(
+            domains=(
+                _domain(
+                    "party",
+                    has_bindings=False,
+                    binding_count=0,
+                    compile_status=CompileStatus.NOT_RUN,
+                ),
+            )
+        )
     )
     assert "design-discovery" not in _kinds(proposal)
     assert "resolve-discovery-open-questions" not in _kinds(proposal)
@@ -125,8 +133,16 @@ def test_unresolved_fleet_discovery_also_blocks_design_domain_when_no_domains_ye
 
 def test_ontology_without_binding_recommends_authoring():
     proposal = propose_next_actions(
-        _hub(domains=(_domain("party", has_bindings=False, binding_count=0,
-                              compile_status=CompileStatus.NOT_RUN),))
+        _hub(
+            domains=(
+                _domain(
+                    "party",
+                    has_bindings=False,
+                    binding_count=0,
+                    compile_status=CompileStatus.NOT_RUN,
+                ),
+            )
+        )
     )
     assert _kinds(proposal) == ["author-binding"]
     assert proposal.actions[0].status is ActionStatus.RECOMMENDED
@@ -135,8 +151,13 @@ def test_ontology_without_binding_recommends_authoring():
 
 def test_binding_without_ontology_requires_domain_decision():
     proposal = propose_next_actions(
-        _hub(domains=(_domain("party", ontology=InputStatus.MISSING,
-                              compile_status=CompileStatus.NOT_RUN),))
+        _hub(
+            domains=(
+                _domain(
+                    "party", ontology=InputStatus.MISSING, compile_status=CompileStatus.NOT_RUN
+                ),
+            )
+        )
     )
     assert _kinds(proposal) == ["design-domain"]
     assert proposal.actions[0].status is ActionStatus.HUMAN_DECISION_REQUIRED
@@ -215,8 +236,7 @@ def test_unreadable_emitted_project_requires_human_decision():
 
 def test_not_run_compile_is_indeterminate_never_ready():
     proposal = propose_next_actions(
-        _hub(compile_ran=False,
-             domains=(_domain("party", compile_status=CompileStatus.NOT_RUN),))
+        _hub(compile_ran=False, domains=(_domain("party", compile_status=CompileStatus.NOT_RUN),))
     )
     assert _kinds(proposal) == ["run-check"]
     assert proposal.actions[0].status is ActionStatus.INDETERMINATE
@@ -229,8 +249,11 @@ def test_optional_policies_only_when_authored():
     assert "review-mdm" not in _kinds(without)
 
     with_policy = propose_next_actions(
-        _hub(domains=(_domain("party", gold_policy=InputStatus.PRESENT,
-                              mdm_policy=InputStatus.PRESENT),))
+        _hub(
+            domains=(
+                _domain("party", gold_policy=InputStatus.PRESENT, mdm_policy=InputStatus.PRESENT),
+            )
+        )
     )
     kinds = _kinds(with_policy)
     assert "review-gold" in kinds and "review-mdm" in kinds
@@ -240,9 +263,7 @@ def test_optional_policies_only_when_authored():
 
 
 def test_no_actions_when_everything_present_and_compiles():
-    proposal = propose_next_actions(
-        _hub(domains=(_domain("party"), _domain("orders")))
-    )
+    proposal = propose_next_actions(_hub(domains=(_domain("party"), _domain("orders"))))
     # Both domains pass -> only emit actions, none blocking.
     assert set(_kinds(proposal)) == {"compile-emit"}
     assert not any(a.blocking for a in proposal.actions)
@@ -252,8 +273,11 @@ def test_ordering_is_deterministic_and_idempotent():
     snapshot = _hub(
         discovery=InputStatus.MISSING,
         domains=(
-            _domain("zeta", compile_status=CompileStatus.FAILED,
-                    diagnostics=(DiagnosticView("c", "m", "error", "l", "DD-133"),)),
+            _domain(
+                "zeta",
+                compile_status=CompileStatus.FAILED,
+                diagnostics=(DiagnosticView("c", "m", "error", "l", "DD-133"),),
+            ),
             _domain("alpha"),
         ),
     )
@@ -271,11 +295,13 @@ def test_every_action_kind_maps_to_a_skill():
         discovery=InputStatus.MISSING,
         sources=InputStatus.MISSING,
         domains=(
-            _domain("a", has_bindings=False, binding_count=0,
-                    compile_status=CompileStatus.NOT_RUN),
+            _domain("a", has_bindings=False, binding_count=0, compile_status=CompileStatus.NOT_RUN),
             _domain("b", ontology=InputStatus.MISSING, compile_status=CompileStatus.NOT_RUN),
-            _domain("c", compile_status=CompileStatus.FAILED,
-                    diagnostics=(DiagnosticView("x", "m", "error", "l", "DD-133"),)),
+            _domain(
+                "c",
+                compile_status=CompileStatus.FAILED,
+                diagnostics=(DiagnosticView("x", "m", "error", "l", "DD-133"),),
+            ),
             _domain("d", gold_policy=InputStatus.PRESENT, mdm_policy=InputStatus.PRESENT),
         ),
     )
@@ -288,9 +314,7 @@ def test_proposal_is_json_serializable_and_stable():
     proposal = propose_next_actions(_hub(domains=(_domain("party"),)))
     payload = {
         "schema_version": proposal.schema_version,
-        "actions": [
-            {**asdict(a), "status": a.status.value} for a in proposal.actions
-        ],
+        "actions": [{**asdict(a), "status": a.status.value} for a in proposal.actions],
     }
     first = json.dumps(payload, sort_keys=True)
     second = json.dumps(payload, sort_keys=True)

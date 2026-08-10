@@ -141,8 +141,7 @@ def find_hub_root(
         if has_marker:
             return oh_dir
         logger.debug(
-            "Found ontology-hub/ at %s but it has no hub marker directories "
-            "(%s) — ignoring.",
+            "Found ontology-hub/ at %s but it has no hub marker directories (%s) — ignoring.",
             oh_dir,
             ", ".join(_HUB_MARKER_DIRS),
         )

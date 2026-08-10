@@ -36,9 +36,7 @@ def test_comment_edit_policy_note_varies():
 
 
 def test_comment_renders_extra_lines():
-    header = provenance_comment(
-        "import-source", generated_at=FIXED, extra={"Source system": "CRM"}
-    )
+    header = provenance_comment("import-source", generated_at=FIXED, extra={"Source system": "CRM"})
     assert "# Source system : CRM" in header
 
 

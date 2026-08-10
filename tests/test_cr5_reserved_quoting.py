@@ -100,9 +100,7 @@ def test_source_record_key_expression_threads_adapter_to_primary_key_columns():
         "databricks",
     )
 
-    assert fabric_expression == (
-        "{{ dbt_utils.generate_surrogate_key([\"'rows'\", 'src.join']) }}"
-    )
+    assert fabric_expression == ("{{ dbt_utils.generate_surrogate_key([\"'rows'\", 'src.join']) }}")
     assert fabric_after_mapping is False
     assert databricks_expression == (
         "{{ dbt_utils.generate_surrogate_key(["

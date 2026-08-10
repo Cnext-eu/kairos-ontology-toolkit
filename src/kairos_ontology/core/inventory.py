@@ -151,10 +151,7 @@ def find_legacy_inventory_files(
         return []
 
     local_inventory_names = (
-        {
-            inventory_filename(source_path)
-            for source_path in sorted(ontology_dir.glob("**/*.ttl"))
-        }
+        {inventory_filename(source_path) for source_path in sorted(ontology_dir.glob("**/*.ttl"))}
         if ontology_dir is not None and ontology_dir.is_dir()
         else set()
     )
@@ -220,7 +217,9 @@ def legacy_inventory_error(finding: LegacyInventoryFile) -> str:
         f"migrate it to {targets} with `kairos-ontology migrate --hub <hub>`."
     )
     if finding.error:
-        return f"{message} Migration cannot proceed until the legacy file is fixed: {finding.error}."
+        return (
+            f"{message} Migration cannot proceed until the legacy file is fixed: {finding.error}."
+        )
     if len(finding.canonical_filenames) > 1:
         return (
             f"{message} Its stem collides across reference models, so the toolkit will not "
@@ -280,12 +279,8 @@ def generate_inventory(
         "generated_from": str(ttl_path) if ttl_path else "(graph)",
         "source_sha256": compute_source_hash(ttl_path) if ttl_path else None,
         "closure_hash": load_result.closure_hash if load_result else None,
-        "semantic_profile": (
-            load_result.profile.value if load_result else "asserted"
-        ),
-        "semantic_index_version": (
-            load_result.semantic_index.version if load_result else None
-        ),
+        "semantic_profile": (load_result.profile.value if load_result else "asserted"),
+        "semantic_index_version": (load_result.semantic_index.version if load_result else None),
         "import_complete": load_result.complete if load_result else True,
         "imports": (
             [
@@ -357,14 +352,8 @@ def _inventory_view_from_index(
                 "import_depth": cls.provenance.import_depth,
                 "asserted": cls.provenance.asserted,
             },
-            "properties": [
-                render_property(link, inherited=False)
-                for link in cls.direct_properties
-            ]
-            + [
-                render_property(link, inherited=True)
-                for link in cls.inherited_properties
-            ],
+            "properties": [render_property(link, inherited=False) for link in cls.direct_properties]
+            + [render_property(link, inherited=True) for link in cls.inherited_properties],
         }
         if include_specializations:
             specializations = []
@@ -456,9 +445,7 @@ class InventoryCheckReport:
 def _source_has_classes(ttl_path: Path, *, include_specializations: bool) -> bool:
     """Return True if a source TTL yields at least one class (mirrors generate-inventory)."""
     try:
-        parsed = parse_reference_model(
-            ttl_path, include_specializations=include_specializations
-        )
+        parsed = parse_reference_model(ttl_path, include_specializations=include_specializations)
         return bool(parsed["classes"])
     except Exception:
         # If it cannot be parsed at all we cannot judge — treat as having classes
@@ -514,9 +501,7 @@ def check_inventories(
         seen_files.add(fname)
 
         if not yaml_path.exists():
-            if _source_has_classes(
-                ttl_file, include_specializations=include_specializations
-            ):
+            if _source_has_classes(ttl_file, include_specializations=include_specializations):
                 report.missing.append(key)
             continue
 

@@ -202,9 +202,7 @@ def pattern_quality_warnings(pattern: Pattern) -> list[str]:
     warnings: list[str] = []
     naming_normativity = str((pattern.normativity or {}).get("naming") or "").strip()
 
-    if pattern.naming_conventions is not None and not isinstance(
-        pattern.naming_conventions, list
-    ):
+    if pattern.naming_conventions is not None and not isinstance(pattern.naming_conventions, list):
         warnings.append(
             f"Pattern '{pattern.id}': naming_conventions is "
             f"{type(pattern.naming_conventions).__name__}, expected a list of entries — "

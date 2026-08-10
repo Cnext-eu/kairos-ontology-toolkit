@@ -105,7 +105,9 @@ def _timestamp_expression(
     source_column = (
         source.source_column
         if source is not None and source.supplied
-        else None if source is not None else timestamp.source_column
+        else None
+        if source is not None
+        else timestamp.source_column
     )
     if source_column is None:
         target_type = "DATETIME2" if platform == "fabric" else "TIMESTAMP"
@@ -479,7 +481,7 @@ def _apply_identity_contract(
         columns = [column for column in columns if column.name != iri_name]
     else:
         iri_expression = (
-            f"CONCAT('{identity.entity_uri}/instance/', " f"{_generated_key_expression(inputs)})"
+            f"CONCAT('{identity.entity_uri}/instance/', {_generated_key_expression(inputs)})"
         )
         if iri_name in {column.name for column in columns}:
             columns = [
@@ -840,7 +842,7 @@ def _runtime_model(
             default_expression="0",
             role=SilverColumnRole.FOREIGN_KEY.value,
             description=(
-                "DD-109 temporal lookup match-count diagnostic for " f"{relationship.property_uri}"
+                f"DD-109 temporal lookup match-count diagnostic for {relationship.property_uri}"
             ),
             provenance=(
                 f"property:{relationship.property_uri}",
@@ -1910,8 +1912,7 @@ def shape_project(contract: ProjectionContract) -> ShapedProject:
         schema_documents.append(
             SchemaDocumentSpec(
                 artifact_path=(
-                    f"models/silver/{project.ontology_name}/"
-                    f"_{project.ontology_name}__models.yml"
+                    f"models/silver/{project.ontology_name}/_{project.ontology_name}__models.yml"
                 ),
                 kind=SchemaKind.SILVER,
                 models=tuple(

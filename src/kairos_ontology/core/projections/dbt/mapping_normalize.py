@@ -271,10 +271,7 @@ def _declared_metadata(
     if declared_nullable is not nullable:
         raise _error(
             "mapping.nullability-mismatch",
-            (
-                f"declared nullable={declared_nullable} does not match inferred "
-                f"nullable={nullable}"
-            ),
+            (f"declared nullable={declared_nullable} does not match inferred nullable={nullable}"),
             resource_uri=fact.resource_uri,
             rule_id="DD-107-null-semantics",
         )
@@ -1116,7 +1113,7 @@ def normalize_mapping_contract(
             )
             raise _error(
                 "mapping.relational-mapping-type",
-                (f"mappingType {fact.mapping_type!r} is relational or grain-affecting" f"{hint}"),
+                (f"mappingType {fact.mapping_type!r} is relational or grain-affecting{hint}"),
                 resource_uri=fact.resource_uri,
                 rule_id="DD-107-transformation-routing",
             )
@@ -1315,7 +1312,7 @@ def normalize_mapping_contract(
         first = unsupported[0]
         raise _error(
             "mapping.unsupported-adapter-capability",
-            (f"{first.capability.value!r} is unsupported on adapter " f"{first.adapter!r}"),
+            (f"{first.capability.value!r} is unsupported on adapter {first.adapter!r}"),
             resource_uri=first.mapping_resource_uri,
             rule_id=first.rule_id,
         )

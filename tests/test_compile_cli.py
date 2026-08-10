@@ -164,5 +164,3 @@ def test_compile_emit_from_repo_root_lands_in_sibling_publish_root(tmp_path, mon
     expected = repository / "ontology-hub-publish/medallion/dbt/models/silver/party/customer.sql"
     assert expected.is_file()
     assert not (hub / "ontology-hub-publish").exists()
-
-

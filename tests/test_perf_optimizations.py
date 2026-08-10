@@ -41,6 +41,7 @@ class TestMapConcurrent:
             if x == 2:
                 raise ValueError("bad")
             return x
+
         with pytest.raises(ValueError, match="bad"):
             map_concurrent(boom, [1, 2, 3], max_workers=4)
 
@@ -104,6 +105,7 @@ class TestCallWithBackoff:
     def test_reraises_after_exhausting_retries(self):
         def fn():
             raise _FakeRateLimit("429")
+
         with pytest.raises(_FakeRateLimit):
             call_with_backoff(fn, retries=2, base_delay=0.0, sleep=lambda _: None)
 
@@ -168,8 +170,11 @@ class TestSidecarCache:
 class TestCostWarning:
     def test_recommends_model_when_using_other(self):
         text = build_cost_warning(
-            command="propose-alignment", table_count=546,
-            max_workers=8, model="gpt-4o", force=False,
+            command="propose-alignment",
+            table_count=546,
+            max_workers=8,
+            model="gpt-4o",
+            force=False,
         )
         assert "COSTLY" in text
         assert RECOMMENDED_MODEL in text
@@ -178,15 +183,21 @@ class TestCostWarning:
 
     def test_confirms_recommended_model(self):
         text = build_cost_warning(
-            command="analyse-sources", table_count=10,
-            max_workers=4, model=RECOMMENDED_MODEL, force=False,
+            command="analyse-sources",
+            table_count=10,
+            max_workers=4,
+            model=RECOMMENDED_MODEL,
+            force=False,
         )
         assert "recommended for this task" in text
 
     def test_force_changes_cache_line(self):
         text = build_cost_warning(
-            command="analyse-sources", table_count=10,
-            max_workers=4, model=RECOMMENDED_MODEL, force=True,
+            command="analyse-sources",
+            table_count=10,
+            max_workers=4,
+            model=RECOMMENDED_MODEL,
+            force=True,
         )
         assert "BYPASSED" in text
 
@@ -194,8 +205,11 @@ class TestCostWarning:
         # WS8 (issue #182): alignment is accuracy-sensitive, so the banner must not
         # claim "no quality gain" for a higher tier — it should flag the trade-off.
         text = build_cost_warning(
-            command="propose-alignment", table_count=10,
-            max_workers=4, model="gpt-5.5", force=False,
+            command="propose-alignment",
+            table_count=10,
+            max_workers=4,
+            model="gpt-5.5",
+            force=False,
             accuracy_sensitive=True,
         )
         assert "ACCURACY-SENSITIVE" in text
@@ -203,8 +217,11 @@ class TestCostWarning:
 
     def test_accuracy_sensitive_default_model_still_recommended(self):
         text = build_cost_warning(
-            command="propose-alignment", table_count=10,
-            max_workers=4, model=RECOMMENDED_MODEL, force=False,
+            command="propose-alignment",
+            table_count=10,
+            max_workers=4,
+            model=RECOMMENDED_MODEL,
+            force=False,
             accuracy_sensitive=True,
         )
         assert "recommended for this task" in text
@@ -212,15 +229,22 @@ class TestCostWarning:
     def test_quiet_suppresses(self):
         emitted: list[str] = []
         print_cost_warning(
-            command="x", table_count=1, max_workers=1, model="m",
-            quiet=True, stream=emitted.append,
+            command="x",
+            table_count=1,
+            max_workers=1,
+            model="m",
+            quiet=True,
+            stream=emitted.append,
         )
         assert emitted == []
 
     def test_emits_by_default(self):
         emitted: list[str] = []
         print_cost_warning(
-            command="x", table_count=1, max_workers=1, model=RECOMMENDED_MODEL,
+            command="x",
+            table_count=1,
+            max_workers=1,
+            model=RECOMMENDED_MODEL,
             stream=emitted.append,
         )
         assert emitted and RECOMMENDED_MODEL in emitted[0]

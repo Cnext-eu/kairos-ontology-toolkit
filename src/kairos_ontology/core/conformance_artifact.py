@@ -92,9 +92,7 @@ def compute_scorecard(
     """
     by_outcome = Counter(o.get("outcome", "unknown") for o in outcomes)
     seeded = tuple(valid_tiers) if valid_tiers else VALID_TIERS
-    present = [
-        o.get("tier") for o in outcomes if isinstance(o.get("tier"), str) and o.get("tier")
-    ]
+    present = [o.get("tier") for o in outcomes if isinstance(o.get("tier"), str) and o.get("tier")]
     by_tier: dict[str, Counter] = {tier: Counter() for tier in (*seeded, *present)}
     for o in outcomes:
         tier = o.get("tier")
@@ -103,9 +101,7 @@ def compute_scorecard(
     return {
         "total": len(outcomes),
         "by_outcome": dict(sorted(by_outcome.items())),
-        "by_tier": {
-            tier: dict(sorted(by_tier[tier].items())) for tier in sorted(by_tier)
-        },
+        "by_tier": {tier: dict(sorted(by_tier[tier].items())) for tier in sorted(by_tier)},
     }
 
 
@@ -121,9 +117,7 @@ def _scorecard_comparable_form(scorecard: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(scorecard)
     by_tier = normalized.get("by_tier")
     if isinstance(by_tier, dict):
-        normalized["by_tier"] = {
-            tier: counts for tier, counts in by_tier.items() if counts
-        }
+        normalized["by_tier"] = {tier: counts for tier, counts in by_tier.items() if counts}
     return normalized
 
 
@@ -179,9 +173,7 @@ def build_artifact(
         },
         "refmodels_version": refmodels_version,
         "discovery_doc": discovery_doc,
-        "ref_model_modules": [
-            {"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules
-        ],
+        "ref_model_modules": [{"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules],
         "core_concepts": outcomes,
         "topology_confirmations": topology_confirmations or [],
         "cardinality_answers": cardinality_answers or [],
@@ -274,9 +266,7 @@ def validate_artifact(
                 seen_uris[uri] = i
         label = c.get("label")
         if not isinstance(label, str) or not label.strip():
-            errors.append(
-                f"core_concepts[{i}] ({display_uri}): missing non-empty string 'label'."
-            )
+            errors.append(f"core_concepts[{i}] ({display_uri}): missing non-empty string 'label'.")
         outcome = c.get("outcome")
         if not isinstance(outcome, str) or outcome not in code_set:
             errors.append(
@@ -285,9 +275,7 @@ def validate_artifact(
             )
         rename_to = c.get("rename_to")
         deviation_reason = c.get("deviation_reason")
-        if rename_to is not None and (
-            not isinstance(rename_to, str) or not rename_to.strip()
-        ):
+        if rename_to is not None and (not isinstance(rename_to, str) or not rename_to.strip()):
             errors.append(
                 f"core_concepts[{i}] ({display_uri}): 'rename_to' must be a "
                 "non-empty string when present."
@@ -303,15 +291,13 @@ def validate_artifact(
             not isinstance(rename_to, str) or not rename_to.strip()
         ):
             errors.append(
-                f"core_concepts[{i}] ({display_uri}): "
-                "'conforms-with-rename' requires 'rename_to'."
+                f"core_concepts[{i}] ({display_uri}): 'conforms-with-rename' requires 'rename_to'."
             )
         if outcome == "deviates" and (
             not isinstance(deviation_reason, str) or not deviation_reason.strip()
         ):
             errors.append(
-                f"core_concepts[{i}] ({display_uri}): "
-                "'deviates' requires 'deviation_reason'."
+                f"core_concepts[{i}] ({display_uri}): 'deviates' requires 'deviation_reason'."
             )
         if rename_to and deviation_reason:
             errors.append(
@@ -339,8 +325,7 @@ def validate_artifact(
             )
         references = c.get("references")
         if references is not None and (
-            not isinstance(references, list)
-            or not all(isinstance(r, str) for r in references)
+            not isinstance(references, list) or not all(isinstance(r, str) for r in references)
         ):
             errors.append(
                 f"core_concepts[{i}] ({display_uri}): 'references' must be a list of strings."
@@ -358,9 +343,7 @@ def validate_artifact(
             )
 
     scorecard_comparable = all(
-        isinstance(c, dict)
-        and isinstance(c.get("outcome"), str)
-        and isinstance(c.get("tier"), str)
+        isinstance(c, dict) and isinstance(c.get("outcome"), str) and isinstance(c.get("tier"), str)
         for c in concepts
     )
     if scorecard_comparable:
@@ -372,8 +355,7 @@ def validate_artifact(
             expected_scorecard
         ):
             errors.append(
-                "'scorecard' contradicts 'core_concepts'; regenerate it from the "
-                "recorded outcomes."
+                "'scorecard' contradicts 'core_concepts'; regenerate it from the recorded outcomes."
             )
     return errors
 
@@ -421,8 +403,7 @@ def load_validated_artifact(
     if errors:
         details = "\n".join(f"- {error}" for error in errors)
         raise ConformanceArtifactError(
-            f"Invalid conformance artifact {Path(path)} "
-            f"({len(errors)} error(s)):\n{details}"
+            f"Invalid conformance artifact {Path(path)} ({len(errors)} error(s)):\n{details}"
         )
     return artifact
 

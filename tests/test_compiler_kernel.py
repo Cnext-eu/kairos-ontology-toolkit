@@ -472,13 +472,17 @@ def test_explicit_conformance_uses_existing_union_renderer(tmp_path, union_mode)
         if union_mode == "deduplicate"
         else "    mode: union-all"
     )
-    conformance = textwrap.dedent("""\
+    conformance = (
+        textwrap.dedent("""\
     conformance:
       group: party-customer
       sourcePrecedence: 1
       conflict: prefer-precedence
       union:
-    """) + union_policy + "\n"
+    """)
+        + union_policy
+        + "\n"
+    )
     crm_binding.write_text(
         crm_binding.read_text(encoding="utf-8") + "\n" + conformance,
         encoding="utf-8",

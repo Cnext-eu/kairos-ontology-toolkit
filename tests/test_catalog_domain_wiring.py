@@ -35,14 +35,9 @@ def test_init_registers_created_domain_ontology_iri_in_catalog(tmp_path):
 
             assert result.exit_code == 0, result.output
             catalog = Path("ontology-hub/catalog-v001.xml")
-            entries = {
-                entry.get("name"): entry.get("uri")
-                for entry in _uri_entries(catalog)
-            }
+            entries = {entry.get("name"): entry.get("uri") for entry in _uri_entries(catalog)}
 
-    assert entries["https://contoso.example/ont/customer"] == (
-        "model/ontologies/customer.ttl"
-    )
+    assert entries["https://contoso.example/ont/customer"] == ("model/ontologies/customer.ttl")
     assert "https://contoso.example/ont/customer/" not in entries
 
 
@@ -51,9 +46,7 @@ def test_sync_domain_catalog_entry_is_idempotent(tmp_path):
     ontology = tmp_path / "model" / "ontologies" / "sales.ttl"
     ontology.parent.mkdir(parents=True)
     catalog.write_text(
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<catalog xmlns="{CATALOG_NS}">\n'
-        "</catalog>\n",
+        f'<?xml version="1.0" encoding="UTF-8"?>\n<catalog xmlns="{CATALOG_NS}">\n</catalog>\n',
         encoding="utf-8",
     )
     ontology.write_text(

@@ -69,9 +69,7 @@ def load_ddd_vocabulary() -> Graph:
     return g
 
 
-def _load_domain_graph(
-    domain_ontology_path: Optional[Path], catalog_path: Optional[Path]
-) -> Graph:
+def _load_domain_graph(domain_ontology_path: Optional[Path], catalog_path: Optional[Path]) -> Graph:
     """Load the domain ontology, resolving imports via catalog when available."""
     graph = Graph()
     if domain_ontology_path is None or not domain_ontology_path.exists():
@@ -80,9 +78,7 @@ def _load_domain_graph(
 
     return load_ontology(
         domain_ontology_path,
-        catalog_path=(
-            catalog_path if catalog_path and catalog_path.exists() else None
-        ),
+        catalog_path=(catalog_path if catalog_path and catalog_path.exists() else None),
         profile=SemanticProfile.KAIROS_DESIGN,
     ).graph
 
@@ -111,7 +107,7 @@ def _scan_ext_leak(overlay_graph: Graph) -> list[str]:
         p_str = str(p)
         if not p_str.startswith(KAIROS_EXT_NS):
             continue
-        local = p_str[len(KAIROS_EXT_NS):]
+        local = p_str[len(KAIROS_EXT_NS) :]
         if local.startswith("silver") or local.startswith("gold"):
             leaked.add(f"kairos-ext:{local}")
     return sorted(leaked)

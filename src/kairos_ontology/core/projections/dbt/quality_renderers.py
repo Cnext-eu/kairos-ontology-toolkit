@@ -64,9 +64,7 @@ def _macro_call(plan: DqRulePhysicalPlan) -> str:
         )
         if "column" in params:
             arguments.append(f"column={_literal(params['column'][0])}")
-            arguments.append(
-                f"compare_column={_literal(params['compare_column'][0])}"
-            )
+            arguments.append(f"compare_column={_literal(params['compare_column'][0])}")
     elif kind is DqCheckKind.REFERENTIAL_COVERAGE:
         arguments.extend(
             (
@@ -133,9 +131,7 @@ def render_dq_result(
 
 def render_dq_test(plan: DqRulePhysicalPlan) -> str:
     """Render a singular dbt test over the persistent DQ result relation."""
-    severity = (
-        "error" if plan.rule.action.value is DqAction.BLOCK else "warn"
-    )
+    severity = "error" if plan.rule.action.value is DqAction.BLOCK else "warn"
     return (
         f"-- DD-115 test for {plan.rule.rule_id.value}; "
         "monitoring and alert delivery are downstream.\n"
@@ -155,9 +151,7 @@ def _row_predicate(plan: DqRulePhysicalPlan, alias: str = "source") -> str:
     kind = plan.rule.check.check_kind.value
     params = _parameters(plan)
     if kind is DqCheckKind.CONTRACT_SHAPE:
-        return " or ".join(
-            f"{_quoted(alias, column)} is null" for column in params["required"]
-        )
+        return " or ".join(f"{_quoted(alias, column)} is null" for column in params["required"])
     if kind is DqCheckKind.RANGE:
         column = _quoted(alias, params["column"][0])
         conditions = []
@@ -186,23 +180,12 @@ def _row_predicate(plan: DqRulePhysicalPlan, alias: str = "source") -> str:
         right = _quoted(alias, params["right"][0])
         operator = params["operator"][0]
         if operator == "eq":
-            return (
-                f"not (({left} = {right}) or "
-                f"({left} is null and {right} is null))"
-            )
+            return f"not (({left} = {right}) or ({left} is null and {right} is null))"
         if operator == "ne":
-            return (
-                f"(({left} = {right}) or "
-                f"({left} is null and {right} is null))"
-            )
+            return f"(({left} = {right}) or ({left} is null and {right} is null))"
         sql_operator = {"lt": "<", "lte": "<=", "gt": ">", "gte": ">="}[operator]
-        return (
-            f"{left} is null or {right} is null or "
-            f"not ({left} {sql_operator} {right})"
-        )
-    raise ValueError(
-        f"DQ rule {plan.rule.rule_id.value!r} has no row-level predicate"
-    )
+        return f"{left} is null or {right} is null or not ({left} {sql_operator} {right})"
+    raise ValueError(f"DQ rule {plan.rule.rule_id.value!r} has no row-level predicate")
 
 
 def _observed_value(
@@ -215,12 +198,7 @@ def _observed_value(
     fields = (
         params.get("left", ()) + params.get("right", ())
         if plan.rule.check.check_kind.value is DqCheckKind.CROSS_FIELD
-        else (
-            params.get("required")
-            or params.get("columns")
-            or params.get("column")
-            or ()
-        )
+        else (params.get("required") or params.get("columns") or params.get("column") or ())
     )
     if not fields:
         return f"cast(null as {text_type})", ""
@@ -234,9 +212,7 @@ def render_dq_accepted_model(
 ) -> str:
     """Render the normal relation from rows that did not enter quarantine."""
     quarantine_rules = tuple(
-        rule
-        for rule in quality.rules
-        if rule.rule.action.value is DqAction.QUARANTINE
+        rule for rule in quality.rules if rule.rule.action.value is DqAction.QUARANTINE
     )
     guards = []
     for rule in quarantine_rules:
@@ -290,8 +266,7 @@ def render_dq_quarantine(
         observed, observed_fields = _observed_value(plan, adapter=adapter)
         evidence = "|".join(rule.evidence.value)
         reason = (
-            f"{rule.check.check_kind.value.value} exceeded tolerance "
-            f"{rule.tolerance.value.value}"
+            f"{rule.check.check_kind.value.value} exceeded tolerance {rule.tolerance.value.value}"
         )
         predicate = _row_predicate(plan)
         selections.append(
@@ -349,9 +324,7 @@ def render_dq_runtime_contract(spec: DqRuntimeResultContractSpec) -> str:
                     "null",
                 ]
                 if field.nullable
-                else (
-                    "integer" if field.data_type == "integer" else "string"
-                )
+                else ("integer" if field.data_type == "integer" else "string")
             ),
             "x-kairos-data-type": field.data_type,
         }

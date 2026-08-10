@@ -186,8 +186,6 @@ class MdmProfile:
             "reference_lists": [r.to_dict() for r in self.reference_lists],
             "steward_roles": [r.to_dict() for r in self.steward_roles],
             "probabilistic_artifact": (
-                self.probabilistic_artifact.to_dict()
-                if self.probabilistic_artifact
-                else None
+                self.probabilistic_artifact.to_dict() if self.probabilistic_artifact else None
             ),
         }

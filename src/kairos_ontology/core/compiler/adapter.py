@@ -204,9 +204,7 @@ class ResolutionContext:
 
     def class_tokens(self, uri: str | None = None) -> tuple[str, ...]:
         """Return bindable class tokens, optionally restricted to one class URI."""
-        return tuple(
-            sorted({item.ref for item in self.classes if uri is None or item.uri == uri})
-        )
+        return tuple(sorted({item.ref for item in self.classes if uri is None or item.uri == uri}))
 
     def property_tokens(self, uri: str | None = None) -> tuple[str, ...]:
         """Return bindable property tokens, optionally restricted to one property URI."""

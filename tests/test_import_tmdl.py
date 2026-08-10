@@ -315,9 +315,7 @@ class TestCLI:
         output = tmp_path / "output"
         runner = CliRunner()
 
-        result = runner.invoke(cli, [
-            "import-tmdl", str(sm_dir), "--output", str(output)
-        ])
+        result = runner.invoke(cli, ["import-tmdl", str(sm_dir), "--output", str(output)])
         assert result.exit_code == 0
         assert "Generated 2 file(s)" in result.output
 

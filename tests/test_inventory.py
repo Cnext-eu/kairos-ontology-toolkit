@@ -2,7 +2,6 @@
 # Copyright 2026 Cnext.eu
 """Tests for inventory module (DD-044)."""
 
-
 import pytest
 
 from kairos_ontology.core.inventory import (
@@ -44,7 +43,6 @@ ref-party:registrationNumber a owl:DatatypeProperty ;
 
 
 class TestGenerateInventory:
-
     def test_generates_with_version_and_domain(self, tmp_path):
         ref_file = tmp_path / "party.ttl"
         ref_file.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
@@ -92,7 +90,6 @@ class TestGenerateInventory:
 
 
 class TestWriteAndLoadInventory:
-
     def test_yaml_round_trip(self, tmp_path):
         ref_file = tmp_path / "party.ttl"
         ref_file.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
@@ -141,9 +138,7 @@ class TestWriteAndLoadInventory:
 
         loaded = load_inventory(out_path)
         party_cls = next(c for c in loaded["classes"] if c["name"] == "Party")
-        org_spec = next(
-            s for s in party_cls["specializations"] if s["class"] == "Organisation"
-        )
+        org_spec = next(s for s in party_cls["specializations"] if s["class"] == "Organisation")
         prop_names = {p["name"] for p in org_spec["properties"]}
         assert "registrationNumber" in prop_names
 
@@ -154,22 +149,21 @@ class TestInventoryFilename:
     def test_ref_model_is_namespaced_by_model(self, tmp_path):
         ref_root = tmp_path / "ontology-reference-models"
         ttl = ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
-        assert (
-            inventory_filename(ttl, ref_models_dir=ref_root)
-            == "bsp-party-inventory.yaml"
-        )
+        assert inventory_filename(ttl, ref_models_dir=ref_root) == "bsp-party-inventory.yaml"
 
     def test_ref_model_ignores_intermediate_segments(self, tmp_path):
         # DCSA has an extra shared-kernel segment that must not affect the name.
         ref_root = tmp_path / "ontology-reference-models"
         ttl = (
-            ref_root / "derived-ontologies" / "DCSA" / "current"
-            / "shared-kernel" / "party" / "party.ttl"
+            ref_root
+            / "derived-ontologies"
+            / "DCSA"
+            / "current"
+            / "shared-kernel"
+            / "party"
+            / "party.ttl"
         )
-        assert (
-            inventory_filename(ttl, ref_models_dir=ref_root)
-            == "dcsa-party-inventory.yaml"
-        )
+        assert inventory_filename(ttl, ref_models_dir=ref_root) == "dcsa-party-inventory.yaml"
 
     def test_same_stem_different_models_do_not_collide(self, tmp_path):
         ref_root = tmp_path / "ontology-reference-models"
@@ -186,6 +180,4 @@ class TestInventoryFilename:
     def test_ref_ttl_without_marker_falls_back_to_stem(self, tmp_path):
         ref_root = tmp_path / "refs"
         ttl = ref_root / "party.ttl"
-        assert (
-            inventory_filename(ttl, ref_models_dir=ref_root) == "party-inventory.yaml"
-        )
+        assert inventory_filename(ttl, ref_models_dir=ref_root) == "party-inventory.yaml"

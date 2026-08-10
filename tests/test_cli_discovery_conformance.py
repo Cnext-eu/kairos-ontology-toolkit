@@ -45,8 +45,16 @@ def test_list_archetypes_emits_clean_json(refroot):
 
 
 def test_load_emits_clean_json_with_topology(refroot):
-    res = _run(["discovery-conformance", "load", "--archetype", "test-carrier",
-                "--refmodels-root", str(refroot)])
+    res = _run(
+        [
+            "discovery-conformance",
+            "load",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
     assert res.exit_code == 0, res.output
     payload = json.loads(res.stdout)
     assert payload["archetype"]["id"] == "test-carrier"
@@ -63,8 +71,16 @@ def test_load_reports_ontology_tier_alongside_conformance_tier(refroot):
     ``tier`` is the archetype's conformance obligation (required/recommended/optional);
     ``ontology_tier`` is which reference-models tier the module lives in.
     """
-    res = _run(["discovery-conformance", "load", "--archetype", "test-carrier",
-                "--refmodels-root", str(refroot)])
+    res = _run(
+        [
+            "discovery-conformance",
+            "load",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
     assert res.exit_code == 0, res.output
     modules = json.loads(res.stdout)["ref_model_modules"]
     assert {m["tier"] for m in modules} == {"required", "recommended"}
@@ -83,24 +99,43 @@ def test_unpinned_blueprint_warning_never_reaches_stderr(refroot, monkeypatch):
         "kairos_ontology.core.archetype_topology.unpinned_blueprint_modules",
         lambda *_: ["Blueprint-tier module <x> is declared but not pinned"],
     )
-    res = _run(["discovery-conformance", "load", "--archetype", "test-carrier",
-                "--refmodels-root", str(refroot)])
+    res = _run(
+        [
+            "discovery-conformance",
+            "load",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
     assert res.exit_code == 0, res.output
     assert any("Blueprint-tier" in w for w in json.loads(res.stdout)["warnings"])
     assert "Blueprint-tier" not in res.stderr
 
 
 def test_load_yaml_format(refroot):
-    res = _run(["discovery-conformance", "load", "--archetype", "test-carrier",
-                "--format", "yaml", "--refmodels-root", str(refroot)])
+    res = _run(
+        [
+            "discovery-conformance",
+            "load",
+            "--archetype",
+            "test-carrier",
+            "--format",
+            "yaml",
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
     assert res.exit_code == 0, res.output
     payload = yaml.safe_load(res.stdout)
     assert payload["archetype"]["id"] == "test-carrier"
 
 
 def test_load_unknown_archetype_exits_nonzero(refroot):
-    res = _run(["discovery-conformance", "load", "--archetype", "ghost",
-                "--refmodels-root", str(refroot)])
+    res = _run(
+        ["discovery-conformance", "load", "--archetype", "ghost", "--refmodels-root", str(refroot)]
+    )
     assert res.exit_code == 2
     assert res.stdout.strip() == ""  # no machine output on failure
 
@@ -108,15 +143,23 @@ def test_load_unknown_archetype_exits_nonzero(refroot):
 def test_validate_valid_artifact(tmp_path, refroot):
     archetype = load_archetype(refroot, "test-carrier")
     art = build_artifact(
-        archetype=archetype, refmodels_version="1.11.0",
-        outcomes=[{"uri": "https://example.org/ont/booking#Booking", "label": "Booking",
-                   "tier": "required", "outcome": "conforms"}],
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=[
+            {
+                "uri": "https://example.org/ont/booking#Booking",
+                "label": "Booking",
+                "tier": "required",
+                "outcome": "conforms",
+            }
+        ],
         mode="interactive",
     )
     hub = tmp_path / "hub"
     path = write_artifact(hub, art)
-    res = _run(["discovery-conformance", "validate", "--file", str(path),
-                "--refmodels-root", str(refroot)])
+    res = _run(
+        ["discovery-conformance", "validate", "--file", str(path), "--refmodels-root", str(refroot)]
+    )
     assert res.exit_code == 0, res.output
     assert "valid" in res.stderr
 
@@ -124,13 +167,15 @@ def test_validate_valid_artifact(tmp_path, refroot):
 def test_validate_invalid_artifact_exits_one(tmp_path, refroot):
     archetype = load_archetype(refroot, "test-carrier")
     art = build_artifact(
-        archetype=archetype, refmodels_version="1.11.0",
+        archetype=archetype,
+        refmodels_version="1.11.0",
         outcomes=[{"uri": "u", "tier": "required", "outcome": "bogus"}],
         mode="interactive",
     )
     hub = tmp_path / "hub"
     path = write_artifact(hub, art)
-    res = _run(["discovery-conformance", "validate", "--file", str(path),
-                "--refmodels-root", str(refroot)])
+    res = _run(
+        ["discovery-conformance", "validate", "--file", str(path), "--refmodels-root", str(refroot)]
+    )
     assert res.exit_code == 1
     assert "invalid" in res.stderr

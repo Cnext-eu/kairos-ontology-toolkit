@@ -50,16 +50,9 @@ def _sql_comment(value: str) -> str:
 
 def _column_fragment(column) -> str:
     nullability = "NULL" if column.nullable else "NOT NULL"
-    default = (
-        f" DEFAULT {column.default_expression}"
-        if column.default_expression
-        else ""
-    )
+    default = f" DEFAULT {column.default_expression}" if column.default_expression else ""
     comment = f" -- {_sql_comment(column.comment)}" if column.comment else ""
-    return (
-        f"    {column.name} {column.physical_type}{default} "
-        f"{nullability}{comment}"
-    )
+    return f"    {column.name} {column.physical_type}{default} {nullability}{comment}"
 
 
 def _constraint_comment(constraint: SilverConstraintPhysicalPlan) -> str:
@@ -73,10 +66,7 @@ def _constraint_comment(constraint: SilverConstraintPhysicalPlan) -> str:
             )
             if value
         )
-        target = (
-            f" REFERENCES {target_name}"
-            f" ({', '.join(constraint.referenced_columns)})"
-        )
+        target = f" REFERENCES {target_name} ({', '.join(constraint.referenced_columns)})"
     temporal = (
         f"; temporal={constraint.temporal_mode}"
         f"{f'; as_of={constraint.as_of_column}' if constraint.as_of_column else ''}"
@@ -132,17 +122,13 @@ def _render_ddl(plan: SilverPhysicalPlan, models: tuple[SilverModelSpec, ...]) -
                 "its exact physical columns follow."
             )
             lines.extend(
-                f"-- COLUMN {_column_fragment(column).strip()}"
-                for column in physical.columns
+                f"-- COLUMN {_column_fragment(column).strip()}" for column in physical.columns
             )
         else:
             create = (
                 f"CREATE TABLE {physical.schema_name}.{physical.model_name} ("
                 if plan.adapter == "fabric"
-                else (
-                    f"CREATE TABLE IF NOT EXISTS "
-                    f"{physical.schema_name}.{physical.model_name} ("
-                )
+                else (f"CREATE TABLE IF NOT EXISTS {physical.schema_name}.{physical.model_name} (")
             )
             lines.append(create)
             lines.append(",\n".join(_column_fragment(column) for column in physical.columns))
@@ -209,10 +195,7 @@ def _render_erd(plan: SilverPhysicalPlan) -> str:
     emitted = {model.model_name for model in plan.models}
     lines = [
         "erDiagram",
-        (
-            f"    %% Silver ERD: {plan.domain_name}; "
-            f"adapter={plan.adapter}/{plan.adapter_version}"
-        ),
+        (f"    %% Silver ERD: {plan.domain_name}; adapter={plan.adapter}/{plan.adapter_version}"),
         "    %% Relationships come only from emitted SilverForeignKeySpec values.",
         "",
     ]
@@ -238,24 +221,18 @@ def _render_erd(plan: SilverPhysicalPlan) -> str:
                 if column.name in foreign_columns
                 else ""
             )
-            lines.append(
-                f"        {_mermaid_type(column.physical_type)} "
-                f"{column.name}{marker}"
-            )
+            lines.append(f"        {_mermaid_type(column.physical_type)} {column.name}{marker}")
         lines.extend(("    }", ""))
     for model in plan.models:
         for constraint in model.constraints:
-            if (
-                constraint.kind != "foreign-key"
-                or constraint.referenced_model not in emitted
-            ):
+            if constraint.kind != "foreign-key" or constraint.referenced_model not in emitted:
                 continue
             temporal = constraint.temporal_mode or "none"
             annotation = f"temporal={temporal}"
             if constraint.as_of_column:
                 annotation += f";as-of={constraint.as_of_column}"
             lines.append(
-                f'    {constraint.referenced_model.upper()} ||--o{{ '
+                f"    {constraint.referenced_model.upper()} ||--o{{ "
                 f'{model.model_name.upper()} : "{constraint.property_uri} '
                 f'[{annotation}]"'
             )
@@ -270,20 +247,12 @@ def _schema_columns(content: str, model_name: str) -> tuple[str, ...] | None:
     if not isinstance(models, list):
         return None
     model = next(
-        (
-            item
-            for item in models
-            if isinstance(item, dict) and item.get("name") == model_name
-        ),
+        (item for item in models if isinstance(item, dict) and item.get("name") == model_name),
         None,
     )
     if model is None or not isinstance(model.get("columns"), list):
         return None
-    return tuple(
-        str(item.get("name"))
-        for item in model["columns"]
-        if isinstance(item, dict)
-    )
+    return tuple(str(item.get("name")) for item in model["columns"] if isinstance(item, dict))
 
 
 def _representation(
@@ -322,16 +291,12 @@ def _build_parity_manifest(
             continue
         actual_physical = tuple(column.name for column in physical_model.columns)
         if actual_physical != expected_columns:
-            errors.append(
-                f"{model.identity.model_name}: physical column order differs from spec"
-            )
+            errors.append(f"{model.identity.model_name}: physical column order differs from spec")
         sql_path = model.identity.artifact_path
         sql = artifacts.get(sql_path, "")
         marker = f"-- DD-110-COLUMNS: {silver_column_marker(model)}"
         if marker not in sql:
-            errors.append(
-                f"{model.identity.model_name}: dbt SQL column marker is missing or stale"
-            )
+            errors.append(f"{model.identity.model_name}: dbt SQL column marker is missing or stale")
         schema_path = schema_paths.get(model.identity.model_name)
         schema_required = model.kind in {
             SilverModelKind.ENTITY,
@@ -339,18 +304,18 @@ def _build_parity_manifest(
         }
         if schema_required:
             schema_content = artifacts.get(schema_path or "", "")
-            if not schema_path or _schema_columns(
-                schema_content,
-                model.identity.model_name,
-            ) != expected_columns:
-                errors.append(
-                    f"{model.identity.model_name}: schema YAML columns differ from spec"
+            if (
+                not schema_path
+                or _schema_columns(
+                    schema_content,
+                    model.identity.model_name,
                 )
+                != expected_columns
+            ):
+                errors.append(f"{model.identity.model_name}: schema YAML columns differ from spec")
         ddl = artifacts.get(plan.ddl_artifact_path, "")
         if marker not in ddl:
-            errors.append(
-                f"{model.identity.model_name}: DDL column marker is missing or stale"
-            )
+            errors.append(f"{model.identity.model_name}: DDL column marker is missing or stale")
 
         representations = {
             "dbt_sql": _representation(sql_path, artifacts, required=True),
@@ -410,9 +375,7 @@ def _build_parity_manifest(
         },
         "status": "blocking" if errors else "pass",
         "errors": sorted(errors),
-        "artifact_hashes": {
-            path: _sha256(artifacts[path]) for path in referenced_paths
-        },
+        "artifact_hashes": {path: _sha256(artifacts[path]) for path in referenced_paths},
         "models": model_entries,
     }
     content = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
@@ -460,8 +423,7 @@ def generate_silver_artifacts(
     artifacts = {
         physical_plan.ddl_artifact_path: _render_ddl(physical_plan, models),
         physical_plan.constraint_artifact_path: (
-            json.dumps(_constraint_data(physical_plan), indent=2, sort_keys=True)
-            + "\n"
+            json.dumps(_constraint_data(physical_plan), indent=2, sort_keys=True) + "\n"
         ),
         physical_plan.erd_artifact_path: _render_erd(physical_plan),
     }
@@ -492,8 +454,7 @@ def generate_master_erd(
         body = "\n".join(
             line
             for line in mmd_file.read_text(encoding="utf-8").splitlines()
-            if line.strip() != "erDiagram"
-            and not line.strip().startswith("%% Silver ERD:")
+            if line.strip() != "erDiagram" and not line.strip().startswith("%% Silver ERD:")
         ).strip()
         if body:
             domain_erds.append((mmd_file.parent.name, body))
@@ -519,10 +480,7 @@ def generate_master_erd(
                 continue
             source = str(model.get("model_name", ""))
             for constraint in model.get("constraints", ()):
-                if (
-                    not isinstance(constraint, dict)
-                    or constraint.get("kind") != "foreign-key"
-                ):
+                if not isinstance(constraint, dict) or constraint.get("kind") != "foreign-key":
                     continue
                 target = str(constraint.get("referenced_model", ""))
                 if source not in emitted or target not in emitted:

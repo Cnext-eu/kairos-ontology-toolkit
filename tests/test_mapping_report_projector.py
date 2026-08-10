@@ -135,6 +135,7 @@ ONTOLOGY_TTL = textwrap.dedent("""\
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def sources_dir(tmp_path):
     d = tmp_path / "integration" / "sources" / "erp"
@@ -165,6 +166,7 @@ def template_dir():
 
 # ── Tests: _parse_source_systems ───────────────────────────────────────
 
+
 class TestParseSourceSystems:
     def test_returns_empty_when_no_dir(self):
         assert _parse_source_systems(Path("/nonexistent")) == []
@@ -185,6 +187,7 @@ class TestParseSourceSystems:
 
 
 # ── Tests: _parse_mappings ─────────────────────────────────────────────
+
 
 class TestParseMappings:
     def test_returns_empty_when_no_dir(self):
@@ -235,6 +238,7 @@ class TestParseMappings:
 
 # ── Tests: _extract_ontology_properties ────────────────────────────────
 
+
 class TestExtractOntologyProperties:
     def test_extracts_class(self, ontology_graph):
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
@@ -253,6 +257,7 @@ class TestExtractOntologyProperties:
 
 # ── Tests: _extract_domain_prefix ──────────────────────────────────────
 
+
 class TestExtractDomainPrefix:
     def test_hash_namespace(self):
         assert _extract_domain_prefix("http://example.com/ont/client#something") == "client"
@@ -262,6 +267,7 @@ class TestExtractDomainPrefix:
 
 
 # ── Tests: _build_report_data ──────────────────────────────────────────
+
 
 class TestBuildReportData:
     def test_contract_item_is_typed_and_immutable(self):
@@ -379,9 +385,7 @@ class TestBuildReportData:
         assert report["warning_count"] == 1
         assert report["info_count"] == 1
 
-    def test_expression_contract_in_column_report(
-        self, sources_dir, mappings_dir, ontology_graph
-    ):
+    def test_expression_contract_in_column_report(self, sources_dir, mappings_dir, ontology_graph):
         systems = _parse_source_systems(sources_dir)
         mappings = _parse_mappings(mappings_dir)
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
@@ -389,9 +393,7 @@ class TestBuildReportData:
 
         tbl = report["tables"][0]
         mapped_cols = [c for c in tbl["columns"] if c["mapped"]]
-        expressions = {
-            c["source_name"]: c["expression_contract"] for c in mapped_cols
-        }
+        expressions = {c["source_name"]: c["expression_contract"] for c in mapped_cols}
         assert expressions["customer_id"] == "direct source-column reference"
         assert expressions["name"] == "function upper"
 
@@ -409,6 +411,7 @@ class TestBuildReportData:
 
 
 # ── Tests: _build_entity_view ──────────────────────────────────────────
+
 
 class TestBuildEntityView:
     def test_groups_by_target_entity(self, sources_dir, mappings_dir, ontology_graph):
@@ -442,27 +445,24 @@ class TestBuildEntityView:
         assert len(customer["source_tables"]) >= 1
         assert customer["source_tables"][0]["table_name"] == "customers"
 
-    def test_entity_column_has_expression_contract(
-        self, sources_dir, mappings_dir, ontology_graph
-    ):
+    def test_entity_column_has_expression_contract(self, sources_dir, mappings_dir, ontology_graph):
         systems = _parse_source_systems(sources_dir)
         mappings = _parse_mappings(mappings_dir)
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
         entities = _build_entity_view(systems[0], mappings, classes)
 
         customer = next(e for e in entities if e["name"] == "Customer")
-        name_map = next(
-            cm
-            for cm in customer["column_mappings"]
-            if cm["source_column"] == "name"
-        )
+        name_map = next(cm for cm in customer["column_mappings"] if cm["source_column"] == "name")
         assert name_map["expression_contract"] == "function upper"
 
 
 # ── Tests: generate_mapping_report (integration) ──────────────────────
 
+
 class TestGenerateMappingReport:
-    def test_produces_html_and_markdown(self, sources_dir, mappings_dir, ontology_graph, template_dir):
+    def test_produces_html_and_markdown(
+        self, sources_dir, mappings_dir, ontology_graph, template_dir
+    ):
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
         result = generate_mapping_report(
             ontology_classes=classes,
@@ -546,9 +546,7 @@ class TestGenerateMappingReport:
         html = next(v for k, v in result.items() if k.endswith(".html"))
         assert "Customer" in html
 
-    def test_html_contains_data_flow(
-        self, sources_dir, mappings_dir, ontology_graph, template_dir
-    ):
+    def test_html_contains_data_flow(self, sources_dir, mappings_dir, ontology_graph, template_dir):
         classes = _extract_ontology_properties(ontology_graph, "http://example.com/ontology#")
         result = generate_mapping_report(
             ontology_classes=classes,

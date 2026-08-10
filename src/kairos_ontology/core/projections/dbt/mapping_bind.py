@@ -142,8 +142,7 @@ def _reject_legacy_authority(graph: Graph) -> None:
                 continue
             if code == "mapping.technical-cleanup":
                 message = (
-                    "technical cleanup is illegal in mappings; use a contracted "
-                    "dbt transformation"
+                    "technical cleanup is illegal in mappings; use a contracted dbt transformation"
                 )
                 rule_id = "DD-107-transformation-routing"
             elif code in {

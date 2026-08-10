@@ -177,9 +177,7 @@ def parse_canonical_type(value: str) -> CanonicalTypeSpec:
     }
     kind = aliases.get(raw.lower())
     if kind is None:
-        raise CanonicalHashError(
-            f"unsupported or ambiguous canonical hash type {value!r}"
-        )
+        raise CanonicalHashError(f"unsupported or ambiguous canonical hash type {value!r}")
     return CanonicalTypeSpec(kind)
 
 
@@ -202,17 +200,14 @@ def _decimal_text(value: object, data_type: CanonicalTypeSpec) -> str:
         raise CanonicalHashError(f"invalid decimal value {value!r}") from exc
     if not decimal_value.is_finite() or quantized != decimal_value:
         raise CanonicalHashError(
-            f"decimal value {value!r} cannot be represented exactly at "
-            f"scale {data_type.scale}"
+            f"decimal value {value!r} cannot be represented exactly at scale {data_type.scale}"
         )
     if quantized == 0:
         quantized = abs(quantized)
     digits = len(quantized.as_tuple().digits)
     integer_digits = max(digits - data_type.scale, 0)
     if integer_digits + data_type.scale > data_type.precision:
-        raise CanonicalHashError(
-            f"decimal value {value!r} exceeds precision {data_type.precision}"
-        )
+        raise CanonicalHashError(f"decimal value {value!r} exceeds precision {data_type.precision}")
     return format(quantized, f".{data_type.scale}f")
 
 
@@ -312,9 +307,7 @@ def canonical_lexical_v1(value: object, data_type: CanonicalTypeSpec) -> str:
         if normalized != value:
             raise CanonicalHashError("string hash inputs must already be NFC")
         if data_type.length is not None and len(normalized) > data_type.length:
-            raise CanonicalHashError(
-                f"string exceeds declared length {data_type.length}"
-            )
+            raise CanonicalHashError(f"string exceeds declared length {data_type.length}")
         return normalized
     if kind is CanonicalTypeKind.BOOLEAN:
         if not isinstance(value, bool):
@@ -406,11 +399,7 @@ def canonical_hash_macro_call(inputs: tuple[CanonicalHashSqlInput, ...]) -> str:
         raise CanonicalHashError("canonical hash v1 requires at least one SQL input")
     expressions = ", ".join(repr(item.expression) for item in inputs)
     types = ", ".join(repr(_sql_type_label(item.data_type)) for item in inputs)
-    return (
-        "{{ kairos_canonical_hash_v1(["
-        f"{expressions}], [{types}]) "
-        "}}"
-    )
+    return f"{{{{ kairos_canonical_hash_v1([{expressions}], [{types}]) }}}}"
 
 
 def _canonical_lexical_sql(
@@ -438,15 +427,9 @@ def _canonical_lexical_sql(
         if kind is CanonicalTypeKind.TIME:
             return f"CONVERT(VARCHAR(16), CAST({expression} AS TIME(6)), 126)"
         if kind is CanonicalTypeKind.TIMESTAMP:
-            return (
-                "CONCAT(CONVERT(VARCHAR(26), "
-                f"CAST({expression} AS DATETIME2(6)), 126), 'Z')"
-            )
+            return f"CONCAT(CONVERT(VARCHAR(26), CAST({expression} AS DATETIME2(6)), 126), 'Z')"
         if kind is CanonicalTypeKind.BINARY:
-            return (
-                "LOWER(CONVERT(VARCHAR(MAX), "
-                f"CAST({expression} AS VARBINARY(MAX)), 2))"
-            )
+            return f"LOWER(CONVERT(VARCHAR(MAX), CAST({expression} AS VARBINARY(MAX)), 2))"
     elif adapter == "databricks":
         if kind in {
             CanonicalTypeKind.STRING,
@@ -472,9 +455,7 @@ def _canonical_lexical_sql(
             return f"LOWER(HEX(CAST({expression} AS BINARY)))"
     else:
         raise CanonicalHashError(f"unknown adapter {adapter!r}")
-    raise CanonicalHashError(
-        f"{label} cannot be canonicalized by adapter {adapter!r}"
-    )
+    raise CanonicalHashError(f"{label} cannot be canonicalized by adapter {adapter!r}")
 
 
 def render_canonical_hash_sql_v1(
@@ -545,11 +526,7 @@ def validate_runtime_sql_static(sql: str, adapter: str) -> None:
         raise CanonicalHashError(f"unknown adapter {adapter!r}")
     lowered = sql.lower()
     leaked = next(
-        (
-            pattern
-            for pattern in (*common_forbidden, *forbidden)
-            if re.search(pattern, lowered)
-        ),
+        (pattern for pattern in (*common_forbidden, *forbidden) if re.search(pattern, lowered)),
         None,
     )
     if leaked is not None:

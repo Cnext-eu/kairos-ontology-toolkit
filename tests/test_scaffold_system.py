@@ -154,13 +154,19 @@ def _build_hub(tmp_path: Path, *, alignment_document: dict | None = None) -> tup
     (hub_root / "integration" / "sources" / "crm").mkdir(parents=True)
     (hub_root / "integration" / "sources" / "_analysis").mkdir(parents=True)
     (hub_root / "integration" / "bindings").mkdir(parents=True)
-    (hub_root / "kairos.yaml").write_text("version: 5\nname: acmehub\nadapter: fabric\n", encoding="utf-8")
+    (hub_root / "kairos.yaml").write_text(
+        "version: 5\nname: acmehub\nadapter: fabric\n", encoding="utf-8"
+    )
 
-    accelerator_ttl_path = ref_models_dir / "accelerator-packs" / "acme" / "ontologies" / "party.ttl"
+    accelerator_ttl_path = (
+        ref_models_dir / "accelerator-packs" / "acme" / "ontologies" / "party.ttl"
+    )
     accelerator_ttl_path.parent.mkdir(parents=True)
     accelerator_ttl_path.write_text(_ACCELERATOR_TTL, encoding="utf-8")
 
-    data_domains_path = ref_models_dir / "accelerator-packs" / "acme" / "client-hub-blueprint" / "data-domains.yaml"
+    data_domains_path = (
+        ref_models_dir / "accelerator-packs" / "acme" / "client-hub-blueprint" / "data-domains.yaml"
+    )
     data_domains_path.parent.mkdir(parents=True)
     data_domains_path.write_text(_DATA_DOMAINS_YAML, encoding="utf-8")
 
@@ -247,7 +253,15 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
 
     json_result = CliRunner().invoke(
         cli,
-        ["scaffold-system", "--system", "crm", "--ref-models", str(ref_models_dir), "--format", "json"],
+        [
+            "scaffold-system",
+            "--system",
+            "crm",
+            "--ref-models",
+            str(ref_models_dir),
+            "--format",
+            "json",
+        ],
     )
     # Second invocation: everything scaffoldable is already covered.
     assert json_result.exit_code == 0, json_result.output
@@ -332,8 +346,18 @@ def test_decline_if_not_mechanical_flags_low_confidence():
 def test_decline_if_not_mechanical_flags_shared_ref_class():
     document = _alignment_document(
         tables=[
-            {"system": "crm", "table": "organisations", "ref_class": "TradeParty", "ref_class_confidence": 0.9},
-            {"system": "crm", "table": "organisations_legacy", "ref_class": "TradeParty", "ref_class_confidence": 0.9},
+            {
+                "system": "crm",
+                "table": "organisations",
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.9,
+            },
+            {
+                "system": "crm",
+                "table": "organisations_legacy",
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.9,
+            },
         ]
     )
     table_dict = document["tables"][0]
@@ -352,8 +376,18 @@ def test_decline_if_not_mechanical_accepts_clean_single_source_table():
 def test_multi_source_merge_signal_declines_both_tables(tmp_path):
     doc = _alignment_document(
         tables=[
-            {"system": "crm", "table": "organisations", "ref_class": "TradeParty", "ref_class_confidence": 0.9},
-            {"system": "crm", "table": "contacts", "ref_class": "TradeParty", "ref_class_confidence": 0.9},
+            {
+                "system": "crm",
+                "table": "organisations",
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.9,
+            },
+            {
+                "system": "crm",
+                "table": "contacts",
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.9,
+            },
         ]
     )
     hub_root, ref_models_dir = _build_hub(tmp_path, alignment_document=doc)
@@ -383,7 +417,12 @@ def test_resolve_target_class_success(tmp_path):
 def test_resolve_target_class_declines_when_ref_class_empty(tmp_path):
     hub_root, _ref_models_dir = _build_hub(tmp_path)
     document = _alignment_document()
-    table_dict = {"system": "crm", "table": "audit_log", "ref_class": "", "ref_class_status": "unmatched"}
+    table_dict = {
+        "system": "crm",
+        "table": "audit_log",
+        "ref_class": "",
+        "ref_class_status": "unmatched",
+    }
     class_uri, domain, detail = _resolve_target_class(
         document, table_dict, catalog_path=hub_root / "catalog-v001.xml"
     )
@@ -395,7 +434,12 @@ def test_resolve_target_class_declines_when_ref_class_empty(tmp_path):
 def test_resolve_target_class_declines_stale_ref_class(tmp_path):
     hub_root, _ref_models_dir = _build_hub(tmp_path)
     document = _alignment_document()
-    table_dict = {"system": "crm", "table": "organisations", "ref_class": "DoesNotExist", "ref_class_confidence": 0.9}
+    table_dict = {
+        "system": "crm",
+        "table": "organisations",
+        "ref_class": "DoesNotExist",
+        "ref_class_confidence": 0.9,
+    }
     class_uri, domain, detail = _resolve_target_class(
         document, table_dict, catalog_path=hub_root / "catalog-v001.xml"
     )

@@ -294,9 +294,7 @@ def build_glossary(
     Returns a :class:`GlossaryBuildResult` describing what was written.
     """
     terms, sources = collect_terms(extraction_dir)
-    concepts, skipped = aggregate_concepts(
-        terms, company_specific_only=company_specific_only
-    )
+    concepts, skipped = aggregate_concepts(terms, company_specific_only=company_specific_only)
     graph = build_glossary_graph(
         concepts,
         glossary_namespace=glossary_namespace,

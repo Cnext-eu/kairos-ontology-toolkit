@@ -19,6 +19,7 @@ from .conftest import ONTOLOGIES_DIR
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def client_silver_with_identifier(client_dbt_artifacts):
     """Generate silver artifacts for client domain (includes Identifier pattern)."""
@@ -28,6 +29,7 @@ def client_silver_with_identifier(client_dbt_artifacts):
 # ---------------------------------------------------------------------------
 # Tests: Reference Model Inspired — Identifier pattern produces silver table
 # ---------------------------------------------------------------------------
+
 
 class TestInspiredIdentifierPattern:
     """The locally-adopted Identifier class should project like any local class."""
@@ -60,14 +62,13 @@ class TestInspiredIdentifierPattern:
         if erd_key is None:
             pytest.skip("No ERD artifact generated")
         erd = client_silver_with_identifier[erd_key]
-        assert "Identifier" in erd or "identifier" in erd.lower(), (
-            "ERD missing Identifier entity"
-        )
+        assert "Identifier" in erd or "identifier" in erd.lower(), "ERD missing Identifier entity"
 
 
 # ---------------------------------------------------------------------------
 # Tests: rdfs:seeAlso back-reference — present but ignored by projectors
 # ---------------------------------------------------------------------------
+
 
 class TestSeeAlsoBackReference:
     """rdfs:seeAlso on inspired classes provides traceability without affecting projections."""
@@ -82,8 +83,7 @@ class TestSeeAlsoBackReference:
             "Identifier class should have rdfs:seeAlso linking to reference model"
         )
         fibo_uri = URIRef(
-            "https://spec.edmcouncil.org/fibo/ontology/FND/Arrangements/"
-            "Identifiers/Identifier"
+            "https://spec.edmcouncil.org/fibo/ontology/FND/Arrangements/Identifiers/Identifier"
         )
         assert fibo_uri in see_also, (
             f"Expected rdfs:seeAlso to point to FIBO Identifier URI, got: {see_also}"
@@ -101,10 +101,8 @@ class TestSeeAlsoBackReference:
         graph, namespace, classes = client_ontology
         fibo_ns = "https://spec.edmcouncil.org/fibo/"
         from rdflib import URIRef
-        fibo_subjects = [
-            s for s in graph.subjects()
-            if isinstance(s, URIRef) and fibo_ns in str(s)
-        ]
+
+        fibo_subjects = [s for s in graph.subjects() if isinstance(s, URIRef) and fibo_ns in str(s)]
         assert len(fibo_subjects) == 0, (
             f"Projection graph contains FIBO URIs as subjects — "
             f"rdfs:seeAlso should be an opaque annotation. Found: {fibo_subjects[:3]}"
@@ -114,6 +112,7 @@ class TestSeeAlsoBackReference:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _find_artifact(artifacts: dict, suffix: str) -> str | None:
     """Find the first artifact key with the given suffix."""

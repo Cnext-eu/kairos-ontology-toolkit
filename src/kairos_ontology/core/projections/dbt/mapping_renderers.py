@@ -103,7 +103,9 @@ def _literal(expression: LiteralExpression, adapter: str) -> str:
         return (
             f"CAST({1 if truthy else 0} AS BIT)"
             if adapter == "fabric"
-            else "TRUE" if truthy else "FALSE"
+            else "TRUE"
+            if truthy
+            else "FALSE"
         )
     if kind in {
         CanonicalTypeKind.INT16,
@@ -118,9 +120,7 @@ def _literal(expression: LiteralExpression, adapter: str) -> str:
         CanonicalTypeKind.TIME,
         CanonicalTypeKind.TIMESTAMP,
     }:
-        return (
-            f"CAST({_text_literal(lexical, adapter)} " f"AS {_physical_type(expression, adapter)})"
-        )
+        return f"CAST({_text_literal(lexical, adapter)} AS {_physical_type(expression, adapter)})"
     raise _error(
         expression,
         f"typed literals of kind {kind.value!r} have no portable renderer",
@@ -159,7 +159,7 @@ def _render(
             _render(item, adapter, sources, depth=depth + 1) for item in expression.arguments
         )
         if expression.operator in _BINARY_OPERATORS:
-            return f"({arguments[0]} {_BINARY_OPERATORS[expression.operator]} " f"{arguments[1]})"
+            return f"({arguments[0]} {_BINARY_OPERATORS[expression.operator]} {arguments[1]})"
         if expression.operator == "negate":
             return f"(-{arguments[0]})"
         if expression.operator == "not":
@@ -271,17 +271,17 @@ def render_mapping_join_condition(join: JoinSpec, *, adapter: str) -> str:
                 resource_uri=join.fk_column or join.alias,
                 rule_id="DD-107-render",
             )
-        as_of = f"{source_alias}." f"{quote_mapping_identifier(join.as_of_column, adapter)}"
+        as_of = f"{source_alias}.{quote_mapping_identifier(join.as_of_column, adapter)}"
         as_of = (
             f"CAST({as_of} AS DATETIME2(6))"
             if adapter == "fabric"
             else f"CAST({as_of} AS TIMESTAMP)"
         )
         valid_from = (
-            f"{target_alias}." f"{quote_mapping_identifier(join.parent_valid_from_column, adapter)}"
+            f"{target_alias}.{quote_mapping_identifier(join.parent_valid_from_column, adapter)}"
         )
         valid_to = (
-            f"{target_alias}." f"{quote_mapping_identifier(join.parent_valid_to_column, adapter)}"
+            f"{target_alias}.{quote_mapping_identifier(join.parent_valid_to_column, adapter)}"
         )
         parts.extend(
             (

@@ -2885,13 +2885,13 @@ class TestUnprojectedClassMapping:
                 mappings_dir=mappings,
             )
         msgs = " ".join(r.getMessage() for r in caplog.records)
-        assert (
-            "VipClient" in msgs and "not" in msgs.lower()
-        ), f"Expected a warning naming the unprojected class VipClient:\n{msgs}"
+        assert "VipClient" in msgs and "not" in msgs.lower(), (
+            f"Expected a warning naming the unprojected class VipClient:\n{msgs}"
+        )
         # No vip model and no rows folded into client (Client has no own mapping).
-        assert not any(
-            "vip" in k.lower() for k in artifacts if k.startswith("models/silver/")
-        ), f"Unprojected VipClient must not produce a model:\n{list(artifacts)}"
+        assert not any("vip" in k.lower() for k in artifacts if k.startswith("models/silver/")), (
+            f"Unprojected VipClient must not produce a model:\n{list(artifacts)}"
+        )
 
     def test_folds_onto_projected_discriminator_parent(self, tmp_path, template_dir, caplog):
         graph, bronze, mappings, classes = self._setup(
@@ -2908,16 +2908,16 @@ class TestUnprojectedClassMapping:
                 mappings_dir=mappings,
             )
         msgs = " ".join(r.getMessage() for r in caplog.records)
-        assert (
-            "folded" in msgs.lower() and "Client" in msgs
-        ), f"Expected a fold warning mentioning the parent Client:\n{msgs}"
+        assert "folded" in msgs.lower() and "Client" in msgs, (
+            f"Expected a fold warning mentioning the parent Client:\n{msgs}"
+        )
         # The folded source (tblVip) drives the projected Client model.
         client_sql = "".join(
             v for k, v in artifacts.items() if k.endswith(".sql") and "client" in k.lower()
         )
-        assert (
-            "tbl_vip" in client_sql.lower() or "tblvip" in client_sql.lower()
-        ), f"Folded VipClient source (tblVip) missing from Client model:\n{client_sql}"
+        assert "tbl_vip" in client_sql.lower() or "tblvip" in client_sql.lower(), (
+            f"Folded VipClient source (tblVip) missing from Client model:\n{client_sql}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3397,9 +3397,9 @@ class TestExtractionCharacterization:
             "models/silver/booking/booking__from_qargo__orders.sql",
             "models/silver/booking/booking.sql",
         ]
-        assert (
-            silver_sql_keys == expected_order
-        ), f"Multi-source emission order changed:\n{silver_sql_keys}"
+        assert silver_sql_keys == expected_order, (
+            f"Multi-source emission order changed:\n{silver_sql_keys}"
+        )
 
     def test_missing_mapping_warning_order_matches_class_iteration_order(
         self, tmp_path, template_dir, caplog
@@ -4313,12 +4313,12 @@ class TestSilverForeignKeyAnnotation:
         )
         assert silver_key is not None, "order.sql not generated"
         content = artifacts[silver_key]
-        assert (
-            "customer_sk" in content
-        ), "silverForeignKey true should generate customer_sk FK column"
-        assert (
-            "ref('customer')" in content
-        ), "silverForeignKey true should generate a join to customer model"
+        assert "customer_sk" in content, (
+            "silverForeignKey true should generate customer_sk FK column"
+        )
+        assert "ref('customer')" in content, (
+            "silverForeignKey true should generate a join to customer model"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -4713,9 +4713,9 @@ class TestCompositeNaturalKey:
             nk,
         )
         sk_expr = next(c["expression"] for c in cols if c["target_name"] == "address_sk")
-        assert (
-            "'address_street', 'address_zip_code'" in sk_expr
-        ), f"SK expression should list both keys separately:\n{sk_expr}"
+        assert "'address_street', 'address_zip_code'" in sk_expr, (
+            f"SK expression should list both keys separately:\n{sk_expr}"
+        )
         # Must NOT have a comma inside a single quoted string
         assert "'address_street,address_zip_code'" not in sk_expr
 
@@ -4730,9 +4730,9 @@ class TestCompositeNaturalKey:
             nk,
         )
         iri_expr = next(c["expression"] for c in cols if c["target_name"] == "address_iri")
-        assert (
-            "'_'" in iri_expr
-        ), f"IRI CONCAT should separate composite NK parts with '_':\n{iri_expr}"
+        assert "'_'" in iri_expr, (
+            f"IRI CONCAT should separate composite NK parts with '_':\n{iri_expr}"
+        )
         assert "address_street" in iri_expr
         assert "address_zip_code" in iri_expr
 
@@ -4803,9 +4803,9 @@ class TestDbtTypeStringMacro:
         all_sql = "\n".join(
             value for value in artifacts.values() if isinstance(value, str) and value
         )
-        assert (
-            "dbt_utils.type_string" not in all_sql
-        ), "Generated SQL must not use deprecated dbt_utils.type_string()"
+        assert "dbt_utils.type_string" not in all_sql, (
+            "Generated SQL must not use deprecated dbt_utils.type_string()"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -4863,9 +4863,9 @@ class TestDimDateNoDuplicateCte:
         )
         if match:
             inner = match.group(1)
-            assert (
-                "date_spine as (" not in inner.lower()
-            ), "CTE body must not start with another 'date_spine as (' wrapper"
+            assert "date_spine as (" not in inner.lower(), (
+                "CTE body must not start with another 'date_spine as (' wrapper"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -4999,9 +4999,9 @@ class TestSkIriUsesSourceExpression:
             _re.DOTALL,
         )
         assert mapped_block
-        assert "[adminpulse_relations].[bankIBAN]" in mapped_block.group(
-            1
-        ), "mapped CTE must use the source column expression, got:\n" + mapped_block.group(1)
+        assert "[adminpulse_relations].[bankIBAN]" in mapped_block.group(1), (
+            "mapped CTE must use the source column expression, got:\n" + mapped_block.group(1)
+        )
 
     def test_no_source_data_stage_is_inferred_without_runtime_authority(
         self, template_dir, bank_sources_dir, bank_mappings_dir

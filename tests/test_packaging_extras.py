@@ -20,7 +20,10 @@ from pathlib import Path
 PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 SCAFFOLD_TEMPLATE = (
     Path(__file__).resolve().parent.parent
-    / "src" / "kairos_ontology" / "scaffold" / "pyproject.toml.template"
+    / "src"
+    / "kairos_ontology"
+    / "scaffold"
+    / "pyproject.toml.template"
 )
 
 USER_FACING_EXTRAS = ["azure", "foundry", "flatfile", "parquet"]
@@ -71,6 +74,6 @@ def test_scaffold_template_declares_user_facing_extras():
             f"scaffold pyproject.toml.template is missing the '{extra}' extra pin"
         )
         pins = optional[extra]
-        assert any(
-            f"kairos-ontology-toolkit[{extra}]" in pin for pin in pins
-        ), f"scaffold '{extra}' extra must pin kairos-ontology-toolkit[{extra}]"
+        assert any(f"kairos-ontology-toolkit[{extra}]" in pin for pin in pins), (
+            f"scaffold '{extra}' extra must pin kairos-ontology-toolkit[{extra}]"
+        )

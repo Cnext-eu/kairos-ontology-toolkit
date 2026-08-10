@@ -85,16 +85,12 @@ class TestFindHubRoot:
         assert find_hub_root() == hub
 
 
-_MANAGED_INSTRUCTIONS = (
-    "<!-- kairos-ontology-toolkit:managed v1.0.0 -->\n# Copilot instructions\n"
-)
+_MANAGED_INSTRUCTIONS = "<!-- kairos-ontology-toolkit:managed v1.0.0 -->\n# Copilot instructions\n"
 
 
 def _make_pin_hub(root):
     root.mkdir(parents=True, exist_ok=True)
-    (root / "pyproject.toml").write_text(
-        '[tool.kairos]\nchannel = "stable"\n', encoding="utf-8"
-    )
+    (root / "pyproject.toml").write_text('[tool.kairos]\nchannel = "stable"\n', encoding="utf-8")
 
 
 def _make_marker_hub(root):

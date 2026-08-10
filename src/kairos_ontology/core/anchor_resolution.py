@@ -105,7 +105,9 @@ def build_confirmed_alias_index(
         if isinstance(rename_to, str) and rename_to.strip():
             aliases.add(rename_to)
         entry = ConfirmedAlias(
-            alias="", canonical_uri=uri, canonical_label=label or _local_name(uri),
+            alias="",
+            canonical_uri=uri,
+            canonical_label=label or _local_name(uri),
             outcome=outcome,
         )
         for alias in aliases:
@@ -113,8 +115,10 @@ def build_confirmed_alias_index(
             if not key:
                 continue
             dated = ConfirmedAlias(
-                alias=alias, canonical_uri=entry.canonical_uri,
-                canonical_label=entry.canonical_label, outcome=entry.outcome,
+                alias=alias,
+                canonical_uri=entry.canonical_uri,
+                canonical_label=entry.canonical_label,
+                outcome=entry.outcome,
             )
             bucket = index.setdefault(key, [])
             if not any(a.canonical_uri == uri for a in bucket):
@@ -202,16 +206,13 @@ def resolve_table_anchor(
             status="ambiguous",
             candidate_uris=tuple(distinct_uris),
             evidence=tuple(
-                f"confirmed alias {m.alias!r} -> {m.canonical_uri} "
-                f"(outcome: {m.outcome})"
+                f"confirmed alias {m.alias!r} -> {m.canonical_uri} (outcome: {m.outcome})"
                 for m in matches
             ),
         )
 
     uri = distinct_uris[0]
-    ref_class = next(
-        (c for c in ref_classes if str(c.get("uri", "")) == uri), None
-    )
+    ref_class = next((c for c in ref_classes if str(c.get("uri", "")) == uri), None)
     if ref_class is None:
         # Confirmed, but the concept's module is not in this table's candidate
         # pool — cannot anchor this run. Fall through unchanged (not "ambiguous":
@@ -224,8 +225,5 @@ def resolve_table_anchor(
         resolved_uri=uri,
         resolved_name=str(ref_class.get("name", "")),
         candidate_uris=(uri,),
-        evidence=(
-            f"confirmed alias {matched.alias!r} -> {uri} "
-            f"(outcome: {matched.outcome})",
-        ),
+        evidence=(f"confirmed alias {matched.alias!r} -> {uri} (outcome: {matched.outcome})",),
     )

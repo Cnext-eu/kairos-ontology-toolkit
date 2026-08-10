@@ -120,9 +120,7 @@ def diagnostic_from_exception(
     resource_uri = str(getattr(error, "resource_uri", ""))
     predicate_uri = str(getattr(error, "predicate_uri", ""))
     message = existing.message if isinstance(existing, Diagnostic) else str(error)
-    remediation = (
-        f"Resolve {code} with {_STAGE_OWNERS.get(stage, 'kairos-execute-validate')}."
-    )
+    remediation = f"Resolve {code} with {_STAGE_OWNERS.get(stage, 'kairos-execute-validate')}."
     return Diagnostic(
         code=code,
         message=message,

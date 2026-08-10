@@ -46,33 +46,67 @@ def _tblclient_llm_response():
         "ref_class": "Party",
         "ref_class_confidence": 0.9,
         "column_alignments": [
-            {"column": "ClientID", "ref_class": "Party",
-             "ref_property": "partyIdentifier", "alignment": "semantic",
-             "confidence": 0.8, "rationale": "Business id"},
-            {"column": "Name", "ref_class": "Party",
-             "ref_property": "partyName", "alignment": "exact",
-             "confidence": 0.95, "rationale": "Name"},
-            {"column": "Email", "ref_class": "Party",
-             "ref_property": "email", "alignment": "exact",
-             "confidence": 0.95, "rationale": "Email"},
-            {"column": "Country", "ref_class": "Party",
-             "ref_property": "country", "alignment": "exact",
-             "confidence": 0.95, "rationale": "Country"},
-            {"column": "VATNumber", "ref_class": "Party",
-             "ref_property": "taxIdentifier", "alignment": "semantic",
-             "confidence": 0.85, "rationale": "VAT"},
-            {"column": "IsActive", "ref_property": "isActive",
-             "alignment": "custom", "confidence": 0.0,
-             "rationale": "No party property"},
+            {
+                "column": "ClientID",
+                "ref_class": "Party",
+                "ref_property": "partyIdentifier",
+                "alignment": "semantic",
+                "confidence": 0.8,
+                "rationale": "Business id",
+            },
+            {
+                "column": "Name",
+                "ref_class": "Party",
+                "ref_property": "partyName",
+                "alignment": "exact",
+                "confidence": 0.95,
+                "rationale": "Name",
+            },
+            {
+                "column": "Email",
+                "ref_class": "Party",
+                "ref_property": "email",
+                "alignment": "exact",
+                "confidence": 0.95,
+                "rationale": "Email",
+            },
+            {
+                "column": "Country",
+                "ref_class": "Party",
+                "ref_property": "country",
+                "alignment": "exact",
+                "confidence": 0.95,
+                "rationale": "Country",
+            },
+            {
+                "column": "VATNumber",
+                "ref_class": "Party",
+                "ref_property": "taxIdentifier",
+                "alignment": "semantic",
+                "confidence": 0.85,
+                "rationale": "VAT",
+            },
+            {
+                "column": "IsActive",
+                "ref_property": "isActive",
+                "alignment": "custom",
+                "confidence": 0.0,
+                "rationale": "No party property",
+            },
         ],
     }
 
 
 def _mock_client():
     def create_completion(**kwargs):
-        return mock.MagicMock(choices=[mock.MagicMock(
-            message=mock.MagicMock(content=json.dumps(_tblclient_llm_response()))
-        )])
+        return mock.MagicMock(
+            choices=[
+                mock.MagicMock(
+                    message=mock.MagicMock(content=json.dumps(_tblclient_llm_response()))
+                )
+            ]
+        )
+
     client = mock.MagicMock()
     client.chat.completions.create = create_completion
     return client
@@ -101,18 +135,19 @@ def _affinity_dir(tmp_path):
             {"domain": "client", "table_count": 1, "tables": ["tblClient"]},
         ],
     }
-    (analysis / "adminpulse-affinity.yaml").write_text(
-        yaml.dump(affinity), encoding="utf-8"
-    )
+    (analysis / "adminpulse-affinity.yaml").write_text(yaml.dump(affinity), encoding="utf-8")
     return analysis
 
 
 def _run(tmp_path, include_mapping_hints):
-    with mock.patch(
-        "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
-    ), mock.patch(
-        "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
-        return_value=_real_party_classes(),
+    with (
+        mock.patch(
+            "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
+        ),
+        mock.patch(
+            "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+            return_value=_real_party_classes(),
+        ),
     ):
         alignments = build_domain_alignments(
             analysis_dir=_affinity_dir(tmp_path),
@@ -135,8 +170,10 @@ class TestDefaultOutputUnchanged:
         assert "structural_hints" not in table
         for col in table["columns"]:
             for key in (
-                "transform_hint", "transform_confidence",
-                "requires_human_confirmation", "transform_rationale",
+                "transform_hint",
+                "transform_confidence",
+                "requires_human_confirmation",
+                "transform_rationale",
             ):
                 assert key not in col, f"{col['column']} leaked hint key {key}"
 
@@ -189,6 +226,5 @@ class TestStructuralHints:
         assert len(dedup) == 1
         assert dedup[0]["natural_key_column"] == "ClientID"
         assert any(
-            c in dedup[0]["ordering_column_candidates"]
-            for c in ("ModifiedDate", "CreatedDate")
+            c in dedup[0]["ordering_column_candidates"] for c in ("ModifiedDate", "CreatedDate")
         )

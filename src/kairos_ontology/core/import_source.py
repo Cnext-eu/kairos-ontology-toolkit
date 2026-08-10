@@ -545,7 +545,9 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
         g.bind("owl", OWL)
 
         # Ontology declaration per table
-        ont_uri = URIRef(f"https://kairos.cnext.eu/source/{system_name}/vocabulary/{_sanitize_uri_part(tbl['name'])}")
+        ont_uri = URIRef(
+            f"https://kairos.cnext.eu/source/{system_name}/vocabulary/{_sanitize_uri_part(tbl['name'])}"
+        )
         g.add((ont_uri, RDF.type, OWL.Ontology))
         g.add((ont_uri, RDFS.label, Literal(f"{system_name} — {tbl['name']} Vocabulary")))
         if extracted_at:
@@ -697,8 +699,7 @@ def _add_table_to_graph(g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef
                         child_uri,
                         RDFS.comment,
                         Literal(
-                            f"Virtual table derived from JSON array column "
-                            f"{tbl_name}.{col_name}"
+                            f"Virtual table derived from JSON array column {tbl_name}.{col_name}"
                         ),
                     )
                 )

@@ -118,8 +118,7 @@ def update(check, upgrade, test_ref, restore, force_managed):
     managed_root = find_managed_root(Path.cwd())
     if managed_root is not None and managed_root != Path.cwd().resolve():
         print(
-            f"↪ Detected hub root at {managed_root} "
-            f"(you ran from {Path.cwd()}) — operating there."
+            f"↪ Detected hub root at {managed_root} (you ran from {Path.cwd()}) — operating there."
         )
         os.chdir(managed_root)
 
@@ -194,8 +193,7 @@ def update(check, upgrade, test_ref, restore, force_managed):
         ref = _resolve_channel(channel)
         if ref is None:
             print(
-                f"⚠  Could not resolve channel '{channel}' — is 'gh' installed and "
-                f"authenticated?"
+                f"⚠  Could not resolve channel '{channel}' — is 'gh' installed and authenticated?"
             )
             raise SystemExit(1)
         print(f"📦 Channel: {channel} → {ref}")
@@ -464,8 +462,7 @@ def update(check, upgrade, test_ref, restore, force_managed):
     "dest_path",
     type=click.Path(),
     default=None,
-    help="Destination path for reference models "
-    "(default: auto-detect ontology-reference-models/).",
+    help="Destination path for reference models (default: auto-detect ontology-reference-models/).",
 )
 def update_refmodels(git_ref, dest_path):
     """Fetch reference models from the upstream repository.
@@ -493,7 +490,7 @@ def update_refmodels(git_ref, dest_path):
         )
     except FileNotFoundError:
         raise click.ClickException(
-            "git is not installed or not on PATH. " "Install git and try again."
+            "git is not installed or not on PATH. Install git and try again."
         )
 
     click.echo(f"  ▶ Fetching ref '{git_ref}' from upstream reference models…")

@@ -17,8 +17,12 @@ class TestEnumDetection:
 
     def test_low_cardinality_detected(self):
         columns = [
-            {"name": "status", "data_type": "varchar(20)", "distinct_count": 5,
-             "samples": ["active", "inactive", "pending", "closed", "draft"]},
+            {
+                "name": "status",
+                "data_type": "varchar(20)",
+                "distinct_count": 5,
+                "samples": ["active", "inactive", "pending", "closed", "draft"],
+            },
         ]
         result = detect_enums("orders", columns, row_count=10000)
         assert len(result) == 1
@@ -28,24 +32,31 @@ class TestEnumDetection:
 
     def test_high_cardinality_not_detected(self):
         columns = [
-            {"name": "email", "data_type": "varchar(200)", "distinct_count": 9500,
-             "samples": ["a@b.com"]},
+            {
+                "name": "email",
+                "data_type": "varchar(200)",
+                "distinct_count": 9500,
+                "samples": ["a@b.com"],
+            },
         ]
         result = detect_enums("users", columns, row_count=10000)
         assert len(result) == 0
 
     def test_too_few_rows_skipped(self):
         columns = [
-            {"name": "type", "data_type": "varchar(10)", "distinct_count": 3,
-             "samples": ["A", "B", "C"]},
+            {
+                "name": "type",
+                "data_type": "varchar(10)",
+                "distinct_count": 3,
+                "samples": ["A", "B", "C"],
+            },
         ]
         result = detect_enums("small_table", columns, row_count=50)
         assert len(result) == 0
 
     def test_single_distinct_skipped(self):
         columns = [
-            {"name": "constant", "data_type": "int", "distinct_count": 1,
-             "samples": ["0"]},
+            {"name": "constant", "data_type": "int", "distinct_count": 1, "samples": ["0"]},
         ]
         result = detect_enums("t", columns, row_count=1000)
         assert len(result) == 0
@@ -59,8 +70,12 @@ class TestEnumDetection:
 
     def test_custom_threshold(self):
         columns = [
-            {"name": "country", "data_type": "varchar(50)", "distinct_count": 15,
-             "samples": ["BE", "NL", "FR"]},
+            {
+                "name": "country",
+                "data_type": "varchar(50)",
+                "distinct_count": 15,
+                "samples": ["BE", "NL", "FR"],
+            },
         ]
         # With threshold 10, should NOT detect
         result = detect_enums("t", columns, row_count=5000, enum_threshold=10)
@@ -76,9 +91,14 @@ class TestFormatDetection:
 
     def test_uuid_detected(self):
         columns = [
-            {"name": "id", "data_type": "varchar(36)",
-             "samples": ["550e8400-e29b-41d4-a716-446655440000",
-                         "6ba7b810-9dad-11d1-80b4-00c04fd430c8"]},
+            {
+                "name": "id",
+                "data_type": "varchar(36)",
+                "samples": [
+                    "550e8400-e29b-41d4-a716-446655440000",
+                    "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+                ],
+            },
         ]
         result = detect_formats("t", columns)
         assert len(result) == 1
@@ -86,8 +106,11 @@ class TestFormatDetection:
 
     def test_email_detected(self):
         columns = [
-            {"name": "email", "data_type": "varchar(200)",
-             "samples": ["user@example.com", "admin@company.org", "test@test.be"]},
+            {
+                "name": "email",
+                "data_type": "varchar(200)",
+                "samples": ["user@example.com", "admin@company.org", "test@test.be"],
+            },
         ]
         result = detect_formats("t", columns)
         assert len(result) == 1
@@ -95,8 +118,11 @@ class TestFormatDetection:
 
     def test_date_detected(self):
         columns = [
-            {"name": "created_at", "data_type": "varchar(30)",
-             "samples": ["2026-01-15T10:30:00Z", "2026-06-02"]},
+            {
+                "name": "created_at",
+                "data_type": "varchar(30)",
+                "samples": ["2026-01-15T10:30:00Z", "2026-06-02"],
+            },
         ]
         result = detect_formats("t", columns)
         assert len(result) == 1
@@ -104,8 +130,11 @@ class TestFormatDetection:
 
     def test_url_detected(self):
         columns = [
-            {"name": "website", "data_type": "varchar(500)",
-             "samples": ["https://example.com", "https://github.com/org/repo"]},
+            {
+                "name": "website",
+                "data_type": "varchar(500)",
+                "samples": ["https://example.com", "https://github.com/org/repo"],
+            },
         ]
         result = detect_formats("t", columns)
         assert len(result) == 1
@@ -113,8 +142,11 @@ class TestFormatDetection:
 
     def test_phone_detected(self):
         columns = [
-            {"name": "phone", "data_type": "varchar(20)",
-             "samples": ["+32 2 123 45 67", "+1 (555) 123-4567"]},
+            {
+                "name": "phone",
+                "data_type": "varchar(20)",
+                "samples": ["+32 2 123 45 67", "+1 (555) 123-4567"],
+            },
         ]
         result = detect_formats("t", columns)
         assert len(result) == 1
@@ -122,8 +154,7 @@ class TestFormatDetection:
 
     def test_numeric_code_detected(self):
         columns = [
-            {"name": "zip", "data_type": "varchar(10)",
-             "samples": ["1000", "9000", "2600"]},
+            {"name": "zip", "data_type": "varchar(10)", "samples": ["1000", "9000", "2600"]},
         ]
         result = detect_formats("t", columns)
         assert len(result) == 1
@@ -131,16 +162,18 @@ class TestFormatDetection:
 
     def test_integer_column_skipped(self):
         columns = [
-            {"name": "count", "data_type": "int",
-             "samples": ["100", "200"]},
+            {"name": "count", "data_type": "int", "samples": ["100", "200"]},
         ]
         result = detect_formats("t", columns)
         assert len(result) == 0
 
     def test_mixed_formats_no_match(self):
         columns = [
-            {"name": "notes", "data_type": "varchar(max)",
-             "samples": ["hello world", "12345", "user@test.com"]},
+            {
+                "name": "notes",
+                "data_type": "varchar(max)",
+                "samples": ["hello world", "12345", "user@test.com"],
+            },
         ]
         result = detect_formats("t", columns)
         assert len(result) == 0
@@ -158,13 +191,21 @@ class TestFKInference:
 
     def test_name_based_exact_match(self):
         tables = [
-            {"name": "orders", "row_count": 1000, "columns": [
-                {"name": "id", "data_type": "int", "distinct_count": 1000},
-                {"name": "customer_id", "data_type": "int", "distinct_count": 200},
-            ]},
-            {"name": "customers", "row_count": 200, "columns": [
-                {"name": "id", "data_type": "int", "distinct_count": 200},
-            ]},
+            {
+                "name": "orders",
+                "row_count": 1000,
+                "columns": [
+                    {"name": "id", "data_type": "int", "distinct_count": 1000},
+                    {"name": "customer_id", "data_type": "int", "distinct_count": 200},
+                ],
+            },
+            {
+                "name": "customers",
+                "row_count": 200,
+                "columns": [
+                    {"name": "id", "data_type": "int", "distinct_count": 200},
+                ],
+            },
         ]
         result = infer_foreign_keys(tables)
         assert len(result) == 1
@@ -175,12 +216,20 @@ class TestFKInference:
 
     def test_name_based_tbl_prefix(self):
         tables = [
-            {"name": "tblInvoice", "row_count": 500, "columns": [
-                {"name": "ClientId", "data_type": "int", "distinct_count": 100},
-            ]},
-            {"name": "tblClient", "row_count": 100, "columns": [
-                {"name": "id", "data_type": "int", "distinct_count": 100},
-            ]},
+            {
+                "name": "tblInvoice",
+                "row_count": 500,
+                "columns": [
+                    {"name": "ClientId", "data_type": "int", "distinct_count": 100},
+                ],
+            },
+            {
+                "name": "tblClient",
+                "row_count": 100,
+                "columns": [
+                    {"name": "id", "data_type": "int", "distinct_count": 100},
+                ],
+            },
         ]
         result = infer_foreign_keys(tables)
         # Should find tblClient via "tblclient" match
@@ -190,18 +239,26 @@ class TestFKInference:
 
     def test_no_match_no_suggestion(self):
         tables = [
-            {"name": "orders", "row_count": 1000, "columns": [
-                {"name": "amount", "data_type": "decimal", "distinct_count": 500},
-            ]},
+            {
+                "name": "orders",
+                "row_count": 1000,
+                "columns": [
+                    {"name": "amount", "data_type": "decimal", "distinct_count": 500},
+                ],
+            },
         ]
         result = infer_foreign_keys(tables)
         assert len(result) == 0
 
     def test_self_reference_excluded(self):
         tables = [
-            {"name": "orders", "row_count": 1000, "columns": [
-                {"name": "order_id", "data_type": "int", "distinct_count": 1000},
-            ]},
+            {
+                "name": "orders",
+                "row_count": 1000,
+                "columns": [
+                    {"name": "order_id", "data_type": "int", "distinct_count": 1000},
+                ],
+            },
         ]
         result = infer_foreign_keys(tables)
         # Should not suggest FK to itself
@@ -220,22 +277,42 @@ class TestEnrichSourceSchema:
                     "name": "orders",
                     "row_count": 5000,
                     "columns": [
-                        {"name": "id", "data_type": "int", "distinct_count": 5000,
-                         "samples": ["1", "2", "3"]},
-                        {"name": "status", "data_type": "varchar(20)", "distinct_count": 4,
-                         "samples": ["open", "closed", "pending", "cancelled"]},
-                        {"name": "email", "data_type": "varchar(200)", "distinct_count": 4800,
-                         "samples": ["a@b.com", "c@d.org", "test@example.com"]},
-                        {"name": "customer_id", "data_type": "int", "distinct_count": 500,
-                         "samples": ["101", "202", "303"]},
+                        {
+                            "name": "id",
+                            "data_type": "int",
+                            "distinct_count": 5000,
+                            "samples": ["1", "2", "3"],
+                        },
+                        {
+                            "name": "status",
+                            "data_type": "varchar(20)",
+                            "distinct_count": 4,
+                            "samples": ["open", "closed", "pending", "cancelled"],
+                        },
+                        {
+                            "name": "email",
+                            "data_type": "varchar(200)",
+                            "distinct_count": 4800,
+                            "samples": ["a@b.com", "c@d.org", "test@example.com"],
+                        },
+                        {
+                            "name": "customer_id",
+                            "data_type": "int",
+                            "distinct_count": 500,
+                            "samples": ["101", "202", "303"],
+                        },
                     ],
                 },
                 {
                     "name": "customers",
                     "row_count": 500,
                     "columns": [
-                        {"name": "id", "data_type": "int", "distinct_count": 500,
-                         "samples": ["101", "202"]},
+                        {
+                            "name": "id",
+                            "data_type": "int",
+                            "distinct_count": 500,
+                            "samples": ["101", "202"],
+                        },
                     ],
                 },
             ],

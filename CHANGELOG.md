@@ -85,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-normalized.
 
 ### Changed
+- **Removed `black` as the formatter; `ruff format` is now the sole formatter.** Black was a
+  declared dev dependency and documented formatter but was never enforced in CI, leaving the code
+  drifted from its own config. The redundant tool and `[tool.black]` config are removed, the whole
+  `src/` and `tests/` tree is reformatted with `ruff format` (black-compatible, 100-char), and
+  `CONTRIBUTING.md` now names `ruff format` as the formatter.
 - **`kairos-design-domain` pattern guidance now covers structure, not just naming (DD-150).**
   `mode_bindings`, `grain_collisions` and `participants` already reached the CLI payload via the
   `extra` flatten, but the skill only instructed on `naming_conventions` / `anti_patterns`, so the

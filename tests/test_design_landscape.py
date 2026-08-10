@@ -284,7 +284,9 @@ def _build_hub(tmp_path: Path) -> tuple[Path, Path]:
         _DOMAIN_ONTOLOGY_TTL, encoding="utf-8"
     )
 
-    accelerator_ttl_path = ref_models_dir / "accelerator-packs" / "acme" / "ontologies" / "party.ttl"
+    accelerator_ttl_path = (
+        ref_models_dir / "accelerator-packs" / "acme" / "ontologies" / "party.ttl"
+    )
     accelerator_ttl_path.parent.mkdir(parents=True)
     accelerator_ttl_path.write_text(_ACCELERATOR_TTL, encoding="utf-8")
 
@@ -520,7 +522,9 @@ def test_missing_evidence_inputs_are_reported_as_gaps_not_crashes(tmp_path):
     ref_models_dir = tmp_path / "ontology-reference-models"
     (hub_root / "model" / "ontologies").mkdir(parents=True)
 
-    accelerator_ttl_path = ref_models_dir / "accelerator-packs" / "acme" / "ontologies" / "party.ttl"
+    accelerator_ttl_path = (
+        ref_models_dir / "accelerator-packs" / "acme" / "ontologies" / "party.ttl"
+    )
     accelerator_ttl_path.parent.mkdir(parents=True)
     accelerator_ttl_path.write_text(_ACCELERATOR_TTL, encoding="utf-8")
     data_domains_path = (

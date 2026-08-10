@@ -99,7 +99,9 @@ class UnresolvedAnchor:
         return out
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], *, diagnostics: list[str] | None = None) -> UnresolvedAnchor | None:
+    def from_dict(
+        cls, data: dict[str, Any], *, diagnostics: list[str] | None = None
+    ) -> UnresolvedAnchor | None:
         """Parse one record, tolerantly.
 
         Returns ``None`` (and appends a message to *diagnostics*, when given)
@@ -108,6 +110,7 @@ class UnresolvedAnchor:
         document never blocks the whole load. An unrecognized ``status`` is
         coerced to ``"open"`` with a diagnostic, never dropped.
         """
+
         def diag(msg: str) -> None:
             if diagnostics is not None:
                 diagnostics.append(msg)
@@ -236,9 +239,7 @@ def merge_preserving_anchor_resolutions(
     return merged
 
 
-def write_unresolved_anchors_doc(
-    path: Path, domain: str, anchors: list[UnresolvedAnchor]
-) -> Path:
+def write_unresolved_anchors_doc(path: Path, domain: str, anchors: list[UnresolvedAnchor]) -> Path:
     """Write a domain's unresolved-anchors document deterministically."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

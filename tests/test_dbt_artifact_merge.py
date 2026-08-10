@@ -87,9 +87,7 @@ def test_merge_dbt_artifacts_unions_shared_sources():
 def test_merge_dbt_artifacts_identical_shared_gold_passes():
     path = "models/gold/shared/dim_date.sql"
     dest = {path: "SELECT 1"}
-    _merge_dbt_artifacts(
-        dest, {path: "SELECT 1"}, context="Generated dbt artifact collisions"
-    )
+    _merge_dbt_artifacts(dest, {path: "SELECT 1"}, context="Generated dbt artifact collisions")
     assert dest[path] == "SELECT 1"
 
 
@@ -97,6 +95,4 @@ def test_merge_dbt_artifacts_raises_on_real_collision():
     path = "models/silver/client/dim_client.sql"
     dest = {path: "SELECT 1"}
     with pytest.raises(RuntimeError, match="Generated dbt artifact collisions"):
-        _merge_dbt_artifacts(
-            dest, {path: "SELECT 2"}, context="Generated dbt artifact collisions"
-        )
+        _merge_dbt_artifacts(dest, {path: "SELECT 2"}, context="Generated dbt artifact collisions")

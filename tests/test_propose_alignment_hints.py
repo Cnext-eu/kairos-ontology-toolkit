@@ -99,9 +99,7 @@ class TestIsDiscriminator:
         assert _is_discriminator({"name": "ClientType", "data_type": "int"})
 
     def test_low_cardinality_samples(self):
-        assert _is_discriminator(
-            {"name": "Flag", "data_type": "int", "samples": ["0", "1", "2"]}
-        )
+        assert _is_discriminator({"name": "Flag", "data_type": "int", "samples": ["0", "1", "2"]})
 
     def test_high_cardinality_not_discriminator(self):
         assert not _is_discriminator(
@@ -223,12 +221,17 @@ def _domain_with_column(**hint_fields):
         **hint_fields,
     )
     table = TableAlignment(
-        system="adminpulse", table="tblClient", ref_class="Client",
-        ref_class_confidence=0.9, columns=[col],
+        system="adminpulse",
+        table="tblClient",
+        ref_class="Client",
+        ref_class_confidence=0.9,
+        columns=[col],
     )
     return DomainAlignment(
-        domain="client", domain_uris=["http://ex/client#"],
-        generated_at="2026-06-13T00:00:00Z", model_used="test",
+        domain="client",
+        domain_uris=["http://ex/client#"],
+        generated_at="2026-06-13T00:00:00Z",
+        model_used="test",
         tables=[table],
     )
 
@@ -239,8 +242,10 @@ class TestHintSerialization:
         data = alignment_to_dict(_domain_with_column())
         col = data["tables"][0]["columns"][0]
         for key in (
-            "transform_hint", "transform_confidence",
-            "requires_human_confirmation", "transform_rationale",
+            "transform_hint",
+            "transform_confidence",
+            "requires_human_confirmation",
+            "transform_rationale",
         ):
             assert key not in col
         assert "structural_hints" not in data["tables"][0]
@@ -252,9 +257,7 @@ class TestHintSerialization:
             requires_human_confirmation=False,
             transform_rationale="passthrough",
         )
-        dom.tables[0].structural_hints = [
-            {"type": "split_candidate", "source_table": "tblClient"}
-        ]
+        dom.tables[0].structural_hints = [{"type": "split_candidate", "source_table": "tblClient"}]
         data = alignment_to_dict(dom)
         col = data["tables"][0]["columns"][0]
         assert col["transform_hint"] == "source.IsActive"

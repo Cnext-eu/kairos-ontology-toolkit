@@ -205,13 +205,13 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
         # DD-148: kairos-ontology compile/validate accept EITHER a businessdiscovery/
         # narrative (this check) OR a conformance artifact (discovery_conformance) as
         # evidence discovery ran — only block here when neither exists.
-        no_conformance_either = (
-            snapshot.discovery_conformance is DiscoveryConformanceStatus.NOT_RUN
-        )
+        no_conformance_either = snapshot.discovery_conformance is DiscoveryConformanceStatus.NOT_RUN
         actions.append(
             _action(
                 "design-discovery",
-                ActionStatus.BLOCKING if no_conformance_either else ActionStatus.HUMAN_DECISION_REQUIRED,
+                ActionStatus.BLOCKING
+                if no_conformance_either
+                else ActionStatus.HUMAN_DECISION_REQUIRED,
                 rationale=(
                     (
                         "No business discovery evidence found — neither a "
@@ -388,8 +388,7 @@ def _domain_actions(domain: DomainSnapshot, compile_ran: bool) -> list[NextActio
                     "fix-diagnostic",
                     ActionStatus.BLOCKING,
                     rationale=(
-                        f"[{name}] {diagnostic.code}: {diagnostic.message} "
-                        f"({diagnostic.location})"
+                        f"[{name}] {diagnostic.code}: {diagnostic.message} ({diagnostic.location})"
                     ),
                     command=f"kairos-ontology compile {name} --check --format json",
                     priority=base + 20,
@@ -481,9 +480,7 @@ def _emit_gate_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
         ]
     if snapshot.emitted_dbt_project is not InputStatus.PRESENT:
         return []
-    if not any(
-        domain.compile_status is CompileStatus.PASSED for domain in snapshot.domains
-    ):
+    if not any(domain.compile_status is CompileStatus.PASSED for domain in snapshot.domains):
         return []
     platform = snapshot.adapter or "<fabric|databricks>"
     return [

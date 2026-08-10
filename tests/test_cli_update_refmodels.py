@@ -41,7 +41,8 @@ class TestUpdateRefmodels:
         with patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError("git not found")
             result = runner.invoke(
-                cli, ["update-refmodels", "--dest", str(hub_structure / "model" / "reference-models")]
+                cli,
+                ["update-refmodels", "--dest", str(hub_structure / "model" / "reference-models")],
             )
             assert result.exit_code != 0
             assert "git is not installed" in result.output
@@ -83,6 +84,7 @@ class TestUpdateRefmodels:
                 # Simulate the clone by copying our fake content into the target
                 clone_dest = Path(cmd[-1])
                 import shutil
+
                 if clone_dest.exists():
                     shutil.rmtree(clone_dest)
                 shutil.copytree(fake_clone_dir, clone_dest)
@@ -120,6 +122,7 @@ class TestUpdateRefmodels:
             if cmd[0] == "git" and cmd[1] == "clone":
                 clone_dest = Path(cmd[-1])
                 import shutil
+
                 if clone_dest.exists():
                     shutil.rmtree(clone_dest)
                 shutil.copytree(fake_clone_dir, clone_dest)
@@ -152,6 +155,7 @@ class TestUpdateRefmodels:
             if cmd[0] == "git" and cmd[1] == "clone":
                 clone_dest = Path(cmd[-1])
                 import shutil
+
                 if clone_dest.exists():
                     shutil.rmtree(clone_dest)
                 shutil.copytree(fake_clone_dir, clone_dest)

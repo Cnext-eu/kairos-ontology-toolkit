@@ -30,15 +30,9 @@ ex:name a owl:DatatypeProperty ; rdfs:domain ex:Party ; rdfs:label "Name" .
         target="prompt",
     )
 
-    compact = json.loads(
-        (output / "prompt" / "party-context.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    compact = json.loads((output / "prompt" / "party-context.json").read_text(encoding="utf-8"))
     detailed = json.loads(
-        (output / "prompt" / "party-context-detailed.json").read_text(
-            encoding="utf-8"
-        )
+        (output / "prompt" / "party-context-detailed.json").read_text(encoding="utf-8")
     )
     metadata = compact["semantic_context"]
     assert metadata["semantic_profile"] == "kairos-design"
@@ -46,6 +40,4 @@ ex:name a owl:DatatypeProperty ; rdfs:domain ex:Party ; rdfs:label "Name" .
     assert metadata["import_complete"] is True
     assert metadata["truncated"] is False
     assert metadata["included_class_count"] == 1
-    assert detailed["entities"][0]["provenance"]["source_identity"] == (
-        "https://example.org/party"
-    )
+    assert detailed["entities"][0]["provenance"]["source_identity"] == ("https://example.org/party")

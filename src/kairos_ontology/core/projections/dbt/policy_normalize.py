@@ -214,7 +214,9 @@ class PolicyNormalizationError(ValueError):
                             else (
                                 "quality"
                                 if code.startswith(("dq.", "quality."))
-                                else "gold" if code.startswith("gold.") else "normalization"
+                                else "gold"
+                                if code.startswith("gold.")
+                                else "normalization"
                             )
                         )
                     )
@@ -4360,7 +4362,9 @@ def _collect_identities(
     status = (
         EvaluationStatus.FAILED
         if any(item.evaluation_status is EvaluationStatus.FAILED for item in own_diagnostics)
-        else EvaluationStatus.NOT_EVALUATED if skipped_prerequisites else EvaluationStatus.PASSED
+        else EvaluationStatus.NOT_EVALUATED
+        if skipped_prerequisites
+        else EvaluationStatus.PASSED
     )
     return EvaluationResult(
         status=status,

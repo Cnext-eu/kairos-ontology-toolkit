@@ -103,8 +103,7 @@ def project(
     """Generate projections from ontologies."""
     if target in RETIRED_COMPILER_TARGETS:
         raise click.ClickException(
-            f"`project --target {target}` is retired; use "
-            "`kairos-ontology compile <domain> --emit`"
+            f"`project --target {target}` is retired; use `kairos-ontology compile <domain> --emit`"
         )
     if target in COMPILE_PLAN_ONLY_TARGETS:
         raise click.ClickException(

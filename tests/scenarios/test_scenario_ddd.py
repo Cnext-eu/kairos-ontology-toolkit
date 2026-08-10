@@ -91,8 +91,6 @@ class TestDddIsolation:
     def test_silver_output_unaffected_by_ddd_overlay(self, client_dbt_artifacts):
         artifacts = client_dbt_artifacts
         # No DDD predicates should appear in generated silver DDL/ERD.
-        blob = "\n".join(
-            value for value in artifacts.values() if isinstance(value, str)
-        )
+        blob = "\n".join(value for value in artifacts.values() if isinstance(value, str))
         assert "kairos-ddd" not in blob
         assert "BoundedContext" not in blob

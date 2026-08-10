@@ -124,7 +124,11 @@ def _source_hash(path: Path) -> str:
 
 def _ontology_metadata(graph: Graph) -> tuple[str | None, str | None]:
     ontologies = sorted(
-        (subject for subject in graph.subjects(RDF.type, OWL.Ontology) if isinstance(subject, URIRef)),
+        (
+            subject
+            for subject in graph.subjects(RDF.type, OWL.Ontology)
+            if isinstance(subject, URIRef)
+        ),
         key=str,
     )
     if not ontologies:
@@ -305,22 +309,20 @@ def load_ontology(
         graph += source_graph
         ontology_iri, ontology_version = _ontology_metadata(source_graph)
         identity = (
-            ontology_iri
-            or pending.import_uri
-            or f"root:{_relative_identity(path, stable_root)}"
+            ontology_iri or pending.import_uri or f"root:{_relative_identity(path, stable_root)}"
         )
         manifest_entry = ImportManifestEntry(
-                ontology_iri=ontology_iri,
-                source_path=str(path),
-                source_identity=identity,
-                parent_import=pending.parent_import,
-                import_uri=pending.import_uri,
-                import_depth=pending.depth,
-                ontology_version=ontology_version,
-                source_sha256=_source_hash(path),
-                rdf_format=rdf_format,
-                requirement=pending.requirement,
-            )
+            ontology_iri=ontology_iri,
+            source_path=str(path),
+            source_identity=identity,
+            parent_import=pending.parent_import,
+            import_uri=pending.import_uri,
+            import_depth=pending.depth,
+            ontology_version=ontology_version,
+            source_sha256=_source_hash(path),
+            rdf_format=rdf_format,
+            requirement=pending.requirement,
+        )
         manifest.append(manifest_entry)
         sources.append(
             LoadedOntologySource(
@@ -332,16 +334,16 @@ def load_ontology(
         imports = sorted({str(value) for value in source_graph.objects(predicate=OWL.imports)})
         for import_uri in imports:
             requirement = (
-                ImportRequirement.OPTIONAL
-                if import_uri in optional
-                else ImportRequirement.REQUIRED
+                ImportRequirement.OPTIONAL if import_uri in optional else ImportRequirement.REQUIRED
             )
             if import_uri.startswith("file://"):
                 if requirement is ImportRequirement.REQUIRED:
                     complete = False
                 diagnostics.append(
                     OntologyDiagnostic(
-                        level="warning" if degraded or requirement is ImportRequirement.OPTIONAL else "error",
+                        level="warning"
+                        if degraded or requirement is ImportRequirement.OPTIONAL
+                        else "error",
                         code="unsupported_file_import",
                         message=f"Unsupported file import: {import_uri}",
                         import_uri=import_uri,
@@ -357,7 +359,9 @@ def load_ontology(
                     complete = False
                 diagnostics.append(
                     OntologyDiagnostic(
-                        level="warning" if degraded or requirement is ImportRequirement.OPTIONAL else "error",
+                        level="warning"
+                        if degraded or requirement is ImportRequirement.OPTIONAL
+                        else "error",
                         code="missing_import",
                         message=f"No catalog mapping for required import: {import_uri}",
                         import_uri=import_uri,
@@ -389,8 +393,7 @@ def load_ontology(
                         level="warning",
                         code="hash_fallback",
                         message=(
-                            f"Hash mismatch: owl:imports <{import_uri}> resolved via "
-                            "'#' fallback."
+                            f"Hash mismatch: owl:imports <{import_uri}> resolved via '#' fallback."
                         ),
                         import_uri=import_uri,
                         source_path=str(resolved_path),

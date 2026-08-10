@@ -75,8 +75,7 @@ def test_root_declared_prefix_suppresses_imported_ambiguity(tmp_path):
 def test_same_file_prefix_conflict_is_a_blocking_error(tmp_path):
     root = _write(
         tmp_path / "root.ttl",
-        "@prefix dup: <https://example.test/one#> .\n"
-        "@prefix dup: <https://example.test/two#> .\n",
+        "@prefix dup: <https://example.test/one#> .\n@prefix dup: <https://example.test/two#> .\n",
     )
     loaded = _loaded(root)
 

@@ -121,7 +121,7 @@ def read_provenance_version(ttl: str) -> str | None:
         if stripped == _RULE:
             break
         if stripped.startswith(prefix):
-            return stripped[len(prefix):].strip()
+            return stripped[len(prefix) :].strip()
     return None
 
 

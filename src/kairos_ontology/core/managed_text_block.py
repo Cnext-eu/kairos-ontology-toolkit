@@ -75,14 +75,7 @@ def compose_managed_file(
         return authored_text
 
     newline = _line_ending(authored_text)
-    block = (
-        begin_marker
-        + newline
-        + newline.join(managed_lines)
-        + newline
-        + end_marker
-        + newline
-    )
+    block = begin_marker + newline + newline.join(managed_lines) + newline + end_marker + newline
     if not authored_text:
         return block
 
@@ -118,12 +111,5 @@ def replace_managed_block(
         return text[:begin] + text[end_after:]
 
     newline = _line_ending(text)
-    block = (
-        begin_marker
-        + newline
-        + newline.join(managed_lines)
-        + newline
-        + end_marker
-        + newline
-    )
+    block = begin_marker + newline + newline.join(managed_lines) + newline + end_marker + newline
     return text[:begin] + block + text[end_after:]

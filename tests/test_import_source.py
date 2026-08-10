@@ -51,7 +51,12 @@ VALID_YAML_DATA = {
         {
             "name": "tblInvoice",
             "columns": [
-                {"name": "InvoiceId", "data_type": "int", "nullable": False, "is_primary_key": True},
+                {
+                    "name": "InvoiceId",
+                    "data_type": "int",
+                    "nullable": False,
+                    "is_primary_key": True,
+                },
                 {"name": "ClientId", "data_type": "int", "nullable": False},
                 {"name": "Amount", "data_type": "decimal(18,2)", "nullable": False},
             ],
@@ -257,14 +262,8 @@ class TestGenerateVocabularyTtl:
         graph.parse(data=ttl, format="turtle")
         ns = Namespace("https://kairos.cnext.eu/source/testapp#")
         expected = "<redacted kind=email source=tblClient.Email datatype=string>"
-        assert (
-            str(graph.value(ns["tblClient_Email"], KAIROS_BRONZE.sampleValues))
-            == expected
-        )
-        assert (
-            str(graph.value(ns["tblClient_Email"], KAIROS_BRONZE.enumValues))
-            == expected
-        )
+        assert str(graph.value(ns["tblClient_Email"], KAIROS_BRONZE.sampleValues)) == expected
+        assert str(graph.value(ns["tblClient_Email"], KAIROS_BRONZE.enumValues)) == expected
 
     def test_primary_key_columns(self):
         ttl = generate_vocabulary_ttl(VALID_YAML_DATA)
@@ -280,14 +279,18 @@ class TestGenerateVocabularyTtl:
         data = {
             "version": "1.0",
             "system": "jsontest",
-            "tables": [{
-                "name": "t1",
-                "columns": [{
-                    "name": "payload",
-                    "data_type": "string",
-                    "content_type": "json-object",
-                }],
-            }],
+            "tables": [
+                {
+                    "name": "t1",
+                    "columns": [
+                        {
+                            "name": "payload",
+                            "data_type": "string",
+                            "content_type": "json-object",
+                        }
+                    ],
+                }
+            ],
         }
         ttl = generate_vocabulary_ttl(data)
         g = Graph()
@@ -384,9 +387,7 @@ class TestMergeWithExisting:
         db = str(g.value(ns["testapp"], KAIROS_BRONZE.database))
         assert db == "bronze_db"
 
-    def test_cleans_stale_raw_and_adds_sanitized_current_samples(
-        self, existing_vocab_file
-    ):
+    def test_cleans_stale_raw_and_adds_sanitized_current_samples(self, existing_vocab_file):
         with existing_vocab_file.open("a", encoding="utf-8") as handle:
             handle.write(
                 "\ntestapp:tblClient_OldColumn "
@@ -402,12 +403,14 @@ class TestMergeWithExisting:
         graph = Graph()
         graph.parse(data=ttl, format="turtle")
         ns = Namespace("https://kairos.cnext.eu/source/testapp#")
-        assert str(
-            graph.value(ns["tblClient_OldColumn"], KAIROS_BRONZE.sampleValues)
-        ) == "<redacted kind=email source=tblClient.OldColumn datatype=string>"
-        assert str(
-            graph.value(ns["tblClient_Email"], KAIROS_BRONZE.sampleValues)
-        ) == "<redacted kind=email source=tblClient.Email datatype=string>"
+        assert (
+            str(graph.value(ns["tblClient_OldColumn"], KAIROS_BRONZE.sampleValues))
+            == "<redacted kind=email source=tblClient.OldColumn datatype=string>"
+        )
+        assert (
+            str(graph.value(ns["tblClient_Email"], KAIROS_BRONZE.sampleValues))
+            == "<redacted kind=email source=tblClient.Email datatype=string>"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -418,9 +421,7 @@ class TestMergeWithExisting:
 class TestRunImportSource:
     def test_fresh_generation(self, valid_yaml_file, tmp_path):
         output_dir = tmp_path / "output"
-        result_path, report = run_import_source(
-            valid_yaml_file, output_dir=output_dir
-        )
+        result_path, report = run_import_source(valid_yaml_file, output_dir=output_dir)
         assert result_path is not None
         assert result_path.exists()
         assert result_path.suffix == ".ttl"
@@ -428,9 +429,7 @@ class TestRunImportSource:
 
     def test_dry_run_no_write(self, valid_yaml_file, tmp_path):
         output_dir = tmp_path / "output"
-        result_path, _ = run_import_source(
-            valid_yaml_file, output_dir=output_dir, dry_run=True
-        )
+        result_path, _ = run_import_source(valid_yaml_file, output_dir=output_dir, dry_run=True)
         assert result_path is None
         assert not output_dir.exists()
 
@@ -440,15 +439,13 @@ class TestRunImportSource:
         # Create existing vocab
         existing = output_dir / "testapp.vocabulary.ttl"
         existing.write_text(
-            '@prefix testapp: <https://kairos.cnext.eu/source/testapp#> .\n'
-            '@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .\n'
-            '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n'
+            "@prefix testapp: <https://kairos.cnext.eu/source/testapp#> .\n"
+            "@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .\n"
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
             'testapp:testapp a kairos-bronze:SourceSystem ; rdfs:label "testapp" .\n',
             encoding="utf-8",
         )
-        result_path, report = run_import_source(
-            valid_yaml_file, output_dir=output_dir
-        )
+        result_path, report = run_import_source(valid_yaml_file, output_dir=output_dir)
         assert result_path is not None
         assert report is not None
         assert report.has_changes
@@ -460,9 +457,7 @@ class TestRunImportSource:
         )
         assert result_path.name == "custom.vocabulary.ttl"
 
-    def test_builds_all_turtle_before_publishing(
-        self, valid_yaml_file, tmp_path, monkeypatch
-    ):
+    def test_builds_all_turtle_before_publishing(self, valid_yaml_file, tmp_path, monkeypatch):
         output_dir = tmp_path / "output"
 
         def fail_per_table(_data):
@@ -516,10 +511,15 @@ class TestParseSourceSchemaDir:
         system_dir.mkdir()
 
         # Write manifest
-        manifest = {"version": "1.1", "system": "testapp", "platform": "fabric",
-                    "tables": ["tblClient"]}
+        manifest = {
+            "version": "1.1",
+            "system": "testapp",
+            "platform": "fabric",
+            "tables": ["tblClient"],
+        }
         (system_dir / "_manifest.yaml").write_text(
-            yaml.dump(manifest, default_flow_style=False), encoding="utf-8")
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8"
+        )
 
         # Write table YAML (no inline samples)
         table_data = {
@@ -528,11 +528,17 @@ class TestParseSourceSchemaDir:
             "row_count": 10,
             "columns": [
                 {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False},
-                {"name": "name", "data_type": "varchar(100)", "ordinal_position": 2, "nullable": True},
+                {
+                    "name": "name",
+                    "data_type": "varchar(100)",
+                    "ordinal_position": 2,
+                    "nullable": True,
+                },
             ],
         }
         (system_dir / "tblClient.yaml").write_text(
-            yaml.dump(table_data, default_flow_style=False), encoding="utf-8")
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8"
+        )
 
         # Write .samples.yaml with row data
         samples_data = {
@@ -546,7 +552,8 @@ class TestParseSourceSchemaDir:
             ],
         }
         (system_dir / "tblClient.samples.yaml").write_text(
-            yaml.dump(samples_data, default_flow_style=False), encoding="utf-8")
+            yaml.dump(samples_data, default_flow_style=False), encoding="utf-8"
+        )
 
         result = parse_source_schema_dir(system_dir)
 
@@ -564,17 +571,27 @@ class TestParseSourceSchemaDir:
         system_dir = tmp_path / "testapp"
         system_dir.mkdir()
 
-        manifest = {"version": "1.1", "system": "testapp", "platform": "fabric",
-                    "tables": ["tblClient"]}
+        manifest = {
+            "version": "1.1",
+            "system": "testapp",
+            "platform": "fabric",
+            "tables": ["tblClient"],
+        }
         (system_dir / "_manifest.yaml").write_text(
-            yaml.dump(manifest, default_flow_style=False), encoding="utf-8")
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8"
+        )
 
         table_data = {
-            "name": "tblClient", "schema": "bronze", "row_count": 5,
-            "columns": [{"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}],
+            "name": "tblClient",
+            "schema": "bronze",
+            "row_count": 5,
+            "columns": [
+                {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+            ],
         }
         (system_dir / "tblClient.yaml").write_text(
-            yaml.dump(table_data, default_flow_style=False), encoding="utf-8")
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8"
+        )
 
         result = parse_source_schema_dir(system_dir)
         assert "samples" not in result["tables"][0]["columns"][0]
@@ -586,25 +603,44 @@ class TestParseSourceSchemaDir:
         system_dir = tmp_path / "testapp"
         system_dir.mkdir()
 
-        manifest = {"version": "1.1", "system": "testapp", "platform": "fabric",
-                    "tables": ["tblClient"]}
+        manifest = {
+            "version": "1.1",
+            "system": "testapp",
+            "platform": "fabric",
+            "tables": ["tblClient"],
+        }
         (system_dir / "_manifest.yaml").write_text(
-            yaml.dump(manifest, default_flow_style=False), encoding="utf-8")
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8"
+        )
 
         # Table with inline samples (backward compat)
         table_data = {
-            "name": "tblClient", "schema": "bronze", "row_count": 5,
-            "columns": [{"name": "id", "data_type": "int", "ordinal_position": 1,
-                         "nullable": False, "samples": ["OLD1", "OLD2"]}],
+            "name": "tblClient",
+            "schema": "bronze",
+            "row_count": 5,
+            "columns": [
+                {
+                    "name": "id",
+                    "data_type": "int",
+                    "ordinal_position": 1,
+                    "nullable": False,
+                    "samples": ["OLD1", "OLD2"],
+                }
+            ],
         }
         (system_dir / "tblClient.yaml").write_text(
-            yaml.dump(table_data, default_flow_style=False), encoding="utf-8")
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8"
+        )
 
         # .samples.yaml exists but inline should take precedence
-        samples_data = {"table": "tblClient", "schema": "bronze",
-                        "rows": [{"id": "NEW1"}, {"id": "NEW2"}]}
+        samples_data = {
+            "table": "tblClient",
+            "schema": "bronze",
+            "rows": [{"id": "NEW1"}, {"id": "NEW2"}],
+        }
         (system_dir / "tblClient.samples.yaml").write_text(
-            yaml.dump(samples_data, default_flow_style=False), encoding="utf-8")
+            yaml.dump(samples_data, default_flow_style=False), encoding="utf-8"
+        )
 
         result = parse_source_schema_dir(system_dir)
         # Should keep the old inline samples

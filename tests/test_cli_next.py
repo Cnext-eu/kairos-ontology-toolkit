@@ -37,7 +37,7 @@ def _stdout_json(result):
     The test runner merges stdout+stderr into ``result.output`` while keeping
     ``result.stderr`` separate; at the OS level stdout carries only the JSON.
     """
-    stdout = result.output[len(result.stderr):]
+    stdout = result.output[len(result.stderr) :]
     return json.loads(stdout)
 
 
@@ -97,9 +97,7 @@ def test_gather_snapshot_reports_passing_domain(hub):
 
 def test_gather_snapshot_flags_binding_without_ontology(hub):
     binding = hub / "integration" / "bindings" / "customer.binding.yaml"
-    text = binding.read_text(encoding="utf-8").replace(
-        "domain: party", "domain: orphan"
-    )
+    text = binding.read_text(encoding="utf-8").replace("domain: party", "domain: orphan")
     binding.write_text(text, encoding="utf-8")
 
     snapshot = gather_hub_input_snapshot(hub)
@@ -168,9 +166,7 @@ def test_next_surfaces_resolve_discovery_open_questions_action(hub, monkeypatch)
     )
     result = _invoke(hub, monkeypatch, ["--format", "json"])
     payload = _stdout_json(result)
-    action = next(
-        a for a in payload["actions"] if a["kind"] == "resolve-discovery-open-questions"
-    )
+    action = next(a for a in payload["actions"] if a["kind"] == "resolve-discovery-open-questions")
     assert action["status"] == "blocking"
     assert action["blocking"] is True
     assert action["skill"] == "kairos-design-discovery"

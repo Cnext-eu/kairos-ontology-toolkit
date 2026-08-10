@@ -30,45 +30,45 @@ KAIROS_MDM = Namespace("https://kairos.cnext.eu/mdm#")
 # ---------------------------------------------------------------------------
 # Class-level annotation terms (on owl:Class)
 # ---------------------------------------------------------------------------
-MASTERED = KAIROS_MDM.mastered               # xsd:boolean — class is a mastered entity
-MDM_STYLE = KAIROS_MDM.mdmStyle              # enum MDM_STYLES
-REFERENCE_LIST = KAIROS_MDM.referenceList    # xsd:boolean — class is reference data
+MASTERED = KAIROS_MDM.mastered  # xsd:boolean — class is a mastered entity
+MDM_STYLE = KAIROS_MDM.mdmStyle  # enum MDM_STYLES
+REFERENCE_LIST = KAIROS_MDM.referenceList  # xsd:boolean — class is reference data
 
 # ---------------------------------------------------------------------------
 # Attribute-level annotation terms (on owl:DatatypeProperty / owl:ObjectProperty)
 # ---------------------------------------------------------------------------
-MATCH_ATTRIBUTE = KAIROS_MDM.matchAttribute        # xsd:boolean
-IS_IDENTIFIER = KAIROS_MDM.identifier              # xsd:boolean — match-capable identifier
-IDENTIFIER_TYPE = KAIROS_MDM.identifierType        # e.g. VAT, KBO, LEI, EORI
-AUTHORITATIVE_SOURCE = KAIROS_MDM.authoritativeSource   # source system name(s)
-SURVIVORSHIP = KAIROS_MDM.survivorship             # enum SURVIVORSHIP_STRATEGIES
+MATCH_ATTRIBUTE = KAIROS_MDM.matchAttribute  # xsd:boolean
+IS_IDENTIFIER = KAIROS_MDM.identifier  # xsd:boolean — match-capable identifier
+IDENTIFIER_TYPE = KAIROS_MDM.identifierType  # e.g. VAT, KBO, LEI, EORI
+AUTHORITATIVE_SOURCE = KAIROS_MDM.authoritativeSource  # source system name(s)
+SURVIVORSHIP = KAIROS_MDM.survivorship  # enum SURVIVORSHIP_STRATEGIES
 SURVIVORSHIP_PRIORITY = KAIROS_MDM.survivorshipPriority  # xsd:integer (lower = wins)
 
 # ---------------------------------------------------------------------------
 # Deterministic match rules (kairos-mdm:MatchRule resources)
 # ---------------------------------------------------------------------------
-MATCH_RULE = KAIROS_MDM.MatchRule           # rdf:type of a deterministic rule node
-APPLIES_TO = KAIROS_MDM.appliesTo           # rule -> owl:Class it masters
-ON_ATTRIBUTE = KAIROS_MDM.onAttribute       # rule/DQ -> property IRI
-COMPARATOR = KAIROS_MDM.comparator          # enum COMPARATORS
-THRESHOLD = KAIROS_MDM.threshold            # xsd:decimal 0..1
-MATCH_ACTION = KAIROS_MDM.matchAction       # enum MATCH_ACTIONS
+MATCH_RULE = KAIROS_MDM.MatchRule  # rdf:type of a deterministic rule node
+APPLIES_TO = KAIROS_MDM.appliesTo  # rule -> owl:Class it masters
+ON_ATTRIBUTE = KAIROS_MDM.onAttribute  # rule/DQ -> property IRI
+COMPARATOR = KAIROS_MDM.comparator  # enum COMPARATORS
+THRESHOLD = KAIROS_MDM.threshold  # xsd:decimal 0..1
+MATCH_ACTION = KAIROS_MDM.matchAction  # enum MATCH_ACTIONS
 
 # ---------------------------------------------------------------------------
 # Probabilistic-model reference (ADR-5) — content-addressed, never weights in TTL
 # ---------------------------------------------------------------------------
 PROBABILISTIC_ARTIFACT = KAIROS_MDM.probabilisticArtifact  # ontology -> artifact node
-ARTIFACT_DIGEST = KAIROS_MDM.artifactDigest   # e.g. sha256:… (content address)
+ARTIFACT_DIGEST = KAIROS_MDM.artifactDigest  # e.g. sha256:… (content address)
 ARTIFACT_VERSION = KAIROS_MDM.artifactVersion
 ARTIFACT_URI = KAIROS_MDM.artifactUri
 
 # ---------------------------------------------------------------------------
 # Workflow / stewardship policy (on owl:Class)
 # ---------------------------------------------------------------------------
-MAKER_CHECKER = KAIROS_MDM.makerChecker         # xsd:boolean
+MAKER_CHECKER = KAIROS_MDM.makerChecker  # xsd:boolean
 AUTO_ACTION_BOUND = KAIROS_MDM.autoActionBound  # xsd:decimal — score >= bound may auto-act
-SLA_HOURS = KAIROS_MDM.slaHours                 # xsd:integer
-ESCALATION_ROLE = KAIROS_MDM.escalationRole     # abstract role name
+SLA_HOURS = KAIROS_MDM.slaHours  # xsd:integer
+ESCALATION_ROLE = KAIROS_MDM.escalationRole  # abstract role name
 
 # ---------------------------------------------------------------------------
 # Abstract steward roles (kairos-mdm:StewardRole resources) — environment identity
@@ -83,16 +83,16 @@ ROLE_SCOPE = KAIROS_MDM.scope
 # ---------------------------------------------------------------------------
 REFERENCE_OWNER = KAIROS_MDM.referenceOwner
 RELEASE_POLICY = KAIROS_MDM.releasePolicy
-REFERENCE_LICENSE = KAIROS_MDM.license          # license/attribution (§9.2)
+REFERENCE_LICENSE = KAIROS_MDM.license  # license/attribution (§9.2)
 
 # ---------------------------------------------------------------------------
 # Data-quality rules (kairos-mdm:DataQualityRule resources) — §11
 # ---------------------------------------------------------------------------
 DQ_RULE = KAIROS_MDM.DataQualityRule
-DQ_DIMENSION = KAIROS_MDM.dimension             # enum DQ_DIMENSIONS (DAMA six)
+DQ_DIMENSION = KAIROS_MDM.dimension  # enum DQ_DIMENSIONS (DAMA six)
 DQ_EXPRESSION = KAIROS_MDM.expression
 DQ_SCORECARD_THRESHOLD = KAIROS_MDM.scorecardThreshold  # xsd:decimal 0..1
-DQ_SEVERITY = KAIROS_MDM.severity               # enum DQ_SEVERITIES
+DQ_SEVERITY = KAIROS_MDM.severity  # enum DQ_SEVERITIES
 
 
 # ---------------------------------------------------------------------------

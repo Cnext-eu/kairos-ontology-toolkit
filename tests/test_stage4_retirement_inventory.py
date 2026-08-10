@@ -257,9 +257,9 @@ def test_mixed_modules_classify_retired_and_retained_symbols(inventory):
     for wave in inventory["waves"]:
         for module, classification in wave.get("mixed_modules", {}).items():
             assert classification["retire"] or classification["retain_or_extract"]
-            assert classification[
-                "retain_or_extract"
-            ], f"{module} is not mixed; move it to retired_modules if nothing survives"
+            assert classification["retain_or_extract"], (
+                f"{module} is not mixed; move it to retired_modules if nothing survives"
+            )
             assert classification["reason"]
 
 

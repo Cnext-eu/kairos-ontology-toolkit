@@ -209,34 +209,54 @@ def _resolve_target_class(
     ref_class = str(table_dict.get("ref_class") or "")
     if not ref_class:
         status = table_dict.get("ref_class_status", "unmatched")
-        return None, domain, (
-            f"propose-alignment recorded no confident accelerator class for this table "
-            f"(ref_class_status={status!r})."
+        return (
+            None,
+            domain,
+            (
+                f"propose-alignment recorded no confident accelerator class for this table "
+                f"(ref_class_status={status!r})."
+            ),
         )
     domain_uris = [str(uri) for uri in (document.get("domain_uris") or ())]
     if not domain_uris:
-        return None, domain, (
-            f"propose-alignment evidence has no domain_uris (accelerator owl:imports) recorded "
-            f"alongside ref_class {ref_class!r}; cannot resolve it to a class URI."
+        return (
+            None,
+            domain,
+            (
+                f"propose-alignment evidence has no domain_uris (accelerator owl:imports) recorded "
+                f"alongside ref_class {ref_class!r}; cannot resolve it to a class URI."
+            ),
         )
     try:
         inventory = extract_ref_model_inventory(domain_uris, catalog_path)
     except Exception as exc:  # noqa: BLE001 - a broken accelerator checkout must not crash the batch
-        return None, domain, (
-            f"could not resolve the accelerator class inventory for ref_class {ref_class!r} "
-            f"(domain_uris={domain_uris}): {exc}"
+        return (
+            None,
+            domain,
+            (
+                f"could not resolve the accelerator class inventory for ref_class {ref_class!r} "
+                f"(domain_uris={domain_uris}): {exc}"
+            ),
         )
     match = next((cls for cls in inventory if str(cls.get("name")) == ref_class), None)
     if match is None:
-        return None, domain, (
-            f"propose-alignment's ref_class {ref_class!r} does not resolve to any class in the "
-            f"accelerator inventory for domain_uris={domain_uris} (stale or renamed evidence -- "
-            "re-run propose-alignment, or scaffold this table by hand with `scaffold-binding "
-            "--target-class`)."
+        return (
+            None,
+            domain,
+            (
+                f"propose-alignment's ref_class {ref_class!r} does not resolve to any class in the "
+                f"accelerator inventory for domain_uris={domain_uris} (stale or renamed evidence -- "
+                "re-run propose-alignment, or scaffold this table by hand with `scaffold-binding "
+                "--target-class`)."
+            ),
         )
     class_uri = str(match.get("uri") or "")
     if not class_uri:
-        return None, domain, f"accelerator class {ref_class!r} has no URI in the resolved inventory."
+        return (
+            None,
+            domain,
+            f"accelerator class {ref_class!r} has no URI in the resolved inventory.",
+        )
     return class_uri, domain, ""
 
 

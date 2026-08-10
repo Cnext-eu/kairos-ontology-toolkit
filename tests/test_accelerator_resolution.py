@@ -391,8 +391,7 @@ class TestCrossCommandResolverParity:
     def test_check_inventory_infers_same_accelerator(self, tmp_path, monkeypatch):
         hub = self._build_hub(tmp_path)
         (hub.parent / "catalog-v001.xml").write_text(
-            '<?xml version="1.0"?>'
-            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"/>',
+            '<?xml version="1.0"?><catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"/>',
             encoding="utf-8",
         )
         monkeypatch.chdir(hub)

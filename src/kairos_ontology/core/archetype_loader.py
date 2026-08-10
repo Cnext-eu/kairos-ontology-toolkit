@@ -232,7 +232,9 @@ def _load_archetype_schema(refmodels_root: Path) -> dict[str, Any] | None:
     root = normalize_refmodels_root(refmodels_root)
     schema_path = root / _ARCHETYPE_SCHEMA_FILE
     if not schema_path.is_file():
-        logger.warning("Archetype JSON Schema not found at %s; skipping schema validation", schema_path)
+        logger.warning(
+            "Archetype JSON Schema not found at %s; skipping schema validation", schema_path
+        )
         return None
     import json
 
@@ -290,7 +292,9 @@ def _validate_against_schema(data: dict[str, Any], schema: dict[str, Any], sourc
         details = "; ".join(
             f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}" for e in errors[:8]
         )
-        raise ArchetypeError(f"Archetype catalog '{source.name}' failed schema validation: {details}")
+        raise ArchetypeError(
+            f"Archetype catalog '{source.name}' failed schema validation: {details}"
+        )
 
 
 def load_archetype(refmodels_root: Path, archetype_id: str) -> Archetype:

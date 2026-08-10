@@ -12,7 +12,6 @@ Examples::
     python -m kairos_ontology --version
 """
 
-
 from kairos_ontology.cli.main import _ensure_utf8_stdio, cli
 
 _ensure_utf8_stdio()

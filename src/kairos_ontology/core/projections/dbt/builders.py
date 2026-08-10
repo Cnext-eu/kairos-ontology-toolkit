@@ -202,7 +202,9 @@ def outcome_from_context(context: Mapping[str, object]) -> SilverModelOutcome:
     outcome = (
         ModelOutcome.FOLDED
         if skipped and reason and "discriminator subclass" in reason
-        else ModelOutcome.SKIPPED if skipped else ModelOutcome.GENERATED
+        else ModelOutcome.SKIPPED
+        if skipped
+        else ModelOutcome.GENERATED
     )
     class_name = str(context.get("class_name") or "")
     model_name = str(context.get("model_name") or "")

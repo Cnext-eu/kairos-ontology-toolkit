@@ -133,9 +133,7 @@ def test_golden_vector_bytes_and_sha256_are_frozen():
     ],
 )
 def test_reference_codec_matches_every_golden_vector(name, values):
-    expected = next(
-        vector for vector in CANONICAL_HASH_V1_GOLDEN_VECTORS if vector.name == name
-    )
+    expected = next(vector for vector in CANONICAL_HASH_V1_GOLDEN_VECTORS if vector.name == name)
     assert canonical_serialize_v1(values) == expected.canonical_bytes
     assert canonical_hash_v1(values) == expected.sha256
 
@@ -147,9 +145,9 @@ def test_null_empty_unicode_and_json_order_are_unambiguous():
     with pytest.raises(CanonicalHashError, match="NFC"):
         canonical_hash_v1((CanonicalValue(STRING, "e\u0301"),))
     json_type = CanonicalTypeSpec(CanonicalTypeKind.JSON)
-    assert canonical_hash_v1(
-        (CanonicalValue(json_type, '{"b":2,"a":1}'),)
-    ) == canonical_hash_v1((CanonicalValue(json_type, {"a": 1, "b": 2}),))
+    assert canonical_hash_v1((CanonicalValue(json_type, '{"b":2,"a":1}'),)) == canonical_hash_v1(
+        (CanonicalValue(json_type, {"a": 1, "b": 2}),)
+    )
 
 
 @pytest.mark.parametrize(
@@ -223,9 +221,7 @@ def test_packaged_macro_and_python_renderer_do_not_drift(adapter):
     env.globals.update(
         target=SimpleNamespace(type=adapter),
         exceptions=SimpleNamespace(
-            raise_compiler_error=lambda message: (_ for _ in ()).throw(
-                CanonicalHashError(message)
-            )
+            raise_compiler_error=lambda message: (_ for _ in ()).throw(CanonicalHashError(message))
         ),
     )
     macro = env.from_string(macro_path.read_text(encoding="utf-8")).module
@@ -368,14 +364,17 @@ def test_delete_block_quarantine_lookback_and_range_replay_are_explicit():
         ),
         _event(value="new", effective_day=24, ingested_hour=12, sequence="2"),
     )
-    assert len(
-        bounded_lookback(
-            events,
-            watermark=datetime(2026, 7, 25, 14, tzinfo=UTC),
-            amount=1,
-            unit="days",
+    assert (
+        len(
+            bounded_lookback(
+                events,
+                watermark=datetime(2026, 7, 25, 14, tzinfo=UTC),
+                amount=1,
+                unit="days",
+            )
         )
-    ) == 1
+        == 1
+    )
     assert range_replay(
         events,
         start=datetime(2026, 7, 24, tzinfo=UTC),

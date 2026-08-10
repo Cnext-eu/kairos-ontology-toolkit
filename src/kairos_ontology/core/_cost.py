@@ -58,22 +58,24 @@ def build_cost_warning(
         if force
         else "  ♻️  Unchanged tables/domains are skipped via cache (use --force to re-run)."
     )
-    return "\n".join([
-        "",
-        f"💸 {_RULE}",
-        f"💸  COSTLY LLM OPERATION  —  {command}",
-        f"💸 {_RULE}",
-        "  This step issues at least ONE paid LLM call per source table, now run",
-        f"  CONCURRENTLY (up to {max_workers} in parallel). On a large hub this is",
-        "  HUNDREDS of billed calls in quick succession.",
-        "",
-        f"  📊 Scale: ~{table_count} table(s) × ≥1 call each, up to {max_workers} in parallel.",
-        model_line,
-        cache_line,
-        "  🐢 Use --max-workers 1 for the slow, cheap, fully-serial path.",
-        f"💸 {_RULE}",
-        "",
-    ])
+    return "\n".join(
+        [
+            "",
+            f"💸 {_RULE}",
+            f"💸  COSTLY LLM OPERATION  —  {command}",
+            f"💸 {_RULE}",
+            "  This step issues at least ONE paid LLM call per source table, now run",
+            f"  CONCURRENTLY (up to {max_workers} in parallel). On a large hub this is",
+            "  HUNDREDS of billed calls in quick succession.",
+            "",
+            f"  📊 Scale: ~{table_count} table(s) × ≥1 call each, up to {max_workers} in parallel.",
+            model_line,
+            cache_line,
+            "  🐢 Use --max-workers 1 for the slow, cheap, fully-serial path.",
+            f"💸 {_RULE}",
+            "",
+        ]
+    )
 
 
 def print_cost_warning(

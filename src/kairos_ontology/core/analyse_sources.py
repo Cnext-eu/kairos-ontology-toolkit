@@ -68,6 +68,7 @@ class TableAssignment:
     optional secondary domains. URIs and group are resolved server-side from the
     chosen candidate domain.
     """
+
     table: str
     total_columns: int
     domain: str
@@ -96,6 +97,7 @@ class SampleEvidence:
 @dataclass
 class SourceAnalysis:
     """Complete analysis result for one source system."""
+
     system: str
     analysed_at: str
     model_used: str
@@ -116,7 +118,8 @@ def _filter_analysis_by_domain(
     only, so secondary domains are deliberately ignored here.
     """
     kept = [
-        ta for ta in analysis.table_assignments
+        ta
+        for ta in analysis.table_assignments
         if any(f in ta.domain.lower() for f in output_domain_filter)
     ]
     return SourceAnalysis(
@@ -146,16 +149,18 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
 
     # Find all source tables
     for tbl_uri in g.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
-        tbl_name = str(g.value(tbl_uri, KAIROS_BRONZE.tableName) or
-                       tbl_uri.split("#")[-1].split("/")[-1])
+        tbl_name = str(
+            g.value(tbl_uri, KAIROS_BRONZE.tableName) or tbl_uri.split("#")[-1].split("/")[-1]
+        )
         columns = []
 
         # Find columns belonging to this table (both predicates are used)
         col_uris = set(g.subjects(KAIROS_BRONZE.belongsToTable, tbl_uri))
         col_uris.update(g.subjects(KAIROS_BRONZE.sourceTable, tbl_uri))
         for col_uri in col_uris:
-            col_name = str(g.value(col_uri, KAIROS_BRONZE.columnName) or
-                           col_uri.split("#")[-1].split("/")[-1])
+            col_name = str(
+                g.value(col_uri, KAIROS_BRONZE.columnName) or col_uri.split("#")[-1].split("/")[-1]
+            )
             data_type = str(g.value(col_uri, KAIROS_BRONZE.dataType) or "unknown")
             nullable = bool(g.value(col_uri, KAIROS_BRONZE.nullable))
             samples_raw = g.value(col_uri, KAIROS_BRONZE.sampleValues)
@@ -163,13 +168,15 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
             distinct_count_raw = g.value(col_uri, KAIROS_BRONZE.distinctCount)
             distinct_count = int(distinct_count_raw) if distinct_count_raw is not None else None
 
-            columns.append({
-                "name": col_name,
-                "data_type": data_type,
-                "nullable": nullable,
-                "samples": samples,
-                "distinct_count": distinct_count,
-            })
+            columns.append(
+                {
+                    "name": col_name,
+                    "data_type": data_type,
+                    "nullable": nullable,
+                    "samples": samples,
+                    "distinct_count": distinct_count,
+                }
+            )
 
         tables[tbl_name] = columns
 
@@ -207,8 +214,7 @@ def analyse_sample_evidence(
     analysed = {name: cols for name, cols in tables.items() if cols}
     analysed_count = len(analysed)
     sampled_tables = [
-        name for name, columns in analysed.items()
-        if any(col.get("samples") for col in columns)
+        name for name, columns in analysed.items() if any(col.get("samples") for col in columns)
     ]
     sampled_count = len(sampled_tables)
     coverage = round(sampled_count / analysed_count, 4) if analysed_count else 1.0
@@ -229,10 +235,14 @@ def analyse_sample_evidence(
 # ---------------------------------------------------------------------------
 
 
-def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None = None,
-                          domain_name: str | None = None,
-                          include_specializations: bool = False,
-                          catalog_path: Path | None = None) -> dict[str, Any]:
+def parse_reference_model(
+    ttl_path: Path | None = None,
+    *,
+    graph: Graph | None = None,
+    domain_name: str | None = None,
+    include_specializations: bool = False,
+    catalog_path: Path | None = None,
+) -> dict[str, Any]:
     """Parse a reference model TTL file (or pre-loaded graph) into a domain summary.
 
     Args:
@@ -291,11 +301,13 @@ def parse_reference_model(ttl_path: Path | None = None, *, graph: Graph | None =
             range_val = g.value(prop_uri, RDFS.range)
             if range_val:
                 prop_range = range_val.split("#")[-1].split("/")[-1]
-            properties.append({
-                "name": prop_name,
-                "label": prop_label,
-                "range": prop_range,
-            })
+            properties.append(
+                {
+                    "name": prop_name,
+                    "label": prop_label,
+                    "range": prop_range,
+                }
+            )
 
         cls_dict: dict[str, Any] = {
             "uri": str(cls_uri),
@@ -353,14 +365,8 @@ def _reference_summary_from_index(
             "name": cls.name,
             "label": cls.label,
             "comment": cls.comment,
-            "properties": [
-                render_property(link)
-                for link in cls.direct_properties
-            ],
-            "inherited_properties": [
-                render_property(link)
-                for link in cls.inherited_properties
-            ],
+            "properties": [render_property(link) for link in cls.direct_properties],
+            "inherited_properties": [render_property(link) for link in cls.inherited_properties],
         }
         if include_specializations:
             item["specializations"] = [
@@ -369,8 +375,7 @@ def _reference_summary_from_index(
                     "class_uri": link.uri,
                     "distance": link.distance,
                     "properties": [
-                        render_property(prop)
-                        for prop in classes[link.uri].direct_properties
+                        render_property(prop) for prop in classes[link.uri].direct_properties
                     ],
                 }
                 for link in cls.descendants
@@ -441,19 +446,23 @@ def find_specializations(
                 prop_type = "datatype"
                 if (prop_uri, RDF.type, OWL.ObjectProperty) in graph:
                     prop_type = "object"
-                child_props.append({
-                    "name": prop_name,
-                    "label": prop_label,
-                    "range": prop_range,
-                    "type": prop_type,
-                })
+                child_props.append(
+                    {
+                        "name": prop_name,
+                        "label": prop_label,
+                        "range": prop_range,
+                        "type": prop_type,
+                    }
+                )
 
-            result.append({
-                "class": child_name,
-                "class_uri": child_str,
-                "distance": depth + 1,
-                "properties": child_props,
-            })
+            result.append(
+                {
+                    "class": child_name,
+                    "class_uri": child_str,
+                    "distance": depth + 1,
+                    "properties": child_props,
+                }
+            )
 
             queue.append((child, depth + 1))
 
@@ -584,11 +593,7 @@ def resolve_reference_models(
                     ttl_file,
                     domain_name=display_name,
                     include_specializations=include_specializations,
-                    catalog_path=(
-                        catalog_path
-                        if catalog_path and catalog_path.exists()
-                        else None
-                    ),
+                    catalog_path=(catalog_path if catalog_path and catalog_path.exists() else None),
                 )
                 for cls in result["classes"]:
                     classes_by_uri.setdefault(cls["uri"], cls)
@@ -607,9 +612,7 @@ def resolve_reference_models(
                 {
                     "domain_name": resolved_display_name,
                     "file": ", ".join(str(path) for path in ttl_files),
-                    "classes": [
-                        classes_by_uri[uri] for uri in sorted(classes_by_uri)
-                    ],
+                    "classes": [classes_by_uri[uri] for uri in sorted(classes_by_uri)],
                     "ref_source": domain_key,
                     "semantic_profile": "kairos-design",
                     "closure_hashes": sorted(closure_hashes),
@@ -619,12 +622,16 @@ def resolve_reference_models(
 
     logger.info(
         "Resolved %d domain(s) from %d TTL file(s) in %s",
-        len(domains), len(all_ttls), ref_models_dir,
+        len(domains),
+        len(all_ttls),
+        ref_models_dir,
     )
     return domains
 
 
-def load_data_domains(ref_models_dir: Path, accelerator: str | None = None) -> dict[str, dict[str, Any]]:
+def load_data_domains(
+    ref_models_dir: Path, accelerator: str | None = None
+) -> dict[str, dict[str, Any]]:
     """Find and parse data-domains.yaml from accelerator pack blueprints.
 
     Returns a dict keyed by domain id (e.g. ``"party"``) with ownership metadata:
@@ -741,17 +748,19 @@ def build_data_domain_targets(
     """
     targets: list[dict[str, Any]] = []
     for dd_id, dd_meta in data_domains.items():
-        targets.append({
-            "domain_name": dd_id,
-            "display_name": dd_meta.get("name", dd_id),
-            "group": dd_meta.get("group", ""),
-            "uris": dd_meta.get("uris", []),
-            "modules": dd_meta.get("modules", []),
-            "file": "data-domains.yaml",
-            "ref_source": dd_meta.get("group", ""),
-            "classes": [],
-            "data_domain_meta": dd_meta,
-        })
+        targets.append(
+            {
+                "domain_name": dd_id,
+                "display_name": dd_meta.get("name", dd_id),
+                "group": dd_meta.get("group", ""),
+                "uris": dd_meta.get("uris", []),
+                "modules": dd_meta.get("modules", []),
+                "file": "data-domains.yaml",
+                "ref_source": dd_meta.get("group", ""),
+                "classes": [],
+                "data_domain_meta": dd_meta,
+            }
+        )
     return targets
 
 
@@ -762,12 +771,14 @@ def build_data_domain_targets(
 
 def _module_format(path: Path) -> str:
     """Best-effort RDF format from a file suffix (defaults to turtle)."""
-    return {".ttl": "turtle", ".owl": "xml", ".rdf": "xml",
-            ".jsonld": "json-ld", ".nt": "nt"}.get(path.suffix.lower(), "turtle")
+    return {".ttl": "turtle", ".owl": "xml", ".rdf": "xml", ".jsonld": "json-ld", ".nt": "nt"}.get(
+        path.suffix.lower(), "turtle"
+    )
 
 
 def _resolve_module_classes(
-    path: Path, cache: dict[str, list[dict[str, str]]],
+    path: Path,
+    cache: dict[str, list[dict[str, str]]],
 ) -> list[dict[str, str]]:
     """Extract the ``owl:Class`` definitions *declared in a single module file*.
 
@@ -844,6 +855,7 @@ def resolve_domain_class_summaries(
         return
     try:
         from kairos_ontology.core.catalog_utils import CatalogResolver
+
         resolver = CatalogResolver(Path(catalog_path))
     except Exception as e:
         logger.warning("Catalog load failed (%s); skipping semantic grounding", e)
@@ -869,16 +881,19 @@ def resolve_domain_class_summaries(
 
 
 def _summarize_classes(
-    classes: list[dict[str, Any]], cap: int = MAX_DOMAIN_CLASSES,
+    classes: list[dict[str, Any]],
+    cap: int = MAX_DOMAIN_CLASSES,
 ) -> list[dict[str, str]]:
     """Trim a full class list down to a capped {name,label,comment} summary."""
     out: list[dict[str, str]] = []
     for c in classes[:cap]:
-        out.append({
-            "name": c.get("name", ""),
-            "label": c.get("label", "") or c.get("name", ""),
-            "comment": c.get("comment", ""),
-        })
+        out.append(
+            {
+                "name": c.get("name", ""),
+                "label": c.get("label", "") or c.get("name", ""),
+                "comment": c.get("comment", ""),
+            }
+        )
     return out
 
 
@@ -895,14 +910,16 @@ def _build_candidates(ref_domains: list[dict[str, Any]]) -> list[dict[str, Any]]
         class_summary = d.get("class_summary")
         if class_summary is None:
             class_summary = _summarize_classes(d.get("classes", []))
-        candidates.append({
-            "id": d["domain_name"],
-            "group": d.get("group", ""),
-            "uris": d.get("uris", []),
-            "owns": dd_meta.get("owns", ""),
-            "does_not_own": dd_meta.get("does_not_own", ""),
-            "class_summary": class_summary,
-        })
+        candidates.append(
+            {
+                "id": d["domain_name"],
+                "group": d.get("group", ""),
+                "uris": d.get("uris", []),
+                "owns": dd_meta.get("owns", ""),
+                "does_not_own": dd_meta.get("does_not_own", ""),
+                "class_summary": class_summary,
+            }
+        )
     return candidates
 
 
@@ -968,6 +985,7 @@ def _get_openai_client():
     high-volume table → domain classification call (issue #182).
     """
     from kairos_ontology.core.ai_provider import ROLE_AFFINITY, get_ai_client
+
     return get_ai_client(role=ROLE_AFFINITY)
 
 
@@ -1054,20 +1072,25 @@ def analyse_table_single_call(
     prompt = _build_single_call_prompt(table_name, columns, candidates)
 
     try:
-        response = call_with_backoff(lambda: client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": (
-                    "You are an expert data architect. You classify source system "
-                    "tables into business data domains based on table names, column "
-                    "names, and sample data values. You always pick exactly one "
-                    "primary domain. Always respond with valid JSON."
-                )},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        ))
+        response = call_with_backoff(
+            lambda: client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert data architect. You classify source system "
+                            "tables into business data domains based on table names, column "
+                            "names, and sample data values. You always pick exactly one "
+                            "primary domain. Always respond with valid JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
+        )
         result = json.loads(response.choices[0].message.content)
     except Exception as e:
         logger.warning("LLM single-call analysis failed for table %s: %s", table_name, e)
@@ -1125,6 +1148,7 @@ def make_reporter(verbose: bool = False, quiet: bool = False):
     Levels: ``"info"`` (default), ``"verbose"`` (only when verbose), and
     ``"error"`` (always shown). When ``quiet`` is set, only errors print.
     """
+
     def report(message: str, level: str = "info") -> None:
         if level == "error":
             print(message)
@@ -1134,6 +1158,7 @@ def make_reporter(verbose: bool = False, quiet: bool = False):
         if level == "verbose" and not verbose:
             return
         print(message)
+
     return report
 
 
@@ -1206,31 +1231,55 @@ def analyse_source_system(
 
     def _classify(item: tuple[str, list[dict[str, Any]]]) -> dict[str, Any]:
         tbl_name, columns = item
-        cache_key = compute_entry_hash({
-            "system": sys_name,
-            "table": tbl_name,
-            "model": model,
-            "candidates": candidate_signature,
-            "columns": [
-                {"name": c.get("name"), "type": c.get("data_type"),
-                 "samples": c.get("samples", [])}
-                for c in columns
-            ],
-        }) if cache is not None else ""
+        cache_key = (
+            compute_entry_hash(
+                {
+                    "system": sys_name,
+                    "table": tbl_name,
+                    "model": model,
+                    "candidates": candidate_signature,
+                    "columns": [
+                        {
+                            "name": c.get("name"),
+                            "type": c.get("data_type"),
+                            "samples": c.get("samples", []),
+                        }
+                        for c in columns
+                    ],
+                }
+            )
+            if cache is not None
+            else ""
+        )
         if cache is not None:
             cached = cache.get(cache_key)
             if cached is not None:
-                return {"table": tbl_name, "columns": columns, "res": cached,
-                        "cache_key": cache_key, "from_cache": True}
+                return {
+                    "table": tbl_name,
+                    "columns": columns,
+                    "res": cached,
+                    "cache_key": cache_key,
+                    "from_cache": True,
+                }
         try:
             res = analyse_table_single_call(client, model, tbl_name, columns, candidates)
         except Exception as exc:  # noqa: BLE001 — isolate one table failure
             logger.warning("Classification failed for %s.%s: %s", sys_name, tbl_name, exc)
-            res = {"domain": _pick_fallback(set(meta_by_id), FALLBACK_DOMAIN_IDS),
-                   "secondary_domains": [], "confidence": 0.0, "likely_entity": "",
-                   "rationale": f"Classification error: {exc}", "indicative_columns": []}
-        return {"table": tbl_name, "columns": columns, "res": res,
-                "cache_key": cache_key, "from_cache": False}
+            res = {
+                "domain": _pick_fallback(set(meta_by_id), FALLBACK_DOMAIN_IDS),
+                "secondary_domains": [],
+                "confidence": 0.0,
+                "likely_entity": "",
+                "rationale": f"Classification error: {exc}",
+                "indicative_columns": [],
+            }
+        return {
+            "table": tbl_name,
+            "columns": columns,
+            "res": res,
+            "cache_key": cache_key,
+            "from_cache": False,
+        }
 
     def _report_classified(entry: dict[str, Any]) -> None:
         res = entry["res"]
@@ -1261,24 +1310,28 @@ def analyse_source_system(
         secondary: list[dict[str, Any]] = []
         for sid in res["secondary_domains"]:
             smeta = meta_by_id.get(sid, {})
-            secondary.append({
-                "domain": sid,
-                "domain_group": smeta.get("group", ""),
-                "domain_uris": smeta.get("uris", []),
-            })
+            secondary.append(
+                {
+                    "domain": sid,
+                    "domain_group": smeta.get("group", ""),
+                    "domain_uris": smeta.get("uris", []),
+                }
+            )
 
-        assignments.append(TableAssignment(
-            table=tbl_name,
-            total_columns=len(columns),
-            domain=domain_id,
-            domain_group=meta.get("group", ""),
-            domain_uris=meta.get("uris", []),
-            confidence=res["confidence"],
-            likely_entity=res["likely_entity"],
-            rationale=res["rationale"],
-            indicative_columns=res["indicative_columns"],
-            secondary_domains=secondary,
-        ))
+        assignments.append(
+            TableAssignment(
+                table=tbl_name,
+                total_columns=len(columns),
+                domain=domain_id,
+                domain_group=meta.get("group", ""),
+                domain_uris=meta.get("uris", []),
+                confidence=res["confidence"],
+                likely_entity=res["likely_entity"],
+                rationale=res["rationale"],
+                indicative_columns=res["indicative_columns"],
+                secondary_domains=secondary,
+            )
+        )
 
     return SourceAnalysis(
         system=sys_name,
@@ -1341,19 +1394,20 @@ def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
             table_dict["secondary_domains"] = ta.secondary_domains
         data["tables"].append(table_dict)
 
-        entry = summary.setdefault(ta.domain, {
-            "domain": ta.domain,
-            "domain_group": ta.domain_group,
-            "domain_uris": ta.domain_uris,
-            "table_count": 0,
-            "tables": [],
-        })
+        entry = summary.setdefault(
+            ta.domain,
+            {
+                "domain": ta.domain,
+                "domain_group": ta.domain_group,
+                "domain_uris": ta.domain_uris,
+                "table_count": 0,
+                "tables": [],
+            },
+        )
         entry["table_count"] += 1
         entry["tables"].append(ta.table)
 
-    data["domain_summary"] = sorted(
-        summary.values(), key=lambda e: e["table_count"], reverse=True
-    )
+    data["domain_summary"] = sorted(summary.values(), key=lambda e: e["table_count"], reverse=True)
 
     output_file = output_dir / f"{analysis.system}-affinity.yaml"
     with open(output_file, "w", encoding="utf-8") as f:
@@ -1480,9 +1534,7 @@ def run_analyse_sources(
             shutil.move(str(legacy_report), archived)
             report(f"  ↪ Archived {legacy_report.name}; {reason}.")
     if not source_systems:
-        raise ValueError(
-            f"No non-generated source vocabulary tables found in {sources_dir}"
-        )
+        raise ValueError(f"No non-generated source vocabulary tables found in {sources_dir}")
 
     # ----- Strategy selection -------------------------------------------------
     strategy: str
@@ -1538,9 +1590,7 @@ def run_analyse_sources(
     output_domain_filter = [d.lower() for d in domains_filter] if domains_filter else None
     if output_domain_filter:
         known = {d["domain_name"].lower() for d in ref_domains}
-        unmatched = [
-            f for f in output_domain_filter if not any(f in name for name in known)
-        ]
+        unmatched = [f for f in output_domain_filter if not any(f in name for name in known)]
         if unmatched:
             report(
                 f"  ⚠ --domains value(s) {unmatched} match no domain in the "
@@ -1550,7 +1600,8 @@ def run_analyse_sources(
     if max_domains and len(ref_domains) > max_domains:
         logger.info(
             "Limiting to %d of %d domains (--max-domains)",
-            max_domains, len(ref_domains),
+            max_domains,
+            len(ref_domains),
         )
         report(
             f"  ⚠ --max-domains={max_domains} truncates the candidate set from "
@@ -1562,16 +1613,15 @@ def run_analyse_sources(
 
     # Pre-flight summary
     total_classes = sum(
-        len(d.get("classes", [])) or len(d.get("class_summary", []))
-        for d in ref_domains
+        len(d.get("classes", [])) or len(d.get("class_summary", [])) for d in ref_domains
     )
     logger.info(
         "Strategy=%s — %d domain(s), %d classes",
-        strategy, len(ref_domains), total_classes,
+        strategy,
+        len(ref_domains),
+        total_classes,
     )
-    report(
-        f"  Strategy: {strategy} — {len(ref_domains)} domain(s) to classify against."
-    )
+    report(f"  Strategy: {strategy} — {len(ref_domains)} domain(s) to classify against.")
 
     # Materialize the resolved analysis context if requested
     output_files: list[Path] = []
@@ -1591,6 +1641,7 @@ def run_analyse_sources(
 
     if cost_warning:
         from ._cost import print_cost_warning
+
         total_tables = sum(len(tables) for tables in source_systems.values())
         print_cost_warning(
             command="analyse-sources",
@@ -1612,10 +1663,19 @@ def run_analyse_sources(
         vocab_path = source_paths[0]
         table_count = len(tables)
         worker_count = min(max_workers, table_count) if table_count else 0
-        report(f"  • {sys_name} … {table_count} table(s), up to {worker_count} concurrent LLM call(s)")
+        report(
+            f"  • {sys_name} … {table_count} table(s), up to {worker_count} concurrent LLM call(s)"
+        )
         analysis = analyse_source_system(
-            vocab_path, ref_domains, model=model, threshold=threshold, report=report,
-            max_workers=max_workers, cache=cache, system_name=sys_name, tables=tables,
+            vocab_path,
+            ref_domains,
+            model=model,
+            threshold=threshold,
+            report=report,
+            max_workers=max_workers,
+            cache=cache,
+            system_name=sys_name,
+            tables=tables,
         )
         classified_count = len(analysis.table_assignments)
         # Apply the --domains OUTPUT filter (primary-domain match) after the
@@ -1687,13 +1747,14 @@ def _materialize_context(
             "classes": [c.get("name") for c in resolved_classes],
         }
         with open(domains_dir / f"{safe}.yaml", "w", encoding="utf-8") as f:
-            yaml.dump(domain_doc, f, default_flow_style=False, sort_keys=False,
-                      allow_unicode=True)
-        manifest_domains.append({
-            "domain": name,
-            "uris": domain.get("uris", []),
-            "n_classes": len(resolved_classes),
-        })
+            yaml.dump(domain_doc, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        manifest_domains.append(
+            {
+                "domain": name,
+                "uris": domain.get("uris", []),
+                "n_classes": len(resolved_classes),
+            }
+        )
 
     manifest = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1704,6 +1765,5 @@ def _materialize_context(
         "domains": manifest_domains,
     }
     with open(materialize_dir / "_manifest.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(manifest, f, default_flow_style=False, sort_keys=False,
-                  allow_unicode=True)
+        yaml.dump(manifest, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     logger.info("Materialized resolved context to %s", materialize_dir)
