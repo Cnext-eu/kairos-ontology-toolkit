@@ -67,23 +67,64 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def compute_scorecard(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+def compute_scorecard(
+    outcomes: list[dict[str, Any]], valid_tiers: tuple[str, ...] | None = None
+) -> dict[str, Any]:
     """Return counts of outcomes overall and grouped by tier.
+
+    The tier buckets are seeded from *valid_tiers* (default :data:`VALID_TIERS`, the offline
+    fallback) **union the tiers actually present in outcomes**, so the scorecard is
+    self-describing: no concept is ever dropped for carrying a tier this toolkit predates.
+    That matters because reference-models owns the tier enum and may add to it — before this,
+    a concept with an unseeded tier was counted in ``total`` but silently omitted from every
+    bucket, leaving ``total`` != sum of ``by_tier`` with no warning.
+
+    Seeding still includes the canonical tiers even when they have no concepts, so artifacts
+    keep their historical shape. :func:`validate_artifact` normalises empty buckets away before
+    comparing, which is what keeps the recomputed scorecard independent of which checkout
+    (and therefore which tier list) happened to be resolvable.
 
     Args:
         outcomes: list of per-concept dicts, each with at least ``outcome`` and ``tier``.
+        valid_tiers: tier enum to seed buckets with; resolve it via
+            :func:`~kairos_ontology.core.archetype_loader.load_valid_tiers` when a checkout is
+            available. ``None`` uses the offline fallback.
     """
     by_outcome = Counter(o.get("outcome", "unknown") for o in outcomes)
-    by_tier: dict[str, Counter] = {tier: Counter() for tier in VALID_TIERS}
+    seeded = tuple(valid_tiers) if valid_tiers else VALID_TIERS
+    present = [
+        o.get("tier") for o in outcomes if isinstance(o.get("tier"), str) and o.get("tier")
+    ]
+    by_tier: dict[str, Counter] = {tier: Counter() for tier in (*seeded, *present)}
     for o in outcomes:
         tier = o.get("tier")
-        if tier in by_tier:
+        if isinstance(tier, str) and tier:
             by_tier[tier][o.get("outcome", "unknown")] += 1
     return {
         "total": len(outcomes),
         "by_outcome": dict(sorted(by_outcome.items())),
-        "by_tier": {tier: dict(sorted(c.items())) for tier, c in by_tier.items()},
+        "by_tier": {
+            tier: dict(sorted(by_tier[tier].items())) for tier in sorted(by_tier)
+        },
     }
+
+
+def _scorecard_comparable_form(scorecard: dict[str, Any]) -> dict[str, Any]:
+    """Return *scorecard* with empty tier buckets removed, for equality comparison.
+
+    Two scorecards computed over the same outcomes can differ only in which *empty* tier
+    buckets they seeded, since a bucket with concepts in it is driven by the outcomes alone.
+    Normalising empties away is what lets an artifact built against a checkout with a newer
+    tier enum validate against one without it (and vice versa) instead of failing with a
+    misleading "scorecard contradicts core_concepts" error the user cannot act on.
+    """
+    normalized = dict(scorecard)
+    by_tier = normalized.get("by_tier")
+    if isinstance(by_tier, dict):
+        normalized["by_tier"] = {
+            tier: counts for tier, counts in by_tier.items() if counts
+        }
+    return normalized
 
 
 def build_artifact(
@@ -97,6 +138,7 @@ def build_artifact(
     cardinality_answers: list[dict[str, Any]] | None = None,
     discovery_doc: str | None = None,
     generated_by: str = "kairos-design-discovery",
+    valid_tiers: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Assemble the conformance artifact mapping.
 
@@ -117,6 +159,10 @@ def build_artifact(
         cardinality_answers: answers to the genuinely-undeclared cardinality questions.
         discovery_doc: relative path/name of the paired discovery markdown, if any.
         generated_by: provenance tag.
+        valid_tiers: tier enum used to seed the scorecard buckets — resolve it with
+            :func:`~kairos_ontology.core.archetype_loader.load_valid_tiers`. Which tiers are
+            seeded never affects validity: :func:`validate_artifact` compares scorecards with
+            empty buckets normalised away.
     """
     return {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
@@ -139,16 +185,34 @@ def build_artifact(
         "core_concepts": outcomes,
         "topology_confirmations": topology_confirmations or [],
         "cardinality_answers": cardinality_answers or [],
-        "scorecard": compute_scorecard(outcomes),
+        "scorecard": compute_scorecard(outcomes, valid_tiers),
     }
 
 
-def validate_artifact(artifact: dict[str, Any], outcome_codes: list[str]) -> list[str]:
+def validate_artifact(
+    artifact: dict[str, Any],
+    outcome_codes: list[str],
+    valid_tiers: tuple[str, ...] | None = None,
+) -> list[str]:
     """Return a list of validation error strings (empty when valid).
 
     Validates structural shape, concept URI/label/tier identity, that every outcome
     is one of *outcome_codes* (loaded from the contract — not hardcoded), conditional
     rename/deviation fields, duplicate concepts, and scorecard consistency.
+
+    Args:
+        artifact: the parsed artifact mapping.
+        outcome_codes: the published outcome enum (see
+            :func:`~kairos_ontology.core.archetype_loader.load_outcome_codes`).
+        valid_tiers: the published tier enum (see
+            :func:`~kairos_ontology.core.archetype_loader.load_valid_tiers`). ``None`` uses the
+            offline fallback :data:`~kairos_ontology.core.archetype_loader.VALID_TIERS`.
+
+    Note:
+        The tier ``not_applicable`` (an archetype-side *obligation* level, "deliberately out of
+        scope for this archetype") is a different thing from the outcome code ``not-applicable``
+        (a hub-side *finding*, "the SME confirmed this does not apply"). Underscore vs. hyphen,
+        catalog side vs. hub side — do not conflate them.
     """
     errors: list[str] = []
     if not isinstance(artifact, dict):
@@ -183,6 +247,7 @@ def validate_artifact(artifact: dict[str, Any], outcome_codes: list[str]) -> lis
         return errors
 
     code_set = set(outcome_codes)
+    tier_set = tuple(valid_tiers) if valid_tiers else VALID_TIERS
     seen_uris: dict[str, int] = {}
     for i, c in enumerate(concepts):
         if not isinstance(c, dict):
@@ -254,10 +319,10 @@ def validate_artifact(artifact: dict[str, Any], outcome_codes: list[str]) -> lis
                 "'deviation_reason' are contradictory on one outcome."
             )
         tier = c.get("tier")
-        if tier not in VALID_TIERS:
+        if tier not in tier_set:
             errors.append(
                 f"core_concepts[{i}] ({display_uri}): invalid or missing tier {tier!r}; "
-                f"must be one of {list(VALID_TIERS)}."
+                f"must be one of {list(tier_set)}."
             )
         confidence = c.get("confidence")
         if confidence is not None and (
@@ -300,10 +365,12 @@ def validate_artifact(artifact: dict[str, Any], outcome_codes: list[str]) -> lis
     )
     if scorecard_comparable:
         scorecard = artifact.get("scorecard")
-        expected_scorecard = compute_scorecard(concepts)
+        expected_scorecard = compute_scorecard(concepts, tier_set)
         if not isinstance(scorecard, dict):
             errors.append("Missing or malformed 'scorecard' block.")
-        elif scorecard != expected_scorecard:
+        elif _scorecard_comparable_form(scorecard) != _scorecard_comparable_form(
+            expected_scorecard
+        ):
             errors.append(
                 "'scorecard' contradicts 'core_concepts'; regenerate it from the "
                 "recorded outcomes."
@@ -346,11 +413,11 @@ def read_artifact(path: Path) -> dict[str, Any]:
 
 
 def load_validated_artifact(
-    path: Path, outcome_codes: list[str]
+    path: Path, outcome_codes: list[str], valid_tiers: tuple[str, ...] | None = None
 ) -> dict[str, Any]:
     """Read and validate *path*, raising one explicit error for all findings."""
     artifact = read_artifact(path)
-    errors = validate_artifact(artifact, outcome_codes)
+    errors = validate_artifact(artifact, outcome_codes, valid_tiers)
     if errors:
         details = "\n".join(f"- {error}" for error in errors)
         raise ConformanceArtifactError(

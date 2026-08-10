@@ -109,14 +109,7 @@ def test_normative_patterns_expose_naming_conventions() -> None:
             )
 
 
-def test_valid_tiers_matches_the_published_schema() -> None:
-    """``VALID_TIERS`` is our copy of the published ``$defs/tier`` enum.
-
-    The duplication is deliberate (the loader must validate without reaching for the
-    schema on every call) but was unenforced, so a tier added on the publishing side —
-    e.g. the proposed ``not_applicable`` — would break us at the next ref-model bump with
-    no warning. This test makes the two repos disagree loudly and at the right moment.
-    """
+def _published_tier_enum() -> list[str]:
     schema_path = (
         REFMODELS_ROOT
         / "ontology-reference-models"
@@ -126,10 +119,95 @@ def test_valid_tiers_matches_the_published_schema() -> None:
         / "archetype.schema.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    published_tiers = schema["$defs"]["tier"]["enum"]
-    assert sorted(archetype_loader.VALID_TIERS) == sorted(published_tiers), (
-        "VALID_TIERS has diverged from the published archetype.schema.json $defs/tier — "
-        "a tier change requires a coordinated PR in both repos"
+    return schema["$defs"]["tier"]["enum"]
+
+
+def test_load_valid_tiers_resolves_the_published_enum() -> None:
+    """The published ``$defs/tier`` enum is authoritative and must resolve exactly.
+
+    Supersedes the original form of this test (#275), which asserted ``VALID_TIERS ==``
+    the published enum. That equality was the right alarm while the enum was hardcoded, but
+    it is now a false alarm: ``load_valid_tiers`` reads the published enum at runtime, so a
+    tier *added* upstream (e.g. the proposed ``not_applicable``) is handled with no toolkit
+    release and must not fail CI here.
+    """
+    assert list(archetype_loader.load_valid_tiers(REFMODELS_ROOT)) == _published_tier_enum()
+
+
+def test_fallback_tiers_never_outlive_the_published_enum() -> None:
+    """The offline fallback may lag the published enum, but must never exceed it.
+
+    A tier *added* upstream is fine — we resolve it at runtime. A tier *removed* upstream
+    while it lingers in :data:`VALID_TIERS` is a real bug: offline, we would keep accepting
+    a retired tier. Subset, not equality, is the correct assertion after #276 Q4.
+    """
+    published = set(_published_tier_enum())
+    stale = sorted(set(archetype_loader.VALID_TIERS) - published)
+    assert not stale, (
+        f"VALID_TIERS still lists tier(s) the published schema has dropped: {stale}. "
+        "Offline validation would accept a retired tier — update the fallback constant."
+    )
+
+
+def test_discovery_outcome_groupings_exist_in_the_published_enum() -> None:
+    """``design_landscape``'s semantic groupings are hardcoded against literal codes.
+
+    ``load_outcome_codes`` deliberately never hardcodes the *list*, but the *semantics* built
+    on top of it (``CONFIRMED_DISCOVERY_OUTCOMES`` / ``NON_EVIDENCE_DISCOVERY_OUTCOMES``, DD-090)
+    are literals with no contract test. A published rename would leave them silently matching
+    nothing — a class quietly losing its confirmed-demand evidence, with green CI. This is the
+    companion to the tier check above.
+    """
+    from kairos_ontology.core import design_landscape
+
+    published = set(archetype_loader.load_outcome_codes(REFMODELS_ROOT))
+    grouped = (
+        design_landscape.CONFIRMED_DISCOVERY_OUTCOMES
+        | design_landscape.NON_EVIDENCE_DISCOVERY_OUTCOMES
+    )
+    missing = sorted(grouped - published)
+    assert not missing, (
+        f"design_landscape groups outcome code(s) absent from the published enum: {missing}. "
+        "A rename in outcome-codes.yaml needs a coordinated change in design_landscape.py."
+    )
+
+
+def test_ontology_tier_prefixes_still_match_the_published_layout() -> None:
+    """``classify_ontology_tier`` reads a directory layout that is *not* in the contract.
+
+    Tier is derived from the path the catalog resolves a module to, because reference-models
+    publishes no explicit tier field (#276 Q3). That makes it a heuristic: a reorganisation
+    would silently degrade every module to ``unknown`` and quietly disable the blueprint drift
+    warning. This test fails instead, and is the evidence behind the ask for an explicit tier
+    declaration.
+    """
+    from kairos_ontology.core.archetype_topology import (
+        UNKNOWN_ONTOLOGY_TIER,
+        classify_ontology_tier,
+    )
+
+    inner = REFMODELS_ROOT / "ontology-reference-models"
+    expected = {
+        "blueprints/ontology": "blueprint",
+        "derived-ontologies": "derived",
+        "authoritative-ontologies": "authoritative",
+    }
+    for relpath, tier in expected.items():
+        directory = inner / relpath
+        assert directory.is_dir(), f"published layout no longer has {relpath}/"
+        assert classify_ontology_tier(directory / "any.ttl", REFMODELS_ROOT) == tier
+
+    # And a real archetype must actually resolve its blueprint module to that tier.
+    archetype = archetype_loader.load_archetype(REFMODELS_ROOT, "freight-forwarder")
+    from kairos_ontology.core.archetype_topology import derive_archetype_topology
+
+    tiers = derive_archetype_topology(REFMODELS_ROOT, archetype).module_tiers
+    assert "blueprint" in tiers.values(), (
+        "freight-forwarder declares a blueprint module but none classified as blueprint"
+    )
+    assert UNKNOWN_ONTOLOGY_TIER not in tiers.values(), (
+        f"published modules resolved outside every known tier prefix: "
+        f"{sorted(iri for iri, t in tiers.items() if t == UNKNOWN_ONTOLOGY_TIER)}"
     )
 
 
@@ -142,8 +220,9 @@ def test_every_published_archetype_loads() -> None:
         path.stem for path in archetypes_dir.glob("*.yaml") if not path.name.startswith(".")
     )
     assert ids, "no archetype catalogs found"
+    valid_tiers = archetype_loader.load_valid_tiers(REFMODELS_ROOT)
     for archetype_id in ids:
         catalog = archetype_loader.load_archetype(REFMODELS_ROOT, archetype_id)
         assert catalog.core_concepts, f"{archetype_id}: no core concepts resolved"
         for concept in catalog.core_concepts:
-            assert concept.tier in archetype_loader.VALID_TIERS
+            assert concept.tier in valid_tiers

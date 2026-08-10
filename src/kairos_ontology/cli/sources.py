@@ -1366,7 +1366,11 @@ def conformance_load(archetype_id, refmodels_root, output_format):
         locate_discovery_doc,
         _refmodels_version,
     )
-    from ..core.archetype_topology import derive_archetype_topology
+    from ..core.archetype_topology import (
+        UNKNOWN_ONTOLOGY_TIER,
+        derive_archetype_topology,
+        unpinned_blueprint_modules,
+    )
 
     root = _resolve_conformance_root(refmodels_root)
     try:
@@ -1383,6 +1387,9 @@ def conformance_load(archetype_id, refmodels_root, output_format):
 
     topology = derive_archetype_topology(root, archetype)
     drift = check_version_drift(archetype, root)
+    # Machine-only: actionable in reference-models, not by the hub designer reading this
+    # console, and it would otherwise print on every load of an affected archetype.
+    blueprint_warnings = unpinned_blueprint_modules(archetype, topology.module_tiers)
 
     for w in drift + topology.warnings():
         click.echo(f"⚠ {w}", err=True)
@@ -1405,7 +1412,17 @@ def conformance_load(archetype_id, refmodels_root, output_format):
         },
         "refmodels_version": _refmodels_version(root),
         "discovery_doc": str(discovery_doc) if discovery_doc else None,
-        "ref_model_modules": [{"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules],
+        # 'tier' is the archetype's *conformance* tier (required/recommended/optional);
+        # 'ontology_tier' is which reference-models tier the module lives in
+        # (blueprint/derived/authoritative). Two unrelated meanings — never merge the keys.
+        "ref_model_modules": [
+            {
+                "iri": m.iri,
+                "tier": m.tier,
+                "ontology_tier": topology.module_tiers.get(m.iri, UNKNOWN_ONTOLOGY_TIER),
+            }
+            for m in archetype.ref_model_modules
+        ],
         "core_concepts": [
             {"uri": c.uri, "label": c.label, "tier": c.tier} for c in archetype.core_concepts
         ],
@@ -1429,7 +1446,7 @@ def conformance_load(archetype_id, refmodels_root, output_format):
                 for e in topology.edges
             ],
         },
-        "warnings": drift + topology.warnings(),
+        "warnings": drift + topology.warnings() + blueprint_warnings,
     }
     _emit(payload, output_format)
 
@@ -1454,7 +1471,7 @@ def conformance_load(archetype_id, refmodels_root, output_format):
 @_REFMODELS_OPTION
 def conformance_validate(artifact_file, allow_unresolved, refmodels_root):
     """Validate a conformance artifact against the shared outcome-codes enum."""
-    from ..core.archetype_loader import load_outcome_codes
+    from ..core.archetype_loader import load_outcome_codes, load_valid_tiers
     from ..core.conformance_artifact import (
         ARTIFACT_RELPATH,
         ConformanceArtifactError,
@@ -1480,7 +1497,7 @@ def conformance_validate(artifact_file, allow_unresolved, refmodels_root):
         click.echo(f"❌ {exc}", err=True)
         raise SystemExit(2) from exc
 
-    errors = validate_artifact(artifact, load_outcome_codes(root))
+    errors = validate_artifact(artifact, load_outcome_codes(root), load_valid_tiers(root))
     if errors:
         click.echo(f"❌ Conformance artifact invalid ({len(errors)} error(s)):", err=True)
         for e in errors:

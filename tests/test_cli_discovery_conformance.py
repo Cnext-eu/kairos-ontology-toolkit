@@ -57,6 +57,39 @@ def test_load_emits_clean_json_with_topology(refroot):
     assert "GhostConcept" in res.stderr
 
 
+def test_load_reports_ontology_tier_alongside_conformance_tier(refroot):
+    """Two different meanings of "tier" must stay under two different keys (#276 Q3).
+
+    ``tier`` is the archetype's conformance obligation (required/recommended/optional);
+    ``ontology_tier`` is which reference-models tier the module lives in.
+    """
+    res = _run(["discovery-conformance", "load", "--archetype", "test-carrier",
+                "--refmodels-root", str(refroot)])
+    assert res.exit_code == 0, res.output
+    modules = json.loads(res.stdout)["ref_model_modules"]
+    assert {m["tier"] for m in modules} == {"required", "recommended"}
+    # The fixture stores modules outside any tier prefix, so 'unknown' is correct here.
+    assert all(m["ontology_tier"] == "unknown" for m in modules)
+
+
+def test_unpinned_blueprint_warning_never_reaches_stderr(refroot, monkeypatch):
+    """The blueprint warning is machine-only: a hub designer cannot act on it.
+
+    It stays in the payload ``warnings`` array so CI and skills can see it, but must not print
+    on every load — reference-models owns the fix, and until they publish the pin it would be a
+    permanent console warning.
+    """
+    monkeypatch.setattr(
+        "kairos_ontology.core.archetype_topology.unpinned_blueprint_modules",
+        lambda *_: ["Blueprint-tier module <x> is declared but not pinned"],
+    )
+    res = _run(["discovery-conformance", "load", "--archetype", "test-carrier",
+                "--refmodels-root", str(refroot)])
+    assert res.exit_code == 0, res.output
+    assert any("Blueprint-tier" in w for w in json.loads(res.stdout)["warnings"])
+    assert "Blueprint-tier" not in res.stderr
+
+
 def test_load_yaml_format(refroot):
     res = _run(["discovery-conformance", "load", "--archetype", "test-carrier",
                 "--format", "yaml", "--refmodels-root", str(refroot)])

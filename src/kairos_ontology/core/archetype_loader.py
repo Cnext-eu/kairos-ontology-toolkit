@@ -46,7 +46,10 @@ _CATALOG_FILENAME = "catalog-v001.xml"
 #: Filenames/dirs excluded from the archetype glob (contract row 5).
 _ARCHETYPE_GLOB_EXCLUDES = {"VERSION", "README.md"}
 
-#: Valid conformance tiers (mirrors the JSON Schema ``$defs/tier`` enum).
+#: Offline fallback for the conformance-tier enum, used when the checkout's
+#: ``archetype.schema.json`` cannot be read. The published ``$defs/tier`` enum is authoritative —
+#: resolve it with :func:`load_valid_tiers` rather than reading this constant directly, so a tier
+#: added on the publishing side (e.g. the proposed ``not_applicable``) needs no toolkit release.
 VALID_TIERS = ("required", "recommended", "optional")
 
 
@@ -226,13 +229,47 @@ def load_outcome_codes(refmodels_root: Path) -> list[str]:
 
 def _load_archetype_schema(refmodels_root: Path) -> dict[str, Any] | None:
     """Load the shipped archetype JSON Schema, or None if absent (graceful soft-skip)."""
-    schema_path = refmodels_root / _ARCHETYPE_SCHEMA_FILE
+    root = normalize_refmodels_root(refmodels_root)
+    schema_path = root / _ARCHETYPE_SCHEMA_FILE
     if not schema_path.is_file():
         logger.warning("Archetype JSON Schema not found at %s; skipping schema validation", schema_path)
         return None
     import json
 
     return json.loads(schema_path.read_text(encoding="utf-8"))
+
+
+def load_valid_tiers(refmodels_root: Path) -> tuple[str, ...]:
+    """Resolve the conformance-tier enum from the checkout's published archetype schema.
+
+    The tier enum is owned by the reference-models repo (``$defs/tier``), exactly like the
+    outcome codes in :func:`load_outcome_codes`. Resolving it at runtime means a tier added on
+    the publishing side — e.g. the proposed ``not_applicable``, letting a catalog say "this
+    concept is deliberately out of scope for this archetype" — needs no toolkit release.
+
+    Unlike :func:`load_outcome_codes`, this **never raises**: an unreadable or malformed schema
+    falls back to :data:`VALID_TIERS`. Tiers must degrade gracefully because the schema is a
+    soft-skip everywhere else in this module (see :func:`_load_archetype_schema`), so a hard
+    failure here would be the only place a pre-v1.11.0 checkout breaks outright.
+
+    The archetype-catalog schema legitimately governs *artifact* tier validation too: a
+    conformance artifact's ``core_concepts[].tier`` values are copied verbatim from catalog
+    concepts by :func:`~kairos_ontology.core.conformance_artifact.build_artifact`, so the two
+    documents share one enum by construction rather than by coincidence.
+    """
+    try:
+        schema = _load_archetype_schema(refmodels_root)
+    except Exception:  # noqa: BLE001 - tier resolution must never break a caller
+        logger.debug("Could not read the archetype schema while resolving tiers", exc_info=True)
+        return VALID_TIERS
+    if not isinstance(schema, dict):
+        return VALID_TIERS
+    tiers = (schema.get("$defs") or {}).get("tier", {})
+    enum = tiers.get("enum") if isinstance(tiers, dict) else None
+    if not isinstance(enum, list) or not enum or not all(isinstance(t, str) and t for t in enum):
+        logger.debug("Published $defs/tier enum is absent or malformed; using VALID_TIERS")
+        return VALID_TIERS
+    return tuple(enum)
 
 
 def _validate_against_schema(data: dict[str, Any], schema: dict[str, Any], source: Path) -> None:
@@ -356,26 +393,23 @@ def _refmodels_version(refmodels_root: Path) -> str | None:
     return None
 
 
-#: Subdirectory under a normalized reference-models root that holds per-module version pins.
+#: Subdirectories under a normalized reference-models root that hold per-module version pins,
+#: one per ontology tier. ``blueprints/ontology`` versions as a whole rather than per module,
+#: so it is probed directly by key (see :func:`_module_version`).
 _DERIVED_ONTOLOGIES_SUBDIR = Path("derived-ontologies")
+_AUTHORITATIVE_ONTOLOGIES_SUBDIR = Path("authoritative-ontologies")
+_BLUEPRINT_ONTOLOGY_SUBDIR = Path("blueprints/ontology")
+
+#: ``compatible_with.ontology_versions`` keys that pin the blueprint tier as a whole.
+_BLUEPRINT_MODULE_KEYS = frozenset({"blueprint", "blueprints"})
 
 
-def _derived_ontology_version(refmodels_root: Path, module_key: str) -> str | None:
-    """Best-effort read of a derived ontology module's declared version.
-
-    Resolution is deliberately lightweight and offline-only, mirroring
-    :func:`_refmodels_version`: it reads the per-module ``VERSION`` file under
-    ``derived-ontologies/<KEY>/`` (key matched case-insensitively against the folder name)
-    rather than loading the ontology through the catalog.  Returns ``None`` when the module
-    folder or its ``VERSION`` file is absent — callers treat that as "no drift signal
-    available" and must not raise.
-    """
-    root = normalize_refmodels_root(refmodels_root)
-    modules_dir = root / _DERIVED_ONTOLOGIES_SUBDIR
-    if not modules_dir.is_dir():
+def _version_from_dir(parent: Path, module_key: str) -> str | None:
+    """Read ``<parent>/<module_key>/VERSION``, matching the folder case-insensitively."""
+    if not parent.is_dir():
         return None
     target = module_key.casefold()
-    for entry in modules_dir.iterdir():
+    for entry in parent.iterdir():
         if entry.is_dir() and entry.name.casefold() == target:
             version_file = entry / "VERSION"
             if version_file.is_file():
@@ -384,15 +418,50 @@ def _derived_ontology_version(refmodels_root: Path, module_key: str) -> str | No
     return None
 
 
+def _module_version(refmodels_root: Path, module_key: str) -> str | None:
+    """Best-effort read of a reference-model module's declared version, across all tiers.
+
+    Resolution is deliberately lightweight and offline-only, mirroring
+    :func:`_refmodels_version`: it reads a ``VERSION`` file rather than loading the ontology
+    through the catalog. Three tiers are probed, because a pin can name a module in any of
+    them:
+
+    * ``derived-ontologies/<KEY>/VERSION`` — standards-derived modules (BSP, DCSA, MMT, …),
+    * ``authoritative-ontologies/<KEY>/VERSION`` — externally-published ontologies (FIBO),
+    * ``blueprints/ontology/VERSION`` — the Kairos-authored blueprint tier, which versions as
+      one unit, so a ``Blueprint`` key resolves to it directly.
+
+    Returns ``None`` when nothing resolves — callers treat that as "no drift signal available"
+    and must not raise. Before this covered more than ``derived-ontologies/``, a blueprint-tier
+    pin resolved to ``None`` and was skipped silently, so the one module on a 0.x cadence had
+    no drift coverage at all (#276 Q3/Q6).
+    """
+    root = normalize_refmodels_root(refmodels_root)
+    if module_key.casefold() in _BLUEPRINT_MODULE_KEYS:
+        version_file = root / _BLUEPRINT_ONTOLOGY_SUBDIR / "VERSION"
+        if version_file.is_file():
+            return version_file.read_text(encoding="utf-8").strip() or None
+        return None
+    for parent in (
+        root / _DERIVED_ONTOLOGIES_SUBDIR,
+        root / _AUTHORITATIVE_ONTOLOGIES_SUBDIR,
+    ):
+        version = _version_from_dir(parent, module_key)
+        if version:
+            return version
+    return None
+
+
 def check_version_drift(archetype: Archetype, refmodels_root: Path) -> list[str]:
     """Return warning strings for repo-tag and per-ontology version drift (contract row 12).
 
     Compares the archetype's ``compatible_with.repo_tag_range`` against the resolved
     reference-models ``VERSION`` and (best-effort) each ``compatible_with.ontology_versions``
-    pin against the corresponding derived ontology module's declared version.  Never raises
-    — drift is a warning, not a hard fail.  A module whose version cannot be resolved
-    (missing folder or ``VERSION`` file) is skipped silently rather than flagged, so the
-    check stays robust against partial or evolving reference-models checkouts.
+    pin against the corresponding module's declared version, in any ontology tier (see
+    :func:`_module_version`).  Never raises — drift is a warning, not a hard fail.  A module
+    whose version cannot be resolved (missing folder or ``VERSION`` file) is skipped silently
+    rather than flagged, so the check stays robust against partial or evolving
+    reference-models checkouts.
     """
     warnings: list[str] = []
     compat = archetype.compatible_with or {}
@@ -410,13 +479,13 @@ def check_version_drift(archetype: Archetype, refmodels_root: Path) -> list[str]
     for module_key, pin in ontology_versions.items():
         if not isinstance(pin, str) or not pin.strip():
             continue
-        module_version = _derived_ontology_version(refmodels_root, str(module_key))
+        module_version = _module_version(refmodels_root, str(module_key))
         if not module_version:
             continue
         if not _version_in_range(module_version, pin):
             warnings.append(
-                f"Derived ontology '{module_key}' version {module_version} is outside the "
-                f"archetype's compatible ontology_versions pin '{pin}'."
+                f"Reference-model module '{module_key}' version {module_version} is outside "
+                f"the archetype's compatible ontology_versions pin '{pin}'."
             )
 
     return warnings

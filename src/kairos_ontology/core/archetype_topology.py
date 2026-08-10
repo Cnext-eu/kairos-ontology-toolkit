@@ -34,6 +34,47 @@ logger = logging.getLogger(__name__)
 
 _CATALOG_FILENAME = "catalog-v001.xml"
 
+#: Reference-models directory prefix → ontology tier. The catalog segregates the tiers by the
+#: path each ``<uri>`` entry resolves to (``blueprints/ontology/…``, ``derived-ontologies/…``,
+#: ``authoritative-ontologies/…``), so the resolved local path is the only tier signal a
+#: consumer gets today.
+_TIER_BY_PATH_PREFIX: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("blueprints", "ontology"), "blueprint"),
+    (("derived-ontologies",), "derived"),
+    (("authoritative-ontologies",), "authoritative"),
+)
+
+#: Tier of a module whose resolved path matches no known prefix.
+UNKNOWN_ONTOLOGY_TIER = "unknown"
+
+
+def classify_ontology_tier(local_path: Path | str, refmodels_root: Path) -> str:
+    """Return the ontology tier (``blueprint``/``derived``/``authoritative``) of a module.
+
+    The tier matters because the *rule* differs by tier: subclassing a **blueprint** class is
+    expected (that tier exists to be extended), while subclassing a **derived**, mode-bound
+    standard class outside its own mode is precisely the error to flag (#276 Q3). Nothing in
+    the archetype catalog distinguishes them, so this derives it from where the catalog
+    resolved the module to.
+
+    Caveat — this is a *heuristic*, not a contracted signal. Reference-models' directory layout
+    is not part of the cross-repo contract table, so a reorganisation would silently degrade
+    every module to :data:`UNKNOWN_ONTOLOGY_TIER`. ``tests/test_refmodels_contract.py`` pins the
+    three prefixes against a real checkout so the degradation is caught rather than shipped, and
+    reference-models has been asked to declare the tier explicitly.
+    """
+    try:
+        relative = Path(local_path).resolve().relative_to(
+            normalize_refmodels_root(refmodels_root).resolve()
+        )
+    except (ValueError, OSError):
+        return UNKNOWN_ONTOLOGY_TIER
+    parts = relative.parts
+    for prefix, tier in _TIER_BY_PATH_PREFIX:
+        if parts[: len(prefix)] == prefix:
+            return tier
+    return UNKNOWN_ONTOLOGY_TIER
+
 
 @dataclass
 class TopologyEdge:
@@ -75,17 +116,24 @@ class TopologyResult:
     missing_concepts: list[str] = field(default_factory=list)
     loaded_modules: list[str] = field(default_factory=list)
     diagnostics: list[dict[str, str]] = field(default_factory=list)
+    #: Module IRI → ontology tier (see :func:`classify_ontology_tier`). Only populated for
+    #: modules the catalog actually resolved.
+    module_tiers: dict[str, str] = field(default_factory=dict)
 
     def warnings(self) -> list[str]:
         """Return only warning-level diagnostic messages."""
         return [d["message"] for d in self.diagnostics if d["level"] == "warning"]
 
 
-def build_concept_graph(refmodels_root: Path, archetype: Archetype) -> tuple[Graph, list[str], list[dict[str, str]]]:
-    """Parse each archetype module directly and return ``(graph, loaded_iris, diagnostics)``.
+def build_concept_graph(
+    refmodels_root: Path, archetype: Archetype
+) -> tuple[Graph, list[str], list[dict[str, str]], dict[str, str]]:
+    """Parse each module directly; return ``(graph, loaded_iris, diagnostics, module_tiers)``.
 
     Modules that cannot be resolved or parsed produce a warning diagnostic and are skipped
-    (the conformance flow continues with whatever resolved — contract row 10).
+    (the conformance flow continues with whatever resolved — contract row 10).  ``module_tiers``
+    maps each resolved module IRI to its ontology tier (see :func:`classify_ontology_tier`),
+    derived from the path the catalog resolved it to — no extra resolution pass.
     """
     from .catalog_utils import CatalogResolver  # local import keeps module import cheap
     from .ontology_loader import SemanticProfile, load_ontology
@@ -95,12 +143,13 @@ def build_concept_graph(refmodels_root: Path, archetype: Archetype) -> tuple[Gra
     diagnostics: list[dict[str, str]] = []
     graph = Graph()
     loaded: list[str] = []
+    module_tiers: dict[str, str] = {}
 
     if not catalog_path.is_file():
         diagnostics.append(
             {"level": "error", "message": f"Catalog not found at {catalog_path}; cannot resolve modules."}
         )
-        return graph, loaded, diagnostics
+        return graph, loaded, diagnostics, module_tiers
 
     resolver = CatalogResolver(catalog_path)
     for module in archetype.ref_model_modules:
@@ -110,6 +159,7 @@ def build_concept_graph(refmodels_root: Path, archetype: Archetype) -> tuple[Gra
                 {"level": "warning", "message": f"Could not resolve module <{module.iri}> via catalog; skipped."}
             )
             continue
+        module_tiers[module.iri] = classify_ontology_tier(local, root)
         try:
             result = load_ontology(
                 local,
@@ -124,7 +174,7 @@ def build_concept_graph(refmodels_root: Path, archetype: Archetype) -> tuple[Gra
             diagnostics.append(
                 {"level": "warning", "message": f"Failed to parse module <{module.iri}> ({local}): {exc}"}
             )
-    return graph, loaded, diagnostics
+    return graph, loaded, diagnostics, module_tiers
 
 
 def _classify_concepts(graph: Graph, archetype: Archetype) -> tuple[list[str], list[str]]:
@@ -228,12 +278,42 @@ def derive_topology(graph: Graph, archetype: Archetype) -> TopologyResult:
 
 def derive_archetype_topology(refmodels_root: Path, archetype: Archetype) -> TopologyResult:
     """Convenience wrapper: load each module's graph, then derive topology + concept coverage."""
-    graph, loaded, diagnostics = build_concept_graph(refmodels_root, archetype)
+    graph, loaded, diagnostics, module_tiers = build_concept_graph(refmodels_root, archetype)
     result = derive_topology(graph, archetype)
     result.loaded_modules = loaded
+    result.module_tiers = module_tiers
     result.diagnostics = diagnostics + result.diagnostics
     for uri in result.missing_concepts:
         result.diagnostics.append(
             {"level": "warning", "message": f"Core concept <{uri}> not found in resolved modules; skipped."}
         )
     return result
+
+
+def unpinned_blueprint_modules(archetype: Archetype, module_tiers: dict[str, str]) -> list[str]:
+    """Return warnings for blueprint-tier modules the archetype declares but does not pin.
+
+    The blueprint tier is Kairos-authored and versions on its own 0.x cadence, so an unpinned
+    blueprint module is the one dependency that can change shape under a hub with no drift
+    signal at all — ``freight-forwarder`` already declares it ``required`` (#276 Q3/Q6). The
+    derived tier is deliberately excluded: those modules are 1.x, pinned in practice, and
+    warning about them would be noise.
+
+    Scoped to a *machine* warning on purpose. Until reference-models publishes a ``Blueprint``
+    key in ``compatible_with.ontology_versions`` this fires on every load of an affected
+    archetype, and a hub designer cannot act on it — so callers surface it in payload output,
+    not on a console the user reads on every command.
+    """
+    pins = {
+        str(key).casefold()
+        for key in (archetype.compatible_with or {}).get("ontology_versions", {}) or {}
+    }
+    if pins & {"blueprint", "blueprints"}:
+        return []
+    return [
+        f"Blueprint-tier module <{iri}> is declared but not pinned in "
+        "compatible_with.ontology_versions; the blueprint tier versions on its own 0.x "
+        "cadence, so this dependency has no drift signal."
+        for iri, tier in sorted(module_tiers.items())
+        if tier == "blueprint"
+    ]
