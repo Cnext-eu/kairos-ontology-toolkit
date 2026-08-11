@@ -7,6 +7,7 @@ import pytest
 from kairos_ontology.core._samples import (
     PII_KEYWORDS,
     SamplePrivacyError,
+    _kind_from_text,
     assert_no_unredacted_sample_pii,
     detect_sample_pii_kind,
     example_values,
@@ -212,3 +213,198 @@ class TestPersistenceRedaction:
     def test_detects_embedded_phone_and_identifier(self):
         assert detect_sample_pii_kind("notes", "Call +32 470 12 34 56") == "phone"
         assert detect_sample_pii_kind("notes", "Reference 1234567890123") == "identifier"
+
+
+class TestTimestampAndNumberExemptions:
+    """Value shapes that cannot be PII must survive persistence (#302).
+
+    Every assertion goes through a classifier or the redactor. Asserting
+    ``_ISO_DATE_OR_DATETIME_RE.fullmatch(value)`` alone proves nothing: the whole
+    defect was that the fullmatch succeeded on the complete value while the code
+    only ever tested it against a truncated substring.
+    """
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "2026-07-29",
+            "2026-07-29 14:19",
+            "2026-07-29 14:19:00",
+            "2026-07-29 14:19:00.123456",
+            "2026-07-29 14:19:00+00:00",
+            "2026-07-29T14:19:00",
+            "2026-07-29T14:19:00Z",
+        ],
+    )
+    def test_whole_value_timestamp_is_not_pii(self, value: str):
+        # Space-separated forms were classified "phone": _EMBEDDED_PHONE_RE's
+        # character class has no ":", so it matched only the "2026-07-29 14" prefix.
+        assert _kind_from_text(value) is None
+        assert detect_sample_pii_kind("created_at", value) is None
+
+    @pytest.mark.parametrize(
+        "value",
+        ["1234-56-78", "0470-12-34", "9999-99-99 99:99", "2026-13-01"],
+    )
+    def test_timestamp_lookalikes_are_not_exempted(self, value: str):
+        # The exemption is now a load-bearing whole-value gate, so digit groupings
+        # that only resemble a date must not slip through it.
+        assert _kind_from_text(value) == "phone"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "1234567.89",
+            "12345.678",
+            "-1234567.8",
+            "0.123456789",
+            "3.14159265358979",
+            "1234.56",
+            "12345678",
+        ],
+    )
+    def test_plain_numbers_are_not_pii(self, value: str):
+        assert _kind_from_text(value) is None
+        assert detect_sample_pii_kind("amount", value) is None
+        assert not value_is_pii_shaped(value)
+
+    @pytest.mark.parametrize("value", ["123456789", "1234567890123", "0612345678"])
+    def test_long_bare_digit_runs_remain_identifiers(self, value: str):
+        # National registry numbers (BE INSZ, NL BSN, DK CPR) are 9-11 digits and
+        # routinely live in numeric columns: the numeric exemption must not reach them.
+        assert _kind_from_text(value) == "identifier"
+        assert value_is_pii_shaped(value)
+
+    def test_leading_zero_keeps_a_bare_phone_number_detected(self):
+        assert _kind_from_text("06123456") == "phone"
+
+    def test_datetime_column_value_survives_redaction(self):
+        rows, findings = redact_sample_rows(
+            [{"created_at": "2026-07-29 14:19:00"}],
+            table="events",
+            column_types={"created_at": "datetime"},
+        )
+        assert rows == [{"created_at": "2026-07-29 14:19:00"}]
+        assert findings == []
+
+    def test_long_decimal_survives_redaction(self):
+        rows, findings = redact_sample_rows(
+            [{"amount": "1234567.89"}],
+            table="invoices",
+            column_types={"amount": "decimal(18,4)"},
+        )
+        assert rows == [{"amount": "1234567.89"}]
+        assert findings == []
+
+    def test_redacted_rows_pass_the_persistence_gate(self):
+        """The redactor and the datatype-blind gate must never disagree.
+
+        ``assert_no_unredacted_sample_pii`` receives no ``column_types``, so any
+        exemption keyed on the declared datatype would make the gate flag exactly
+        what the redactor just left alone and abort persistence.
+        """
+        rows = [
+            {
+                "created_at": "2026-07-29 14:19:00",
+                "amount": "1234567.89",
+                "ratio": "0.123456789",
+                "flag": "True",
+                "email": "person@example.com",
+                "note": "Call +32 470 12 34 56",
+            }
+        ]
+        safe_rows, _ = redact_sample_rows(
+            rows,
+            table="events",
+            column_types={
+                "created_at": "datetime",
+                "amount": "decimal(18,4)",
+                "ratio": "decimal(18,9)",
+                "flag": "bit",
+                "email": "varchar(255)",
+                "note": "varchar(max)",
+            },
+        )
+        assert_no_unredacted_sample_pii(safe_rows, table="events")
+        assert safe_rows[0]["created_at"] == "2026-07-29 14:19:00"
+        assert safe_rows[0]["amount"] == "1234567.89"
+        assert safe_rows[0]["ratio"] == "0.123456789"
+        assert safe_rows[0]["flag"] == "True"
+        assert is_redaction_token(safe_rows[0]["email"])
+        assert is_redaction_token(safe_rows[0]["note"])
+
+
+class TestExemptionsDoNotWeakenDetection:
+    """Negative controls: everything here must STILL be redacted."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected_kind"),
+        [
+            ("+32 470 12 34 56", "phone"),
+            ("(02) 123 45 67", "phone"),
+            ("jane.doe@acme.com", "email"),
+            ("BE68 5390 0754 7034", "iban"),
+            ("1234567890123", "identifier"),
+            ("123456789", "identifier"),
+        ],
+    )
+    def test_shaped_value_in_text_column_is_redacted(self, value: str, expected_kind: str):
+        redacted, finding = redact_sample_value(
+            value,
+            table="contacts",
+            column="detail",
+            data_type="varchar(255)",
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == expected_kind
+
+    @pytest.mark.parametrize(
+        ("value", "expected_kind"),
+        [
+            ("2024-01-15 10:30 signed off by jane.doe@acme.com", "email"),
+            ("2024-01-15 10:30 call +32 470 12 34 56", "phone"),
+            ("Signed 2024-01-15 10:30, IBAN BE68539007547034", "iban"),
+        ],
+    )
+    def test_free_text_beginning_with_a_timestamp_is_still_scanned(
+        self, value: str, expected_kind: str
+    ):
+        # A leading timestamp must not exempt the rest of the cell: the value does
+        # not fullmatch, so every detector still runs over it.
+        assert _kind_from_text(value) == expected_kind
+
+    @pytest.mark.parametrize("data_type", [None, "", "unknown", "some-future-type"])
+    def test_unknown_datatype_is_still_scanned(self, data_type: str | None):
+        redacted, finding = redact_sample_value(
+            "jane.doe@acme.com",
+            table="contacts",
+            column="detail",
+            data_type=data_type,
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == "email"
+
+    @pytest.mark.parametrize(
+        ("column", "data_type", "value", "expected_kind"),
+        [
+            ("first_name", "varchar(100)", "Jane Doe", "name"),
+            ("national_id", "bigint", "12345678", "identifier"),
+            ("DateOfBirth", "datetime", "1980-01-15 00:00:00", "birth-date"),
+            # A single bit still discloses a special category (GDPR art. 9), so a
+            # boolean column must never be exempted on the strength of its datatype.
+            ("Religion_Christian", "bit", "True", "demographic"),
+            ("HasHealthFlag", "bit", "False", "health"),
+            ("HasAddressOnFile", "bit", "True", "address"),
+        ],
+    )
+    def test_column_name_detection_survives_every_datatype(
+        self, column: str, data_type: str, value: str, expected_kind: str
+    ):
+        redacted, finding = redact_sample_value(
+            value,
+            table="people",
+            column=column,
+            data_type=data_type,
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == expected_kind

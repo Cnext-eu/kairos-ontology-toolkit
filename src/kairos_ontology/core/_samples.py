@@ -65,10 +65,27 @@ _EMBEDDED_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![
 _EMBEDDED_IBAN_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Za-z0-9 ]{8,30}")
 _EMBEDDED_PHONE_RE = re.compile(r"(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)")
 _EMBEDDED_LONG_ID_RE = re.compile(r"(?<!\d)\d{9,}(?!\d)")
+# Whole-value date/date-time exemption. Component ranges are constrained because
+# this pattern is a load-bearing gate in ``_kind_from_text`` and ``value_is_pii_shaped``:
+# a loose ``\d{2}`` would let digit-grouping lookalikes such as ``0470-12-34`` or
+# ``9999-99-99 99:99`` pass as timestamps. Every form the toolkit persists must be
+# accepted: ``2026-07-29``, ``2026-07-29 14:19``, ``2026-07-29 14:19:00``,
+# ``2026-07-29 14:19:00.123456``, ``2026-07-29 14:19:00+00:00``, ``2026-07-29T14:19:00Z``.
 _ISO_DATE_OR_DATETIME_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}"
-    r"(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$"
+    r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
+    r"(?:[T ](?:[01]\d|2[0-3]):[0-5]\d"
+    r"(?::[0-5]\d(?:\.\d+)?)?"
+    r"(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?$"
 )
+
+#: Bare, optionally signed decimal literal (``-1234567.89``, ``0.123456789``).
+_NUMERIC_LITERAL_RE = re.compile(r"^[+-]?(?P<integer>\d+)(?:\.(?P<fraction>\d+))?$")
+
+#: Longest bare integer that is exempted as an ordinary number. National registry
+#: numbers (BE INSZ, NL BSN, DK CPR) are 9-11 digits and routinely arrive in
+#: ``bigint``/``decimal`` columns, so digit count — not the declared datatype — is
+#: what separates them from amounts and counters.
+_MAX_EXEMPT_INTEGER_DIGITS = 8
 _REDACTION_TOKEN_RE = re.compile(
     r"^<redacted kind=[a-z0-9-]+ source=[^<>\r\n]+ datatype=[^<>\r\n]+>$"
 )
@@ -122,10 +139,36 @@ def _name_is_pii(name: str | None) -> bool:
     return any(kw in norm for kw in PII_KEYWORDS)
 
 
+def _is_exempt_numeric_value(text: str) -> bool:
+    """Return whether *text* is, in its entirety, a number that cannot be PII.
+
+    A value that is nothing but a decimal literal is an amount, a measurement or a
+    counter — never an email, an IBAN or a phone number. It is exempted when it
+    carries a fractional part, or when its integer part is shorter than a national
+    registry number, so ``1234567.89`` and ``0.123456789`` are exempt while
+    ``123456789`` and ``1234567890123`` stay detectable as identifiers.
+
+    A leading zero disqualifies the exemption: numeric renderings never carry one,
+    while bare phone numbers routinely do (``06123456``), so keeping those in scope
+    costs nothing and preserves detection.
+    """
+    match = _NUMERIC_LITERAL_RE.fullmatch(text)
+    if not match:
+        return False
+    integer = match.group("integer")
+    if len(integer) > 1 and integer.startswith("0"):
+        return False
+    return bool(match.group("fraction")) or len(integer) <= _MAX_EXEMPT_INTEGER_DIGITS
+
+
 def value_is_pii_shaped(value: str) -> bool:
     """True when a raw value looks like an email, IBAN, phone, or long id."""
     text = str(value or "").strip()
     if not text:
+        return False
+    if _is_exempt_numeric_value(text):
+        # Keeps the human-facing masking path (``is_pii_column`` → ``mask_value``)
+        # in step with the persistence path in ``_kind_from_text``.
         return False
     return bool(
         _EMAIL_RE.match(text)
@@ -251,6 +294,10 @@ def _kind_from_text(value: Any) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
+    if _is_exempt_numeric_value(text):
+        # Exempted before the digit-run detectors below, which would otherwise read
+        # ``0.123456789`` as an identifier and ``1234567.89`` as a phone number (#302).
+        return None
     detectors = (
         ("email", _EMBEDDED_EMAIL_RE),
         ("iban", _EMBEDDED_IBAN_RE),
@@ -259,7 +306,17 @@ def _kind_from_text(value: Any) -> str | None:
     for kind, pattern in detectors:
         if pattern.search(text):
             return kind
-    if any(
+    # The date-time exemption is tested against the WHOLE value first, mirroring
+    # ``value_is_pii_shaped``. Testing it per phone match alone never fired for the
+    # form the toolkit persists: ``_EMBEDDED_PHONE_RE``'s character class has no
+    # ``:``, so on ``2026-07-29 14:19:00`` it matches only the ``2026-07-29 14``
+    # prefix, which can never fullmatch an anchored date-time pattern — every
+    # space-separated timestamp was classified ``phone`` (#302). Free text that
+    # merely CONTAINS a phone number does not fullmatch, so embedded phone numbers
+    # stay detected. The per-match check is retained for mixed text: it is what
+    # keeps a bare date inside prose ("Occurs on 2026-07-18") from reading as a
+    # phone number.
+    if not _ISO_DATE_OR_DATETIME_RE.fullmatch(text) and any(
         not _ISO_DATE_OR_DATETIME_RE.fullmatch(match.group().strip())
         for match in _EMBEDDED_PHONE_RE.finditer(text)
     ):
