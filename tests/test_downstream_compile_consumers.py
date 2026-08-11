@@ -91,7 +91,23 @@ def test_real_gold_policy_is_bound_into_canonical_compile_plan(tmp_path):
 
 
 def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkeypatch):
-    plan = build_compile_plan(_copy_hub(tmp_path), "party")
+    hub = _copy_hub(tmp_path)
+    # The Databricks semantic-model connection is authored in the hub kairos.yaml the
+    # plan already resolved, and reaches the renderer from the plan's scope (#283).
+    config = (hub / "kairos.yaml").read_text(encoding="utf-8")
+    (hub / "kairos.yaml").write_text(
+        config
+        + (
+            "gold:\n"
+            "  databricks_connection:\n"
+            "    environments:\n"
+            "      DEV:\n"
+            "        server_hostname: adb-1111111111111111.11.azuredatabricks.net\n"
+            "        http_path: /sql/1.0/warehouses/dev0000000000000\n"
+        ),
+        encoding="utf-8",
+    )
+    plan = build_compile_plan(hub, "party")
     logical = object()
     physical = object()
     observed = {}
@@ -107,10 +123,11 @@ def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkey
         observed["adapter_version"] = kwargs["adapter_version"]
         return physical
 
-    def render(spec, physical_plan, *, silver_parity):
+    def render(spec, physical_plan, *, silver_parity, connection):
         assert spec is logical
         assert physical_plan is physical
         observed["parity"] = silver_parity
+        observed["connection"] = connection
         return {"party/gold.sql": "select 1\n"}
 
     monkeypatch.setattr(
@@ -135,6 +152,11 @@ def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkey
     assert observed["domain"] == "party"
     assert observed["parity"]["authority"] == "compile-plan"
     assert observed["parity"]["provenance_hash"] == plan.provenance_hash
+    assert observed["connection"].default_environment == "DEV"
+    assert (
+        observed["connection"].default.server_hostname
+        == "adb-1111111111111111.11.azuredatabricks.net"
+    )
 
 
 def test_gold_rejects_blocked_compile_plan(tmp_path):

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc20] — 2026-08-12
+
+### Fixed
+- **Every Databricks gold projection emitted a semantic model that could not connect to anything**
+  (#283). The Power BI partition carried literal `{{DATABRICKS_SERVER_HOSTNAME}}` and
+  `{{DATABRICKS_HTTP_PATH}}` tokens, and **no substitution mechanism existed anywhere in the
+  codebase** — those tokens appeared at exactly one site, with no reader, no config key and no
+  templating pass over TMDL. Since the partition branch fires whenever the adapter is not Fabric,
+  every Databricks gold run produced a dead artifact, silently. Fabric was never a working sibling
+  to copy from: Direct Lake resolves its binding from the workspace it is deployed into and has no
+  external connection to parameterise, so Databricks was structurally the only adapter needing one.
+
+### Added
+- **Per-environment Databricks connection config and a fabric-cicd `parameter.yml`** (#283). A new
+  `gold.databricks_connection` block in `kairos.yaml` declares `server_hostname` / `http_path` per
+  environment; the partition is emitted with the default environment's resolved values, and a
+  `parameter.yml` with `find_replace` entries rewrites them per target environment at deploy time —
+  matching the `environment=` argument the scaffolded deploy workflow already passed to
+  `FabricWorkspace`, which was the half of the mechanism that existed. The released artifact is
+  therefore deployable as emitted and still promotable across environments. Schema verified against
+  fabric-cicd 1.3.0's own source and validator rather than from documentation alone; note its
+  `find_replace` performs a literal substring replacement, so `find_value` must be a real value
+  present in the file, not a placeholder.
+- **Gold projection now fails closed on missing or malformed Databricks connection config**, raising
+  `GoldContractError` with `gold.databricks-connection-missing` / `gold.databricks-connection-invalid`
+  (rule `DD-113-connection`), matching how every other Gold precondition is enforced. Unknown keys,
+  non-string values, values containing quoting or newline characters, and an ambiguous default
+  environment are all rejected rather than partially applied.
+
 ## [5.2.0rc19] — 2026-08-12
 
 ### Fixed

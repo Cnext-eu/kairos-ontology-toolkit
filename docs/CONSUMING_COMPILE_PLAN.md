@@ -23,6 +23,14 @@ Gold semantic-model and MDM profile generation consume the same plan as Silver/d
 toolchains validate TMDL/DAX, relationships, security, physical deployment, and runtime MDM
 integration separately. Consumer configuration cannot alter canonical binding semantics.
 
+A `databricks` Gold product is emitted as a `directQuery` semantic model, so it also emits
+`parameter.yml` at the root of the Gold artifact set. Keep it at the root of the directory
+fabric-cicd is pointed at (`FabricWorkspace(repository_directory=...)`): its `find_replace`
+entries rewrite the emitted warehouse hostname and HTTP path for the deployed
+`environment`. The values come from `gold.databricks_connection` in the hub `kairos.yaml`,
+and projection fails closed while that block is absent — a semantic model with an
+unresolved connection is not a publishable artifact.
+
 ## Ownership
 
 - Ontology, source, binding, and compile diagnostics: hub owner.

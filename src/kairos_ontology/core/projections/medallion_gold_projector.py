@@ -18,6 +18,7 @@ from .dbt import (
     render_project,
     shape_project,
 )
+from .dbt.gold_connection import load_gold_databricks_connection
 from .dbt.gold_render import render_powerbi_artifacts
 from .dbt.gold_materialize import materialize_gold_product
 from .dbt.gold_shape import shape_gold_product
@@ -78,7 +79,14 @@ def generate_gold_from_compile_plan(
         "provenance_hash": compile_plan.provenance_hash,
         "models": [name for name, _ in compile_plan.silver_registry.names],
     }
-    return render_powerbi_artifacts(logical, physical, silver_parity=parity)
+    return render_powerbi_artifacts(
+        logical,
+        physical,
+        silver_parity=parity,
+        # The compiler already resolved and hashed this hub's kairos.yaml, which is
+        # where the per-environment Databricks connection is authored (issue #283).
+        connection=load_gold_databricks_connection(Path(compile_plan.scope.hub_root)),
+    )
 
 
 def _require_silver_authority(bound, contract, shaped) -> None:
@@ -121,8 +129,13 @@ def generate_gold_artifacts(
     peer_ontology_paths: list | None = None,
     target_platform: str = "fabric",
     contract_registry: Mapping[str, object] | None = None,
+    hub_root: Path | None = None,
 ) -> dict[str, str]:
-    """Generate one registered Gold product from typed Silver and Gold plans."""
+    """Generate one registered Gold product from typed Silver and Gold plans.
+
+    ``hub_root`` locates the ``kairos.yaml`` that authors the per-environment
+    Databricks connection required by a ``directQuery`` product (issue #283).
+    """
     shaped, plan = plan_gold_projection(
         classes=classes,
         graph=graph,
@@ -161,6 +174,7 @@ def generate_gold_artifacts(
         shaped.gold_product,
         plan.gold,
         silver_parity=parity,
+        connection=load_gold_databricks_connection(hub_root),
     )
     artifacts["__release_data__"] = release_data
     return artifacts

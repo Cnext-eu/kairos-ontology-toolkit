@@ -32,6 +32,27 @@ The adapter is selected in `kairos.yaml` (`fabric` or `databricks`). Every invoc
 builds one immutable `CompilePlan`; check and explain do not write. Bare `--emit`
 writes the unified dbt project to `ontology-hub-publish/medallion/dbt`.
 
+On `databricks`, the Gold Power BI semantic model is `directQuery` and needs warehouse
+coordinates per deployment environment in `kairos.yaml`:
+
+```yaml
+gold:
+  databricks_connection:
+    default_environment: DEV
+    environments:
+      DEV:
+        server_hostname: adb-1111111111111111.11.azuredatabricks.net
+        http_path: /sql/1.0/warehouses/dev0000000000000
+      PROD:
+        server_hostname: adb-2222222222222222.22.azuredatabricks.net
+        http_path: /sql/1.0/warehouses/prod000000000000
+```
+
+The TMDL carries the `default_environment` values and the projector emits a fabric-cicd
+`parameter.yml` that rewrites them per target environment at deploy time. Gold projection
+on `databricks` fails closed while the block is missing. Fabric Direct Lake needs nothing
+here.
+
 ## Ontology conventions
 
 - One domain per lowercase, hyphenated `.ttl` file.

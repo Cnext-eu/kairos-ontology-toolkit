@@ -62,6 +62,12 @@ jobs:
           pip install --upgrade pip
           pip install fabric-cicd azure-identity
 
+      # `environment` selects one value per `find_replace` entry of the `parameter.yml`
+      # that fabric-cicd reads from the root of `repository_directory`. For a Databricks
+      # (directQuery) model the hub ships that file inside the release package, generated
+      # from `gold.databricks_connection` in `kairos.yaml`; `target_environment` must be
+      # one of the environment keys declared there or the rewrite is skipped and the
+      # model keeps the default environment's warehouse.
       - name: Publish semantic model to Fabric workspace
         env:
           FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
