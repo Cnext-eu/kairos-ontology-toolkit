@@ -61,6 +61,13 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir):
             profiles_dir=profiles,
         )
     except DbtValidationError as exc:
+        # This conversion to ClickException is what keeps one dbt-phase failure
+        # to a single structured-log record: events.py's timed_phase() already
+        # ERROR-logs DBT_PHASE_FAILED (core/dbt_validation.py:312,324,339) and
+        # re-raises; ClickException is exempted from the DD-151 unhandled-
+        # exception boundary in cli/main.py's _KairosGroup, so it is never
+        # logged a second time. If this conversion is ever removed, the
+        # boundary would log the same failure again as `exception.*`.
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"✓ dbt deps and parse passed for {platform}")

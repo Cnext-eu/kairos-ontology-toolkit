@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc14] — 2026-08-11
+
+### Fixed
+- **An unhandled exception produced zero structured log records (#295, DD-151).** rc12 added
+  structured logging, but a crash that escaped a command body was the one failure mode it did not
+  observe: Click's `standalone_mode` rendered a traceback to stderr and exited, so `--log-file`
+  ended with the last successful phase and no failure record at all — exactly the case a
+  skill-assisted diagnosis or a bug report needs most. The root group is now a `_KairosGroup`
+  whose `invoke()` logs one `kairos.cli.command.failed` record — `exception.type`,
+  `exception.message`, `exception.stacktrace`, and the run's `kairos.operation.id` — then
+  re-raises, so Click still owns every exit code and all stderr rendering. `click.exceptions.Exit`,
+  `click.Abort`, `click.ClickException` (with `UsageError`), `KeyboardInterrupt`, and `SystemExit`
+  are exempt: they are the deliberate exit and user-error channels, and in click 8.4.1
+  `Exit.__mro__` runs through `RuntimeError`, so a bare `except Exception` would have logged every
+  subcommand's `--help` as a command failure. The stacktrace is built as a string and passed as a
+  normal `extra`, never via `exc_info=` — `RedactionFilter` skips `exc_info`/`exc_text`, so an
+  `exc_info`-bound traceback would have written an unredacted traceback, passwords included, to
+  both console and `--log-file`. Because Click runs `@result_callback` only on success, the
+  boundary also performs the observability teardown (`reset_operation_context`, `flush_otel`,
+  `reset_logging`), which is what flushes and closes the `--log-file` handler on the failure path.
+  Root option parsing and command resolution remain outside the boundary — they run before
+  `configure_logging` — and `docs/OBSERVABILITY.md` documents that limitation, the record shape,
+  and that the persisted stacktrace is redacted and therefore lossy.
+
 ## [5.2.0rc13] — 2026-08-11
 
 ### Fixed
