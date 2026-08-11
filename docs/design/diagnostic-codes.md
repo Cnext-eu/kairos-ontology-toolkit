@@ -42,6 +42,7 @@ Constructed via `CompileDiagnostic(code=...)` directly, or through the local
 | `binding.bad-literal-type` | error | DD-133 (default) | via `_diag` |
 | `binding.case-requires-else` | error | DD-133 (default) | via `_diag` |
 | `binding.null-policy-incompatible` | error | DD-133 (default) | via `_diag` |
+| `binding.object-property-in-fields` | error | DD-133 (default) | An `owl:ObjectProperty` under `fields:`. Remapped to `safety.relationship-endpoint` by `kernel.py`'s `code_map`, and mirrored pre-adapter in `_binding_safety_diagnostics` so `compile --check` reports it even when the binding is blocked before `adapt_binding` runs. Error, not warning: DD-133 §5 rule 3 requires a canonical scalar target type per field and an object property has none, so the emitted artifact is wrong (raw FK as a business attribute — no surrogate key, no join, no orphan window, no ERD edge). `relationships:` accepts an object property whose `rdfs:range` is absent or a class expression (DD-133 §7 — the `deferred-relationship` shape) because the join endpoint is authored explicitly via `target:`/`on:`; `fields:` rejects it because a scalar column has no such endpoint to carry. Explicit raw passthrough remains available as an authored `technicalFields:` entry (DD-139). |
 | `binding.property-domain-incompatible` | error | DD-133 (default) | |
 | `binding.quality-column-unmapped` | error | DD-133 (default) | |
 | `binding.unknown-class` | error | DD-133 (default) | |

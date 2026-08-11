@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc18] — 2026-08-12
+
+### Fixed
+- **An `owl:ObjectProperty` under `fields:` silently emitted the raw foreign key as a business
+  attribute, and the compiler steered authors into doing it** (#280). For an object property whose
+  `rdfs:range` is absent or a class expression — the shape the reference-model
+  `deferred-relationship` pattern prescribes — authoring it *correctly* under `relationships:` was a
+  hard error (`safety.relationship-endpoint`) while authoring it *wrongly* under `fields:` compiled
+  clean. An author who hit the first and "fixed" it by moving the entry got a green build, losing
+  the surrogate key, the join and the orphan-detection window; the model YAML recorded
+  `silver_role: "business"` for an object property and the ERD dropped the relationship edge
+  entirely. This is the `silently-dropped-relationship` anti-pattern the pattern library already
+  names ("Data loss, not simplification — the relationship was observed in the source"), applied by
+  the compiler below the author's line of sight.
+  Both symptoms shared one cause: `_class_index_properties` fabricated `xsd:string` as the range
+  whenever none resolved, which made an object property indistinguishable from a string property
+  downstream *and* made the range comparison in `_relationship_diagnostics` fail. The fabrication is
+  now conditional on the property being a datatype property, so a range-less object property is
+  authorable under `relationships:`, and the `fields:` loop rejects object properties outright with
+  a source-located `binding.object-property-in-fields` diagnostic naming both `relationships:` and
+  the DD-139 `technicalFields:` escape hatch. The diagnostic is remapped onto the existing
+  `safety.relationship-endpoint` family rather than extending the closed `SAFETY_RULE_CODES`
+  catalogue. The legacy v4 RDF-authored path, where mapping an object property to a scalar FK
+  passthrough is deliberate, is untouched. DD-133 §7 records the widened `relationships:` contract.
+
 ## [5.2.0rc17] — 2026-08-11
 
 ### Fixed

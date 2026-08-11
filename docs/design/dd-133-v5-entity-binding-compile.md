@@ -265,6 +265,27 @@ model in scope, or (b) an explicitly declared **external reference** (name + key
 that the compiler treats as a resolvable parent without generating it. The slice tests
 missing target, missing key, and incompatible key types.
 
+**Object properties belong under `relationships:`, never under `fields:`.** `fields:`
+materializes scalar attributes only, and an `owl:ObjectProperty` has no canonical scalar
+target type (§5 rule 3), so a `fields:` entry whose property resolves to an object property
+is rejected — `binding.object-property-in-fields`, surfaced as
+`safety.relationship-endpoint`. Materializing it as a scalar would silently emit the raw
+reference value as a business attribute, losing the surrogate key, the join, the
+orphan-detection window, and the ERD relationship edge. If the raw reference value really is
+wanted as a column, author it explicitly as a `technicalFields:` entry (DD-139).
+
+**A `relationships:` entry does not require the object property to declare a named
+`rdfs:range`.** The property's range is checked against the authored `target:` class only
+when a named range actually resolves; an absent `rdfs:range`, or a range that is a class
+expression (`owl:unionOf` / `owl:Restriction` / `owl:oneOf` — a blank node, which the DD-103
+semantic index does not surface as a named class), leaves the range unconstrained and the
+relationship is validated on its authored endpoint (`target:` + `on:`) alone. This is
+deliberate: it is exactly the shape the reference-model `deferred-relationship` pattern
+prescribes, where the object property is declared before its target class conforms. The
+compiler must never fabricate a scalar range (e.g. `xsd:string`) for an object property to
+fill that gap — doing so both defeats this check and makes the property indistinguishable
+from a real string attribute.
+
 ## 8. Scope resolution & provenance
 
 - `compile <domain>` resolves a single immutable `BuildScope` from the hub root (located by

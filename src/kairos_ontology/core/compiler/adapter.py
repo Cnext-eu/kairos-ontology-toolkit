@@ -229,6 +229,24 @@ def _ambiguous_targets_by_uri(items: tuple[ResolvedClass | ResolvedProperty, ...
     return "; ".join(parts)
 
 
+def object_property_in_fields_message(property_token: str, prop: ResolvedProperty) -> str:
+    """Return the actionable message for an object property authored under ``fields:``.
+
+    Single-sourced here so the adapter diagnostic (``binding.object-property-in-fields``)
+    and the kernel's pre-adapter safety mirror of the same rule read identically. The text
+    must point both ways: to ``relationships:`` for the semantically correct authoring, and
+    to ``technicalFields:`` (DD-139) as the explicit raw-passthrough escape hatch.
+    """
+    range_label = prop.range_uri or "undeclared or a class expression"
+    return (
+        f"field '{property_token}' targets an object property (range {range_label}); "
+        "fields: materializes scalar attributes only. Declare it as a relationships: entry "
+        "with an on: clause so the compiler resolves the surrogate-key join, or -- if the "
+        "raw reference value really is wanted as a column -- author an explicit "
+        "technicalFields: entry (DD-139)"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _Symbol:
     """A resolved source column symbol: URI, canonical type, nullability."""
@@ -769,6 +787,19 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                         f"property '{field_map.property}' does not apply to "
                         f"class '{binding.target_class}'"
                     ),
+                    location=SourceLocation(path=path, pointer=f"/fields/{index}/property"),
+                )
+            )
+            continue
+        if prop.is_object_property:
+            # DD-133 §5 rule 3 / §7: ``fields:`` materializes scalar attributes only, and an
+            # owl:ObjectProperty has no canonical scalar target type. Emitting the raw source
+            # value as a business column loses the surrogate key, the join and the
+            # orphan-detection window, and drops the relationship from the ERD (issue #280).
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="binding.object-property-in-fields",
+                    message=object_property_in_fields_message(field_map.property, prop),
                     location=SourceLocation(path=path, pointer=f"/fields/{index}/property"),
                 )
             )
