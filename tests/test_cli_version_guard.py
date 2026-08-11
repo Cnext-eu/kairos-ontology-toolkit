@@ -4,12 +4,17 @@
 
 Catches users who run a globally-installed (often older) toolkit instead of
 `uv run kairos-ontology`, silently using a different version than the hub pins.
+
+The remedy depends on the direction of the mismatch, so the message branches:
+running older than the pin means "sync to the pin"; running newer means "this hub
+pins an older toolkit, move the pin forward" (issue #297).
 """
 
 from pathlib import Path
 from unittest.mock import patch
 
 from kairos_ontology.cli import main as cli_main
+from kairos_ontology.cli import shared as cli_shared
 from kairos_ontology.cli.main import (
     _read_pinned_toolkit_version,
     _warn_if_version_mismatch,
@@ -98,11 +103,35 @@ class TestWarnVersionMismatch:
         _warn_if_version_mismatch()
         assert capsys.readouterr().err == ""
 
-    def test_warns_different_when_running_newer(self, tmp_path, monkeypatch, capsys):
+    def test_warns_newer_and_points_at_update_upgrade(self, tmp_path, monkeypatch, capsys):
+        """Running NEWER than the pin is the common case from a toolkit checkout.
+
+        The old message claimed a stale global install and advised `uv sync`, which
+        would have downgraded the user into the very version they are ahead of.
+        (The previous version of this test patched ``cli_main._toolkit_version``,
+        which the warning never reads, and asserted the wrong-direction wording.)
+        """
         _write_pyproject_whl(tmp_path, "v0.0.1")
         monkeypatch.chdir(tmp_path)
-        with patch.object(cli_main, "_toolkit_version", "3.12.0"):
+        with patch.object(cli_shared, "_toolkit_version", "3.12.0"):
             _warn_if_version_mismatch()
         err = capsys.readouterr().err
         assert "v0.0.1" in err
-        assert "different from" in err
+        assert "v3.12.0" in err
+        assert "NEWER than" in err
+        assert "update --upgrade" in err
+        # Must not misdiagnose a global install, nor advise syncing down to the pin.
+        assert "globally-installed" not in err
+        assert "to use the pin" not in err
+        assert "would downgrade you" in err
+
+    def test_older_than_pin_keeps_the_global_install_diagnosis(self, tmp_path, monkeypatch, capsys):
+        _write_pyproject_whl(tmp_path, "v999.0.0")
+        monkeypatch.chdir(tmp_path)
+        with patch.object(cli_shared, "_toolkit_version", "3.12.0"):
+            _warn_if_version_mismatch()
+        err = capsys.readouterr().err
+        assert "OLDER than" in err
+        assert "globally-installed" in err
+        assert "uv sync" in err
+        assert "update --upgrade" not in err

@@ -37,6 +37,7 @@ from .shared import (
     _managed_files_transaction,
     _managed_scaffold_map,
     _read_hub_channel,
+    _read_pinned_toolkit_version,
     _read_toolkit_test_ref_state,
     _refresh_with_installed_toolkit,
     _remove_toolkit_test_ref_state,
@@ -72,8 +73,13 @@ from .shared import (
 @click.option(
     "--restore", is_flag=True, help="Restore the exact dependency source saved by --test-ref."
 )
+@click.option(
+    "--allow-downgrade",
+    is_flag=True,
+    help="Allow --upgrade to move the toolkit pin backwards to an older version.",
+)
 @click.option("--force-managed", is_flag=True, hidden=True)
-def update(check, upgrade, test_ref, restore, force_managed):
+def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
     """Update toolkit-managed files to the installed toolkit version.
 
     Scans .github/ for files stamped by kairos-ontology-toolkit and refreshes
@@ -90,6 +96,9 @@ def update(check, upgrade, test_ref, restore, force_managed):
     release channel.  Then use --restore to return to the exact dependency
     source saved before the test.
 
+    --upgrade never moves the pin backwards: if the channel resolves to a version
+    older than the hub's current pin it refuses, unless --allow-downgrade is given.
+
     \b
     Exit codes (with --check):
       0  All managed files are up to date
@@ -105,6 +114,8 @@ def update(check, upgrade, test_ref, restore, force_managed):
         raise click.UsageError("--upgrade, --test-ref, and --restore are mutually exclusive")
     if check and (test_ref is not None or restore):
         raise click.UsageError("--check cannot be combined with --test-ref or --restore")
+    if allow_downgrade and not upgrade:
+        raise click.UsageError("--allow-downgrade only applies to --upgrade")
 
     # --- Re-root to the real managed hub root (DD-062) -----------------------
     # `update` only ever touches the toolkit pin + managed .github/ files, which
@@ -199,6 +210,27 @@ def update(check, upgrade, test_ref, restore, force_managed):
         # Update the pyproject.toml dependency pin first
         pyproject = Path.cwd() / "pyproject.toml"
         version = _tag_to_version(ref)
+
+        # Refuse to move the pin backwards unless explicitly allowed.  Every release
+        # after v5.0.2 is a pre-release, so the 'stable' channel resolves to v5.0.2:
+        # a hub pinned to a current pre-release would otherwise be silently
+        # downgraded to a toolkit predating the fixes its scaffold depends on.
+        current_pin = _read_pinned_toolkit_version()
+        if current_pin is not None and not allow_downgrade:
+            from packaging.version import InvalidVersion, Version
+
+            try:
+                is_downgrade = Version(version) < Version(current_pin)
+            except InvalidVersion:
+                is_downgrade = False
+            if is_downgrade:
+                print(
+                    f"❌ Refusing to downgrade the toolkit pin: channel '{channel}' resolves to\n"
+                    f"   v{version}, which is OLDER than this hub's current pin v{current_pin}.\n"
+                    "   Change [tool.kairos] channel, or pass --allow-downgrade to proceed."
+                )
+                raise SystemExit(1)
+
         if not pyproject.is_file():
             # Auto-generate pyproject.toml from scaffold template only for a
             # legacy managed hub (positive .github marker but no pin file yet).
@@ -219,6 +251,7 @@ def update(check, upgrade, test_ref, restore, force_managed):
                 content = content.replace("{description}", repo_name)
                 content = content.replace("{toolkit_ref}", ref)
                 content = content.replace("{toolkit_version}", version)
+                content = content.replace("{toolkit_channel}", channel)
                 pyproject.write_text(content, encoding="utf-8")
                 print("   ✓ Created pyproject.toml (was missing)")
             else:

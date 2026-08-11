@@ -45,6 +45,79 @@ def _pyproject(source: str, ending: str = "\n") -> str:
     )
 
 
+SCAFFOLD_TEMPLATE = (
+    Path(__file__).resolve().parent.parent
+    / "src"
+    / "kairos_ontology"
+    / "scaffold"
+    / "pyproject.toml.template"
+)
+
+
+def _scaffolded_pyproject() -> str:
+    """Render the shipped scaffold template exactly as ``init`` does.
+
+    A current hub declares the toolkit URL once and its extras as bare
+    requirements (issue #297), so the helpers below must cope with toolkit
+    requirements that carry no source at all.
+    """
+    return (
+        SCAFFOLD_TEMPLATE.read_text(encoding="utf-8")
+        .replace("{repo_name}", "hub")
+        .replace("{description}", "hub")
+        .replace("{toolkit_ref}", "v3.8.0")
+        .replace("{toolkit_version}", "3.8.0")
+        .replace("{toolkit_channel}", "preview")
+    )
+
+
+def test_bare_extras_requirements_are_skipped_not_rejected():
+    """Url-less extras carry no source: nothing to validate, nothing to rewrite."""
+    content = _scaffolded_pyproject()
+
+    assert _single_toolkit_dependency_source(content) == RELEASE_SOURCE
+
+    rewritten = _rewrite_toolkit_dependency_source(content, GIT_SOURCE)
+
+    assert rewritten.count(GIT_SOURCE) == 1
+    assert RELEASE_SOURCE not in rewritten
+    # The bare extras requirements are untouched — they still resolve via the base pin.
+    assert '"kairos-ontology-toolkit[flatfile]"' in rewritten
+    assert _single_toolkit_dependency_source(rewritten) == GIT_SOURCE
+
+
+def test_unsupported_url_is_still_rejected():
+    """Skipping url-less requirements must not excuse a *wrong* URL."""
+    content = _scaffolded_pyproject().replace(
+        RELEASE_SOURCE, "https://example.invalid/kairos_ontology_toolkit-3.8.0-py3-none-any.whl"
+    )
+
+    with pytest.raises(ValueError, match="unsupported"):
+        _single_toolkit_dependency_source(content)
+
+
+def test_scaffolded_hub_test_ref_and_restore_round_trip(tmp_path, monkeypatch):
+    """`update --test-ref` / `--restore` must work on a hub scaffolded today."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(_scaffolded_pyproject(), encoding="utf-8")
+    original = pyproject.read_bytes()
+    monkeypatch.chdir(tmp_path)
+
+    with (
+        patch("kairos_ontology.cli.operations._resolve_toolkit_ref_sha", return_value=SHA),
+        patch("kairos_ontology.cli.operations._lock_and_sync_dependency"),
+        patch("kairos_ontology.cli.operations._refresh_with_installed_toolkit", return_value=0),
+    ):
+        tested = CliRunner().invoke(cli, ["update", "--test-ref", "feature/example"])
+        assert tested.exit_code == 0, tested.output
+        assert GIT_SOURCE in pyproject.read_text(encoding="utf-8")
+
+        restored = CliRunner().invoke(cli, ["update", "--restore"])
+
+    assert restored.exit_code == 0, restored.output
+    assert pyproject.read_bytes() == original
+
+
 @patch("kairos_ontology.cli.main.subprocess.run")
 def test_resolve_toolkit_ref_sha_validates_and_encodes_ref(mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout=SHA.upper() + "\n")

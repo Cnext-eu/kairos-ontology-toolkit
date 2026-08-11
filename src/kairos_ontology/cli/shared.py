@@ -261,6 +261,66 @@ def _resolve_channel(channel: str) -> str | None:
         return None
 
 
+def _resolve_scaffold_toolkit_pin() -> tuple[str, str]:
+    """Return the ``(ref, channel)`` a freshly scaffolded hub must pin.
+
+    One policy, shared by ``init`` and ``new-repo`` so the two scaffolders cannot
+    drift apart (issue #297):
+
+    1. Only ever pin a ref that has a **published** GitHub release, taken from the
+       live release list.  The running toolkit's own ``__version__`` is never
+       preferred: a development build (e.g. ``5.2.0rc17``) has no release, so the
+       wheel URL ``…/download/v5.2.0rc17/…`` would 404 on the hub's first
+       ``uv sync``.  That is what ``new-repo`` used to do.
+    2. Never pin a release older than the running toolkit while a newer release is
+       published.  The scaffold being written comes from the running toolkit, so a
+       pin behind it installs a toolkit that predates the files it just generated.
+       This is the drift reported in #297: ``init`` pinned ``v5.0.2`` (the newest
+       *non*-pre-release) while ``v5.2.0rc12`` did the scaffolding, and every
+       command then printed a version-mismatch banner.
+    3. Write the channel that matches the chosen ref, so the pin and
+       ``[tool.kairos] channel`` are a single truth and ``update --upgrade`` is not
+       an immediate downgrade.  A hub scaffolded by a pre-release toolkit
+       therefore follows ``preview``.
+    4. Last resort only: when releases cannot be listed at all (no ``gh``, no
+       network) fall back to ``v<running version>`` and say so.  The pin may not
+       exist yet; the hub is repairable with ``update --upgrade``.
+    """
+    from packaging.version import InvalidVersion, Version
+
+    def _version_of(tag: str | None) -> Version | None:
+        if tag is None:
+            return None
+        try:
+            return Version(_tag_to_version(tag))
+        except InvalidVersion:
+            return None
+
+    try:
+        running = Version(_toolkit_version)
+    except InvalidVersion:  # pragma: no cover - __version__ is always PEP 440
+        running = None
+
+    stable_ref = _resolve_channel("stable")
+    stable = _version_of(stable_ref)
+    if stable_ref is not None and (stable is None or running is None or stable >= running):
+        return stable_ref, "stable"
+
+    preview_ref = _resolve_channel("preview")
+    preview = _version_of(preview_ref)
+    if preview_ref is not None and (stable is None or (preview is not None and preview > stable)):
+        return preview_ref, "preview"
+    if stable_ref is not None:
+        return stable_ref, "stable"
+
+    print(
+        f"  ⚠ Could not list toolkit releases (is 'gh' installed and authenticated?); "
+        f"pinning v{_toolkit_version}, which may not be published.\n"
+        f"    Run `uv run kairos-ontology update --upgrade` once releases are reachable."
+    )
+    return f"v{_toolkit_version}", "stable"
+
+
 def _tag_to_version(tag: str) -> str:
     """Convert a git tag (e.g. ``v3.9.0-rc.1``) to PEP 440 (``3.9.0rc1``)."""
     import re
@@ -368,9 +428,11 @@ def _toolkit_requirement_matches(content: str) -> list[tuple[re.Match[str], Requ
         if requirement.name.lower().replace("_", "-") != _TOOLKIT_NAME:
             continue
         if requirement.url is None:
-            raise ValueError(
-                "kairos-ontology-toolkit dependencies must use one supported direct URL"
-            )
+            # A bare extras requirement (e.g. "kairos-ontology-toolkit[flatfile]") carries
+            # no source: it resolves through the single direct URL declared in
+            # [project.dependencies], which is the only place a hub pins the toolkit
+            # version (issue #297).  There is nothing here to validate or rewrite.
+            continue
         matches.append((match, requirement))
     if not matches:
         raise ValueError("no kairos-ontology-toolkit dependency found in pyproject.toml")
@@ -649,14 +711,30 @@ def _resync_restored_dependency() -> str | None:
 
 
 def _read_hub_channel() -> str:
-    """Read the [tool.kairos] channel from the current directory's pyproject.toml."""
+    """Read the [tool.kairos] channel from the current directory's pyproject.toml.
+
+    Parsed with ``tomllib`` so commented-out keys are ignored.  The previous
+    ``re.search(..., re.DOTALL)`` scan matched the first ``channel = "…"`` anywhere
+    after ``[tool.kairos]``, so a commented ``# channel = "preview"`` sitting above
+    the real key won — and ``update --upgrade`` then resolved the wrong channel.
+    Falls back to a comment-skipping line scan only when the file is not valid TOML.
+    """
     pyproject = Path.cwd() / "pyproject.toml"
     if not pyproject.is_file():
         return "stable"
     content = pyproject.read_text(encoding="utf-8")
-    # Simple TOML parsing for channel value (avoid tomllib dependency)
-    match = re.search(r'\[tool\.kairos\].*?channel\s*=\s*"([^"]+)"', content, re.DOTALL)
-    return match.group(1) if match else "stable"
+    try:
+        channel = tomllib.loads(content).get("tool", {}).get("kairos", {}).get("channel")
+    except (tomllib.TOMLDecodeError, AttributeError):
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            match = re.match(r'channel\s*=\s*"([^"]+)"', stripped)
+            if match:
+                return match.group(1)
+        return "stable"
+    return channel if isinstance(channel, str) and channel.strip() else "stable"
 
 
 def _read_pinned_toolkit_version() -> str | None:
@@ -701,31 +779,47 @@ def _read_pinned_toolkit_version() -> str | None:
 def _warn_if_version_mismatch() -> None:
     """Warn when the running toolkit version differs from the hub's pin.
 
-    Catches the case where a user runs a globally-installed (often older)
-    ``kairos-ontology`` / ``python -m kairos_ontology`` instead of
-    ``uv run kairos-ontology``, silently using a different version than the one
-    pinned in this hub's ``pyproject.toml``.  Non-blocking (stderr warning only).
+    The remedy depends on the *direction* of the mismatch:
+
+    * running **older** than the pin — the classic case this guard was written for:
+      a globally-installed ``kairos-ontology`` shadowing ``uv run``.  Syncing to the
+      pin is the fix.
+    * running **newer** than the pin — the normal case when working from a toolkit
+      checkout, or after a hub was scaffolded/pinned by an older release.  Here the
+      user is *not* on a stale global install and ``uv sync`` would downgrade them
+      into whatever the pinned release still gets wrong, so the advice is to move
+      the hub's pin forward instead.
     """
     pinned = _read_pinned_toolkit_version()
     if not pinned or pinned == _toolkit_version:
         return
 
-    relation = "different from"
+    running_is_older = False
+    running_is_newer = False
     try:
         from packaging.version import parse as _parse_version
 
-        if _parse_version(_toolkit_version) < _parse_version(pinned):
-            relation = "OLDER than"
+        running_is_older = _parse_version(_toolkit_version) < _parse_version(pinned)
+        running_is_newer = _parse_version(_toolkit_version) > _parse_version(pinned)
     except Exception:  # pragma: no cover - packaging always present via deps
         pass
 
-    click.echo(
-        f"⚠️  Running kairos-ontology v{_toolkit_version}, which is {relation} the\n"
-        f"   version pinned in this hub (v{pinned}).\n"
-        f"   You may be using a globally-installed toolkit.\n"
-        f"   Fix: run `uv run kairos-ontology …` (or `uv sync`) to use the pin.\n",
-        err=True,
-    )
+    if running_is_newer:
+        message = (
+            f"⚠️  Running kairos-ontology v{_toolkit_version}, which is NEWER than the\n"
+            f"   version pinned in this hub (v{pinned}).\n"
+            f"   This hub pins an older toolkit; `uv sync` would downgrade you to it.\n"
+            f"   Fix: run `uv run kairos-ontology update --upgrade` to move the pin forward.\n"
+        )
+    else:
+        relation = "OLDER than" if running_is_older else "different from"
+        message = (
+            f"⚠️  Running kairos-ontology v{_toolkit_version}, which is {relation} the\n"
+            f"   version pinned in this hub (v{pinned}).\n"
+            f"   You may be using a globally-installed toolkit.\n"
+            f"   Fix: run `uv run kairos-ontology …` (or `uv sync`) to use the pin.\n"
+        )
+    click.echo(message, err=True)
 
 
 _MANAGED_MARKER_RE = re.compile(r"<!-- kairos-ontology-toolkit:managed v([\d]+(?:\.[\d]+)*\S*) -->")

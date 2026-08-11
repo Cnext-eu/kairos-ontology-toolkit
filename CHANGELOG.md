@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc19] — 2026-08-12
+
+### Fixed
+- **The toolkit version was pinned in five places in a scaffolded hub, and the scaffolders,
+  the channel and the drift warning all disagreed about it** (#297).
+  - *One pin.* The wheel URL was repeated once in `[project.dependencies]` and once per extra, each
+    embedding the version twice — five strings nothing kept in agreement, and the `otel` extra added
+    in rc12 was never added to the template at all. Extras of the same distribution resolve through
+    the single direct reference, so the four extras are now bare requirements and `{toolkit_version}`
+    / `{toolkit_ref}` appear exactly once. Verified with `uv lock` and `uv sync --extra flatfile
+    --extra otel` against a rendered template: one distinct URL in the lockfile, extras recorded with
+    no URL, and both `openpyxl` and the OpenTelemetry packages installed alongside the pinned wheel.
+    `update --test-ref`/`--restore` now skip url-less toolkit requirements instead of raising.
+  - *One pinning policy.* `init` pinned whatever the `stable` channel resolved to while `new-repo`
+    pinned the **running** toolkit's version — which, from a development build, is a release that does
+    not exist and a wheel URL that 404s on the hub's first `uv sync`. Both scaffolders now share one
+    policy: only ever pin a ref with a published release, never pin behind the running toolkit when a
+    newer release exists, and write `[tool.kairos] channel` to match the chosen pin so the pin and the
+    channel are a single truth. A hub scaffolded by a pre-release toolkit therefore follows `preview`,
+    and returns to `stable` automatically once a GA release catches up.
+  - *No silent downgrade.* `update --upgrade` rewrote the pin to whatever the channel resolved to with
+    no comparison against the current pin. Because every release since v5.0.2 has shipped as a
+    pre-release, a hub pinned to a current pre-release was **downgraded** to a toolkit predating the
+    scaffold it was running. It now refuses to move the pin backwards without `--allow-downgrade`,
+    comparing with `packaging.version` rather than strings. **This will block existing hubs** that pin
+    a 5.x pre-release while declaring `channel = "stable"` — deliberately, since the alternative is the
+    silent downgrade.
+  - *Honest advice.* The version-mismatch warning always claimed a globally-installed toolkit and
+    always advised `uv sync`, which is wrong when the running toolkit is **newer** than the pin: the
+    user is not on a stale global install, and syncing would downgrade them. It now branches on
+    direction and points at `update --upgrade`.
+  - *`_read_hub_channel` read commented-out keys.* Its `re.search(..., re.DOTALL)` with a lazy `.*?`
+    let `# channel = "preview"` win over the real key below it. Latent in shipped hubs, reachable in
+    hand-edited ones, and it feeds the channel resolution the downgrade guard depends on.
+
 ## [5.2.0rc18] — 2026-08-12
 
 ### Fixed
