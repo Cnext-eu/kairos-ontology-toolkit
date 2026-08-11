@@ -73,6 +73,8 @@ def test_update_refmodels_persists_resolved_fetch_provenance(tmp_path):
     fake_refmodels = fake_clone_dir / "ontology-reference-models"
     fake_refmodels.mkdir(parents=True)
     (fake_refmodels / "party.ttl").write_text("# Party reference model\n", encoding="utf-8")
+    (fake_refmodels / "catalog-v001.xml").write_text("<catalog/>", encoding="utf-8")
+    (fake_refmodels / "blueprints" / "archetypes").mkdir(parents=True)
 
     def mock_run_side_effect(cmd, **kwargs):
         if cmd[0] == "git" and cmd[1] == "--version":

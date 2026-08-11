@@ -70,6 +70,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining importers.
 
 ### Fixed
+- **`init` never populated `ontology-reference-models/`** (#290). `cli/setup.py` carried only a
+  *comment* claiming reference models were "populated later"; the sole real call lived in
+  `new_repo`. So an `init`-created hub had no archetypes, patterns, blueprints or accelerator
+  packs — `discovery-conformance`, `list-patterns`, `check-inventory`, `design-landscape`,
+  `coverage-report`, `fit-report` and `analyse-sources --accelerator` could not run at all — and
+  the catalog it wrote chained to an `<nextCatalog>` that dangled from birth. `init` now fetches
+  them, with `--skip-refmodels` to opt out and `--ref-models-version` to pin.
+  The fetch **resolves the newest semver tag** rather than floating `main`, since archetypes carry
+  `compatible_with.repo_tag_range` checked against exactly that; it also copies the upstream root
+  `VERSION` file, which lives outside the vendored subdirectory and whose absence had silently
+  disabled version-drift checking. Failure is never fatal — no network, no git, a clone error or a
+  Windows `MAX_PATH` overrun all degrade to a warning naming `update-refmodels`, and `init` still
+  exits 0 with a usable hub. An existing checkout is never clobbered, **not even with `--force`**,
+  because the documented flow runs `init` inside a `new-repo` hub whose reference models are
+  already pinned.
+  The clone/copy logic is now one `_fetch_reference_models()` helper shared by `init`,
+  `update-refmodels` and `new_repo`, replacing two near-duplicate implementations. It builds into a
+  temporary directory and validates the result before replacing the destination, so a partial
+  clone can no longer masquerade as a complete reference-model set.
+- **`new_repo` committed the entire index when populating reference models.** Its dirty check ran
+  `git status --porcelain` over the whole repository and its `git commit` carried no pathspec, so
+  any work the user had staged was swept into a `chore: populate ontology-reference-models`
+  commit — and then pushed. Both are now scoped to `-- ontology-reference-models`.
 - **`init`'s own glossary template silently disabled the DD-148 discovery gate** (#288). `init`
   copies `glossary-template.ttl` into `businessdiscovery/`, and the predicate deciding whether
   business-discovery evidence exists excluded only names ending `.template` — not

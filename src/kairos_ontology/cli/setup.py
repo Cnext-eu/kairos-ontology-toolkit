@@ -25,6 +25,7 @@ from .shared import (
     _DATAPLATFORM_SKILLS,
     _MIGRATE_DIR_MAP,
     _MIGRATE_OUTPUT_MAP,
+    _REF_MODELS_PATH,
     _SCAFFOLD_DIR,
     _V5_HUB_DIRECTORIES,
     _V5_OUTPUT_DIRECTORIES,
@@ -33,8 +34,11 @@ from .shared import (
     _copy_managed,
     _create_github_repo,
     _detect_hub_context,
+    _fetch_reference_models,
+    _format_refmodels_fetch_provenance,
     _is_old_layout,
     _resolve_channel,
+    _resolve_latest_refmodels_ref,
     _run_reference_models_update,
     _slugify,
     _tag_to_version,
@@ -57,7 +61,21 @@ from .shared import (
     "Used as the namespace base: https://<domain>/ont/",
 )
 @click.option("--force", is_flag=True, help="Overwrite existing files")
-def init(domain, company_domain, force):
+@click.option(
+    "--skip-refmodels",
+    "skip_refmodels",
+    is_flag=True,
+    default=False,
+    help="Skip fetching ontology-reference-models/ (fetch it later with update-refmodels).",
+)
+@click.option(
+    "--ref-models-version",
+    "ref_models_version",
+    type=str,
+    default=None,
+    help="Git ref (tag/branch) for reference models (default: latest tag, falling back to main).",
+)
+def init(domain, company_domain, force, skip_refmodels, ref_models_version):
     """Initialize a Kairos ontology hub in the current directory.
 
     Creates the standard folder structure, installs Copilot skills, and
@@ -321,9 +339,6 @@ def init(domain, company_domain, force):
             pyproject_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created pyproject.toml")
 
-    # 5. Reference models are populated later by _run_reference_models_update()
-    # (no submodule — files committed directly)
-
     # 6. Generate hub README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
     hub_readme_dst = hub / "README.md"
@@ -422,6 +437,40 @@ def init(domain, company_domain, force):
                 company_domain=company_domain,
             )
             print(f"  ✓ Registered {ontology_iri} in ontology-hub/catalog-v001.xml")
+
+    # 9. Fetch ontology-reference-models/ at the repo root (issue #290).
+    #
+    # This is deliberately offline-safe and never touches git: `init` runs inside
+    # a hub that may already have staged, uncommitted work, and `new_repo`'s own
+    # reference-models fetch (_run_reference_models_update) commits + pushes —
+    # doing that here would sweep up and push whatever the caller had pending.
+    # An existing checkout (e.g. the pinned one `new-repo` already fetched) is
+    # never touched either, even with --force: --force is about overwriting
+    # scaffold *files*, not about clobbering a reference-models pin.
+    from ..core.archetype_loader import _looks_like_refmodels_root
+
+    refmodels_dest = cwd / _REF_MODELS_PATH
+    if skip_refmodels:
+        print(
+            "  ⏭  Skipped reference models "
+            "(run `kairos-ontology update-refmodels` to fetch them later)"
+        )
+    elif refmodels_dest.exists() and _looks_like_refmodels_root(refmodels_dest):
+        provenance = _format_refmodels_fetch_provenance(refmodels_dest)
+        suffix = f" ({provenance})" if provenance else ""
+        print(
+            f"  ✓ Reference models already present{suffix}; "
+            "run `kairos-ontology update-refmodels` to refresh"
+        )
+    else:
+        git_ref = ref_models_version or _resolve_latest_refmodels_ref() or "main"
+        print("  ▶ Fetching reference models (~17 MB / 561 files)…")
+        ok, _sha, message = _fetch_reference_models(refmodels_dest, git_ref)
+        if ok:
+            print(f"  ✓ {message}")
+        else:
+            print(f"  ⚠  {message}")
+            print("       Run 'kairos-ontology update-refmodels' manually.")
 
     print("\n✅ Ontology hub initialized!")
     print("\nNext steps:")
