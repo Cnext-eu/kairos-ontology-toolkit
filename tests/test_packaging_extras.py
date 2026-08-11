@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Packaging parity tests for user-facing extras.
 
-The four user-facing extras (``azure``, ``foundry``, ``flatfile``, ``parquet``)
+The user-facing extras (``azure``, ``foundry``, ``flatfile``, ``parquet``, ``otel``)
 are declared twice on purpose:
 
 * ``[project.optional-dependencies]`` — what ships in the wheel metadata, so the
@@ -26,7 +26,7 @@ SCAFFOLD_TEMPLATE = (
     / "pyproject.toml.template"
 )
 
-USER_FACING_EXTRAS = ["azure", "foundry", "flatfile", "parquet"]
+USER_FACING_EXTRAS = ["azure", "foundry", "flatfile", "parquet", "otel"]
 
 
 def _load_pyproject() -> dict:
@@ -63,17 +63,24 @@ def test_dev_group_is_not_an_optional_dependency():
     assert "dev" not in optional
 
 
-def test_scaffold_template_declares_user_facing_extras():
-    """The scaffold pyproject template must pin every user-facing extra so hubs
-    scaffolded/upgraded via the toolkit exercise the extras pin-rewriter."""
+def test_scaffold_template_offers_every_user_facing_extra():
+    """Every extra the toolkit ships must be selectable in a scaffolded hub.
+
+    The extras are declared as *bare* requirements — no URL — so the single direct
+    reference in ``[project.dependencies]`` stays the only place a hub records the
+    toolkit version (issue #297).  The previous version of this test asserted only
+    that ``kairos-ontology-toolkit[<extra>]`` appeared somewhere in the pin, which was
+    true both with and without the per-extra URLs, and justified those URLs circularly
+    ("so hubs exercise the extras pin-rewriter").  The URL shape is asserted in
+    tests/test_scaffold_toolkit_pin.py; the rewriter's back-compat with legacy
+    five-URL hubs is asserted in tests/test_cli_update_upgrade.py.
+    """
     with SCAFFOLD_TEMPLATE.open("rb") as fh:
         data = tomllib.load(fh)
     optional = data["project"].get("optional-dependencies", {})
     for extra in USER_FACING_EXTRAS:
-        assert extra in optional, (
-            f"scaffold pyproject.toml.template is missing the '{extra}' extra pin"
-        )
-        pins = optional[extra]
-        assert any(f"kairos-ontology-toolkit[{extra}]" in pin for pin in pins), (
-            f"scaffold '{extra}' extra must pin kairos-ontology-toolkit[{extra}]"
+        assert extra in optional, f"scaffold pyproject.toml.template is missing the '{extra}' extra"
+        assert optional[extra] == [f"kairos-ontology-toolkit[{extra}]"], (
+            f"scaffold '{extra}' extra must be the bare requirement "
+            f"kairos-ontology-toolkit[{extra}], got {optional[extra]}"
         )

@@ -23,17 +23,25 @@ dbt-validate-databricks = [
     "dbt-core>=1.9,<1.10",
     "dbt-databricks>=1.9,<1.10",
 ]
+# Toolkit extras. These deliberately carry NO URL: the single direct reference in
+# [project.dependencies] above is the one and only place the toolkit version is pinned,
+# and extras of the same distribution resolve through it. Repeating the wheel URL here
+# (as hubs scaffolded before toolkit 5.2 did) created five copies of one version that
+# nothing kept in agreement — see issue #297.
 flatfile = [
-    "kairos-ontology-toolkit[flatfile] @ https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/{toolkit_ref}/kairos_ontology_toolkit-{toolkit_version}-py3-none-any.whl",
+    "kairos-ontology-toolkit[flatfile]",
 ]
 azure = [
-    "kairos-ontology-toolkit[azure] @ https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/{toolkit_ref}/kairos_ontology_toolkit-{toolkit_version}-py3-none-any.whl",
+    "kairos-ontology-toolkit[azure]",
 ]
 foundry = [
-    "kairos-ontology-toolkit[foundry] @ https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/{toolkit_ref}/kairos_ontology_toolkit-{toolkit_version}-py3-none-any.whl",
+    "kairos-ontology-toolkit[foundry]",
 ]
 parquet = [
-    "kairos-ontology-toolkit[parquet] @ https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/{toolkit_ref}/kairos_ontology_toolkit-{toolkit_version}-py3-none-any.whl",
+    "kairos-ontology-toolkit[parquet]",
+]
+otel = [
+    "kairos-ontology-toolkit[otel]",
 ]
 
 [tool.kairos]
@@ -45,7 +53,9 @@ parquet = [
 #   uv run kairos-ontology update --test-ref <branch-or-sha>
 # The command pins an immutable SHA and saves exact restore metadata below temporarily.
 # Return to the prior dependency source with: uv run kairos-ontology update --restore
-channel = "stable"
+# This channel is written by the scaffolder to match the pin above, so `update --upgrade`
+# moves forward from it instead of resolving to an older release.
+channel = "{toolkit_channel}"
 
 # Optional accelerator pack selected for scoped validation and projection. When omitted,
 # Kairos infers a single installed pack and requires an explicit choice if several exist.

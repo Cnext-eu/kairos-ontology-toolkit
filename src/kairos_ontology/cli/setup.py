@@ -9,7 +9,6 @@ import subprocess
 from pathlib import Path
 
 
-from .. import __version__ as _toolkit_version
 from ..core._provenance import provenance_comment
 from ..core.catalog_utils import sync_domain_catalog_entry
 from ..core.decision_records import build_index_markdown
@@ -37,8 +36,8 @@ from .shared import (
     _fetch_reference_models,
     _format_refmodels_fetch_provenance,
     _is_old_layout,
-    _resolve_channel,
     _resolve_latest_refmodels_ref,
+    _resolve_scaffold_toolkit_pin,
     _run_reference_models_update,
     _slugify,
     _tag_to_version,
@@ -326,7 +325,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
         if pyproject_dst.exists() and not force:
             print("  ⏭  pyproject.toml already exists (use --force to overwrite)")
         else:
-            ref = _resolve_channel("stable") or f"v{_toolkit_version}"
+            ref, channel = _resolve_scaffold_toolkit_pin()
             version = _tag_to_version(ref)
             repo_name = cwd.name
             content = pyproject_src.read_text(encoding="utf-8")
@@ -335,6 +334,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
                 .replace("{description}", repo_name)
                 .replace("{toolkit_ref}", ref)
                 .replace("{toolkit_version}", version)
+                .replace("{toolkit_channel}", channel)
             )
             pyproject_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created pyproject.toml")
@@ -954,12 +954,15 @@ def new_repo(
     # pyproject.toml
     pyproject_src = _SCAFFOLD_DIR / "pyproject.toml.template"
     if pyproject_src.is_file():
+        # Same pin policy as `init` — never the running (possibly unpublished) version.
+        ref, channel = _resolve_scaffold_toolkit_pin()
         content = pyproject_src.read_text(encoding="utf-8")
         content = (
             content.replace("{repo_name}", repo_slug)
             .replace("{description}", description)
-            .replace("{toolkit_version}", _toolkit_version)
-            .replace("{toolkit_ref}", f"v{_toolkit_version}")
+            .replace("{toolkit_version}", _tag_to_version(ref))
+            .replace("{toolkit_ref}", ref)
+            .replace("{toolkit_channel}", channel)
         )
         (repo_dir / "pyproject.toml").write_text(content, encoding="utf-8")
         print("  ✓ pyproject.toml")

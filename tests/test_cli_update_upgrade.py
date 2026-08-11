@@ -14,11 +14,35 @@ import pytest
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
+from kairos_ontology.cli.shared import _read_hub_channel
+
+SCAFFOLD_TEMPLATE = (
+    Path(__file__).resolve().parent.parent
+    / "src"
+    / "kairos_ontology"
+    / "scaffold"
+    / "pyproject.toml.template"
+)
 
 
 @pytest.fixture
 def runner():
     return CliRunner()
+
+
+def _make_scaffolded_hub_pyproject(tmp_path: Path, version: str = "v3.8.0") -> Path:
+    """Render the shipped scaffold template — one URL, bare extras (issue #297)."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        SCAFFOLD_TEMPLATE.read_text(encoding="utf-8")
+        .replace("{repo_name}", "test-hub")
+        .replace("{description}", "test-hub")
+        .replace("{toolkit_ref}", version)
+        .replace("{toolkit_version}", version.lstrip("v"))
+        .replace("{toolkit_channel}", "preview"),
+        encoding="utf-8",
+    )
+    return pyproject
 
 
 def _make_hub_pyproject(tmp_path: Path, version: str = "v3.8.0") -> Path:
@@ -354,19 +378,25 @@ class TestUpdateHubRootResolution:
         assert not (subdir / ".github").exists()
 
 
-class TestUpdateUpgradeExtrasPins:
-    """The pin-rewriter must also rewrite [project.optional-dependencies] pins.
+class TestUpdateUpgradeLegacyExtrasPins:
+    """Back-compat for *legacy* hubs (scaffolded before toolkit 5.2) whose
+    ``[project.optional-dependencies]`` still repeat the wheel URL per extra.
 
-    Regression: `--upgrade` only rewrote the primary pin, leaving extras pins
-    like ``kairos-ontology-toolkit[flatfile] @ ...`` on the old version, which
-    made `uv lock` fail with conflicting URLs for the same package.
+    Hubs scaffolded today declare the URL once and their extras as bare
+    requirements (issue #297) — that shape is covered by
+    ``TestUpdateUpgradeSingleUrlHub`` below and by
+    ``tests/test_scaffold_toolkit_pin.py``.  These two tests exist because such
+    legacy hubs are still in the field: `--upgrade` once rewrote only the primary
+    pin, leaving extras pins on the old version, which made `uv lock` fail with
+    conflicting URLs for the same package.  The fixture is hand-built, not
+    rendered from the shipped template, precisely so it keeps that old shape.
     """
 
     @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
     @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
     @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
-    def test_extras_pin_is_rewritten_and_marker_preserved(
+    def test_legacy_extras_pin_is_rewritten_and_marker_preserved(
         self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
     ):
         """Both the primary and the [flatfile] extras pin get the new version,
@@ -406,3 +436,158 @@ class TestUpdateUpgradeExtrasPins:
         assert result.exit_code == 0
         assert "3.9.0rc2-py3-none-any.whl" in text
         assert "0.0.0-py3-none-any.whl" not in text
+
+
+class TestUpdateUpgradeSingleUrlHub:
+    """A hub scaffolded today carries the toolkit URL once (issue #297)."""
+
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_upgrade_rewrites_the_single_url_and_leaves_bare_extras(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_scaffolded_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+                text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+        assert result.exit_code == 0, result.output
+        assert text.count("py3-none-any.whl") == 1
+        assert text.count("3.9.0rc2-py3-none-any.whl") == 1
+        assert '"kairos-ontology-toolkit[flatfile]"' in text
+
+
+class TestUpdateUpgradeDowngradeGuard:
+    """`--upgrade` must never silently move the pin backwards.
+
+    Every release after v5.0.2 was published as a pre-release, so the ``stable``
+    channel resolves to v5.0.2: a hub pinned to a current pre-release would
+    otherwise be downgraded into a toolkit predating its own scaffold.
+    """
+
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="stable")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_refuses_to_downgrade_the_pin(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd(), version="v4.5.0")
+                result = runner.invoke(cli, ["update", "--upgrade"])
+                text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+        assert result.exit_code == 1
+        # Both versions and the escape hatch are named.
+        assert "3.9.0rc2" in result.output
+        assert "4.5.0" in result.output
+        assert "--allow-downgrade" in result.output
+        # The pin is untouched and nothing was locked or synced.
+        assert "/download/v4.5.0/" in text
+        assert ["uv", "lock"] not in [c[0][0] for c in mock_run.call_args_list]
+
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="stable")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_allow_downgrade_proceeds(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd(), version="v4.5.0")
+                result = runner.invoke(cli, ["update", "--upgrade", "--allow-downgrade"])
+                text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+        assert result.exit_code == 0, result.output
+        assert "/download/v3.9.0-rc.2/" in text
+
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_pre_release_ordering_uses_packaging_not_strings(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        """v3.10.0 → v3.9.0-rc.2 is a downgrade, though "3.10" < "3.9" as strings."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd(), version="v3.10.0")
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 1
+        assert "--allow-downgrade" in result.output
+
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="stable")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_upgrade_from_pre_release_to_final_is_allowed(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd(), version="v3.9.0-rc.2")
+                result = runner.invoke(cli, ["update", "--upgrade"])
+                text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+        assert result.exit_code == 0, result.output
+        assert "/download/v3.9.0/" in text
+
+    def test_allow_downgrade_requires_upgrade(self, runner):
+        result = runner.invoke(cli, ["update", "--allow-downgrade"])
+
+        assert result.exit_code == 2
+        assert "--allow-downgrade only applies to --upgrade" in result.output
+
+
+class TestReadHubChannel:
+    """`_read_hub_channel` feeds the upgrade target, so a wrong answer picks the
+    wrong version."""
+
+    def test_commented_out_channel_does_not_win(self, tmp_path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "hub"\n\n[tool.kairos]\n# channel = "preview"\nchannel = "stable"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert _read_hub_channel() == "stable"
+
+    def test_reads_the_real_channel(self, tmp_path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "hub"\n\n[tool.kairos]\nchannel = "preview"\n', encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert _read_hub_channel() == "preview"
+
+    def test_defaults_to_stable_without_pyproject_or_key(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert _read_hub_channel() == "stable"
+
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "hub"\n', encoding="utf-8")
+        assert _read_hub_channel() == "stable"
+
+    def test_falls_back_to_a_line_scan_for_broken_toml(self, tmp_path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text(
+            '[project\nname = broken\n[tool.kairos]\n# channel = "stable"\nchannel = "preview"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert _read_hub_channel() == "preview"
