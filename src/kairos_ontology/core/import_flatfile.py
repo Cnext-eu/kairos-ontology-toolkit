@@ -771,22 +771,19 @@ def run_import_flatfile(
         exclude_columns_from_tables(tables, all_excluded)
 
     if output_dir is None:
-        # Detect hub root
-        from .hub_utils import find_hub_root
+        from .hub_utils import resolve_hub_output_dir
 
-        cwd = Path.cwd()
-        hub_root = find_hub_root(cwd)
-        if hub_root:
-            output_dir = hub_root / "integration" / "sources" / system_name
-        else:
+        output_dir, hub_root = resolve_hub_output_dir(
+            Path("integration") / "sources" / system_name
+        )
+        if hub_root is None:
             logger.warning(
                 "Could not detect ontology-hub root (no ontology-hub/ or "
                 "model/ontologies/ found). "
-                "Writing to relative path: integration/sources/%s. "
+                "Writing to relative path: %s. "
                 "Use --output to specify an explicit output directory.",
-                system_name,
+                output_dir,
             )
-            output_dir = Path("integration/sources") / system_name
 
     result_dir = write_source_dir(tables, system_name, output_dir)
     if return_count:

@@ -12,6 +12,7 @@ This module coordinates the full import-tmdl workflow:
 from __future__ import annotations
 
 import logging
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,9 +20,15 @@ from typing import Literal
 
 import yaml
 
+from .hub_utils import resolve_hub_output_dir
 from .tmdl_parser import TmdlModel, parse_model_folder, parse_tmdl_content
 
 logger = logging.getLogger(__name__)
+
+# Declared home for Power BI demand evidence, relative to the hub root. Scaffolded
+# by init/new-repo and read back from the hub root by draft-model-report and
+# design-landscape, so writer and readers must agree on the anchor (issue #296).
+_BI_DISCOVERY_RELPATH = Path("integration") / "discovery" / "bi"
 
 
 def detect_input_type(path: Path) -> Literal["zip", "folder", "file"]:
@@ -262,30 +269,53 @@ def generate_concept_mapping(model: TmdlModel) -> str:
     return header + yaml.dump(data, default_flow_style=False, sort_keys=False, width=100)
 
 
-def run_import_tmdl(source: Path, output_dir: Path) -> list[Path]:
+def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
     """Main entry point: detect input, parse, and generate outputs.
 
     Args:
         source: Path to ZIP, folder, or .tmdl file
-        output_dir: Directory to write output files
+        output_dir: Directory to write output files. When ``None``, resolves to
+            ``<hub root>/integration/discovery/bi`` via
+            :func:`~kairos_ontology.core.hub_utils.resolve_hub_output_dir`; a
+            cwd-relative default would create a stray ``integration/`` tree
+            outside the hub whenever the command is run from the repo root
+            (issue #296).
 
     Returns:
         List of generated output file paths
     """
+    if output_dir is None:
+        output_dir, hub_root = resolve_hub_output_dir(_BI_DISCOVERY_RELPATH)
+        if hub_root is None:
+            logger.warning(
+                "Could not detect ontology-hub root (no ontology-hub/ or "
+                "model/ontologies/ found). "
+                "Writing to relative path: %s. "
+                "Use --output to specify an explicit output directory.",
+                output_dir,
+            )
+
     input_type = detect_input_type(source)
     generated_files: list[Path] = []
 
     if input_type == "zip":
-        # Extract to output dir and find definition dirs
-        extract_dest = output_dir / source.stem
-        definition_dirs = extract_pbip_zip(source, extract_dest)
-        if not definition_dirs:
-            logger.warning("No SemanticModel definition/ found in ZIP: %s", source)
-            return []
-        for def_dir in definition_dirs:
-            model = parse_model_folder(def_dir)
-            files = _write_outputs(model, output_dir, str(source))
-            generated_files.extend(files)
+        # Extract to a throwaway temp directory, never into output_dir. A PBIP
+        # archive carries the whole report — .Report/ definition JSON,
+        # .pbi/localSettings.json, expression.tmdl with M queries and server
+        # names — and output_dir is a committed hub folder whose contract is two
+        # derived artifacts only ("Never commit credentials, connection strings,
+        # raw personal data, or proprietary report content", see that folder's
+        # README). Extracting in place also accumulated stale members across
+        # re-runs, since extractall never prunes (issue #296).
+        with tempfile.TemporaryDirectory(prefix="kairos-tmdl-") as tmp:
+            definition_dirs = extract_pbip_zip(source, Path(tmp) / source.stem)
+            if not definition_dirs:
+                logger.warning("No SemanticModel definition/ found in ZIP: %s", source)
+                return []
+            for def_dir in definition_dirs:
+                model = parse_model_folder(def_dir)
+                files = _write_outputs(model, output_dir, str(source))
+                generated_files.extend(files)
 
     elif input_type == "folder":
         definition_dirs = find_definition_dirs(source)

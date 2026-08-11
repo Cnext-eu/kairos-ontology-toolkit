@@ -932,7 +932,7 @@ def check_inventory_cmd(
     "--tmdl-dir",
     type=click.Path(),
     default=None,
-    help="Path to import-tmdl output (default: integration/discovery/bi/).",
+    help="Path to import-tmdl output (default: <hub root>/integration/discovery/bi/).",
 )
 @click.option(
     "--glossary-dir",

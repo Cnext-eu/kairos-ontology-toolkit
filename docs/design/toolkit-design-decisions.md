@@ -10128,7 +10128,16 @@ relation in an `EntityBinding`, contradicting the intended demand-evidence seman
 Relocate Power BI/TMDL analysis to the demand/discovery tree:
 
 - `import-tmdl --output` defaults to **`integration/discovery/bi/`** (a sibling of the DD-090
-  `core-concepts-conformance.yaml` demand artifact), never `integration/sources/`.
+  `core-concepts-conformance.yaml` demand artifact), never `integration/sources/`. That path is
+  resolved against the **hub root**, not the current working directory (issue #296): the original
+  cwd-relative default created a stray top-level `integration/` tree outside `ontology-hub/`
+  whenever the command was run from the repository root — which is the natural place to run it,
+  since raw BI exports are kept there. An explicit `--output` is still honoured verbatim.
+- Only the two derived artifacts are written into the hub. A PBIP archive is expanded in a
+  temporary directory, never into the output folder (issue #296): the archive carries the whole
+  report — report definitions, local settings, M expressions with server names — and that folder's
+  own README forbids committing connection strings or proprietary report content. In-place
+  extraction also accumulated stale members across re-runs, since `extractall` never prunes.
 - `design-landscape` reads concept-mapping BI weight from `integration/discovery/bi/**` first,
   and still reads the legacy `integration/sources/**` location for back-compat.
 - `draft-model-report --tmdl-dir` auto-detects `integration/discovery/bi/`, falling back to the

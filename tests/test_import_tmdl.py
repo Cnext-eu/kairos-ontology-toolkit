@@ -323,3 +323,157 @@ class TestCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ["import-tmdl", "/nonexistent/path"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #296 — output is resolved against the hub root, and only the two
+# derived artifacts are written
+# ---------------------------------------------------------------------------
+
+
+def _make_hub(root: Path) -> Path:
+    """Create a repo root containing a scaffolded-shaped ontology-hub/."""
+    hub = root / "ontology-hub"
+    (hub / "model" / "ontologies").mkdir(parents=True)
+    (hub / "integration" / "discovery" / "bi").mkdir(parents=True)
+    return hub
+
+
+def _bi_dir(hub: Path) -> Path:
+    return hub / "integration" / "discovery" / "bi"
+
+
+class TestHubRootResolution:
+    def test_default_output_lands_inside_the_hub_not_at_the_repo_root(self, tmp_path, monkeypatch):
+        """The reported bug: run from the repo root, get a stray top-level integration/."""
+        hub = _make_hub(tmp_path)
+        sm_dir = _create_semantic_model(tmp_path / "raw")
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["import-tmdl", str(sm_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert sorted(p.name for p in _bi_dir(hub).iterdir()) == [
+            "TestModel-concept-mapping.yaml",
+            "TestModel-engineering-pack.md",
+        ]
+        assert not (tmp_path / "integration").exists(), "stray top-level integration/ was created"
+
+    def test_default_output_announces_the_destination_before_writing(self, tmp_path, monkeypatch):
+        hub = _make_hub(tmp_path)
+        sm_dir = _create_semantic_model(tmp_path / "raw")
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["import-tmdl", str(sm_dir)])
+
+        assert "📂 Writing to:" in result.output
+        assert str(_bi_dir(hub)) in result.output
+
+    def test_run_from_inside_the_hub_does_not_nest(self, tmp_path, monkeypatch):
+        hub = _make_hub(tmp_path)
+        sm_dir = _create_semantic_model(tmp_path / "raw")
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["import-tmdl", str(sm_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert list(_bi_dir(hub).glob("*-engineering-pack.md"))
+        assert not (hub / "ontology-hub").exists()
+
+    def test_run_from_a_deep_subdirectory_resolves_upward(self, tmp_path, monkeypatch):
+        """From ontology-hub/integration/, a cwd-relative path would produce
+        ontology-hub/integration/integration/discovery/bi (DD-064 nesting)."""
+        hub = _make_hub(tmp_path)
+        sm_dir = _create_semantic_model(tmp_path / "raw")
+        monkeypatch.chdir(hub / "integration")
+
+        result = CliRunner().invoke(cli, ["import-tmdl", str(sm_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert list(_bi_dir(hub).glob("*-engineering-pack.md"))
+        assert not (hub / "integration" / "integration").exists()
+
+    def test_explicit_output_is_used_verbatim(self, tmp_path, monkeypatch):
+        """Pins that an explicit path is never re-anchored to the hub root.
+
+        This passes against the unfixed code too — it is a guard against a future
+        over-correction, not coverage of the bug.
+        """
+        hub = _make_hub(tmp_path)
+        sm_dir = _create_semantic_model(tmp_path / "raw")
+        monkeypatch.chdir(tmp_path)
+        explicit = tmp_path / "somewhere" / "else"
+
+        result = CliRunner().invoke(cli, ["import-tmdl", str(sm_dir), "--output", str(explicit)])
+
+        assert result.exit_code == 0, result.output
+        assert list(explicit.glob("*-engineering-pack.md"))
+        assert not list(_bi_dir(hub).iterdir())
+
+    def test_no_hub_detected_warns_loudly_and_still_writes(self, tmp_path, monkeypatch):
+        """No hub is not a hard failure, but it must not be silent."""
+        sm_dir = _create_semantic_model(tmp_path / "raw")
+        workdir = tmp_path / "not-a-hub"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+
+        result = CliRunner().invoke(cli, ["import-tmdl", str(sm_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert "No ontology-hub root detected" in result.output
+        assert list((workdir / "integration" / "discovery" / "bi").glob("*-engineering-pack.md"))
+
+    def test_core_resolves_the_hub_root_when_output_dir_is_none(self, tmp_path, monkeypatch):
+        """The resolution lives in core, so non-CLI callers get it too."""
+        hub = _make_hub(tmp_path)
+        sm_dir = _create_semantic_model(tmp_path / "raw")
+        monkeypatch.chdir(tmp_path)
+
+        files = run_import_tmdl(sm_dir)
+
+        assert len(files) == 2
+        assert all(f.resolve().is_relative_to(_bi_dir(hub).resolve()) for f in files)
+
+
+class TestZipExtractionStaysOutOfTheHub:
+    def test_zip_writes_only_the_two_derived_artifacts(self, tmp_path, monkeypatch):
+        """A PBIP archive carries report definitions and connection strings.
+
+        Only the engineering pack and concept mapping may enter the hub; the raw
+        archive members must not be committed alongside them.
+        """
+        hub = _make_hub(tmp_path)
+        zip_path = _create_zip(tmp_path / "raw")
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["import-tmdl", str(zip_path)])
+
+        assert result.exit_code == 0, result.output
+        written = sorted(p.relative_to(_bi_dir(hub)).as_posix() for p in _bi_dir(hub).rglob("*"))
+        assert written == [
+            "TestModel-concept-mapping.yaml",
+            "TestModel-engineering-pack.md",
+        ]
+
+    def test_zip_leaves_no_extraction_tree_anywhere_in_the_hub(self, tmp_path, monkeypatch):
+        hub = _make_hub(tmp_path)
+        zip_path = _create_zip(tmp_path / "raw")
+        monkeypatch.chdir(tmp_path)
+
+        CliRunner().invoke(cli, ["import-tmdl", str(zip_path)])
+
+        assert not list(hub.rglob("*.SemanticModel"))
+        assert not list(hub.rglob("model.tmdl"))
+
+    def test_zip_import_is_repeatable_without_accumulating_files(self, tmp_path, monkeypatch):
+        """extractall never prunes, so in-place extraction accumulated stale members."""
+        hub = _make_hub(tmp_path)
+        zip_path = _create_zip(tmp_path / "raw")
+        monkeypatch.chdir(tmp_path)
+
+        CliRunner().invoke(cli, ["import-tmdl", str(zip_path)])
+        first = sorted(p.name for p in _bi_dir(hub).rglob("*"))
+        CliRunner().invoke(cli, ["import-tmdl", str(zip_path)])
+        second = sorted(p.name for p in _bi_dir(hub).rglob("*"))
+
+        assert first == second
