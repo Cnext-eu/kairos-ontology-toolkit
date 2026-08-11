@@ -250,6 +250,19 @@ def test_check_discovery_gate_ignores_template_files_under_businessdiscovery(tmp
     assert "No business discovery evidence found" in errors[0]
 
 
+def test_check_discovery_gate_ignores_scaffold_dash_template_ttl(tmp_path):
+    # Issue #288: init's actual scaffold uses `glossary-template.ttl` (a `-template.ttl`
+    # suffix), not the legacy `*.template` convention exercised above. A hub whose only
+    # businessdiscovery/ file is this scaffold template has zero authored evidence and must
+    # still fail the hard gate, not silently pass compile/validate.
+    narrative_dir = tmp_path / "businessdiscovery"
+    narrative_dir.mkdir(parents=True)
+    (narrative_dir / "glossary-template.ttl").write_text("", encoding="utf-8")
+    errors = check_discovery_gate(tmp_path)
+    assert len(errors) == 1
+    assert "No business discovery evidence found" in errors[0]
+
+
 def test_check_discovery_gate_passes_for_resolved_artifact(tmp_path, archetype):
     art = build_artifact(
         archetype=archetype, refmodels_version="1.11.0", outcomes=_outcomes(), mode="interactive"
