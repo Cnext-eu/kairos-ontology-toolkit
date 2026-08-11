@@ -43,6 +43,21 @@ class TestInferColumnType:
 
     def test_datetimes(self):
         assert infer_column_type(["2024-01-15T10:30:00", "2024-02-20 14:00"]) == "datetime"
+        assert infer_column_type(["2024-01-15 10:30:00.123456"]) == "datetime"
+        assert infer_column_type(["2024-01-15 10:30:00+00:00"]) == "datetime"
+
+    def test_free_text_beginning_with_a_timestamp_is_not_a_datetime(self):
+        """``_DATETIME_PATTERNS`` must be end-anchored (#302).
+
+        Unanchored, it typed audit trails and contact notes as ``datetime`` — a
+        declared type that any datatype-keyed privacy exemption would then trust,
+        persisting the emails and phone numbers in those cells verbatim.
+        """
+        values = [
+            "2024-01-15 10:30 signed off by jane.doe@acme.com",
+            "2024-02-20 14:00 called +32 470 12 34 56",
+        ]
+        assert infer_column_type(values) == "varchar(max)"
 
     def test_booleans(self):
         assert infer_column_type(["true", "false", "True"]) == "bit"
@@ -226,6 +241,68 @@ class TestWriteSourceDir:
 
         manifest = yaml.safe_load((output / "_manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["sample_privacy"]["version"] == "1"
+
+    def test_persists_timestamps_and_numbers_but_redacts_text_pii(self, tmp_path):
+        """End-to-end through the function the importers call (#302).
+
+        A unit test of ``redact_sample_value`` alone is not enough: ``write_source_dir``
+        redacts with the declared column types and then re-checks with
+        ``assert_no_unredacted_sample_pii``, which has none, so any datatype-keyed
+        exemption raises ``SamplePrivacyError`` here while the unit test passes.
+        """
+        columns = [
+            ("created_at", "datetime"),
+            ("amount", "decimal"),
+            ("ratio", "decimal"),
+            ("quantity", "bigint"),
+            ("note", "varchar(max)"),
+            ("email", "varchar(255)"),
+            ("iban", "varchar(34)"),
+        ]
+        tables = [
+            {
+                "name": "invoices",
+                "row_count": 1,
+                "columns": [
+                    {
+                        "name": name,
+                        "data_type": data_type,
+                        "ordinal_position": pos,
+                        "nullable": False,
+                    }
+                    for pos, (name, data_type) in enumerate(columns, start=1)
+                ],
+                "sample_rows": [
+                    {
+                        "created_at": "2026-07-29 14:19:00",
+                        "amount": "1234567.89",
+                        "ratio": "0.123456789",
+                        "quantity": "12345678",
+                        "note": "2026-07-29 14:19 called +32 470 12 34 56 to confirm",
+                        "email": "jane.doe@acme.com",
+                        "iban": "BE68 5390 0754 7034",
+                    }
+                ],
+            }
+        ]
+
+        output = write_source_dir(tables, "erp", tmp_path / "erp")
+
+        import yaml
+
+        raw = (output / "invoices.samples.yaml").read_text(encoding="utf-8")
+        row = yaml.safe_load(raw)["rows"][0]
+
+        assert row["created_at"] == "2026-07-29 14:19:00"
+        assert row["amount"] == "1234567.89"
+        assert row["ratio"] == "0.123456789"
+        assert row["quantity"] == "12345678"
+
+        assert row["note"] == ("<redacted kind=phone source=invoices.note datatype=varchar(max)>")
+        assert row["email"] == ("<redacted kind=email source=invoices.email datatype=varchar(255)>")
+        assert row["iban"] == "<redacted kind=iban source=invoices.iban datatype=varchar(34)>"
+        for leaked in ("+32 470 12 34 56", "jane.doe@acme.com", "BE68 5390 0754 7034"):
+            assert leaked not in raw
 
     def test_removes_stale_samples_when_rerun_has_no_rows(self, tmp_path):
         output_dir = tmp_path / "erp"
@@ -857,15 +934,23 @@ class TestTimezoneAwareTimestamps:
         assert rendered == ["2024-01-15 10:30:00+00:00", "2024-03-02 08:00:00+00:00"]
 
     def test_rendered_value_satisfies_the_datetime_pii_exemption(self, tmp_path):
-        """The rendered form must fullmatch the datetime exemption regex.
+        """The rendered form must survive redaction, not merely match the regex.
 
-        Otherwise the PII detectors treat the timestamp as a candidate and
-        redact it. A ``cast(pa.string())`` would emit a colon-less ``-0500``
-        offset, which does not fullmatch.
+        A ``cast(pa.string())`` would emit a colon-less ``-0500`` offset, which does
+        not fullmatch the exemption. Asserting the fullmatch alone proves nothing
+        though — it passed against the code that redacted every timestamp as a phone
+        number (#302), because the exemption was tested against a truncated
+        substring and no detector was ever invoked. So run the redactor and the
+        persistence gate over the rendered value.
         """
         import datetime as dt
 
-        from kairos_ontology.core._samples import _ISO_DATE_OR_DATETIME_RE, is_redaction_token
+        from kairos_ontology.core._samples import (
+            _ISO_DATE_OR_DATETIME_RE,
+            assert_no_unredacted_sample_pii,
+            is_redaction_token,
+            redact_sample_rows,
+        )
 
         pq_file = tmp_path / "events.parquet"
         naive = pa.array([dt.datetime(2024, 1, 15, 10, 30, 0)], type=pa.timestamp("us"))
@@ -879,6 +964,15 @@ class TestTimezoneAwareTimestamps:
         value = table["sample_rows"][0]["created_at"]
         assert _ISO_DATE_OR_DATETIME_RE.fullmatch(value), value
         assert not is_redaction_token(value)
+
+        safe_rows, findings = redact_sample_rows(
+            table["sample_rows"],
+            table="events",
+            column_types={"created_at": "datetime"},
+        )
+        assert_no_unredacted_sample_pii(safe_rows, table="events")
+        assert safe_rows[0]["created_at"] == value
+        assert findings == []
 
     def test_offset_is_applied_not_dropped(self, tmp_path):
         """UTC normalisation must shift the instant, never silently drop the offset.

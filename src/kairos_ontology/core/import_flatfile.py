@@ -69,7 +69,10 @@ _DATE_PATTERNS = [
     re.compile(r"^\d{2}-\d{2}-\d{4}$"),  # 15-01-2024
 ]
 _DATETIME_PATTERNS = [
-    re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"),  # ISO datetime
+    # End-anchored like _DATE_PATTERNS above: without the ``$`` any free-text column
+    # whose values merely BEGIN with a timestamp (audit trails, comment logs, contact
+    # notes) was typed ``datetime`` (#302).
+    re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?$"),
 ]
 _BOOL_VALUES = {"true", "false", "1", "0", "yes", "no", "y", "n"}
 

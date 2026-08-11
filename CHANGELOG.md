@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc17] — 2026-08-11
+
+### Fixed
+- **Source samples replaced timestamps and amounts with `<redacted kind=phone>`** (#302). On a real
+  70-table parquet import, 1,194 cells were falsely redacted — 973 `datetime` and 221 `decimal` —
+  leaving a sample corpus with no usable temporal or numeric evidence for `audit-silver-samples`
+  (DD-089) or for modelling. Two shape bugs, both now fixed by whole-value exemptions in
+  `core/_samples.py`. First, the ISO date-time exemption was tested against the *substring* matched
+  by `_EMBEDDED_PHONE_RE`, whose character class excludes `:`; on `2026-07-29 14:19:00` that
+  substring is `2026-07-29 14`, which can never fullmatch an anchored date-time pattern, so every
+  space-separated timestamp — the only form the toolkit writes, since `str(datetime)` produces it —
+  was classified as a phone number. The whole value is now tested first, while the per-match check
+  is retained so a bare date inside prose still does not read as a phone number. Second, there was
+  no numeric exemption at all, so `1234567.89` was a phone number and `0.123456789` an identifier;
+  a bare decimal literal is now exempt when it has a fractional part or fewer than 9 integer
+  digits — the digit bound keeps national registry numbers (BE INSZ, NL BSN, DK CPR), which arrive
+  in `bigint` columns, detectable, and a leading zero disqualifies the exemption so bare phone
+  numbers like `06123456` still classify. Both exemptions are applied in `value_is_pii_shaped` too,
+  so the human-facing masking path agrees with the persistence path.
+  The exemptions deliberately do **not** consult the declared column datatype: `column_types` is
+  inferred from the very values it would protect on the CSV path and read from a mutable sibling
+  YAML elsewhere, and gating on it leaked emails, phone numbers and IBANs out of free-text columns
+  that merely begin with a timestamp. Column-*name* detection is likewise untouched, so a boolean
+  named for a special category (`Religion_*`, `Has*HealthFlag`) still redacts. Real-data
+  re-verification: false positives on those datatypes fell from 1,229 to 45, all 45 name-driven.
+- **`infer_column_type` typed free text as `datetime`.** `_DATETIME_PATTERNS` was the only pattern
+  in `core/import_flatfile.py` missing its `$` anchor (the `_DATE_PATTERNS` beside it all have
+  one), so any column whose sampled values merely *began* with a timestamp — audit trails, comment
+  logs, contact notes — was declared `datetime`. Anchored, and extended to accept seconds,
+  fractional seconds and offsets so the common `2024-01-15 10:30:00` form still infers correctly.
+
 ## [5.2.0rc16] — 2026-08-11
 
 ### Fixed
