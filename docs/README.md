@@ -7,6 +7,7 @@
 | [User guide](USER_GUIDE.md) | Authoring, stateless compile, adapters, and clean cutover |
 | [CLI reference](CLI_REFERENCE.md) | Exact retained command surface and compiler modes |
 | [CompilePlan consumption](CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
+| [Logging & observability](OBSERVABILITY.md) | Verbosity flags, JSON logs, optional OpenTelemetry bridge (DD-151) |
 | [DD-133](design/dd-133-v5-entity-binding-compile.md) | Normative EntityBinding/compiler contract |
 | [Design decisions](design/toolkit-design-decisions.md) | Canonical ADR log and status index |
 | [Releasing](RELEASING.md) | Maintainer publication process; not evidence of a published release |

@@ -54,6 +54,21 @@ def test_compile_check_and_explain_json_includes_both(tmp_path, monkeypatch):
     assert payload["explain"]["entities"][0]["name"] == "crm-customer"
 
 
+def test_compile_json_payload_includes_operation_id(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli, ["compile", "party", "--check", "--format", "json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert "operation_id" in payload
+    assert isinstance(payload["operation_id"], str)
+    assert payload["operation_id"]  # non-empty when CLI is the entry point
+
+
 def test_compile_explain_and_emit_cannot_be_combined(tmp_path, monkeypatch):
     hub = _hub(tmp_path)
     monkeypatch.chdir(hub)

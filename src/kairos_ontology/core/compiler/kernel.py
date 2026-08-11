@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import re
 from dataclasses import replace
@@ -88,6 +89,14 @@ from .result import (
 from .result import DiagnosticSeverity
 from .scope import BuildScope, ProvenanceInput
 from .temporal import adapt_temporal_relationships
+
+logger = logging.getLogger(__name__)
+
+
+def _codes_of(diagnostics: tuple[CompileDiagnostic, ...] | list[CompileDiagnostic]) -> tuple[str, ...]:
+    """Extract diagnostic codes for compact debug trace lines."""
+    return tuple(d.code for d in diagnostics)
+
 
 _BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 _XSD_TYPES = {
@@ -2292,6 +2301,12 @@ def _planned_artifact_paths(
 def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     """Build the canonical graph-free plan without rendering or writing artifacts."""
     scope, context = resolve_scope(Path(hub_root), domain)
+    logger.debug(
+        "compile scope resolved: domain=%s binding_paths=%d provenance=%s",
+        domain,
+        len(scope.binding_paths),
+        scope.provenance_hash(),
+    )
     diagnostics: list[CompileDiagnostic] = list(scope.prefix_warnings)
     specs: list[EntityBindingSpec] = []
     valid_bindings: list[EntityBinding] = []
@@ -2302,13 +2317,16 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         text = path.read_text(encoding="utf-8")
         declared_domain = _binding_domain(text)
         if declared_domain not in {None, domain}:
+            logger.debug("binding skipped (domain mismatch): %s declared=%s", path.name, declared_domain)
             continue
         try:
             binding = load_entity_binding(text, path=str(path))
         except CompileError as exc:
             diagnostics.extend(_structural_safety_diagnostic(item) for item in exc.diagnostics)
+            logger.debug("binding blocked (structural errors): %s codes=%s", path.name, _codes_of(exc.diagnostics))
             continue
         if binding.domain != domain:
+            logger.debug("binding skipped (binding.domain mismatch): %s", path.name)
             continue
         selected_bindings.append(binding)
     if not selected_bindings and not diagnostics:
@@ -2370,6 +2388,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         except CompileError as exc:
             diagnostics.extend(_adapter_safety_diagnostic(item) for item in exc.diagnostics)
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
+            logger.debug("binding blocked (adapter): %s codes=%s", path.name, _codes_of(exc.diagnostics))
         except Exception as exc:
             diagnostics.append(
                 CompileDiagnostic(
@@ -2379,6 +2398,13 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 )
             )
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
+            logger.debug("binding blocked (normalization): %s error=%s", path.name, exc)
+    logger.debug(
+        "binding selection: selected=%d valid=%d blocked=%d",
+        len(selected_bindings),
+        len(valid_bindings),
+        sum(1 for s in specs if s.blocked),
+    )
     contract = None
     shaped = None
     materialized = None
@@ -2657,12 +2683,20 @@ def compile_domain(
 ) -> CompileResult:
     """Return a compatibility result view over one canonical compile plan."""
     selected_mode = CompileMode(mode)
+    cached_plan = isinstance(hub_root, CompilePlan)
+    logger.debug(
+        "compile domain: domain=%s mode=%s cached_plan=%s",
+        domain or "",
+        selected_mode.value,
+        cached_plan,
+    )
     try:
         plan = (
             hub_root
-            if isinstance(hub_root, CompilePlan)
+            if cached_plan
             else build_compile_plan(hub_root, domain or "")
         )
     except CompileError as exc:
+        logger.debug("compile domain aborted (compile errors): codes=%s", _codes_of(exc.diagnostics))
         return CompileResult(domain or "", selected_mode.value, CompileDiagnostics(exc.diagnostics))
     return compile_plan_result(plan, selected_mode, render=True)

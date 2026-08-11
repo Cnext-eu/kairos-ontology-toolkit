@@ -11,9 +11,17 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from time import perf_counter
 
 import yaml
 
+from ..observability.events import (
+    PROJECTION_STEP_COMPLETED,
+    PROJECTION_STEP_FAILED,
+    PROJECTION_STEP_SKIPPED,
+    PROJECTION_STEP_STARTED,
+    emit,
+)
 from .dbt.silver_contract import (
     canonical_data,
     canonical_type_label,
@@ -527,8 +535,21 @@ def render_mermaid_svg(mmd_path: Path) -> Path | None:
         search_dir = search_dir.parent
     mmdc = mmdc or shutil.which("mmdc")
     if not mmdc:
+        emit(
+            PROJECTION_STEP_SKIPPED,
+            logging.INFO,
+            "Mermaid render skipped: mmdc not found",
+            **{"kairos.projection.step": "mermaid_render", "source": str(mmd_path)},
+        )
         return None
     svg_path = mmd_path.with_suffix(".svg")
+    emit(
+        PROJECTION_STEP_STARTED,
+        logging.INFO,
+        "Mermaid render started",
+        **{"kairos.projection.step": "mermaid_render", "source": str(mmd_path)},
+    )
+    start = perf_counter()
     try:
         subprocess.run(
             [mmdc, "-i", str(mmd_path), "-o", str(svg_path), "-q"],
@@ -537,6 +558,30 @@ def render_mermaid_svg(mmd_path: Path) -> Path | None:
             timeout=60,
         )
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        duration_ms = int((perf_counter() - start) * 1000)
+        emit(
+            PROJECTION_STEP_FAILED,
+            logging.WARNING,
+            f"Mermaid render failed for {mmd_path.name}: {exc}",
+            **{
+                "kairos.projection.step": "mermaid_render",
+                "source": str(mmd_path),
+                "duration_ms": duration_ms,
+                "error_type": type(exc).__name__,
+            },
+        )
         logger.warning("Mermaid render failed for %s: %s", mmd_path.name, exc)
         return None
+    duration_ms = int((perf_counter() - start) * 1000)
+    emit(
+        PROJECTION_STEP_COMPLETED,
+        logging.INFO,
+        "Mermaid render completed",
+        **{
+            "kairos.projection.step": "mermaid_render",
+            "source": str(mmd_path),
+            "artifact": str(svg_path),
+            "duration_ms": duration_ms,
+        },
+    )
     return svg_path

@@ -198,6 +198,7 @@ above).
 | Code | Default severity | Rule ID / DD citation | Notes |
 | --- | --- | --- | --- |
 | `safety.artifact-collision` | error | DD-133 (default) | two call sites (duplicate binding name, duplicate artifact path) |
+
 | `safety.grain-missing` | error | DD-133 (default) | also constructed via remap in `kernel.py` |
 | `safety.identity-incomplete` | error | DD-133 (default) | also constructed via remap in `kernel.py` |
 | `safety.relationship-endpoint` | error | DD-133 (default) | also constructed directly in `kernel.py` |
