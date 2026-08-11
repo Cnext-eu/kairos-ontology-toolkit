@@ -51,6 +51,14 @@ flatfile = [
 parquet = [
     "pyarrow>=14.0.0",
 ]
+# OpenTelemetry-ready structured logging bridge (DD-151). Opt-in and off by default:
+# the package import must never fail when the extra is absent. Activated by OTEL_*
+# environment variables; export failure never affects CLI exit codes.
+otel = [
+    "opentelemetry-api>=1.28.0,<2.0.0",
+    "opentelemetry-sdk>=1.28.0,<2.0.0",
+    "opentelemetry-exporter-otlp>=1.28.0,<2.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
@@ -82,6 +90,11 @@ flatfile = [
 ]
 parquet = [
     "pyarrow>=14.0.0",
+]
+otel = [
+    "opentelemetry-api>=1.28.0,<2.0.0",
+    "opentelemetry-sdk>=1.28.0,<2.0.0",
+    "opentelemetry-exporter-otlp>=1.28.0,<2.0.0",
 ]
 
 [build-system]

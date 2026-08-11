@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -12,6 +13,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
+
+from .observability.events import (
+    DBT_ENVIRONMENT_BLOCKED,
+    timed_phase,
+)
 
 import yaml
 
@@ -300,32 +306,77 @@ def validate_dbt_project(
             )
 
     common = ("--profiles-dir", str(effective_profiles))
+    project_dir_str = str(project_dir)
     try:
         try:
-            deps = _run((executable, "deps", *common), project_dir=project_dir, runner=runner)
+            with timed_phase(
+                "deps",
+                platform=platform,
+                project_dir=project_dir_str,
+            ):
+                deps = _run((executable, "deps", *common), project_dir=project_dir, runner=runner)
+                if deps.returncode:
+                    raise DbtValidationError("deps", _failure_text(deps))
         except subprocess.TimeoutExpired as exc:
             raise DbtValidationError("deps", "command exceeded 300 seconds") from exc
-        if deps.returncode:
-            raise DbtValidationError("deps", _failure_text(deps))
 
         try:
-            parse = _run((executable, "parse", *common), project_dir=project_dir, runner=runner)
+            with timed_phase(
+                "parse",
+                platform=platform,
+                project_dir=project_dir_str,
+            ):
+                parse = _run((executable, "parse", *common), project_dir=project_dir, runner=runner)
+                if parse.returncode:
+                    raise DbtValidationError("parse", _failure_text(parse))
         except subprocess.TimeoutExpired as exc:
             raise DbtValidationError("parse", "command exceeded 300 seconds") from exc
-        if parse.returncode:
-            raise DbtValidationError("parse", _failure_text(parse))
 
         manifest_path = project_dir / "target" / "manifest.json"
         validate_manifest(manifest_path)
 
         try:
-            compile_result = _run(
-                (executable, "compile", *common),
-                project_dir=project_dir,
-                runner=runner,
-                timeout=120,
-            )
+            with timed_phase(
+                "compile",
+                platform=platform,
+                project_dir=project_dir_str,
+            ):
+                compile_result = _run(
+                    (executable, "compile", *common),
+                    project_dir=project_dir,
+                    runner=runner,
+                    timeout=120,
+                )
+                if compile_result.returncode:
+                    message = _failure_text(compile_result)
+                    if _is_environment_blocked(message):
+                        logging.getLogger("kairos_ontology.dbt").info(
+                            "dbt compile environment-blocked",
+                            extra={
+                                "event": DBT_ENVIRONMENT_BLOCKED,
+                                "kairos.dbt.phase": "compile",
+                                "kairos.dbt.platform": platform,
+                                "kairos.retryable": True,
+                            },
+                        )
+                        return DbtValidationResult(
+                            platform=platform,
+                            project_dir=project_dir,
+                            manifest_path=manifest_path,
+                            compile_status="environment_blocked",
+                            compile_message=message,
+                        )
+                    raise DbtValidationError("compile", message)
         except subprocess.TimeoutExpired:
+            logging.getLogger("kairos_ontology.dbt").info(
+                "dbt compile environment-blocked (timeout)",
+                extra={
+                    "event": DBT_ENVIRONMENT_BLOCKED,
+                    "kairos.dbt.phase": "compile",
+                    "kairos.dbt.platform": platform,
+                    "kairos.retryable": True,
+                },
+            )
             return DbtValidationResult(
                 platform=platform,
                 project_dir=project_dir,
@@ -336,17 +387,6 @@ def validate_dbt_project(
                     "credential-free offline profile"
                 ),
             )
-        if compile_result.returncode:
-            message = _failure_text(compile_result)
-            if _is_environment_blocked(message):
-                return DbtValidationResult(
-                    platform=platform,
-                    project_dir=project_dir,
-                    manifest_path=manifest_path,
-                    compile_status="environment_blocked",
-                    compile_message=message,
-                )
-            raise DbtValidationError("compile", message)
 
         return DbtValidationResult(
             platform=platform,

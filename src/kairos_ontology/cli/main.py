@@ -6,6 +6,17 @@ import click
 
 from .. import __version__ as _toolkit_version
 from .. import mdm as _mdm  # noqa: F401
+from ..core.observability import (
+    OperationContext,
+    configure_logging,
+    new_operation_id,
+    reset_logging,
+)
+from ..core.observability.context import (
+    reset_operation_context,
+    set_operation_context,
+)
+from ..core.observability.otel import configure_otel_logging, flush_otel
 from . import compile as _compile
 from . import inspection as _inspection
 from . import operations as _operations
@@ -108,12 +119,49 @@ _ensure_utf8_stdio()
 
 @click.group()
 @click.version_option(version=_toolkit_version, package_name="kairos-ontology-toolkit")
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False, help="Emit INFO-level log output."
+)
+@click.option(
+    "--debug", is_flag=True, default=False, help="Emit DEBUG-level log output."
+)
+@click.option(
+    "--log-file", "log_file", default=None, help="Also write logs to this file."
+)
+@click.option(
+    "--log-format",
+    "log_format",
+    type=click.Choice(["text", "json"], case_sensitive=False),
+    default="text",
+    show_default=True,
+    help="Structured log format for console and --log-file.",
+)
 @click.pass_context
-def cli(ctx):
+def cli(ctx, verbose, debug, log_file, log_format):
     """Kairos Ontology Toolkit - Validation and projection tools for OWL/Turtle ontologies."""
+    configure_logging(
+        verbose=verbose, debug=debug, log_file=log_file, log_format=log_format
+    )
+    token = set_operation_context(OperationContext(operation_id=new_operation_id()))
+    otel_handler = configure_otel_logging()
+    ctx.obj = {"operation_context_token": token, "otel_handler": otel_handler}
     _warn_if_outside_venv()
     _warn_if_version_mismatch()
     _warn_if_no_skill_context(ctx.invoked_subcommand)
+
+
+@cli.result_callback()
+@click.pass_context
+def _reset_operation_context(ctx, _result, **_kwargs):  # noqa: ANN001
+    """Reset the per-invocation operation context and flush OTel bridge after the command."""
+    token = (ctx.obj or {}).get("operation_context_token") if ctx.obj else None
+    otel_handler = (ctx.obj or {}).get("otel_handler") if ctx.obj else None
+    if token is not None:
+        reset_operation_context(token)
+    flush_otel(otel_handler)
+    # Restore logging defaults so a CLI-invoking test does not leave
+    # propagate=False set and starve later tests' caplog of records.
+    reset_logging()
 
 
 def register_commands(group: click.Group) -> None:

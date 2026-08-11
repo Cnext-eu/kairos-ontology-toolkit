@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -21,6 +22,8 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final
+
+logger = logging.getLogger(__name__)
 
 EMIT_MANIFEST_NAME: Final = ".kairos-compile-manifest.json"
 EMIT_MANIFEST_SCHEMA: Final = "kairos.eu/compiler-emit-manifest/v1"
@@ -467,6 +470,13 @@ def _stale_lock(path: Path) -> bool:
 def _recover_interrupted_emit(target: Path) -> None:
     backups = tuple(sorted(target.parent.glob(f".{target.name}.kairos-backup-*")))
     stages = tuple(sorted(target.parent.glob(f".{target.name}.kairos-stage-*")))
+    if backups or stages:
+        logger.debug(
+            "emit recovery: target=%s backups=%d stages=%d",
+            target.name,
+            len(backups),
+            len(stages),
+        )
     if not target.exists() and backups:
         if len(backups) != 1:
             raise EmissionError(
@@ -476,6 +486,7 @@ def _recover_interrupted_emit(target: Path) -> None:
             os.replace(backups[0], target)
         except OSError as exc:
             raise EmissionError(f"cannot restore interrupted emission backup for {target}") from exc
+        logger.debug("emit recovery: restored target from backup: %s", target.name)
         backups = ()
     if target.exists():
         for path in (*backups, *stages):
@@ -526,6 +537,7 @@ def _commit_stage(stage: Path, target: Path) -> Path | None:
                     f"the previous target remains at {backup}",
                     backup_path=backup,
                 ) from rollback_error
+            logger.debug("emit commit: rollback restored target from backup: %s", target.name)
         raise EmissionError(f"could not swap staged artifacts into {target}") from swap_error
     return backup
 
@@ -572,6 +584,13 @@ def emit_artifacts(
             replace_unowned_paths,
         )
         stale = tuple(sorted(set(previously_owned) - set(plan.paths)))
+        logger.debug(
+            "emit plan: target=%s artifacts=%d previously_owned=%d stale=%d",
+            target.name,
+            len(plan.paths),
+            len(previously_owned),
+            len(stale),
+        )
 
         try:
             stage = Path(
@@ -597,6 +616,12 @@ def emit_artifacts(
             _best_effort_remove(stage)
 
         _best_effort_remove(backup)
+        logger.debug(
+            "emit commit: target=%s written=%d removed=%d",
+            target.name,
+            len(plan.paths),
+            len(stale),
+        )
         return EmissionResult(
             target_dir=target,
             manifest_path=target / manifest_name,

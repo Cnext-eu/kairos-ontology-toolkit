@@ -14,6 +14,7 @@ import click
 from ..core.compiler import CompileMode, compile_domain
 from ..core.conformance_artifact import check_discovery_gate
 from ..core.hub_utils import find_hub_root, publish_root
+from ..core.observability import current_operation_id
 
 #: dbt project sub-path under the publish root (``<publish_root>/medallion/dbt``).
 _DBT_EMIT_SUBPATH = Path("medallion") / "dbt"
@@ -27,6 +28,7 @@ def _payload(result) -> dict:
         "mode": result.mode,
         "succeeded": result.succeeded,
         "provenance_hash": result.provenance_hash,
+        "operation_id": current_operation_id(),
         "diagnostics": [asdict(item) for item in result.diagnostics.ordered],
         "explain": asdict(result.explain) if result.explain is not None else None,
         "artifacts": [path for path, _ in result.artifacts],
