@@ -77,6 +77,62 @@ def test_malformed_pattern_warns_but_succeeds(tmp_path):
     assert "broken-pattern" in res.stderr
 
 
+def test_coverage_emits_the_ledger_and_exits_zero(tmp_path):
+    """``--coverage`` is a record, not a gate: it reports and always exits 0."""
+    root = build_refmodels_root(tmp_path, add_enforced_pattern=True)
+    res = _run(["list-patterns", "--coverage", "--refmodels-root", str(root)])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["totals"]["units"] == len(payload["units"])
+    assert payload["totals"]["enforced_by"] >= 1
+    enforced = [u for u in payload["units"] if u["classification"] == "enforced_by"]
+    assert enforced[0]["diagnostic_code"] == "safety.relationship-endpoint"
+    assert enforced[0]["home"] == "compiler"
+    assert "Pattern coverage" in res.stderr
+
+
+def test_coverage_never_gates_on_an_unrecognized_shape(tmp_path):
+    """A pattern published in a shape the toolkit has never seen must not fail anything."""
+    root = build_refmodels_root(tmp_path, add_enforced_pattern=True, add_future_shape_pattern=True)
+    res = _run(["list-patterns", "--coverage", "--refmodels-root", str(root)])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["totals"]["unrecognized_shape"] >= 1
+
+
+def test_coverage_surfaces_loader_warnings_in_the_payload(tmp_path):
+    """A skipped pattern is absent from the ledger, so it has to be visible in the report."""
+    root = build_refmodels_root(tmp_path, add_enforced_pattern=True, add_malformed_pattern=True)
+    res = _run(["list-patterns", "--coverage", "--refmodels-root", str(root)])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert any("broken-pattern" in w for w in payload["warnings"])
+
+
+def test_coverage_yaml_format(tmp_path):
+    root = build_refmodels_root(tmp_path, add_enforced_pattern=True)
+    res = _run(["list-patterns", "--coverage", "--format", "yaml", "--refmodels-root", str(root)])
+    assert res.exit_code == 0, res.output
+    assert yaml.safe_load(res.stdout)["totals"]["enforced_by"] >= 1
+
+
+def test_coverage_for_a_single_pattern(tmp_path):
+    root = build_refmodels_root(tmp_path, add_enforced_pattern=True)
+    res = _run(
+        [
+            "list-patterns",
+            "--coverage",
+            "--pattern",
+            "deferred-relationship",
+            "--refmodels-root",
+            str(root),
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["patterns"] == ["deferred-relationship"]
+
+
 def test_absent_library_warns_but_succeeds(tmp_path):
     root = build_refmodels_root(tmp_path, with_patterns=False)
     res = _run(["list-patterns", "--refmodels-root", str(root)])

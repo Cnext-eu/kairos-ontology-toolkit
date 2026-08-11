@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc21] — 2026-08-12
+
+### Added
+- **`list-patterns --coverage` — a total ledger of which normative pattern units the toolkit
+  actually enforces.** The pattern library declares `normativity.naming: normative` with MUST rules
+  and named anti-patterns, and until #280 nothing enforced any of it — but the real problem was that
+  nothing *recorded* that fact, so `silently-dropped-relationship` sat unenforced in no list at all
+  and nobody noticed. Every normative unit in the published library now maps to exactly one of
+  `enforced_by <diagnostic code>`, `not_enforceable <reason>`, or `unrecognized_shape`. Against
+  v1.15.0 that is **43 units across 5 patterns: 1 enforced, 42 not enforceable, 0 unrecognized**.
+  The single enforced entry is `deferred-relationship/silently-dropped-relationship` →
+  `safety.relationship-endpoint`, the check added for #280.
+  The ledger gates nothing and cannot fail a build: no new `kairos.yaml` key, no
+  `validation-report.json` section, and no change to any exit code. It exists so the enforceable
+  surface is auditable before anyone argues about severity — the `not_enforceable` reasons are
+  recorded per unit, including the ones that are not enforceable because a rule contradicts itself
+  (referencemodels#39) or has no machine-readable denylist (referencemodels#40), and the ones a
+  check would fire on documented practice for.
+  Enumeration reads the **raw parsed pattern payload including keys the loader does not promote**,
+  so a future reference-models release that adds a normative block under an unknown key lands in
+  `unrecognized_shape` rather than vanishing from the denominator. A contract test asserts the
+  ledger is total over the live library and that at least one unit is enforced, so an empty registry
+  cannot pass silently.
+
 ## [5.2.0rc20] — 2026-08-12
 
 ### Fixed

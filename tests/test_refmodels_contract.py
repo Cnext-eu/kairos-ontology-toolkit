@@ -109,6 +109,46 @@ def test_normative_patterns_expose_naming_conventions() -> None:
             )
 
 
+def test_every_published_normative_unit_is_classified() -> None:
+    """The live half of the coverage-ledger totality contract (``core/pattern_rules``).
+
+    The library-independent half is ``tests/test_pattern_rules.py``, which always runs. This
+    one is the alarm for the *published* library: a newly shipped anti-pattern, a renamed
+    convention, or a new top-level block lands in ``unrecognized_shape`` and fails here,
+    instead of being absent from every list the way #280's ``silently-dropped-relationship``
+    was.
+
+    Note that this file is ``skipif``'d and CI provides no reference-models checkout (#315),
+    so this is a *local* alarm only — which is precisely why the totality assertion is not
+    only here.
+    """
+    from kairos_ontology.core import pattern_rules
+
+    patterns, warnings = pattern_loader.load_patterns(REFMODELS_ROOT)
+    assert patterns, f"no patterns found under {REFMODELS_ROOT}"
+    ledger = pattern_rules.build_ledger(patterns, warnings)
+
+    unrecognized = [
+        f"{e.pattern}/{e.key}/{e.unit}"
+        for e in ledger.entries
+        if e.classification == pattern_rules.UNRECOGNIZED
+    ]
+    assert not unrecognized, (
+        "the published pattern library declares normative unit(s) this toolkit has no "
+        f"recorded position on: {unrecognized}. Classify each one in "
+        "core/pattern_rules.py as enforced_by or not_enforceable."
+    )
+    assert not ledger.stale_registry_entries, (
+        "core/pattern_rules.py records a position on unit(s) the library no longer "
+        f"publishes: {list(ledger.stale_registry_entries)}"
+    )
+    enforced = ledger.totals[pattern_rules.ENFORCED]
+    assert enforced >= pattern_rules.MINIMUM_ENFORCED_UNITS, (
+        f"the ledger records {enforced} enforced unit(s) over the published library; the "
+        "registry must not silently lose the one check that exists"
+    )
+
+
 def _published_tier_enum() -> list[str]:
     schema_path = (
         REFMODELS_ROOT

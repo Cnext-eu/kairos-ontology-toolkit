@@ -192,6 +192,61 @@ grain_collisions:
     reason: "A service window is its own grain, not a timestamp on the aggregate."
 """
 
+# The one pattern that carries an *enforced* anti-pattern today: ``silently-dropped-relationship``
+# is checked by the compiler as ``safety.relationship-endpoint`` (#280). Committed here so the
+# coverage-ledger totality test can assert a non-zero ``enforced_by`` count without a live
+# reference-models checkout — that assertion is what stops the test passing vacuously against an
+# empty registry, so it must not depend on the skipif'd contract file.
+_DEFERRED_RELATIONSHIP_PATTERN_YAML = """id: deferred-relationship
+problem: >
+  A relationship's target class is not yet conformant, but the foreign-key value is already
+  stable in the source.
+applicability: >
+  The target concept's canonical registry entry is unresolved and the foreign key is stable.
+closes_gap: []
+normativity:
+  naming: normative
+  participants: advisory
+  cardinality_rules: advisory
+naming_conventions:
+  - element: eventual_object_property
+    convention: "<relationship>"
+    example: hasEquipmentAllocation
+  - element: interim_scalar_property
+    convention: "<target>Reference"
+    example: equipmentAllocationReference
+    rule: "MUST be derivable from the eventual object property name by appending 'Reference'."
+anti_patterns:
+  - id: silently-dropped-relationship
+    description: "The relationship existed in the source but is omitted because its target is unresolved."
+    rejection_reason: "Data loss, not simplification — the relationship was observed in the source."
+  - id: source-column-named-interim-property
+    description: "Interim scalar property is named after the source column rather than the eventual relationship."
+    rejection_reason: "Source-noun is not canonical grain; breaks the naming pairing this pattern depends on."
+grain_collisions: []
+"""
+
+# A pattern published in a shape this toolkit has never seen: an unknown *top-level* key
+# (``constraint_rules``) plus an unrecognised ``anti_patterns`` id. Reference models release
+# independently of the toolkit, so both must land in the ledger's ``unrecognized_shape`` bucket
+# rather than disappearing — which is exactly what happened to #280.
+_FUTURE_SHAPE_PATTERN_YAML = """id: future-pattern
+problem: A pattern published after this toolkit release, in a shape it does not know.
+applicability: Whenever reference models ship ahead of the toolkit.
+normativity:
+  naming: normative
+naming_conventions:
+  - element: brand_new_element
+    convention: "<Thing>Widget"
+constraint_rules:
+  - id: cardinality-must-be-stated
+    rule: "MUST declare a cardinality for every declared relationship."
+anti_patterns:
+  - id: brand-new-anti-pattern
+    description: "Something the toolkit has never been told about."
+    rejection_reason: "Published upstream after the toolkit's registry was written."
+"""
+
 # A pattern.yaml with a deliberate list/mapping indentation error (exercises the lenient
 # skip-with-warning path of load_patterns).
 _MALFORMED_PATTERN_YAML = """id: broken-pattern
@@ -212,6 +267,8 @@ def build_refmodels_root(
     add_duplicate_discovery: bool = False,
     with_patterns: bool = True,
     add_malformed_pattern: bool = False,
+    add_enforced_pattern: bool = False,
+    add_future_shape_pattern: bool = False,
     blueprint_version: str | None = None,
     authoritative_version: str | None = None,
 ) -> Path:
@@ -223,6 +280,12 @@ def build_refmodels_root(
     When *with_patterns* is set (default), a ``blueprints/patterns/`` library with a valid
     ``temporal-quartet`` entry is written.  *add_malformed_pattern* additionally writes a
     pattern whose YAML does not parse, to exercise the lenient loader's warning path.
+
+    *add_enforced_pattern* writes ``deferred-relationship``, whose
+    ``silently-dropped-relationship`` anti-pattern is the one unit the toolkit actually checks
+    (#280), and *add_future_shape_pattern* writes a pattern using a top-level key and an
+    anti-pattern id the toolkit has never seen.  Both are off by default so existing tests keep
+    seeing a single-pattern library; the coverage-ledger tests turn them on.
 
     *blueprint_version* writes ``blueprints/ontology/VERSION`` (the Kairos-authored tier, which
     versions as one unit on its own 0.x cadence) and *authoritative_version* writes
@@ -284,6 +347,16 @@ def build_refmodels_root(
             (patterns / "broken-pattern").mkdir(parents=True, exist_ok=True)
             (patterns / "broken-pattern" / "pattern.yaml").write_text(
                 _MALFORMED_PATTERN_YAML, encoding="utf-8"
+            )
+        if add_enforced_pattern:
+            (patterns / "deferred-relationship").mkdir(parents=True, exist_ok=True)
+            (patterns / "deferred-relationship" / "pattern.yaml").write_text(
+                _DEFERRED_RELATIONSHIP_PATTERN_YAML, encoding="utf-8"
+            )
+        if add_future_shape_pattern:
+            (patterns / "future-pattern").mkdir(parents=True, exist_ok=True)
+            (patterns / "future-pattern" / "pattern.yaml").write_text(
+                _FUTURE_SHAPE_PATTERN_YAML, encoding="utf-8"
             )
 
     if add_duplicate_discovery:
