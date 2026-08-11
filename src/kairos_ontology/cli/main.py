@@ -2,6 +2,9 @@
 # Copyright 2026 Cnext.eu
 """Root Click group and command registration for the Kairos toolkit."""
 
+import logging
+import traceback
+
 import click
 
 from .. import __version__ as _toolkit_version
@@ -117,7 +120,34 @@ def _ensure_utf8_stdio() -> None:
 _ensure_utf8_stdio()
 
 
-@click.group()
+class _KairosGroup(click.Group):
+    """Root group with the DD-151 unhandled-exception boundary.
+
+    Sits inside Group.invoke so `configure_logging` (the group callback) has
+    already run, and outside the command body so Click's standalone_mode still
+    owns every exit code and all stderr rendering. Covers both
+    `kairos-ontology ...` and `python -m kairos_ontology` because both call
+    this same object.
+    """
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except (
+            click.exceptions.Exit,
+            click.Abort,
+            click.ClickException,
+            KeyboardInterrupt,
+            SystemExit,
+        ):
+            raise
+        except Exception as exc:
+            _log_unhandled_exception(exc)
+            _teardown_observability(ctx)
+            raise
+
+
+@click.group(cls=_KairosGroup)
 @click.version_option(version=_toolkit_version, package_name="kairos-ontology-toolkit")
 @click.option(
     "--verbose", "-v", is_flag=True, default=False, help="Emit INFO-level log output."
@@ -150,18 +180,56 @@ def cli(ctx, verbose, debug, log_file, log_format):
     _warn_if_no_skill_context(ctx.invoked_subcommand)
 
 
-@cli.result_callback()
-@click.pass_context
-def _reset_operation_context(ctx, _result, **_kwargs):  # noqa: ANN001
-    """Reset the per-invocation operation context and flush OTel bridge after the command."""
-    token = (ctx.obj or {}).get("operation_context_token") if ctx.obj else None
-    otel_handler = (ctx.obj or {}).get("otel_handler") if ctx.obj else None
+def _log_unhandled_exception(exc: BaseException) -> None:
+    """Log the single DD-151 record for an exception that escaped every command body.
+
+    Deliberately does not pass ``exc_info=``: :class:`RedactionFilter` skips
+    ``exc_info``/``exc_text`` (they are standard ``LogRecord`` attributes), so
+    an ``exc_info``-bound traceback would reach both formatters unredacted.
+    Building the stacktrace string ourselves and carrying it as a normal
+    ``extra`` routes it through :func:`redact_text` like any other field, and
+    keeps ``TextFormatter`` from rendering a second, unredacted traceback
+    block (it only does that when ``record.exc_info`` is set).
+    """
+    logging.getLogger("kairos_ontology.cli").error(
+        "unhandled exception: %s",
+        type(exc).__name__,
+        extra={
+            "event": "kairos.cli.command.failed",
+            "exception.type": type(exc).__name__,
+            "exception.message": str(exc),
+            "exception.stacktrace": "".join(traceback.format_exception(exc)),
+        },
+    )
+
+
+def _teardown_observability(ctx) -> None:  # noqa: ANN001
+    """Reset the operation context, flush the OTel bridge, and reset logging.
+
+    Shared by the success path (``@cli.result_callback()``, invoked only when
+    the command returns normally) and the failure path (``_KairosGroup.invoke``,
+    which Click's result callback never sees) so the two cannot drift.
+    Tolerates ``ctx.obj is None`` (root option parsing can fail before the
+    group callback runs).
+    """
+    obj = ctx.obj or {}
+    token = obj.get("operation_context_token")
+    otel_handler = obj.get("otel_handler")
     if token is not None:
         reset_operation_context(token)
     flush_otel(otel_handler)
     # Restore logging defaults so a CLI-invoking test does not leave
-    # propagate=False set and starve later tests' caplog of records.
+    # propagate=False set and starve later tests' caplog of records. This also
+    # closes the file handler (see reset_logging -> _strip_owned_handlers),
+    # which is what flushes --log-file to disk; no separate flush loop needed.
     reset_logging()
+
+
+@cli.result_callback()
+@click.pass_context
+def _reset_operation_context(ctx, _result, **_kwargs):  # noqa: ANN001
+    """Reset the per-invocation operation context and flush OTel bridge after the command."""
+    _teardown_observability(ctx)
 
 
 def register_commands(group: click.Group) -> None:

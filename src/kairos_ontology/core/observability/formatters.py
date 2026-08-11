@@ -112,6 +112,9 @@ class TextFormatter(logging.Formatter):
         if record.exc_info:
             tb = self.formatException(record.exc_info)
             line = f"{line}\n{tb}"
+        stacktrace = getattr(record, "exception.stacktrace", None)
+        if stacktrace:
+            line = f"{line}\n{stacktrace}"
         return line
 
 

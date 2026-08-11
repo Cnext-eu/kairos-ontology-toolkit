@@ -333,6 +333,43 @@ def _arrow_type_to_sql(arrow_type: Any) -> str:
     return "varchar(max)"
 
 
+def _arrow_column_to_pylist(column: Any, field_type: Any) -> list:
+    """Materialise one Arrow column as Python values without needing a tz database.
+
+    tz-aware timestamps are normalised to UTC and rendered as RFC-3339 text
+    (``2024-01-15 10:30:00+00:00``) so the offset is explicit and the value
+    matches ``core/_samples.py::_ISO_DATE_OR_DATETIME_RE``. Casting to a
+    tz-naive timestamp instead would silently drop the offset and, for a
+    non-UTC source zone, shift the displayed wall clock.
+
+    tz-NAIVE timestamp columns are left to ``to_pylist()`` as-is — they carry
+    no offset, and rendering them without one is honest about what the source
+    actually recorded. Only tz-aware columns go through the UTC-normalising
+    path above; the difference in rendering between the two is intentional.
+
+    Any Arrow type this cannot materialise (e.g. an exotic type pyarrow itself
+    fails to convert) degrades to a column of ``None`` values with a logged
+    warning, rather than aborting the whole import.
+    """
+    import pyarrow as pa
+
+    try:
+        if pa.types.is_timestamp(field_type) and field_type.tz is not None:
+            naive_values = column.cast(pa.timestamp(field_type.unit)).to_pylist()
+            return [
+                v.replace(tzinfo=timezone.utc).isoformat(sep=" ") if v is not None else None
+                for v in naive_values
+            ]
+        return column.to_pylist()
+    except Exception as exc:
+        logger.warning(
+            "Column of type %s could not be materialised: %s",
+            field_type,
+            exc,
+        )
+        return [None] * len(column)
+
+
 def read_parquet_table(
     path: Path, max_rows: int = DEFAULT_MAX_ROWS, sample_size: int = DEFAULT_SAMPLE_SIZE
 ) -> dict[str, Any]:
@@ -392,8 +429,13 @@ def read_parquet_table(
     row_count = batch.num_rows
 
     # Build per-row string dicts for samples (mirrors CSV/XLSX format).
+    # Naive timestamp[us] columns pass straight through to_pylist(); tz-aware
+    # columns route through _arrow_column_to_pylist() to avoid pyarrow's
+    # zoneinfo lookup (no tz database is required on Windows). See that
+    # helper's docstring for why the two are rendered differently.
     column_values: dict[str, list] = {
-        name: batch.column(i).to_pylist() for i, name in enumerate(headers)
+        name: _arrow_column_to_pylist(batch.column(i), schema.field(name).type)
+        for i, name in enumerate(headers)
     }
 
     columns = []
@@ -542,6 +584,13 @@ def detect_technical_columns(tables: list[dict[str, Any]]) -> set[str]:
     distinctCount=1 and its name (case-insensitive) matches a known
     lakehouse metadata pattern.
 
+    ``tables`` here is whatever ``run_import_flatfile`` successfully read —
+    the "ALL tables" gate (``count == num_tables``) is relative to that
+    successfully-read set, not the full set of files present on disk. If
+    directory mode skipped some unreadable files, auto-exclusion runs against
+    the surviving tables only, so which columns get auto-excluded can vary
+    run to run as the set of readable files changes.
+
     Args:
         tables: List of table data dicts.
 
@@ -608,11 +657,27 @@ def run_import_flatfile(
     exclude_columns: set[str] | None = None,
     keep_technical: bool = False,
     return_count: bool = False,
-) -> Path | tuple[Path, int, int]:
+) -> Path | tuple[Path, int, int, list[tuple[str, str]]]:
     """Orchestrate the flatfile import workflow.
 
     Accepts a single CSV, single XLSX, single Parquet, or a directory containing
     CSV/XLSX/Parquet files.
+
+    Exit-code policy — directory mode is partial-failure tolerant; single-file
+    mode is fail-fast:
+    - Directory mode: each file is read independently. A file that raises
+      (corrupt/truncated parquet, malformed CSV, missing openpyxl, ...) is
+      skipped and recorded in the returned ``failures`` list; the remaining
+      readable files are still imported and written. This mirrors the
+      ``catalog-test``/``propose-alignment`` convention of partial success
+      over aborting a whole run for one bad input.
+    - Zero readable files (directory has no CSV/XLSX/Parquet, or every file
+      present failed to read) is a hard failure: ``ValueError`` is raised and
+      nothing is written. Callers (the CLI) map this to a non-zero exit.
+    - Single-file mode (a path pointing directly at one .csv/.xlsx/.parquet)
+      always fails fast — an unsupported extension or a read error propagates
+      immediately as the underlying exception. There is no "partial" outcome
+      for a single file.
 
     Args:
         source_path: Path to CSV, XLSX file, or directory.
@@ -622,12 +687,16 @@ def run_import_flatfile(
         sample_size: Number of sample rows to store.
         exclude_columns: Explicit set of column names to exclude.
         keep_technical: If True, skip auto-detection of technical columns.
-        return_count: If True, return ``(output_dir, table_count, sample_file_count)``.
+        return_count: If True, return
+            ``(output_dir, table_count, sample_file_count, failures)`` where
+            ``failures`` is a list of ``(filename, "ExceptionType: message")``
+            tuples for files skipped in directory mode (empty otherwise).
 
     Returns:
         Path to the output directory, or a tuple with counts from this import.
     """
     tables: list[dict[str, Any]] = []
+    failures: list[tuple[str, str]] = []
 
     if source_path.is_file():
         suffix = source_path.suffix.lower()
@@ -646,14 +715,24 @@ def run_import_flatfile(
         default_name = source_path.name
         files = sorted(source_path.iterdir())
         for f in files:
-            if f.suffix.lower() == ".csv":
-                tables.append(read_csv_table(f, max_rows, sample_size))
-            elif f.suffix.lower() in (".xlsx", ".xls"):
-                tables.extend(read_xlsx_tables(f, max_rows, sample_size))
-            elif f.suffix.lower() == ".parquet":
-                tables.append(read_parquet_table(f, max_rows, sample_size))
+            try:
+                if f.suffix.lower() == ".csv":
+                    tables.append(read_csv_table(f, max_rows, sample_size))
+                elif f.suffix.lower() in (".xlsx", ".xls"):
+                    tables.extend(read_xlsx_tables(f, max_rows, sample_size))
+                elif f.suffix.lower() == ".parquet":
+                    tables.append(read_parquet_table(f, max_rows, sample_size))
+            except Exception as exc:
+                logger.warning("Skipping unreadable file %s: %s", f.name, exc)
+                failures.append((f.name, f"{type(exc).__name__}: {exc}"))
 
         if not tables:
+            if failures:
+                names = ", ".join(f"{name} ({reason})" for name, reason in failures)
+                raise ValueError(
+                    f"No CSV, Excel, or Parquet files could be read in: {source_path} "
+                    f"(all {len(failures)} file(s) failed: {names})"
+                )
             raise ValueError(f"No CSV, Excel, or Parquet files found in: {source_path}")
     else:
         raise ValueError(f"Path does not exist: {source_path}")
@@ -695,5 +774,5 @@ def run_import_flatfile(
     result_dir = write_source_dir(tables, system_name, output_dir)
     if return_count:
         sample_count = sum(1 for table in tables if table.get("sample_rows"))
-        return result_dir, len(tables), sample_count
+        return result_dir, len(tables), sample_count, failures
     return result_dir
