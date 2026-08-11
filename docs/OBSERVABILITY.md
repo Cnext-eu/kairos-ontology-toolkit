@@ -39,6 +39,57 @@ Each JSON log record is one NDJSON object with a stable field set:
 
 Sensitive values (passwords, tokens, connection strings) are redacted before emit.
 
+## Unhandled exceptions
+
+Any exception that escapes every command body — one that no `except` clause in the
+CLI converts to a `click.ClickException`/`click.UsageError` (the deliberate
+user-error channel) or a `raise SystemExit(...)` (the deliberate non-zero-exit
+channel) — is caught once, at the root `_KairosGroup.invoke` boundary in
+`cli/main.py`, and logged as a single structured record before the exception is
+re-raised so Click's `standalone_mode` still renders the traceback to stderr and
+sets the process exit code exactly as it always has:
+
+```json
+{"timestamp": "...", "level": "ERROR", "logger": "kairos_ontology.cli",
+ "event": "kairos.cli.command.failed", "kairos.operation.id": "<uuid4>",
+ "exception.type": "RuntimeError", "exception.message": "...",
+ "exception.stacktrace": "Traceback (most recent call last): ...",
+ "message": "unhandled exception: RuntimeError"}
+```
+
+| Field | Description |
+|---|---|
+| `event` | Always `kairos.cli.command.failed`. |
+| `exception.type` | The exception class name (`type(exc).__name__`). |
+| `exception.message` | `str(exc)`. |
+| `exception.stacktrace` | The full formatted traceback, as text — **not** attached via `exc_info`. |
+| `kairos.operation.id` | The same per-invocation id as every other record from the run. |
+
+**The stacktrace is redacted, and therefore lossy for debugging.** Like every other
+structured `extra` field, `exception.stacktrace` passes through `redact_text` before
+it reaches a formatter. That function's first pattern is
+`(?i)(token|secret|password|passwd|client_secret|api[-_]?key)\S*`, so a frame whose
+file path or local variable happens to contain one of those words — e.g. a line
+referencing `.../token_store.py` — is masked to `[REDACTED]` in the persisted record.
+The unredacted traceback still reaches the console today via Click's normal
+exception rendering (unchanged behavior); only the structured copy is redacted.
+
+**Exit codes are unchanged.** The boundary only adds a log record; it re-raises the
+original exception (or `SystemExit`/`ClickException`/`click.Abort`/`KeyboardInterrupt`,
+which are exempted and pass through untouched) so Click's `standalone_mode` still owns
+every exit code.
+
+**Limitation — root option parsing and command resolution are not covered.**
+`--help`, `--version`, an unknown subcommand, an invalid `--log-format` value, or a
+bare `kairos-ontology` with no arguments all fail (or exit) *inside*
+`Group.invoke` **before** `super().invoke(ctx)` runs the group callback that calls
+`configure_logging`. Any exception in that window — including Click's own
+`Exit`/`UsageError` raised while resolving the invocation — carries no operation id
+and never reaches `--log-file`, because logging has not been configured yet. This is
+by design: `click.exceptions.Exit` is explicitly exempted from the boundary (in click
+8.4.1 its MRO includes `RuntimeError`/`Exception`, so `--help`'s internal `Exit(0)`
+would otherwise be logged as a failure on every subcommand).
+
 ## dbt-validation event catalogue
 
 Emitted around the offline `dbt deps`/`parse`/`compile` phases in
