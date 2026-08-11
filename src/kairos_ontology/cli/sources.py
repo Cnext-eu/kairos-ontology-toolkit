@@ -441,6 +441,12 @@ def import_flatfile(
       - Directory of .csv/.xlsx/.parquet files → 1 table per file/sheet
 
     \b
+    Directory mode tolerates unreadable files: each one is skipped with a
+    warning and the rest are imported (exit 0). If no file in the directory
+    can be read, nothing is written and the exit code is 1. A single file
+    given directly always fails fast.
+
+    \b
     Examples:
       kairos-ontology import-flatfile --from exports/customers.csv --system erp
       kairos-ontology import-flatfile --from data/report.xlsx --system finance
@@ -453,7 +459,7 @@ def import_flatfile(
     Next step after import-flatfile:
       kairos-ontology import-source --from integration/sources/{system}/
     """
-    from ..core.import_flatfile import run_import_flatfile
+    from ..core.import_flatfile import list_flatfile_candidates, run_import_flatfile
 
     source_path = Path(from_path)
     output_dir = Path(output) if output else None
@@ -465,8 +471,12 @@ def import_flatfile(
 
     click.echo(f"📋 Importing flat files from: {source_path}")
 
+    # Candidate count for the partial-failure report, taken from the same helper
+    # the import loop uses so "M of K" cannot disagree with what was attempted.
+    candidate_count = len(list_flatfile_candidates(source_path)) if source_path.is_dir() else 1
+
     try:
-        result_dir, table_count, samples_count = run_import_flatfile(
+        result_dir, table_count, samples_count, failures = run_import_flatfile(
             source_path=source_path,
             system_name=system_name,
             output_dir=output_dir,
@@ -484,6 +494,16 @@ def import_flatfile(
     click.echo(f"   📊 {table_count} table(s) documented")
     if samples_count:
         click.echo(f"   📋 {samples_count} sample file(s) created")
+    if failures:
+        # Partial success: the readable files were imported and written, so this
+        # is a warning and the exit code stays 0. Total failure raises ValueError
+        # above and exits 1 without writing anything.
+        click.echo(
+            f"\n⚠ {len(failures)} of {candidate_count} file(s) could not be read — skipped:",
+            err=True,
+        )
+        for name, reason in failures:
+            click.echo(f"   - {name}: {reason}", err=True)
     click.echo(f"\n💡 Next step: kairos-ontology import-source --from {result_dir}")
 
 
