@@ -62,6 +62,39 @@ adapter: fabric
 Compiler adapters are `fabric` and `databricks`. An unsupported value is rejected; it is
 never silently mapped to another dialect.
 
+On `databricks`, the Gold Power BI semantic model is generated as `directQuery` over a
+Databricks SQL warehouse, so it needs connection coordinates the ontology cannot supply.
+Declare them per environment — one released semantic model is promoted across
+environments:
+
+```yaml
+adapter: databricks
+
+gold:
+  databricks_connection:
+    default_environment: DEV
+    environments:
+      DEV:
+        server_hostname: adb-1111111111111111.11.azuredatabricks.net
+        http_path: /sql/1.0/warehouses/dev0000000000000
+      PROD:
+        server_hostname: adb-2222222222222222.22.azuredatabricks.net
+        http_path: /sql/1.0/warehouses/prod000000000000
+```
+
+The projected TMDL partitions carry the `default_environment` values, and the projector
+emits a fabric-cicd `parameter.yml` beside them whose `find_replace` entries rewrite those
+two values for the environment being deployed to (`FabricWorkspace(environment=...)` in
+`.github/workflows/deploy-powerbi-semantic-model.yml`). `parameter.yml` must stay at the
+root of the directory fabric-cicd is pointed at.
+
+`default_environment` may be omitted only when a single environment is declared. Gold
+projection on `databricks` fails closed with `gold.databricks-connection-missing` when the
+block is absent, and with `gold.databricks-connection-invalid` when it is malformed —
+generating a semantic model that cannot reach a warehouse is not an acceptable outcome.
+This block is Databricks-only: a Fabric Direct Lake partition resolves its binding from the
+workspace it is deployed into and needs no connection configuration.
+
 ## 4. Compile
 
 Each invocation resolves its inputs afresh and builds one immutable, graph-free

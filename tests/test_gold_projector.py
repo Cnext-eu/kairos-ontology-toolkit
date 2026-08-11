@@ -57,6 +57,7 @@ def _generate(
     *,
     gold_path: Path | None = None,
     platform: str = "fabric",
+    hub_root: Path | None = None,
 ) -> dict[str, str]:
     graph, namespace, classes = _load_ontology(domain)
     peers = [EXTENSIONS_DIR / "client-silver-ext.ttl"] if domain == "invoice" else []
@@ -76,7 +77,69 @@ def _generate(
         silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
         peer_ext_paths=peers,
         target_platform=platform,
+        hub_root=hub_root,
     )
+
+
+# Databricks Gold is capability-gated: Power BI security and TMDL are downstream of
+# Databricks SQL, so both deviations must be approved before the product projects.
+_DATABRICKS_DEVIATIONS = """
+acme:DatabricksTmdlDeviation a kairos-ext:Deviation ;
+    kairos-ext:adapterName "databricks" ;
+    kairos-ext:policyReference "DD-113-tmdl" ;
+    kairos-ext:deviationScope "gold" ;
+    kairos-ext:deviationRationale "Power BI is downstream of Databricks SQL." ;
+    kairos-ext:deviationOwnerRole "Platform Owner" ;
+    kairos-ext:approvalStatus "approved" ;
+    kairos-ext:reviewDate "2026-07-25" ;
+    kairos-ext:expiryDate "2099-12-31" ;
+    kairos-ext:deviationEvidence "review:databricks-tmdl" .
+
+acme:DatabricksSecurityDeviation a kairos-ext:Deviation ;
+    kairos-ext:adapterName "databricks" ;
+    kairos-ext:policyReference "DD-113-security" ;
+    kairos-ext:deviationScope "gold" ;
+    kairos-ext:deviationRationale "Security enforcement is in downstream Power BI." ;
+    kairos-ext:deviationOwnerRole "Security Owner" ;
+    kairos-ext:approvalStatus "approved" ;
+    kairos-ext:reviewDate "2026-07-25" ;
+    kairos-ext:expiryDate "2099-12-31" ;
+    kairos-ext:deviationEvidence "review:databricks-security" .
+"""
+
+_DEV_HOSTNAME = "adb-1111111111111111.11.azuredatabricks.net"
+_DEV_HTTP_PATH = "/sql/1.0/warehouses/dev0000000000000"
+_PROD_HOSTNAME = "adb-2222222222222222.22.azuredatabricks.net"
+_PROD_HTTP_PATH = "/sql/1.0/warehouses/prod000000000000"
+
+
+def _databricks_hub(tmp_path: Path, *, connection: bool = True) -> Path:
+    """Write a hub ``kairos.yaml``, optionally with the Gold connection block."""
+    hub_root = tmp_path / "hub"
+    hub_root.mkdir(parents=True, exist_ok=True)
+    config: dict = {"version": 5, "name": "acme-hub", "adapter": "databricks"}
+    if connection:
+        config["gold"] = {
+            "databricks_connection": {
+                "default_environment": "DEV",
+                "environments": {
+                    "DEV": {
+                        "server_hostname": _DEV_HOSTNAME,
+                        "http_path": _DEV_HTTP_PATH,
+                    },
+                    "PROD": {
+                        "server_hostname": _PROD_HOSTNAME,
+                        "http_path": _PROD_HTTP_PATH,
+                    },
+                },
+            }
+        }
+    (hub_root / "kairos.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    return hub_root
+
+
+def _databricks_gold(tmp_path: Path) -> Path:
+    return _write_gold(tmp_path, "client", _gold_text("client") + _DATABRICKS_DEVIATIONS)
 
 
 @pytest.fixture(scope="module")
@@ -467,42 +530,112 @@ def test_databricks_requires_declared_downstream_powerbi_deviations(tmp_path: Pa
     with pytest.raises(GoldContractError, match="adapter-capability-blocking"):
         _generate("client", platform="databricks")
 
-    text = (
-        _gold_text("client")
-        + """
-acme:DatabricksTmdlDeviation a kairos-ext:Deviation ;
-    kairos-ext:adapterName "databricks" ;
-    kairos-ext:policyReference "DD-113-tmdl" ;
-    kairos-ext:deviationScope "gold" ;
-    kairos-ext:deviationRationale "Power BI is downstream of Databricks SQL." ;
-    kairos-ext:deviationOwnerRole "Platform Owner" ;
-    kairos-ext:approvalStatus "approved" ;
-    kairos-ext:reviewDate "2026-07-25" ;
-    kairos-ext:expiryDate "2099-12-31" ;
-    kairos-ext:deviationEvidence "review:databricks-tmdl" .
-
-acme:DatabricksSecurityDeviation a kairos-ext:Deviation ;
-    kairos-ext:adapterName "databricks" ;
-    kairos-ext:policyReference "DD-113-security" ;
-    kairos-ext:deviationScope "gold" ;
-    kairos-ext:deviationRationale "Security enforcement is in downstream Power BI." ;
-    kairos-ext:deviationOwnerRole "Security Owner" ;
-    kairos-ext:approvalStatus "approved" ;
-    kairos-ext:reviewDate "2026-07-25" ;
-    kairos-ext:expiryDate "2099-12-31" ;
-    kairos-ext:deviationEvidence "review:databricks-security" .
-"""
-    )
     artifacts = _generate(
         "client",
-        gold_path=_write_gold(tmp_path, "client", text),
+        gold_path=_databricks_gold(tmp_path),
         platform="databricks",
+        hub_root=_databricks_hub(tmp_path),
     )
     report = _report(artifacts, "client")
     assert report["adapter"]["semantic_mode"] == "directQuery"
     assert len(report["adapter"]["approved_deviations"]) == 2
     ddl = artifacts["client/client-gold-ddl.sql"]
     assert "USING DELTA" in ddl
+    # An approved deviation only permits the directQuery TMDL; it must still be a
+    # connectable one. Asserting on the report alone walked straight past #283.
+    tmdl = artifacts["client/Client.SemanticModel/definition/tables/dim_client.tmdl"]
+    assert "mode: directQuery" in tmdl
+    assert "{{DATABRICKS_" not in tmdl
+
+
+def test_databricks_directquery_partition_is_connectable_and_parameterised(tmp_path: Path):
+    """The emitted model must name a warehouse and carry its deploy-time rewrite.
+
+    Issue #283: the partition used to emit ``{{DATABRICKS_SERVER_HOSTNAME}}`` /
+    ``{{DATABRICKS_HTTP_PATH}}`` with nothing anywhere to substitute them.
+    """
+    artifacts = _generate(
+        "client",
+        gold_path=_databricks_gold(tmp_path),
+        platform="databricks",
+        hub_root=_databricks_hub(tmp_path),
+    )
+
+    tmdl_paths = [path for path in artifacts if path.endswith(".tmdl")]
+    assert tmdl_paths
+    for path in tmdl_paths:
+        assert "{{DATABRICKS_" not in artifacts[path], path
+    partition = artifacts["client/Client.SemanticModel/definition/tables/dim_client.tmdl"]
+    assert f'Source = Databricks.Catalogs("{_DEV_HOSTNAME}", "{_DEV_HTTP_PATH}")' in partition
+
+    # fabric-cicd reads parameter.yml from the root of its repository_directory.
+    assert "parameter.yml" in artifacts
+    parameter = yaml.safe_load(artifacts["parameter.yml"])
+    assert [entry["find_value"] for entry in parameter["find_replace"]] == [
+        _DEV_HOSTNAME,
+        _DEV_HTTP_PATH,
+    ]
+    assert [entry["replace_value"] for entry in parameter["find_replace"]] == [
+        {"DEV": _DEV_HOSTNAME, "PROD": _PROD_HOSTNAME},
+        {"DEV": _DEV_HTTP_PATH, "PROD": _PROD_HTTP_PATH},
+    ]
+    assert {entry["item_type"] for entry in parameter["find_replace"]} == {"SemanticModel"}
+    # find_replace accepts exactly these keys (fabric-cicd Parameter.PARAMETER_KEYS).
+    assert all(
+        set(entry) <= {"find_value", "replace_value", "is_regex", "ignore_case", "item_type"}
+        for entry in parameter["find_replace"]
+    )
+
+
+def test_databricks_gold_without_connection_config_fails_closed(tmp_path: Path):
+    gold_path = _databricks_gold(tmp_path)
+    with pytest.raises(GoldContractError, match="gold.databricks-connection-missing"):
+        _generate("client", gold_path=gold_path, platform="databricks")
+    with pytest.raises(GoldContractError, match="gold.databricks-connection-missing"):
+        _generate(
+            "client",
+            gold_path=gold_path,
+            platform="databricks",
+            hub_root=_databricks_hub(tmp_path, connection=False),
+        )
+
+
+def test_malformed_gold_connection_block_never_partially_applies(tmp_path: Path):
+    hub_root = tmp_path / "hub"
+    hub_root.mkdir(parents=True, exist_ok=True)
+    (hub_root / "kairos.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "adapter": "databricks",
+                "gold": {
+                    "databricks_connection": {
+                        "environments": {
+                            "DEV": {"server_hostname": _DEV_HOSTNAME},
+                            "PROD": {
+                                "server_hostname": _PROD_HOSTNAME,
+                                "http_path": _PROD_HTTP_PATH,
+                            },
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(GoldContractError, match="gold.databricks-connection-invalid"):
+        _generate(
+            "client",
+            gold_path=_databricks_gold(tmp_path),
+            platform="databricks",
+            hub_root=hub_root,
+        )
+
+
+def test_fabric_direct_lake_needs_no_connection_and_emits_no_parameter_file(client_gold):
+    partition = client_gold["client/Client.SemanticModel/definition/tables/dim_client.tmdl"]
+    assert "mode: directLake" in partition
+    assert "Databricks.Catalogs" not in partition
+    assert "parameter.yml" not in client_gold
 
 
 def test_ddl_tmdl_dax_erd_and_report_are_deterministic(invoice_gold):

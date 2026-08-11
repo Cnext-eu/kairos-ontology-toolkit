@@ -28,6 +28,10 @@ business semantics.
 - Generate RLS/OLS only from complete fail-closed security policy and emitted-column bindings.
   Runtime identity provisioning and enforcement remain downstream responsibilities.
 - Keep platform-specific behavior inside supported Fabric/Databricks capability contracts.
+- On `databricks` the semantic model is `directQuery`, so declare `gold.databricks_connection`
+  (`server_hostname`, `http_path` per environment) in `kairos.yaml`. Projection fails closed
+  without it; the emitted fabric-cicd `parameter.yml` rewrites those two values per deployment
+  environment. Fabric Direct Lake needs no connection configuration.
 
 Run `kairos-ontology compile <domain> --check --format json` before Gold generation. Gold consumes
 the returned CompilePlan view through the registered projector; it never calls a legacy Silver/dbt

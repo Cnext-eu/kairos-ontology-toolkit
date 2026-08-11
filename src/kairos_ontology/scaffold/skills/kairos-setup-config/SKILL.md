@@ -30,6 +30,32 @@ Configure namespace, catalog, adapters, and selected roots in `kairos.yaml`. Kee
 OWL ontology with labels/comments and explicit imports. Add optional SHACL in `model/shapes/`.
 Validate ontology inputs, then run `compile --check` before emission.
 
+## Databricks Gold semantic-model connection
+
+With `adapter: databricks`, the Gold Power BI semantic model is `directQuery` over a Databricks SQL
+warehouse. Authoring cannot be inferred from the ontology, so declare it per environment in
+`kairos.yaml`:
+
+```yaml
+gold:
+  databricks_connection:
+    default_environment: DEV
+    environments:
+      DEV:
+        server_hostname: adb-1111111111111111.11.azuredatabricks.net
+        http_path: /sql/1.0/warehouses/dev0000000000000
+      PROD:
+        server_hostname: adb-2222222222222222.22.azuredatabricks.net
+        http_path: /sql/1.0/warehouses/prod000000000000
+```
+
+The projected TMDL partitions carry the `default_environment` values, and a generated
+fabric-cicd `parameter.yml` (at the root of the semantic-model package) rewrites them for the
+environment being deployed to. `default_environment` may be omitted only with a single
+environment. Gold projection fails closed with `gold.databricks-connection-missing` until the
+block exists. `adapter: fabric` needs none of this: a Direct Lake partition resolves its binding
+from the workspace it lands in.
+
 ## Pin the accelerator (multi-pack hubs)
 
 When the hub ships more than one reference-model accelerator pack, `check-inventory`,
