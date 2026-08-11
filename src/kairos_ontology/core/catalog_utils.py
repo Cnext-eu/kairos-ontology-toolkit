@@ -14,10 +14,22 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from rdflib import Graph, OWL, RDF
 
 _logger = logging.getLogger(__name__)
+
+
+def _is_absolute_uri(uri_path: str) -> bool:
+    """Return True when *uri_path* (a catalog ``uri=`` attribute) is an absolute URI/path.
+
+    OASIS catalogs permit the ``uri=`` target itself to be an absolute URI (e.g.
+    ``https://spec.edmcouncil.org/...``) rather than a path relative to the catalog
+    file. Joining such a value onto ``catalog_dir`` produces a nonsensical local
+    path, so callers must detect and skip this case rather than resolve it.
+    """
+    return bool(urlparse(uri_path).scheme) or Path(uri_path).is_absolute()
 
 
 @dataclass
@@ -36,6 +48,27 @@ class CatalogLoadResult:
     def warnings(self) -> List[str]:
         """Return only warning-level diagnostic messages."""
         return [d["message"] for d in self.diagnostics if d["level"] == "warning"]
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    """One declared ``<uri>`` element, tagged with the catalog file that declared it.
+
+    ``declaring_catalog`` is the resolved path of the catalog file the ``<uri>``
+    element was parsed from — the catalog under test itself, or a catalog reached
+    by following ``<nextCatalog>`` (e.g. the vendored reference-models catalog).
+    This lets an auditor distinguish entries the hub author can actually fix from
+    entries owned by an upstream catalog.
+
+    ``absolute`` is True when the ``uri=`` target itself is an absolute URI/path
+    (permitted by OASIS catalogs) rather than a path relative to the catalog file;
+    ``path`` is not meaningful for dangling checks in that case.
+    """
+
+    name: str
+    path: Path
+    declaring_catalog: Path
+    absolute: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,6 +126,7 @@ class CatalogResolver:
         """
         self.catalog_path = catalog_path
         self.mappings: Dict[str, Path] = {}
+        self.entries: List[CatalogEntry] = []
         self._rewrite_rules: List[Tuple[str, str, Path]] = []
         self._hash_fallback_used: bool = False
         self._rewrite_fallback_used: bool = False
@@ -132,7 +166,22 @@ class CatalogResolver:
             uri_path = uri_elem.get("uri")
 
             if uri_name and uri_path:
-                local_path = (catalog_dir / uri_path).resolve()
+                is_absolute = _is_absolute_uri(uri_path)
+                if is_absolute:
+                    # OASIS catalogs permit the uri= target to be an absolute URI/path
+                    # in its own right (e.g. a remote spec URL). Joining it onto
+                    # catalog_dir produces a nonsensical mangled path (e.g.
+                    # `<hub>\https:\spec.edmcouncil.org\...`); keep it as-is instead.
+                    local_path = Path(uri_path)
+                else:
+                    local_path = (catalog_dir / uri_path).resolve()
+
+                # Track the raw declared entry (one per <uri> element, no normalized
+                # variants) tagged with the declaring catalog file, so callers can
+                # audit declared entries, e.g. detect ones whose target file does
+                # not exist ("dangling" entries), scoped to the catalog that owns
+                # them rather than every catalog reached via <nextCatalog>.
+                self.entries.append(CatalogEntry(uri_name, local_path, path, is_absolute))
 
                 # Store exact mapping
                 self.mappings[uri_name] = local_path

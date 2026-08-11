@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from .archetype_loader import Archetype, VALID_TIERS
+from .hub_utils import is_authored_discovery_ttl
 
 #: Schema version of the conformance artifact itself.
 #: v2 (DD-148) added ``mode``, ``archetype.confirmed_by``, and per-concept
@@ -434,19 +435,21 @@ def has_unresolved_fleet_items(artifact: dict[str, Any]) -> bool:
 def _has_authored_discovery_narrative(hub_root: Path) -> bool:
     """Return True when ``businessdiscovery/`` has any authored (non-template) .ttl file.
 
-    Mirrors ``hub_inspection._authored_ttl``/``_dir_status`` locally rather than importing
-    that module (``hub_inspection`` already imports from here — this avoids a cycle). This
-    is the DD-048 discovery narrative/glossary, a separate artifact from the DD-090
-    conformance YAML this module otherwise deals with — either satisfies "discovery ran".
+    Uses the shared ``hub_utils.is_authored_discovery_ttl`` predicate (rather than a local
+    copy) so this DD-148 hard gate and ``hub_inspection``'s advisory ``next`` snapshot can
+    never drift apart again: a scaffold-provided template (init's
+    businessdiscovery/glossary-template.ttl) is not authored evidence, and counting it as
+    such here would silently disable this gate on a hub with zero real discovery content
+    (issue #288). ``hub_utils`` is a dependency-light leaf module — importing it here does
+    not create a cycle with ``hub_inspection`` (which imports from this module). This is the
+    DD-048 discovery narrative/glossary, a separate artifact from the DD-090 conformance YAML
+    this module otherwise deals with — either satisfies "discovery ran".
     """
     root = Path(hub_root) / "businessdiscovery"
     if not root.is_dir():
         return False
     try:
-        return any(
-            path.is_file() and path.suffix == ".ttl" and not path.name.endswith(".template")
-            for path in root.rglob("*")
-        )
+        return any(path.is_file() and is_authored_discovery_ttl(path) for path in root.rglob("*"))
     except OSError:
         return False
 

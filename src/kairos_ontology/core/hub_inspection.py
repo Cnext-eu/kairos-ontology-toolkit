@@ -30,6 +30,7 @@ from .conformance_artifact import (
     has_unresolved_fleet_items,
     read_artifact,
 )
+from .hub_utils import is_authored_discovery_ttl, is_domain_ontology_stem
 from .next_actions import (
     CompileStatus,
     DiagnosticView,
@@ -39,18 +40,11 @@ from .next_actions import (
     InputStatus,
 )
 
-# Domain-ontology filename rule, mirrored from projector._is_domain_ontology to keep this
-# I/O module lightweight (no heavy projector/rdflib import). Kept in sync deliberately.
-_NON_DOMAIN_PREFIXES = ("_",)
-_NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
-
-
-def _is_domain_ontology_stem(stem: str) -> bool:
-    if any(stem.startswith(prefix) for prefix in _NON_DOMAIN_PREFIXES):
-        return False
-    if any(stem.endswith(suffix) for suffix in _NON_DOMAIN_SUFFIXES):
-        return False
-    return True
+# Thin alias kept for existing call sites (below). The actual predicate lives in
+# hub_utils.is_domain_ontology_stem — a leaf module shared with core/projector.py,
+# core/validator.py, and core/catalog_test.py — so the four copies cannot drift
+# apart again (issue #289).
+_is_domain_ontology_stem = is_domain_ontology_stem
 
 
 def _dir_status(root: Path, predicate) -> InputStatus:
@@ -66,8 +60,12 @@ def _dir_status(root: Path, predicate) -> InputStatus:
     return InputStatus.MISSING
 
 
-def _authored_ttl(path: Path) -> bool:
-    return path.suffix == ".ttl" and not path.name.endswith(".template")
+# Thin alias kept for existing call sites/tests (e.g. tests/test_cli_next.py imports this
+# name directly). The actual predicate lives in hub_utils.is_authored_discovery_ttl — a leaf
+# module shared with conformance_artifact.check_discovery_gate's DD-148 hard gate — so a
+# scaffold-provided template (init's businessdiscovery/glossary-template.ttl) cannot be
+# miscounted as authored evidence in one place while still being excluded in the other (#288).
+_authored_ttl = is_authored_discovery_ttl
 
 
 def _emitted_dbt_status(root: Path) -> InputStatus:

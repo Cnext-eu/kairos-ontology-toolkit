@@ -12,7 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
-from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
+from kairos_ontology.core.hub_inspection import _authored_ttl, gather_hub_input_snapshot
 from kairos_ontology.core.next_actions import CompileStatus, DiscoveryConformanceStatus, InputStatus
 
 _HUB = Path(__file__).parent / "scenarios" / "v5-hub"
@@ -170,6 +170,31 @@ def test_next_surfaces_resolve_discovery_open_questions_action(hub, monkeypatch)
     assert action["status"] == "blocking"
     assert action["blocking"] is True
     assert action["skill"] == "kairos-design-discovery"
+
+
+def test_authored_ttl_rejects_scaffold_templates_regardless_of_naming(tmp_path):
+    # Issue #288: init's scaffold uses `glossary-template.ttl` (a `-template.ttl` suffix),
+    # not the legacy `*.template` convention — both must be rejected as non-authored.
+    assert _authored_ttl(tmp_path / "glossary-template.ttl") is False
+    assert _authored_ttl(tmp_path / "foo.template") is False
+    assert _authored_ttl(tmp_path / "party-discovery.ttl") is True
+
+
+def test_gather_snapshot_discovery_ignores_scaffold_template_only(hub):
+    # Issue #288: a freshly-scaffolded businessdiscovery/ containing only the init-copied
+    # glossary-template.ttl (plus README.md) has zero authored evidence and must report
+    # MISSING, not PRESENT — otherwise the DD-148 discovery gate is silently disabled.
+    discovery_dir = hub / "businessdiscovery"
+    discovery_dir.mkdir()
+    (discovery_dir / "glossary-template.ttl").write_text("# scaffold\n", encoding="utf-8")
+    (discovery_dir / "README.md").write_text("# discovery\n", encoding="utf-8")
+
+    scaffold_only = gather_hub_input_snapshot(hub)
+    assert scaffold_only.discovery is InputStatus.MISSING
+
+    (discovery_dir / "party-discovery.ttl").write_text("# authored\n", encoding="utf-8")
+    with_authored = gather_hub_input_snapshot(hub)
+    assert with_authored.discovery is InputStatus.PRESENT
 
 
 def test_next_surfaces_optional_validate_dbt_after_emit(hub, monkeypatch):

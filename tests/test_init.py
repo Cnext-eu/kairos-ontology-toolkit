@@ -22,6 +22,9 @@ from kairos_ontology.cli.shared import (
     _V5_HUB_DIRECTORIES,
     _V5_OUTPUT_DIRECTORIES,
 )
+from kairos_ontology.core.conformance_artifact import check_discovery_gate
+from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
+from kairos_ontology.core.next_actions import InputStatus
 
 V5_SCAFFOLD_DIRECTORIES = {
     "model/ontologies",
@@ -176,6 +179,58 @@ def test_init_without_domain(tmp_path):
             ttl_files = sorted(Path("ontology-hub/model/ontologies").glob("*.ttl"))
             assert len(ttl_files) == 2
             assert [f.name for f in ttl_files] == ["_foundation.ttl", "_master.ttl"]
+
+
+def test_init_scaffold_template_only_discovery_is_missing_end_to_end(tmp_path):
+    """Issue #288: a freshly-scaffolded hub's only businessdiscovery/ file is init's own
+    glossary-template.ttl — that is a scaffold template, not authored evidence. Pin the
+    end-to-end property against the real scaffold (not a hand-built fixture) so a future
+    rename of the scaffold file cannot silently reintroduce the bug: both the advisory
+    `next` snapshot (hub_inspection.gather_hub_input_snapshot) and the hard DD-148 gate
+    (conformance_artifact.check_discovery_gate) must agree that discovery hasn't happened.
+    """
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--domain", "order"]
+            )
+            assert result.exit_code == 0
+
+            hub = Path("ontology-hub").resolve()
+            assert (hub / "businessdiscovery" / "glossary-template.ttl").is_file()
+
+            snapshot = gather_hub_input_snapshot(hub, run_compile=False)
+            assert snapshot.discovery is InputStatus.MISSING
+
+            gate_errors = check_discovery_gate(hub)
+            assert gate_errors != []
+
+
+def test_init_authored_discovery_ttl_flips_snapshot_and_gate_to_satisfied(tmp_path):
+    """Counterpart to the MISSING case above: once a real (non-template) discovery .ttl
+    exists alongside the scaffold template, both the advisory snapshot and the hard gate
+    must report discovery as present/satisfied.
+    """
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--domain", "order"]
+            )
+            assert result.exit_code == 0
+
+            hub = Path("ontology-hub").resolve()
+            (hub / "businessdiscovery" / "test-glossary.ttl").write_text(
+                "@prefix : <urn:x> .\n", encoding="utf-8"
+            )
+
+            snapshot = gather_hub_input_snapshot(hub, run_compile=False)
+            assert snapshot.discovery is InputStatus.PRESENT
+
+            assert check_discovery_gate(hub) == []
 
 
 def test_init_no_overwrite_without_force(tmp_path):

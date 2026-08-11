@@ -22,6 +22,55 @@ _PUBLISH_DIRNAME = "ontology-hub-publish"
 _MANAGED_MARKER = "kairos-ontology-toolkit:managed"
 
 
+def is_authored_discovery_ttl(path: Path) -> bool:
+    """Return True when *path* is a genuinely authored ``.ttl`` file, not a scaffold template.
+
+    Single shared predicate for ``hub_inspection._authored_ttl`` and the DD-148 discovery
+    gate in ``conformance_artifact.check_discovery_gate``. A scaffold-provided template
+    (init copies ``businessdiscovery/glossary-template.ttl`` into every freshly-scaffolded
+    hub) is not authored evidence — counting it as "present" silently disables the discovery
+    gate on a hub with zero real content (issue #288). Both copies of this predicate had the
+    identical bug until they were unified here; keep it in this leaf module (no imports of
+    ``hub_inspection``/``conformance_artifact``) so the two call sites cannot drift apart
+    again.
+    """
+    return (
+        path.suffix == ".ttl"
+        and not path.name.endswith(".template")
+        and not path.name.endswith("-template.ttl")
+    )
+
+
+# Filename patterns that are NOT domain ontologies and should be skipped.
+_NON_DOMAIN_PREFIXES = ("_",)
+_NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
+
+
+def is_domain_ontology_stem(stem: str) -> bool:
+    """Return True when *stem* (a ``.ttl`` filename without extension) names a domain ontology.
+
+    Excludes annotation/configuration files such as ``*-silver-ext.ttl``/``*-ext.ttl``
+    and metadata files whose name starts with ``_`` (e.g. ``_master.ttl``,
+    ``_foundation.ttl``). Single shared predicate for ``core/projector.py``,
+    ``core/validator.py``, ``core/hub_inspection.py``, and ``core/catalog_test.py`` —
+    kept in this leaf module (no rdflib/projector import) so the four copies cannot
+    drift apart again (issue #289).
+    """
+    if any(stem.startswith(prefix) for prefix in _NON_DOMAIN_PREFIXES):
+        return False
+    if any(stem.endswith(suffix) for suffix in _NON_DOMAIN_SUFFIXES):
+        return False
+    return True
+
+
+def is_domain_ontology(path: Path) -> bool:
+    """Return True if *path* looks like a domain ontology file.
+
+    See :func:`is_domain_ontology_stem` for the exclusion rules.
+    """
+    return is_domain_ontology_stem(path.stem)
+
+
 def publish_root(hub: Path) -> Path:
     """Return the derived-output publish root for *hub*.
 

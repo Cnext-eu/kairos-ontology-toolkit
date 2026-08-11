@@ -70,6 +70,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining importers.
 
 ### Fixed
+- **`init`'s own glossary template silently disabled the DD-148 discovery gate** (#288). `init`
+  copies `glossary-template.ttl` into `businessdiscovery/`, and the predicate deciding whether
+  business-discovery evidence exists excluded only names ending `.template` — not
+  `-template.ttl`. So a freshly-scaffolded hub counted the scaffold's own file as authored
+  evidence: `check_discovery_gate()` passed and `compile`/`validate` proceeded with zero
+  discovery. The predicate lived in **two** copies (`core/hub_inspection.py` for the advisory
+  `next` signal, `core/conformance_artifact.py` for the actual gate); patching only the first
+  would have had no enforcement effect at all — `next` is advisory and always exits 0 (DD-137) —
+  and would have made it print a rationale claiming a hard-fail that does not happen. Both now
+  share one `is_authored_discovery_ttl()` in `core/hub_utils.py`, so they cannot drift again. The
+  regression test drives a real `init` and asserts both the snapshot **and** the gate see
+  discovery as missing, pinning the end-to-end property rather than the predicate.
+- **`catalog-test` was almost a no-op** (#289). It verified only that the catalog file existed and
+  was readable, so a dangling `<uri>` target and a domain ontology with no entry both passed with
+  a green checkmark — observed in the field as a hub with 13 domains, zero catalog entries, and one
+  active entry pointing at a `logistics.ttl` that was never created, with every tool reporting
+  success. It now checks entry targets, unmapped domains, `<nextCatalog>` targets and catalog
+  cycles, and reports parse failures instead of raising. Severity is deliberately narrow: it
+  **fails** only on a dangling entry declared in the catalog under test, or an unparseable
+  catalog. Unmapped domains are advisory, because `sync_domain_catalog_entry` runs only from
+  `init --domain` and nothing else registers a domain — a hard gate would redden every hub that
+  grew via the design skill, for a convention the toolkit does not maintain. Dangling entries in
+  *chained* catalogs are likewise advisory and name the owning file, so a bad entry in the
+  vendored reference-models catalog (79 of 80 audited entries on a real hub) cannot fail a hub its
+  author cannot fix. Absolute-URI entries are no longer mangled into false danglers.
 - **Multi-source conformance collapsed to one contributor for contracted dbt-model sources**
   (#284, DD-028 amendment). N `EntityBinding`s sourced from `source.dbtModel` and sharing a
   `conformance` group produced a single silver model, and `compile --check` failed with a

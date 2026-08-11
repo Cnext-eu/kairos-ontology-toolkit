@@ -19,6 +19,7 @@ from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
 from .determinism import generated_at_iso, resolve_generated_at
+from .hub_utils import is_domain_ontology_stem
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
 
@@ -332,10 +333,6 @@ def project_downstream_compile_plan(
     )
 
 
-# Filename patterns that are NOT domain ontologies and should be skipped.
-_NON_DOMAIN_SUFFIXES = ("-silver-ext", "-ext")
-_NON_DOMAIN_PREFIXES = ("_",)
-
 _logger = logging.getLogger(__name__)
 
 
@@ -372,18 +369,17 @@ def _reject_retired_compiler_targets(targets: Iterable[str]) -> None:
         )
 
 
+# Thin alias kept for existing call sites below. The actual predicate lives in
+# hub_utils.is_domain_ontology_stem — a leaf module shared with core/validator.py,
+# core/hub_inspection.py, and core/catalog_test.py — so the four copies cannot drift
+# apart again (issue #289).
 def _is_domain_ontology(path: Path) -> bool:
     """Return True if *path* looks like a domain ontology file.
 
     Excludes annotation/configuration files such as ``*-silver-ext.ttl``
     and metadata files whose name starts with ``_`` (e.g. ``_master.ttl``).
     """
-    stem = path.stem
-    if any(stem.startswith(p) for p in _NON_DOMAIN_PREFIXES):
-        return False
-    if any(stem.endswith(s) for s in _NON_DOMAIN_SUFFIXES):
-        return False
-    return True
+    return is_domain_ontology_stem(path.stem)
 
 
 def project_graph(

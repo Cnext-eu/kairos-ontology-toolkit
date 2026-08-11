@@ -407,7 +407,9 @@ def catalog_test_cmd(catalog, ontology):
     catalog_path = Path(catalog)
     ontology_path = Path(ontology) if ontology else None
 
-    test_catalog_resolution(catalog_path, ontology_path)
+    passed = test_catalog_resolution(catalog_path, ontology_path)
+    if not passed:
+        raise SystemExit(1)
 
 
 @click.command(name="validate-mapping")
