@@ -24,14 +24,13 @@ from .shared import (
     _MANAGED_MARKER_RE,
     _RETIRED_MANAGED_SCAFFOLD_FILES,
     _RETIRED_SCAFFOLD_DIRECTORIES,
-    _REFMODELS_REMOTE,
-    _REFMODELS_REMOTE_DIR,
     _SCAFFOLD_DIR,
     _ToolkitTestRefState,
     _add_toolkit_test_ref_state,
     _copy_managed,
     _dependency_files_transaction,
     _detect_refmodels_dest,
+    _fetch_reference_models,
     _get_managed_version,
     _lock_and_sync_dependency,
     _managed_dataplatform_map,
@@ -50,7 +49,6 @@ from .shared import (
     _stamp_managed,
     _tag_to_version,
     _toolkit_git_sha_source,
-    _write_refmodels_fetch_provenance,
     _whl_url,
 )
 
@@ -477,91 +475,21 @@ def update_refmodels(git_ref, dest_path):
         kairos-ontology update-refmodels --ref v1.2.1
         kairos-ontology update-refmodels --dest path/to/reference-models
     """
-    import tempfile
-
     dest = Path(dest_path) if dest_path else _detect_refmodels_dest()
-
-    # Verify git is available
-    try:
-        subprocess.run(
-            ["git", "--version"],
-            capture_output=True,
-            check=True,
-        )
-    except FileNotFoundError:
-        raise click.ClickException(
-            "git is not installed or not on PATH. Install git and try again."
-        )
 
     click.echo(f"  ▶ Fetching ref '{git_ref}' from upstream reference models…")
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix="kairos-refmodels-"))
+    ok, sha, message = _fetch_reference_models(dest, git_ref)
+    if not ok:
+        raise click.ClickException(message)
 
-    try:
-        # Sparse shallow clone
-        result = subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--filter=blob:none",
-                "--sparse",
-                "--branch",
-                git_ref,
-                _REFMODELS_REMOTE,
-                str(tmp_dir),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise click.ClickException(
-                f"git clone failed (ref '{git_ref}'):\n{result.stderr.strip()}"
-            )
+    # Report results
+    click.echo(f"  ✓ Reference models updated: {dest}")
+    click.echo(f"    Ref    : {git_ref}")
+    click.echo(f"    Commit : {sha[:12] if sha else 'unknown'}")
 
-        # Set sparse-checkout to only the reference models folder
-        result = subprocess.run(
-            ["git", "-C", str(tmp_dir), "sparse-checkout", "set", _REFMODELS_REMOTE_DIR],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise click.ClickException(f"git sparse-checkout failed:\n{result.stderr.strip()}")
-
-        src = tmp_dir / _REFMODELS_REMOTE_DIR
-        if not src.exists():
-            raise click.ClickException(
-                f"Expected folder '{_REFMODELS_REMOTE_DIR}' not found in cloned repo. "
-                f"Check that the ref '{git_ref}' contains this folder."
-            )
-
-        # Get commit SHA for reporting
-        sha_result = subprocess.run(
-            ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
-
-        # Replace destination with fetched content
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(src, dest)
-        _write_refmodels_fetch_provenance(dest, ref=git_ref, commit=sha)
-
-        # Report results
-        click.echo(f"  ✓ Reference models updated: {dest}")
-        click.echo(f"    Ref    : {git_ref}")
-        click.echo(f"    Commit : {sha[:12] if sha else 'unknown'}")
-
-        # Check for VERSION file
-        version_file = dest / "VERSION"
-        if version_file.exists():
-            version = version_file.read_text().strip()
-            click.echo(f"    Version: {version}")
-
-    finally:
-        # Clean up temp directory
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+    # Check for VERSION file
+    version_file = dest / "VERSION"
+    if version_file.exists():
+        version = version_file.read_text().strip()
+        click.echo(f"    Version: {version}")

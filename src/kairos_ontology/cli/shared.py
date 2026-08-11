@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import tomllib
 import click
 import shutil
@@ -1489,27 +1490,92 @@ def _detect_refmodels_dest() -> Path:
     return default
 
 
-def _run_reference_models_update(repo_dir: Path, version: str | None = None):
-    """Populate ontology-reference-models/ via sparse clone (no submodule).
+def _resolve_latest_refmodels_ref() -> str | None:
+    """Resolve the newest semver tag on the reference-models remote.
 
-    Performs the same sparse-clone + copy logic as the update-refmodels CLI
-    command, then commits the result.
+    Mirrors :func:`_resolve_channel`'s "pick the highest non-prerelease-aware
+    version" logic, but the reference-models repo isn't on GitHub Releases the
+    toolkit repo uses, so this shells out to ``git ls-remote --tags`` instead of
+    ``gh api``. Returns ``None`` (never raises) when git is unavailable, the
+    remote can't be reached, or no tags exist — callers fall back to ``main``.
     """
-    import tempfile
-
-    git_ref = version or "main"
-    dest = repo_dir / _REF_MODELS_PATH
-
     try:
-        subprocess.run(["git", "--version"], capture_output=True, check=True)
-    except FileNotFoundError:
-        print("  ⚠  git not found — skipping reference models update")
-        return
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", _REFMODELS_REMOTE],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
 
-    print(f"  ▶ Fetching reference models (ref '{git_ref}')…")
-    tmp_dir = Path(tempfile.mkdtemp(prefix="kairos-refmodels-"))
+    tags: list[str] = []
+    for line in result.stdout.splitlines():
+        if "refs/tags/" not in line:
+            continue
+        tag = line.split("refs/tags/", 1)[1].strip()
+        if tag.endswith("^{}"):
+            tag = tag[: -len("^{}")]
+        if tag:
+            tags.append(tag)
+    if not tags:
+        return None
 
+    from packaging.version import InvalidVersion, Version
+
+    def _parse_version(tag: str) -> Version:
+        try:
+            return Version(_tag_to_version(tag))
+        except InvalidVersion:
+            return Version("0.0.0")
+
+    return sorted(set(tags), key=_parse_version, reverse=True)[0]
+
+
+def _fetch_reference_models(dest: Path, git_ref: str) -> tuple[bool, str | None, str]:
+    """Fetch reference models into *dest* via a sparse shallow clone.
+
+    Never commits, never pushes, and never raises — every failure mode (git
+    missing, clone failure, sparse-checkout failure, missing subtree, a copy
+    that raises ``OSError`` partway through) is caught internally and reported
+    back as ``(False, None, message)`` so callers (``init``, ``new-repo``,
+    ``update-refmodels``) can each decide how loudly to warn.
+
+    The fetched tree is assembled in a temp directory that is a *sibling* of
+    *dest*, validated with :func:`_looks_like_refmodels_root`, and only then
+    swapped into place. This matters on Windows: a ``shutil.copytree`` can fail
+    partway through once the destination prefix passes ~110 characters (the
+    upstream FIBO paths reach ~170), and copying straight into *dest* would
+    leave a partial tree behind that still happens to contain enough files to
+    look valid. Building off to the side means a failed copy never touches
+    *dest* at all — it either keeps its prior (possibly absent) state or gets
+    replaced wholesale by a fully-validated tree.
+
+    Returns:
+        ``(ok, resolved_commit_sha, message)`` — *message* is a human-readable
+        status (on success) or error (on failure) string suitable for a CLI to
+        print or wrap in a ``ClickException``.
+    """
+    from ..core.archetype_loader import (
+        _ARCHETYPES_SUBDIR,
+        _CATALOG_FILENAME,
+        _looks_like_refmodels_root,
+    )
+
+    clone_dir: Path | None = None
+    holder_dir: Path | None = None
     try:
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except FileNotFoundError:
+            return False, None, "git is not installed or not on PATH. Install git and try again."
+
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        clone_dir = Path(tempfile.mkdtemp(prefix="kairos-refmodels-clone-"))
+
         result = subprocess.run(
             [
                 "git",
@@ -1521,52 +1587,121 @@ def _run_reference_models_update(repo_dir: Path, version: str | None = None):
                 "--branch",
                 git_ref,
                 _REFMODELS_REMOTE,
-                str(tmp_dir),
+                str(clone_dir),
             ],
             capture_output=True,
             text=True,
+            env=env,
+            timeout=300,
         )
         if result.returncode != 0:
-            print(f"  ⚠  git clone failed: {result.stderr.strip()}")
-            return
+            return False, None, f"git clone failed (ref '{git_ref}'):\n{result.stderr.strip()}"
 
-        subprocess.run(
-            ["git", "-C", str(tmp_dir), "sparse-checkout", "set", _REFMODELS_REMOTE_DIR],
+        sparse_result = subprocess.run(
+            ["git", "-C", str(clone_dir), "sparse-checkout", "set", _REFMODELS_REMOTE_DIR],
             capture_output=True,
             text=True,
-            check=True,
+            env=env,
+            timeout=300,
         )
+        if sparse_result.returncode != 0:
+            return False, None, f"git sparse-checkout failed:\n{sparse_result.stderr.strip()}"
 
-        src = tmp_dir / _REFMODELS_REMOTE_DIR
+        src = clone_dir / _REFMODELS_REMOTE_DIR
         if not src.exists():
-            print(f"  ⚠  Folder '{_REFMODELS_REMOTE_DIR}' not found in ref '{git_ref}'")
-            return
+            return (
+                False,
+                None,
+                f"Expected folder '{_REFMODELS_REMOTE_DIR}' not found in cloned repo. "
+                f"Check that the ref '{git_ref}' contains this folder.",
+            )
 
         sha_result = subprocess.run(
-            ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"],
+            ["git", "-C", str(clone_dir), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
+            env=env,
+            timeout=300,
         )
         sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
 
+        holder_dir = Path(tempfile.mkdtemp(prefix=f".{dest.name}.fetch-", dir=str(dest.parent)))
+        build_dir = holder_dir / dest.name
+        shutil.copytree(src, build_dir)
+
+        # Upstream keeps VERSION at the clone root (sibling of the copied subdir),
+        # so version-drift checks (which read <dest>/VERSION) would otherwise never
+        # see it. Copy it in alongside the subtree when present.
+        version_src = clone_dir / "VERSION"
+        if version_src.is_file():
+            shutil.copy2(version_src, build_dir / "VERSION")
+
+        if not _looks_like_refmodels_root(build_dir):
+            return (
+                False,
+                sha,
+                f"Fetched content at ref '{git_ref}' failed validation "
+                f"(missing '{_CATALOG_FILENAME}' or '{_ARCHETYPES_SUBDIR.as_posix()}/')",
+            )
+
+        _write_refmodels_fetch_provenance(build_dir, ref=git_ref, commit=sha)
+
         if dest.exists():
             shutil.rmtree(dest)
-        shutil.copytree(src, dest)
-        _write_refmodels_fetch_provenance(dest, ref=git_ref, commit=sha)
+        shutil.move(str(build_dir), str(dest))
 
-        # Commit the populated reference-models content
+        short_sha = sha[:12] if sha else "unknown commit"
+        return True, sha, f"Reference models fetched (ref '{git_ref}' @ {short_sha})"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, None, f"Reference models fetch failed: {exc}"
+    finally:
+        if clone_dir is not None:
+            shutil.rmtree(clone_dir, ignore_errors=True)
+        if holder_dir is not None:
+            shutil.rmtree(holder_dir, ignore_errors=True)
+
+
+def _run_reference_models_update(repo_dir: Path, version: str | None = None):
+    """Populate ontology-reference-models/ via sparse clone (no submodule), then commit.
+
+    Delegates the fetch itself to :func:`_fetch_reference_models` (which never
+    raises and never touches git state) and is left with only the commit step —
+    scoped to ``ontology-reference-models/`` so this never sweeps in unrelated
+    working-tree changes from the rest of the freshly-scaffolded repo.
+    """
+    git_ref = version or "main"
+    dest = repo_dir / _REF_MODELS_PATH
+
+    print(f"  ▶ Fetching reference models (ref '{git_ref}')…")
+    ok, _sha, message = _fetch_reference_models(dest, git_ref)
+    if not ok:
+        print(f"  ⚠  {message}")
+        print("       Run 'kairos-ontology update-refmodels' manually.")
+        return
+
+    try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--", _REF_MODELS_PATH],
             cwd=repo_dir,
             capture_output=True,
             text=True,
         )
         if result.stdout.strip():
             subprocess.run(
-                ["git", "add", _REF_MODELS_PATH], cwd=repo_dir, capture_output=True, check=True
+                ["git", "add", "--", _REF_MODELS_PATH],
+                cwd=repo_dir,
+                capture_output=True,
+                check=True,
             )
             subprocess.run(
-                ["git", "commit", "-m", "chore: populate ontology-reference-models"],
+                [
+                    "git",
+                    "commit",
+                    "-m",
+                    "chore: populate ontology-reference-models",
+                    "--",
+                    _REF_MODELS_PATH,
+                ],
                 cwd=repo_dir,
                 capture_output=True,
                 check=True,
@@ -1582,9 +1717,6 @@ def _run_reference_models_update(repo_dir: Path, version: str | None = None):
         if hasattr(exc, "stderr") and exc.stderr:
             stderr = exc.stderr.decode().strip() if isinstance(exc.stderr, bytes) else exc.stderr
             print(f"       {stderr}")
-    finally:
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _configure_branch_protection(repo_dir: Path, full_name: str):

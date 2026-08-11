@@ -73,6 +73,8 @@ class TestUpdateRefmodels:
         fake_refmodels.mkdir(parents=True)
         (fake_refmodels / "party.ttl").write_text("# Party reference model")
         (fake_refmodels / "VERSION").write_text("1.2.0\n")
+        (fake_refmodels / "catalog-v001.xml").write_text("<catalog/>")
+        (fake_refmodels / "blueprints" / "archetypes").mkdir(parents=True)
 
         call_count = {"n": 0}
 
@@ -145,6 +147,8 @@ class TestUpdateRefmodels:
         fake_refmodels = fake_clone_dir / "ontology-reference-models"
         fake_refmodels.mkdir(parents=True)
         (fake_refmodels / "test.ttl").write_text("# test")
+        (fake_refmodels / "catalog-v001.xml").write_text("<catalog/>")
+        (fake_refmodels / "blueprints" / "archetypes").mkdir(parents=True)
 
         captured_cmds = []
 
