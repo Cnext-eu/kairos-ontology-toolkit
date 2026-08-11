@@ -4,7 +4,12 @@
 
 from pathlib import Path
 
-from kairos_ontology.core.hub_utils import find_hub_root, find_managed_root, publish_root
+from kairos_ontology.core.hub_utils import (
+    find_hub_root,
+    find_managed_root,
+    publish_root,
+    resolve_hub_output_dir,
+)
 
 
 class TestPublishRoot:
@@ -145,3 +150,72 @@ class TestFindManagedRoot:
         _make_pin_hub(tmp_path)
         monkeypatch.chdir(tmp_path)
         assert find_managed_root() == tmp_path.resolve()
+
+
+class TestResolveHubOutputDir:
+    """Tests for resolve_hub_output_dir() — the shared "where do I write?" helper (#296)."""
+
+    def test_resolves_against_ontology_hub_from_repo_root(self, tmp_path):
+        hub = tmp_path / "ontology-hub"
+        (hub / "model" / "ontologies").mkdir(parents=True)
+
+        output, root = resolve_hub_output_dir("integration/discovery/bi", cwd=tmp_path)
+
+        assert output == hub / "integration" / "discovery" / "bi"
+        assert root == hub
+
+    def test_resolves_when_cwd_is_the_hub_root(self, tmp_path):
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+
+        output, root = resolve_hub_output_dir("integration/sources/erp", cwd=tmp_path)
+
+        assert output == tmp_path / "integration" / "sources" / "erp"
+        assert root == tmp_path
+
+    def test_walks_up_from_a_deep_subdirectory(self, tmp_path):
+        """Without the ancestor pass this returns a doubly-nested relative path."""
+        hub = tmp_path / "ontology-hub"
+        (hub / "model" / "ontologies").mkdir(parents=True)
+        deep = hub / "integration" / "discovery"
+        deep.mkdir(parents=True)
+
+        output, root = resolve_hub_output_dir("integration/discovery/bi", cwd=deep)
+
+        assert output == hub / "integration" / "discovery" / "bi"
+        assert root == hub
+
+    def test_ancestor_pass_requires_model_ontologies(self, tmp_path):
+        """A bare ontology-hub/ name several levels up is too weak to redirect writes."""
+        hub = tmp_path / "ontology-hub"
+        (hub / "integration").mkdir(parents=True)
+        deep = hub / "integration" / "nested"
+        deep.mkdir(parents=True)
+
+        output, root = resolve_hub_output_dir("integration/discovery/bi", cwd=deep)
+
+        assert root is None
+        assert output == Path("integration/discovery/bi")
+
+    def test_no_hub_returns_the_relative_path_and_none(self, tmp_path):
+        output, root = resolve_hub_output_dir("integration/discovery/bi", cwd=tmp_path)
+
+        assert root is None
+        assert output == Path("integration/discovery/bi")
+
+    def test_accepts_a_path_or_a_string(self, tmp_path):
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+
+        from_str, _ = resolve_hub_output_dir("integration/discovery/bi", cwd=tmp_path)
+        from_path, _ = resolve_hub_output_dir(Path("integration/discovery/bi"), cwd=tmp_path)
+
+        assert from_str == from_path
+
+    def test_defaults_to_cwd(self, tmp_path, monkeypatch):
+        hub = tmp_path / "ontology-hub"
+        (hub / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        output, root = resolve_hub_output_dir("integration/discovery/bi")
+
+        assert root == hub
+        assert output == hub / "integration" / "discovery" / "bi"

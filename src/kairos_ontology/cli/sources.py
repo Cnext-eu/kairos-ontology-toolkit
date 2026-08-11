@@ -27,8 +27,9 @@ from .shared import (
     "--output",
     "-o",
     type=click.Path(),
-    default="integration/discovery/bi",
-    help="Output directory (default: integration/discovery/bi/)",
+    default=None,
+    help="Output directory (default: <hub root>/integration/discovery/bi/). "
+    "An explicit path is used verbatim, relative to the current directory.",
 )
 def import_tmdl(source, output):
     """Import and inventory TMDL/PBIP files for ontology modeling.
@@ -43,13 +44,38 @@ def import_tmdl(source, output):
     Power BI/TMDL is downstream **demand evidence**, not a canonical input
     source, so output lands under ``integration/discovery/bi/`` (alongside the
     other demand/discovery artifacts) — never under ``integration/sources/``.
+
+    \b
+    That path is resolved against the **hub root**, not the current directory,
+    so running this from the repository root (where raw exports usually live)
+    still writes inside ``ontology-hub/``. Only the two generated artifacts are
+    written: a PBIP archive is expanded in a temporary directory, never into the
+    hub. Pass --output to write somewhere else; an explicit path is used as
+    given.
     """
-    from ..core.import_tmdl import run_import_tmdl
+    from ..core.hub_utils import resolve_hub_output_dir
+    from ..core.import_tmdl import _BI_DISCOVERY_RELPATH, run_import_tmdl
 
     source_path = Path(source)
-    output_path = Path(output)
+
+    # Resolve here as well as in core, so the destination is ANNOUNCED before
+    # anything is written. This defect was invisible precisely because the
+    # command only ever reported paths after the fact (issue #296): core's
+    # logger.warning serves library callers, this echo serves CLI users.
+    if output:
+        output_path = Path(output)
+    else:
+        output_path, hub_root = resolve_hub_output_dir(_BI_DISCOVERY_RELPATH)
+        if hub_root is None:
+            click.echo(
+                "⚠️  No ontology-hub root detected from the current directory.\n"
+                f"   Writing to the relative path: {output_path}\n"
+                "   Run from the hub (or its repository root), or pass --output.",
+                err=True,
+            )
 
     click.echo(f"📦 Importing TMDL from: {source_path}")
+    click.echo(f"📂 Writing to: {output_path}")
     generated = run_import_tmdl(source_path, output_path)
 
     if generated:

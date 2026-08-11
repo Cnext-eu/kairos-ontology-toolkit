@@ -196,3 +196,55 @@ def find_hub_root(
         )
 
     return None
+
+
+def resolve_hub_output_dir(
+    relative: Path | str,
+    *,
+    cwd: Path | None = None,
+) -> tuple[Path, Path | None]:
+    """Resolve a hub-relative output path against the detected hub root.
+
+    Single implementation for the "where does this command write?" question.
+    ``import-flatfile``, ``import-source`` and ``import-tmdl`` each carried a
+    verbatim copy of hub-detect + warn + relative-fallback; issues #288 and #289
+    are the record of what happens when duplicated predicates in this codebase
+    drift, so this lives here and they all call it (issue #296).
+
+    Unlike :func:`find_hub_root`, this also searches **ancestor** directories, so
+    running a command from inside the hub (``ontology-hub/integration/``) resolves
+    to the hub root rather than producing a doubly-nested
+    ``integration/integration/...`` tree (DD-064). Ancestors must carry
+    ``model/ontologies/`` (``require_model=True``) — a bare ``ontology-hub/``
+    directory name several levels up is too weak a signal to redirect writes to.
+
+    Args:
+        relative: Hub-relative destination, e.g. ``integration/discovery/bi``.
+        cwd: Starting directory. Defaults to ``Path.cwd()``.
+
+    Returns:
+        ``(output_dir, hub_root)``. When no hub can be detected, ``hub_root`` is
+        ``None`` and ``output_dir`` is *relative* itself (i.e. cwd-relative).
+        Callers must tell the user where output went in that case — writing to a
+        guessed relative path silently is the defect this helper exists to stop.
+    """
+    relative = Path(relative)
+    if cwd is None:
+        cwd = Path.cwd()
+
+    hub_root = find_hub_root(cwd)
+    if hub_root is None:
+        for ancestor in cwd.parents:
+            hub_root = find_hub_root(ancestor, require_model=True)
+            if hub_root is not None:
+                logger.debug(
+                    "Resolved hub root %s from ancestor of %s.",
+                    hub_root,
+                    cwd,
+                )
+                break
+
+    if hub_root is not None:
+        return hub_root / relative, hub_root
+
+    return relative, None

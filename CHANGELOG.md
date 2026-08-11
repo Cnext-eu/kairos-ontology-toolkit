@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc15] — 2026-08-11
+
+### Fixed
+- **`import-tmdl` wrote outside the hub, and expanded PBIP archives into it** (#296). `--output`
+  defaulted to the cwd-relative literal `integration/discovery/bi`, so running the command from
+  the repository root — the natural place, since raw Power BI exports are kept there — created a
+  stray top-level `integration/discovery/bi/` tree *outside* `ontology-hub/`, while the scaffolded
+  destination inside the hub stayed empty. The readers disagreed with the writer: `design-landscape`
+  and `draft-model-report` both resolve that path from the hub root, so nothing ever found the
+  output. The default is now resolved against the hub root (DD-147 amended), an explicit `--output`
+  is still honoured verbatim, and the resolved destination is echoed *before* anything is written —
+  the defect was invisible precisely because the command only reported paths after the fact.
+  Relatedly, a PBIP ZIP was expanded with `extractall` **into the output directory**: correcting the
+  destination alone would have committed raw report definitions, `.pbi/localSettings.json`, and M
+  expressions carrying server names into the hub, contradicting that folder's own README ("Never
+  commit credentials, connection strings, raw personal data, or proprietary report content"), and
+  in-place extraction accumulated stale members across re-runs because `extractall` never prunes.
+  Archives now expand in a temporary directory and only the engineering pack and concept mapping
+  enter the hub.
+- **Commands run from inside the hub wrote to a doubly-nested path.** `find_hub_root` inspects only
+  `cwd` and `cwd/ontology-hub`, so running an import from `ontology-hub/integration/` resolved the
+  output relative to the cwd and produced `integration/integration/discovery/bi` — the DD-064
+  nesting symptom, this time inside the hub where nothing gitignores it. Hub-relative output
+  resolution now also searches ancestor directories (requiring `model/ontologies/`, so a bare
+  `ontology-hub/` directory name several levels up cannot silently redirect writes). The three
+  verbatim copies of hub-detect + warn + relative-fallback in `import_flatfile`, `import_source`
+  and `import_tmdl` are unified into one `hub_utils.resolve_hub_output_dir()`, following the same
+  de-duplication that #288 and #289 forced on this module.
+
 ## [5.2.0rc14] — 2026-08-11
 
 ### Fixed

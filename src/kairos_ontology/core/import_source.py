@@ -1062,22 +1062,17 @@ def run_import_source(
     sys_name = data["system"]
 
     if output_dir is None:
-        # Detect hub root: check cwd/ontology-hub/ first, then cwd itself
-        from .hub_utils import find_hub_root
+        from .hub_utils import resolve_hub_output_dir
 
-        cwd = Path.cwd()
-        hub_root = find_hub_root(cwd)
-        if hub_root:
-            output_dir = hub_root / "integration" / "sources" / sys_name
-        else:
+        output_dir, hub_root = resolve_hub_output_dir(Path("integration") / "sources" / sys_name)
+        if hub_root is None:
             logger.warning(
                 "Could not detect ontology-hub root (no ontology-hub/ or "
                 "model/ontologies/ found). "
-                "Writing to relative path: integration/sources/%s. "
+                "Writing to relative path: %s. "
                 "Use --output to specify an explicit output directory.",
-                sys_name,
+                output_dir,
             )
-            output_dir = Path("integration/sources") / sys_name
 
     # --- Split-tables mode: one TTL per table ---
     if split_tables:
