@@ -56,6 +56,7 @@ from .adapter import (
     ResolvedProperty,
     ResolvedRelation,
     adapt_binding,
+    object_property_in_fields_message,
 )
 from .bindings import (
     EntityBinding,
@@ -93,7 +94,9 @@ from .temporal import adapt_temporal_relationships
 logger = logging.getLogger(__name__)
 
 
-def _codes_of(diagnostics: tuple[CompileDiagnostic, ...] | list[CompileDiagnostic]) -> tuple[str, ...]:
+def _codes_of(
+    diagnostics: tuple[CompileDiagnostic, ...] | list[CompileDiagnostic],
+) -> tuple[str, ...]:
     """Extract diagnostic codes for compact debug trace lines."""
     return tuple(d.code for d in diagnostics)
 
@@ -390,8 +393,19 @@ def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[Proper
             continue
         prop_uri = row["property_uri"]
         record = index.property_by_uri(prop_uri)
+        is_object_property = row["property_type"] == "object"
         ranges = tuple(row.get("ranges") or ())
-        range_uri = ranges[0] if ranges else str(XSD.string)
+        # ``ranges`` (DD-103 semantic index) keeps only ``URIRef`` objects, so it is empty
+        # both for a missing ``rdfs:range`` and for a class-expression range (a blank node:
+        # ``owl:unionOf`` / ``owl:Restriction`` / ``owl:oneOf``). Falling back to
+        # ``xsd:string`` is the right default for a *datatype* property, but for an object
+        # property it fabricates a scalar range that makes the property byte-identical to a
+        # real string attribute -- which erased the relationship when authored under
+        # ``fields:`` and made the range check in ``_relationship_diagnostics`` reject the
+        # correct ``relationships:`` authoring (issue #280). An object property with no
+        # resolvable named range therefore carries no range at all, and the
+        # ``prop.range_uri and ...`` guard short-circuits honestly.
+        range_uri = ranges[0] if ranges else ("" if is_object_property else str(XSD.string))
         resolved.append(
             PropertyInfo(
                 uri=prop_uri,
@@ -400,7 +414,7 @@ def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[Proper
                 comment=record.comment if record is not None else "",
                 range_uri=range_uri,
                 range_name=_local_from_uri(range_uri),
-                is_object_property=(row["property_type"] == "object"),
+                is_object_property=is_object_property,
             )
         )
     return tuple(resolved)
@@ -1626,6 +1640,10 @@ def _adapter_safety_diagnostic(item: CompileDiagnostic) -> CompileDiagnostic:
         "binding.unknown-class": "safety.class-unresolved",
         "binding.ambiguous-class": "safety.class-unresolved",
         "binding.unknown-property": "safety.property-unresolved",
+        # #280: an object property under ``fields:`` is a misplaced relationship endpoint.
+        # ``safety.relationship-endpoint`` already carries exactly that meaning, so the
+        # closed 13-code ``SAFETY_RULE_CODES`` catalogue stays closed.
+        "binding.object-property-in-fields": "safety.relationship-endpoint",
         "binding.unsupported-dbt-model-source": "safety.adapter-unsupported",
         "binding.unknown-identity-strategy": "safety.identity-incomplete",
     }
@@ -1696,6 +1714,18 @@ def _binding_safety_diagnostics(
     }
     for field in binding.fields:
         prop = context.property(field.property)
+        if prop is not None and prop.is_object_property:
+            # #280: mirrors the adapter's ``binding.object-property-in-fields`` rejection so
+            # ``compile --check`` still reports it when this binding is blocked before
+            # ``adapt_binding`` ever runs. Same family as a misplaced relationship endpoint.
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="safety.relationship-endpoint",
+                    message=object_property_in_fields_message(field.property, prop),
+                    location=SourceLocation(path=binding.source_path, pointer=field.pointer),
+                    rule_id="DD-133-safety",
+                )
+            )
         if prop is not None and prop.column_name.lower() in reserved:
             diagnostics.append(
                 CompileDiagnostic(
@@ -2317,13 +2347,19 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         text = path.read_text(encoding="utf-8")
         declared_domain = _binding_domain(text)
         if declared_domain not in {None, domain}:
-            logger.debug("binding skipped (domain mismatch): %s declared=%s", path.name, declared_domain)
+            logger.debug(
+                "binding skipped (domain mismatch): %s declared=%s", path.name, declared_domain
+            )
             continue
         try:
             binding = load_entity_binding(text, path=str(path))
         except CompileError as exc:
             diagnostics.extend(_structural_safety_diagnostic(item) for item in exc.diagnostics)
-            logger.debug("binding blocked (structural errors): %s codes=%s", path.name, _codes_of(exc.diagnostics))
+            logger.debug(
+                "binding blocked (structural errors): %s codes=%s",
+                path.name,
+                _codes_of(exc.diagnostics),
+            )
             continue
         if binding.domain != domain:
             logger.debug("binding skipped (binding.domain mismatch): %s", path.name)
@@ -2388,7 +2424,9 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         except CompileError as exc:
             diagnostics.extend(_adapter_safety_diagnostic(item) for item in exc.diagnostics)
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
-            logger.debug("binding blocked (adapter): %s codes=%s", path.name, _codes_of(exc.diagnostics))
+            logger.debug(
+                "binding blocked (adapter): %s codes=%s", path.name, _codes_of(exc.diagnostics)
+            )
         except Exception as exc:
             diagnostics.append(
                 CompileDiagnostic(
@@ -2691,12 +2729,10 @@ def compile_domain(
         cached_plan,
     )
     try:
-        plan = (
-            hub_root
-            if cached_plan
-            else build_compile_plan(hub_root, domain or "")
-        )
+        plan = hub_root if cached_plan else build_compile_plan(hub_root, domain or "")
     except CompileError as exc:
-        logger.debug("compile domain aborted (compile errors): codes=%s", _codes_of(exc.diagnostics))
+        logger.debug(
+            "compile domain aborted (compile errors): codes=%s", _codes_of(exc.diagnostics)
+        )
         return CompileResult(domain or "", selected_mode.value, CompileDiagnostics(exc.diagnostics))
     return compile_plan_result(plan, selected_mode, render=True)
