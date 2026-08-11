@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc16] — 2026-08-11
+
+### Fixed
+- **`import-flatfile` persisted non-ASCII values as `\uXXXX` escapes, so the next command rewrote
+  the file** (#303). Its three `yaml.dump` calls were the only YAML writers in the toolkit that
+  omitted `allow_unicode=True`, and PyYAML defaults it to `False`. A job title containing an
+  en-dash was written as `"Team Lead – EPC Operations"`; any non-Latin source data became
+  fully unreadable. Worse, `import-source` rewrites the same `.samples.yaml` files *with*
+  `allow_unicode=True`, so a step that should be a pure read of those files produced a one-line
+  diff in each affected one — review noise that masks real changes, and the reason this was caught
+  by change-detection around the step rather than by reading the output. All three writers now
+  match the other 14 YAML writers in the codebase, and a regression test asserts the persisted
+  bytes round-trip byte-identically through the rewriter.
+
 ## [5.2.0rc15] — 2026-08-11
 
 ### Fixed
