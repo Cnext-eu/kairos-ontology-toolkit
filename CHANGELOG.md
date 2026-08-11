@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc13] — 2026-08-11
+
+### Fixed
+- **`import-flatfile` lost 66 of 70 tables to one timezone-aware column, and aborted the whole
+  directory on any unreadable file** (#293). Two defects compounded. First, `read_parquet_table`
+  materialised sample values with `to_pylist()`, which resolves a named-zone
+  `timestamp[us, tz=America/New_York]` column through `zoneinfo` and raises
+  `ZoneInfoNotFoundError` wherever no tz database is installed — stock Windows, and any slim
+  container. Second, the directory loop had no per-file error handling, so that single raise
+  aborted the entire import and wrote nothing: a 70-table CargoWise export produced zero output
+  (only the four tables whose tz-aware columns were entirely null survived, because an all-null
+  column never constructs a `TimestampScalar`). tz-aware columns are now materialised via
+  `_arrow_column_to_pylist()`, which normalises to UTC and renders RFC-3339 with an explicit
+  `+00:00` offset — no tz database needed, the offset is never silently dropped, and the value
+  still matches the datetime exemption in the PII detectors (`core/_samples.py`), so timestamps
+  are not mistaken for sensitive values and redacted. tz-naive columns are unchanged and stay
+  offset-free. Directory mode is now partial-failure tolerant: each file is read independently,
+  unreadable files are skipped and reported as `M of K file(s) could not be read — skipped:` with
+  the exception type per file, and the run exits 0 having written every readable table. Zero
+  readable files remains a hard failure — exit 1, nothing written — and a path pointing directly
+  at a single file still fails fast. `pyarrow` is a core dependency, so this needed no new extra
+  and no `tzdata`.
+
 ## [5.2.0rc12] — 2026-08-11
 
 ### Added

@@ -6,6 +6,7 @@ import pytest
 
 from kairos_ontology.core.import_flatfile import (
     infer_column_type,
+    list_flatfile_candidates,
     read_csv_table,
     read_parquet_table,
     write_source_dir,
@@ -807,3 +808,272 @@ class TestRunImportFlatfileParquet:
 
         manifest = yaml.safe_load((result / "_manifest.yaml").read_text(encoding="utf-8"))
         assert sorted(manifest["tables"]) == ["items", "orders"]
+
+
+# --------------------------------------------------------------------------- #
+# Issue #293 — tz-aware parquet + resilient directory import
+# --------------------------------------------------------------------------- #
+
+
+def _write_corrupt_parquet(path):
+    """Write a file with a .parquet suffix that pyarrow cannot open."""
+    path.write_bytes(b"not a parquet file at all")
+    return path
+
+
+class TestTimezoneAwareTimestamps:
+    """A tz-aware timestamp column must not abort the read (#293).
+
+    ``to_pylist()`` on a NAMED-zone column resolves the zone through
+    ``zoneinfo``, which raises ``ZoneInfoNotFoundError`` wherever no tz database
+    is installed (stock Windows). A fixed-offset zone (``-05:00``) needs no
+    lookup and would therefore pass against unfixed code — the crash fixtures
+    below must use a named zone. Values must also be NON-NULL: an all-null
+    tz-aware column never constructs a ``TimestampScalar``, so it never reaches
+    ``zoneinfo`` either.
+    """
+
+    def test_named_zone_column_is_read_and_rendered_as_utc(self, tmp_path):
+        import datetime as dt
+
+        pq_file = tmp_path / "events.parquet"
+        naive = pa.array(
+            [dt.datetime(2024, 1, 15, 10, 30, 0), dt.datetime(2024, 3, 2, 8, 0, 0)],
+            type=pa.timestamp("us"),
+        )
+        _write_parquet(
+            pq_file,
+            {
+                "id": pa.array([1, 2], type=pa.int64()),
+                "created_at": naive.cast(pa.timestamp("us", tz="America/New_York")),
+            },
+        )
+
+        table = read_parquet_table(pq_file)
+
+        by_name = {c["name"]: c for c in table["columns"]}
+        assert by_name["created_at"]["data_type"] == "datetime"
+        rendered = [row["created_at"] for row in table["sample_rows"]]
+        assert rendered == ["2024-01-15 10:30:00+00:00", "2024-03-02 08:00:00+00:00"]
+
+    def test_rendered_value_satisfies_the_datetime_pii_exemption(self, tmp_path):
+        """The rendered form must fullmatch the datetime exemption regex.
+
+        Otherwise the PII detectors treat the timestamp as a candidate and
+        redact it. A ``cast(pa.string())`` would emit a colon-less ``-0500``
+        offset, which does not fullmatch.
+        """
+        import datetime as dt
+
+        from kairos_ontology.core._samples import _ISO_DATE_OR_DATETIME_RE, is_redaction_token
+
+        pq_file = tmp_path / "events.parquet"
+        naive = pa.array([dt.datetime(2024, 1, 15, 10, 30, 0)], type=pa.timestamp("us"))
+        _write_parquet(
+            pq_file,
+            {"created_at": naive.cast(pa.timestamp("us", tz="Europe/Brussels"))},
+        )
+
+        table = read_parquet_table(pq_file)
+
+        value = table["sample_rows"][0]["created_at"]
+        assert _ISO_DATE_OR_DATETIME_RE.fullmatch(value), value
+        assert not is_redaction_token(value)
+
+    def test_offset_is_applied_not_dropped(self, tmp_path):
+        """UTC normalisation must shift the instant, never silently drop the offset.
+
+        ``10:30-05:00`` is ``15:30`` UTC. Casting tz-aware to tz-naive instead
+        would keep a local wall clock and lose the offset entirely.
+        """
+        import datetime as dt
+
+        pq_file = tmp_path / "events.parquet"
+        _write_parquet(
+            pq_file,
+            {
+                "created_at": pa.array(
+                    [
+                        dt.datetime(
+                            2024, 1, 15, 10, 30, 0, tzinfo=dt.timezone(dt.timedelta(hours=-5))
+                        )
+                    ],
+                    type=pa.timestamp("us", tz="-05:00"),
+                )
+            },
+        )
+
+        table = read_parquet_table(pq_file)
+
+        assert table["sample_rows"][0]["created_at"] == "2024-01-15 15:30:00+00:00"
+
+    def test_naive_column_keeps_its_offset_free_rendering(self, tmp_path):
+        """tz-naive columns carry no offset, so none is invented for them."""
+        import datetime as dt
+
+        pq_file = tmp_path / "events.parquet"
+        _write_parquet(
+            pq_file,
+            {
+                "created_at": pa.array(
+                    [dt.datetime(2024, 1, 15, 10, 30, 0)], type=pa.timestamp("us")
+                )
+            },
+        )
+
+        table = read_parquet_table(pq_file)
+
+        assert table["sample_rows"][0]["created_at"] == "2024-01-15 10:30:00"
+
+    def test_all_null_named_zone_column_is_read(self, tmp_path):
+        """All-null tz-aware columns already worked; keep them working."""
+        pq_file = tmp_path / "events.parquet"
+        _write_parquet(
+            pq_file,
+            {
+                "created_at": pa.array(
+                    [None, None], type=pa.timestamp("us", tz="America/New_York")
+                ),
+                "id": pa.array([1, 2], type=pa.int64()),
+            },
+        )
+
+        table = read_parquet_table(pq_file)
+
+        assert table["row_count"] == 2
+
+    def test_mixed_null_and_non_null_named_zone_column(self, tmp_path):
+        import datetime as dt
+
+        pq_file = tmp_path / "events.parquet"
+        naive = pa.array([dt.datetime(2024, 1, 15, 10, 30, 0), None], type=pa.timestamp("us"))
+        _write_parquet(
+            pq_file,
+            {"created_at": naive.cast(pa.timestamp("us", tz="America/New_York"))},
+        )
+
+        table = read_parquet_table(pq_file)
+
+        # Null cells are omitted from the sample row dict entirely, as elsewhere.
+        assert table["sample_rows"][0]["created_at"] == "2024-01-15 10:30:00+00:00"
+        assert "created_at" not in table["sample_rows"][1]
+
+
+class TestListFlatfileCandidates:
+    def test_only_supported_suffixes_are_candidates(self, tmp_path):
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        (tmp_path / "b.parquet").write_bytes(b"")
+        (tmp_path / "c.xlsx").write_bytes(b"")
+        (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+        (tmp_path / "_manifest.yaml").write_text("x: 1", encoding="utf-8")
+
+        names = [p.name for p in list_flatfile_candidates(tmp_path)]
+
+        assert names == ["a.csv", "b.parquet", "c.xlsx"]
+
+
+class TestDirectoryImportResilience:
+    """Directory mode is partial-failure tolerant; single-file mode is fail-fast (#293)."""
+
+    def test_unreadable_file_is_skipped_and_the_rest_import(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "good.parquet", {"id": pa.array([1], type=pa.int64())})
+        _write_corrupt_parquet(input_dir / "broken.parquet")
+        (input_dir / "items.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
+
+        output_dir = tmp_path / "out"
+        result_dir, table_count, _samples, failures = run_import_flatfile(
+            input_dir, system_name="legacy", output_dir=output_dir, return_count=True
+        )
+
+        assert table_count == 2
+        assert [name for name, _reason in failures] == ["broken.parquet"]
+        assert (result_dir / "good.yaml").exists()
+        assert (result_dir / "items.yaml").exists()
+        assert not (result_dir / "broken.yaml").exists()
+
+    def test_failure_reason_names_the_exception_type(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "good.parquet", {"id": pa.array([1], type=pa.int64())})
+        _write_corrupt_parquet(input_dir / "broken.parquet")
+
+        _result, _count, _samples, failures = run_import_flatfile(
+            input_dir, system_name="legacy", output_dir=tmp_path / "out", return_count=True
+        )
+
+        assert len(failures) == 1
+        name, reason = failures[0]
+        assert name == "broken.parquet"
+        assert ":" in reason and reason.split(":")[0].strip()
+
+    def test_all_files_unreadable_writes_nothing_and_raises(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        _write_corrupt_parquet(input_dir / "broken-a.parquet")
+        _write_corrupt_parquet(input_dir / "broken-b.parquet")
+
+        output_dir = tmp_path / "out"
+        with pytest.raises(ValueError, match="No CSV, Excel, or Parquet files could be read"):
+            run_import_flatfile(input_dir, system_name="legacy", output_dir=output_dir)
+
+        assert not output_dir.exists()
+
+    def test_total_failure_message_lists_every_file(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        _write_corrupt_parquet(input_dir / "broken-a.parquet")
+        _write_corrupt_parquet(input_dir / "broken-b.parquet")
+
+        with pytest.raises(ValueError) as excinfo:
+            run_import_flatfile(input_dir, system_name="legacy", output_dir=tmp_path / "out")
+
+        message = str(excinfo.value)
+        assert "all 2 file(s) failed" in message
+        assert "broken-a.parquet" in message
+        assert "broken-b.parquet" in message
+
+    def test_empty_directory_still_reports_nothing_found(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        (input_dir / "notes.txt").write_text("hello", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="No CSV, Excel, or Parquet files found"):
+            run_import_flatfile(input_dir, system_name="legacy", output_dir=tmp_path / "out")
+
+    def test_successful_directory_import_reports_no_failures(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        (input_dir / "items.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
+
+        _result, _count, _samples, failures = run_import_flatfile(
+            input_dir, system_name="legacy", output_dir=tmp_path / "out", return_count=True
+        )
+
+        assert failures == []
+
+    def test_single_corrupt_file_fails_fast(self, tmp_path):
+        """A path pointing directly at one file has no 'partial' outcome."""
+        pq_file = _write_corrupt_parquet(tmp_path / "broken.parquet")
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(Exception):
+            run_import_flatfile(pq_file, output_dir=output_dir)
+
+        assert not output_dir.exists()
+
+    def test_non_parquet_read_errors_are_also_tolerated(self, tmp_path):
+        """The try/except wraps the whole loop body — CSV and XLSX raise too."""
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        (input_dir / "items.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
+        # A .xlsx that is not a zip container: openpyxl raises on open.
+        (input_dir / "broken.xlsx").write_bytes(b"definitely not xlsx")
+
+        _result, table_count, _samples, failures = run_import_flatfile(
+            input_dir, system_name="legacy", output_dir=tmp_path / "out", return_count=True
+        )
+
+        assert table_count == 1
+        assert [name for name, _reason in failures] == ["broken.xlsx"]
