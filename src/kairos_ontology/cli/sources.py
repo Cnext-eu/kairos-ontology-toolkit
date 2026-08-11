@@ -1712,9 +1712,16 @@ def build_glossary_cmd(
     default=None,
     help="Load a single pattern by id instead of the whole library.",
 )
+@click.option(
+    "--coverage",
+    "coverage",
+    is_flag=True,
+    default=False,
+    help="Print the toolkit's enforcement-coverage ledger instead of the pattern bodies.",
+)
 @_REFMODELS_OPTION
 @_FORMAT_OPTION
-def list_patterns_cmd(pattern_id, refmodels_root, output_format):
+def list_patterns_cmd(pattern_id, coverage, refmodels_root, output_format):
     """Surface the reference-models pattern library for the design-domain skill (#262 §3).
 
     Emits sector-neutral modelling craft — normative naming conventions and anti-patterns
@@ -1724,10 +1731,16 @@ def list_patterns_cmd(pattern_id, refmodels_root, output_format):
     authoring-time guidance, deliberately separate from the ``discovery-conformance``
     concept flow.  Human progress goes to stderr; stdout is machine output only.
 
+    ``--coverage`` prints the toolkit-owned ledger instead: every normative unit the library
+    publishes, mapped to ``enforced_by`` a diagnostic, ``not_enforceable`` with a stated
+    reason, or ``unrecognized_shape``.  It is a record, not a gate — it enforces nothing and
+    never changes the exit code.
+
     \\b
     Examples:
       kairos-ontology list-patterns
       kairos-ontology list-patterns --pattern temporal-quartet
+      kairos-ontology list-patterns --coverage
     """
     from ..core.pattern_loader import (
         PatternError,
@@ -1735,6 +1748,7 @@ def list_patterns_cmd(pattern_id, refmodels_root, output_format):
         load_patterns,
         pattern_quality_warnings,
     )
+    from ..core.pattern_rules import build_ledger
 
     root = _resolve_conformance_root(refmodels_root)
     click.echo(f"🔎 Reference-models root: {root}", err=True)
@@ -1748,6 +1762,9 @@ def list_patterns_cmd(pattern_id, refmodels_root, output_format):
         quality = pattern_quality_warnings(pattern)
         for w in quality:
             click.echo(f"⚠ {w}", err=True)
+        if coverage:
+            _emit_pattern_coverage(root, build_ledger([pattern], quality), output_format)
+            return
         _emit(
             {
                 "refmodels_root": str(root),
@@ -1767,6 +1784,9 @@ def list_patterns_cmd(pattern_id, refmodels_root, output_format):
             "'blueprints/patterns/' library.",
             err=True,
         )
+    if coverage:
+        _emit_pattern_coverage(root, build_ledger(patterns, warnings), output_format)
+        return
     _emit(
         {
             "refmodels_root": str(root),
@@ -1775,3 +1795,39 @@ def list_patterns_cmd(pattern_id, refmodels_root, output_format):
         },
         output_format,
     )
+
+
+def _emit_pattern_coverage(root, ledger, output_format):
+    """Write the coverage ledger: a stderr summary for humans, the ledger on stdout.
+
+    Gates nothing.  An empty ``enforced_by`` column, an ``unrecognized_shape`` unit and a
+    skipped pattern are all *reported*, never fatal — the point of the ledger is that the
+    toolkit's reach is written down, not that it is large.
+    """
+    totals = ledger.totals
+    click.echo(
+        f"📒 Pattern coverage: {totals['units']} normative unit(s) across "
+        f"{len(ledger.patterns_seen)} pattern(s) — "
+        f"{totals['enforced_by']} enforced_by, "
+        f"{totals['not_enforceable']} not_enforceable, "
+        f"{totals['unrecognized_shape']} unrecognized_shape.",
+        err=True,
+    )
+    for entry in ledger.entries:
+        if entry.classification == "enforced_by":
+            click.echo(
+                f"   ✓ {entry.pattern}/{entry.unit} → {entry.diagnostic_code} (home: {entry.home})",
+                err=True,
+            )
+    for entry in ledger.entries:
+        if entry.classification == "unrecognized_shape":
+            click.echo(
+                f"   ? {entry.pattern}/{entry.key}/{entry.unit} — no registered "
+                "classification (new or reshaped upstream)",
+                err=True,
+            )
+    for stale in ledger.stale_registry_entries:
+        click.echo(f"   ⚠ registry entry '{stale}' matches no published unit", err=True)
+    payload = {"refmodels_root": str(root)}
+    payload.update(ledger.to_payload())
+    _emit(payload, output_format)
