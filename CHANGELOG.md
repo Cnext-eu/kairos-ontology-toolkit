@@ -70,6 +70,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining importers.
 
 ### Fixed
+- **Multi-source conformance collapsed to one contributor for contracted dbt-model sources**
+  (#284, DD-028 amendment). N `EntityBinding`s sourced from `source.dbtModel` and sharing a
+  `conformance` group produced a single silver model, and `compile --check` failed with a
+  misleading `identity.source-contributor-mismatch` ("declared 8, actual 1") that pointed at
+  the identity declaration rather than the real cause. The compiler adapter blanked
+  `source_name`/`table_name` to `""` for dbt-model sources — putting the relation identity in
+  `ref_model` — but `merge_bound_sources` builds conformance branch names from exactly those
+  two fields, so every branch was named `{entity}__from___` and all but the last were
+  overwritten. The blanking was never load-bearing: `ref()` vs `source()` has always been
+  decided by `ref_model` alone. The spec now always describes the bound relation, giving
+  `{entity}__from_dbt__{model}` branches. This also fixes `_source_system`, which rendered as
+  the empty string literal in every dbt-sourced branch — and therefore in the reconciliation
+  and contribution-lineage models — and now renders `'dbt'`. Raw `relation:` sources are
+  unaffected; their branch names are unchanged. A duplicate branch name is now a hard error
+  instead of a silent last-write-wins that would `UNION ALL` a model with itself.
+- **The managed virtual source of a contracted dbt model leaked back out as a raw dbt source**
+  (#284). `merge_bound_sources` rebuilt its result with `replace(base, ...)` and never
+  re-derived the top-level `virtual_table_uris` set, so only the *first* binding's virtual IRIs
+  survived the merge. Any later dbt-model binding then failed the filter that keeps virtual
+  tables out of the source catalog and was emitted into `models/silver/_dbt__sources.yml` as a
+  physical source that nothing references — a `source('dbt', '<model>')` declaration for a
+  relation the projector deliberately reaches by `ref()`. This fired whenever a
+  relation-sourced binding sorted ahead of a dbt-model one, independent of conformance.
+  **Migration:** the file is no longer generated, but `*__sources.yml` is treated as a shared
+  cross-domain artifact and preserved across compiles, so an already-emitted
+  `models/silver/_dbt__sources.yml` will linger and must be deleted by hand.
 - **Fabric packaging helper corrupted Databricks semantic models** (#206). `_sanitize_tmdl` in
   `scaffold/dataplatform/scripts/package_fabric_semantic_model.py` rewrote `" = m"` → `" = entity"`
   on **every** line containing `partition `, to fix a Direct Lake partition older projector

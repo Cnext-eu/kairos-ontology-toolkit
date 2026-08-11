@@ -661,9 +661,13 @@ def test_stage2_contracted_dbt_model_uses_sql_yaml_and_provenance(tmp_path):
     result = compile_domain(hub, "party", CompileMode.EXPLAIN)
 
     assert result.succeeded, [item.render() for item in result.diagnostics.items]
-    sql = result.artifact_dict()["models/silver/party/customer.sql"]
+    artifacts = result.artifact_dict()
+    sql = artifacts["models/silver/party/customer.sql"]
     assert "ref('customer_stage')" in sql
     assert "source('dbt'" not in sql
+    # The managed virtual source must not leak back out as a raw dbt source, even
+    # though a relation-sourced binding (country) is merged ahead of this one.
+    assert "models/silver/_dbt__sources.yml" not in artifacts
     customer = next(item for item in result.explain.entities if item.name == "crm-customer")
     assert customer.source_kind == "dbt-model"
     inputs = {item.name for item in result.ir.scope.inputs}

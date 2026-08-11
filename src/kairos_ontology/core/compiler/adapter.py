@@ -1160,8 +1160,11 @@ def _assemble_bound_sources(
         sources=(
             SourceBindingSpec(
                 alias="src",
-                source_name="" if is_dbt_model else relation.system_label,
-                table_name="" if is_dbt_model else relation.table_name,
+                # Always describe the bound relation; ``ref_model`` alone selects the
+                # dbt ``ref()`` form. Blanking these hid contracted dbt models from
+                # branch naming and ``_source_system`` lineage (issue #284).
+                source_name=relation.system_label,
+                table_name=relation.table_name,
                 table_uri=relation.uri,
                 ref_model=relation.table_name if is_dbt_model else "",
             ),

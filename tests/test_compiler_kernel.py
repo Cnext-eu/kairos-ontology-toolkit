@@ -444,9 +444,176 @@ def test_contracted_dbt_model_compiles_as_virtual_ref_source(tmp_path):
     result = compile_domain(hub, "party")
 
     assert result.succeeded, [item.render() for item in result.diagnostics.items]
-    sql = result.artifact_dict()["models/silver/party/customer.sql"]
+    artifacts = result.artifact_dict()
+    sql = artifacts["models/silver/party/customer.sql"]
     assert "ref('customer_stage')" in sql
     assert "source('dbt'" not in sql
+    # A lone contracted model is not a conformance group, so no source branches.
+    assert not [path for path in artifacts if "__from_" in path]
+    # The managed virtual source is never re-declared as a raw dbt source.
+    assert "models/silver/_dbt__sources.yml" not in artifacts
+
+
+def _write_contracted_models(hub: Path, names: list[str]) -> None:
+    """Write ``names`` as contracted dbt models sharing one properties document."""
+    models = hub / "integration" / "transforms" / "dbt" / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for name in names:
+        (models / f"{name}.sql").write_text(
+            "select customer_id, customer_name from source_rows\n", encoding="utf-8"
+        )
+        entries.append(
+            f"  - name: {name}\n"
+            "    config:\n"
+            "      contract:\n"
+            "        enforced: true\n"
+            "    meta:\n"
+            "      kairos:\n"
+            "        grain: one row per customer\n"
+            "        grain_key: [customer_id]\n"
+            f"        virtual_source_iri: https://example.test/virtual/{name}\n"
+            "    columns:\n"
+            "      - {name: customer_id, data_type: string, data_tests: [not_null]}\n"
+            "      - {name: customer_name, data_type: string}\n"
+        )
+    (models / "schema.yml").write_text("version: 2\nmodels:\n" + "".join(entries), encoding="utf-8")
+
+
+def _conformance_block(precedence: int, union_mode: str) -> str:
+    union_policy = (
+        "    mode: deduplicate\n"
+        "    deduplicateBy: [customer_id]\n"
+        "    orderBy: [{column: customer_id, direction: ascending}]\n"
+        if union_mode == "deduplicate"
+        else "    mode: union-all\n"
+    )
+    return (
+        "conformance:\n"
+        "  group: party-customer\n"
+        f"  sourcePrecedence: {precedence}\n"
+        "  conflict: prefer-precedence\n"
+        "  union:\n"
+    ) + union_policy
+
+
+def _dbt_binding_text(binding_name: str, model_name: str, conformance: str) -> str:
+    return (
+        textwrap.dedent(f"""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: {binding_name}
+              domain: party
+            source:
+              dbtModel:
+                name: {model_name}
+                sqlPath: integration/transforms/dbt/models/{model_name}.sql
+                contractPath: integration/transforms/dbt/models/schema.yml
+            target:
+              class: party:Customer
+            grain:
+              columns: [customer_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [customer_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: party:customer_id
+                expression: customer_id
+              - property: party:customerName
+                expression: customer_name
+            """).strip()
+        + "\n"
+        + conformance
+    )
+
+
+def _dbt_conformance_hub(tmp_path: Path, models: list[str], union_mode: str) -> Path:
+    """Hub whose only bindings are ``models`` contracted dbt sources in one group."""
+    hub = _hub(tmp_path)
+    _write_contracted_models(hub, models)
+    binding_dir = hub / "integration" / "bindings"
+    (binding_dir / "customer.binding.yaml").unlink()
+    for precedence, model in enumerate(models, start=1):
+        (binding_dir / f"{model}.binding.yaml").write_text(
+            _dbt_binding_text(
+                f"{model}-customer", model, _conformance_block(precedence, union_mode)
+            ),
+            encoding="utf-8",
+        )
+    return hub
+
+
+@pytest.mark.parametrize("union_mode", ["union-all", "deduplicate"])
+def test_conformance_over_contracted_dbt_models_emits_one_branch_per_model(tmp_path, union_mode):
+    """Issue #284: N contracted dbt models in one group must not collapse to one."""
+    models = ["crm_customer_stage", "erp_customer_stage"]
+    hub = _dbt_conformance_hub(tmp_path, models, union_mode)
+
+    result = compile_domain(hub, "party")
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    artifacts = result.artifact_dict()
+    assert sorted(path for path in artifacts if "__from_" in path) == [
+        f"models/silver/party/customer__from_dbt__{model}.sql" for model in models
+    ]
+    for model in models:
+        branch = artifacts[f"models/silver/party/customer__from_dbt__{model}.sql"]
+        assert f"ref('{model}')" in branch
+        assert "source('dbt'" not in branch
+        assert "'dbt' as _source_system" in branch
+    assert "models/silver/_dbt__sources.yml" not in artifacts
+    union_sql = artifacts["models/silver/party/customer.sql"]
+    assert "union all" in union_sql.lower()
+    for model in models:
+        assert f"ref('customer__from_dbt__{model}')" in union_sql
+
+
+def test_conformance_over_three_contracted_dbt_models(tmp_path):
+    """The N-way path (issue #284 reports eight contributors), not just N=2."""
+    models = ["crm_customer_stage", "erp_customer_stage", "web_customer_stage"]
+    hub = _dbt_conformance_hub(tmp_path, models, "union-all")
+
+    result = compile_domain(hub, "party")
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    artifacts = result.artifact_dict()
+    assert sorted(path for path in artifacts if "__from_" in path) == [
+        f"models/silver/party/customer__from_dbt__{model}.sql" for model in models
+    ]
+    union_sql = artifacts["models/silver/party/customer.sql"]
+    assert union_sql.lower().count("union all") == len(models) - 1
+
+
+def test_conformance_mixes_relation_and_contracted_dbt_model_sources(tmp_path):
+    """A dbt-model contributor does not perturb a relation contributor's branch name."""
+    hub = _hub(tmp_path)
+    _write_contracted_models(hub, ["erp_customer_stage"])
+    binding_dir = hub / "integration" / "bindings"
+    crm_binding = binding_dir / "customer.binding.yaml"
+    crm_binding.write_text(
+        crm_binding.read_text(encoding="utf-8") + "\n" + _conformance_block(1, "union-all"),
+        encoding="utf-8",
+    )
+    (binding_dir / "erp_customer_stage.binding.yaml").write_text(
+        _dbt_binding_text("erp-customer", "erp_customer_stage", _conformance_block(2, "union-all")),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    artifacts = result.artifact_dict()
+    assert sorted(path for path in artifacts if "__from_" in path) == [
+        "models/silver/party/customer__from_crm__customers.sql",
+        "models/silver/party/customer__from_dbt__erp_customer_stage.sql",
+    ]
+    relation_branch = artifacts["models/silver/party/customer__from_crm__customers.sql"]
+    assert "source('crm', 'customers')" in relation_branch
+    assert "'crm' as _source_system" in relation_branch
+    assert "models/silver/_dbt__sources.yml" not in artifacts
 
 
 @pytest.mark.parametrize("union_mode", ["union-all", "deduplicate"])

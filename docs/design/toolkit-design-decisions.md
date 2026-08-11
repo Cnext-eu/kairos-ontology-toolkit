@@ -1550,6 +1550,25 @@ The table suffix is only added when `count > 1` for that source system.
 - This is a **minor breaking change** for hubs that previously generated colliding names:
   their model filenames change (from the incorrect duplicate to two distinct files)
 
+### Amendment — v5 conformance branches (issue #284)
+
+The v5 compiler (`merge_bound_sources`) emits one branch per conformance contributor and
+always uses the full `{entity}__from_{source}__{table}` form — it does not apply the
+conditional-suffix rule above, because every member of a conformance group targets the same
+entity and so would always collide.
+
+A contributor sourced from a contracted dbt model (`source.dbtModel`) names its branch
+`{entity}__from_dbt__{dbt_model_name}`: `dbt` is that relation's system label and the model
+name is its table name, matching the `dbt:<name>` source identity used by conformance
+validation and the `('dbt', '<model>', ...)` inputs to `_source_record_key`. Consequently
+`_source_system` is `'dbt'` for all such branches — constant by design, exactly as two
+tables from one `crm` system share `'crm'`; `_source_record_key` carries the discriminating
+model name.
+
+The failure this section originally described recurred in the v5 kernel because these fields
+were blanked for dbt-model sources, so every branch collapsed onto one name. Duplicate branch
+names are now a hard error rather than a silent last-write-wins.
+
 ---
 
 ## DD-029: Silver Model Registry for Gold ref() Resolution

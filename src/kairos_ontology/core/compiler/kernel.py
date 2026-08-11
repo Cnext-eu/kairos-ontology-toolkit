@@ -1222,6 +1222,11 @@ def merge_bound_sources(
             integration_key_expression=", ".join(integration_columns) or "_source_record_key",
         )
         for branch in branches:
+            if branch.identity.model_name in silver_by_model:
+                raise ValueError(
+                    "conformance branch model name collision: "
+                    f"{branch.identity.model_name!r} for {target_ref!r}"
+                )
             silver_by_model[branch.identity.model_name] = branch
         silver_by_model[union.identity.model_name] = union
 
@@ -1233,6 +1238,7 @@ def merge_bound_sources(
         base,
         classes=tuple(classes[key] for key in sorted(classes)),
         systems=_merge_systems(bounds),
+        virtual_table_uris=frozenset(uri for bound in bounds for uri in bound.virtual_table_uris),
         mappings=SourceMappings(
             tables=tuple(item for bound in bounds for item in bound.mappings.tables),
             columns=tuple(item for bound in bounds for item in bound.mappings.columns),
