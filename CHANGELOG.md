@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc12] — 2026-08-11
+
 ### Added
+- **Structured, OpenTelemetry-ready logging and diagnostics (DD-151).** The toolkit had no
+  central logging configuration, so unhappy flows in offline dbt validation, projections, and
+  the compiler surfaced only through return codes or `CompileDiagnostic` — no debug/warning trail
+  for skill-assisted self-healing or bug tracing. A new `core/observability/` subpackage provides
+  central `configure_logging()` at the CLI boundary with `--verbose`/`--debug`/`--log-file`/
+  `--log-format` flags, NDJSON or text formatters, redaction of secrets/tokens/connection
+  strings, and per-invocation `operation_id` correlation (also surfaced in `compile --format
+  json`). Offline dbt validation phases and the silver-projector Mermaid render emit stable
+  `kairos.dbt.*` / `kairos.projection.*` events with retryable classification. The compiler
+  keeps `CompileDiagnostic` as its stable contract and adds targeted `logger.debug` trace points
+  (scope resolution, binding selection, emit plan/commit/recovery) visible only under `--debug`.
+  An optional `[otel]` extra wires a `LoggingHandler` OTLP bridge — off by default, telemetry
+  failure never fails compilation. See `docs/OBSERVABILITY.md`.
 - **Gold Power BI output is now a complete PBIP project** (#206). The projector emitted only the
   inner `{Domain}.SemanticModel/` TMDL, so Fabric git-integration worked but Power BI Desktop
   could not open the result — Desktop opens a *report*, not a semantic model. It now also emits
