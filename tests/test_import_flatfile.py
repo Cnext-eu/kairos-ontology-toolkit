@@ -959,6 +959,97 @@ class TestTimezoneAwareTimestamps:
         assert "created_at" not in table["sample_rows"][1]
 
 
+# --------------------------------------------------------------------------- #
+# Issue #303 — allow_unicode=True on every import-flatfile YAML writer
+# --------------------------------------------------------------------------- #
+
+
+class TestUnicodePreservedInSamplesYaml:
+    """Non-ASCII sample values must survive as literal characters, never as
+    ``\\uXXXX`` escapes (#303).
+
+    Asserting on the *parsed* YAML would pass identically whether or not the
+    fix is applied — ``yaml.safe_load`` decodes escapes back to the same
+    string. The regression only shows up in the raw persisted bytes, so these
+    assertions read the file text directly.
+    """
+
+    def test_non_ascii_value_is_literal_and_unescaped(self, tmp_path):
+        csv_file = tmp_path / "input" / "roles.csv"
+        csv_file.parent.mkdir()
+        csv_file.write_text(
+            "id,job_title\n1,Team Lead – EPC Operations 系统工程师\n",
+            encoding="utf-8",
+        )
+
+        output_dir = tmp_path / "output" / "roles"
+        run_import_flatfile(csv_file, output_dir=output_dir)
+
+        raw = (output_dir / "roles.samples.yaml").read_text(encoding="utf-8")
+        assert "Team Lead – EPC Operations 系统工程师" in raw
+        assert "\\u" not in raw
+
+
+class TestUnicodePreservedInManifestAndTableYaml:
+    """The other two writers persist non-ASCII table/column names literally too."""
+
+    def test_non_ascii_table_name_is_literal_in_manifest(self, tmp_path):
+        csv_file = tmp_path / "input" / "café.csv"
+        csv_file.parent.mkdir()
+        csv_file.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+        output_dir = tmp_path / "output" / "café"
+        run_import_flatfile(csv_file, system_name="café", output_dir=output_dir)
+
+        raw = (output_dir / "_manifest.yaml").read_text(encoding="utf-8")
+        assert "café" in raw
+        assert "\\u" not in raw
+
+    def test_non_ascii_column_name_is_literal_in_table_yaml(self, tmp_path):
+        csv_file = tmp_path / "input" / "employees.csv"
+        csv_file.parent.mkdir()
+        csv_file.write_text(
+            "id,intitulé\n1,Ingénieur\n",
+            encoding="utf-8",
+        )
+
+        output_dir = tmp_path / "output" / "employees"
+        run_import_flatfile(csv_file, output_dir=output_dir)
+
+        raw = (output_dir / "employees.yaml").read_text(encoding="utf-8")
+        assert "intitulé" in raw
+        assert "\\u" not in raw
+
+
+class TestSamplesYamlIdempotentAcrossWriters:
+    """Pins the reported symptom directly: import-source's later rewrite of the
+    same ``.samples.yaml`` (``yaml.safe_dump(doc, allow_unicode=True,
+    sort_keys=False)``, see ``cli/sources.py``) must be byte-identical to what
+    import-flatfile wrote, else re-running import-source produces a spurious
+    one-line diff in a file nobody edited (#303).
+    """
+
+    def test_samples_yaml_round_trip_is_byte_identical(self, tmp_path):
+        import yaml
+
+        csv_file = tmp_path / "input" / "roles.csv"
+        csv_file.parent.mkdir()
+        csv_file.write_text(
+            "id,job_title\n1,Team Lead – EPC Operations 系统工程师\n",
+            encoding="utf-8",
+        )
+
+        output_dir = tmp_path / "output" / "roles"
+        run_import_flatfile(csv_file, output_dir=output_dir)
+
+        written = (output_dir / "roles.samples.yaml").read_text(encoding="utf-8")
+
+        doc = yaml.safe_load(written)
+        redumped = yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)
+
+        assert redumped == written
+
+
 class TestListFlatfileCandidates:
     def test_only_supported_suffixes_are_candidates(self, tmp_path):
         (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")

@@ -544,7 +544,7 @@ def write_source_dir(
         },
     }
     with open(output_dir / "_manifest.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(manifest, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     # Write per-table YAML + samples
     for table in safe_tables:
@@ -559,7 +559,7 @@ def write_source_dir(
             ],
         }
         with open(output_dir / f"{tbl_name}.yaml", "w", encoding="utf-8") as f:
-            yaml.dump(table_yaml, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(table_yaml, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
         # Sample rows
         sample_rows = table.get("sample_rows", [])
@@ -572,7 +572,9 @@ def write_source_dir(
                 "rows": sample_rows,
             }
             with open(output_dir / f"{tbl_name}.samples.yaml", "w", encoding="utf-8") as f:
-                yaml.dump(samples_data, f, default_flow_style=False, sort_keys=False)
+                yaml.dump(
+                    samples_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True
+                )
         else:
             stale_samples = output_dir / f"{tbl_name}.samples.yaml"
             if stale_samples.exists():
