@@ -120,12 +120,23 @@ class ExplainLoad:
 
 @dataclass(frozen=True, slots=True)
 class ExplainRelationship:
-    """Closed explain shape for one authored relationship."""
+    """Closed explain shape for one authored relationship.
+
+    ``property`` and ``join`` close the gap #338 identified: the JSON explain payload
+    named only the ``target`` class, mode, and cardinality, never the relationship's own
+    property or which columns the join runs on -- so a reader could see *that* a
+    relationship existed but not *what* it was keyed on. ``join`` renders each authored
+    ``local``/``foreign`` pair as ``"<local>=<foreign>"`` (mirrors the flattened-string
+    convention already used by :class:`ExplainQualityCheck.columns`) rather than a nested
+    shape, keeping this dataclass a flat, stable explain leaf.
+    """
 
     target: str
     mode: str
     cardinality: str
     temporal: bool = False
+    property: str = ""
+    join: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

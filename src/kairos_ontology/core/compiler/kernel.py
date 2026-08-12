@@ -1372,7 +1372,42 @@ def _wire_relationships(
     bindings: tuple[EntityBinding, ...],
     context: ResolutionContext,
     hub_root: str | Path,
-) -> tuple[BoundSources, ...]:
+) -> tuple[tuple[BoundSources, ...], tuple[CompileDiagnostic, ...]]:
+    """Wire resolved relationships into join specs and surrogate FK columns.
+
+    Every condition below is also checked by ``_relationship_diagnostics``, which runs on
+    each binding *before* it is admitted into ``bounds``/``bindings`` here and blocks the
+    whole binding (with the matching diagnostic code) if any relationship fails one of
+    them (#334, #335). For three of the four conditions, that makes this defensive rather
+    than the primary gate: by the time a binding reaches this function, none of its
+    relationships should be able to trip them. The fourth -- an internal relationship
+    whose target binding is ``None`` -- is **not** fully defensive: it resolves the target
+    binding from ``by_target`` (built from ``valid_bindings``, i.e. bindings that survived
+    *every* check), whereas ``_relationship_diagnostics`` resolves the same lookup from
+    ``selected_by_name`` (a snapshot of every *selected* binding, taken once before the
+    per-binding blocking loop runs). If a relationship's target binding is later blocked
+    for a reason unrelated to that relationship, the two views disagree and this specific
+    branch fires for real through the public compile path -- see
+    ``tests/test_wire_relationships_diagnostics.py::
+    test_wire_relationships_endpoint_diagnostic_is_reachable_when_target_blocked_unrelated``.
+    It does not change the compile's pass/fail outcome even then: ``quality.py``'s
+    pre-existing, independent, non-suppressible ``run_safety_kernel`` already blocks that
+    same scenario with its own ``safety.relationship-endpoint`` (checked from the final,
+    fully-resolved blocked set), so the observable effect is a second, redundant
+    diagnostic with the same code for the same cause -- not a new silent drop and not a
+    new compile failure. Deduplicating that redundancy is left alone deliberately (doing
+    it safely would mean weakening the non-suppressible kernel, or suppressing this
+    fallback in a way that also hides the cases -- an unresolved target *property* or
+    target *class* -- that ``run_safety_kernel`` does not cover).
+
+    All four conditions raise a diagnostic instead of a bare ``continue`` anyway, so that
+    if the upstream gate for the other three is ever weakened or bypassed by a future
+    change, the relationship is dropped loudly rather than silently (#338 -- the same
+    ``silently-dropped-relationship`` anti-pattern the reference-models pattern library
+    names on the ``deferred-relationship`` pattern, and that ``core/pattern_rules.py``
+    records as enforced via ``safety.relationship-endpoint``).
+    """
+
     def quote(value: str) -> str:
         return (
             f"`{value.replace('`', '``')}`"
@@ -1382,22 +1417,82 @@ def _wire_relationships(
 
     by_target = {binding.target_class: binding for binding in bindings}
     wired: list[BoundSources] = []
+    diagnostics: list[CompileDiagnostic] = []
     for bound, binding in zip(bounds, bindings, strict=True):
         joins: list[JoinSpec] = []
         fk_columns: list[ColumnSpec] = []
         relation = _resolved_binding_relation(binding, context)
-        for relationship in binding.relationships:
+        for rel_index, relationship in enumerate(binding.relationships):
+            pointer = f"/relationships/{rel_index}"
             external = relationship.external_reference
             target_binding = by_target.get(relationship.target)
             target_class = _relationship_target_class(relationship, context, hub_root)
             prop = context.property(relationship.property)
+            if relation is None:
+                # Defensive: adapt_binding already requires the source relation to
+                # resolve (as "safety.source-unresolved") before a binding reaches
+                # _wire_relationships at all.
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.source-unresolved",
+                        message=(
+                            f"relationship '{relationship.property}' on binding "
+                            f"'{binding.name}' was dropped during wiring: the binding's "
+                            "source relation does not resolve"
+                        ),
+                        location=SourceLocation(path=binding.source_path, pointer=pointer),
+                    )
+                )
+                continue
             if (
-                relation is None
-                or target_class is None
+                target_class is None
                 or prop is None
                 or (external is None and target_binding is None)
-                or (external is None and len(relationship.on) != 1)
             ):
+                # target_class/prop unresolved: defensive. _relationship_diagnostics
+                # already rejects those as "safety.relationship-endpoint" before this
+                # binding is admitted here.
+                #
+                # target_binding is None (external is None): NOT fully defensive.
+                # _relationship_diagnostics resolves the same lookup from
+                # selected_by_name (every selected binding, snapshotted once, before the
+                # per-binding blocking loop runs); by_target here is built from
+                # valid_bindings (bindings that survived every check). If the target
+                # binding is later blocked for a reason unrelated to this relationship,
+                # the two views disagree and this branch fires for real through the
+                # public compile path -- see the docstring above and
+                # tests/test_wire_relationships_diagnostics.py (#338). Pass/fail is
+                # unaffected either way: quality.py's
+                # non-suppressible run_safety_kernel independently blocks that same
+                # scenario with its own "safety.relationship-endpoint", so this is a
+                # redundant, not incorrect, second diagnostic in that specific case.
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.relationship-endpoint",
+                        message=(
+                            f"relationship '{relationship.property}' on binding "
+                            f"'{binding.name}' was dropped during wiring: its target "
+                            "class, property, or in-scope target binding does not resolve"
+                        ),
+                        location=SourceLocation(path=binding.source_path, pointer=pointer),
+                    )
+                )
+                continue
+            if external is None and len(relationship.on) != 1:
+                # Defensive: _relationship_diagnostics already rejects a composite
+                # (non-external) join as "safety.adapter-unsupported" before this binding
+                # is admitted here.
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.adapter-unsupported",
+                        message=(
+                            f"relationship '{relationship.property}' on binding "
+                            f"'{binding.name}' was dropped during wiring: composite "
+                            "relationship joins are deferred beyond the v5 first slice"
+                        ),
+                        location=SourceLocation(path=binding.source_path, pointer=pointer),
+                    )
+                )
                 continue
             if external is None:
                 join = relationship.on[0]
@@ -1406,6 +1501,24 @@ def _wire_relationships(
                     _relationship_output_column(target_binding, join.foreign, context),
                 )
                 if target_columns[0] is None:
+                    # Defensive: _relationship_diagnostics already rejects a foreign join
+                    # column the target binding doesn't map to exactly one output column
+                    # as "safety.relationship-endpoint" before this binding is admitted
+                    # here.
+                    diagnostics.append(
+                        CompileDiagnostic(
+                            code="safety.relationship-endpoint",
+                            message=(
+                                f"relationship '{relationship.property}' on binding "
+                                f"'{binding.name}' was dropped during wiring: join "
+                                f"column '{join.foreign}' is not mapped by the target "
+                                "binding"
+                            ),
+                            location=SourceLocation(
+                                path=binding.source_path, pointer=f"{pointer}/join/0"
+                            ),
+                        )
+                    )
                     continue
                 target_model = target_class.name.lower()
                 description = f"Surrogate reference to {target_class.name}"
@@ -1471,7 +1584,7 @@ def _wire_relationships(
             for model in bound.schema_candidates
         )
         wired.append(replace(bound, silver_candidates=silver, schema_candidates=schema))
-    return tuple(wired)
+    return tuple(wired), tuple(diagnostics)
 
 
 def _project_relationship_match_counts(shaped, bindings, context):
@@ -2550,9 +2663,10 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     materialized = None
     if bounds:
         try:
-            wired_bounds = _wire_relationships(
+            wired_bounds, wiring_diagnostics = _wire_relationships(
                 tuple(bounds), tuple(valid_bindings), context, scope.hub_root
             )
+            diagnostics.extend(wiring_diagnostics)
             merged = merge_bound_sources(
                 wired_bounds,
                 tuple(valid_bindings),
@@ -2738,6 +2852,8 @@ def _explain_plan(plan: CompilePlan, artifact_paths: tuple[str, ...]) -> Explain
                         mode=rel.mode,
                         cardinality=rel.cardinality,
                         temporal=rel.temporal is not None,
+                        property=rel.property,
+                        join=tuple(f"{join.local}={join.foreign}" for join in rel.on),
                     )
                     for rel in entity.binding.relationships
                 ),

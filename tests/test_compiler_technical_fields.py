@@ -727,7 +727,7 @@ def test_external_reference_in_the_bindings_own_domain_is_rejected(tmp_path: Pat
     """FAILS before #335: a same-domain ``externalReference`` is silently accepted, bypassing
     join validation, model-existence checking, and the ``silently-dropped-relationship`` check.
 
-    Asserts the dedicated code, not ``safety.relationship-endpoint`` -- eight sites already
+    Asserts the dedicated code, not ``safety.relationship-endpoint`` -- ten sites already
     construct that one, so pinning it would pass whether or not this check exists.
     """
     hub = _hub(tmp_path)
