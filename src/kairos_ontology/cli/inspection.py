@@ -3,6 +3,7 @@
 """Focused inspection CLI commands."""
 
 import fnmatch
+import hashlib
 import json
 import os
 import tempfile
@@ -17,6 +18,8 @@ from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target regist
 from .shared import (
     _autodetect_analysis_dir,
     _format_refmodels_fetch_provenance,
+    _git_head_sha,
+    _git_repo_root,
     _git_status_snapshot,
     _resolve_ref_models_dir,
     _resolve_semantic_input,
@@ -1262,25 +1265,114 @@ def design_landscape_cmd(accelerator, domain, out_format):
     _render_design_landscape_text(result)
 
 
-def _parse_porcelain_paths(status_text: str) -> set[str]:
-    """Extract the repo-root-relative path(s) from ``git status --porcelain`` lines.
+_GUARD_TOKEN_FORMAT = "kairos-guard-scope/1"
 
-    Each line is ``XY PATH`` (status code, space, path); a rename line is
-    ``XY OLD -> NEW``, and both sides are returned so a rename can't slip past
-    an allowlist that only names one side.
+# Fingerprint sentinels for paths that have no hashable worktree content.
+_FP_ABSENT = "<absent>"  # deleted, or the vanished side of a rename
+_FP_DIR = "<directory>"  # e.g. an embedded git repo, reported as "?? nested/"
+_FP_UNREADABLE = "<unreadable>"
+
+
+def _parse_porcelain_entries(status_text: str) -> dict[str, str]:
+    """Map every repo-root-relative path in a ``-z`` porcelain stream to its status code.
+
+    The stream is a sequence of NUL-terminated fields, **not** lines. A plain
+    entry is ``XY<space>PATH``: two status characters (index column, worktree
+    column) then a space, then the raw unquoted path. A rename or copy — ``X``
+    in ``RC`` — is followed by one *extra* field holding the bare **old** path.
+
+    Note the ordering, which is the reverse of the default (non-``-z``) format:
+    ``-z`` emits ``R  NEW`` then ``OLD``, where the default emits the single
+    line ``R  OLD -> NEW``. Both sides are recorded, under the same status
+    code, so a rename cannot slip past an allowlist that names only one of
+    them.
     """
-    paths: set[str] = set()
-    for line in status_text.splitlines():
-        if not line:
-            continue
-        entry = line[3:] if len(line) > 3 else line.lstrip()
-        if " -> " in entry:
-            old, _, new = entry.partition(" -> ")
-            paths.add(old.strip())
-            paths.add(new.strip())
-        else:
-            paths.add(entry.strip())
-    return paths
+    entries: dict[str, str] = {}
+    fields = [field for field in status_text.split("\0") if field]
+    index = 0
+    while index < len(fields):
+        field = fields[index]
+        index += 1
+        if len(field) < 4:
+            continue  # not "XY PATH" — malformed, and there is no path to guard
+        code, path = field[:2], field[3:]
+        entries[path] = code
+        if code[0] in ("R", "C") and index < len(fields):
+            entries[fields[index]] = code  # the old path, its own NUL-terminated field
+            index += 1
+    return entries
+
+
+def _worktree_fingerprint(target: Path) -> str:
+    """Return a content hash for *target*, or a sentinel when there is nothing to hash.
+
+    Sentinels stand in for the entries a hash cannot describe: a deleted path
+    (``D`` in either status column, and the old side of a rename) has no
+    content, and a directory entry — an embedded git repository surfaces as
+    ``?? nested/`` — is not a file. Returning a sentinel rather than raising is
+    what lets ``--check-since`` still render a verdict on such a tree.
+
+    Read in chunks: a status entry may name a file of any size, and the guard
+    must not hold one in memory to hash it.
+    """
+    try:
+        if target.is_dir():
+            return _FP_DIR
+        digest = hashlib.sha256()
+        with target.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except FileNotFoundError:
+        return _FP_ABSENT
+    except (OSError, ValueError):
+        # ValueError covers UnicodeEncodeError on a surrogate-escaped path.
+        return _FP_UNREADABLE
+
+
+def _guard_scope_state(repo_dir: Path, repo_root: Path) -> dict[str, list[str]]:
+    """Snapshot every path git currently reports, as ``{path: [status_code, fingerprint]}``.
+
+    Both halves are recorded because neither subsumes the other. ``git add`` on
+    an already-dirty file moves ``" M"`` to ``"M "`` while the worktree bytes —
+    and therefore the hash — stay identical; conversely a rewrite that leaves
+    the file dirty keeps the status code and changes only the hash.
+
+    Only paths git already names are hashed, so the cost tracks the size of the
+    dirty set, not of the repository.
+    """
+    entries = _parse_porcelain_entries(_git_status_snapshot(repo_dir))
+    return {path: [code, _worktree_fingerprint(repo_root / path)] for path, code in entries.items()}
+
+
+def _read_guard_token(token_path: Path) -> tuple[str, dict[str, list[str]]]:
+    """Load a guard-scope token, hard-failing on any format this build cannot read.
+
+    The token carries an explicit format marker on its first line and is
+    rejected outright when that marker is missing or unknown. Refusing is the
+    only safe response: a token this build cannot parse would otherwise be read
+    as an empty or garbled baseline, and a guard that misreads its baseline
+    reports a *pass*.
+    """
+    raw = token_path.read_text(encoding="utf-8")
+    marker, _, payload = raw.partition("\n")
+    if marker.strip() != _GUARD_TOKEN_FORMAT:
+        raise click.ClickException(
+            f"Unrecognised guard-scope token format in {token_path} "
+            f"(expected first line {_GUARD_TOKEN_FORMAT!r}). Tokens are not portable "
+            f"across toolkit versions — take a fresh --snapshot with this build."
+        )
+    try:
+        token = json.loads(payload)
+        head = token["head"]
+        entries = token["entries"]
+        if not isinstance(head, str) or not isinstance(entries, dict):
+            raise ValueError("unexpected token shape")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise click.ClickException(
+            f"Corrupt guard-scope token {token_path}: {exc}. Take a fresh --snapshot."
+        ) from exc
+    return head, {path: list(value) for path, value in entries.items()}
 
 
 @click.command(name="guard-scope")
@@ -1317,10 +1409,17 @@ def guard_scope_cmd(snapshot: bool, check_since: Path | None, allow_globs: tuple
         changes) and print the token path to stdout. Pass that path to
         --check-since at the end of the bounded work.
     --check-since TOKEN --allow GLOB [--allow GLOB ...]
-        Compare current status against the snapshot at TOKEN. Any path that
-        changed or newly appeared since the snapshot and does not match at
-        least one --allow glob fails the command (non-zero exit, every
-        offending path is named). On success, the token file is removed.
+        Compare current status against the snapshot at TOKEN. Any path whose
+        content or git status differs from the snapshot — including one that
+        was already dirty when the snapshot was taken, and one that has since
+        disappeared from git's output — fails the command unless it matches at
+        least one --allow glob (non-zero exit, every offending path is named).
+        A commit moving HEAD inside the window also fails. On success, the
+        token file is removed.
+
+    Scope of the guarantee: the guard sees exactly what git reports, so writes
+    into gitignored trees are invisible to it and a passing result does not
+    attest to those paths.
     """
     if snapshot and check_since is not None:
         raise click.UsageError("--snapshot and --check-since are mutually exclusive.")
@@ -1330,26 +1429,48 @@ def guard_scope_cmd(snapshot: bool, check_since: Path | None, allow_globs: tuple
         raise click.UsageError("--allow is only valid with --check-since.")
 
     repo_dir = Path.cwd()
+    repo_root = _git_repo_root(repo_dir)
 
     if snapshot:
-        status_text = _git_status_snapshot(repo_dir)
+        token = {
+            "head": _git_head_sha(repo_dir),
+            "entries": _guard_scope_state(repo_dir, repo_root),
+        }
         fd, token_name = tempfile.mkstemp(prefix="kairos-guard-scope-", suffix=".txt")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(status_text)
+            # Marker first, so a token from a newer toolkit is *recognised* as
+            # unreadable by an older one rather than silently misparsed.
+            # ensure_ascii keeps any surrogate-escaped path writable as UTF-8.
+            fh.write(f"{_GUARD_TOKEN_FORMAT}\n")
+            fh.write(json.dumps(token, ensure_ascii=True, sort_keys=True))
         click.echo(token_name)
         return
 
-    baseline_paths = _parse_porcelain_paths(check_since.read_text(encoding="utf-8"))
-    current_paths = _parse_porcelain_paths(_git_status_snapshot(repo_dir))
+    baseline_head, baseline = _read_guard_token(check_since)
+    current_head = _git_head_sha(repo_dir)
+    current = _guard_scope_state(repo_dir, repo_root)
 
-    new_paths = current_paths - baseline_paths
+    # Compare in both directions: a path that *left* git's output — an
+    # already-dirty untracked file that was deleted, or a dirty tracked file
+    # flipping " M" to " D" — is a change the forward direction cannot see.
     offending = sorted(
-        path for path in new_paths if not any(fnmatch.fnmatch(path, glob) for glob in allow_globs)
+        path
+        for path in set(baseline) | set(current)
+        if baseline.get(path) != current.get(path)
+        and not any(fnmatch.fnmatch(path, glob) for glob in allow_globs)
     )
-    if offending:
+    head_moved = baseline_head != current_head
+    if offending or head_moved:
         click.echo(
-            "❌ guard-scope: unexpected file(s) changed outside the allowed scope:", err=True
+            "❌ guard-scope: unexpected change(s) outside the allowed scope:",
+            err=True,
         )
+        if head_moved:
+            click.echo(
+                f"   HEAD moved since the snapshot: "
+                f"{baseline_head or '(unborn)'} → {current_head or '(unborn)'}",
+                err=True,
+            )
         for path in offending:
             click.echo(f"   {path}", err=True)
         raise click.ClickException(

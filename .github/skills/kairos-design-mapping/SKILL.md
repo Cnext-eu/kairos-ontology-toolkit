@@ -369,7 +369,7 @@ confirm the workspace guard passes:
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-uv run kairos-ontology guard-scope --check-since <token> --allow "integration/bindings/<source>-to-<domain>.binding.yaml"
+uv run kairos-ontology guard-scope --check-since <token> --allow "*integration/bindings/<source>-to-<domain>.binding.yaml"
 ```
 
 Completion requires:

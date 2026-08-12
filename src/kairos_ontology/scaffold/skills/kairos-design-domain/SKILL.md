@@ -362,7 +362,7 @@ Gate 5, and confirm the workspace guard passes:
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-uv run kairos-ontology guard-scope --check-since <token> --allow "model/ontologies/<domain>.ttl"
+uv run kairos-ontology guard-scope --check-since <token> --allow "*model/ontologies/<domain>.ttl"
 ```
 
 A non-zero exit names every path that changed outside the accepted patch —
