@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.1rc4] — 2026-08-12
+
+### Fixed
+- **The domain-authoring skill made registering a domain impossible** (#322). This is the root cause of
+  the "13 domains, 0 resolvable catalog entries" failure that motivated the dogfooding exercise.
+  `core/catalog_test.py` states that only `init --domain` registers a domain; the
+  `kairos-design-domain` skill mentioned that command **zero times**, its guard-scope step allowed a
+  single path, and its anti-pattern list closed with "Writing any file outside the approved ontology
+  patch". So following the skill correctly and registering a domain were mutually exclusive, and a
+  compliant author produced exactly the broken hub. The skill now names `init --domain` as the
+  registration step **at step 9, after the patch is applied** — the ordering is load-bearing, because
+  the command scaffolds a starter `.ttl` when the file is absent — states that `--company-domain` is
+  required and where to obtain it, states that the command is idempotent on an existing hub (its only
+  change is the catalog entry, though its output reads like a re-run of setup), and widens the
+  guard-scope allow-list to the three paths a domain legitimately touches.
+  Deliberately **not** done, both rejected on evidence: auto-wiring `_master.ttl`'s `owl:imports`,
+  which would re-implement DD-126 — decided, implemented, then silently deleted with its module and
+  no superseding decision — to maintain a file whose imports nothing reads; and flipping
+  `catalog-test` to a hard failure, which changes nothing because nothing invokes `catalog-test` (no
+  skill, no toolkit workflow, no hub workflow).
+
+### Added
+- **The skill's own commands are now executed by a test rather than asserted as strings.** A test
+  checking that `"init --domain"` appears in the file would pass the moment the string is typed and
+  prove nothing about whether following the document works — which is the defect class that produced
+  #322. The new tests **extract the command lines from `SKILL.md` itself**, substitute the
+  placeholders, and run them through the CLI against a real hub layout, asserting the catalog gains a
+  resolving entry; and they check the published `--allow` globs against the repo-root-relative paths
+  `guard-scope` actually reports, so the #329 mismatch cannot silently return. Both fail against the
+  pre-fix skill. A future re-word that breaks either instruction fails the build.
+
 ## [5.2.1rc3] — 2026-08-12
 
 ### Fixed
