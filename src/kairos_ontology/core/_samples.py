@@ -45,6 +45,7 @@ PII_KEYWORDS: list[str] = [
     "birth_place",
     "nationality",
     "marital_status",
+    "next_of_kin",
 ]
 
 #: Bounds for human-facing example rendering.
