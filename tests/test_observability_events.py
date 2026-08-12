@@ -87,7 +87,7 @@ def test_happy_path_emits_phase_completed_for_each_phase(tmp_path, monkeypatch, 
     assert result.compile_status == "passed"
     events = _events(_capture)
     assert DBT_PHASE_STARTED in events
-    assert events.count(DBT_PHASE_COMPLETED) == 3  # deps, parse, compile
+    assert events.count(DBT_PHASE_COMPLETED) == 4  # structural, deps, parse, compile
 
 
 def test_parse_failure_emits_phase_failed_not_retryable(tmp_path, monkeypatch, _capture):
@@ -153,4 +153,4 @@ def test_phase_events_carry_phase_and_operation_attributes(tmp_path, monkeypatch
     completed = [r for r in _capture.records if r.__dict__.get("event") == DBT_PHASE_COMPLETED]
     assert completed
     rec = completed[0].__dict__
-    assert rec.get("kairos.dbt.phase") in {"deps", "parse", "compile"}
+    assert rec.get("kairos.dbt.phase") in {"structural", "deps", "parse", "compile"}

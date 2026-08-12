@@ -881,6 +881,301 @@ ex:email a owl:DatatypeProperty ;
 """
 
 
+# Issue #325: false positives on a governed code (xsd:string, name ends in "Code")
+# and a boolean flag, both matching the "address" keyword as a bare substring.
+_ONTOLOGY_FALSE_POSITIVES = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.org/ont/reference-data#> .
+
+ex:ReferenceDataOntology a owl:Ontology ;
+    rdfs:label "Reference Data" ;
+    owl:versionInfo "1.0" .
+
+ex:Address a owl:Class ;
+    rdfs:label "Address" ;
+    rdfs:comment "A governed address record" .
+
+ex:addressCode a owl:DatatypeProperty ;
+    rdfs:domain ex:Address ;
+    rdfs:range xsd:string ;
+    rdfs:label "Address Code" .
+
+ex:AddressRoleAssignment a owl:Class ;
+    rdfs:label "Address Role Assignment" ;
+    rdfs:comment "Marks an address as playing a role for a party" .
+
+ex:isMainAddressRole a owl:DatatypeProperty ;
+    rdfs:domain ex:AddressRoleAssignment ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "Is Main Address Role" .
+"""
+
+# Regression: numeric/temporal properties must keep being name-matched (#302 caveat) --
+# a datetime named for a PII keyword is genuinely sensitive.
+_ONTOLOGY_TEMPORAL_KEYWORD_MATCH = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.org/ont/party#> .
+
+ex:PartyOntology a owl:Ontology ;
+    rdfs:label "Party" ;
+    owl:versionInfo "1.0" .
+
+ex:Employee a owl:Class ;
+    rdfs:label "Employee" ;
+    rdfs:comment "An employee" .
+
+ex:dateOfBirth a owl:DatatypeProperty ;
+    rdfs:domain ex:Employee ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "Date Of Birth" .
+"""
+
+# Binding-sourced false negative: StaffMember's own canonical property ("role") carries
+# no PII keyword, but its bound source table has birthdate/passport columns.
+_ONTOLOGY_STAFF_MEMBER = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix party: <http://example.org/ont/party#> .
+
+party:PartyOntology a owl:Ontology ;
+    rdfs:label "Party" ;
+    owl:versionInfo "1.0" .
+
+party:StaffMember a owl:Class ;
+    rdfs:label "Staff Member" ;
+    rdfs:comment "A staff member" .
+
+party:role a owl:DatatypeProperty ;
+    rdfs:domain party:StaffMember ;
+    rdfs:range xsd:string ;
+    rdfs:label "Role" .
+"""
+
+_STAFF_BINDING_YAML = """\
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: hr-staff-to-party
+  domain: party
+source:
+  relation: hr.GlbStaff
+target:
+  class: party:StaffMember
+grain:
+  columns: [staff_id]
+identity:
+  strategy: source-natural
+  sourceKey: [staff_id]
+load:
+  mode: full-refresh
+fields:
+  - property: party:role
+    expression: role
+"""
+
+_STAFF_SOURCE_VOCAB_TTL = """\
+@prefix src: <https://example.test/source/hr#> .
+@prefix kb: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+src:hr a kb:SourceSystem ; rdfs:label "hr" ;
+  kb:database "hr_raw" ; kb:schema "dbo" ; kb:connectionType "jdbc" .
+
+src:GlbStaff a kb:SourceTable ; kb:sourceSystem src:hr ;
+  kb:tableName "GlbStaff" ; kb:primaryKeyColumns "staff_id" .
+src:staff_id a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+  kb:columnName "staff_id" ; kb:dataType "varchar(30)" ;
+  kb:nullable "false"^^xsd:boolean .
+src:staff_role a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+  kb:columnName "role" ; kb:dataType "varchar(50)" ;
+  kb:nullable "true"^^xsd:boolean .
+src:staff_dob a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+  kb:columnName "DateOfBirth" ; kb:dataType "date" ;
+  kb:nullable "true"^^xsd:boolean .
+src:staff_passport a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+  kb:columnName "PassportNumber" ; kb:dataType "varchar(30)" ;
+  kb:nullable "true"^^xsd:boolean .
+src:staff_kin a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+  kb:columnName "NextOfKinName" ; kb:dataType "varchar(200)" ;
+  kb:nullable "true"^^xsd:boolean .
+"""
+
+
+def _write_staff_hub(hub_root):
+    """Build a minimal hub with a StaffMember binding sourced from person-shaped columns."""
+    bindings_dir = hub_root / "integration" / "bindings"
+    bindings_dir.mkdir(parents=True)
+    (bindings_dir / "hr-staff.binding.yaml").write_text(_STAFF_BINDING_YAML, encoding="utf-8")
+
+    sources_dir = hub_root / "integration" / "sources" / "hr"
+    sources_dir.mkdir(parents=True)
+    (sources_dir / "hr.vocabulary.ttl").write_text(_STAFF_SOURCE_VOCAB_TTL, encoding="utf-8")
+
+    ontologies_dir = hub_root / "model" / "ontologies"
+    ontologies_dir.mkdir(parents=True)
+    (ontologies_dir / "party.ttl").write_text(_ONTOLOGY_STAFF_MEMBER, encoding="utf-8")
+    return ontologies_dir
+
+
+class TestGdprDatatypeAndBindingEvidence:
+    """Issue #325: datatype/name-shape gates on false positives, binding-sourced evidence
+    on the false negative, and the non-blocking-but-honest summary line."""
+
+    def test_boolean_property_not_flagged(self):
+        """A boolean flag can't carry an address -- isMainAddressRole must not warn."""
+        result = validate_gdpr(_ONTOLOGY_FALSE_POSITIVES)
+        flagged_properties = {w["property"] for w in result["warnings"]}
+        assert "isMainAddressRole" not in flagged_properties
+
+    def test_governed_code_property_not_flagged(self):
+        """A short reference code can't carry an address -- addressCode must not warn."""
+        result = validate_gdpr(_ONTOLOGY_FALSE_POSITIVES)
+        flagged_properties = {w["property"] for w in result["warnings"]}
+        assert "addressCode" not in flagged_properties
+
+    def test_false_positive_ontology_now_passes_clean(self):
+        """Both known real-hub false positives are gone; nothing else in the fixture
+        should spuriously trip either gate."""
+        result = validate_gdpr(_ONTOLOGY_FALSE_POSITIVES)
+        assert result["passed"] is True
+        assert result["warnings"] == []
+
+    def test_temporal_property_keyword_match_still_flagged(self):
+        """#302 caveat: a non-string (here xsd:dateTime) property named for a PII
+        keyword is still genuinely sensitive and must still be flagged."""
+        result = validate_gdpr(_ONTOLOGY_TEMPORAL_KEYWORD_MATCH)
+        assert result["passed"] is False
+        keywords_found = {w["keyword"] for w in result["warnings"]}
+        assert "date_of_birth" in keywords_found
+
+    def test_source_evidence_flags_class_with_non_pii_named_property(self):
+        """A class bound to a source relation with person-shaped columns (birthdate,
+        passport) must be flagged even though its own canonical property ("role")
+        carries no PII keyword."""
+        source_evidence = {
+            "StaffMember": [
+                ("hr.GlbStaff", "DateOfBirth", "date_of_birth"),
+                ("hr.GlbStaff", "PassportNumber", "passport"),
+            ]
+        }
+        result = validate_gdpr(_ONTOLOGY_STAFF_MEMBER, source_evidence=source_evidence)
+        assert result["passed"] is False
+        assert any(w["class"] == "StaffMember" for w in result["warnings"])
+        assert all(w.get("evidence") == "source-binding" for w in result["warnings"])
+
+    def test_source_evidence_respects_gdpr_satellite_protection(self):
+        """A class already protected by gdprSatelliteOf must not gain a new warning
+        just because binding-sourced evidence exists."""
+        extension = """\
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+@prefix party: <http://example.org/ont/party#> .
+
+party:StaffMemberPII
+    kairos-ext:gdprSatelliteOf party:StaffMember .
+"""
+        source_evidence = {"StaffMember": [("hr.GlbStaff", "PassportNumber", "passport")]}
+        result = validate_gdpr(
+            _ONTOLOGY_STAFF_MEMBER, extension, source_evidence=source_evidence
+        )
+        assert result["passed"] is True
+        assert result["warnings"] == []
+
+    def test_source_evidence_ignored_for_unbound_class(self):
+        """Evidence keyed by a class local name absent from the ontology is a no-op,
+        not a crash."""
+        result = validate_gdpr(
+            _ONTOLOGY_STAFF_MEMBER,
+            source_evidence={"SomeOtherClass": [("x.y", "Passport", "passport")]},
+        )
+        assert result["passed"] is True
+
+    def test_binding_source_evidence_end_to_end(self, tmp_path, capsys):
+        """Integration: run_gdpr_validation resolves the real binding + source vocabulary
+        TTL from disk and flags StaffMember via its source columns."""
+        from kairos_ontology.core.validator import run_gdpr_validation
+
+        hub_root = tmp_path / "hub"
+        ontologies_dir = _write_staff_hub(hub_root)
+
+        total = run_gdpr_validation(ontologies_path=ontologies_dir, hub_root=hub_root)
+        captured = capsys.readouterr()
+        assert total > 0
+        assert "StaffMember" in captured.out
+        assert "hr.GlbStaff" in captured.out
+
+    def test_binding_source_evidence_defaults_hub_root_from_ontologies_path(self, tmp_path):
+        """When hub_root is omitted, the <hub>/model/ontologies convention is assumed."""
+        from kairos_ontology.core.validator import run_gdpr_validation
+
+        hub_root = tmp_path / "hub"
+        ontologies_dir = _write_staff_hub(hub_root)
+
+        total = run_gdpr_validation(ontologies_path=ontologies_dir)
+        assert total > 0
+
+    def test_no_bindings_directory_is_a_no_op(self, temp_dir, capsys):
+        """A hub with no integration/bindings at all must not crash the scan."""
+        from kairos_ontology.core.validator import run_gdpr_validation
+
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "service.ttl").write_text(_ONTOLOGY_NO_PII, encoding="utf-8")
+
+        total = run_gdpr_validation(ontologies_path=ontologies_dir)
+        assert total == 0
+
+
+class TestGdprWarningsSummaryLine:
+    """Issue #325: `validate` must not print an unqualified "All validations passed!"
+    while GDPR warnings are open, even though the scan stays non-blocking (exit 0)."""
+
+    def test_default_message_unchanged_when_no_gdpr_warnings(self, temp_dir, sample_ontology):
+        """gdpr_warnings defaults to 0, so existing callers/messages are unaffected."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+        )
+
+    def test_summary_qualified_when_gdpr_warnings_open(self, temp_dir, sample_ontology, capsys):
+        """With unresolved GDPR warnings, the summary must not claim a clean bill of
+        health, but must still not raise SystemExit (non-blocking, per issue #325)."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            gdpr_warnings=2,
+        )
+
+        captured = capsys.readouterr()
+        assert "All validations passed" in captured.out
+        assert "2 unprotected PII warning" in captured.out
+
+
 class TestGdprValidation:
     """Test GDPR PII scanning."""
 

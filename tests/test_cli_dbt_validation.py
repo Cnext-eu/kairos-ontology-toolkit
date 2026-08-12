@@ -16,10 +16,11 @@ def test_validate_dbt_reports_success(tmp_path: Path, monkeypatch) -> None:
     project.mkdir()
     manifest = project / "target" / "manifest.json"
 
-    def fake_validate(project_dir, platform, profiles_dir=None):
+    def fake_validate(project_dir, platform, profiles_dir=None, structural_only=False):
         assert project_dir == project
         assert platform == "databricks"
         assert profiles_dir is None
+        assert structural_only is False
         return SimpleNamespace(
             manifest_path=manifest,
             compile_status="environment_blocked",

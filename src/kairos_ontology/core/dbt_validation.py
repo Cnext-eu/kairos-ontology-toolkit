@@ -146,6 +146,32 @@ def _is_environment_blocked(message: str) -> bool:
     return any(pattern.search(message) for pattern in _ENVIRONMENT_BLOCK_PATTERNS)
 
 
+_MODEL_REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
+
+
+def _dangling_refs(project_dir: Path) -> dict[str, list[str]]:
+    """Map each model's relative path to any ``ref()`` targets with no model file.
+
+    Text-scans the already-assembled project on disk (DD-140's unified topology),
+    independent of dbt or of the compiler's per-domain relationship resolution
+    (DD-138/139 keep that scoped to one domain and never search peer bindings) --
+    this instead checks whether the artifact those bindings produced is internally
+    self-consistent, the same class of defect dbt's own parser would catch (#342).
+    """
+    models_dir = project_dir / "models"
+    if not models_dir.is_dir():
+        return {}
+    sql_files = sorted(models_dir.rglob("*.sql"))
+    known_models = {path.stem for path in sql_files}
+    problems: dict[str, list[str]] = {}
+    for path in sql_files:
+        content = path.read_text(encoding="utf-8")
+        missing = sorted(set(_MODEL_REF_RE.findall(content)) - known_models)
+        if missing:
+            problems[str(path.relative_to(project_dir).as_posix())] = missing
+    return problems
+
+
 def _node_name(node: dict[str, object]) -> str:
     return str(node.get("name") or "")
 
@@ -271,8 +297,18 @@ def validate_dbt_project(
     profiles_dir: Path | None = None,
     executable: str = "dbt",
     runner: RunCommand = subprocess.run,
+    structural_only: bool = False,
 ) -> DbtValidationResult:
-    """Run offline dbt validation for one generated adapter-specific project."""
+    """Run offline dbt validation for one generated adapter-specific project.
+
+    Runs a structural dangling-``ref()`` scan first, unconditionally -- it needs
+    no dbt installation, so it still catches #342-shaped defects (a cross-domain
+    ``ref()`` naming a model absent from the assembled project) in environments
+    where ``dbt`` itself is unavailable. ``structural_only=True`` stops there,
+    skipping the deps/parse/compile phases and the dbt-installed preflight check
+    entirely -- for callers (CI's release loop) that want this gate without
+    paying for a real dbt install.
+    """
     project_dir = Path(project_dir).resolve()
     if platform not in SUPPORTED_PLATFORMS:
         raise DbtValidationError(
@@ -281,6 +317,25 @@ def validate_dbt_project(
         )
     if not (project_dir / "dbt_project.yml").is_file():
         raise DbtValidationError("preflight", f"no dbt_project.yml under {project_dir}")
+
+    with timed_phase("structural", platform=platform, project_dir=str(project_dir)):
+        dangling = _dangling_refs(project_dir)
+        if dangling:
+            details = "; ".join(f"{path} -> {refs}" for path, refs in sorted(dangling.items()))
+            raise DbtValidationError(
+                "structural",
+                f"ref() targets no model file in this assembled project: {details}",
+            )
+
+    if structural_only:
+        return DbtValidationResult(
+            platform=platform,
+            project_dir=project_dir,
+            manifest_path=project_dir / "target" / "manifest.json",
+            compile_status="skipped",
+            compile_message="structural-only run; dbt deps/parse/compile were not invoked",
+        )
+
     if runner is subprocess.run and shutil.which(executable) is None:
         extra = f"dbt-validate-{platform}"
         raise DbtValidationError(

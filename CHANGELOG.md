@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`audit-silver-samples` (DD-089) read only the v4 `model/mappings/` SKOS surface, so on a v5
+  hub it audited nothing and reported an unqualified `✅ ... (100% coverage)`** (#348). Root
+  cause: `run_silver_sample_audit` obtained its mapped columns exclusively from
+  `_parse_skos_mappings(mappings_dir)`; `integration/bindings/*.binding.yaml` (v5 EntityBindings)
+  was never read, and `sample_coverage_ratio` special-cased a zero denominator to `1.0`, so
+  `0 mapped columns` rendered as a green, unqualified pass. The audit now also resolves v5
+  bindings via the compiler's own `resolve_scope`/`adapt_binding` (reusing the same
+  binding-to-column-mapping resolution `compile` uses, not re-deriving it), joining back to
+  persisted samples on `(table_uri, column_name)` since the compiler's per-relation column
+  symbol is a synthesized identifier, not the real bronze `SourceColumn` URI. A column mapped on
+  both surfaces at once (mid v4-to-v5 migration) is counted once. `sample_coverage_ratio` now
+  returns `None`, not `1.0`, when nothing was mapped; the CLI prints an explicit
+  `⚠ ... nothing was audited`, naming both authoring surfaces searched, instead of `✅`, and a new
+  `no_mapping_surface_found` warning finding means `--fail-on warning` now catches an inert audit.
+  A new `--bindings` option (default: `integration/bindings/`, auto-detected) mirrors `--mappings`.
+- **The GDPR PII scan (`validate --gdpr`) matched keywords as bare local-name substrings, with no
+  regard to datatype or source evidence** (#325). On a real four-domain hub this produced two false
+  positives — `Address.addressCode` (a governed reference code, `xsd:string`) and
+  `AddressRoleAssignment.isMainAddressRole` (`xsd:boolean`) both matched the `"address"` keyword —
+  while missing the two classes a DPIA would actually care about (`party:Contact`/`party:StaffMember`,
+  sourced from 158 real CargoWise columns including birthdate/passport/next-of-kin), because their
+  canonical property names happened not to contain a keyword substring. `core/validator.py`'s
+  `validate_gdpr` now suppresses a name-keyword hit when the property's declared `rdfs:range` is
+  `xsd:boolean` (no keyword describes a plausible boolean fact) or when the local name ends in a bare
+  `Code` segment and the matched keyword is `"address"` specifically (a postal address cannot be
+  compressed into a short code, so `<X>AddressCode` is definitionally a lookup key, not content).
+  Both gates are scoped narrowly on purpose, per the precedent in #302: `rdfs:range` is
+  author-declared metadata, not the inferred/mutable `column_types` #302 explicitly rejected gating
+  on, and neither gate touches numeric or temporal properties or any other keyword — a
+  `dateOfBirth: xsd:dateTime` still gets flagged, and `nationalIdCode`/`genderCode`-shaped names stay
+  detectable, since `core/_samples.py`'s own identifier-token logic already treats a `Code`/`Id`
+  suffix on a person-context column as the sensitive content itself, not an exemption.
+  Independently, `run_gdpr_validation` now resolves each domain's `integration/bindings/*.binding.yaml`
+  against its source relation's columns (`integration/sources/**/*.ttl`, reusing the same tolerant
+  `_binding_domain`/`_binding_source_ref`/`_binding_target_class`/`_source_relations` helpers
+  `resolve_scope()` already uses for `compile`) and flags a bound class whose *source* columns carry a
+  PII keyword even when its canonical property name does not — still fully respecting existing
+  `kairos-ext:gdprSatelliteOf` protection. Added `"next_of_kin"` to the shared `PII_KEYWORDS` list
+  (`core/_samples.py`, DD-075's single source of truth for both the validator and the sample-masking
+  policy) to cover the third named evidence category. Also: the scan's warning count reached nobody —
+  `validate` (running all checks) printed an unqualified `"✅ All validations passed!"` even with open
+  GDPR warnings. `run_validation` now accepts the already-computed `gdpr_warnings` count and, when
+  nonzero, prints `"✅ All validations passed (⚠️ N unprotected PII warning(s) ... remain open)"`
+  instead. This is a deliberate, non-blocking choice: whether unprotected PII should fail the build is
+  a separate product decision the issue explicitly declines to make unilaterally, and this fix keeps
+  the scan advisory — matching the toolkit's other warning-tolerant checks (DD-089's
+  `audit-silver-samples`, NK-coverage-warned-not-enforced) — while making sure the summary line never
+  overclaims again.
+- **`compile --explain`'s default text output showed nothing about relationships, and even
+  `--format json` omitted the relationship's own property and its join columns** (#338, partial —
+  narrowed from the full issue, see below). A reader inspecting the human-facing `--explain` output
+  had no way to see which relationships an entity binding declares at all; `ExplainRelationship`
+  carried only `target`/`mode`/`cardinality`/`temporal`, never the authored `property:` or `join:`
+  columns, in either output form. `ExplainRelationship` now also carries `property` and `join` (each
+  authored `local`/`foreign` pair flattened to `"<local>=<foreign>"`, matching the existing
+  `ExplainQualityCheck.columns` convention), and `compile --explain`'s text renderer prints one line
+  per relationship (`rel: <property> → <target> [<cardinality>, <mode>] on (<join>)`).
+- **`_wire_relationships` had `continue` paths that dropped a relationship with no diagnostic** — the
+  `silently-dropped-relationship` anti-pattern the pattern library names and
+  `core/pattern_rules.py` records as enforced (#338, partial). Re-auditing against the current
+  codebase (not the issue's original count, which predates #334/#335): `_wire_relationships` has 2
+  syntactic `continue` statements covering 4 distinct drop conditions. Three of those are already
+  detected and blocked, pre-wiring, by `_relationship_diagnostics` — added by #334/#335 — which
+  rejects the whole binding with a proper diagnostic before it is ever admitted into
+  `_wire_relationships`, making them defensive/unreachable via the normal `compile_domain` entry
+  point today. The fourth is **not** fully unreachable: it fires for real when a relationship's
+  target binding is later blocked for a reason unrelated to that relationship, because
+  `_relationship_diagnostics` resolves the target binding from a pre-blocking snapshot of every
+  *selected* binding, while `_wire_relationships` resolves it from the post-blocking valid set —
+  the two views can disagree. In that case `compile`'s pass/fail outcome is still unchanged
+  (`quality.py`'s independent, non-suppressible safety kernel already blocks the same scenario with
+  its own `safety.relationship-endpoint`), so the effect is a redundant second diagnostic with the
+  same code, not a new silent drop or a newly-failing hub; left un-deduplicated deliberately (see
+  the `_wire_relationships` docstring). Every one of the 4 conditions now raises a diagnostic anyway
+  (reusing `safety.source-unresolved`, `safety.relationship-endpoint`, or
+  `safety.adapter-unsupported`, matching the codes `_relationship_diagnostics` already uses for the
+  same conditions) instead of a bare `continue`, so a future change that weakens or bypasses the
+  upstream gate on the other three cannot reopen a silent drop.
+  **Out of scope, left for a follow-up decision:** the other four gaps #338 also reported — a
+  class with only object properties is unbindable (`fields` requires `minItems: 1`), no
+  one-to-many/many-to-many `EntityBinding` cardinality, no polymorphic (type-discriminated) joins,
+  and no `technicalFields.purpose` value for a plain carried column — are real modelling-construct
+  design decisions with product-facing scope and are **not** addressed here.
+- **A cross-domain `ref()` naming a model absent from the assembled dbt project went undetected by
+  every gate that runs by default** (#342). `compile --check` passes per-domain; `--emit` succeeds;
+  only running real `dbt` against the fully assembled project ever surfaced the dangling reference —
+  and nothing in the sanctioned per-domain authoring workflow invokes it. Root cause traced to a real
+  case: `externalReference.name` is free text a binding author types by hand (DD-138/139 deliberately
+  keep the compiler from searching peer-domain bindings to validate it, since `externalReference` must
+  also support parents genuinely outside the hub, where no peer binding would ever exist to check
+  against) — so a wrong value is never caught at the point it's written. `validate-dbt` now runs a
+  structural dangling-`ref()` scan first, unconditionally, before shelling out to `dbt` at all: it
+  text-scans the already-assembled project's emitted `.sql` files against the set of model files
+  actually present, the same class of check `dbt_bundle.py` already runs for custom transform
+  artifacts, applied here to the standard generated Silver models. A new `--structural-only` flag
+  runs just that scan with no dbt install required, and the scaffolded CI release workflow now runs
+  it as a mandatory step immediately after the per-domain emit loop finishes — not fused into each
+  domain's own `--emit`, since that would false-positive on the toolkit's own documented
+  single-domain incremental workflow whenever a domain with a legitimate external reference is
+  emitted before its target domain has been (re-)emitted.
+- **Generic-test arguments emitted in the pre-deprecation top-level form** (also #342). dbt has
+  announced removal of unnested arguments on generic tests; the seven `kairos_runtime_*` /
+  `kairos_temporal_fk_cardinality` tests emitted by the v5 Silver path (`projections/dbt/shape.py`)
+  now nest their arguments under `arguments:`. Scoped to v5 only — the legacy v4 projector
+  (`medallion_dbt_projector.py`) emits its own, separate generic test and is unaffected.
+
 ## [5.2.1rc4] — 2026-08-12
 
 ### Fixed

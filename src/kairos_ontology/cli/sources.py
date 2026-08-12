@@ -836,7 +836,13 @@ def analyse_sources_cmd(
     "--mappings",
     type=click.Path(exists=True),
     default=None,
-    help="Path to model/mappings/ directory (default: auto-detect).",
+    help="Path to model/mappings/ directory of v4 SKOS mappings (default: auto-detect).",
+)
+@click.option(
+    "--bindings",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/bindings/ directory of v5 EntityBindings (default: auto-detect).",
 )
 @click.option(
     "--dbt-output",
@@ -859,12 +865,12 @@ def analyse_sources_cmd(
     default="none",
     help="Exit non-zero when findings at this severity exist (default: none).",
 )
-def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
+def audit_silver_samples_cmd(sources, mappings, bindings, dbt_output, output, fail_on):
     """Offline advisory audit of generated silver dbt mappings using source samples.
 
-    This command reads source vocabularies, SKOS mappings, and generated dbt SQL
-    only. It does not require a dbt profile, warehouse credentials, or live bronze
-    data. Findings are advisory by default.
+    This command reads source vocabularies, mapped columns (v4 SKOS mappings and/or v5
+    EntityBindings), and generated dbt SQL only. It does not require a dbt profile,
+    warehouse credentials, or live bronze data. Findings are advisory by default.
     """
     from ..core.hub_utils import find_hub_root, publish_root
     from ..core.silver_sample_audit import run_silver_sample_audit
@@ -876,12 +882,14 @@ def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
 
     sources_path = Path(sources) if sources else base / "integration" / "sources"
     mappings_path = Path(mappings) if mappings else base / "model" / "mappings"
+    bindings_path = Path(bindings) if bindings else base / "integration" / "bindings"
     dbt_output_path = Path(dbt_output) if dbt_output else pub / "medallion" / "dbt"
     output_path = Path(output) if output else pub / "reports" / "silver-sample-audit"
 
     click.echo("🔎 Running offline silver sample audit")
     click.echo(f"   Sources:    {sources_path}")
-    click.echo(f"   Mappings:   {mappings_path}")
+    click.echo(f"   Mappings:   {mappings_path} (v4)")
+    click.echo(f"   Bindings:   {bindings_path} (v5)")
     click.echo(f"   dbt output: {dbt_output_path}")
     click.echo(f"   Report:     {output_path}")
     click.echo()
@@ -891,14 +899,22 @@ def audit_silver_samples_cmd(sources, mappings, dbt_output, output, fail_on):
         mappings_dir=mappings_path,
         dbt_output_dir=dbt_output_path,
         output_dir=output_path,
+        bindings_dir=bindings_path,
+        hub_root=base,
     )
 
     counts = report.counts
-    click.echo(
-        f"✅ Audit complete: {report.mapped_columns} mapped column(s), "
-        f"{report.sampled_mapped_columns} with samples "
-        f"({report.sample_coverage_ratio:.0%} coverage)"
-    )
+    if report.mapped_columns == 0:
+        click.echo(
+            "⚠ No mapped columns found on either authoring surface — nothing was audited. "
+            f"Searched {mappings_path} (v4) and {bindings_path} (v5)."
+        )
+    else:
+        click.echo(
+            f"✅ Audit complete: {report.mapped_columns} mapped column(s), "
+            f"{report.sampled_mapped_columns} with samples "
+            f"({report.sample_coverage_ratio:.0%} coverage)"
+        )
     click.echo(
         f"   Findings: {counts['error']} error(s), "
         f"{counts['warning']} warning(s), {counts['info']} info"

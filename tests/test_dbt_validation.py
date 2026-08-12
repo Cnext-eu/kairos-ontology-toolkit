@@ -108,6 +108,53 @@ def test_validate_dbt_project_runs_required_sequence(tmp_path: Path) -> None:
     assert result.manifest_path == project / "target" / "manifest.json"
 
 
+def test_structural_check_catches_dangling_ref(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    models = project / "models" / "silver" / "consignment"
+    models.mkdir(parents=True)
+    (models / "consoltransportleg.sql").write_text(
+        "select * from {{ ref('carrierreservation') }}", encoding="utf-8"
+    )
+
+    def runner(args, **kwargs):
+        raise AssertionError("dbt must not run once the structural scan fails")
+
+    with pytest.raises(DbtValidationError, match="dbt structural failed"):
+        validate_dbt_project(project, "fabric", runner=runner)
+
+
+def test_structural_check_passes_with_resolvable_refs(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _manifest(project)
+    models = project / "models" / "silver" / "consignment"
+    models.mkdir(parents=True)
+    (models / "consoltransportleg.sql").write_text(
+        "select * from {{ ref('transportbooking') }}", encoding="utf-8"
+    )
+    (project / "models" / "silver" / "booking").mkdir(parents=True)
+    (project / "models" / "silver" / "booking" / "transportbooking.sql").write_text(
+        "select 1", encoding="utf-8"
+    )
+
+    result = validate_dbt_project(project, "fabric", runner=lambda *a, **k: _result())
+
+    assert result.compile_status == "passed"
+
+
+def test_structural_only_never_invokes_dbt(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    models = project / "models" / "silver" / "party"
+    models.mkdir(parents=True)
+    (models / "organisation.sql").write_text("select 1", encoding="utf-8")
+
+    def runner(args, **kwargs):
+        raise AssertionError("structural_only must never shell out to dbt")
+
+    result = validate_dbt_project(project, "fabric", runner=runner, structural_only=True)
+
+    assert result.compile_status == "skipped"
+
+
 def test_compile_connection_failure_is_environment_blocked(tmp_path: Path) -> None:
     project = _project(tmp_path)
     _manifest(project)

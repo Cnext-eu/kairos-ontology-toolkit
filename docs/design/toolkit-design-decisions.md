@@ -5490,6 +5490,33 @@ row counts, referential integrity, and production distributions.
 - Dataplatform validation remains required for actual bronze data correctness and
   SQL engine behavior.
 
+### Amendment (2026-08-12): v5 EntityBindings as a second mapping source (issue #348)
+
+The audit was written against the v4 RDF-authored `model/mappings/` SKOS surface only. It
+never read `integration/bindings/*.binding.yaml` (v5 EntityBindings, DD-133), so on a v5-only
+hub it found zero mapped columns and — because `sample_coverage_ratio` special-cased a
+zero denominator to `1.0` — printed an unqualified `✅ ... (100% coverage)` for a hub it had
+not looked at.
+
+`run_silver_sample_audit` now takes an optional `bindings_dir`/`hub_root` and resolves v5
+mappings via the compiler's own `resolve_scope` + `adapt_binding` (`core/compiler/kernel.py`,
+`core/compiler/adapter.py`) — the exact functions that turn one `EntityBinding` into
+column-level `ColumnMappingFact`s for compilation — rather than re-deriving source-relation or
+expression resolution. The resulting facts are folded into the same `mapping_context()` facade
+(`core/projections/dbt/mapping_bind.py`) the v4 path already produces, so the rest of the
+audit (sample-shape, cross-source, and SQL-lineage checks) is unchanged. `ResolvedRelation`
+resolves a binding's source column to a synthesized `{table_uri}/{name}` symbol rather than the
+real bronze `SourceColumn` URI, so the join back to persisted samples matches on the real
+`(table_uri, column_name)` pair instead of URI equality. A physical column mapped on both
+surfaces at once (mid v4-to-v5 migration) is counted once, not twice.
+
+`sample_coverage_ratio` now returns `None`, not `1.0`, when `mapped_columns == 0`; the CLI
+prints an explicit `⚠ ... nothing was audited` line naming both authoring surfaces searched
+instead of a `✅` success line, and adds a `no_mapping_surface_found` warning finding so
+`--fail-on warning` (the recommended CI setting) treats an inert audit as a failure — the same
+"a command that checked nothing must not emit the success string of a command that checked
+something" rule raised by #309 and #332.
+
 ---
 
 ## DD-090: Core Concepts Conformance — toolkit runtime for the archetype + discovery contract (v0.2)
