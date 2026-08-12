@@ -29,7 +29,7 @@ never graph-authority project targets. `project --target all` excludes them.
 | Author bindings | `scaffold-binding`, `scaffold-system` |
 | Validate | `validate`, `validate-dbt`, `catalog-test`, `validate-mapping`, `validate-silver-ext`, `suggest-shapes` |
 | Source/discovery | `import-source`, `import-flatfile`, `import-tmdl`, `show-source-schema`, `source-privacy`, `analyse-sources`, `audit-silver-samples`, `propose-alignment`, `build-glossary`, `discovery-status`, `discovery-conformance` |
-| Inspect/report | `resolve-ontology`, `show-class-inventory`, `list-class-properties`, `fit-report`, `explain-term`, `coverage-report`, `generate-inventory`, `check-inventory`, `draft-model-report`, `next`, `design-landscape` |
+| Inspect/report | `resolve-ontology`, `show-class-inventory`, `list-class-properties`, `fit-report`, `explain-term`, `coverage-report`, `field-mapping-report`, `generate-inventory`, `check-inventory`, `draft-model-report`, `next`, `design-landscape` |
 | Legacy scaffold helpers | `scaffold-mapping`, `scaffold-silver-ext` |
 | Setup/update | `init`, `new-repo`, `migrate`, `init-dataplatform`, `update`, `update-refmodels` |
 

@@ -12,6 +12,7 @@ from kairos_ontology.core.silver_sample_audit import (
     load_binding_mappings,
     load_source_samples,
     render_markdown,
+    resolve_v5_column_facts,
     run_silver_sample_audit,
 )
 
@@ -405,6 +406,62 @@ def test_load_binding_mappings_resolves_v5_entity_bindings(tmp_path):
         "https://example.test/party#customer_id",
         "https://example.test/party#customerName",
     }
+
+
+def test_resolve_v5_column_facts_source_system_none_does_not_filter(tmp_path):
+    """``source_system=None`` (the pre-existing ``load_binding_mappings`` caller's mode)
+    must resolve every binding regardless of which source system it declares -- guards the
+    ``resolve_v5_column_facts`` refactor (added for the field-mapping report) against
+    accidentally narrowing ``load_binding_mappings``'s own behavior."""
+    sources, ontology_dir, bindings = _write_v5_hub(tmp_path)
+    (bindings / "legacy-customer.binding.yaml").write_text(
+        textwrap.dedent("""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: legacy-customer
+              domain: party
+            source:
+              relation: legacy.old_customers
+            target:
+              class: party:Customer
+            grain:
+              columns: [legacy_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [legacy_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: party:customer_id
+                expression: legacy_id
+            """).strip(),
+        encoding="utf-8",
+    )
+    legacy_dir = sources / "legacy"
+    legacy_dir.mkdir()
+    (legacy_dir / "legacy.vocabulary.ttl").write_text(
+        textwrap.dedent("""
+            @prefix src: <https://example.test/source/legacy#> .
+            @prefix kb: <https://kairos.cnext.eu/bronze#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            src:legacy a kb:SourceSystem ; rdfs:label "legacy" .
+            src:old_customers a kb:SourceTable ; kb:sourceSystem src:legacy ;
+              kb:tableName "old_customers" ; kb:primaryKeyColumns "legacy_id" .
+            src:id a kb:SourceColumn ; kb:sourceTable src:old_customers ;
+              kb:columnName "legacy_id" ; kb:dataType "varchar(50)" ;
+              kb:nullable "false"^^xsd:boolean ; kb:sampleValues "L-1" .
+            """).strip(),
+        encoding="utf-8",
+    )
+
+    facts, findings = resolve_v5_column_facts(tmp_path, bindings)
+
+    assert findings == []
+    source_uris = {fact.source_column_uri for fact in facts}
+    assert any("crm" in uri or uri.endswith("/customer_id") for uri in source_uris)
+    assert len(facts) == 3  # crm's customer_id + customerName, legacy's customer_id
 
 
 def test_load_binding_mappings_is_empty_when_bindings_dir_absent(tmp_path):
