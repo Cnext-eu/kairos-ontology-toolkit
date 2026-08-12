@@ -241,7 +241,7 @@ def object_property_in_fields_message(property_token: str, prop: ResolvedPropert
     return (
         f"field '{property_token}' targets an object property (range {range_label}); "
         "fields: materializes scalar attributes only. Declare it as a relationships: entry "
-        "with an on: clause so the compiler resolves the surrogate-key join, or -- if the "
+        "with a join: clause so the compiler resolves the surrogate-key join, or -- if the "
         "raw reference value really is wanted as a column -- author an explicit "
         "technicalFields: entry (DD-139)"
     )
