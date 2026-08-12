@@ -13,6 +13,11 @@ reimplements:
   dropped or given a decorative local property (C2 enforcement).
 * DD-138 ``externalReference`` -- the ``line-item-child`` archetype scaffolds one heavily
   commented worked example of the cross-domain relationship shape.
+* Column <-> property matching is a three-rung, class-name-aware ladder of *exact* normalized
+  equalities (:func:`_candidate_keys`) over the target class's **datatype**-property universe
+  only. Object-property name matches are surfaced as relationship candidates and never written
+  under ``fields:`` (#314/#280); a relation with zero datatype matches is failed rather than
+  emitting the schema-invalid ``fields: []`` that #336 reported.
 * ``fit-report``'s (``core/fit_report.py``) class-token resolution
   (:func:`kairos_ontology.core.fit_report.resolve_token_uri`) and the DD-103 semantic index's
   ``class_properties`` for the target class's full property universe.
@@ -83,6 +88,9 @@ _EVENT_TIME_NAME = re.compile(
     r"(event.?time|occurred.?at|created.?at|event.?date|timestamp)", re.IGNORECASE
 )
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
+# One leading vendor table prefix, e.g. ``GB_`` in ``GB_BranchName``. Deliberately a *single*
+# capture with no repetition: see match_columns_to_properties for why depth stops at one.
+_COLUMN_PREFIX = re.compile(r"^([A-Z0-9]{1,4})_")
 
 
 class ScaffoldBindingError(ValueError):
@@ -229,24 +237,151 @@ def _normalize(name: str) -> str:
     return _NON_ALNUM.sub("", name.lower())
 
 
-def match_columns_to_properties(
-    columns: tuple[SourceColumn, ...], universe: list[dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-    """Return ``{column_name: universe_row}`` for exact normalized-name matches.
+def _local_name_from_uri(uri: str) -> str:
+    """Return the local name of a term IRI (``.../party#Branch`` -> ``Branch``)."""
+    for separator in ("#", "/"):
+        if separator in uri:
+            tail = uri.rsplit(separator, 1)[1]
+            if tail:
+                return tail
+    return uri
 
-    Deterministic, no LLM: a column matches a property when their names are equal after
-    stripping non-alphanumeric characters and lowercasing (``org_id`` <-> ``orgId``). *universe*
-    rows are consumed in their given (URI-sorted) order so a rare normalized-name collision
-    resolves deterministically to the first (lexicographically smallest URI) candidate.
+
+def detect_column_prefix(columns: tuple[SourceColumn, ...]) -> str | None:
+    """Return the dominant leading ``[A-Z0-9]{1,4}_`` table prefix across *columns*, or ``None``.
+
+    The prefix is detected from the *columns themselves*, never derived from the table name:
+    on the 70-table CargoWise corpus only 17 of 70 prefixes appear in the table's CamelCase
+    initials and exactly one equals its first two characters (``GlbCapability`` -> ``G4``,
+    ``DtbBooking`` -> ``KM``, ``JobConsol`` -> ``JK``), and an initials rule maps both
+    ``GlbCapability`` and ``GlbCompany`` to ``GC`` while their real prefixes differ.
+
+    Ties break on the lexicographically smallest prefix so the result is deterministic. A
+    prefix carried by a single column is not "dominant" and is ignored -- one incidentally
+    prefixed column in an otherwise unprefixed table is not evidence of a naming convention.
     """
-    by_normalized: dict[str, dict[str, Any]] = {}
-    for row in universe:
-        by_normalized.setdefault(_normalize(str(row["name"])), row)
-    return {
-        column.name: by_normalized[_normalize(column.name)]
-        for column in columns
-        if _normalize(column.name) in by_normalized
-    }
+    counts: dict[str, int] = {}
+    for column in columns:
+        match = _COLUMN_PREFIX.match(column.name)
+        if match is not None:
+            counts[match.group(1)] = counts.get(match.group(1), 0) + 1
+    if not counts:
+        return None
+    best = min(counts, key=lambda prefix: (-counts[prefix], prefix))
+    return best if counts[best] >= 2 else None
+
+
+def _candidate_keys(column_name: str, prefix: str | None, class_local_name: str) -> list[str]:
+    """Return the ordered normalized lookup keys tried for one column name.
+
+    The ladder is exactly three rungs deep and never recurses:
+
+    1. the column name as-is (the pre-existing exact behaviour, kept first so nothing regresses);
+    2. the column name with **one** leading vendor prefix stripped (``GB_BranchName`` ->
+       ``BranchName``);
+    3. the target class's local name prepended to that remainder (``GB_Code`` -> ``Code`` ->
+       ``BranchCode``, which resolves ``:branchCode``). This rung keys off an *ontology
+       authoring* convention -- properties named ``branchCode``/``contactName``, the class name
+       prefixed to the attribute -- not a vendor quirk, so it generalises to any hub.
+
+    Measured on the 70-source / 3,087-column / 20-authored-binding CargoWise corpus: rung 1
+    alone matches 0; rungs 1-2 match 17 at 100% precision; rungs 1-3 match 25 at 100% precision
+    (32% recall of the 77 authored field mappings).
+
+    A second strip depth is deliberately **not** offered. It buys 2 more matches, both wrong,
+    and collides 6 pairs within a single table -- ``JobVoyOrigin``'s ``JA_E_DEP`` / ``JA_A_DEP``
+    / ``JA_S_DEP`` all collapse to ``dep`` (Estimated / Actual / Scheduled), where the collapsed
+    distinction *is* the semantics. There is also a third, non-``_``-delimited layer (147 of the
+    434 double-prefixed columns have remainders beginning ``NK<Capital>``, e.g.
+    ``GS_NKStaffAssignedTo``), which no strip depth reaches; ``column_prefix`` is the escape
+    hatch for it. Fuzzy/token-subset matching is likewise excluded: 62% precision on this
+    corpus, and its errors are the plausible kind a reviewer waves through (four distinct
+    currency foreign keys collapsing onto ``currency``).
+    """
+    keys = [_normalize(column_name)]
+    if prefix and column_name.startswith(prefix + "_"):
+        stripped = column_name[len(prefix) + 1 :]
+        if stripped:
+            keys.append(_normalize(stripped))
+            if class_local_name:
+                keys.append(_normalize(class_local_name + stripped))
+    seen: set[str] = set()
+    return [key for key in keys if key and not (key in seen or seen.add(key))]
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnMatchResult:
+    """Outcome of matching one relation's columns against a target class's property universe.
+
+    ``fields`` holds only **datatype**-property matches -- the sole shape that may legally be
+    authored under ``fields:``. ``relationship_candidates`` holds columns whose name resolved to
+    an **object** property; those are reported to the author as needing a ``relationships:``
+    entry and are never written into ``fields:`` (issue #314: an object property under
+    ``fields:`` is the #280 data-loss shape, and since the #280 remediation it is a blocking
+    ``safety.relationship-endpoint`` diagnostic, so writing one would merely trade a schema
+    failure for a safety failure).
+    """
+
+    fields: dict[str, dict[str, Any]]
+    relationship_candidates: dict[str, dict[str, Any]]
+    column_prefix: str | None
+    datatype_property_count: int
+    object_property_count: int
+
+
+def match_columns_to_properties(
+    columns: tuple[SourceColumn, ...],
+    universe: list[dict[str, Any]],
+    *,
+    target_class_uri: str | None = None,
+    column_prefix: str | None = None,
+) -> ColumnMatchResult:
+    """Match *columns* against *universe* via the class-name-aware candidate ladder.
+
+    Deterministic, no LLM, no fuzzy matching: every rung is an exact equality against a
+    normalized (lowercased, non-alphanumerics stripped) name. See :func:`_candidate_keys` for
+    the ladder and the measurements that fixed its depth, and :func:`detect_column_prefix` for
+    how the vendor prefix is found. *universe* rows are consumed in their given (URI-sorted)
+    order so a rare normalized-name collision resolves deterministically to the first
+    (lexicographically smallest URI) candidate.
+
+    Annotation/``rdf`` properties are excluded from both buckets, mirroring the compiler
+    kernel's ``_class_index_properties``: only ``datatype`` and ``object`` properties are
+    bindable at all.
+    """
+    datatype_rows = [row for row in universe if row.get("property_type") == "datatype"]
+    object_rows = [row for row in universe if row.get("property_type") == "object"]
+
+    def _index(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        indexed: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            indexed.setdefault(_normalize(str(row["name"])), row)
+        return indexed
+
+    by_datatype = _index(datatype_rows)
+    by_object = _index(object_rows)
+    prefix = column_prefix if column_prefix is not None else detect_column_prefix(columns)
+    class_local_name = _local_name_from_uri(target_class_uri) if target_class_uri else ""
+
+    fields: dict[str, dict[str, Any]] = {}
+    relationship_candidates: dict[str, dict[str, Any]] = {}
+    for column in columns:
+        for key in _candidate_keys(column.name, prefix, class_local_name):
+            # A datatype hit is preferred over an object hit at the *same* rung, but an earlier
+            # rung always wins outright -- the ladder is ordered by descending confidence.
+            if key in by_datatype:
+                fields[column.name] = by_datatype[key]
+                break
+            if key in by_object:
+                relationship_candidates[column.name] = by_object[key]
+                break
+    return ColumnMatchResult(
+        fields=fields,
+        relationship_candidates=relationship_candidates,
+        column_prefix=prefix,
+        datatype_property_count=len(by_datatype),
+        object_property_count=len(by_object),
+    )
 
 
 def _technical_field_type(data_type: str) -> str:
@@ -747,6 +882,11 @@ class ScaffoldBindingResult:
     mapped_columns: tuple[str, ...] = ()
     technical_field_columns: tuple[str, ...] = ()
     orphan_columns: tuple[str, ...] = ()
+    relationship_candidates: tuple[tuple[str, str], ...] = ()
+    column_prefix: str | None = None
+    matched_property_count: int = 0
+    datatype_property_count: int = 0
+    object_property_count: int = 0
     dbt_model_path: Path | None = None
     dbt_model_text: str | None = None
     dbt_model_written: bool = False
@@ -769,6 +909,46 @@ def _build_field_entries(
         for column in columns
         if column.name in matches
     ]
+
+
+DRAFT_SUFFIX = ".draft"
+
+
+def _commented_fields_block(
+    candidate_columns: list[str],
+    *,
+    target_class_token: str,
+    prefix: str | None,
+    class_local_name: str,
+) -> list[str]:
+    """Render a commented-out, ready-to-uncomment ``fields:`` block for a zero-match relation.
+
+    ``fields:`` is ``required`` with ``minItems: 1`` in ``entity-binding.schema.json``, so a
+    zero-match relation has no schema-valid ``*.binding.yaml`` to write at all -- there is
+    literally nothing to put in ``fields:``. Bare refusal, though, leaves the author with an
+    empty directory: even with the full ladder, 8 of the 20 ground-truth CargoWise tables match
+    zero properties. So the skeleton is written to a sibling ``.draft`` file (which the
+    compiler's ``*.binding.yaml`` glob does not pick up, so no invalid binding ever enters the
+    build) and the run is failed loudly through :class:`ScaffoldBindingError`.
+    """
+    lines = [
+        "",
+        f"# fields: -- NOT WRITTEN. No datatype property on {target_class_token} matched any",
+        "# column of this relation, and `fields:` is required with at least one entry, so there",
+        "# is no schema-valid binding to emit. This file is a DRAFT: complete the block below,",
+        f"# uncomment it, and rename this file by dropping the trailing `{DRAFT_SUFFIX}`.",
+        "#",
+        "# Each candidate below shows the normalized names that were tried against the target",
+        "# class's datatype-property universe. If a real property exists under a name none of",
+        "# them reached, the accelerator model may be missing it -- or the vendor prefix was",
+        "# mis-detected, in which case re-run with --column-prefix.",
+        "#fields:",
+    ]
+    for name in candidate_columns:
+        tried = ", ".join(_candidate_keys(name, prefix, class_local_name))
+        lines.append(f"#  - property: <CONFIRM_PROPERTY_FOR_{name}>   # tried: {tried}")
+        lines.append(f"#    expression: {name}")
+    return lines
 
 
 def _resolve_class(
@@ -823,6 +1003,7 @@ def run_scaffold_binding(
     analysis_dir: Path | None = None,
     platform: str = "fabric",
     dry_run: bool = False,
+    column_prefix: str | None = None,
 ) -> ScaffoldBindingResult:
     """Scaffold one v5 ``EntityBinding`` YAML (and, for ``passthrough``, a dbt staging model).
 
@@ -835,7 +1016,8 @@ def run_scaffold_binding(
     Raises:
         ScaffoldBindingError: for any user-facing failure (unknown archetype/table, no domain
             could be inferred, an unresolvable ``--target-class``, an existing output path
-            without ``--force``).
+            without ``--force``, or no datatype property matching any column -- see
+            :func:`_commented_fields_block`).
     """
     archetype = load_binding_archetype(archetype_id)
     notes: list[str] = []
@@ -930,7 +1112,25 @@ def run_scaffold_binding(
         )
 
     universe = loaded.semantic_index.class_properties(class_uri)
-    matches = match_columns_to_properties(columns, universe)
+    match_result = match_columns_to_properties(
+        columns, universe, target_class_uri=class_uri, column_prefix=column_prefix
+    )
+    matches = match_result.fields
+    class_local_name = _local_name_from_uri(class_uri)
+    relationship_candidates = tuple(
+        (name, str(row["property_uri"]))
+        for name, row in sorted(match_result.relationship_candidates.items())
+    )
+    if relationship_candidates:
+        notes.append(
+            f"detected {len(relationship_candidates)} relationship candidate(s) -- source "
+            "column(s) whose name resolves to an OBJECT property on the target class: "
+            + ", ".join(f"{name} -> {uri}" for name, uri in relationship_candidates)
+            + ". These are deliberately NOT written under fields: (an object property there is "
+            "the #280 data-loss shape and is rejected by safety.relationship-endpoint); they are "
+            "the strongest foreign-key signal on this relation. Author a relationships: entry "
+            "for each one you confirm."
+        )
 
     mapped_columns = tuple(c.name for c in columns if c.name in matches)
     remaining = [c for c in columns if c.name not in matches]
@@ -939,6 +1139,13 @@ def run_scaffold_binding(
     orphan_columns: list[str] = []
     for column in remaining:
         purpose = classify_technical_field(column)
+        if purpose is None and column.name in match_result.relationship_candidates:
+            # An object-property name match is a stronger FK signal than the DD-139 FK-shaped
+            # name regex (which hits 13 of 3,087 real columns), so it earns the same DD-139
+            # `relationship` technical field rather than being dropped as an orphan. This keeps
+            # the column's value in the Silver output, so the relationships: entry the author is
+            # asked to add has something materialized to join against.
+            purpose = "relationship"
         if purpose is None:
             orphan_columns.append(column.name)
             continue
@@ -981,10 +1188,14 @@ def run_scaffold_binding(
         "grain": {"columns": list(grain_columns)},
         "identity": {"strategy": "source-natural", "sourceKey": list(identity_key)},
         "load": {"mode": archetype.load_mode},
-        "fields": seed_fields
-        if seed_fields is not None
-        else _build_field_entries(columns, matches),
     }
+    field_entries = (
+        seed_fields if seed_fields is not None else _build_field_entries(columns, matches)
+    )
+    # An empty `fields:` violates the schema (`required`, `minItems: 1`), so it is never written:
+    # the key is omitted entirely and the run is failed into a `.draft` artifact below (#336).
+    if field_entries:
+        doc["fields"] = field_entries
     if technical_entries:
         doc["technicalFields"] = technical_entries
     comment_hooks: dict[str, list[str]] = {}
@@ -1068,10 +1279,32 @@ def run_scaffold_binding(
     for key, comment_lines in comment_hooks.items():
         rendered = _insert_comment_before(rendered, key, comment_lines)
 
+    matched_property_count = len({str(row["property_uri"]) for row in matches.values()})
     header_lines = [
         f"# Generated by `kairos-ontology scaffold-binding` ({archetype.label} archetype).",
         f"# Source: {system}.{table}   Domain: {resolved_domain}   Target: {target_class_token}",
+        # The denominator is the target class's datatype-property universe, never the column
+        # count: party:Branch declares 2 datatype properties across 28 source columns, so a
+        # column-based rate would read 7% where the truth is 100% (#336 item 4).
+        f"# Matched {matched_property_count} of {match_result.datatype_property_count} datatype "
+        f"properties on {class_local_name}"
+        + (
+            f"; detected column prefix: {match_result.column_prefix}_"
+            if match_result.column_prefix
+            else "; no dominant column prefix detected"
+        )
+        + " (override with --column-prefix).",
     ]
+    if relationship_candidates:
+        header_lines.append(
+            f"# Relationship candidates -- object properties, NEVER valid under fields: "
+            f"({len(relationship_candidates)}): "
+            + ", ".join(f"{name} -> {uri}" for name, uri in relationship_candidates)
+        )
+        header_lines.append(
+            "# Author a relationships: entry for each one you confirm; each is kept as a DD-139 "
+            "technical field meanwhile so its value still reaches Silver."
+        )
     if mapped_columns:
         header_lines.append(
             f"# Mapped columns ({len(mapped_columns)}): {', '.join(mapped_columns)}"
@@ -1093,11 +1326,54 @@ def run_scaffold_binding(
     for note in notes:
         header_lines.append(f"# NOTE: {note}")
     binding_text = "\n".join(header_lines) + "\n" + rendered
+    if not field_entries:
+        binding_text += "\n".join(
+            _commented_fields_block(
+                orphan_columns or [c.name for c in columns],
+                target_class_token=target_class_token,
+                prefix=match_result.column_prefix,
+                class_local_name=class_local_name,
+            )
+        )
 
     default_out = hub_root / "integration" / "bindings" / f"{doc['metadata']['name']}.binding.yaml"
     resolved_out = Path(out_path) if out_path is not None else default_out
     if resolved_out.is_file() and not force:
         raise ScaffoldBindingError(f"{resolved_out} already exists; pass --force to overwrite.")
+
+    if not field_entries:
+        # #336: never report success over a binding the next command rejects. `fields:` is
+        # required/non-empty, so there is nothing schema-valid to write here at all -- but bare
+        # refusal would leave the author nothing (8 of the 20 ground-truth CargoWise tables match
+        # zero properties even with the full ladder). The commented skeleton goes to a sibling
+        # `.draft`, which the compiler's `*.binding.yaml` glob never picks up, and the run is
+        # failed through ScaffoldBindingError -> scaffold-system's declined("scaffold-failed").
+        draft_path = Path(str(resolved_out) + DRAFT_SUFFIX)
+        if dry_run:
+            disposition = f"dry-run: a commented draft would have been written to {draft_path}"
+        elif draft_path.is_file() and not force:
+            disposition = f"{draft_path} already exists and was left untouched (pass --force)"
+        else:
+            draft_path.parent.mkdir(parents=True, exist_ok=True)
+            draft_path.write_text(binding_text, encoding="utf-8")
+            disposition = f"a commented draft was written to {draft_path}"
+        candidates_hint = (
+            f" {len(relationship_candidates)} column(s) DID resolve to an object property "
+            "(relationship candidates, listed in the draft's header) -- those need a "
+            "relationships: entry, not a fields: entry."
+            if relationship_candidates
+            else ""
+        )
+        raise ScaffoldBindingError(
+            f"no datatype property on {target_class_token} matched any of the "
+            f"{len(columns)} column(s) of {system}.{table} "
+            f"(0 of {match_result.datatype_property_count} datatype properties; detected column "
+            f"prefix: {match_result.column_prefix or 'none'}). `fields:` is required and must be "
+            f"non-empty, so no binding was written -- {disposition}: complete and uncomment its "
+            f"fields: block, then drop the trailing `{DRAFT_SUFFIX}`. If the vendor prefix was "
+            f"mis-detected, re-run with --column-prefix.{candidates_hint}"
+        )
+
     written = False
     if dry_run:
         notes.append(f"dry-run: {resolved_out} was not written.")
@@ -1140,6 +1416,11 @@ def run_scaffold_binding(
         mapped_columns=mapped_columns,
         technical_field_columns=tuple(technical_columns),
         orphan_columns=tuple(orphan_columns),
+        relationship_candidates=relationship_candidates,
+        column_prefix=match_result.column_prefix,
+        matched_property_count=matched_property_count,
+        datatype_property_count=match_result.datatype_property_count,
+        object_property_count=match_result.object_property_count,
         dbt_model_path=dbt_model_path,
         dbt_model_text=dbt_model_text,
         dbt_model_written=dbt_model_written,

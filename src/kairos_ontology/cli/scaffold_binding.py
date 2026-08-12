@@ -51,6 +51,15 @@ from .shared import _autodetect_analysis_dir, _resolve_ref_models_dir
 )
 @click.option("--force", is_flag=True, default=False, help="Overwrite an existing output path.")
 @click.option(
+    "--column-prefix",
+    "column_prefix",
+    default=None,
+    help="Vendor column prefix to strip before matching (e.g. GB for GB_BranchName), without "
+    "the trailing underscore. Default: the dominant leading [A-Z0-9]{1,4}_ prefix across the "
+    "table's columns. Pass this when the auto-detected prefix is wrong, or to reach a second "
+    "prefix layer (e.g. --column-prefix JW_OA for JW_OA_DepartureLocation).",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     default=False,
@@ -89,6 +98,7 @@ def scaffold_binding_cmd(
     from_binding,
     out_path,
     force,
+    column_prefix,
     dry_run,
     accelerator,
     ref_models_dir_opt,
@@ -185,6 +195,7 @@ def scaffold_binding_cmd(
             accelerator=accelerator,
             analysis_dir=analysis_dir,
             dry_run=dry_run,
+            column_prefix=column_prefix,
         )
     except (ScaffoldBindingError, BindingArchetypeError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -192,6 +203,28 @@ def scaffold_binding_cmd(
     verb = "Would scaffold" if dry_run else "Scaffolded"
     click.echo(f"✅ {verb} {result.archetype.label} binding: {result.binding_path}")
     click.echo(f"   Domain: {result.domain}   Target class: {result.target_class}")
+    # The denominator is the target class's DATATYPE-property universe, not the column count:
+    # a column-based rate reads 7% for a class with 2 properties over 28 columns (#336 item 4).
+    prefix_note = (
+        f"detected column prefix: {result.column_prefix}_"
+        if result.column_prefix
+        else "no dominant column prefix detected"
+    )
+    click.echo(
+        f"   Matched {result.matched_property_count} of {result.datatype_property_count} "
+        f"datatype properties in the target class ({prefix_note}; override with --column-prefix)"
+    )
+    if result.relationship_candidates:
+        click.echo(
+            f"   🔗 Detected relationship candidates -- object properties, never valid under "
+            f"fields: ({len(result.relationship_candidates)}):"
+        )
+        for column_name, property_uri in result.relationship_candidates:
+            click.echo(f"      - {column_name} -> {property_uri}")
+        click.echo(
+            "      Author a relationships: entry for each one you confirm (kept as a DD-139 "
+            "technical field meanwhile)."
+        )
     if result.mapped_columns:
         click.echo(
             f"   Mapped columns ({len(result.mapped_columns)}): {', '.join(result.mapped_columns)}"
