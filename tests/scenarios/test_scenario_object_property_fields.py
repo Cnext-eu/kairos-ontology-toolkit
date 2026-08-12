@@ -140,6 +140,50 @@ def test_object_property_in_fields_is_rejected(tmp_path, range_shape):
     assert "party:country" in message
     assert "relationships:" in message
     assert "technicalFields:" in message
+    _assert_remediation_names_only_real_schema_keys(message)
+
+
+def _assert_remediation_names_only_real_schema_keys(message: str) -> None:
+    """Every ``key:`` the remediation names must exist in the binding schema.
+
+    The first version of this message said "with an on: clause". There is no ``on``
+    key — the schema requires ``join`` — and ``additionalProperties`` is false, so
+    following the advice failed. Worse, ``on`` is a YAML 1.1 boolean, so the author
+    got ``Additional properties are not allowed (True was unexpected)``, naming no
+    key at all. Asserting the wording alone would not have caught it; this checks
+    the named keys against the shipped schema.
+    """
+    import json
+    import re
+    from pathlib import Path
+
+    schema_path = (
+        Path(__file__).resolve().parents[1].parent
+        / "src"
+        / "kairos_ontology"
+        / "core"
+        / "compiler"
+        / "schema"
+        / "entity-binding.schema.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    definitions = schema.get("definitions", {})
+
+    known: set[str] = set(schema.get("properties", {}))
+    for definition in definitions.values():
+        known |= set(definition.get("properties", {}))
+        for branch in definition.get("oneOf", []) or []:
+            known |= set(branch.get("properties", {}))
+
+    # A key mentioned in prose is followed by whitespace ("join: clause"). A CURIE is
+    # not ("party:country"), so the lookahead keeps prefixed names out of the set.
+    named = set(re.findall(r"\b([a-zA-Z][a-zA-Z]*):(?=\s|$)", message))
+
+    unknown = {key for key in named if key not in known}
+    assert not unknown, (
+        f"remediation names schema key(s) that do not exist: {sorted(unknown)}; "
+        f"schema accepts {sorted(known)}"
+    )
 
 
 @pytest.mark.parametrize("range_shape", sorted(_SILENT_RANGE_SHAPES))

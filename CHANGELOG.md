@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc24] — 2026-08-12
+
+### Fixed
+- **The #280 remediation message named a binding key that does not exist.** It told authors to
+  declare the property "as a `relationships:` entry with an `on:` clause"; the schema requires
+  `join`, and `additionalProperties` is false. Following the advice verbatim therefore failed —
+  and failed opaquely, because `on` is a YAML 1.1 boolean, so the author got
+  `Additional properties are not allowed (True was unexpected)`, which names no key at all. Found by
+  authoring 20 real bindings against the message. The regression test now checks every `key:` the
+  message names against the shipped schema rather than asserting the wording, since asserting the
+  wording is what let the wrong key ship in the first place.
+
 ## [5.2.0rc23] — 2026-08-12
 
 ### Fixed
