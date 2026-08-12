@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0] — 2026-08-12
+
+First GA release of the 5.2 line. Every release since v5.0.2 had shipped as a pre-release, so the
+`stable` channel — which `init` uses to pin a freshly scaffolded hub — still pointed at v5.0.2 and a
+new client hub was pinned to a toolkit predating everything below. Promoting this line is what makes
+`stable` mean the current toolkit again.
+
+The rc sections below remain the detailed record. The headline changes in this line:
+
+### Added
+- **Structured, OpenTelemetry-ready logging and diagnostics** (DD-151, rc12) — `configure_logging()`
+  at the CLI boundary, NDJSON or text formatters, secret redaction, per-invocation `operation_id`
+  correlation, an optional `[otel]` OTLP bridge, and compiler trace points under `--debug`.
+- **`list-patterns --coverage`** (rc21) — a total ledger mapping every normative unit in the pattern
+  library to `enforced_by`, `not_enforceable` or `unrecognized_shape`. Against reference models
+  v1.15.0 that is 43 units, 1 enforced. It gates nothing; it exists so the enforceable surface is
+  auditable rather than assumed.
+- **Per-environment Databricks connection config and a fabric-cicd `parameter.yml`** (rc20), plus a
+  fail-closed `GoldContractError` when nothing is configured.
+
+### Fixed
+- **`import-flatfile` lost 66 of 70 tables to one timezone-aware column** and aborted a whole
+  directory on any unreadable file (rc13). Directory mode is now partial-failure tolerant.
+- **Unhandled exceptions produced zero structured records** (rc14) — the one failure mode the new
+  observability layer could not see.
+- **`import-tmdl` wrote outside the hub**, and expanding a PBIP archive would have committed raw
+  report definitions and connection strings into it (rc15).
+- **Source samples redacted timestamps and amounts as phone numbers** (rc17) — 1,229 false
+  redactions on a real 70-table import, now 45, all deliberate.
+- **An `owl:ObjectProperty` under `fields:` silently emitted the raw foreign key** as a business
+  attribute, while the *correct* authoring was rejected (rc18). This is the
+  `silently-dropped-relationship` anti-pattern the pattern library names, performed by the compiler.
+- **One toolkit pin per hub, one pinning policy, and no silent downgrade** on `update --upgrade`
+  (rc19).
+- **`validate` rejected the deferred-range shape `compile` declares supported** (rc22), and
+  `rdfs:range owl:Thing` — the workaround authors reached for — is now warned about, because it is
+  the one form that breaks at compile time.
+- **`guard-scope` reported false cleans, and the `--allow` globs published in the design skills could
+  not match**, so the guard flagged the file the skill had just authored and the skill then told the
+  agent to restore pre-patch content (rc23).
+
 ## [5.2.0rc24] — 2026-08-12
 
 ### Fixed
