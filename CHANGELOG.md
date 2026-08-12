@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.1rc1] — 2026-08-12
+
+Opens the post-GA fix line. No functional change; `__version__` is moved off the
+released `5.2.0` so that subsequent fixes have a pre-release to accumulate in and
+the GA tag stays immutable.
+
 ## [5.2.0] — 2026-08-12
 
 First GA release of the 5.2 line. Every release since v5.0.2 had shipped as a pre-release, so the
