@@ -465,6 +465,144 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
         raise SystemExit(1)
 
 
+@click.command(name="field-mapping-report")
+@click.option(
+    "--ontologies",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--bindings",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/bindings/ directory of v5 EntityBindings (default: auto-detect).",
+)
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ directory, for sample values (default: auto-detect).",
+)
+@click.option(
+    "--source-system",
+    required=True,
+    help="Source system to derive the mapping from (e.g. 'cargowise'), matched against the "
+    "first dot-segment of each binding's source.relation.",
+)
+@click.option(
+    "--domain",
+    "domains",
+    multiple=True,
+    help="Restrict to specific domain(s) (repeatable). Default: every domain ontology found.",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    default=None,
+    help="Output .xlsx path (default: ontology-hub-publish/reports/field-mapping-<source-system>.xlsx).",
+)
+def field_mapping_report_cmd(ontologies, bindings, sources, source_system, domains, output):
+    """Generate a field-mapping Excel report: ontology fields x one source system.
+
+    One worksheet per domain, listing every declared scalar (owl:DatatypeProperty) field
+    with its ontology-authored description and IRI, cross-referenced against the
+    EntityBindings that map the given --source-system onto it -- embedding the mapped
+    source column and a real sample value when source vocabulary/sample data exists for it.
+
+    Object properties / relationship joins are out of scope for this report; only
+    fields:-declared scalar mappings are shown.
+
+    \b
+    Examples:
+      kairos-ontology field-mapping-report --source-system cargowise
+      kairos-ontology field-mapping-report --source-system cargowise --domain party
+    """
+    from ..core.field_mapping_report import run_field_mapping_report, write_field_mapping_workbook
+    from ..core.hub_utils import find_hub_root, publish_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=True)
+
+    if ontologies is None:
+        if hub_root:
+            ontologies_path = hub_root / "model" / "ontologies"
+        else:
+            click.echo(
+                "❌ Cannot find model/ontologies/ directory. Use --ontologies to specify.",
+                err=True,
+            )
+            raise SystemExit(1)
+    else:
+        ontologies_path = Path(ontologies)
+
+    if bindings is None:
+        if hub_root:
+            bindings_dir = hub_root / "integration" / "bindings"
+        else:
+            click.echo(
+                "❌ Cannot find integration/bindings/ directory. Use --bindings to specify.",
+                err=True,
+            )
+            raise SystemExit(1)
+    else:
+        bindings_dir = Path(bindings)
+
+    if sources is None:
+        if hub_root:
+            sources_dir = hub_root / "integration" / "sources"
+        else:
+            click.echo(
+                "❌ Cannot find integration/sources/ directory. Use --sources to specify.",
+                err=True,
+            )
+            raise SystemExit(1)
+    else:
+        sources_dir = Path(sources)
+
+    if output is None:
+        report_dir = publish_root(hub_root) / "reports" if hub_root else Path("ontology-hub-publish/reports")
+        output_path = report_dir / f"field-mapping-{source_system}.xlsx"
+    else:
+        output_path = Path(output)
+
+    click.echo("📄 Generating field-mapping report")
+    click.echo(f"   Ontologies:    {ontologies_path}")
+    click.echo(f"   Bindings:      {bindings_dir}")
+    click.echo(f"   Sources:       {sources_dir}")
+    click.echo(f"   Source system: {source_system}")
+    click.echo(f"   Output:        {output_path}")
+    click.echo()
+
+    report = run_field_mapping_report(
+        ontologies_path=ontologies_path,
+        bindings_dir=bindings_dir,
+        sources_dir=sources_dir,
+        hub_root=hub_root or ontologies_path.parent.parent,
+        source_system=source_system,
+        domains=tuple(domains),
+    )
+
+    try:
+        write_field_mapping_workbook(report, output_path)
+    except ImportError as e:
+        click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+
+    total_fields = sum(len(rows) for rows in report.rows_by_domain.values())
+    mapped_fields = sum(
+        1 for rows in report.rows_by_domain.values() for row in rows if row.source_columns
+    )
+    click.echo(f"✅ Field-mapping report written: {output_path}")
+    click.echo(
+        f"   {len(report.rows_by_domain)} domain(s), {total_fields} field(s), "
+        f"{mapped_fields} mapped to '{source_system}'"
+    )
+    for note in report.notes:
+        click.echo(f"   ⚠ {note}")
+
+
 @click.command(name="generate-inventory")
 @click.option(
     "--ontology-dir",

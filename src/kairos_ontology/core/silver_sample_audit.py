@@ -14,7 +14,7 @@ import yaml
 from rdflib import Graph, Namespace, RDF, RDFS
 
 from .compiler import CompileError, adapt_binding, load_entity_binding, resolve_scope
-from .compiler.kernel import _binding_domain
+from .compiler.kernel import _binding_domain, _binding_source_ref
 from .projections.dbt.mapping_bind import mapping_context
 from .projections.dbt.mapping_specs import ColumnMappingFact, SourceMappings
 from .projections.medallion_dbt_projector import _parse_skos_mappings
@@ -356,20 +356,41 @@ def _diagnostics_message(exc: CompileError) -> str:
     return "; ".join(diagnostic.message for diagnostic in exc.diagnostics)
 
 
-def load_binding_mappings(
-    hub_root: Path, bindings_dir: Path
-) -> tuple[dict[str, Any], dict[str, str], list[AuditFinding]]:
-    """Resolve v5 EntityBindings to the same ``column_maps`` facade v4 SKOS mappings use.
+def _binding_matches_system(text: str, source_system: str) -> bool:
+    """True when *text*'s declared ``source.relation`` belongs to *source_system*.
 
-    Reuses the compiler's own binding resolution (``resolve_scope`` + ``adapt_binding`` +
-    ``mapping_context``) rather than re-deriving source-relation, property, or expression
-    resolution; the only bespoke code here is domain enumeration, a small YAML peek mirroring
+    Matched on the relation's first dot-segment (e.g. ``"cargowise"`` in
+    ``"cargowise.GlbStaff.sample"``) -- always present on a resolvable binding, unlike a
+    matching bronze ``SourceColumn``/sample entry, which issue #298 documents may not exist
+    for every declared column.
+    """
+    relation = _binding_source_ref(text)
+    system = relation.split(".", 1)[0] if relation else ""
+    return system.lower() == source_system.lower()
+
+
+def resolve_v5_column_facts(
+    hub_root: Path, bindings_dir: Path, *, source_system: str | None = None
+) -> tuple[list[ColumnMappingFact], list[AuditFinding]]:
+    """Resolve every v5 EntityBinding's column mappings via the compiler's own resolution.
+
+    Reuses the compiler's own binding resolution (``resolve_scope`` + ``adapt_binding``)
+    rather than re-deriving source-relation, property, or expression resolution; the only
+    bespoke code here is domain enumeration, a small YAML peek mirroring
     ``core.compiler.kernel._binding_domain`` (issue #348).
+
+    ``source_system``, if given, restricts resolution to bindings whose ``source.relation``
+    belongs to that system (see `_binding_matches_system`) -- filtered before
+    ``adapt_binding`` runs, so an out-of-scope binding costs nothing beyond the read.
+
+    Shared by ``load_binding_mappings`` (silver-sample audit) and
+    ``core.field_mapping_report`` (field-mapping report) -- both need the identical
+    resolve_scope/adapt_binding walk over every domain's bindings; only what each does with
+    the resulting facts differs.
     """
     findings: list[AuditFinding] = []
-    empty: dict[str, Any] = {"table_maps": {}, "column_maps": {}}
     if not bindings_dir.is_dir() or not any(bindings_dir.glob("*.binding.yaml")):
-        return empty, {}, findings
+        return [], findings
 
     columns: list[ColumnMappingFact] = []
     for domain in _discover_binding_domains(bindings_dir):
@@ -392,7 +413,6 @@ def load_binding_mappings(
             path = Path(path_str)
             try:
                 text = path.read_text(encoding="utf-8")
-                binding = load_entity_binding(text, path=str(path))
             except OSError as exc:
                 findings.append(
                     AuditFinding(
@@ -403,6 +423,10 @@ def load_binding_mappings(
                     )
                 )
                 continue
+            if source_system is not None and not _binding_matches_system(text, source_system):
+                continue
+            try:
+                binding = load_entity_binding(text, path=str(path))
             except CompileError as exc:
                 findings.append(
                     AuditFinding(
@@ -439,6 +463,18 @@ def load_binding_mappings(
                 continue
             columns.extend(bound.mappings.columns)
 
+    return columns, findings
+
+
+def load_binding_mappings(
+    hub_root: Path, bindings_dir: Path
+) -> tuple[dict[str, Any], dict[str, str], list[AuditFinding]]:
+    """Resolve v5 EntityBindings to the same ``column_maps`` facade v4 SKOS mappings use."""
+    empty: dict[str, Any] = {"table_maps": {}, "column_maps": {}}
+    if not bindings_dir.is_dir() or not any(bindings_dir.glob("*.binding.yaml")):
+        return empty, {}, []
+
+    columns, findings = resolve_v5_column_facts(hub_root, bindings_dir)
     mappings, namespaces = mapping_context(SourceMappings(tables=(), columns=tuple(columns)))
     return mappings, namespaces, findings
 

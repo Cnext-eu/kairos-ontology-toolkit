@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`field-mapping-report`**: generates an Excel workbook (one worksheet per domain) listing
+  every declared scalar `owl:DatatypeProperty` field with its ontology-authored description
+  and IRI, cross-referenced against the EntityBindings that map a chosen `--source-system`
+  (e.g. `cargowise`) onto it -- embedding the mapped source column and a real sample value
+  when source vocabulary/sample data is available for it. Unmapped fields are shown with a
+  blank source/sample rather than omitted, so coverage gaps stay visible instead of reading
+  as complete. Reuses the compiler's own binding resolution (`resolve_scope`/`adapt_binding`,
+  factored out of `silver_sample_audit.py`'s `load_binding_mappings` into a shared
+  `resolve_v5_column_facts` with an optional `source_system` filter) and the canonical
+  `load_ontology`/`SemanticIndex` loader (DD-103) for per-domain property enumeration, scoped
+  to each domain file's own asserted properties (`provenance.import_depth == 0`) so imported
+  properties from other domains don't leak into a domain's tab. A class also picks up
+  properties from its ancestor classes ("inherited", tagged in a new `Origin` column
+  alongside "direct") even when the ancestor is declared in a different, `owl:imports`-ed
+  foundation/reference file -- via `SemanticIndex.class_properties`, computed under the
+  `rdfs` profile (the default `asserted` profile skips subclass-transitivity entirely).
+  Object properties (relationship joins) are out of scope for this version -- only
+  `fields:`-declared scalar mappings are shown; a CASE/fallback expression's multiple source
+  columns are still surfaced correctly via `expression_input_uris`, not just its
+  (often-empty) top-level column. A field with no binding under the selected source system
+  shows `NO-MAPPING-FOUND` in its "Source Field(s)" cell rather than a blank one
+  indistinguishable from a mapped-but-unsampled field. Columns are ordered `Ontology Class
+  (Label) | Ontology Field (Label) | Origin | Ontology Description | Range | Source
+  Field(s) | Source Field Example | Ontology Reference IRI` -- `Range` is the property's
+  compacted `rdfs:range` (e.g. `xsd:string`) -- with a styled header row (colored fill, bold
+  white text, frozen, auto-filtered) and auto-sized/wrapped columns. Ships under the
+  existing `flatfile` extra (`openpyxl`).
+
 ### Fixed
 - **`audit-silver-samples` (DD-089) read only the v4 `model/mappings/` SKOS surface, so on a v5
   hub it audited nothing and reported an unqualified `✅ ... (100% coverage)`** (#348). Root
