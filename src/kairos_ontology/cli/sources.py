@@ -929,6 +929,83 @@ def audit_silver_samples_cmd(sources, mappings, bindings, dbt_output, output, fa
         raise SystemExit(1)
 
 
+@click.command(name="audit-column-coverage")
+@click.option(
+    "--sources",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/ directory (default: auto-detect).",
+)
+@click.option(
+    "--bindings",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/bindings/ directory of v5 EntityBindings (default: auto-detect).",
+)
+@click.option(
+    "--fail-on",
+    type=click.Choice(["none", "any"]),
+    default="none",
+    help="Exit non-zero when any orphan column or unbound table is found (default: none).",
+)
+def audit_column_coverage_cmd(sources, bindings, fail_on):
+    """Advisory gate: source columns with real data that no binding references (issue #353).
+
+    For every bound source table, flags a column with real, populated sample variation
+    that isn't referenced anywhere in that table's binding(s) -- not in fields:, not in
+    technicalFields:, not in identity/grain/relationships/quality/load.incremental --
+    and separately lists source tables with zero bindings at all. Audit-trail/operational
+    columns (created/updated/system timestamps, GUIDs, hashes) are excluded by name, reusing
+    the same pattern list `propose-alignment` already uses (DD-077), not a bespoke one.
+
+    This is the closest v5 equivalent to v4's deleted Claim Registry column-omission gate --
+    recomputed fresh each run (v5 is stateless, DD-133), not persisted. Advisory by default:
+    a flagged column is a candidate for authoring, not proof that it should be mapped --
+    check the binding's own documented exclusions first.
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.column_coverage_audit import run_column_coverage_audit
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    base = hub_root or cwd
+
+    sources_path = Path(sources) if sources else base / "integration" / "sources"
+    bindings_path = Path(bindings) if bindings else base / "integration" / "bindings"
+
+    click.echo("🔎 Running column-coverage audit")
+    click.echo(f"   Sources:  {sources_path}")
+    click.echo(f"   Bindings: {bindings_path}")
+    click.echo()
+
+    report = run_column_coverage_audit(sources_dir=sources_path, bindings_dir=bindings_path)
+
+    if report.unbound_tables:
+        click.echo(f"⚠️  {len(report.unbound_tables)} source table(s) with zero bindings:")
+        for finding in report.unbound_tables:
+            click.echo(f"   {finding.table} ({finding.column_count} columns)")
+        click.echo()
+
+    if report.orphan_columns:
+        click.echo(f"⚠️  {len(report.orphan_columns)} unmapped column(s) with real data:")
+        for finding in report.orphan_columns:
+            bindings_note = ", ".join(finding.binding_names)
+            click.echo(
+                f"   {finding.table}.{finding.column} "
+                f"(distinct={finding.distinct_count}/{finding.row_count}, "
+                f"type={finding.data_type}) sample={finding.sample_value!r} "
+                f"[bound by: {bindings_note}]"
+            )
+    else:
+        click.echo("✅ No unmapped columns with real data found.")
+
+    for note in report.notes:
+        click.echo(f"   ⚠ {note}")
+
+    if fail_on == "any" and (report.orphan_columns or report.unbound_tables):
+        raise SystemExit(1)
+
+
 @click.command(name="propose-alignment")
 @click.option(
     "--analysis",

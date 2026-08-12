@@ -60,6 +60,7 @@ from .sources import (
     import_flatfile,
     analyse_sources_cmd,
     audit_silver_samples_cmd,
+    audit_column_coverage_cmd,
     propose_alignment_cmd,
     discovery_status_cmd,
     discovery_conformance,
@@ -261,6 +262,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(import_flatfile)
     group.add_command(analyse_sources_cmd)
     group.add_command(audit_silver_samples_cmd)
+    group.add_command(audit_column_coverage_cmd)
     group.add_command(propose_alignment_cmd)
     group.add_command(discovery_status_cmd)
     group.add_command(discovery_conformance)
