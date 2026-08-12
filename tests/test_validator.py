@@ -6,6 +6,7 @@ import json
 
 import pytest
 from kairos_ontology.core.validator import (
+    render_validation_markdown,
     run_validation,
     validate_gdpr,
     run_gdpr_validation,
@@ -530,6 +531,243 @@ class TestNamingConventions:
         assert payload["syntax"]["passed"] == 1
         assert payload["syntax"]["failed"] == 0
         assert payload["naming"]["failed"] == 1
+
+
+class TestObjectPropertyDeferredRange:
+    """DD-133 §7: an object property may defer its ``rdfs:range``.
+
+    ``compile`` supports a ``relationships:`` entry whose object property declares no
+    named ``rdfs:range`` — the reference-model ``deferred-relationship`` shape, validated
+    on its authored ``target:``/``on:`` endpoint alone. ``validate`` used to hard-error
+    exactly that shape, so the two halves of one package disagreed.
+    """
+
+    _HEADER = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+"""
+
+    def test_object_property_without_range_warns_and_passes(self):
+        """A range-less object property is a warning, not an error, and does not fail."""
+        content = (
+            self._HEADER
+            + """
+:country a owl:ObjectProperty ;
+    rdfs:label "Country" ;
+    rdfs:domain :Customer .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert result["passed"] is True, result["errors"]
+        assert not result["errors"]
+        warnings = [w for w in result["warnings"] if w["code"] == "property_missing_range"]
+        assert len(warnings) == 1, result["warnings"]
+        assert warnings[0]["level"] == "warning"
+        assert warnings[0]["term_uri"] == "http://kairos.example/ontology/country"
+        assert "DD-133" in warnings[0]["message"]
+
+    def test_datatype_property_without_range_still_errors_alongside_it(self):
+        """The relaxation is scoped to object properties: a datatype sibling in the same
+        file still hard-errors, so ``validate`` keeps demanding a scalar type."""
+        content = (
+            self._HEADER
+            + """
+:country a owl:ObjectProperty ;
+    rdfs:label "Country" ;
+    rdfs:domain :Customer .
+
+:customerName a owl:DatatypeProperty ;
+    rdfs:label "Customer Name" ;
+    rdfs:domain :Customer .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert result["passed"] is False
+        errors = [e for e in result["errors"] if e["code"] == "property_missing_range"]
+        assert [e["term_uri"] for e in errors] == ["http://kairos.example/ontology/customerName"], (
+            result["errors"]
+        )
+        warnings = [w for w in result["warnings"] if w["code"] == "property_missing_range"]
+        assert [w["term_uri"] for w in warnings] == ["http://kairos.example/ontology/country"]
+
+    def test_object_property_ranged_owl_thing_warns(self):
+        """``rdfs:range owl:Thing`` is worse than omitting the range — the compiler's
+        relationship guard rejects it while an omitted range compiles. Pinned end-to-end
+        in ``tests/scenarios/test_scenario_object_property_fields.py``."""
+        content = (
+            self._HEADER
+            + """
+:country a owl:ObjectProperty ;
+    rdfs:label "Country" ;
+    rdfs:domain :Customer ;
+    rdfs:range owl:Thing .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert result["passed"] is True, result["errors"]
+        warnings = [w for w in result["warnings"] if w["code"] == "property_range_owl_thing"]
+        assert len(warnings) == 1, result["warnings"]
+        assert warnings[0]["level"] == "warning"
+        assert warnings[0]["term_uri"] == "http://kairos.example/ontology/country"
+        message = warnings[0]["message"]
+        assert "worse than omitting" in message
+        assert "safety.relationship-endpoint" in message
+        assert "DD-133" in message
+        # It is a *different* finding from the deferred-range one, not a relabelling.
+        assert not [w for w in result["warnings"] if w["code"] == "property_missing_range"]
+
+    def test_named_class_range_produces_no_range_finding(self):
+        """Guard against the warning firing on every object property."""
+        content = (
+            self._HEADER
+            + """
+:Country a owl:Class ;
+    rdfs:label "Country" ;
+    rdfs:comment "A country" .
+
+:country a owl:ObjectProperty ;
+    rdfs:label "Country" ;
+    rdfs:domain :Customer ;
+    rdfs:range :Country .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert result["passed"] is True, result["errors"]
+        assert result["warnings"] == []
+
+    def test_deferred_range_does_not_fail_run_validation(self, temp_dir, capsys):
+        """Integration: the shape ``compile`` supports no longer trips the exit code, and
+        the warning is carried into the JSON report."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(
+            self._HEADER
+            + """
+:country a owl:ObjectProperty ;
+    rdfs:label "Country" ;
+    rdfs:domain :Customer .
+""",
+            encoding="utf-8",
+        )
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+        report_path = temp_dir / "output" / "validation-report.json"
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            report_path=report_path,
+        )
+
+        assert "All validations passed" in capsys.readouterr().out
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        assert payload["naming"]["failed"] == 0
+        assert payload["naming"]["passed"] == 1
+        codes = {w["code"] for w in payload["naming"]["warnings"]}
+        assert codes == {"property_missing_range"}
+
+
+class TestMarkdownReportWarnings:
+    """``render_validation_markdown`` used to key off ``errors`` only and ``continue`` on
+    an empty list, so a warning could never reach the report at all."""
+
+    _RENDER_KWARGS = dict(
+        toolkit_version="9.9.9",
+        catalog_path=None,
+        ref_models_dir=None,
+        accelerator=None,
+        do_syntax=True,
+        do_shacl=False,
+        do_consistency=False,
+        degraded=False,
+        ontology_files=[],
+    )
+
+    def _render(self, results, tmp_path):
+        return render_validation_markdown(
+            results,
+            ontologies_path=tmp_path / "ontologies",
+            shapes_path=tmp_path / "shapes",
+            **self._RENDER_KWARGS,
+        )
+
+    def test_naming_warnings_are_rendered_and_counted(self, tmp_path):
+        markdown = self._render(
+            {
+                "naming": {
+                    "passed": 1,
+                    "failed": 0,
+                    "errors": [],
+                    "warnings": [
+                        {
+                            "level": "warning",
+                            "code": "property_missing_range",
+                            "message": "Object property :country is missing rdfs:range.",
+                            "term_uri": "http://kairos.example/ontology/country",
+                            "file": "customer.ttl",
+                        }
+                    ],
+                },
+            },
+            tmp_path,
+        )
+
+        assert "| Check | Passed | Failed | Warnings |" in markdown
+        assert "| naming | 1 | 0 | 1 |" in markdown
+        assert "### Naming warnings" in markdown
+        assert "- `customer.ttl`: Object property :country is missing rdfs:range." in markdown
+        # Warnings must not be re-reported as errors.
+        assert "### Naming errors" not in markdown
+
+    def test_errors_precede_warnings_and_rendering_is_deterministic(self, tmp_path):
+        results = {
+            "naming": {
+                "passed": 0,
+                "failed": 1,
+                "errors": [
+                    {"code": "b_error", "message": "beta error", "file": "b.ttl"},
+                    {"code": "a_error", "message": "alpha error", "file": "a.ttl"},
+                ],
+                "warnings": [
+                    {"code": "b_warn", "message": "beta warning", "file": "b.ttl"},
+                    {"code": "a_warn", "message": "alpha warning", "file": "a.ttl"},
+                ],
+            },
+        }
+
+        markdown = self._render(results, tmp_path)
+
+        assert markdown == self._render(results, tmp_path)
+        assert markdown.index("### Naming errors") < markdown.index("### Naming warnings")
+        # Sorted by _finding_sort_key (DD-120), not by authored order.
+        assert markdown.index("alpha error") < markdown.index("beta error")
+        assert markdown.index("alpha warning") < markdown.index("beta warning")
+
+    def test_sections_without_warnings_key_are_not_mandatory(self, tmp_path):
+        """Callers build partial ``results`` dicts; every section stays optional."""
+        markdown = self._render({"syntax": {"passed": 2, "failed": 0, "errors": []}}, tmp_path)
+
+        assert "| syntax | 2 | 0 | 0 |" in markdown
+        assert "| decisions | 0 | 0 | 0 |" in markdown
+        assert "warnings" not in markdown.split("## Findings")[1].replace("| Warnings |", "")
 
 
 # -----------------------------------------------------------------------

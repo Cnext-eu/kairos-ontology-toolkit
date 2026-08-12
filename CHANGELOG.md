@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc22] — 2026-08-12
+
+### Fixed
+- **`validate` hard-errored on the exact shape `compile` declares supported.** DD-133 §7 states that a
+  `relationships:` entry does not require the object property to declare a named `rdfs:range` — "it is
+  exactly the shape the reference-model `deferred-relationship` pattern prescribes" — and the
+  `binding.object-property-in-fields` row in the diagnostic catalogue restates it. But
+  `validate_naming_conventions` raised `property_missing_range` as a blocking error for every
+  property, so the two halves of the same package disagreed and the pattern could not be authored.
+  Missing `rdfs:range` is now a **warning for object properties** and remains an **error for datatype
+  properties**, where a scalar with no `xsd:` type is a genuine oversight. `property_missing_domain`
+  is deliberately unchanged for both: an omitted domain is not the symmetric case — the property
+  attaches to no class and becomes invisible to the compiler, `fit-report`, `coverage-report` and
+  every dbt projector.
+
+### Added
+- **New `property_range_owl_thing` warning.** `rdfs:range owl:Thing` on an object property is *worse*
+  than omitting the range, and nothing said so. Verified on the real compiler: an omitted range
+  leaves `range_uri` empty so the relationship guard short-circuits and the binding compiles, while
+  `owl:Thing` is a plain `URIRef` that can never equal the authored target, producing a hard
+  `safety.relationship-endpoint` failure. So the workaround authors reach for when `validate` rejects
+  a deferred range is the one form that breaks at compile time — silently, since `validate` passed it.
+- **Warnings now render in the Markdown validation report.** `render_validation_markdown` keyed off
+  `errors` and skipped any section without them, so every warning the validator produced — including
+  the two above and the existing PII and import warnings — was written to `validation-report.json`
+  and never shown. The summary table gains a `Warnings` column and the findings loop renders both
+  kinds, errors first, with the DD-120 deterministic ordering preserved.
+
 ## [5.2.0rc21] — 2026-08-12
 
 ### Added

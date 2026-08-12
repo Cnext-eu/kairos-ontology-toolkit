@@ -279,7 +279,19 @@ def validate_naming_conventions(ontology_content: str) -> dict:
         ``owl:versionInfo``;
       - every class has ``rdfs:label`` and ``rdfs:comment``;
       - every ``owl:DatatypeProperty``/``owl:ObjectProperty`` has
-        ``rdfs:label``, ``rdfs:domain``, and ``rdfs:range``;
+        ``rdfs:label`` and ``rdfs:domain``;
+      - every ``owl:DatatypeProperty`` has ``rdfs:range`` (error). For an
+        ``owl:ObjectProperty`` an absent ``rdfs:range`` is only a **warning**:
+        DD-133 §7 states that a ``relationships:`` entry does not require the
+        object property to declare a named ``rdfs:range``, and the compiler
+        validates such a relationship on its authored ``target:``/``on:``
+        endpoint alone — it is exactly the reference-model
+        ``deferred-relationship`` shape. Erroring here would block, in
+        ``validate``, a shape ``compile`` declares supported.
+      - an ``owl:ObjectProperty`` whose ``rdfs:range`` *is* ``owl:Thing``
+        (warning): that is strictly worse than omitting the range, because the
+        compiler's relationship guard rejects a declared range that differs from
+        the authored ``target:`` class while an omitted one compiles.
       - class names are PascalCase; property names are camelCase;
       - no term is declared as more than one of
         {Class, DatatypeProperty, ObjectProperty}.
@@ -295,6 +307,7 @@ def validate_naming_conventions(ontology_content: str) -> dict:
     graph.parse(data=ontology_content, format="turtle")
 
     errors: list[NamingDiagnostic] = []
+    warnings: list[NamingDiagnostic] = []
 
     ontology_subjects = [s for s in graph.subjects(RDF.type, OWL.Ontology) if isinstance(s, URIRef)]
     if not ontology_subjects:
@@ -337,9 +350,13 @@ def validate_naming_conventions(ontology_content: str) -> dict:
             )
 
     class_uris = {str(s) for s in graph.subjects(RDF.type, OWL.Class) if isinstance(s, URIRef)}
-    property_uris = {
+    datatype_property_uris = {
         str(s) for s in graph.subjects(RDF.type, OWL.DatatypeProperty) if isinstance(s, URIRef)
-    } | {str(s) for s in graph.subjects(RDF.type, OWL.ObjectProperty) if isinstance(s, URIRef)}
+    }
+    object_property_uris = {
+        str(s) for s in graph.subjects(RDF.type, OWL.ObjectProperty) if isinstance(s, URIRef)
+    }
+    property_uris = datatype_property_uris | object_property_uris
 
     for term_uri in sorted(class_uris & property_uris):
         errors.append(
@@ -401,12 +418,60 @@ def validate_naming_conventions(ontology_content: str) -> dict:
                     term_uri=property_uri,
                 )
             )
-        if graph.value(subject, RDFS.range) is None:
-            errors.append(
+        # An object property that is *also* declared a datatype property is not a
+        # trustworthy "object property" — keep the strict datatype rules for it.
+        is_object_property = (
+            property_uri in object_property_uris and property_uri not in datatype_property_uris
+        )
+        declared_range = graph.value(subject, RDFS.range)
+        if declared_range is None:
+            if is_object_property:
+                # DD-133 §7: "A relationships: entry does not require the object property
+                # to declare a named rdfs:range." An absent range leaves the range
+                # unconstrained and the relationship is validated on its authored
+                # target:/on: endpoint alone — the reference-model deferred-relationship
+                # shape. compile supports it, so validate must not block it; warn only.
+                warnings.append(
+                    NamingDiagnostic(
+                        level="warning",
+                        code="property_missing_range",
+                        message=(
+                            f"Object property {property_uri} is missing rdfs:range. This is "
+                            "supported (DD-133 §7): the relationship is validated on its "
+                            "authored target:/on: endpoint alone, as the reference-model "
+                            "deferred-relationship pattern prescribes. Declare the target "
+                            "class once it exists."
+                        ),
+                        term_uri=property_uri,
+                    )
+                )
+            else:
+                errors.append(
+                    NamingDiagnostic(
+                        level="error",
+                        code="property_missing_range",
+                        message=f"Property {property_uri} is missing rdfs:range.",
+                        term_uri=property_uri,
+                    )
+                )
+        elif is_object_property and declared_range == OWL.Thing:
+            # Worse than omitting it: the compiler's relationship guard is
+            # ``prop.range_uri and prop.range_uri != target_class.uri``, so an omitted
+            # range short-circuits and compiles, while owl:Thing is a resolvable named
+            # range that never equals the authored target: class and therefore always
+            # fails as safety.relationship-endpoint (DD-133 §7).
+            warnings.append(
                 NamingDiagnostic(
-                    level="error",
-                    code="property_missing_range",
-                    message=f"Property {property_uri} is missing rdfs:range.",
+                    level="warning",
+                    code="property_range_owl_thing",
+                    message=(
+                        f"Object property {property_uri} declares rdfs:range owl:Thing, which "
+                        "is worse than omitting rdfs:range entirely. The compiler compares a "
+                        "declared named range against the authored target: class, so "
+                        "owl:Thing always fails as safety.relationship-endpoint, whereas an "
+                        "omitted range leaves the range unconstrained and compiles (DD-133 "
+                        "§7). Remove the rdfs:range triple, or declare the real target class."
+                    ),
                     term_uri=property_uri,
                 )
             )
@@ -423,7 +488,7 @@ def validate_naming_conventions(ontology_content: str) -> dict:
     return {
         "passed": len(errors) == 0,
         "errors": [e.to_dict() for e in errors],
-        "warnings": [],
+        "warnings": [w.to_dict() for w in warnings],
     }
 
 
@@ -591,26 +656,41 @@ def render_validation_markdown(
     lines.append("")
     lines.append("## Findings")
     lines.append("")
-    lines.append("| Check | Passed | Failed |")
-    lines.append("|-------|--------|--------|")
-    for section in ("syntax", "naming", "imports", "shacl", "consistency", "decisions"):
+    sections = ("syntax", "naming", "imports", "shacl", "consistency", "decisions")
+    lines.append("| Check | Passed | Failed | Warnings |")
+    lines.append("|-------|--------|--------|----------|")
+    for section in sections:
         data = results.get(section, {})
-        lines.append(f"| {section} | {data.get('passed', 0)} | {data.get('failed', 0)} |")
+        warning_count = len(data.get("warnings") or [])
+        lines.append(
+            f"| {section} | {data.get('passed', 0)} | {data.get('failed', 0)} | {warning_count} |"
+        )
     lines.append("")
-    for section in ("syntax", "naming", "imports", "shacl", "consistency", "decisions"):
-        errors = results.get(section, {}).get("errors", [])
-        if not errors:
-            continue
-        lines.append(f"### {section.capitalize()} errors")
-        lines.append("")
-        for err in sorted(errors, key=_finding_sort_key):
-            if isinstance(err, dict):
-                file_ = err.get("file", "")
-                message = err.get("error") or err.get("message") or err.get("report") or ""
-                lines.append(f"- `{file_}`: {message}")
-            else:
-                lines.append(f"- {err}")
-        lines.append("")
+    # Warnings are rendered as well as errors — they never feed ``total_failed`` or the
+    # exit code, but a finding nobody can see is a finding nobody acts on (e.g. the
+    # DD-133 §7 object-property range warnings). Errors first, then warnings; within a
+    # kind the section order is fixed and the entries are sorted by ``_finding_sort_key``,
+    # so the rendered Markdown stays byte-deterministic (DD-120).
+    for kind in ("errors", "warnings"):
+        for section in sections:
+            findings = results.get(section, {}).get(kind) or []
+            if not findings:
+                continue
+            lines.append(f"### {section.capitalize()} {kind}")
+            lines.append("")
+            for finding in sorted(findings, key=_finding_sort_key):
+                if isinstance(finding, dict):
+                    file_ = finding.get("file", "")
+                    message = (
+                        finding.get("error")
+                        or finding.get("message")
+                        or finding.get("report")
+                        or ""
+                    )
+                    lines.append(f"- `{file_}`: {message}")
+                else:
+                    lines.append(f"- {finding}")
+            lines.append("")
     if state_proposal is not None:
         lines.append("## Suggested lifecycle state (non-writing signal)")
         lines.append("")

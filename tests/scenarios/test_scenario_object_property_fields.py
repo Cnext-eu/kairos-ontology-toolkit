@@ -56,9 +56,17 @@ _SILENT_RANGE_SHAPES = {
 }
 
 
-def _hub_with_range_shape(tmp_path: Path, range_shape: str) -> Path:
+# ``owl:Thing`` is NOT a silent shape: it is a resolvable named range, so the compiler's
+# guard sees it and rejects it. Kept next to the silent shapes because the whole point is
+# that the two behave oppositely.
+_OWL_THING_RANGE = """party:country a owl:ObjectProperty ;
+  rdfs:domain party:Customer ; rdfs:range owl:Thing .
+"""
+
+
+def _hub_with_range_declaration(tmp_path: Path, name: str, declaration: str) -> Path:
     """Copy the v5 acceptance hub, rewriting ``party:country``'s declared range."""
-    hub = tmp_path / range_shape
+    hub = tmp_path / name
     shutil.copytree(_HUB, hub)
     (hub / "kairos.yaml").write_text("adapter: fabric\n", encoding="utf-8")
     ontology = hub / "model" / "ontologies" / "party.ttl"
@@ -66,8 +74,12 @@ def _hub_with_range_shape(tmp_path: Path, range_shape: str) -> Path:
     assert _CLASS_RANGE in text, (
         "v5-hub no longer declares party:country as expected; this fixture edit is stale"
     )
-    ontology.write_text(text.replace(_CLASS_RANGE, _SILENT_RANGE_SHAPES[range_shape]), "utf-8")
+    ontology.write_text(text.replace(_CLASS_RANGE, declaration), "utf-8")
     return hub
+
+
+def _hub_with_range_shape(tmp_path: Path, range_shape: str) -> Path:
+    return _hub_with_range_declaration(tmp_path, range_shape, _SILENT_RANGE_SHAPES[range_shape])
 
 
 def _author_object_property_under_fields(hub: Path) -> None:
@@ -184,3 +196,51 @@ def test_range_less_object_property_is_authorable_as_a_relationship(tmp_path, ra
     erd = artifacts[_ERD]
     assert "COUNTRY ||--o{ CUSTOMER" in erd, erd
     assert "https://example.test/ontology/party#country" in erd, erd
+
+
+def test_owl_thing_range_is_worse_than_omitting_the_range(tmp_path):
+    """Pins the asymmetry the ``property_range_owl_thing`` validator warning asserts.
+
+    The compiler's relationship guard is ``prop.range_uri and prop.range_uri !=
+    target_class.uri``. ``owl:Thing`` is a plain ``URIRef``, so the DD-103 semantic index
+    surfaces it as a named range: the guard does *not* short-circuit and, since it can
+    never equal the authored ``target:`` class, it always fails as
+    ``safety.relationship-endpoint``. Omitting ``rdfs:range`` leaves ``range_uri`` empty,
+    the guard short-circuits, and the identical binding compiles.
+
+    Both halves are asserted in one test on purpose: either alone would still pass if the
+    mechanism were something else, and the validator warning's message — which tells the
+    author owl:Thing is *worse* than omission — would then be wrong.
+    """
+    omitted = compile_domain(
+        _hub_with_range_declaration(tmp_path, "omitted", _SILENT_RANGE_SHAPES["no-range"]),
+        "party",
+        CompileMode.EMIT,
+    )
+    owl_thing = compile_domain(
+        _hub_with_range_declaration(tmp_path, "owl-thing", _OWL_THING_RANGE),
+        "party",
+        CompileMode.EMIT,
+    )
+
+    omitted_codes = {item.code for item in omitted.diagnostics.items}
+    owl_thing_codes = {item.code for item in owl_thing.diagnostics.items}
+
+    assert "safety.relationship-endpoint" not in omitted_codes, [
+        item.render() for item in omitted.diagnostics.items
+    ]
+    assert omitted.succeeded, [item.render() for item in omitted.diagnostics.items]
+
+    assert "safety.relationship-endpoint" in owl_thing_codes, [
+        item.render() for item in owl_thing.diagnostics.items
+    ]
+    assert not owl_thing.succeeded, (
+        "rdfs:range owl:Thing compiled; the validator's property_range_owl_thing warning "
+        f"now misstates the mechanism:\n{_rendered(owl_thing)}"
+    )
+    message = next(
+        item.message
+        for item in owl_thing.diagnostics.items
+        if item.code == "safety.relationship-endpoint"
+    )
+    assert "party:country" in message
