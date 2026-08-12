@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.1rc3] — 2026-08-12
+
+### Fixed
+- **`scaffold-binding` matched zero columns on any prefixed-column source, then reported success over
+  a binding that failed its own schema** (#336). Matching required exact equality after normalisation,
+  so every column of a prefixed ERP schema missed: `GB_BranchName` normalises to `gbbranchname` while
+  the property normalises to `branchname`. Measured against ground truth — 20 hand-authored bindings
+  over a 156-property universe — that is **0% recall**, with all 20 relations matching nothing. It then
+  wrote `fields: []`, printed a success banner, and the next command rejected the file.
+  Matching now walks a three-rung ladder: the column as-is, the column with one detected prefix
+  stripped, and the class name prefixed to the stripped remainder (`GB_Code` → `Code` → `BranchCode`
+  → `:branchCode`). That third rung is the highest-yield one and keys off an *ontology-authoring*
+  convention rather than a vendor quirk, so it generalises: **32.5% recall at 100% precision**,
+  against 22% for prefix-stripping alone.
+  Deliberately **not** done, each rejected on measured evidence: recursing the prefix strip (6
+  within-table collisions on the real corpus, including three departure timestamps collapsing to one
+  name, where the collapsed distinction between estimated, actual and scheduled *is* the semantics);
+  deriving the prefix from the table name (53 of 70 tables fail, and an initials rule maps two
+  different tables to one prefix while their real prefixes differ); and fuzzy or token-subset
+  matching (62% precision, whose errors are the plausible kind a reviewer waves through — four
+  distinct currency foreign keys all collapsing to one property).
+- **The match universe is now restricted to datatype properties** (#314). There was no property-type
+  filter, so an object-property name match landed in `fields:` — the #280 data-loss shape, which
+  since that fix is a *blocking* diagnostic rather than a silent pass. Without the filter the
+  improved matching above would have produced a success banner followed by a compile rejection, so
+  the two had to land together. Object-property matches are **not** discarded: they are reported as
+  detected relationship candidates and promoted to a DD-139 `purpose: relationship` technical field
+  so the foreign-key value still reaches silver. They are the strongest FK signal available on a real
+  ERP corpus — the DD-139 FK-name regex matches 13 of 3,087 columns there, and no source schema
+  carries `is_primary_key` at all.
+- **A zero-match relation no longer reports success.** It writes a commented, ready-to-uncomment
+  skeleton to a `.draft` sibling the compiler never globs, and raises through the existing
+  `ScaffoldBindingError` → `declined("scaffold-failed")` path, so the CLI exits non-zero with no
+  success banner. A fully-commented `fields:` block cannot be written into the binding itself, since
+  the schema requires that key with at least one entry — the draft keeps the author's starting point
+  without emitting an invalid binding. This matters because 8 of the 20 real relations still match
+  nothing even with the full ladder, and bare refusal would leave them with no artifact at all.
+- **The match rate is reported against the target class's property universe**, not the column count.
+  The old framing would read 7% where the truth is 50%: `party:Branch` declares 3 properties and its
+  authored binding maps 2, so a 28-column denominator was never achievable. A `--column-prefix`
+  override is added for the layer detection cannot reach — 147 of 434 doubly-prefixed columns carry a
+  natural-key marker that is not a delimited segment.
+
 ## [5.2.1rc2] — 2026-08-12
 
 ### Fixed
