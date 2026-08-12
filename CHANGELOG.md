@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`compile --explain`'s default text output showed nothing about relationships, and even
+  `--format json` omitted the relationship's own property and its join columns** (#338, partial —
+  narrowed from the full issue, see below). A reader inspecting the human-facing `--explain` output
+  had no way to see which relationships an entity binding declares at all; `ExplainRelationship`
+  carried only `target`/`mode`/`cardinality`/`temporal`, never the authored `property:` or `join:`
+  columns, in either output form. `ExplainRelationship` now also carries `property` and `join` (each
+  authored `local`/`foreign` pair flattened to `"<local>=<foreign>"`, matching the existing
+  `ExplainQualityCheck.columns` convention), and `compile --explain`'s text renderer prints one line
+  per relationship (`rel: <property> → <target> [<cardinality>, <mode>] on (<join>)`).
+- **`_wire_relationships` had `continue` paths that dropped a relationship with no diagnostic** — the
+  `silently-dropped-relationship` anti-pattern the pattern library names and
+  `core/pattern_rules.py` records as enforced (#338, partial). Re-auditing against the current
+  codebase (not the issue's original count, which predates #334/#335): `_wire_relationships` has 2
+  syntactic `continue` statements covering 4 distinct drop conditions. Three of those are already
+  detected and blocked, pre-wiring, by `_relationship_diagnostics` — added by #334/#335 — which
+  rejects the whole binding with a proper diagnostic before it is ever admitted into
+  `_wire_relationships`, making them defensive/unreachable via the normal `compile_domain` entry
+  point today. The fourth is **not** fully unreachable: it fires for real when a relationship's
+  target binding is later blocked for a reason unrelated to that relationship, because
+  `_relationship_diagnostics` resolves the target binding from a pre-blocking snapshot of every
+  *selected* binding, while `_wire_relationships` resolves it from the post-blocking valid set —
+  the two views can disagree. In that case `compile`'s pass/fail outcome is still unchanged
+  (`quality.py`'s independent, non-suppressible safety kernel already blocks the same scenario with
+  its own `safety.relationship-endpoint`), so the effect is a redundant second diagnostic with the
+  same code, not a new silent drop or a newly-failing hub; left un-deduplicated deliberately (see
+  the `_wire_relationships` docstring). Every one of the 4 conditions now raises a diagnostic anyway
+  (reusing `safety.source-unresolved`, `safety.relationship-endpoint`, or
+  `safety.adapter-unsupported`, matching the codes `_relationship_diagnostics` already uses for the
+  same conditions) instead of a bare `continue`, so a future change that weakens or bypasses the
+  upstream gate on the other three cannot reopen a silent drop.
+  **Out of scope, left for a follow-up decision:** the other four gaps #338 also reported — a
+  class with only object properties is unbindable (`fields` requires `minItems: 1`), no
+  one-to-many/many-to-many `EntityBinding` cardinality, no polymorphic (type-discriminated) joins,
+  and no `technicalFields.purpose` value for a plain carried column — are real modelling-construct
+  design decisions with product-facing scope and are **not** addressed here.
 - **A cross-domain `ref()` naming a model absent from the assembled dbt project went undetected by
   every gate that runs by default** (#342). `compile --check` passes per-domain; `--emit` succeeds;
   only running real `dbt` against the fully assembled project ever surfaced the dangling reference —

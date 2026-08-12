@@ -227,6 +227,13 @@ def compile_cmd(
                         f"  {entity.name}: {entity.source} → {entity.target_class} "
                         f"[grain: {', '.join(entity.grain)}]"
                     )
+                    for rel in entity.relationship_shapes:
+                        joins = f" on ({', '.join(rel.join)})" if rel.join else ""
+                        temporal = " temporal" if rel.temporal else ""
+                        click.echo(
+                            f"    rel: {rel.property} → {rel.target} "
+                            f"[{rel.cardinality}, {rel.mode}{temporal}]{joins}"
+                        )
                     for check in entity.quality:
                         emitted = f" → {check.emitted_test}" if check.emitted_test else ""
                         columns = f"({', '.join(check.columns)})" if check.columns else ""
