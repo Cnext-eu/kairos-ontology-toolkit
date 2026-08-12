@@ -27,8 +27,9 @@ from .shared import (
 @click.option(
     "--platform",
     type=click.Choice(["fabric", "databricks"]),
-    required=True,
-    help="Adapter used to parse and compile the generated project.",
+    default=None,
+    help="Adapter used to parse and compile the generated project. Required "
+    "unless --structural-only is set (the structural scan needs no adapter).",
 )
 @click.option(
     "--project-dir",
@@ -40,10 +41,26 @@ from .shared import (
     type=click.Path(path_type=Path),
     help="Optional directory containing a non-committed profiles.yml.",
 )
-def validate_dbt_cmd(platform, project_dir, profiles_dir):
-    """Run offline dependency, parse, graph, and compile validation for dbt."""
+@click.option(
+    "--structural-only",
+    is_flag=True,
+    help="Run only the offline ref()-vs-model scan; skip dbt deps/parse/compile "
+    "entirely. Needs no dbt install — for CI gates that want #342-shaped dangling "
+    "cross-domain refs caught without paying for a real dbt adapter.",
+)
+def validate_dbt_cmd(platform, project_dir, profiles_dir, structural_only):
+    """Run structural, dependency, parse, graph, and compile validation for dbt.
+
+    The structural dangling-``ref()`` scan runs first and needs no dbt install;
+    the remaining phases still require `dbt` itself, unless --structural-only.
+    """
     from ..core.dbt_validation import DbtValidationError, validate_dbt_project
     from ..core.hub_utils import find_hub_root, publish_root
+
+    if platform is None:
+        if not structural_only:
+            raise click.UsageError("--platform is required unless --structural-only is set")
+        platform = "fabric"  # inert placeholder; structural-only never invokes an adapter
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False) or cwd
@@ -59,6 +76,7 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir):
             project,
             platform,
             profiles_dir=profiles,
+            structural_only=structural_only,
         )
     except DbtValidationError as exc:
         # This conversion to ClickException is what keeps one dbt-phase failure
@@ -70,6 +88,9 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir):
         # boundary would log the same failure again as `exception.*`.
         raise click.ClickException(str(exc)) from exc
 
+    click.echo("✓ structural ref() scan passed (no dangling cross-domain refs)")
+    if result.compile_status == "skipped":
+        return
     click.echo(f"✓ dbt deps and parse passed for {platform}")
     click.echo(f"✓ manifest graph validated: {result.manifest_path}")
     if result.compile_status == "passed":

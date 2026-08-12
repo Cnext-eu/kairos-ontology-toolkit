@@ -38,6 +38,15 @@ jobs:
             uv run kairos-ontology compile "$domain" --emit
           done
 
+      # Each domain's --emit is stateless and per-domain (DD-133/140); a cross-domain
+      # externalReference naming a model absent from the assembled project (#342) is
+      # only visible once every domain above has emitted. Runs unconditionally, after
+      # the full loop, before anything ships — needs no dbt install (DD-138/139 keep
+      # dbt itself, and any peer-binding search, out of per-domain compile scope).
+      - name: Check assembled dbt project for dangling cross-domain refs
+        run: |
+          uv run kairos-ontology validate-dbt --structural-only
+
       # `project --target all` contains only retained graph projections. Gold and
       # MDM are compile-plan-only consumers and are intentionally not generated here.
       - name: Run retained optional projections

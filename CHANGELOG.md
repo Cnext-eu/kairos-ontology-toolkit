@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A cross-domain `ref()` naming a model absent from the assembled dbt project went undetected by
+  every gate that runs by default** (#342). `compile --check` passes per-domain; `--emit` succeeds;
+  only running real `dbt` against the fully assembled project ever surfaced the dangling reference —
+  and nothing in the sanctioned per-domain authoring workflow invokes it. Root cause traced to a real
+  case: `externalReference.name` is free text a binding author types by hand (DD-138/139 deliberately
+  keep the compiler from searching peer-domain bindings to validate it, since `externalReference` must
+  also support parents genuinely outside the hub, where no peer binding would ever exist to check
+  against) — so a wrong value is never caught at the point it's written. `validate-dbt` now runs a
+  structural dangling-`ref()` scan first, unconditionally, before shelling out to `dbt` at all: it
+  text-scans the already-assembled project's emitted `.sql` files against the set of model files
+  actually present, the same class of check `dbt_bundle.py` already runs for custom transform
+  artifacts, applied here to the standard generated Silver models. A new `--structural-only` flag
+  runs just that scan with no dbt install required, and the scaffolded CI release workflow now runs
+  it as a mandatory step immediately after the per-domain emit loop finishes — not fused into each
+  domain's own `--emit`, since that would false-positive on the toolkit's own documented
+  single-domain incremental workflow whenever a domain with a legitimate external reference is
+  emitted before its target domain has been (re-)emitted.
+- **Generic-test arguments emitted in the pre-deprecation top-level form** (also #342). dbt has
+  announced removal of unnested arguments on generic tests; the seven `kairos_runtime_*` /
+  `kairos_temporal_fk_cardinality` tests emitted by the v5 Silver path (`projections/dbt/shape.py`)
+  now nest their arguments under `arguments:`. Scoped to v5 only — the legacy v4 projector
+  (`medallion_dbt_projector.py`) emits its own, separate generic test and is unaffected.
+
 ## [5.2.1rc4] — 2026-08-12
 
 ### Fixed

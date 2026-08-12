@@ -1722,13 +1722,20 @@ def _schema_model(
             )
             for column in columns
         ]
+    def _generic_test(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        # dbt is removing top-level generic-test arguments; nest under `arguments`
+        # ahead of that removal (v5 Silver path only -- the legacy v4 projector at
+        # medallion_dbt_projector.py has its own, separately-emitted generic test).
+        return {name: {"arguments": arguments}}
+
     data_tests: list[object] = []
     if runtime is not None:
         incremental = runtime.incremental
         data_tests.extend(
             (
-                {
-                    "kairos_runtime_total_order": {
+                _generic_test(
+                    "kairos_runtime_total_order",
+                    {
                         "identity_columns": list(incremental.merge_identity.value),
                         "ordering_columns": [
                             incremental.ordering.source_effective_at.value,
@@ -1736,63 +1743,69 @@ def _schema_model(
                             incremental.ordering.ingested_at.value,
                             *incremental.ordering.tie_breakers.value,
                         ],
-                    }
-                },
-                {
-                    "kairos_runtime_replay_idempotent": {
+                    },
+                ),
+                _generic_test(
+                    "kairos_runtime_replay_idempotent",
+                    {
                         "identity_columns": list(incremental.merge_identity.value),
                         "operation_column": incremental.cdc_operation.value,
-                    }
-                },
-                {
-                    "kairos_runtime_cdc_contract": {
+                    },
+                ),
+                _generic_test(
+                    "kairos_runtime_cdc_contract",
+                    {
                         "operation_column": incremental.cdc_operation.value,
                         "source_updated_at": (incremental.ordering.source_updated_at.value),
                         "source_effective_at": (incremental.ordering.source_effective_at.value),
                         "ingested_at": incremental.ordering.ingested_at.value,
-                    }
-                },
-                {
-                    "kairos_runtime_delete_policy": {
+                    },
+                ),
+                _generic_test(
+                    "kairos_runtime_delete_policy",
+                    {
                         "operation_column": incremental.cdc_operation.value,
                         "hard_action": incremental.hard_delete.value.value,
                         "soft_action": incremental.soft_delete.value.value,
-                    }
-                },
+                    },
+                ),
             )
         )
         if runtime.history.scd_type.value.value == "2":
             data_tests.extend(
                 (
-                    {
-                        "kairos_runtime_one_current": {
+                    _generic_test(
+                        "kairos_runtime_one_current",
+                        {
                             "identity_columns": list(incremental.merge_identity.value),
                             "current_column": runtime.history.current_flag_column,
-                        }
-                    },
-                    {
-                        "kairos_runtime_half_open_intervals": {
+                        },
+                    ),
+                    _generic_test(
+                        "kairos_runtime_half_open_intervals",
+                        {
                             "identity_columns": list(incremental.merge_identity.value),
                             "business_from_column": (runtime.history.business_valid_from_column),
                             "business_to_column": runtime.history.business_valid_to_column,
                             "system_from_column": runtime.history.system_from_column,
                             "system_to_column": runtime.history.system_to_column,
-                        }
-                    },
+                        },
+                    ),
                 )
             )
     for relationship in authority.foreign_keys:
         data_tests.append(
-            {
-                "kairos_temporal_fk_cardinality": {
+            _generic_test(
+                "kairos_temporal_fk_cardinality",
+                {
                     "property_uri": relationship.property_uri,
                     "match_count_column": temporal_match_count_column(relationship.property_uri),
                     "mode": relationship.mode.value.value,
                     "cardinality": relationship.cardinality.value.value,
                     "missing_action": relationship.missing_action.value.value,
                     "ambiguous_action": relationship.ambiguous_action.value.value,
-                }
-            }
+                },
+            )
         )
 
     return SchemaModelSpec(
