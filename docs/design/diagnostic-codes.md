@@ -150,6 +150,8 @@ canonical `safety.*` form. `technical-field.*` rows come from
 | Code | Default severity | Rule ID / DD citation | Notes |
 | --- | --- | --- | --- |
 | `compiler.render-failed` | error | DD-133 (default) | projection rendering raised |
+| `relationship.external-reference-same-domain` | error | DD-133-safety | #335. `externalReference` is the *cross*-domain escape hatch; a reference whose `domain` equals the binding's own bypasses every join guarantee at once (nothing checks that `ref('<external.name>')` resolves to a model that exists, `join.foreign` is never resolved against the parent binding's outputs, and `quality.py` skips the in-scope-target check whenever `external_reference is not None` — disabling `silently-dropped-relationship`, the one enforced normative pattern unit). Deliberately **not** `safety.relationship-endpoint`: eight sites already construct that code, so only a distinct literal is pinnable by a test. |
+| `relationship.self-reference-unsupported` | error | DD-133-safety | #334. A non-external relationship whose resolved target class is the binding's own class. `_wire_relationships` would emit `ref('<own model>')` inside that same model (a dbt dependency cycle) plus a second `<model>_sk` column colliding with the model's own surrogate key — the `safety.identity-role-collision` guard only reserves the generated FK name when `external_reference is not None`, so it never sees this case. |
 | `safety.adapter-unsupported` | error | DD-133 (default) | |
 | `safety.class-unresolved` | error | DD-133 (default) | via `code_map` remap only, see above |
 | `safety.column-unresolved` | error | DD-133 (default) | |
@@ -166,6 +168,7 @@ canonical `safety.*` form. `technical-field.*` rows come from
 | `scope.no-bindings-authored` | error | DD-133 (default) | ontology-only waypoint: a valid ontology slice exists but no EntityBinding is authored yet (or none selects the domain). Blocking, but distinct from `safety.source-unresolved` so a CI gate can tell an expected early stage from a broken source. |
 | `technical-field.duplicate-source-ambiguous` | error | DD-139 | |
 | `technical-field.output-collision` | error | DD-139 | three call sites |
+| `technical-field.relationship-target-ambiguous` | error | DD-139 | #334. A relationship `join.foreign` whose parent source column is carried by more than one authored technical field. `(source column, purpose)` is the technical-field uniqueness key, so this is legal authoring with two distinct output names; the join has no rule to pick one, so it is rejected instead of resolved silently. |
 
 ## `load_policy.py` — DD-109 load-policy adapter
 

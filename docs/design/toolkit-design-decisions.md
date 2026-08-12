@@ -9421,7 +9421,29 @@ with its bound physical source column is rejected in `adapter.py`
 (`technical-field.type-incompatible`). `identity.sourceKey`/`quality.columns`/relationship
 `join.local`/`join.foreign` now resolve against authored technical fields exactly as they do
 against `fields:`, so the previous "map the FK join column as a scalar field" workaround is no
-longer required. `compile --explain` labels technical outputs separately
+longer required. **Correction (#334):** the `join.foreign` half of that sentence was aspirational
+when this decision was first recorded — `kernel.py`'s `_relationship_output_column` iterated
+`binding.fields` only, so a parent join column carried by a technical field was rejected with
+`safety.relationship-endpoint` ("relationship foreign column '…' is not mapped by the target
+binding"). Any surrogate technical primary key was therefore unauthorable as a parent endpoint
+and every relationship pointing at one was silently dropped. That resolution is implemented as
+of #334: the lookup falls back to authored technical fields with **no `purpose` filter**
+(`adapter.py` materializes every technical field regardless of purpose, so every one is a valid
+join target), mapped `fields:` keep precedence, and the match is made on the technical field's
+bound source `expression` column while the value returned into the join predicate is its output
+`name` — a technical field renames, so returning `join.foreign` verbatim would reference a column
+the parent model never emits under that name. Because `(source column, purpose)` is the
+technical-field uniqueness key, one source column may legally carry two technical fields with two
+output names; that case is rejected as `technical-field.relationship-target-ambiguous` rather than
+resolved silently. Two adjacent holes the same change closes: a non-external relationship whose
+target class is the binding's own is rejected (`relationship.self-reference-unsupported` — it would
+otherwise emit `ref('<own model>')` inside that very model and a duplicate `<model>_sk`), and an
+`externalReference` whose `domain` equals the binding's own is rejected
+(`relationship.external-reference-same-domain` — it bypasses join validation, model-existence
+checking, and the `silently-dropped-relationship` pattern check all at once). Validating that a
+referenced *foreign* domain resolves stays deliberately unimplemented: the only available
+mechanism ("a domain with bindings exists in this hub") would break the out-of-hub parent case
+DD-138 explicitly preserves. `compile --explain` labels technical outputs separately
 (`ExplainEntity.technical_fields`), distinct from the semantic `fields` pairs. As originally
 decided, implicit auto-materialization remains rejected: the compiler never creates a technical
 field on its own — every one must be explicitly authored in the binding YAML.

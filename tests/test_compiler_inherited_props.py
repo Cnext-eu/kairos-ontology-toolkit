@@ -550,8 +550,11 @@ def test_unmaterialized_relationship_join_column_message_is_actionable(tmp_path)
         party:Organisation a owl:Class ; rdfs:label "Organisation" .
         party:orgId a owl:DatatypeProperty ;
           rdfs:domain party:Organisation ; rdfs:range xsd:string .
-        party:parentOrganisation a owl:ObjectProperty ;
-          rdfs:domain party:Organisation ; rdfs:range party:Organisation .
+        party:Location a owl:Class ; rdfs:label "Location" .
+        party:locationId a owl:DatatypeProperty ;
+          rdfs:domain party:Location ; rdfs:range xsd:string .
+        party:parentLocation a owl:ObjectProperty ;
+          rdfs:domain party:Organisation ; rdfs:range party:Location .
     """
     binding = """
         apiVersion: kairos.eu/v5
@@ -574,9 +577,9 @@ def test_unmaterialized_relationship_join_column_message_is_actionable(tmp_path)
           - property: party:orgId
             expression: org_id
         relationships:
-          - property: party:parentOrganisation
-            target: party:Organisation
-            join: [{local: parent_id, foreign: org_id}]
+          - property: party:parentLocation
+            target: party:Location
+            join: [{local: parent_id, foreign: location_id}]
             cardinality: many-to-one
             mode: non-temporal
             missingParent: error
@@ -591,7 +594,39 @@ def test_unmaterialized_relationship_join_column_message_is_actionable(tmp_path)
             src:parent a kb:SourceColumn ; kb:sourceTable src:orgs ;
               kb:columnName "parent_id" ; kb:dataType "varchar(50)" ;
               kb:nullable "true"^^xsd:boolean .
+            src:locations a kb:SourceTable ; kb:sourceSystem src:crm ;
+              kb:tableName "locations" ; kb:primaryKeyColumns "location_id" .
+            src:locationid a kb:SourceColumn ; kb:sourceTable src:locations ;
+              kb:columnName "location_id" ; kb:dataType "varchar(50)" ;
+              kb:nullable "false"^^xsd:boolean .
         """),
+        encoding="utf-8",
+    )
+    # #334: the parent must be a *different* class -- a self-referential relationship is now
+    # rejected outright (``relationship.self-reference-unsupported``), which would mask the
+    # unmaterialized-join-local-column message this test is about.
+    (hub / "integration" / "bindings" / "location.binding.yaml").write_text(
+        textwrap.dedent("""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: crm-location
+              domain: party
+            source:
+              relation: crm.locations
+            target:
+              class: party:Location
+            grain:
+              columns: [location_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [location_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: party:locationId
+                expression: location_id
+        """).strip(),
         encoding="utf-8",
     )
 
