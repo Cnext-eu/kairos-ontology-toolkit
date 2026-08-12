@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`audit-silver-samples` (DD-089) read only the v4 `model/mappings/` SKOS surface, so on a v5
+  hub it audited nothing and reported an unqualified `✅ ... (100% coverage)`** (#348). Root
+  cause: `run_silver_sample_audit` obtained its mapped columns exclusively from
+  `_parse_skos_mappings(mappings_dir)`; `integration/bindings/*.binding.yaml` (v5 EntityBindings)
+  was never read, and `sample_coverage_ratio` special-cased a zero denominator to `1.0`, so
+  `0 mapped columns` rendered as a green, unqualified pass. The audit now also resolves v5
+  bindings via the compiler's own `resolve_scope`/`adapt_binding` (reusing the same
+  binding-to-column-mapping resolution `compile` uses, not re-deriving it), joining back to
+  persisted samples on `(table_uri, column_name)` since the compiler's per-relation column
+  symbol is a synthesized identifier, not the real bronze `SourceColumn` URI. A column mapped on
+  both surfaces at once (mid v4-to-v5 migration) is counted once. `sample_coverage_ratio` now
+  returns `None`, not `1.0`, when nothing was mapped; the CLI prints an explicit
+  `⚠ ... nothing was audited`, naming both authoring surfaces searched, instead of `✅`, and a new
+  `no_mapping_surface_found` warning finding means `--fail-on warning` now catches an inert audit.
+  A new `--bindings` option (default: `integration/bindings/`, auto-detected) mirrors `--mappings`.
 - **A cross-domain `ref()` naming a model absent from the assembled dbt project went undetected by
   every gate that runs by default** (#342). `compile --check` passes per-domain; `--emit` succeeds;
   only running real `dbt` against the fully assembled project ever surfaced the dangling reference —
