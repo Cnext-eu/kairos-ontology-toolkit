@@ -13,6 +13,10 @@ from typing import Any
 import yaml
 from rdflib import Graph, Namespace, RDF, RDFS
 
+from .compiler import CompileError, adapt_binding, load_entity_binding, resolve_scope
+from .compiler.kernel import _binding_domain
+from .projections.dbt.mapping_bind import mapping_context
+from .projections.dbt.mapping_specs import ColumnMappingFact, SourceMappings
 from .projections.medallion_dbt_projector import _parse_skos_mappings
 from .projections.uri_utils import camel_to_snake, extract_local_name
 
@@ -62,15 +66,22 @@ class SilverSampleAuditReport:
     mapped_columns: int
     sampled_mapped_columns: int
     findings: list[AuditFinding] = field(default_factory=list)
+    bindings_dir: str = ""
 
     @property
     def counts(self) -> dict[str, int]:
         return {sev: sum(1 for f in self.findings if f.severity == sev) for sev in SEVERITIES}
 
     @property
-    def sample_coverage_ratio(self) -> float:
+    def sample_coverage_ratio(self) -> float | None:
+        """Return the mapped-column sample coverage ratio, or ``None`` if nothing was mapped.
+
+        ``0 of 0`` is arithmetically ``1.0`` but operationally meaningless: a command that
+        checked no columns must not report the same "100% coverage" a command that checked
+        columns and found every one sampled would report (issue #348).
+        """
         if self.mapped_columns == 0:
-            return 1.0
+            return None
         return round(self.sampled_mapped_columns / self.mapped_columns, 4)
 
 
@@ -243,6 +254,7 @@ def _to_dict(report: SilverSampleAuditReport) -> dict[str, Any]:
         "generated_at": report.generated_at,
         "sources_dir": report.sources_dir,
         "mappings_dir": report.mappings_dir,
+        "bindings_dir": report.bindings_dir,
         "dbt_output_dir": report.dbt_output_dir,
         "summary": {
             "mapped_columns": report.mapped_columns,
@@ -266,6 +278,10 @@ def _to_dict(report: SilverSampleAuditReport) -> dict[str, Any]:
     }
 
 
+def _coverage_text(ratio: float | None) -> str:
+    return f"{ratio:.0%}" if ratio is not None else "N/A (0 mapped columns)"
+
+
 def render_markdown(report: SilverSampleAuditReport) -> str:
     """Render a human-readable markdown audit report."""
     lines = [
@@ -277,7 +293,7 @@ def render_markdown(report: SilverSampleAuditReport) -> str:
         "",
         f"- Mapped columns: {report.mapped_columns}",
         f"- Mapped columns with samples: {report.sampled_mapped_columns}",
-        f"- Sample coverage: {report.sample_coverage_ratio:.0%}",
+        f"- Sample coverage: {_coverage_text(report.sample_coverage_ratio)}",
         f"- Errors: {report.counts[SEVERITY_ERROR]}",
         f"- Warnings: {report.counts[SEVERITY_WARNING]}",
         f"- Info: {report.counts[SEVERITY_INFO]}",
@@ -297,28 +313,218 @@ def render_markdown(report: SilverSampleAuditReport) -> str:
     return "\n".join(lines)
 
 
+def _resolve_source_column(
+    key: str,
+    source_columns: dict[str, SourceColumnSample],
+    by_table_and_name: dict[tuple[str, str], SourceColumnSample],
+) -> SourceColumnSample | None:
+    """Resolve one mapping's source-column key against the loaded samples.
+
+    v4 SKOS mappings key by the real bronze ``kairos-bronze:SourceColumn`` RDF subject URI,
+    which is a direct hit against ``source_columns``. v5 EntityBindings resolve through the
+    compiler's ``ResolvedRelation.column_uri()`` (``core/compiler/adapter.py``), which
+    synthesizes ``f"{table_uri}/{column_name}"`` rather than reproducing the real bronze
+    subject URI -- the compiler has no reason to know it, since it only needs a stable
+    per-relation symbol. Fall back to splitting that synthesized form and joining on the real
+    ``(table_uri, column_name)`` pair the sample loader already carries, instead of
+    re-deriving bronze URI conventions.
+    """
+    column = source_columns.get(key)
+    if column is not None:
+        return column
+    table_uri, sep, name = key.rpartition("/")
+    if not sep:
+        return None
+    return by_table_and_name.get((table_uri, name))
+
+
+def _discover_binding_domains(bindings_dir: Path) -> tuple[str, ...]:
+    """Return the distinct ``metadata.domain`` values declared under ``bindings_dir``."""
+    domains: set[str] = set()
+    for path in sorted(bindings_dir.glob("*.binding.yaml")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        domain = _binding_domain(text)
+        if domain:
+            domains.add(domain)
+    return tuple(sorted(domains))
+
+
+def _diagnostics_message(exc: CompileError) -> str:
+    return "; ".join(diagnostic.message for diagnostic in exc.diagnostics)
+
+
+def load_binding_mappings(
+    hub_root: Path, bindings_dir: Path
+) -> tuple[dict[str, Any], dict[str, str], list[AuditFinding]]:
+    """Resolve v5 EntityBindings to the same ``column_maps`` facade v4 SKOS mappings use.
+
+    Reuses the compiler's own binding resolution (``resolve_scope`` + ``adapt_binding`` +
+    ``mapping_context``) rather than re-deriving source-relation, property, or expression
+    resolution; the only bespoke code here is domain enumeration, a small YAML peek mirroring
+    ``core.compiler.kernel._binding_domain`` (issue #348).
+    """
+    findings: list[AuditFinding] = []
+    empty: dict[str, Any] = {"table_maps": {}, "column_maps": {}}
+    if not bindings_dir.is_dir() or not any(bindings_dir.glob("*.binding.yaml")):
+        return empty, {}, findings
+
+    columns: list[ColumnMappingFact] = []
+    for domain in _discover_binding_domains(bindings_dir):
+        try:
+            scope, context = resolve_scope(hub_root, domain)
+        except CompileError as exc:
+            findings.append(
+                AuditFinding(
+                    severity=SEVERITY_INFO,
+                    code="binding_domain_unresolved",
+                    message=(
+                        f"v5 domain '{domain}' could not be resolved for audit: "
+                        f"{_diagnostics_message(exc)}"
+                    ),
+                    source=domain,
+                )
+            )
+            continue
+        for path_str in scope.binding_paths:
+            path = Path(path_str)
+            try:
+                text = path.read_text(encoding="utf-8")
+                binding = load_entity_binding(text, path=str(path))
+            except OSError as exc:
+                findings.append(
+                    AuditFinding(
+                        severity=SEVERITY_INFO,
+                        code="binding_unreadable",
+                        message=f"binding '{path.name}' could not be read for audit: {exc}",
+                        source=domain,
+                    )
+                )
+                continue
+            except CompileError as exc:
+                findings.append(
+                    AuditFinding(
+                        severity=SEVERITY_INFO,
+                        code="binding_unreadable",
+                        message=(
+                            f"binding '{path.name}' could not be parsed for audit: "
+                            f"{_diagnostics_message(exc)}"
+                        ),
+                        source=domain,
+                    )
+                )
+                continue
+            if binding.domain != domain:
+                # Mirrors the kernel's own selection guard: an undomained/foreign binding
+                # surfaced by resolve_scope for this domain is audited under its own domain
+                # pass instead, so it is not double-counted here.
+                continue
+            try:
+                bound = adapt_binding(binding, context)
+            except CompileError as exc:
+                findings.append(
+                    AuditFinding(
+                        severity=SEVERITY_INFO,
+                        code="binding_unresolved",
+                        message=(
+                            f"binding '{binding.name}' could not be resolved for audit: "
+                            f"{_diagnostics_message(exc)}"
+                        ),
+                        source=domain,
+                        target=binding.name,
+                    )
+                )
+                continue
+            columns.extend(bound.mappings.columns)
+
+    mappings, namespaces = mapping_context(SourceMappings(tables=(), columns=tuple(columns)))
+    return mappings, namespaces, findings
+
+
+def _no_mapping_surface_finding(mappings_dir: Path, bindings_dir: Path | None) -> AuditFinding:
+    """Build the finding that replaces a false 100%-coverage result (issue #348)."""
+    parts = [
+        (
+            f"'{mappings_dir}' exists but declares no SKOS column mappings (v4)"
+            if mappings_dir.is_dir()
+            else f"'{mappings_dir}' does not exist (v4)"
+        )
+    ]
+    if bindings_dir is None:
+        parts.append("no v5 bindings directory was given")
+    elif bindings_dir.is_dir():
+        parts.append(f"'{bindings_dir}' exists but resolved no field mappings (v5)")
+    else:
+        parts.append(f"'{bindings_dir}' does not exist (v5)")
+    return AuditFinding(
+        severity=SEVERITY_WARNING,
+        code="no_mapping_surface_found",
+        message=(
+            "No mapped columns were found on any authoring surface, so nothing was audited: "
+            + "; ".join(parts)
+        ),
+    )
+
+
 def run_silver_sample_audit(
     *,
     sources_dir: Path,
     mappings_dir: Path,
     dbt_output_dir: Path,
     output_dir: Path | None = None,
+    bindings_dir: Path | None = None,
+    hub_root: Path | None = None,
 ) -> SilverSampleAuditReport:
-    """Run an offline advisory audit over generated dbt silver artifacts."""
+    """Run an offline advisory audit over generated dbt silver artifacts.
+
+    Reads mapped columns from both authoring surfaces a hub may use: the v4 SKOS
+    ``model/mappings/`` directory and, if ``bindings_dir`` is given, the v5
+    ``integration/bindings/*.binding.yaml`` EntityBindings (issue #348).
+    """
     source_columns = load_source_samples(sources_dir)
-    mappings, mapping_ns = _parse_skos_mappings(mappings_dir)
+    by_table_and_name: dict[tuple[str, str], SourceColumnSample] = {
+        (column.table_uri, column.name): column for column in source_columns.values()
+    }
     sql_artifacts = _all_dbt_sql(dbt_output_dir)
 
-    findings: list[AuditFinding] = []
+    v4_mappings, mapping_ns = _parse_skos_mappings(mappings_dir)
+    v5_findings: list[AuditFinding] = []
+    v5_mappings: dict[str, Any] = {"table_maps": {}, "column_maps": {}}
+    v5_ns: dict[str, str] = {}
+    if bindings_dir is not None:
+        v5_mappings, v5_ns, v5_findings = load_binding_mappings(
+            hub_root or bindings_dir.parent.parent, bindings_dir
+        )
+    mapping_ns = {**mapping_ns, **v5_ns}
+
+    column_maps: dict[str, list[dict]] = {}
+    for surface_mappings in (v4_mappings, v5_mappings):
+        for key, entries in surface_mappings.get("column_maps", {}).items():
+            column_maps.setdefault(key, []).extend(entries)
+
+    findings: list[AuditFinding] = list(v5_findings)
     grouped_shapes: dict[str, list[tuple[SourceColumnSample, str]]] = {}
     mapped_columns = 0
     sampled_mapped_columns = 0
+    seen_mapping_triples: set[tuple[str, str, str]] = set()
+    duplicate_mappings = 0
 
-    for col_uri, col_maps in mappings.get("column_maps", {}).items():
-        column = source_columns.get(col_uri)
+    for col_uri, col_maps in column_maps.items():
+        column = _resolve_source_column(col_uri, source_columns, by_table_and_name)
         for col_map in col_maps:
-            mapped_columns += 1
             target = col_map.get("target_uri", "")
+            if column is not None:
+                # The same physical source column can legitimately be declared under both
+                # authoring surfaces during a v4-to-v5 migration; count it once per distinct
+                # target rather than inflating mapped_columns/sample_coverage_ratio.
+                triple = (column.table_uri, column.name, target)
+                if triple in seen_mapping_triples:
+                    duplicate_mappings += 1
+                    continue
+                seen_mapping_triples.add(triple)
+            mapped_columns += 1
             if column is None:
                 findings.append(
                     AuditFinding(
@@ -350,7 +556,9 @@ def run_silver_sample_audit(
                 )
 
             for referenced_uri in col_map.get("referenced_column_uris") or ():
-                referenced = source_columns.get(referenced_uri)
+                referenced = _resolve_source_column(
+                    referenced_uri, source_columns, by_table_and_name
+                )
                 if referenced is None or referenced.table_uri != column.table_uri:
                     findings.append(
                         AuditFinding(
@@ -403,10 +611,27 @@ def run_silver_sample_audit(
                 )
             )
 
+    if duplicate_mappings:
+        findings.append(
+            AuditFinding(
+                severity=SEVERITY_INFO,
+                code="duplicate_mapping_across_surfaces",
+                message=(
+                    f"{duplicate_mappings} column mapping(s) targeting the same property were "
+                    "declared on both the v4 model/mappings/ and v5 integration/bindings/ "
+                    "authoring surfaces for the same physical source column; counted once."
+                ),
+            )
+        )
+
+    if mapped_columns == 0:
+        findings.append(_no_mapping_surface_finding(mappings_dir, bindings_dir))
+
     report = SilverSampleAuditReport(
         generated_at=datetime.now(timezone.utc).isoformat(),
         sources_dir=str(sources_dir),
         mappings_dir=str(mappings_dir),
+        bindings_dir=str(bindings_dir) if bindings_dir is not None else "",
         dbt_output_dir=str(dbt_output_dir),
         mapped_columns=mapped_columns,
         sampled_mapped_columns=sampled_mapped_columns,
