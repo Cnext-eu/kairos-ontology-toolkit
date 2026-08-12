@@ -355,18 +355,60 @@ their evidence.
 In interactive mode, show the validated diff and wait for final approval. In
 fleet mode, record the AI approval with rationale, confidence, and evidence.
 
-### 9. Apply and verify
+### 9. Apply, register, and verify
 
-Apply only the approved diff. Reread and parse the saved ontology, repeat
-Gate 5, and confirm the workspace guard passes:
+Apply only the approved diff. Reread and parse the saved ontology and repeat
+Gate 5.
+
+Then register the domain in the hub catalog — **only after the patch is on disk,
+never before**:
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-uv run kairos-ontology guard-scope --check-since <token> --allow "*model/ontologies/<domain>.ttl"
+uv run kairos-ontology init --domain <domain> --company-domain <company-domain>
 ```
 
-A non-zero exit names every path that changed outside the accepted patch —
-treat that as blocking, not a self-report. If validation or the guard fails,
+This is the registration step, and nothing else performs it: `init --domain` is
+the only command that maps a domain ontology in `ontology-hub/catalog-v001.xml`.
+Skip it and the patch parses and validates while remaining unresolvable through
+the catalog. Run it from the repo root — the directory that contains
+`ontology-hub/`.
+
+The ordering is load-bearing. When `model/ontologies/<domain>.ttl` is absent this
+command *creates a starter ontology* in its place, so running it first hands you
+a scaffold you would then have to overwrite. Once the file exists it is left
+untouched.
+
+`--company-domain` is required by the command but is a fallback, not a free-text
+parameter: the catalog entry uses the IRI declared by the `owl:Ontology` in the
+`.ttl` whenever one is declared, and `--company-domain` only supplies
+`https://<company-domain>/ont/<domain>` when none is. Take the value from the
+hub's own existing ontology IRIs — the `uri name=` entries already in
+`catalog-v001.xml`, or the `owl:Ontology` line of a sibling
+`model/ontologies/*.ttl`. Never invent one.
+
+On an already-initialized hub the command is idempotent. Every scaffold write is
+guarded by an "already exists, and no `--force`" check, so the one file it
+changes is `catalog-v001.xml`. Expect roughly fifteen `⏭  … already exists` lines
+closing with `✅ Ontology hub initialized!` — that is the guarded no-op reporting
+itself, not setup being re-run. Never add `--force` to make the output look
+busier: that overwrites the patch you just applied.
+
+Finally confirm the workspace guard passes:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology guard-scope --check-since <token> --allow "*model/ontologies/<domain>.ttl" --allow "*catalog-v001.xml" --allow "*model/ontologies/_master.ttl"
+```
+
+Those three globs are the whole legitimate footprint of one domain: the ontology
+patch, the catalog entry the registration step writes, and `_master.ttl` when the
+hub lists its domain imports there. Each one carries a leading `*` because
+`guard-scope` reports paths relative to the **git repo root**; a hub-relative
+glob matches nothing in the standard `ontology-hub/` layout.
+
+A non-zero exit names every path that changed outside that scope — treat that as
+blocking, not a self-report. If validation, registration, or the guard fails,
 restore the pre-patch content and report the failure.
 
 ### 10. Hand off
@@ -392,7 +434,10 @@ diff review, and ontology integrity still apply.
 - Exposing raw sample values to the LLM or committed files.
 - Writing unconfirmed or unparsed Turtle.
 - Combining ontology design with EntityBinding or generated SQL authoring.
-- Writing any file outside the approved ontology patch.
+- Writing any file outside the guarded scope of step 9: the approved ontology
+  patch, the catalog entry `init --domain` registers, and `_master.ttl`.
+- Leaving a new domain unregistered — a `.ttl` with no `catalog-v001.xml` entry
+  is invisible to every catalog-resolved import.
 
 ## Related skills
 
