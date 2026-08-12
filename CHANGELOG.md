@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.1rc2] — 2026-08-12
+
+### Fixed
+- **A relationship could not join on a surrogate key, so most foreign keys were unauthorable** (#334).
+  `join.foreign` resolved only against `fields:`, and a surrogate GUID primary key carries no business
+  meaning so is never a mapped ontology property. On a real 70-table CargoWise hub only 3 of ~15
+  evidenced foreign keys could be authored, and the `booking` domain compiled with **zero
+  relationships** while carrying the raw foreign key as a column with no join beside it. This was not
+  a design boundary: **DD-139 already declared that `join.local`/`join.foreign` resolve against
+  authored technical fields "exactly as they do against `fields:`"**, status Accepted (implemented) —
+  for `join.foreign` that was simply untrue, and the decision record is corrected here. There is no
+  purpose filter, matching DD-139: the adapter materialises every technical field regardless of
+  purpose, so all are valid join targets. The match is on the technical field's source expression and
+  the value returned is its **output** name, because technical fields rename — a lookup returning the
+  authored `join.foreign` verbatim would emit a column that does not exist under that name and
+  survive only by case-insensitive SQL resolution.
+- **A self-referential relationship emitted a dbt dependency cycle and a duplicate column.** With the
+  above fix, four of the newly-authorable foreign keys were self-joins (parent and child are the same
+  class, hence the same silver model). Those emitted `{{ ref('<model>') }}` *inside* that model, plus a
+  generated foreign-key column equal to the model's own surrogate key — the existing collision guard
+  only reserves the generated name when an `externalReference` is present. `render.py` logged a
+  non-blocking warning about the self-reference and compiled anyway, so this shipped a broken dbt
+  project with a log line. Now rejected with `relationship.self-reference-unsupported`.
+- **`externalReference` naming the binding's own domain was silently accepted** (#335), bypassing the
+  join validation entirely and emitting `ref()` to a model nothing checks exists — so either a
+  dangling reference that fails at dbt parse, or a correct-looking but wholly unvalidated join plus a
+  duplicate foreign-key column. It also switched off the in-scope-target check, which is
+  `safety.relationship-endpoint` for `silently-dropped-relationship` — the single enforced normative
+  pattern unit in the library. Now rejected with `relationship.external-reference-same-domain`, under
+  its own code rather than the eight-site `safety.relationship-endpoint` so a test cannot pass while
+  the check does nothing.
+- **Two technical fields mapping one source column are no longer resolved silently.** That shape is
+  legal — the uniqueness key is `(source column, purpose)` — so a join naming that column had two
+  equally valid candidates. Now `technical-field.relationship-target-ambiguous`, raised only where a
+  join actually resolves, so the legal duplicate itself stays valid.
+
+Deliberately **not** implemented: validation that an `externalReference` domain resolves. The only
+available mechanism is "a domain with bindings exists in this hub", which would break the deliberate
+out-of-hub parent — the exact case `patterns/deferred-relationship` exists for, and which a real hub
+documents.
+
 ## [5.2.1rc1] — 2026-08-12
 
 Opens the post-GA fix line. No functional change; `__version__` is moved off the

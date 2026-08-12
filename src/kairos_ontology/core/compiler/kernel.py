@@ -1324,14 +1324,47 @@ def merge_bound_sources(
     )
 
 
+def _relationship_technical_field_matches(
+    binding: EntityBinding, source_column: str
+) -> tuple[TechnicalField, ...]:
+    """Return every authored technical field bound directly to ``source_column``.
+
+    More than one match is genuinely ambiguous rather than a collision:
+    ``_technical_field_safety_diagnostics`` makes ``(source column, purpose)`` the uniqueness
+    key, so one source column may legitimately carry several technical fields under distinct
+    purposes -- each with its own output ``name``. Nothing in the join contract picks between
+    them, so the caller reports the ambiguity instead of resolving it silently.
+    """
+    return tuple(
+        technical_field
+        for technical_field in binding.technical_fields
+        if isinstance(technical_field.expression, ExprColumn)
+        and technical_field.expression.column == source_column
+    )
+
+
 def _relationship_output_column(
     binding: EntityBinding, source_column: str, context: ResolutionContext
 ) -> str | None:
+    """Return the parent model's *output* column for an authored parent-side join column.
+
+    #334 / DD-139: ``join.foreign`` resolves against authored technical fields exactly as it
+    does against ``fields:``. Mapped fields keep precedence. There is deliberately no
+    ``purpose`` filter -- ``adapter.py`` materializes every technical field regardless of
+    purpose, so every one of them is a valid join target.
+
+    A technical field renames its source column (``name`` is the output, ``expression`` binds
+    the source), so the match is on the bound source column while the *returned* value is
+    ``technical_field.name`` -- symmetric with the mapped-field branch returning
+    ``prop.column_name``. Returning ``join.foreign`` verbatim would render a predicate against
+    a column the parent model does not emit under that name.
+    """
     for field in binding.fields:
         if isinstance(field.expression, ExprColumn) and field.expression.column == source_column:
             prop = context.property(field.property)
             return prop.column_name if prop is not None else None
-    return None
+    matches = _relationship_technical_field_matches(binding, source_column)
+    return matches[0].name if len(matches) == 1 else None
 
 
 def _wire_relationships(
@@ -1962,6 +1995,32 @@ def _relationship_diagnostics(
         prop = context.property(relationship.property)
         source_class = context.klass(binding.target_class)
         target_class = _relationship_target_class(relationship, context, hub_root)
+        if external is not None and external.domain.strip().lower() == binding.domain.lower():
+            # #335: ``externalReference`` is the *cross*-domain escape hatch. A same-domain
+            # reference bypasses every join guarantee at once: nothing checks that
+            # ``ref('<external.name>')`` resolves to a model that exists, ``join.foreign`` is
+            # never resolved against the parent binding's outputs, and ``quality.py`` skips the
+            # in-scope-target check whenever ``external_reference is not None`` -- switching off
+            # ``silently-dropped-relationship``, the one enforced normative pattern unit.
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="relationship.external-reference-same-domain",
+                    message=(
+                        f"relationship '{relationship.property}' declares an externalReference "
+                        f"in domain '{external.domain}', which is this binding's own domain "
+                        f"'{binding.domain}'; externalReference names the other domain that "
+                        "materializes the parent. An in-scope parent must be joined through "
+                        "target/join so the join columns, the referenced model, and the "
+                        "silently-dropped-relationship check are all validated"
+                    ),
+                    location=SourceLocation(
+                        path=binding.source_path,
+                        pointer=f"{pointer}/externalReference/domain",
+                    ),
+                    rule_id="DD-133-safety",
+                )
+            )
+            continue
         if external is None and target_binding is None:
             external_domain = _external_target_domain(hub_root, context.domain, relationship.target)
             if external_domain:
@@ -2021,6 +2080,30 @@ def _relationship_diagnostics(
                         f"'{binding.target_class}' -> '{relationship.target}'"
                     ),
                     location=SourceLocation(path=binding.source_path, pointer=pointer),
+                )
+            )
+            continue
+        if external is None and target_class.uri == source_class.uri:
+            # #334: unblocking ``join.foreign`` against technical fields also unblocks self-joins
+            # (a surrogate parent key is typically technical). ``_wire_relationships`` would emit
+            # ``ref('<own model>')`` inside that same model -- a dbt dependency cycle -- plus a
+            # second ``<model>_sk`` column colliding with the model's own surrogate key: the
+            # collision guard in ``_binding_safety_diagnostics`` only reserves the generated FK
+            # when ``external_reference is not None``, so it never sees this case. Reject rather
+            # than convert a compile-time error into a broken dbt project (#342).
+            own_model = target_class.name.lower()
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="relationship.self-reference-unsupported",
+                    message=(
+                        f"relationship '{relationship.property}' points "
+                        f"'{binding.target_class}' at itself; a self-referential relationship is "
+                        f"not supported yet: the generated join would emit ref('{own_model}') "
+                        f"inside the '{own_model}' model (a dbt dependency cycle) and a second "
+                        f"'{own_model}_sk' column colliding with that model's own surrogate key"
+                    ),
+                    location=SourceLocation(path=binding.source_path, pointer=pointer),
+                    rule_id="DD-133-safety",
                 )
             )
             continue
@@ -2141,12 +2224,31 @@ def _relationship_diagnostics(
                 target_binding is not None
                 and _relationship_output_column(target_binding, join.foreign, context) is None
             ):
+                ambiguous = _relationship_technical_field_matches(target_binding, join.foreign)
+                if len(ambiguous) > 1:
+                    names = ", ".join(f"'{item.name}'" for item in ambiguous)
+                    diagnostics.append(
+                        CompileDiagnostic(
+                            code="technical-field.relationship-target-ambiguous",
+                            message=(
+                                f"relationship foreign column '{join.foreign}' is carried by "
+                                f"{len(ambiguous)} technical fields in the target binding "
+                                f"({names}); the join cannot pick one output column "
+                                "unambiguously -- carry the parent join column as exactly one "
+                                "technical field or as a mapped field"
+                            ),
+                            location=SourceLocation(path=binding.source_path, pointer=join_pointer),
+                            rule_id="DD-139",
+                        )
+                    )
+                    continue
                 diagnostics.append(
                     CompileDiagnostic(
                         code="safety.relationship-endpoint",
                         message=(
                             f"relationship foreign column '{join.foreign}' is not "
-                            "mapped by the target binding"
+                            "mapped by the target binding (neither a mapped field nor an "
+                            "authored technical field carries it)"
                         ),
                         location=SourceLocation(path=binding.source_path, pointer=join_pointer),
                     )

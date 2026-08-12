@@ -567,3 +567,189 @@ def test_technical_field_distinct_purposes_allow_duplicate_source_reuse(tmp_path
     result = compile_domain(hub, "party")
 
     assert result.succeeded, result.diagnostics.items
+
+
+# --------------------------------------------------------------------------------------
+# kernel.py: the DD-139 ``join.foreign`` clause (#334) and the two relationship guards it
+# requires (#334 self-reference, #335 same-domain ``externalReference``).
+#
+# DD-139 recorded "``identity.sourceKey``/``quality.columns``/relationship
+# ``join.local``/``join.foreign`` now resolve against authored technical fields exactly as they
+# do against ``fields:``" as implemented. For ``join.foreign`` that was false:
+# ``_relationship_output_column`` iterated ``binding.fields`` only, so a parent join column
+# carried by a technical field -- the normal shape of a surrogate technical primary key -- was
+# rejected and its relationship silently dropped.
+# --------------------------------------------------------------------------------------
+def _country_binding_path(hub: Path) -> Path:
+    return hub / "integration" / "bindings" / "country.binding.yaml"
+
+
+def _carry_parent_join_column_as_technical_fields(hub: Path, *entries: tuple[str, str]) -> None:
+    """Drop mapped ``party:code`` and carry the parent join column as technical field(s).
+
+    ``party:code`` is the only reason ``join.foreign: code`` resolves in the stock hub. Once it
+    is gone the customer -> country join endpoint is carried exclusively by authored
+    ``technicalFields:``, which is exactly the DD-139 clause under test. ``entries`` are
+    ``(output name, purpose)`` pairs, all bound to the same source column ``code``.
+    """
+    path = _country_binding_path(hub)
+    text = path.read_text(encoding="utf-8").replace(
+        "  - property: party:code\n    expression: code\n", ""
+    )
+    text += "technicalFields:\n"
+    for name, purpose in entries:
+        text += textwrap.dedent(f"""\
+            - name: {name}
+              expression: code
+              type: string
+              nullable: false
+              purpose: {purpose}
+            """)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_technical_field_supplies_a_relationship_join_foreign_column(tmp_path: Path) -> None:
+    """FAILS before #334: rejected as ``safety.relationship-endpoint`` "not mapped by the target
+    binding".
+
+    Asserts the emitted predicate, not merely that the compile is green -- a binding whose
+    relationships were all dropped also compiles green.
+    """
+    hub = _hub(tmp_path)
+    _carry_parent_join_column_as_technical_fields(hub, ("code", "relationship"))
+
+    result = compile_domain(hub, "party")
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    sql = result.artifact_dict()["models/silver/party/customer.sql"].lower()
+    assert "left join {{ ref('country') }}" in sql
+    assert "[src].[country_code] = [country].[code]" in sql
+
+
+def test_renamed_technical_field_join_uses_its_output_name_not_its_source_column(
+    tmp_path: Path,
+) -> None:
+    """FAILS before #334 (rejected outright); also fails any verbatim ``join.foreign`` lookup.
+
+    A technical field renames: ``name`` is the emitted output column while ``expression`` binds
+    the source column the author writes as ``join.foreign``. The predicate must reference the
+    output name -- emitting the source name yields a column the parent model does not have.
+    """
+    hub = _hub(tmp_path)
+    _carry_parent_join_column_as_technical_fields(hub, ("country_pk", "relationship"))
+
+    result = compile_domain(hub, "party")
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    artifacts = result.artifact_dict()
+    customer_sql = artifacts["models/silver/party/customer.sql"].lower()
+    assert "[src].[country_code] = [country].[country_pk]" in customer_sql
+    assert "[country].[code]" not in customer_sql
+    # The parent really does emit the output name rather than the source name.
+    assert "country_pk" in artifacts["models/silver/party/country.sql"]
+
+
+def test_ambiguous_technical_fields_for_one_join_foreign_column_are_rejected(
+    tmp_path: Path,
+) -> None:
+    """FAILS before #334: today's code reports ``safety.relationship-endpoint`` instead.
+
+    ``(source column, purpose)`` is the technical-field uniqueness key, so one source column
+    legally carries two technical fields with two different output names. The join has no rule
+    to choose between them, so it must say so rather than silently take the first.
+    """
+    hub = _hub(tmp_path)
+    _carry_parent_join_column_as_technical_fields(
+        hub, ("code_for_relationship", "relationship"), ("code_for_quality", "quality")
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    ambiguous = [
+        item
+        for item in result.diagnostics.items
+        if item.code == "technical-field.relationship-target-ambiguous"
+    ]
+    assert ambiguous, [item.render() for item in result.diagnostics.items]
+    assert "code_for_relationship" in ambiguous[0].message
+    assert "code_for_quality" in ambiguous[0].message
+
+
+def test_self_referential_relationship_is_rejected_and_never_refs_its_own_model(
+    tmp_path: Path,
+) -> None:
+    """FAILS before #334: the hub compiles green and customer.sql contains ``ref('customer')``.
+
+    ``_wire_relationships`` derives both ``referenced_model`` and ``fk_column`` from the target
+    model name, so an in-scope self-relationship emits a dbt dependency cycle plus a second
+    ``customer_sk`` column. ``safety.identity-role-collision`` cannot catch it: it only reserves
+    the generated FK name when ``external_reference is not None``.
+    """
+    hub = _hub(tmp_path)
+    ontology = hub / "model" / "ontologies" / "party.ttl"
+    ontology.write_text(
+        ontology.read_text(encoding="utf-8") + "\nparty:parent_customer a owl:ObjectProperty ;\n"
+        "  rdfs:domain party:Customer ; rdfs:range party:Customer .\n",
+        encoding="utf-8",
+    )
+    binding_path = _customer_binding_path(hub)
+    binding_path.write_text(
+        binding_path.read_text(encoding="utf-8").replace(
+            "relationships:\n",
+            textwrap.dedent("""\
+                relationships:
+                  - property: party:parent_customer
+                    target: party:Customer
+                    join:
+                      - local: customer_id
+                        foreign: customer_id
+                    cardinality: many-to-one
+                    mode: non-temporal
+                    missingParent: error
+                    ambiguousParent: error
+                """),
+        ),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    codes = {item.code for item in result.diagnostics.items}
+    assert "relationship.self-reference-unsupported" in codes, [
+        item.render() for item in result.diagnostics.items
+    ]
+    assert not any("ref('customer')" in content.lower() for _, content in result.artifacts)
+
+
+def test_external_reference_in_the_bindings_own_domain_is_rejected(tmp_path: Path) -> None:
+    """FAILS before #335: a same-domain ``externalReference`` is silently accepted, bypassing
+    join validation, model-existence checking, and the ``silently-dropped-relationship`` check.
+
+    Asserts the dedicated code, not ``safety.relationship-endpoint`` -- eight sites already
+    construct that one, so pinning it would pass whether or not this check exists.
+    """
+    hub = _hub(tmp_path)
+    binding_path = _customer_binding_path(hub)
+    binding_path.write_text(
+        binding_path.read_text(encoding="utf-8").replace(
+            "    target: party:Country\n",
+            "    target: party:Country\n"
+            "    externalReference:\n"
+            "      name: country\n"
+            "      domain: party\n"
+            "      key:\n"
+            "        - column: code\n"
+            "          type: string\n",
+        ),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    codes = {item.code for item in result.diagnostics.items}
+    assert "relationship.external-reference-same-domain" in codes, [
+        item.render() for item in result.diagnostics.items
+    ]

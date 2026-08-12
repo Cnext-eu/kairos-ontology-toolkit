@@ -260,7 +260,12 @@ class CompileResult:
             "safety.adapter-unsupported",
             "technical-field.output-collision",
             "technical-field.duplicate-source-ambiguous",
+            "technical-field.relationship-target-ambiguous",
             "technical-field.type-incompatible",
+            # #334/#335: entity-local relationship rejections -- the offending binding is
+            # blocked and filtered from the IR exactly like a relationship-endpoint failure.
+            "relationship.self-reference-unsupported",
+            "relationship.external-reference-same-domain",
         }
         if any(entity.blocked for entity in self.ir.entities):
             return all(
