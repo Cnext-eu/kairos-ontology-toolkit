@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The GDPR PII scan (`validate --gdpr`) matched keywords as bare local-name substrings, with no
+  regard to datatype or source evidence** (#325). On a real four-domain hub this produced two false
+  positives — `Address.addressCode` (a governed reference code, `xsd:string`) and
+  `AddressRoleAssignment.isMainAddressRole` (`xsd:boolean`) both matched the `"address"` keyword —
+  while missing the two classes a DPIA would actually care about (`party:Contact`/`party:StaffMember`,
+  sourced from 158 real CargoWise columns including birthdate/passport/next-of-kin), because their
+  canonical property names happened not to contain a keyword substring. `core/validator.py`'s
+  `validate_gdpr` now suppresses a name-keyword hit when the property's declared `rdfs:range` is
+  `xsd:boolean` (no keyword describes a plausible boolean fact) or when the local name ends in a bare
+  `Code` segment and the matched keyword is `"address"` specifically (a postal address cannot be
+  compressed into a short code, so `<X>AddressCode` is definitionally a lookup key, not content).
+  Both gates are scoped narrowly on purpose, per the precedent in #302: `rdfs:range` is
+  author-declared metadata, not the inferred/mutable `column_types` #302 explicitly rejected gating
+  on, and neither gate touches numeric or temporal properties or any other keyword — a
+  `dateOfBirth: xsd:dateTime` still gets flagged, and `nationalIdCode`/`genderCode`-shaped names stay
+  detectable, since `core/_samples.py`'s own identifier-token logic already treats a `Code`/`Id`
+  suffix on a person-context column as the sensitive content itself, not an exemption.
+  Independently, `run_gdpr_validation` now resolves each domain's `integration/bindings/*.binding.yaml`
+  against its source relation's columns (`integration/sources/**/*.ttl`, reusing the same tolerant
+  `_binding_domain`/`_binding_source_ref`/`_binding_target_class`/`_source_relations` helpers
+  `resolve_scope()` already uses for `compile`) and flags a bound class whose *source* columns carry a
+  PII keyword even when its canonical property name does not — still fully respecting existing
+  `kairos-ext:gdprSatelliteOf` protection. Added `"next_of_kin"` to the shared `PII_KEYWORDS` list
+  (`core/_samples.py`, DD-075's single source of truth for both the validator and the sample-masking
+  policy) to cover the third named evidence category. Also: the scan's warning count reached nobody —
+  `validate` (running all checks) printed an unqualified `"✅ All validations passed!"` even with open
+  GDPR warnings. `run_validation` now accepts the already-computed `gdpr_warnings` count and, when
+  nonzero, prints `"✅ All validations passed (⚠️ N unprotected PII warning(s) ... remain open)"`
+  instead. This is a deliberate, non-blocking choice: whether unprotected PII should fail the build is
+  a separate product decision the issue explicitly declines to make unilaterally, and this fix keeps
+  the scan advisory — matching the toolkit's other warning-tolerant checks (DD-089's
+  `audit-silver-samples`, NK-coverage-warned-not-enforced) — while making sure the summary line never
+  overclaims again.
 - **A cross-domain `ref()` naming a model absent from the assembled dbt project went undetected by
   every gate that runs by default** (#342). `compile --check` passes per-domain; `--emit` succeeds;
   only running real `dbt` against the fully assembled project ever surfaced the dangling reference —

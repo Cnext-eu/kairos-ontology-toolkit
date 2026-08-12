@@ -8,13 +8,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 from rdflib import Graph, Namespace, URIRef
-from rdflib.namespace import OWL, RDF, RDFS
+from rdflib.namespace import OWL, RDF, RDFS, XSD
 from pyshacl import validate as shacl_validate
 import json
 
 # Canonical PII keyword list lives in ._samples (single source of truth, also
 # used by the sample-exposure masking policy); re-exported for compatibility.
-from ._samples import PII_KEYWORDS
+from ._samples import PII_KEYWORDS, _normalize
 from .hub_utils import is_domain_ontology_stem
 from .reference_modules import (
     ModuleDiagnostic,
@@ -22,10 +22,40 @@ from .reference_modules import (
     build_managed_import_plan,
     build_reference_module_context,
 )
+# Lightweight, best-effort binding/source-relation readers (issue #325). These are the
+# same tolerant helpers `resolve_scope()` uses to build a compile scope (kernel.py
+# ~line 564-650) and that hub_inspection.py/design_landscape.py already reach into at
+# module scope for advisory reporting — reused here rather than re-parsing binding YAML
+# or source vocabulary TTL a second, subtly different way.
+from .compiler.kernel import (
+    _binding_domain,
+    _binding_source_ref,
+    _binding_target_class,
+    _source_relations,
+)
 
 logger = logging.getLogger(__name__)
 
 KAIROS_EXT = Namespace("https://kairos.cnext.eu/ext#")
+
+# Issue #325: a property whose local name ends in a bare "Code" segment is, by
+# convention, a reference/lookup identifier for the matched concept -- NOT the concept's
+# actual content -- but only for concepts that cannot themselves be compressed into a
+# short code. "address" is the only keyword in this set today: a postal address is
+# inherently multi-component free text, so "<X>AddressCode" can only be a lookup key into
+# an address record, never an address itself (this is what produced the real false
+# positive on `Address.addressCode`, issue #325).
+#
+# This is deliberately NOT extended to the identifier-shaped keywords (national_id, iban,
+# ssn, passport, tax_id) or to the categorical ones (gender, nationality, marital_status,
+# ethnicity, religion) -- core/_samples.py's own `_IDENTIFIER_TOKENS`/
+# `_kind_from_person_column_tokens` already treats a "Code"/"Id"/"Number" suffix on a
+# person-context column as identifier-shaped PII, not an exemption, and a
+# `nationalIdCode`/`genderCode`/`maritalStatusCode` is routinely the coded value ITSELF
+# (e.g. "M"/"F", an ISO nationality code) -- suppressing those would reopen the exact
+# false-negative class this fix exists to close. Extend this set only with the same kind
+# of concrete, evidenced false positive that motivated "address".
+_CODE_SUFFIX_EXEMPT_KEYWORDS: frozenset[str] = frozenset({"address"})
 
 
 # Thin alias kept for existing call sites below. The actual predicate lives in
@@ -103,9 +133,111 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def _property_range_is_boolean(graph: Graph, prop: URIRef) -> bool:
+    """True when *prop* declares ``rdfs:range xsd:boolean``.
+
+    ``rdfs:range`` is author-declared ontology metadata, not inferred from mutable
+    sample data (unlike the ``column_types`` gating that issue #302's fix rejected for
+    the sample redactor -- see `_CODE_SUFFIX_EXEMPT_KEYWORDS` above and the CHANGELOG for
+    the full comparison). A boolean is the one datatype that structurally cannot hold any
+    of ``PII_KEYWORDS``'s free-text/identifier concepts, so this gate is scoped to exactly
+    that type and nothing else -- numeric and temporal properties are deliberately left
+    alone, so a ``dateOfBirth: xsd:dateTime`` or a hypothetical ``age: xsd:decimal`` still
+    gets flagged, per the #302 caveat.
+    """
+    return any(r == XSD.boolean for r in graph.objects(prop, RDFS.range))
+
+
+def _is_governed_code_property_name(snake_local: str) -> bool:
+    """True when the local name's last snake-case segment is a bare ``code``."""
+    tokens = snake_local.split("_")
+    return len(tokens) > 1 and tokens[-1] == "code"
+
+
+def _binding_source_evidence(
+    hub_root: Path, domain_name: str
+) -> dict[str, list[tuple[str, str, str]]]:
+    """Best-effort: map each ``domain_name``-scoped bound class to PII-keyword hits found
+    in its EntityBinding's *source* columns (not its canonical property names).
+
+    Returns ``{class_local_name: [(source_relation, column_name, keyword), ...]}``.
+
+    A class bound to a source relation whose physical columns carry a PII keyword is a
+    strong positive signal regardless of what the canonical (mapped) property was named --
+    this is what issue #325 calls out as the missed false-negative case (a class sourced
+    from person data whose canonical properties were renamed to something that no longer
+    contains a keyword substring).
+
+    Advisory and deliberately best-effort, mirroring how ``hub_inspection.py`` /
+    ``design_landscape.py`` already read bindings for advisory reporting: a hub with no
+    ``integration/bindings`` or ``integration/sources``, or a binding/source file that
+    fails to parse, yields no evidence rather than raising -- the GDPR scan must never
+    crash `validate` on a partially-authored hub.
+
+    Bindings are scoped to *domain_name* via ``metadata.domain`` (``None``/absent counts
+    as unscoped, matching ``resolve_scope()``'s own filter in ``compiler/kernel.py`` --
+    NOT by comparing the binding's ``target.class`` prefix against the domain name, since
+    a class's usable prefix can legitimately differ from the ontology file stem (prefix
+    aliasing across an import closure)).
+    """
+    evidence: dict[str, list[tuple[str, str, str]]] = {}
+
+    bindings_dir = hub_root / "integration" / "bindings"
+    if not bindings_dir.is_dir():
+        return evidence
+
+    binding_paths = sorted(bindings_dir.glob("*.binding.yaml"))
+    if not binding_paths:
+        return evidence
+
+    sources_dir = hub_root / "integration" / "sources"
+    source_paths = tuple(sorted(sources_dir.glob("**/*.ttl"))) if sources_dir.is_dir() else ()
+    if not source_paths:
+        return evidence
+
+    try:
+        relations = _source_relations(source_paths)
+    except Exception:
+        logger.debug(
+            "GDPR scan: could not resolve source relations under %s", sources_dir, exc_info=True
+        )
+        return evidence
+    relations_by_ref = {relation.ref: relation for relation in relations}
+
+    for binding_path in binding_paths:
+        try:
+            text = binding_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _binding_domain(text) not in (None, domain_name):
+            continue
+        target_class = _binding_target_class(text)
+        if not target_class:
+            continue
+        cls_local = target_class.rsplit(":", 1)[-1]
+        relation = relations_by_ref.get(_binding_source_ref(text))
+        if relation is None:
+            continue
+
+        hits = evidence.setdefault(cls_local, [])
+        seen_keywords = {kw for _rel, _col, kw in hits}
+        for column in relation.columns:
+            normalized = _normalize(column.name)
+            for kw in PII_KEYWORDS:
+                if kw in normalized:
+                    if kw not in seen_keywords:
+                        hits.append((relation.ref, column.name, kw))
+                        seen_keywords.add(kw)
+                    break
+
+    return evidence
+
+
 def validate_gdpr(
     ontology_content: str,
     extension_content: Optional[str] = None,
+    *,
+    source_evidence: Optional[dict[str, list[tuple[str, str, str]]]] = None,
 ) -> dict:
     """Scan an ontology for PII-like properties that lack GDPR satellite protection.
 
@@ -114,9 +246,23 @@ def validate_gdpr(
     ``rdfs:domain`` class (or a parent class) is protected by
     ``kairos-ext:gdprSatelliteOf``.
 
+    A name-keyword match is suppressed (issue #325) when:
+      * the property's declared ``rdfs:range`` is ``xsd:boolean`` -- no PII keyword
+        describes a plausible boolean fact; or
+      * the matched keyword is in ``_CODE_SUFFIX_EXEMPT_KEYWORDS`` (today, just
+        ``"address"``) and the property's local name ends in a bare ``Code`` segment --
+        a governed reference/lookup code, not the concept's content.
+
+    Independently of name-based matching, *source_evidence* (see
+    `_binding_source_evidence`) adds warnings for classes whose EntityBinding source
+    columns carry a PII keyword, even when the canonical property name does not -- still
+    subject to the same ``gdprSatelliteOf`` protection check as name-based hits.
+
     Args:
         ontology_content: Turtle-formatted domain ontology.
         extension_content: Optional silver-ext TTL with ``kairos-ext:`` annotations.
+        source_evidence: Optional ``{class_local_name: [(relation, column, keyword)]}``
+            binding-sourced evidence for this domain (see `_binding_source_evidence`).
 
     Returns:
         Dict with ``passed`` (bool — True if no unprotected PII found),
@@ -161,6 +307,14 @@ def validate_gdpr(
         if not matched_keyword:
             continue
 
+        # Datatype/name-shape gates (issue #325) -- see docstring above.
+        if _property_range_is_boolean(graph, prop):
+            continue
+        if matched_keyword in _CODE_SUFFIX_EXEMPT_KEYWORDS and _is_governed_code_property_name(
+            snake_local
+        ):
+            continue
+
         # Find domain class(es) for this property
         for domain_cls in graph.objects(prop, RDFS.domain):
             cls_uri = str(domain_cls)
@@ -182,6 +336,35 @@ def validate_gdpr(
                 }
             )
 
+    if source_evidence:
+        flagged_classes = {w["class"] for w in warnings}
+        class_uri_by_local: dict[str, str] = {}
+        for cls in graph.subjects(RDF.type, OWL.Class):
+            cls_uri = str(cls)
+            cls_local = cls_uri.rsplit("#", 1)[-1] if "#" in cls_uri else cls_uri.rsplit("/", 1)[-1]
+            class_uri_by_local.setdefault(cls_local, cls_uri)
+
+        for cls_local, hits in source_evidence.items():
+            cls_uri = class_uri_by_local.get(cls_local)
+            if cls_uri is None:
+                continue  # the binding targets a class this ontology file doesn't declare
+            if cls_uri in protected_classes or cls_uri in parents_with_satellite:
+                continue
+            if cls_local in flagged_classes:
+                continue  # already unprotected via a name-based hit; avoid duplicate noise
+            for relation, column, keyword in hits:
+                warnings.append(
+                    {
+                        "class": cls_local,
+                        "class_uri": cls_uri,
+                        "property": column,
+                        "property_uri": None,
+                        "keyword": keyword,
+                        "evidence": "source-binding",
+                        "source": f"{relation}.{column}",
+                    }
+                )
+
     return {
         "passed": len(warnings) == 0,
         "warnings": warnings,
@@ -189,14 +372,31 @@ def validate_gdpr(
     }
 
 
-def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = None):
+def run_gdpr_validation(
+    ontologies_path: Path,
+    catalog_path: Optional[Path] = None,
+    hub_root: Optional[Path] = None,
+) -> int:
     """Run GDPR PII scan across all domain ontologies.
 
     Prints warnings for classes with PII-like properties that lack
-    ``kairos-ext:gdprSatelliteOf`` annotations.
+    ``kairos-ext:gdprSatelliteOf`` annotations, including classes whose EntityBinding
+    source columns carry PII evidence the canonical property name does not (issue #325).
+
+    Args:
+        ontologies_path: Directory to scan for domain ontology files.
+        catalog_path: Unused by this scan (accepted for call-site symmetry with the
+            other ``run_*_validation`` entry points).
+        hub_root: Root of the ontology hub, used to resolve ``integration/bindings`` and
+            ``integration/sources`` for binding-sourced evidence. Defaults to
+            ``ontologies_path.parent.parent`` (the ``<hub>/model/ontologies`` convention)
+            when omitted; callers with a non-default ``--ontologies`` layout should pass
+            the real hub root explicitly (the CLI always does).
     """
     print("\U0001f512 Kairos GDPR PII Scan")
     print("=" * 50)
+
+    resolved_hub_root = hub_root if hub_root is not None else ontologies_path.parent.parent
 
     ontology_files = list(ontologies_path.glob("**/*.ttl"))
     ontology_files = [f for f in ontology_files if _is_domain_ontology(f)]
@@ -216,17 +416,25 @@ def run_gdpr_validation(ontologies_path: Path, catalog_path: Optional[Path] = No
         ext_content = ext_file.read_text(encoding="utf-8") if ext_file else None
 
         ontology_content = ontology_file.read_text(encoding="utf-8")
-        result = validate_gdpr(ontology_content, ext_content)
+        source_evidence = _binding_source_evidence(resolved_hub_root, domain_name)
+        result = validate_gdpr(ontology_content, ext_content, source_evidence=source_evidence)
         total_domains += 1
 
         if result["warnings"]:
             total_warnings += len(result["warnings"])
             print(f"\n  \u26a0\ufe0f  {ontology_file.name}:")
             for w in result["warnings"]:
-                print(
-                    f"     {w['class']}.{w['property']} \u2014 "
-                    f"PII keyword '{w['keyword']}' without gdprSatelliteOf"
-                )
+                if w.get("evidence") == "source-binding":
+                    print(
+                        f"     {w['class']} \u2014 bound source column "
+                        f"'{w['source']}' matches PII keyword '{w['keyword']}' "
+                        "without gdprSatelliteOf (canonical property name does not)"
+                    )
+                else:
+                    print(
+                        f"     {w['class']}.{w['property']} \u2014 "
+                        f"PII keyword '{w['keyword']}' without gdprSatelliteOf"
+                    )
 
     print(f"\n  Scanned {total_domains} domains")
     if total_warnings:
@@ -714,6 +922,7 @@ def run_validation(
     accelerator: Optional[str] = None,
     markdown_report_path: Optional[Path] = None,
     decisions_path: Optional[Path] = None,
+    gdpr_warnings: int = 0,
 ):
     """Run validation pipeline.
 
@@ -738,6 +947,16 @@ def run_validation(
             ``render_validation_markdown``). Omitted by default, which preserves the
             pre-existing JSON-only report contract exactly.
         decisions_path: Optional OKF decision bundle directory to validate when present.
+        gdpr_warnings: Count of unprotected-PII warnings from a GDPR scan that already
+            ran earlier in this same ``validate`` invocation (issue #325). Purely
+            advisory and does NOT affect the exit code here (see the issue's own framing:
+            whether unprotected PII should block is a separate product decision, and this
+            fix keeps the GDPR scan non-blocking, matching the toolkit's other
+            warning-tolerant advisory checks -- DD-089's silver-sample-audit, the
+            NK-coverage-warned-not-enforced precedent). What it DOES change: the final
+            summary line below no longer claims a clean bill of health while GDPR
+            warnings are open. Defaults to 0 (unchanged behavior) for callers that ran no
+            GDPR scan or don't pass it.
     """
 
     print("🔍 Kairos Ontology Validation")
@@ -1018,6 +1237,14 @@ def run_validation(
     if total_failed > 0:
         print(f"\n❌ Validation failed with {total_failed} errors")
         exit(1)
+    elif gdpr_warnings:
+        # Issue #325: never claim a clean bill of health while the GDPR scan (run
+        # earlier in this same invocation) still has unprotected-PII warnings open.
+        # Deliberately non-blocking (exit 0) -- see `gdpr_warnings` docstring above.
+        print(
+            f"\n✅ All validations passed (⚠️  {gdpr_warnings} unprotected PII "
+            "warning(s) from the GDPR scan above remain open)"
+        )
     else:
         print("\n✅ All validations passed!")
 

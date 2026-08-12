@@ -286,10 +286,15 @@ def validate(
     if not any([validate_all, syntax, shacl, consistency, gdpr, ddd]):
         validate_all = True
 
+    gdpr_warning_count = 0
     if gdpr or validate_all:
-        run_gdpr_validation(
-            ontologies_path=ontologies_path,
-            catalog_path=catalog_path,
+        gdpr_warning_count = (
+            run_gdpr_validation(
+                ontologies_path=ontologies_path,
+                catalog_path=catalog_path,
+                hub_root=effective_hub_root,
+            )
+            or 0
         )
         if gdpr and not any([validate_all, syntax, shacl, consistency, ddd]):
             return  # GDPR-only mode
@@ -323,6 +328,7 @@ def validate(
         accelerator=accelerator,
         markdown_report_path=markdown_report_path,
         decisions_path=decisions_path,
+        gdpr_warnings=gdpr_warning_count,
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through
