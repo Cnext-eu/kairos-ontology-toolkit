@@ -35,6 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compacted `rdfs:range` (e.g. `xsd:string`) -- with a styled header row (colored fill, bold
   white text, frozen, auto-filtered) and auto-sized/wrapped columns. Ships under the
   existing `flatfile` extra (`openpyxl`).
+- **`audit-column-coverage`**: advisory gate flagging source columns with real, populated
+  sample data that no EntityBinding references anywhere -- not in `fields:`,
+  `technicalFields:`, `identity`/`grain`/`relationships`/`quality`, or `load.incremental`
+  (`sourceUpdatedAt`, `cdcOperation.column`, `mergeIdentity`, etc.) -- and source tables with
+  zero bindings at all (issue #353). This is the closest v5 equivalent to v4's deleted Claim
+  Registry column-omission gate (DD-077/DD-127/DD-128), recomputed fresh on every run rather
+  than persisted, matching v5's stateless design (DD-133). An adversarial pre-implementation
+  review found that a cardinality-ratio threshold is unreliable in both directions on real
+  data (audit-trail timestamps can show low distinct/row ratios from batched edits, while
+  genuine business timestamps often show high ones), so orphan columns are filtered by name
+  instead, reusing and extending `propose-alignment`'s existing DD-077 operational/audit
+  pattern lists (`_OPERATIONAL_PATTERNS`/`_AUDIT_AUTO_PATTERNS` in `core/propose_alignment.py`,
+  now also matching `systemcreate`/`systemlastedit`) rather than a bespoke heuristic. Advisory
+  by default, with `--fail-on any`. `SourceColumnSample` (`core/silver_sample_audit.py`) gained
+  `distinct_count`/`nullable`/`row_count`, read from the bronze vocabulary's existing
+  `kairos-bronze:distinctCount`/`nullable`/`rowCount` predicates.
 
 ### Fixed
 - **`audit-silver-samples` (DD-089) read only the v4 `model/mappings/` SKOS surface, so on a v5

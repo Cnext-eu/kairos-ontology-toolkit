@@ -39,6 +39,9 @@ class SourceColumnSample:
     system: str
     data_type: str
     samples: list[str] = field(default_factory=list)
+    distinct_count: int | None = None
+    nullable: bool | None = None
+    row_count: int | None = None
 
 
 @dataclass
@@ -102,6 +105,7 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
 
     table_names: dict[str, str] = {}
     table_systems: dict[str, str] = {}
+    table_row_counts: dict[str, int] = {}
     for tbl_uri in graph.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
         tbl_key = str(tbl_uri)
         table_names[tbl_key] = str(
@@ -116,6 +120,12 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
             table_systems[tbl_key] = str(
                 graph.value(system_uri, RDFS.label) or extract_local_name(str(system_uri))
             )
+        row_count_lit = graph.value(tbl_uri, KAIROS_BRONZE.rowCount)
+        if row_count_lit is not None:
+            try:
+                table_row_counts[tbl_key] = int(row_count_lit)
+            except (TypeError, ValueError):
+                pass
 
     columns: dict[str, SourceColumnSample] = {}
     for col_uri in graph.subjects(RDF.type, KAIROS_BRONZE.SourceColumn):
@@ -127,6 +137,15 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
         col_key = str(col_uri)
         table_key = str(table_uri)
         samples = _split_samples(graph.value(col_uri, KAIROS_BRONZE.sampleValues))
+        distinct_count_lit = graph.value(col_uri, KAIROS_BRONZE.distinctCount)
+        distinct_count = None
+        if distinct_count_lit is not None:
+            try:
+                distinct_count = int(distinct_count_lit)
+            except (TypeError, ValueError):
+                distinct_count = None
+        nullable_lit = graph.value(col_uri, KAIROS_BRONZE.nullable)
+        nullable = bool(nullable_lit) if nullable_lit is not None else None
         columns[col_key] = SourceColumnSample(
             uri=col_key,
             name=str(graph.value(col_uri, KAIROS_BRONZE.columnName) or extract_local_name(col_key)),
@@ -135,6 +154,9 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
             system=table_systems.get(table_key, ""),
             data_type=str(graph.value(col_uri, KAIROS_BRONZE.dataType) or "unknown"),
             samples=samples,
+            distinct_count=distinct_count,
+            nullable=nullable,
+            row_count=table_row_counts.get(table_key),
         )
     return columns
 

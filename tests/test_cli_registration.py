@@ -11,6 +11,7 @@ from kairos_ontology.cli.main import cli
 RETAINED_COMMANDS = {
     "analyse-sources",
     "audit-silver-samples",
+    "audit-column-coverage",
     "build-glossary",
     "catalog-test",
     "check-inventory",
