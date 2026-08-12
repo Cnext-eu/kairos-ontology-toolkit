@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0rc23] — 2026-08-12
+
+### Fixed
+- **The `--allow` globs published in the design skills could not match the paths `guard-scope`
+  reports, and the skill then told the agent to delete its own work** (#329). `git status --porcelain`
+  emits repo-root-relative paths (`ontology-hub/model/ontologies/party.ttl`) while both design skills
+  published hub-relative globs (`model/ontologies/<domain>.ttl`), so `fnmatch` never matched. On a
+  clean tree the guard therefore flagged the file the skill had just authored, and
+  `kairos-design-domain`'s own instructions say to **restore the pre-patch content** on a non-zero
+  exit — destroying the domain. On a dirty tree the failure inverted into a false pass. Both skills
+  now use a leading-`*` glob, which also works for a hub whose `model/` sits at the repo root, where
+  an `ontology-hub/`-prefixed glob would fail in the opposite direction. The test fixture, which
+  built its files at the **repo root** — a layout `init` never produces — is moved to the realistic
+  `ontology-hub/…` shape, so the assertions now exercise the case hubs actually have.
+- **`guard-scope --check-since` compared path sets, so an already-dirty file could change without
+  limit and never be reported** (#323). It now records `(status_code, content_hash)` per path and
+  compares the maps **symmetrically**. The two values are partially disjoint rather than ordered:
+  `git add` on a dirty file changes ` M` → `M ` with an identical hash, invisible to a hash alone.
+  The symmetric comparison closes the cases where a path *leaves* the status output — an already-dirty
+  untracked file that is deleted, and a tracked file flipping ` M` → ` D`. The token also records
+  `HEAD`, so a `git commit` inside the window — which empties the status output and previously
+  reported clean — is now reported.
+- **Non-ASCII paths were unmatchable and would have crashed a naive fix.** Porcelain v1 quotes and
+  octal-escapes them; one real hub has 14 tracked paths containing an en dash, which no
+  human-written glob could match and which `read_bytes()` would fail on. Snapshotting now uses `-z`
+  output, with the parser rewritten for its NUL-delimited fields and its **reversed** rename encoding
+  (rename fields arrive NUL-separated as new-then-old, the opposite order from the `old -> new` form). Paths resolve against `git rev-parse
+  --show-toplevel` rather than the working directory, so the guard works when run from inside the hub.
+
+### Changed
+- **The snapshot token is versioned and fails closed.** Its format was uncontracted and unread by any
+  test; a new token parsed by an older toolkit would have sliced hash-prefixed lines into garbage
+  paths and could have produced a false **pass**. Unrecognised or legacy tokens are now a hard error.
+- **`guard-scope`'s help states that gitignored paths are out of scope** (#312). The guard derives
+  everything from `git status`, so writes into ignored trees — such as the `validation-report.json`
+  that `validate` puts under `ontology-hub-publish/` — are invisible to it. A green result means less
+  than it appeared to, and now says so.
+
+This is a **fidelity fix, not a security control**: a `git commit` mid-window is a total bypass that
+no hashing scheme closes, and the agent under observation is cooperative. The justification is
+instrument validity — `guard-scope` is the detection mechanism for onboarding runs, and a false clean
+silently invalidates the evidence they produce.
+
 ## [5.2.0rc22] — 2026-08-12
 
 ### Fixed

@@ -135,26 +135,82 @@ _DATAPLATFORM_SKILLS = [
 ]
 
 
-def _git_status_snapshot(repo_dir: Path) -> str:
-    """Return ``git status --porcelain --untracked-files=all`` output for *repo_dir*.
+def _run_git(args: list[str], repo_dir: Path, label: str) -> str:
+    """Run ``git *args*`` in *repo_dir*, returning stdout and raising on failure.
 
-    ``--untracked-files=all`` is required — plain ``--porcelain`` omits
-    untracked files entirely, which would let a new file outside a guarded
-    scope slip past undetected. Used by the ``guard-scope`` command to compare
-    a before/after snapshot; not a generic git-runner abstraction — every
-    other git call in this module stays inline as-is.
+    Decodes as UTF-8 — git's own path encoding — rather than the platform
+    locale, with ``surrogateescape`` so an undecodable byte sequence is carried
+    through intact instead of raising mid-parse.
     """
     result = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
+        ["git", *args],
         cwd=repo_dir,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"git status failed in {repo_dir}: {result.stderr.strip() or result.stdout.strip()}"
+            f"{label} failed in {repo_dir}: {result.stderr.strip() or result.stdout.strip()}"
         )
     return result.stdout
+
+
+def _git_status_snapshot(repo_dir: Path) -> str:
+    """Return ``git status --porcelain -z --untracked-files=all`` output for *repo_dir*.
+
+    ``--untracked-files=all`` is required — plain ``--porcelain`` omits
+    untracked files entirely, which would let a new file outside a guarded
+    scope slip past undetected.
+
+    ``-z`` is equally required. Without it, porcelain v1 wraps any path holding
+    a non-ASCII byte in double quotes and octal-escapes it, so
+    ``model/bi/Fee – Actual.ttl`` is emitted as
+    ``"model/bi/Fee \\342\\200\\223 Actual.ttl"`` — a string no human-written
+    ``--allow`` glob can match and no filesystem call can open. ``-z`` emits
+    raw, unquoted path bytes terminated by NUL, the one byte a path can never
+    contain and therefore the only unambiguous record separator.
+
+    Beware that ``-z`` also **reverses** the rename/copy encoding: the default
+    format writes ``R  OLD -> NEW`` on one line, whereas ``-z`` writes
+    ``R  NEW`` and then the bare ``OLD`` as the next NUL-terminated field.
+
+    Used by the ``guard-scope`` command to compare a before/after snapshot; not
+    a generic git-runner abstraction — every other git call in this module
+    stays inline as-is.
+    """
+    return _run_git(
+        ["status", "--porcelain", "-z", "--untracked-files=all"], repo_dir, "git status"
+    )
+
+
+def _git_repo_root(repo_dir: Path) -> Path:
+    """Return the absolute repository root containing *repo_dir*.
+
+    Porcelain status paths are repo-root-relative whatever directory git was
+    invoked from, so resolving them against ``Path.cwd()`` doubles the prefix
+    (``ontology-hub/ontology-hub/…``) whenever a command runs from inside the
+    hub rather than from the repo root.
+    """
+    return Path(_run_git(["rev-parse", "--show-toplevel"], repo_dir, "git rev-parse").strip())
+
+
+def _git_head_sha(repo_dir: Path) -> str:
+    """Return the current HEAD commit sha, or ``""`` when HEAD is unborn.
+
+    A commit made inside a guarded window empties the status output entirely,
+    so without recording HEAD the guard would report a pristine tree.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_dir,
+        capture_output=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
+    if result.returncode != 0:
+        return ""  # unborn HEAD — a repository with no commit yet
+    return result.stdout.strip()
 
 
 _REF_MODELS_PATH = "ontology-reference-models"
