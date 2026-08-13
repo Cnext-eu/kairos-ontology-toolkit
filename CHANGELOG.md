@@ -212,6 +212,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wasn't. Property alignment now checks `subPropertyOf` first (a new `alignment: "subproperty"`,
   `confidence: 1.0` tier, resolved via the canonical `SemanticIndex`), crediting the single most
   explicit, formal alignment signal OWL offers for properties.
+- **No field-vs-field duplicate-property or duplicate-output-column diagnostic** (#343).
+  `_binding_safety_diagnostics` checked `technicalFields:` for duplicate source columns/output
+  names but had no equivalent check over `fields:`; two entries resolving to the same property, or
+  to different properties whose output columns collide, were accepted silently, and
+  `semantic_outputs`'s `setdefault`-based construction quietly discarded the second entry instead
+  of erroring. Two new errors: `field.duplicate-property` (same property mapped twice) and
+  `field.output-collision` (different properties, same resulting output column name).
+- **An expired approved deviation still authorized a Power BI capability degradation** (#319).
+  `kairos-ext:Deviation.expiryDate` was parsed, type-checked and rendered, but never compared to a
+  clock -- `_matching_deviation` (`core/projections/dbt/capabilities.py`) now takes an explicit
+  `current_date`, resolved once via the existing `core/determinism.py::resolve_generated_at()`
+  (never a direct wall-clock read, preserving this package's determinism guarantees), and skips a
+  matched deviation whose `expiry_date` has passed so the underlying requirement blocks again, as
+  if the deviation had never been written.
+- **`discovery-conformance validate` gates accepted what they were built to reject** (#307, #308).
+  The DD-148 unresolved-judgment gate was keyed on the artifact's own self-declared `mode` field
+  (`mode: interactive` disabled it entirely, even with every concept `decided_by: ai` and
+  unconfirmed) -- `open_questions()` now keys on each concept's own `decided_by`/
+  `needs_confirmation`/`confidence`, in any mode. Separately, `validate_artifact` never compared
+  the artifact to the archetype it claims to conform to: an artifact covering 1/48 concepts, or
+  with a mismatched/tampered `archetype.id`/`catalog_hash`, validated clean. `validate_artifact`
+  now optionally checks full coverage and per-concept identity against the resolved archetype
+  catalog, reuses the existing `is_stale()` for hash verification, rejects `rename_to`/
+  `deviation_reason` on an outcome that doesn't call for them, and type-checks `business_area`.
+  (One further hole -- `topology_confirmations`/`cardinality_answers` shape validation -- needs a
+  reference-models-side change and is tracked separately.)
+- **The canonical `EntityBinding` example failed its own schema, and the DD-108 identity error
+  message was both misleading and silently case-sensitive** (#337). `missingParent: null` parsed
+  to Python `None` instead of the required string `"null"`, and `ambiguousParent: first` is
+  schema-valid but always rejected by the adapter -- both now use values the schema and the
+  adapter actually agree on. The DD-108 identity error said an authored naturalKey "must be
+  explicitly materialized as mapped fields" (false -- `technicalFields:` is an accepted remedy
+  too) and silently case-mismatched an authored `technicalFields` name against its
+  already-lowercased output-column expectation with no mention of case; the comparison is now
+  case-insensitive and the message names both valid remedies. Separately, `--target-class
+  party:Branch` was rejected (only `:Branch` or a full IRI worked) because a domain ontology
+  conventionally self-declares with the default/empty prefix rather than an alias for its own
+  domain name; `fit_report.py`'s prefix resolution (shared by `scaffold-binding`/`fit-report`) now
+  falls back to the root ontology's default namespace when the requested prefix matches nothing
+  declared but equals the ontology's own file stem.
 
 ## [5.2.1rc4] — 2026-08-12
 
