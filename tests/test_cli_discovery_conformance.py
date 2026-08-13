@@ -256,3 +256,222 @@ def test_validate_invalid_artifact_exits_one(tmp_path, refroot):
     )
     assert res.exit_code == 1
     assert "invalid" in res.stderr
+
+
+# --- discovery-conformance build (issue #311) ---------------------------------------------
+
+
+def _write_judgments(path, outcomes, *, mode="interactive"):
+    path.write_text(
+        yaml.safe_dump({"mode": mode, "core_concepts": outcomes}, sort_keys=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _default_artifact_path(hub):
+    return hub / "integration" / "discovery" / "core-concepts-conformance.yaml"
+
+
+def test_build_happy_path_writes_valid_artifact(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    judgments = _write_judgments(tmp_path / "judgments.yaml", _full_test_carrier_outcomes())
+
+    res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    out_path = _default_artifact_path(hub)
+    assert out_path.is_file()
+    artifact = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    assert artifact["schema_version"] == 2
+    assert artifact["scorecard"]["total"] == 4
+    assert artifact["archetype"]["catalog_hash"]
+    assert artifact["archetype"]["concept_set_hash"]
+    assert "Wrote conformance artifact" in res.stderr
+    assert "valid" in res.stderr
+
+
+def test_build_malformed_judgments_missing_core_concepts_exits_two(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    judgments = tmp_path / "judgments.yaml"
+    judgments.write_text(yaml.safe_dump({"mode": "interactive"}), encoding="utf-8")
+
+    res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert res.exit_code == 2
+    assert "core_concepts" in res.stderr
+    assert not _default_artifact_path(hub).exists()
+
+
+def test_build_malformed_judgments_not_a_mapping_exits_two(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    judgments = tmp_path / "judgments.yaml"
+    judgments.write_text(yaml.safe_dump(["not", "a", "mapping"]), encoding="utf-8")
+
+    res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert res.exit_code == 2
+    assert "mapping" in res.stderr
+    assert not _default_artifact_path(hub).exists()
+
+
+def test_build_default_validate_catches_incomplete_coverage(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    # Drop the last concept (GhostConcept) — incomplete coverage.
+    incomplete = _full_test_carrier_outcomes()[:-1]
+    judgments = _write_judgments(tmp_path / "judgments.yaml", incomplete)
+
+    res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert res.exit_code == 1
+    assert "missing archetype concept" in res.stderr
+    # The artifact IS written (build writes before validating) but the command still fails.
+    assert _default_artifact_path(hub).is_file()
+
+
+def test_build_no_validate_decouples_write_from_validation(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    incomplete = _full_test_carrier_outcomes()[:-1]
+    judgments = _write_judgments(tmp_path / "judgments.yaml", incomplete)
+
+    res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+            "--no-validate",
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    out_path = _default_artifact_path(hub)
+    assert out_path.is_file()
+
+    # A separate, subsequent validate call on that same file now fails.
+    validate_res = _run(
+        [
+            "discovery-conformance",
+            "validate",
+            "--file",
+            str(out_path),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert validate_res.exit_code == 1
+    assert "missing archetype concept" in validate_res.stderr
+
+
+def test_build_output_writes_to_explicit_path(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    judgments = _write_judgments(tmp_path / "judgments.yaml", _full_test_carrier_outcomes())
+    explicit_output = tmp_path / "somewhere-else" / "artifact.yaml"
+
+    res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+            "--output",
+            str(explicit_output),
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    assert explicit_output.is_file()
+    assert not _default_artifact_path(hub).exists()
+    artifact = yaml.safe_load(explicit_output.read_text(encoding="utf-8"))
+    assert artifact["schema_version"] == 2
+
+
+def test_build_allow_unresolved_passthrough(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    outcomes = _full_test_carrier_outcomes()
+    # Mark one concept as an unresolved AI-decided (fleet-mode) judgment.
+    outcomes[0] = {
+        **outcomes[0],
+        "decided_by": "ai",
+        "needs_confirmation": True,
+    }
+    judgments = _write_judgments(tmp_path / "judgments.yaml", outcomes, mode="fleet")
+
+    args = [
+        "discovery-conformance",
+        "build",
+        "--archetype",
+        "test-carrier",
+        "--judgments-file",
+        str(judgments),
+        "--refmodels-root",
+        str(refroot),
+    ]
+
+    res_fail = _run(args)
+    assert res_fail.exit_code == 1
+    assert "unresolved" in res_fail.stderr
+
+    res_pass = _run([*args, "--allow-unresolved"])
+    assert res_pass.exit_code == 0, res_pass.output
+    assert _default_artifact_path(hub).is_file()

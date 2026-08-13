@@ -1729,6 +1729,169 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, refmodel
     click.echo(f"✅ Conformance artifact valid: {path}", err=True)
 
 
+@discovery_conformance.command(name="build")
+@click.option("--archetype", "archetype_id", required=True, help="Archetype id to build against.")
+@click.option(
+    "--judgments-file",
+    "judgments_file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="YAML or JSON file with mode, core_concepts outcomes, and optional "
+    "topology_confirmations/cardinality_answers.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(),
+    default=None,
+    help="Where to write the artifact (default: <hub>/integration/discovery/"
+    "core-concepts-conformance.yaml).",
+)
+@click.option(
+    "--validate/--no-validate",
+    "run_validate",
+    default=True,
+    help="Run the same checks as `discovery-conformance validate` immediately after "
+    "writing (default: on).",
+)
+@click.option(
+    "--allow-unresolved",
+    is_flag=True,
+    default=False,
+    help="Passed through to the post-build validation pass (DD-148); same meaning as "
+    "`validate --allow-unresolved`.",
+)
+@_REFMODELS_OPTION
+def conformance_build(
+    archetype_id, judgments_file, output_path, run_validate, allow_unresolved, refmodels_root
+):
+    """Assemble, write, and (by default) validate a conformance artifact in one step.
+
+    This is the CLI equivalent of calling ``build_artifact()``/``write_artifact()`` directly
+    (issue #311): the judgments file's shape mirrors ``build_artifact()``'s own parameters
+    (``mode``, ``core_concepts`` outcome dicts, optional ``topology_confirmations`` /
+    ``cardinality_answers`` / ``discovery_doc`` / ``archetype_confirmed_by``) rather than
+    inventing a new envelope, so a human or the kairos-design-discovery skill only ever
+    has to write plain YAML/JSON, never a one-off Python script.
+
+    By default this also runs the same checks ``discovery-conformance validate`` runs, so
+    a caller ends up with either a validated artifact or a clear failure — pass
+    ``--no-validate`` to only write (a separate ``validate`` call, or a subsequent ``build``,
+    can check it later).
+    """
+    import yaml
+
+    from ..core.archetype_loader import (
+        ArchetypeError,
+        load_archetype,
+        load_outcome_codes,
+        load_valid_tiers,
+        locate_discovery_doc,
+        _refmodels_version,
+    )
+    from ..core.conformance_artifact import (
+        build_artifact,
+        open_questions,
+        validate_artifact,
+        write_artifact,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    root = _resolve_conformance_root(refmodels_root)
+    try:
+        archetype = load_archetype(root, archetype_id)
+    except ArchetypeError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    judgments_path = Path(judgments_file)
+    try:
+        judgments = yaml.safe_load(judgments_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        click.echo(f"❌ Could not parse judgments file {judgments_path}: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    if not isinstance(judgments, dict):
+        click.echo(
+            f"❌ Judgments file {judgments_path} must contain a mapping with at least "
+            "'mode' and 'core_concepts' keys.",
+            err=True,
+        )
+        raise SystemExit(2)
+
+    core_concepts = judgments.get("core_concepts")
+    if not isinstance(core_concepts, list):
+        click.echo(
+            f"❌ Judgments file {judgments_path} is missing a 'core_concepts' list "
+            "(one outcome dict per archetype concept, e.g. {uri, outcome, tier, ...}).",
+            err=True,
+        )
+        raise SystemExit(2)
+
+    discovery_doc = judgments.get("discovery_doc")
+    if not discovery_doc:
+        try:
+            resolved_doc = locate_discovery_doc(root, archetype_id)
+        except ArchetypeError as exc:
+            click.echo(f"❌ {exc}", err=True)
+            raise SystemExit(2) from exc
+        discovery_doc = str(resolved_doc) if resolved_doc else None
+
+    refmodels_version = _refmodels_version(root)
+    valid_tiers = load_valid_tiers(root)
+
+    artifact = build_artifact(
+        archetype=archetype,
+        refmodels_version=refmodels_version,
+        outcomes=core_concepts,
+        mode=judgments.get("mode"),
+        archetype_confirmed_by=judgments.get("archetype_confirmed_by", "human"),
+        topology_confirmations=judgments.get("topology_confirmations"),
+        cardinality_answers=judgments.get("cardinality_answers"),
+        discovery_doc=discovery_doc,
+        valid_tiers=valid_tiers,
+    )
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if output_path:
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            yaml.safe_dump(artifact, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+    else:
+        out_path = write_artifact(hub_root or cwd, artifact)
+
+    click.echo(f"✅ Wrote conformance artifact: {out_path}", err=True)
+
+    if run_validate:
+        errors = validate_artifact(
+            artifact, load_outcome_codes(root), valid_tiers, archetype=archetype
+        )
+        if errors:
+            click.echo(f"❌ Conformance artifact invalid ({len(errors)} error(s)):", err=True)
+            for e in errors:
+                click.echo(f"   • {e}", err=True)
+            raise SystemExit(1)
+
+        if not allow_unresolved:
+            questions = open_questions(artifact)
+            if questions:
+                click.echo(
+                    f"❌ Conformance artifact has {len(questions)} unresolved AI-decided "
+                    "item(s) (DD-148) — a human must confirm these via "
+                    "kairos-design-discovery:",
+                    err=True,
+                )
+                for q in questions:
+                    click.echo(f"   • {q.get('label') or q.get('uri')} ({q['reason']})", err=True)
+                raise SystemExit(1)
+
+        click.echo(f"✅ Conformance artifact valid: {out_path}", err=True)
+
+
 @click.command(name="build-glossary")
 @click.option(
     "--extraction-dir",
