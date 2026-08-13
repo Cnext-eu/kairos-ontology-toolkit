@@ -192,6 +192,51 @@ def test_the_enforced_unit_is_the_relationship_endpoint_check(library):
     assert remapped.code == entry.diagnostic_code
 
 
+def test_the_temporal_quartet_synonym_ban_is_actually_checked(library):
+    """The second honest entry (issue #364), asserted against the real check.
+
+    Non-vacuous: remove or rename ``temporal_quartet_synonym_ban`` and this goes red, so the
+    registry cannot keep claiming a check that no longer exists or produces a different code.
+    """
+    from kairos_ontology.core.validator import (
+        _check_temporal_quartet_synonyms,
+        validate_naming_conventions,
+    )
+
+    patterns, _ = library
+    entry = next(
+        e
+        for e in coverage_entries(patterns)
+        if e.pattern == "temporal-quartet" and e.unit == "synonym-for-estimated-or-requested"
+    )
+    assert entry.classification == ENFORCED
+    assert entry.home == "validator"
+    assert entry.rejection_reason, "an enforced unit must record the reason it stands for"
+    assert entry.diagnostic_code == "temporal_quartet_synonym_ban"
+    assert _check_temporal_quartet_synonyms is not None  # importable, not a stale reference
+
+    pattern = next(p for p in patterns if p.id == "temporal-quartet")
+    synonym_rule = next(
+        a
+        for a in pattern.anti_patterns
+        if isinstance(a, dict) and a.get("id") == "synonym-for-estimated-or-requested"
+    )
+    content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:ShipmentOntology a owl:Ontology ; rdfs:label "Shipment" ; owl:versionInfo "1.0" .
+:Shipment a owl:Class ; rdfs:label "Shipment" ; rdfs:comment "A shipment" .
+:requestedETA a owl:DatatypeProperty ;
+    rdfs:label "requested ETA" ; rdfs:domain :Shipment ; rdfs:range xsd:dateTime .
+"""
+    result = validate_naming_conventions(content, temporal_quartet_synonym_rule=synonym_rule)
+    codes = {w["code"] for w in result["warnings"]}
+    assert entry.diagnostic_code in codes
+
+
 def test_enforced_registry_reason_matches_the_published_text(library):
     """Recorded ``rejection_reason`` must still be the library's, or the ledger warns.
 

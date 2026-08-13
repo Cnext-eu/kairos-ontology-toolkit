@@ -280,11 +280,13 @@ when a named range actually resolves; an absent `rdfs:range`, or a range that is
 expression (`owl:unionOf` / `owl:Restriction` / `owl:oneOf` — a blank node, which the DD-103
 semantic index does not surface as a named class), leaves the range unconstrained and the
 relationship is validated on its authored endpoint (`target:` + `on:`) alone. This is
-deliberate: it is exactly the shape the reference-model `deferred-relationship` pattern
-prescribes, where the object property is declared before its target class conforms. The
-compiler must never fabricate a scalar range (e.g. `xsd:string`) for an object property to
-fill that gap — doing so both defeats this check and makes the property indistinguishable
-from a real string attribute.
+deliberate: the reference-model `deferred-relationship` pattern prescribes declaring the
+range against a marked stub class (an `owl:Class` minted in the hub's own namespace, marked
+with an `rdfs:comment` starting `STUB (deferred-relationship):`) rather than omitting it, so
+the relationship stays visible before its target class conforms; an omitted range is merely
+*tolerated* here, not the prescribed shape. The compiler must never fabricate a scalar range
+(e.g. `xsd:string`) for an object property to fill that gap — doing so both defeats this
+check and makes the property indistinguishable from a real string attribute.
 
 ## 8. Scope resolution & provenance
 

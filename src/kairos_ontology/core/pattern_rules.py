@@ -65,7 +65,7 @@ CLASSIFICATIONS: tuple[str, ...] = (ENFORCED, NOT_ENFORCEABLE, UNRECOGNIZED)
 #: Without it the totality assertion passes vacuously against an empty registry — every unit
 #: would classify as ``not_enforceable``/``unrecognized_shape`` and the ledger would look
 #: complete while recording that the toolkit checks nothing. Raise this when a check lands.
-MINIMUM_ENFORCED_UNITS = 1
+MINIMUM_ENFORCED_UNITS = 2
 
 #: Top-level ``pattern.yaml`` keys that carry no normative unit, with the reason each is
 #: exempt. Being on this list is a toolkit judgement exactly like ``not_enforceable`` is, so
@@ -420,14 +420,19 @@ RULE_REGISTRY: dict[tuple[str, str, str], RuleVerdict] = {
             "*DueDate property",
         ),
     ),
-    ("temporal-quartet", "anti_pattern", "synonym-for-estimated-or-requested"): _judgement(
-        "the banned set is exemplary ('eta, expectedTime, or due_date'), not closed, and the "
-        "example tokens collide with names the shipped reference ontologies use, so the check "
-        "would be simultaneously incomplete and wrong.",
+    ("temporal-quartet", "anti_pattern", "synonym-for-estimated-or-requested"): _enforced(
+        "temporal_quartet_synonym_ban",
+        home="validator",
+        rejection_reason=(
+            "This is the exact naming drift this pattern was shipped normative to stop."
+        ),
         evidence=(
-            "derived-ontologies/BSP/current/financial/financial.ttl declares dueDate; "
-            "WCO customs, IMO maritime-security and MMT consignment each declare a "
-            "*DueDate property",
+            "core/validator.py: _check_temporal_quartet_synonyms, called from "
+            "validate_naming_conventions when a temporal-quartet pattern.yaml is resolvable "
+            "via --ref-models",
+            "blueprints/patterns/temporal-quartet/pattern.yaml: banned_name_tokens, "
+            "applies_to_ranges and a closed exemptions[] list now resolve the two "
+            "objections this entry used to record",
         ),
     ),
     ("temporal-quartet", "anti_pattern", "overwrite-actual-in-place"): _judgement(

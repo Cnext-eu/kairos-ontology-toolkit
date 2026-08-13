@@ -16,6 +16,8 @@ import json
 # used by the sample-exposure masking policy); re-exported for compatibility.
 from ._samples import PII_KEYWORDS, _normalize
 from .hub_utils import is_domain_ontology_stem
+from .archetype_loader import ArchetypeError
+from .pattern_loader import PatternError, load_pattern
 from .reference_modules import (
     ModuleDiagnostic,
     ReferenceModuleContext,
@@ -449,6 +451,126 @@ def run_gdpr_validation(
 _PASCAL_CASE_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
 _CAMEL_CASE_RE = re.compile(r"^[a-z][A-Za-z0-9]*$")
 
+# Issue #367: a property whose rdfs:comment starts with this literal marker (after
+# stripping surrounding whitespace) is deliberately domainless -- a "reusable" property
+# (bsp/party#hasContact, #hasAddress, #hasParty, ...) whose domain is intentionally
+# omitted to avoid inferring subsumption of every hub class that uses it onto one
+# "owning" class (the subclass-identity-by-role anti-pattern, by the back door). Kept as
+# a strict, unnormalized prefix match (str.startswith), matching this function's existing
+# strict-equality style (the rdfs:range == OWL.Thing check below) -- verified directly
+# against the 5 real shipped instances in bsp/party, all of which start with exactly this
+# text, no leading whitespace.
+REUSABLE_NO_DOMAIN_MARKER = "REUSABLE — no rdfs:domain by design"
+
+# Issue #364: the temporal-quartet pattern's synonym-ban anti-pattern applies only to
+# these three XSD ranges (its own applies_to_ranges). A small, closed table rather than a
+# generic CURIE->URIRef derivation: if the upstream pattern.yaml ever adds a 4th range,
+# this under-enforces (treats that range as out of scope) rather than erroring -- a
+# one-line fix (derive via getattr(XSD, curie.split(":")[1])) if that ever happens.
+_TEMPORAL_QUARTET_RANGE_CURIES = {
+    "xsd:dateTime": XSD.dateTime,
+    "xsd:date": XSD.date,
+    "xsd:time": XSD.time,
+}
+
+# Tokenizes a property local name into word-boundary tokens, acronym-run-aware: splits on
+# underscores, then within each piece tries (in order) an acronym run immediately
+# followed by a new titlecase word (kept whole, e.g. "HTTPRequest" -> "HTTP", "Request"),
+# else one titlecase-or-lowercase word, else a trailing acronym run with no lowercase
+# suffix (e.g. "ETA" at the end of a name).
+_TEMPORAL_QUARTET_TOKEN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z0-9]+|[A-Z]+")
+
+
+def _tokenize_property_local_name(local_name: str) -> list[str]:
+    tokens: list[str] = []
+    for piece in local_name.split("_"):
+        tokens.extend(_TEMPORAL_QUARTET_TOKEN_RE.findall(piece))
+    return tokens
+
+
+def _load_temporal_quartet_synonym_rule(ref_models_dir: Path | None) -> dict | None:
+    """Best-effort load of the temporal-quartet pattern's 'synonym-for-estimated-or-
+    requested' anti_pattern dict (issue #364). Returns None -- the check is skipped, not
+    failed -- when no reference-models checkout is configured/resolvable, or the
+    pattern/entry isn't present there.
+
+    Catches both ``PatternError`` (missing pattern directory/pattern.yaml) and
+    ``ArchetypeError`` (``load_pattern`` -> ``_patterns_dir`` ->
+    ``normalize_refmodels_root`` raises this when *ref_models_dir* doesn't look like a
+    reference-models root at all -- verified directly: a malformed root reaches this,
+    not just a missing pattern). This is a best-effort lookup; no exception from it
+    should ever be allowed to crash `validate`.
+    """
+    if ref_models_dir is None or not Path(ref_models_dir).is_dir():
+        return None
+    try:
+        pattern = load_pattern(Path(ref_models_dir), "temporal-quartet")
+    except (PatternError, ArchetypeError):
+        return None
+    for entry in pattern.anti_patterns:
+        if isinstance(entry, dict) and entry.get("id") == "synonym-for-estimated-or-requested":
+            return entry
+    return None
+
+
+def _check_temporal_quartet_synonyms(
+    graph: Graph,
+    datatype_property_uris: set[str],
+    synonym_rule: dict,
+    warnings: list["NamingDiagnostic"],
+) -> None:
+    """Issue #364: flag a datatype property, in an in-scope temporal range, whose local
+    name contains a whole token from the temporal-quartet pattern's closed
+    banned_name_tokens list -- unless the property is explicitly exempted (by bare local
+    name or full IRI) in the pattern's own exemptions[]. Matching semantics (scope,
+    exemptions-first, tokenization, whole-token-only violation) mirror the pattern's own
+    published pattern.md exactly.
+    """
+    banned = {str(t).lower() for t in (synonym_rule.get("banned_name_tokens") or [])}
+    applies_to = {
+        _TEMPORAL_QUARTET_RANGE_CURIES[curie]
+        for curie in (synonym_rule.get("applies_to_ranges") or [])
+        if curie in _TEMPORAL_QUARTET_RANGE_CURIES
+    }
+    exempt_local_names: set[str] = set()
+    exempt_iris: set[str] = set()
+    for exemption in synonym_rule.get("exemptions") or []:
+        name = exemption.get("name") if isinstance(exemption, dict) else None
+        if not name:
+            continue
+        (exempt_iris if "://" in name else exempt_local_names).add(name)
+
+    for property_uri in sorted(datatype_property_uris):
+        subject = URIRef(property_uri)
+        declared_range = graph.value(subject, RDFS.range)
+        if declared_range not in applies_to:
+            continue
+        if property_uri in exempt_iris:
+            continue
+        local_name = _local_name(property_uri)
+        if local_name in exempt_local_names:
+            continue
+        tokens = _tokenize_property_local_name(local_name)
+        violating_tokens = sorted({t.lower() for t in tokens if t.lower() in banned})
+        if violating_tokens:
+            warnings.append(
+                NamingDiagnostic(
+                    level="warning",
+                    code="temporal_quartet_synonym_ban",
+                    message=(
+                        f"Datatype property {property_uri} uses a temporal-quartet synonym "
+                        f"token ({', '.join(violating_tokens)}) instead of the published "
+                        "estimated*/requested*/actual* names (reference-models "
+                        "temporal-quartet pattern, anti-pattern "
+                        "synonym-for-estimated-or-requested). Rename to the canonical "
+                        "qualifier, or add an exempted local name to the pattern library's "
+                        "exemptions[] with a cited reason if this is a genuine domain term "
+                        "of art."
+                    ),
+                    term_uri=property_uri,
+                )
+            )
+
 
 @dataclass(frozen=True)
 class NamingDiagnostic:
@@ -469,7 +591,10 @@ def _local_name(term_uri: str) -> str:
     return term_uri.rsplit("/", 1)[-1]
 
 
-def validate_naming_conventions(ontology_content: str) -> dict:
+def validate_naming_conventions(
+    ontology_content: str,
+    temporal_quartet_synonym_rule: dict | None = None,
+) -> dict:
     """Check ontology naming and annotation conventions for one domain file.
 
     Every rule below is already documented as authoring convention (scaffold
@@ -487,22 +612,38 @@ def validate_naming_conventions(ontology_content: str) -> dict:
         ``owl:versionInfo``;
       - every class has ``rdfs:label`` and ``rdfs:comment``;
       - every ``owl:DatatypeProperty``/``owl:ObjectProperty`` has
-        ``rdfs:label`` and ``rdfs:domain``;
+        ``rdfs:label`` and ``rdfs:domain`` — except a property whose
+        ``rdfs:comment`` starts with :data:`REUSABLE_NO_DOMAIN_MARKER`, a
+        deliberately domainless "reusable" property (issue #367): asserting a
+        domain on one would infer that domain's subsumption onto every hub
+        class that uses the property, re-creating the
+        subclass-identity-by-role anti-pattern by the back door. Silent, not a
+        downgraded warning — this is a permanent, intentional end state, not a
+        transitional one with a future action item.
       - every ``owl:DatatypeProperty`` has ``rdfs:range`` (error). For an
         ``owl:ObjectProperty`` an absent ``rdfs:range`` is only a **warning**:
         DD-133 §7 states that a ``relationships:`` entry does not require the
         object property to declare a named ``rdfs:range``, and the compiler
         validates such a relationship on its authored ``target:``/``on:``
-        endpoint alone — it is exactly the reference-model
-        ``deferred-relationship`` shape. Erroring here would block, in
-        ``validate``, a shape ``compile`` declares supported.
+        endpoint alone. The reference-model ``deferred-relationship`` pattern
+        prescribes declaring the range against a marked stub class instead;
+        an omitted range is merely *tolerated*. Erroring here on an omitted
+        range would block, in ``validate``, a shape ``compile`` declares
+        supported.
       - an ``owl:ObjectProperty`` whose ``rdfs:range`` *is* ``owl:Thing``
         (warning): that is strictly worse than omitting the range, because the
         compiler's relationship guard rejects a declared range that differs from
         the authored ``target:`` class while an omitted one compiles.
       - class names are PascalCase; property names are camelCase;
       - no term is declared as more than one of
-        {Class, DatatypeProperty, ObjectProperty}.
+        {Class, DatatypeProperty, ObjectProperty};
+      - (issue #364, opt-in) when *temporal_quartet_synonym_rule* is supplied
+        (the reference-models temporal-quartet pattern's own
+        ``synonym-for-estimated-or-requested`` anti_pattern dict), a
+        datatype property in an in-scope temporal range whose local name
+        contains a whole banned synonym token (warning) — see
+        :func:`_check_temporal_quartet_synonyms`. ``None`` (the default)
+        skips this check entirely; it is never on by default.
 
     Not checked here (requires judgment, stays in the design skill's prose):
     whether a class is an accidental reference-model specialization, and
@@ -618,14 +759,19 @@ def validate_naming_conventions(ontology_content: str) -> dict:
                 )
             )
         if graph.value(subject, RDFS.domain) is None:
-            errors.append(
-                NamingDiagnostic(
-                    level="error",
-                    code="property_missing_domain",
-                    message=f"Property {property_uri} is missing rdfs:domain.",
-                    term_uri=property_uri,
-                )
+            comment = graph.value(subject, RDFS.comment)
+            is_marked_reusable = comment is not None and str(comment).strip().startswith(
+                REUSABLE_NO_DOMAIN_MARKER
             )
+            if not is_marked_reusable:
+                errors.append(
+                    NamingDiagnostic(
+                        level="error",
+                        code="property_missing_domain",
+                        message=f"Property {property_uri} is missing rdfs:domain.",
+                        term_uri=property_uri,
+                    )
+                )
         # An object property that is *also* declared a datatype property is not a
         # trustworthy "object property" — keep the strict datatype rules for it.
         is_object_property = (
@@ -645,10 +791,13 @@ def validate_naming_conventions(ontology_content: str) -> dict:
                         code="property_missing_range",
                         message=(
                             f"Object property {property_uri} is missing rdfs:range. This is "
-                            "supported (DD-133 §7): the relationship is validated on its "
-                            "authored target:/on: endpoint alone, as the reference-model "
-                            "deferred-relationship pattern prescribes. Declare the target "
-                            "class once it exists."
+                            "tolerated (DD-133 §7): the relationship is validated on its "
+                            "authored target:/on: endpoint alone. The reference-model "
+                            "deferred-relationship pattern prescribes declaring the range "
+                            "against a marked stub class instead of omitting it -- mint the "
+                            "target class now, declare it owl:Class, and give it an "
+                            "rdfs:comment starting with 'STUB (deferred-relationship):'. "
+                            "Declare (or stub) the target class once it exists."
                         ),
                         term_uri=property_uri,
                     )
@@ -692,6 +841,11 @@ def validate_naming_conventions(ontology_content: str) -> dict:
                     term_uri=property_uri,
                 )
             )
+
+    if temporal_quartet_synonym_rule is not None:
+        _check_temporal_quartet_synonyms(
+            graph, datatype_property_uris, temporal_quartet_synonym_rule, warnings
+        )
 
     return {
         "passed": len(errors) == 0,
@@ -1101,6 +1255,10 @@ def run_validation(
     if do_syntax:
         print("📋 Level 1: Syntax Validation")
         print("-" * 50)
+        # Issue #364: best-effort, opt-in by resolvability -- None (no ref-models
+        # checkout resolvable) skips the temporal-quartet synonym-ban check entirely,
+        # it is never required for validate to run.
+        temporal_quartet_synonym_rule = _load_temporal_quartet_synonym_rule(ref_models_dir)
         for ontology_file in ontology_files:
             try:
                 g = Graph()
@@ -1113,7 +1271,10 @@ def run_validation(
                 print(f"  ✗ {ontology_file.name}: {e}")
                 continue
 
-            naming_result = validate_naming_conventions(ontology_file.read_text(encoding="utf-8"))
+            naming_result = validate_naming_conventions(
+                ontology_file.read_text(encoding="utf-8"),
+                temporal_quartet_synonym_rule=temporal_quartet_synonym_rule,
+            )
             if naming_result["errors"]:
                 results["naming"]["failed"] += 1
                 results["naming"]["errors"].extend(

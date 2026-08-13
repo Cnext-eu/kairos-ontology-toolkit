@@ -252,6 +252,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   domain name; `fit_report.py`'s prefix resolution (shared by `scaffold-binding`/`fit-report`) now
   falls back to the root ontology's default namespace when the requested prefix matches nothing
   declared but equals the ontology's own file stem.
+- **`property_missing_domain` had no escape for the reference models' deliberately
+  domainless "reusable" properties** (#367). The reference models now ship object
+  properties (`bsp/party#hasContact`/`#hasParty`/`#hasAddress`/etc.) whose domain is
+  intentionally omitted -- asserting one would infer that domain's subsumption onto every
+  hub class using the property, re-creating the subclass-identity-by-role anti-pattern by
+  the back door -- marked with an `rdfs:comment` starting `REUSABLE — no rdfs:domain by
+  design`. A hub author following this convention hit a hard, unfixable error. The check
+  now stays fully silent (not a downgraded warning -- this is a permanent, intentional end
+  state, unlike the transitional missing-range case) when that exact marker leads the
+  property's comment.
+- **The `deferred-relationship` pattern's prescribed shape changed upstream, and three
+  toolkit surfaces still described the old one as prescribed** (#363). The pattern now
+  wants a *marked stub class* as an eventual object property's `rdfs:range` (mint the
+  target class now, mark its `rdfs:comment` `STUB (deferred-relationship):`), not an
+  omitted range -- omission is merely *tolerated*. Reworded the validator's
+  `property_missing_range` warning text, the DD-133 §7 design doc, and the
+  `kairos-design-domain` skill's authoring guidance to match; the `owl:Thing`-is-worse-
+  than-omitting guidance in all three was already correct and is unchanged.
+- **The `temporal-quartet` pattern's synonym-ban anti-pattern (no `eta`/`etd`/`due`/etc.
+  token in a temporal property name) was classified `not_enforceable`** because the
+  banned-token list was open-ended and collided with real reference-model property names
+  (#364). Upstream has since closed the list, added a formal per-name/per-IRI exemptions
+  mechanism, and published exact tokenization/matching semantics -- both objections are
+  resolved. `validate` now checks it (opt-in: only when a temporal-quartet `pattern.yaml`
+  is resolvable via `--ref-models`/auto-detection, and only against the closed
+  `banned_name_tokens`/`applies_to_ranges`/`exemptions` a *current* pattern.yaml actually
+  publishes -- an older, pre-upgrade checkout with the prior open-ended shape degrades to
+  zero findings, not a crash or a flood). New warning code
+  `temporal_quartet_synonym_ban`; `RULE_REGISTRY`'s entry for this unit is now `enforced_by`
+  and `MINIMUM_ENFORCED_UNITS` moves from 1 to 2.
 
 ## [5.2.1rc4] — 2026-08-12
 

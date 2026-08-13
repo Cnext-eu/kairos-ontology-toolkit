@@ -685,6 +685,294 @@ class TestObjectPropertyDeferredRange:
         assert codes == {"property_missing_range"}
 
 
+class TestReusableDomainlessProperty:
+    """Issue #367: a property whose ``rdfs:comment`` starts with the literal marker
+    ``REUSABLE — no rdfs:domain by design`` is deliberately domainless (the reference
+    models' escape from the subclass-identity-by-role anti-pattern for reusable
+    properties like ``bsp/party#hasContact``/``#hasParty``) and must not trip
+    ``property_missing_domain``."""
+
+    _HEADER = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+"""
+
+    def test_marked_reusable_property_without_domain_passes(self):
+        content = (
+            self._HEADER
+            + """
+:hasContact a owl:ObjectProperty ;
+    rdfs:label "has contact" ;
+    rdfs:comment "REUSABLE — no rdfs:domain by design: typed specialisations attach to different subjects." ;
+    rdfs:range :Contact .
+
+:Contact a owl:Class ;
+    rdfs:label "Contact" ;
+    rdfs:comment "A contact" .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert result["passed"] is True, result["errors"]
+        assert not [e for e in result["errors"] if e["code"] == "property_missing_domain"]
+        assert not [w for w in result["warnings"] if w["code"] == "property_missing_domain"]
+
+    def test_unmarked_property_without_domain_still_errors(self):
+        content = (
+            self._HEADER
+            + """
+:hasContact a owl:ObjectProperty ;
+    rdfs:label "has contact" ;
+    rdfs:comment "An ordinary, unrelated comment." ;
+    rdfs:range :Contact .
+
+:Contact a owl:Class ;
+    rdfs:label "Contact" ;
+    rdfs:comment "A contact" .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        errors = [e for e in result["errors"] if e["code"] == "property_missing_domain"]
+        assert len(errors) == 1, result["errors"]
+
+    def test_marker_as_substring_not_prefix_still_errors(self):
+        """Pins prefix-only semantics: the marker must lead the comment, not merely
+        appear somewhere inside it."""
+        content = (
+            self._HEADER
+            + """
+:hasContact a owl:ObjectProperty ;
+    rdfs:label "has contact" ;
+    rdfs:comment "See also: REUSABLE — no rdfs:domain by design." ;
+    rdfs:range :Contact .
+
+:Contact a owl:Class ;
+    rdfs:label "Contact" ;
+    rdfs:comment "A contact" .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        errors = [e for e in result["errors"] if e["code"] == "property_missing_domain"]
+        assert len(errors) == 1, result["errors"]
+
+    def test_marked_reusable_property_with_leading_whitespace_still_passes(self):
+        """Proves the ``.strip()`` is load-bearing for a triple-quoted literal whose
+        first line is blank before the marker starts."""
+        content = (
+            self._HEADER
+            + """
+:hasContact a owl:ObjectProperty ;
+    rdfs:label "has contact" ;
+    rdfs:comment \"\"\"
+    REUSABLE — no rdfs:domain by design: leading blank line before the marker.\"\"\" ;
+    rdfs:range :Contact .
+
+:Contact a owl:Class ;
+    rdfs:label "Contact" ;
+    rdfs:comment "A contact" .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert not [e for e in result["errors"] if e["code"] == "property_missing_domain"]
+
+    def test_marker_requires_exact_em_dash_not_hyphen(self):
+        """Pins byte-exact matching: an ASCII hyphen lookalike does not satisfy the
+        marker, guarding against a future 'helpful' dash normalization."""
+        content = (
+            self._HEADER
+            + """
+:hasContact a owl:ObjectProperty ;
+    rdfs:label "has contact" ;
+    rdfs:comment "REUSABLE - no rdfs:domain by design: ascii hyphen, not em-dash." ;
+    rdfs:range :Contact .
+
+:Contact a owl:Class ;
+    rdfs:label "Contact" ;
+    rdfs:comment "A contact" .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        errors = [e for e in result["errors"] if e["code"] == "property_missing_domain"]
+        assert len(errors) == 1, result["errors"]
+
+
+class TestTemporalQuartetSynonymBan:
+    """Issue #364: the reference-models temporal-quartet pattern's
+    ``synonym-for-estimated-or-requested`` anti-pattern, now enforceable since upstream
+    closed its ``banned_name_tokens`` list and published exact matching semantics. Opt-in:
+    only checked when a caller supplies the pattern's own anti_pattern dict."""
+
+    _HEADER = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <http://kairos.example/ontology/> .
+@prefix other: <http://other.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:Shipment a owl:Class ;
+    rdfs:label "Shipment" ;
+    rdfs:comment "A shipment" .
+"""
+
+    _RULE = {
+        "banned_name_tokens": ["eta", "etd", "ata", "atd", "expected", "due"],
+        "applies_to_ranges": ["xsd:dateTime", "xsd:date", "xsd:time"],
+        "exemptions": [
+            {"name": "dueDate", "reason": "BSP financial term of art."},
+            {
+                "name": "http://other.example/ontology/arrivalETA",
+                "reason": "Source-fidelity exemption for this specific namespace only.",
+            },
+        ],
+    }
+
+    def _violations(self, result):
+        return [w for w in result["warnings"] if w["code"] == "temporal_quartet_synonym_ban"]
+
+    def test_requested_eta_on_datetime_property_violates(self):
+        content = (
+            self._HEADER
+            + """
+:requestedETA a owl:DatatypeProperty ;
+    rdfs:label "requested ETA" ;
+    rdfs:domain :Shipment ;
+    rdfs:range xsd:dateTime .
+"""
+        )
+        result = validate_naming_conventions(content, temporal_quartet_synonym_rule=self._RULE)
+
+        violations = self._violations(result)
+        assert len(violations) == 1, result["warnings"]
+        assert violations[0]["term_uri"] == "http://kairos.example/ontology/requestedETA"
+        assert "eta" in violations[0]["message"]
+
+    def test_exempted_due_date_on_datetime_property_is_clean(self):
+        content = (
+            self._HEADER
+            + """
+:dueDate a owl:DatatypeProperty ;
+    rdfs:label "due date" ;
+    rdfs:domain :Shipment ;
+    rdfs:range xsd:dateTime .
+"""
+        )
+        result = validate_naming_conventions(content, temporal_quartet_synonym_rule=self._RULE)
+
+        assert self._violations(result) == []
+
+    def test_has_wagon_at_departure_is_clean(self):
+        """Acronym-boundary regression guard: 'atd' spans the At/Departure boundary as
+        letters but never as a whole token, so this must not violate."""
+        content = (
+            self._HEADER
+            + """
+:hasWagonAtDeparture a owl:DatatypeProperty ;
+    rdfs:label "has wagon at departure" ;
+    rdfs:domain :Shipment ;
+    rdfs:range xsd:dateTime .
+"""
+        )
+        result = validate_naming_conventions(content, temporal_quartet_synonym_rule=self._RULE)
+
+        assert self._violations(result) == []
+
+    def test_eta_named_property_out_of_scope_range_is_clean(self):
+        content = (
+            self._HEADER
+            + """
+:etaNote a owl:DatatypeProperty ;
+    rdfs:label "eta note" ;
+    rdfs:domain :Shipment ;
+    rdfs:range xsd:string .
+"""
+        )
+        result = validate_naming_conventions(content, temporal_quartet_synonym_rule=self._RULE)
+
+        assert self._violations(result) == []
+
+    def test_full_iri_exemption_matches_only_that_namespace(self):
+        """Same local name (a genuine violation -- 'ETA' is a whole banned token) in two
+        namespaces; only the one NOT named by its full IRI in exemptions[] violates."""
+        content = (
+            self._HEADER
+            + """
+:arrivalETA a owl:DatatypeProperty ;
+    rdfs:label "arrival ETA" ;
+    rdfs:domain :Shipment ;
+    rdfs:range xsd:dateTime .
+
+other:arrivalETA a owl:DatatypeProperty ;
+    rdfs:label "arrival ETA" ;
+    rdfs:domain :Shipment ;
+    rdfs:range xsd:dateTime .
+"""
+        )
+        result = validate_naming_conventions(content, temporal_quartet_synonym_rule=self._RULE)
+
+        violations = self._violations(result)
+        assert [v["term_uri"] for v in violations] == [
+            "http://kairos.example/ontology/arrivalETA"
+        ], result["warnings"]
+
+    def test_due_date_snake_case_tokenizes_correctly(self):
+        content = (
+            self._HEADER
+            + """
+:due_date a owl:DatatypeProperty ;
+    rdfs:label "due date" ;
+    rdfs:domain :Shipment ;
+    rdfs:range xsd:date .
+"""
+        )
+        rule = {**self._RULE, "exemptions": []}
+        result = validate_naming_conventions(content, temporal_quartet_synonym_rule=rule)
+
+        assert len(self._violations(result)) == 1
+
+    def test_no_reference_models_checkout_degrades_gracefully(self, temp_dir, capsys):
+        """Integration: with no --ref-models resolvable, the check is skipped entirely --
+        no crash, no finding -- even against an ontology that would otherwise violate."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "shipment.ttl").write_text(
+            self._HEADER
+            + """
+:requestedETA a owl:DatatypeProperty ;
+    rdfs:label "requested ETA" ;
+    rdfs:domain :Shipment ;
+    rdfs:range xsd:dateTime .
+""",
+            encoding="utf-8",
+        )
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            ref_models_dir=None,
+        )
+
+        assert "All validations passed" in capsys.readouterr().out
+
+
 class TestConsoleWarningsVisibility:
     """Issue #332: `validate` rendered warnings in the Markdown/JSON report but not on
     the console, so a run with an open warning printed an unqualified
