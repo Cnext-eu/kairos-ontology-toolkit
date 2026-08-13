@@ -2,7 +2,9 @@
 #
 # Copy this file to .dbt/profiles.yml and fill in your connection details.
 # Run dbt with: dbt build --profiles-dir .dbt
-# Or set the env var: export DBT_PROFILES_DIR=.dbt
+# Or set the env var:
+#   PowerShell: $env:DBT_PROFILES_DIR = ".dbt"
+#   bash/zsh:   export DBT_PROFILES_DIR=.dbt
 #
 # The .dbt/profiles.yml file is gitignored to keep secrets out of version control.
 #
@@ -32,9 +34,9 @@
     # @endconfig
       # For Service Principal auth, replace the 3 lines above with:
       # authentication: ServicePrincipal
-      # tenant_id: "{tenant-id}"
-      # client_id: "{client-id}"
-      # client_secret: "{client-secret}"
+      # tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
+      # client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
+      # client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
 # --- END PLATFORM ---
 
 # --- PLATFORM: fabric-warehouse ---
@@ -48,9 +50,9 @@
     #   database: "{your-warehouse-name}"
     #   schema: "dbo"
     #   authentication: ServicePrincipal
-    #   tenant_id: "{tenant-id}"
-    #   client_id: "{client-id}"
-    #   client_secret: "{client-secret}"
+    #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
+    #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
+    #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
     # @endconfig
 # --- END PLATFORM ---
 
@@ -64,6 +66,6 @@
     #   schema: "silver"
     #   host: "{workspace-url}.azuredatabricks.net"
     #   http_path: "/sql/1.0/warehouses/{warehouse-id}"
-    #   token: "{personal-access-token}"
+    #   token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
     # @endconfig
 # --- END PLATFORM ---
