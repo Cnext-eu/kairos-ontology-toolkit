@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -258,6 +258,24 @@ def validate_artifact(
             "'archetype.confirmed_by' must be 'human' (DD-149): archetype selection "
             "is never fleet-eligible and must be explicitly confirmed by a person."
         )
+
+    discovery_doc = artifact.get("discovery_doc")
+    if discovery_doc is not None:
+        if not isinstance(discovery_doc, str) or not discovery_doc.strip():
+            errors.append("'discovery_doc' must be a non-empty string when present.")
+        # 'discovery_doc' is always POSIX-style (forward slashes, contract row —
+        # see build_artifact's docstring), so absoluteness is checked with
+        # PurePosixPath rather than the platform Path: on Windows, plain Path is
+        # WindowsPath, whose is_absolute() does not flag a leading-'/' POSIX-absolute
+        # path (#313). The "\\" check is separate defense-in-depth: it catches a
+        # Windows drive-letter-absolute path like 'C:\...' (which PurePosixPath alone
+        # would not flag, since it has no leading '/') and any non-portable
+        # backslash-separated path.
+        elif PurePosixPath(discovery_doc).is_absolute() or "\\" in discovery_doc:
+            errors.append(
+                "'discovery_doc' must be a path relative to the reference-models root "
+                f"(e.g. 'accelerator-packs/<pack>/discovery/<id>.md'), got: {discovery_doc!r}."
+            )
 
     concepts = artifact.get("core_concepts")
     if not isinstance(concepts, list):
