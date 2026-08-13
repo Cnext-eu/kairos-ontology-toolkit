@@ -1559,6 +1559,15 @@ def conformance_load(archetype_id, refmodels_root, output_format):
         click.echo(f"❌ {exc}", err=True)
         raise SystemExit(2) from exc
 
+    discovery_doc_rel = None
+    if discovery_doc is not None:
+        try:
+            discovery_doc_rel = discovery_doc.relative_to(root).as_posix()
+        except ValueError:
+            # Defensive: shouldn't happen since locate_discovery_doc globs under root,
+            # but never let an unrelativizable path leak out absolute (#313).
+            discovery_doc_rel = discovery_doc.name
+
     topology = derive_archetype_topology(root, archetype)
     drift = check_version_drift(archetype, root)
     # Machine-only: actionable in reference-models, not by the hub designer reading this
@@ -1585,7 +1594,7 @@ def conformance_load(archetype_id, refmodels_root, output_format):
             "compatible_with": archetype.compatible_with,
         },
         "refmodels_version": _refmodels_version(root),
-        "discovery_doc": str(discovery_doc) if discovery_doc else None,
+        "discovery_doc": discovery_doc_rel,
         # 'tier' is the archetype's *conformance* tier (required/recommended/optional);
         # 'ontology_tier' is which reference-models tier the module lives in
         # (blueprint/derived/authoritative). Two unrelated meanings — never merge the keys.

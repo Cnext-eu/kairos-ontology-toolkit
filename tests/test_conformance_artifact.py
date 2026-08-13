@@ -158,6 +158,55 @@ def test_validate_requires_human_confirmed_archetype(refroot, archetype):
     assert any("archetype.confirmed_by" in e for e in errors)
 
 
+def test_validate_rejects_absolute_posix_discovery_doc(refroot, archetype):
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_outcomes(),
+        mode="interactive",
+        discovery_doc="/home/dev/hub/ontology-reference-models/accelerator-packs/"
+        "logistics/discovery/test-carrier.md",
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("discovery_doc" in e for e in errors)
+
+
+def test_validate_rejects_windows_absolute_discovery_doc(refroot, archetype):
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_outcomes(),
+        mode="interactive",
+        discovery_doc=r"C:\refmodels\accelerator-packs\logistics\discovery\test-carrier.md",
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("discovery_doc" in e for e in errors)
+
+
+def test_validate_accepts_relative_discovery_doc(refroot, archetype):
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_outcomes(),
+        mode="interactive",
+        discovery_doc="accelerator-packs/logistics/discovery/test-carrier.md",
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert not any("discovery_doc" in e for e in errors)
+
+
+def test_validate_accepts_null_discovery_doc(refroot, archetype):
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_outcomes(),
+        mode="interactive",
+        discovery_doc=None,
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert not any("discovery_doc" in e for e in errors)
+
+
 def test_validate_rejects_bad_confidence_and_decided_by(refroot, archetype):
     outcomes = _outcomes()
     outcomes[0]["confidence"] = 1.5

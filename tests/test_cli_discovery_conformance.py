@@ -8,6 +8,7 @@ Asserts machine output on stdout is parseable (clean) and diagnostics go to stde
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -61,6 +62,10 @@ def test_load_emits_clean_json_with_topology(refroot):
     assert len(payload["ref_model_modules"]) == 2
     assert len(payload["topology"]["edges"]) == 2
     assert payload["discovery_doc"].endswith("test-carrier.md")
+    # #313: discovery_doc must be relative to the reference-models root, not an
+    # absolute, machine-local path.
+    assert not Path(payload["discovery_doc"]).is_absolute()
+    assert payload["discovery_doc"] == "accelerator-packs/logistics/discovery/test-carrier.md"
     # Missing GhostConcept warning surfaces on stderr only.
     assert "GhostConcept" in res.stderr
 
