@@ -70,15 +70,18 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
    discovery doc) before proceeding.
 3. Author **only** the per-concept business judgment as data: `outcome` (one of the loaded
    codes), `rename_to` or `deviation_reason` where applicable, `confidence`, `rationale`,
-   `references`, `needs_confirmation`, and `decided_by` (`"user"` or `"ai"` — mark every
-   AI-approved choice `"ai"`; never mark an AI choice `"user"`). This is the actual discovery
-   analysis and cannot be automated — everything else (the concept list, tiers, topology) comes
-   from step 2.
+   `references`, `needs_confirmation`, `decided_by` (`"user"` or `"ai"` — mark every
+   AI-approved choice `"ai"`; never mark an AI choice `"user"`), and optional `likely_domains`
+   (a list of lowercase domain-id strings the concept informs — a concept may inform more than
+   one domain; omit or leave empty for a **cross-cutting** concept, which stays in scope for
+   every domain). This is the actual discovery analysis and cannot be automated — everything
+   else (the concept list, tiers, topology) comes from step 2.
 4. Write the step-3 judgments as a plain YAML (or JSON) file — `mode: "interactive"` or
    `mode: "fleet"` to match this session (DD-088), a `core_concepts` list with one outcome dict
    per concept from step 2 (`uri`, `outcome`, `tier`, `confidence`, `rationale`, `references`,
-   `needs_confirmation`, `decided_by`, plus `rename_to`/`deviation_reason` where applicable), and
-   optional `topology_confirmations`/`cardinality_answers`. Then run:
+   `needs_confirmation`, `decided_by`, `likely_domains` (optional, defaults to cross-cutting),
+   plus `rename_to`/`deviation_reason` where applicable), and optional
+   `topology_confirmations`/`cardinality_answers`. Then run:
 
    `kairos-ontology discovery-conformance build --archetype <id> --judgments-file <path>`
 

@@ -39,3 +39,42 @@ def write_minimal_discovery_artifact(hub_root: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def write_discovery_artifact_with_unresolved_judgment(
+    hub_root: Path, *, likely_domains: list[str] | None = None
+) -> Path:
+    """Write a discovery artifact with exactly one unresolved AI-decided judgment.
+
+    The concept is ``decided_by: "ai"`` with ``needs_confirmation: true``, so it always
+    fails ``open_questions()``/``check_discovery_gate()`` when in scope. Pass
+    *likely_domains* to tag it to specific domain(s) (issue #389/#390); omit (the
+    default) to leave it cross-cutting — matching every pre-existing artifact's implicit
+    behavior, always in scope regardless of any ``--domain``/``domains=`` filter.
+    """
+    path = Path(hub_root) / ARTIFACT_RELPATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    concept: dict = {
+        "uri": "https://example.org/ont/test#UnresolvedConcept",
+        "label": "Unresolved Concept",
+        "tier": "required",
+        "outcome": "conforms",
+        "decided_by": "ai",
+        "needs_confirmation": True,
+    }
+    if likely_domains:
+        concept["likely_domains"] = list(likely_domains)
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": ARTIFACT_SCHEMA_VERSION,
+                "generated_by": "test-fixture",
+                "mode": "fleet",
+                "archetype": {"id": "test-fixture", "confirmed_by": "human"},
+                "core_concepts": [concept],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return path

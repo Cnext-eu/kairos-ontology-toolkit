@@ -220,7 +220,16 @@ def validate(
         raise SystemExit(1)
 
     effective_hub_root = hub_root if hub_root is not None else cwd / "ontology-hub"
-    discovery_errors = check_discovery_gate(effective_hub_root)
+    # Domain-scoped (issue #389/#390): an unresolved DD-148 judgment tagged to a domain
+    # other than the one being validated no longer blocks this narrower check. Deliberately
+    # NOT falling back to `_ontology_domain_hints(ontologies_path)` when --domain is omitted
+    # (unlike the accelerator-resolution call below) — that helper only returns domain stems
+    # already modeled in the hub, which would silently weaken whole-hub validation for any
+    # judgment tagged to a domain with no TTL yet (the common case). Passing domains=None
+    # here when --domain is omitted preserves today's whole-hub gating exactly.
+    discovery_errors = check_discovery_gate(
+        effective_hub_root, domains=[domain] if domain else None
+    )
     if discovery_errors:
         for error in discovery_errors:
             click.echo(f"❌ {error}", err=True)

@@ -194,7 +194,11 @@ def compile_cmd(
         CompileMode.EMIT if emit_mode else CompileMode.CHECK if check_mode else CompileMode.EXPLAIN
     )
     hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
-    discovery_errors = check_discovery_gate(hub)
+    # Domain-scoped (issue #389/#390): compile is inherently single-domain (domain is a
+    # required positional argument here), so an unresolved DD-148 judgment tagged to a
+    # different domain no longer blocks this domain's compile; cross-cutting or
+    # matching-domain judgments still do.
+    discovery_errors = check_discovery_gate(hub, domains=[domain])
     if discovery_errors:
         for error in discovery_errors:
             click.echo(f"✗ {error}", err=True)

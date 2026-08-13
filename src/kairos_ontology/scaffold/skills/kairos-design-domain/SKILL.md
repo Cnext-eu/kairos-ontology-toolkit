@@ -108,12 +108,17 @@ narrative (DD-048) nor a discovery conformance artifact at
 `integration/discovery/core-concepts-conformance.yaml` (DD-090), STOP and invoke
 **kairos-design-discovery** first — do not proceed on inferred business terms. The
 two are independent; either is enough to pass this baseline check. If a conformance
-artifact exists, additionally read its `mode` field. When `mode: fleet`, check for
-unresolved AI-decided concept judgments (`needs_confirmation: true`, or no recorded
-`confidence`); if any exist, STOP and invoke **kairos-design-discovery** so a human
-confirms them before design proceeds — this check applies regardless of whether a
-`businessdiscovery/` narrative exists. `kairos-ontology compile`/`validate` enforce
-both checks and hard-fail otherwise — this gate only lets you catch it earlier.
+artifact exists, additionally check for unresolved AI-decided concept judgments
+(`needs_confirmation: true`, or no recorded `confidence`) — this check applies in
+every mode, not only `mode: fleet`. This is domain-scoped (issue #389/#390): an
+unresolved judgment tagged (via `likely_domains`) to a domain other than the one you
+are actively designing no longer blocks you here; one tagged to the active domain, or
+left **cross-cutting** (no `likely_domains`, the default), still does. If any
+in-scope unresolved judgment exists, STOP and invoke **kairos-design-discovery** so a
+human confirms it before design proceeds — this check applies regardless of whether a
+`businessdiscovery/` narrative exists. `kairos-ontology compile`/`validate --domain`
+enforce both checks the same way and hard-fail otherwise — this gate only lets you
+catch it earlier.
 
 ### Gate 2: PII-safe, source-grounded evidence
 
