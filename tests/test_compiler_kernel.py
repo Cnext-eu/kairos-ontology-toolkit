@@ -670,3 +670,70 @@ def test_explicit_conformance_uses_existing_union_renderer(tmp_path, union_mode)
     assert "union all" in union_sql.lower()
     if union_mode == "deduplicate":
         assert "row_number() over" in union_sql.lower()
+
+
+# ------------------------------------------------------------------------------------------
+# #343: ``_binding_safety_diagnostics`` checks ``technicalFields:`` for duplicate source
+# columns and duplicate output names, but had no equivalent check over ``fields:``. Two
+# ``fields:`` entries resolving to the same property -- or producing the same output column
+# name -- were accepted silently, and ``semantic_outputs`` (built with ``setdefault`` in
+# ``_technical_field_safety_diagnostics``) quietly discarded the second entry instead of
+# reporting the collision. Dormant only because today's column matcher requires exact name
+# equality, so nothing currently authors two ``fields:`` entries for one property.
+# ------------------------------------------------------------------------------------------
+def test_duplicate_fields_entry_for_same_property_is_rejected(tmp_path):
+    hub = _hub(tmp_path)
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8")
+        + "\n  - property: party:customerName\n    expression: customer_name\n",
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    codes = {item.code for item in result.diagnostics.items}
+    assert "field.duplicate-property" in codes, [item.render() for item in result.diagnostics.items]
+
+
+def test_fields_entries_with_colliding_output_columns_are_rejected(tmp_path):
+    """Two *different* properties whose local names normalize to the same output column.
+
+    ``party:customerName`` and a newly authored ``party:customer_name`` are distinct
+    property URIs, but ``camel_to_snake`` normalizes both to the ``customer_name`` output
+    column -- the synthetic case a future name-relaxing column matcher could produce for
+    real, and which ``field.duplicate-property`` alone (a same-URI check) cannot catch.
+    """
+    hub = _hub(tmp_path)
+    ontology = hub / "model" / "ontologies" / "party.ttl"
+    ontology.write_text(
+        ontology.read_text(encoding="utf-8")
+        + "\nparty:customer_name a owl:DatatypeProperty ;\n"
+        "  rdfs:domain party:Customer ; rdfs:range xsd:string .\n",
+        encoding="utf-8",
+    )
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8")
+        + "\n  - property: party:customer_name\n    expression: customer_name\n",
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    codes = {item.code for item in result.diagnostics.items}
+    assert "field.output-collision" in codes, [item.render() for item in result.diagnostics.items]
+    # Distinct property URIs: this must not also fire the same-property duplicate check.
+    assert "field.duplicate-property" not in codes
+
+
+def test_single_fields_entry_per_property_is_unaffected(tmp_path):
+    """The overwhelming common case -- one ``fields:`` entry per property -- stays green."""
+    result = compile_domain(_hub(tmp_path), "party")
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    codes = {item.code for item in result.diagnostics.items}
+    assert "field.duplicate-property" not in codes
+    assert "field.output-collision" not in codes
