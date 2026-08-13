@@ -169,6 +169,11 @@ def scaffold_binding_cmd(
             f"{', '.join(missing)} required (or use --list-unscaffolded/--list-archetypes)."
         )
 
+    if out_path is not None and Path(out_path).is_dir():
+        raise click.UsageError(
+            f"'--out' must be a file path, not an existing directory: {out_path}"
+        )
+
     cwd = Path.cwd()
     ref_models_dir = (
         Path(ref_models_dir_opt) if ref_models_dir_opt else _resolve_ref_models_dir(cwd, hub_root)
