@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import re
 
+from ...determinism import resolve_generated_at
 from .context import (
     MaterializationPlan,
     ProjectionContract,
@@ -674,16 +675,27 @@ def _plan_materialization(
     shaped: ShapedProject,
     mode: ExecutionMode = ExecutionMode.FAIL_FAST,
 ) -> MaterializationPlan:
-    """Select adapter, materialization, dependencies, and release facts."""
+    """Select adapter, materialization, dependencies, and release facts.
+
+    Resolves the projection "now" via
+    :func:`kairos_ontology.core.determinism.resolve_generated_at` (honoring the
+    ``KAIROS_GENERATED_AT``/``SOURCE_DATE_EPOCH`` pins) and threads it into
+    capability negotiation so an expired approved deviation stops authorizing
+    its capability. This keeps the phase contract of ``plan_materialization``/
+    ``collect_materialization`` at exactly ``(contract, shaped)`` -- the
+    timestamp is resolved here rather than added as a public parameter.
+    """
     from .capabilities import adapter_spec, negotiate_capabilities
     from .gold_materialize import materialize_gold_product
 
     project = contract.project
     adapter_name = contract.policy.target_adapter.value
+    generated_at = resolve_generated_at()
     capability_results = negotiate_capabilities(
         adapter_name,
         contract.policy.capability_requirements,
         contract.policy.deviations,
+        current_date=generated_at.date(),
     )
     mapping_capability_results = tuple(
         item
