@@ -363,6 +363,20 @@ class TestProfilesExamplePlatformSelection:
         assert "@config" not in content
         assert "PLATFORM:" not in content
 
+    def test_example_includes_cross_platform_profiles_dir_guidance(self, mock_hub):
+        content = self._profiles_example(mock_hub, "dp-guidance", platform="fabric-lakehouse")
+        assert 'PowerShell: $env:DBT_PROFILES_DIR = ".dbt"' in content
+        assert "bash/zsh:   export DBT_PROFILES_DIR=.dbt" in content
+
+    def test_secret_fields_use_env_var_placeholders(self, mock_hub):
+        content = self._profiles_example(mock_hub, "dp-secrets", platform="fabric-warehouse")
+        assert "env_var('DBT_FABRIC_TENANT_ID')" in content
+        assert "env_var('DBT_FABRIC_CLIENT_ID')" in content
+        assert "env_var('DBT_FABRIC_CLIENT_SECRET')" in content
+
+        dbx_content = self._profiles_example(mock_hub, "dp-secrets-dbx", platform="databricks")
+        assert "env_var('DBT_DATABRICKS_TOKEN')" in dbx_content
+
 
 class TestUpdateDataplatform:
     """Tests for the update command in a dataplatform repo context."""
