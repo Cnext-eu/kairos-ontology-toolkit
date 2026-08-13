@@ -215,6 +215,44 @@ def test_invalid_entity_is_blocked_while_safe_entity_still_plans(tmp_path):
     )
 
 
+def test_policy_normalization_error_preserves_its_own_code(tmp_path):
+    """#337: a ``PolicyNormalizationError`` raised while normalizing one binding (e.g. the
+    DD-108 ``identity.authored-key-not-supplied`` rule) must surface under its own specific
+    code, not get flattened into the generic ``safety.type-incompatible`` by the blanket
+    ``except Exception`` in the per-binding compile loop. That blanket handler must still
+    catch genuinely-unexpected exceptions, so this only asserts the more specific
+    ``PolicyNormalizationError`` branch is tried first.
+    """
+    from kairos_ontology.core.projections.dbt.policy_normalize import PolicyNormalizationError
+
+    hub = _hub(tmp_path)
+
+    def _boom(*_args, **_kwargs):
+        raise PolicyNormalizationError(
+            "identity.authored-key-not-supplied",
+            "authored naturalKey identity OUTPUT column(s) must be explicitly materialized "
+            "as a mapped fields: entry or an authored technicalFields: entry (DD-139) on "
+            "'customer'; missing output column(s): gc_pk.",
+            rule_id="DD-108-business-identity",
+            resource_uri="https://example.test/party#Customer",
+        )
+
+    with patch("kairos_ontology.core.compiler.kernel.normalize_contract", side_effect=_boom):
+        result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    codes = {item.code for item in result.diagnostics.items}
+    assert "identity.authored-key-not-supplied" in codes
+    assert "safety.type-incompatible" not in codes
+    diagnostic = next(
+        item
+        for item in result.diagnostics.items
+        if item.code == "identity.authored-key-not-supplied"
+    )
+    assert diagnostic.rule_id == "DD-108-business-identity"
+    assert "gc_pk" in diagnostic.message
+
+
 def test_unsupported_adapter_fails_closed(tmp_path):
     hub = _hub(tmp_path)
     (hub / "kairos.yaml").write_text("adapter: unknown\n", encoding="utf-8")

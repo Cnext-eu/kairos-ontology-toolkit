@@ -299,6 +299,75 @@ def test_technical_field_satisfies_identity_key_materialization() -> None:
     assert bound.policy_facts.identities[0].natural_keys.values == ("account_ref",)
 
 
+def test_uppercase_technical_field_identity_key_matches_case_insensitively() -> None:
+    """#337: DD-108 identity-key matching used to be case-sensitive against a lowercased
+    naturalKey expectation, while a ``technicalFields:`` remedy's emitted output column
+    keeps whatever case the author chose for ``name:`` (unlike a ``fields:`` entry, whose
+    output column is always forced to the ontology property's already-snake-cased name).
+    A business identity key materialized via an upper-case technicalFields entry -- a common
+    convention when passing a legacy vendor column like ``GC_PK`` straight through -- used to
+    fail DD-108 identity validation purely over letter case, with a message that never even
+    mentioned case. The match must be case-insensitive.
+    """
+    from kairos_ontology.core.projections.dbt import normalize_contract
+    from kairos_ontology.core.projections.dbt.diagnostics import ExecutionMode
+
+    context = ResolutionContext(
+        domain="party",
+        namespace=_NS,
+        ontology_name="party",
+        ontology_iri=_IRI,
+        ontology_version="0.1.0",
+        template_root=str(
+            Path(__file__).resolve().parents[1] / "src" / "kairos_ontology" / "templates" / "dbt"
+        ),
+        target_platform="fabric",
+        relations=(
+            ResolvedRelation(
+                ref="crm.customers",
+                uri="https://acme.example/bronze/crm#customers",
+                system_label="crm",
+                table_name="customers",
+                columns=(
+                    ResolvedColumn(
+                        "customer_id", "varchar(50)", nullable=False, is_primary_key=True
+                    ),
+                    ResolvedColumn("GC_PK", "varchar(50)", nullable=False),
+                ),
+            ),
+        ),
+        classes=(ResolvedClass(ref="party:Customer", uri=f"{_NS}Customer", name="Customer"),),
+        properties=(
+            ResolvedProperty(
+                ref="party:customerId",
+                uri=f"{_NS}customerId",
+                column_name="customer_id",
+                data_type="string",
+            ),
+        ),
+    )
+    doc = VALID.replace(
+        "identity:\n  strategy: source-natural\n  sourceKey: [customer_id]\n",
+        "identity:\n  strategy: source-natural\n  sourceKey: [customer_id]\n"
+        "  businessKey: [GC_PK]\n",
+    ) + textwrap.dedent("""\
+        technicalFields:
+          - name: GC_PK
+            expression: GC_PK
+            type: string
+            nullable: false
+            purpose: identity
+        """)
+    binding = load_entity_binding(doc, path="crm.binding.yaml")
+    bound = adapt_binding(binding, context)
+    assert bound.policy_facts.identities[0].natural_keys.values == ("GC_PK",)
+    # Must not raise identity.authored-key-not-supplied (nor the generic
+    # safety.type-incompatible it used to get flattened into): the upper-case technicalFields
+    # output satisfies the (lower-cased) identity key case-insensitively.
+    contract = normalize_contract(bound, ExecutionMode.FAIL_FAST)
+    assert contract is not None
+
+
 def test_technical_field_type_incompatible_with_physical_column_is_rejected() -> None:
     doc = VALID + textwrap.dedent("""\
         technicalFields:

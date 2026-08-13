@@ -173,25 +173,43 @@ def _namespace_for_prefix(loaded, root_path: Path, prefix: str) -> str | None:
 
     Root-declared prefixes win; an imported-only prefix is usable only when every
     declaration across the closure agrees on the same namespace.
+
+    A root ontology conventionally self-declares its own terms under the empty/default
+    prefix (``@prefix : <...>``) rather than an explicit alias for its own domain name --
+    ``model/ontologies/party.ttl`` typically declares ``@prefix : <https://.../party#> .``,
+    never ``@prefix party: <...>``. An author naturally typing the domain name itself as an
+    explicit qname prefix (e.g. ``party:Branch`` while working in the ``party`` domain) would
+    otherwise get a spurious "no declared prefix matches" error even though ``:Branch`` and
+    the full IRI both resolve fine. So when *prefix* matches nothing declared and equals the
+    root ontology's own file stem (its domain name), fall back to the root's default-prefix
+    namespace, if one is declared.
     """
     root = str(root_path.resolve())
     root_namespace: str | None = None
+    root_default_namespace: str | None = None
     imported_namespaces: set[str] = set()
     for source in loaded.sources:
         path = source.manifest.source_path
         if not path:
             continue
-        namespaces = _declared_prefixes(path).get(prefix)
-        if not namespaces:
-            continue
-        if str(Path(path).resolve()) == root:
-            root_namespace = namespaces[-1]
-        else:
-            imported_namespaces.update(namespaces)
+        is_root = str(Path(path).resolve()) == root
+        declared = _declared_prefixes(path)
+        namespaces = declared.get(prefix)
+        if namespaces:
+            if is_root:
+                root_namespace = namespaces[-1]
+            else:
+                imported_namespaces.update(namespaces)
+        if is_root:
+            default_namespaces = declared.get("")
+            if default_namespaces:
+                root_default_namespace = default_namespaces[-1]
     if root_namespace is not None:
         return root_namespace
     if len(imported_namespaces) == 1:
         return next(iter(imported_namespaces))
+    if root_default_namespace is not None and prefix == root_path.stem:
+        return root_default_namespace
     return None
 
 

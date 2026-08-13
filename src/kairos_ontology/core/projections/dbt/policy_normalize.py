@@ -3683,20 +3683,30 @@ def _validate_identity_columns(
         or candidate.identity.outcome is not ModelOutcome.GENERATED
     ):
         return
-    columns = {column.name: column for column in candidate.columns}
+    # Matching is case-insensitive: an authored naturalKey component is resolved by the v5
+    # adapter to its emitted OUTPUT column name (DD-108/DD-133), which for a `fields:` entry
+    # is always the property's already-snake-cased `column_name`, but for a `technicalFields:`
+    # entry (DD-139) is whatever case the author chose for `name:`. Comparing case-sensitively
+    # against the identity key (which is itself normalized) would reject an otherwise-correct
+    # authored key purely over letter case -- e.g. a technicalFields `name: GC_PK` -- with a
+    # misleading "missing" diagnostic that never mentions case at all.
+    columns = {column.name.lower(): column for column in candidate.columns}
     missing = tuple(
         key
         for key in identity.business.keys.value
-        if key not in columns or _NULL_EXPRESSION.match(columns[key].expression or "")
+        if key.lower() not in columns
+        or _NULL_EXPRESSION.match(columns[key.lower()].expression or "")
     )
     if missing:
         raise PolicyNormalizationError(
             "identity.authored-key-not-supplied",
             (
                 "authored naturalKey identity OUTPUT column(s) must be explicitly materialized "
-                f"as mapped fields on {candidate.identity.model_name!r}; missing output "
-                f"column(s): {', '.join(missing)}. Each naturalKey component must correspond to "
-                "a field whose target property emits that output column"
+                f"as a mapped fields: entry or an authored technicalFields: entry (DD-139) on "
+                f"{candidate.identity.model_name!r}; missing output column(s): "
+                f"{', '.join(missing)}. Each naturalKey component must correspond to a fields: "
+                "entry whose target property emits that output column, or a technicalFields: "
+                "entry whose name is that output column"
             ),
             rule_id="DD-108-business-identity",
             resource_uri=identity.entity_uri,

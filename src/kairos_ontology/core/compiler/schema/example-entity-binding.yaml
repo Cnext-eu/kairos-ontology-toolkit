@@ -95,8 +95,8 @@ relationships:
     join: [{ local: account_id, foreign: account_id }]
     cardinality: many-to-one
     mode: non-temporal
-    missingParent: null
-    ambiguousParent: first
+    missingParent: "null"
+    ambiguousParent: error
 conformance:
   group: party-customer
   sourcePrecedence: 1
