@@ -184,6 +184,42 @@ def _git_status_snapshot(repo_dir: Path) -> str:
     )
 
 
+def _git_ignored_snapshot(repo_root: Path, roots: tuple[str, ...]) -> str:
+    """Return ``git status --porcelain -z --ignored=matching --untracked-files=all``
+    output for *roots*, run from *repo_root* so pathspecs are unambiguous
+    repo-root-relative strings.
+
+    ``--ignored=matching`` (rather than the default ``--ignored=traditional``) is
+    required: ``traditional`` collapses a whole ignored directory into a single
+    ``!! some/dir/`` entry, which cannot be fingerprinted per file. ``matching``
+    reports each ignored *file* individually — but only when the file, not its
+    containing directory, is what the ``.gitignore`` pattern matches (a directory
+    that is itself fully ignored is still reported as one collapsed entry, no
+    matter the mode). The toolkit's own scaffolded ``.gitignore`` for
+    ``ontology-hub-publish/`` is written this way on purpose (``ontology-hub-publish/**``
+    plus ``!ontology-hub-publish/**/`` to un-ignore the directories themselves),
+    so this call sees one entry per ignored file under any ``--ignored-root``
+    that follows the same shape.
+
+    No pathspec means "the whole repo", which would make an opt-in guard scan
+    unbounded — *roots* must always be a non-empty tuple of caller-supplied,
+    repo-root-relative paths.
+    """
+    return _run_git(
+        [
+            "status",
+            "--porcelain",
+            "-z",
+            "--ignored=matching",
+            "--untracked-files=all",
+            "--",
+            *roots,
+        ],
+        repo_root,
+        "git status --ignored",
+    )
+
+
 def _git_repo_root(repo_dir: Path) -> Path:
     """Return the absolute repository root containing *repo_dir*.
 

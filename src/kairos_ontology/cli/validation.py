@@ -163,12 +163,13 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir, structural_only):
 @click.option(
     "--report-format",
     "--format",
-    type=click.Choice(["json", "markdown", "both"]),
+    type=click.Choice(["json", "markdown", "both", "none"]),
     default="json",
     show_default=True,
     help="Validation report format(s) to write. Additive: the default preserves "
     "the pre-existing JSON-only report contract at "
-    "<repo>/ontology-hub-publish/validation-report.json unchanged.",
+    "<repo>/ontology-hub-publish/validation-report.json unchanged. Pass 'none' "
+    "to run validation without writing any report file at all.",
 )
 @click.option(
     "--report-path",
@@ -177,7 +178,8 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir, structural_only):
     help="Explicit report output path. Only valid with a single --report-format "
     "(json or markdown) — --report-format both always writes the default "
     "validation-report.json and validation-report.md under "
-    "<repo>/ontology-hub-publish/.",
+    "<repo>/ontology-hub-publish/, and --report-format none writes no report "
+    "at all, so --report-path is rejected with either.",
 )
 def validate(
     ontologies,
@@ -252,11 +254,12 @@ def validate(
         if accelerator_resolution.data_domains_path is not None:
             click.echo(f"   Data domains: {accelerator_resolution.data_domains_path}")
 
-    if report_path is not None and report_format == "both":
+    if report_path is not None and report_format in ("both", "none"):
         raise click.ClickException(
-            "--report-path requires --report-format json or markdown (not 'both'); "
-            "'both' always writes validation-report.json and validation-report.md "
-            "under <repo>/ontology-hub-publish/."
+            "--report-path requires --report-format json or markdown (not 'both' or "
+            "'none'); 'both' always writes validation-report.json and "
+            "validation-report.md under <repo>/ontology-hub-publish/, and 'none' "
+            "writes no report at all."
         )
 
     # Report destination: always the publish root (repo-root sibling), never the
@@ -281,6 +284,8 @@ def validate(
             if (report_path is not None and report_format == "markdown")
             else output_dir / "validation-report.md"
         )
+    if report_format == "none":
+        click.echo("   Report: skipped (--report-format none)")
 
     # Default to all if nothing specified
     if not any([validate_all, syntax, shacl, consistency, gdpr, ddd]):
