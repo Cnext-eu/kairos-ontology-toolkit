@@ -35,6 +35,8 @@ from typing import Any
 
 import yaml
 
+from .hub_utils import find_hub_root
+
 # --- OKF bundle conventions -------------------------------------------------
 
 #: Glob that selects decision *records*. README/index/log/templates are excluded.
@@ -312,6 +314,7 @@ def validate_decision_bundle(decisions_path: Path) -> DecisionValidationResult:
     result = DecisionValidationResult(decisions_path=decisions_path)
     files = iter_record_files(decisions_path)
     seen_ids: dict[str, Path] = {}
+    hub_root = _resolve_hub_root(decisions_path)
 
     for path in files:
         rel = path.name
@@ -340,10 +343,30 @@ def validate_decision_bundle(decisions_path: Path) -> DecisionValidationResult:
 
         record = _record_from_frontmatter(path, fm, body)
         result.records.append(record)
-        _validate_record(record, rel, result.diagnostics, seen_ids)
+        _validate_record(record, rel, result.diagnostics, seen_ids, hub_root)
 
     _validate_supersession_graph(result.records, result.diagnostics)
     return result
+
+
+def _resolve_hub_root(decisions_path: Path) -> Path:
+    """Resolve the hub root that owns *decisions_path*.
+
+    Decision records live at ``<hub_root>/decisions/HUB-DD-*.md`` — the sole
+    layout produced by ``decision new`` (see ``cli/decisions.py::_decisions_dir``)
+    and assumed by ``validate`` when it passes ``decisions_path`` down to
+    :func:`run_validation`. Reuses :func:`find_hub_root` (the codebase's single
+    hub-root-discovery helper — see ``core/hub_utils.py``) for the authoritative
+    answer when the hub already has real content (``model/ontologies``), and
+    falls back to the structural parent of *decisions_path* for a hub that has
+    decisions but no ``model/`` yet. This is what ``sources[].resource`` local
+    paths must be resolved against — not ``decisions_path`` itself — so a
+    citation like ``integration/sources/cargowise/GlbStaff.sample.yaml`` (relative
+    to the hub root, the convention every other path citation in a hub follows)
+    resolves without an unmotivated ``../`` (issue #349).
+    """
+    hub_root = find_hub_root(decisions_path.parent, require_model=False)
+    return hub_root if hub_root is not None else decisions_path.parent
 
 
 def _err(
@@ -373,6 +396,7 @@ def _validate_record(
     rel: str,
     diags: list[DecisionDiagnostic],
     seen_ids: dict[str, Path],
+    hub_root: Path,
 ) -> None:
     # --- OKF conformance ---------------------------------------------------
     if record.type is None:
@@ -476,7 +500,11 @@ def _validate_record(
                 continue
             resource = entry["resource"]
             if _is_local_path(resource):
-                target = (record.path.parent / resource).resolve()
+                # Resolved against the hub root, matching every other path
+                # citation convention in a hub — not against decisions_path
+                # (record.path.parent), which would demand an unmotivated
+                # leading '../' for hub-root-relative citations (issue #349).
+                target = (hub_root / resource).resolve()
                 if not target.exists():
                     _warn(
                         diags,

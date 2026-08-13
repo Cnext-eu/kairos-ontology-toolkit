@@ -205,6 +205,32 @@ def test_url_source_never_warns_but_missing_local_path_does(bundle: Path):
     assert warn_codes.count("unresolved_source") == 1
 
 
+def test_local_source_path_resolves_relative_to_hub_root_not_decisions_dir(
+    tmp_path: Path, bundle: Path
+):
+    """issue #349: sources[].resource must resolve against the hub root (the
+    parent of the ``decisions/`` bundle directory), not against ``decisions/``
+    itself — otherwise a citation written the same way every other hub path
+    citation is written (relative to the hub root, no leading ``../``) wrongly
+    warns as unresolved.
+    """
+    source_dir = tmp_path / "integration" / "sources" / "cargowise"
+    source_dir.mkdir(parents=True)
+    (source_dir / "GlbStaff.sample.yaml").write_text("a: 1\n", encoding="utf-8")
+
+    fm = (
+        "type: Decision Record\nid: HUB-DD-20260728-x\ntitle: T\n"
+        "status: stable\ndecision_state: Accepted\n"
+        "materiality: [evidence-conflict]\n"
+        "generated: { by: human:me }\n"
+        "sources:\n"
+        "  - { resource: integration/sources/cargowise/GlbStaff.sample.yaml }\n"
+    )
+    _write(bundle, "HUB-DD-20260728-x.md", fm)
+    result = dr.validate_decision_bundle(bundle)
+    assert not any(w.code == "unresolved_source" for w in result.warnings)
+
+
 def test_stale_after_warns_when_past(bundle: Path):
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     fm = _accepted_fm("HUB-DD-20260728-x") + f"stale_after: {yesterday}\n"
