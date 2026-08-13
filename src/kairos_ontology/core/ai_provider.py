@@ -26,13 +26,32 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # .env auto-loading
 # ---------------------------------------------------------------------------
+
+
+def _clear_stale_empty_env_vars(env_file: Path) -> None:
+    """Treat a pre-existing empty-string env var as unset before `load_dotenv`.
+
+    `load_dotenv(..., override=False)` only checks *presence* in `os.environ`, not
+    truthiness (python-dotenv's `DotEnv.set_as_environment_variables`). A shell
+    profile, CI runner, or a sourced `.env.example` full of blank placeholders
+    (e.g. `AZURE_FOUNDRY_API_KEY=`) can leave a var set to `""` in the process
+    environment, which then silently and permanently wins over a real value in
+    the hub's .env -- with no error, no log line, nothing pointing at the cause
+    (issue #188). Every var this loader is responsible for is an
+    endpoint/token/key/model-or-version string; none has a meaningful empty
+    value, so an empty pre-existing value is treated the same as absent for
+    every key this specific .env file defines.
+    """
+    for key in dotenv_values(env_file):
+        if os.environ.get(key) == "":
+            del os.environ[key]
 
 
 def _load_dotenv_from_hub():
@@ -66,6 +85,7 @@ def _load_dotenv_from_hub():
 
     for env_file in ordered_candidates:
         if env_file.is_file():
+            _clear_stale_empty_env_vars(env_file)
             load_dotenv(env_file, override=False)
             logger.debug("Loaded .env from %s", env_file)
             return
