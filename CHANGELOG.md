@@ -282,6 +282,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zero findings, not a crash or a flood). New warning code
   `temporal_quartet_synonym_ban`; `RULE_REGISTRY`'s entry for this unit is now `enforced_by`
   and `MINIMUM_ENFORCED_UNITS` moves from 1 to 2.
+- **A source vocabulary with no sample data read as "present," identical to a fully-sampled
+  one** (#298). Nothing distinguished "sources present" from "sources present *with sample
+  evidence*," so a hub could reach fully-authored bindings on schema names alone. New
+  `SourceSampleStatus`/`SourceSampleObservation` observe per-table `kairos-bronze:
+  sampleValues` coverage; `next` reports NONE/PARTIAL/FULL (with a `design-source` action
+  when evidence is missing/partial), and `import-source` now warns per-table when no
+  sibling `.samples.yaml` is found instead of silently producing a sample-free vocabulary.
+- **`validate`/`discovery-status` reported success on an empty set** (#309). A hub with
+  zero domain ontology files printed the identical `✅ All validations passed!` a hub with
+  real, passing content would -- and `discovery-status` reported "up to date" when both
+  discovery directories were empty (a vacuous comparison). Both now say "nothing to
+  check"/"nothing was validated" instead, matching the existing `catalog-test` precedent:
+  informational only, exit code unchanged.
+- **`next` printed `discovery: missing` directly next to text saying the compile/validate
+  gate IS satisfied** via a conformance artifact (#310). New `discovery_gate_satisfied()` is
+  now the single source of truth for both the recommendation rationale and the rendered
+  status line/JSON payload, so they can no longer disagree about the same hub state.
+- **The `kairos-design-discovery` skill forbade one-off Python scripts, but its own step 4
+  required calling `build_artifact()`/`write_artifact()` directly** (#311), since
+  `discovery-conformance` exposed no way to build/write an artifact from the CLI. New
+  `discovery-conformance build --archetype <id> --judgments-file <path>` subcommand wraps
+  both calls and, by default, immediately validates its own output -- one CLI call instead
+  of a hand-rolled script.
+- **`guard-scope` couldn't detect writes into gitignored paths, and `validate` always wrote
+  a report file with no opt-out** (#312). `guard-scope --snapshot` gains an opt-in,
+  repeatable `--ignored-root <path>`, fingerprinting gitignored files via `git status
+  --ignored=matching` the same way tracked ones already are -- the resolved roots are
+  stored in the snapshot token itself, so `--check-since` never needs its own flag.
+  `validate --report-format` gains a `none` choice.
+- **`discovery-conformance load` emitted `discovery_doc` as an absolute, machine-local
+  path** (#313), which could land in a *committed* `core-concepts-conformance.yaml` and
+  produce spurious per-machine diffs. Now relativized to the reference-models root before
+  emitting; `validate_artifact` rejects an absolute or backslash-containing value.
+- **The reference-models contract test suite (8 tests, including the regression guard for a
+  specific known `pattern.yaml`-loading defect class) has never run in CI** (#315), because
+  CI never checked out `kairos-ontology-referencemodels` or set `KAIROS_REFMODELS_ROOT` --
+  silently skipped on every run, invisible in a green build. CI now checks it out pinned to
+  `v1.16.0` (never a floating branch); a missing checkout is now a hard failure specifically
+  in CI (the local skip-when-absent behavior for contributors without a checkout is
+  unchanged).
+- **`check-inventory` blocked a hub straight out of `init`**, for a directory the scaffolder
+  deliberately no longer creates, with no command ever surfacing the remedy (#321). `init`
+  now pre-generates reference-model inventories after fetching reference models; a new
+  `inventory_status` observation surfaces a blocking `generate-inventory` action in `next`
+  when missing, and the `kairos-design-domain` skill's Gate 0 text now names the fix.
+- **`validate` enforced every accelerator `data-domains.yaml` import as mandatory,
+  ignoring the archetype's own `tier: required|recommended|optional`**, forcing hubs to
+  import modules they could never use, with no way to record a justified exclusion (#324).
+  `recommended`/`optional`-tier imports now emit a `"warning"`, not an `"error"`; the error
+  message no longer substitutes the unhelpful `(configured module)` filler or leaks a raw
+  internal module id.
+- **`init --domain` mangled `catalog-v001.xml` and misreported an existing hub as freshly
+  initialized** (#327, sub-findings 2-4 -- sub-finding 1 was already fixed by a prior
+  commit). `sync_domain_catalog_entry` round-tripped the file through `ElementTree`,
+  producing a 24-line diff for a 1-line change (dropped the prolog comment, stripped blank
+  lines, changed the XML declaration's quote style, dropped the trailing newline, inserted
+  the new `<uri>` in the wrong section). Rewritten as a pure textual edit that preserves the
+  file's own line-ending convention exactly (CRLF or LF, whichever it already used) --
+  fixes all of the above at once, no new dependency. `init` now also distinguishes a fresh
+  scaffold from a domain added to an existing hub in its closing banner.
+- **A pre-existing empty-string environment variable silently and permanently shadowed a
+  hub's real `.env` credential** (#188), because `load_dotenv(..., override=False)` only
+  checks key *presence*, not truthiness. Fixed generally (every var this loader handles is
+  endpoint/key/model/version-shaped; none has a meaningful empty value): a stale empty key
+  the loaded `.env` file itself defines is now cleared before `load_dotenv` runs, so the
+  hub's real value can apply; a genuinely-set non-empty override is completely unaffected.
 
 ## [5.2.1rc4] — 2026-08-12
 
