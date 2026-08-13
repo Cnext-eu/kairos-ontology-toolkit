@@ -470,6 +470,37 @@ def test_scaffold_binding_cli_end_to_end(tmp_path, monkeypatch):
     assert compiled.succeeded, {item.code: item.message for item in compiled.diagnostics.items}
 
 
+def test_out_pointing_at_a_directory_is_a_clean_usage_error(tmp_path, monkeypatch):
+    """#346: ``--out`` pointing at an existing directory must not crash with a raw traceback."""
+    hub_root, _ref_models_dir = _build_hub(tmp_path)
+    monkeypatch.chdir(hub_root)
+    out_dir = hub_root / "integration" / "bindings"
+    assert out_dir.is_dir()
+    result = CliRunner().invoke(
+        cli,
+        [
+            "scaffold-binding",
+            "--system",
+            "crm",
+            "--table",
+            "organisations",
+            "--archetype",
+            "passthrough",
+            "--target-class",
+            _TRADE_PARTY_IRI,
+            "--domain",
+            "party",
+            "--out",
+            str(out_dir),
+        ],
+    )
+    assert result.exit_code != 0
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Traceback" not in result.output
+    assert "--out" in result.output
+    assert "existing directory" in result.output
+
+
 # ---------------------------------------------------------------------------
 # --from-binding promotion path.
 # ---------------------------------------------------------------------------
@@ -536,6 +567,50 @@ def test_propose_grain_falls_back_to_first_column_when_all_nullable():
     columns = (_col("a", nullable=True), _col("b", nullable=True))
     grain, note = propose_grain_columns(columns, pk_columns=())
     assert grain == ("a",)
+
+
+# ---------------------------------------------------------------------------
+# #346: grain must never resolve to a system audit timestamp.
+# ---------------------------------------------------------------------------
+def test_propose_grain_prefers_pk_shaped_column_over_audit_timestamp():
+    """A ``GB_PK``-shaped unique column beats a low-cardinality ``GB_SystemLastEditTimeUtc``.
+
+    Reproduces the real #346 shape: a small sample where the audit timestamp's distinct_count
+    (8) happens to be *lower* than the row count, but the heuristic must not even consider it --
+    the PK-shaped column, tied for the table-wide highest distinct_count (100, i.e. one per row),
+    is recognised ahead of the plain distinct-count proxy.
+    """
+    columns = (
+        _col("GB_PK", distinct_count=100),
+        _col("GB_Code", distinct_count=95),
+        _col("GB_BranchName", distinct_count=90),
+        _col("GB_SystemLastEditTimeUtc", distinct_count=8),
+    )
+    grain, note = propose_grain_columns(columns, pk_columns=())
+    assert grain == ("GB_PK",)
+    assert "GB_PK" in note
+    assert "SystemLastEditTimeUtc" not in note
+
+
+def test_propose_grain_excludes_audit_columns_and_is_honest_about_guessing():
+    """No PK-shaped column: audit columns must still never be proposed as grain.
+
+    With no ``XX_PK``-shaped column and no distinct_count evidence on any non-audit column, the
+    only remaining candidates are a real (but unprofiled) business column and an audit-shaped
+    column. The audit column must be excluded from candidacy, and since nothing left carries
+    real evidence, the note must read as an explicit low-confidence guess -- never as a NOTE
+    that could be mistaken for a finding.
+    """
+    columns = (
+        _col("GB_Code"),
+        _col("GB_SystemLastEditTimeUtc"),
+        _col("GB_SystemCreateUser"),
+    )
+    grain, note = propose_grain_columns(columns, pk_columns=())
+    assert grain == ("GB_Code",)
+    assert "SystemLastEditTimeUtc" not in note
+    assert "SystemCreateUser" not in note
+    assert "GUESS" in note
 
 
 # ---------------------------------------------------------------------------

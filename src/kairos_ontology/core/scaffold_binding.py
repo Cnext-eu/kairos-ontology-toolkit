@@ -60,6 +60,7 @@ from .compiler.bindings import (
 )
 from .fit_report import resolve_token_uri
 from .ontology_loader import SemanticProfile, load_ontology
+from .propose_alignment import auto_disposition
 from .reference_modules import load_accelerator_module_config, resolve_hub_accelerator_detailed
 
 SENTINEL_GRAIN_COLUMN = "<CONFIRM_GRAIN_COLUMN>"
@@ -408,23 +409,88 @@ def classify_technical_field(column: SourceColumn) -> str | None:
 # --------------------------------------------------------------------------------------
 # Grain proposal (passthrough only -- the one archetype allowed to derive it).
 # --------------------------------------------------------------------------------------
+def _pk_shaped_grain_candidate(
+    columns: tuple[SourceColumn, ...], non_nullable: list[SourceColumn], prefix: str | None
+) -> SourceColumn | None:
+    """Return the ``<prefix>PK``-shaped non-nullable column, if one is confidently a real key.
+
+    Recognises this hub's own naming convention (``GB_PK`` alongside ``GB_BranchName``, ``GB_
+    Code``, ...) the same way :func:`detect_column_prefix` recognises any other ``XX_`` column:
+    a leading table-prefix shape, here followed by literal ``PK``. "Confidently a real key" means
+    its ``distinct_count`` is tied for the highest among all profiled columns in the table -- no
+    column's distinct value count can exceed the table's row count, so a column tied for the
+    table-wide maximum is consistent with being unique across every row, which an audit
+    timestamp (typically low-cardinality even in a full extract) essentially never is. This check
+    runs *ahead of* the plain distinct-count proxy so a real key wins even when an audit column
+    happens to have inflated cardinality in a small sample.
+    """
+    if not prefix:
+        return None
+    pk_shape = re.compile(rf"^{re.escape(prefix)}_?PK$", re.IGNORECASE)
+    shaped = [c for c in non_nullable if pk_shape.match(c.name)]
+    if not shaped:
+        return None
+    distinct_values = [c.distinct_count for c in columns if c.distinct_count is not None]
+    if not distinct_values:
+        return None
+    max_distinct = max(distinct_values)
+    confident = [c for c in shaped if c.distinct_count == max_distinct]
+    if not confident:
+        return None
+    return min(confident, key=lambda c: c.name)
+
+
 def propose_grain_columns(
-    columns: tuple[SourceColumn, ...], pk_columns: tuple[str, ...]
+    columns: tuple[SourceColumn, ...],
+    pk_columns: tuple[str, ...],
+    *,
+    column_prefix: str | None = None,
 ) -> tuple[tuple[str, ...], str]:
     """Propose ``grain.columns`` for the passthrough archetype. Returns ``(columns, note)``.
 
-    Priority: the non-nullable column with the highest ``distinct_count``; falling back (only
-    when *no* non-nullable column carries ``distinct_count`` evidence, e.g. samples were never
-    profiled) to the Bronze contract's declared ``primaryKeyColumns``, then the first
-    non-nullable column, then the first column at all.
+    Priority, each rung applied ahead of the next:
+
+    1. a ``<prefix>PK``-shaped non-nullable column whose distinct count is tied for the highest
+       in the table (see :func:`_pk_shaped_grain_candidate`) -- this hub's own primary-key naming
+       convention, recognised the same way any other ``XX_`` column prefix is recognised, and
+       preferred ahead of the raw distinct-count proxy below.
+    2. the non-nullable, non-audit column with the highest ``distinct_count``. Known system
+       audit columns (``SystemCreateTimeUtc``, ``SystemLastEditTimeUtc``, ``SystemCreateUser``,
+       ``SystemLastEditUser`` and the wider operational/audit family recognised by
+       :func:`kairos_ontology.core.propose_alignment.auto_disposition`) are excluded from grain
+       candidacy entirely -- an audit timestamp can easily out-count a legitimate business key in
+       a small sample, and #346 found exactly that on a real corpus where ``is_primary_key`` is
+       never populated by the flat-file import path, so this proxy is all that ever fires.
+    3. falling back (only when *no* non-nullable, non-audit column carries ``distinct_count``
+       evidence, e.g. samples were never profiled) to the Bronze contract's declared
+       ``primaryKeyColumns``.
+    4. a last-resort, explicitly-labelled GUESS: the first non-nullable, non-audit column: else
+       the first non-nullable column of any kind (including audit-shaped, if that is all there
+       is); else the first column at all. These fallbacks carry no distinct-count or naming
+       evidence at all, so the note deliberately reads as a low-confidence guess -- never as a
+       NOTE that could be mistaken for a finding.
     """
     non_nullable = [c for c in columns if not c.nullable]
-    with_distinct = [c for c in non_nullable if c.distinct_count is not None]
+    prefix = column_prefix if column_prefix is not None else detect_column_prefix(columns)
+
+    pk_shaped = _pk_shaped_grain_candidate(columns, non_nullable, prefix)
+    if pk_shaped is not None:
+        return (pk_shaped.name,), (
+            f"grain.columns proposed from the detected {prefix}_PK-shaped primary-key column "
+            f"({pk_shaped.name}: {pk_shaped.distinct_count} distinct values, tied for the "
+            "highest in the table) -- this hub's own primary-key naming convention, preferred "
+            "ahead of the distinct_count proxy."
+        )
+
+    non_audit_non_nullable = [c for c in non_nullable if auto_disposition(c.name) != "skip"]
+    with_distinct = [c for c in non_audit_non_nullable if c.distinct_count is not None]
     if with_distinct:
         best = max(with_distinct, key=lambda c: (c.distinct_count, c.name))
         return (best.name,), (
-            f"grain.columns proposed from the highest distinct_count among non-nullable "
-            f"columns ({best.name}: {best.distinct_count} distinct values)."
+            f"grain.columns proposed from the highest distinct_count among non-nullable, "
+            f"non-audit columns ({best.name}: {best.distinct_count} distinct values). System "
+            "audit columns (created/updated/system timestamps and similar) were excluded from "
+            "candidacy."
         )
     if pk_columns:
         return tuple(pk_columns), (
@@ -432,16 +498,27 @@ def propose_grain_columns(
             "(no distinct_count evidence was available -- run analyse-sources with sampling "
             "for a stronger signal next time)."
         )
+    if non_audit_non_nullable:
+        candidates = ", ".join(c.name for c in non_audit_non_nullable)
+        return (non_audit_non_nullable[0].name,), (
+            f"grain.columns is a GUESS, not a finding: no primary-key-shaped column, "
+            f"distinct_count evidence, or Bronze-declared primary key was available, so the "
+            f"first non-nullable, non-audit column ({non_audit_non_nullable[0].name}) was "
+            f"guessed among {len(non_audit_non_nullable)} equally-plausible candidate(s): "
+            f"{candidates}. Verify this is a real key before trusting it."
+        )
     if non_nullable:
         return (non_nullable[0].name,), (
-            f"grain.columns fell back to the first non-nullable column ({non_nullable[0].name}): "
-            "no distinct_count or primary-key evidence was available. Verify this is a real key."
+            f"grain.columns is a GUESS, not a finding: every non-nullable column looks like a "
+            f"system audit column and none carries distinct_count or primary-key evidence, so "
+            f"{non_nullable[0].name} was guessed anyway. Verify this is a real key before "
+            "trusting it."
         )
     if columns:
         return (columns[0].name,), (
-            f"grain.columns fell back to the first column ({columns[0].name}): every column is "
-            "nullable and no distinct_count or primary-key evidence was available. Verify this "
-            "is a real key."
+            f"grain.columns is a GUESS, not a finding: every column is nullable and no "
+            f"distinct_count or primary-key evidence was available, so {columns[0].name} was "
+            "guessed anyway. Verify this is a real key before trusting it."
         )
     return (), "grain.columns could not be proposed: the table has no columns."
 
@@ -1161,7 +1238,9 @@ def run_scaffold_binding(
         )
 
     if archetype.grain_mode == "derive":
-        grain_columns, grain_note = propose_grain_columns(columns, pk_columns)
+        grain_columns, grain_note = propose_grain_columns(
+            columns, pk_columns, column_prefix=match_result.column_prefix
+        )
         notes.append(grain_note)
         if not grain_columns:
             raise ScaffoldBindingError(f"cannot propose grain.columns: {grain_note}")
