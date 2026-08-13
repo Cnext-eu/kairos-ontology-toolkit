@@ -186,12 +186,34 @@ def validate_artifact(
     artifact: dict[str, Any],
     outcome_codes: list[str],
     valid_tiers: tuple[str, ...] | None = None,
+    archetype: Archetype | None = None,
 ) -> list[str]:
     """Return a list of validation error strings (empty when valid).
 
     Validates structural shape, concept URI/label/tier identity, that every outcome
     is one of *outcome_codes* (loaded from the contract — not hardcoded), conditional
     rename/deviation fields, duplicate concepts, and scorecard consistency.
+
+    When *archetype* is supplied, this additionally checks (issue #308):
+
+    * **coverage/identity** — every concept in *archetype*'s catalog has a corresponding
+      ``core_concepts`` entry, and every ``core_concepts`` entry's uri/label/tier matches a
+      real concept in *archetype*'s catalog (not merely well-formed) — this is what catches
+      an artifact whose ``archetype.id`` names a *different* archetype than the one the
+      recorded concepts actually came from, or that only covers a subset of concepts.
+    * **staleness** — :func:`is_stale` against *archetype*; a stale artifact (its
+      ``catalog_hash``/``concept_set_hash`` no longer match) fails validation instead of
+      silently validating clean.
+
+    Without *archetype* (the default), these two checks are skipped — callers that cannot
+    resolve a reference-models checkout (e.g. offline unit tests) still get the rest of the
+    shape/enum validation. The ``discovery-conformance validate`` CLI always resolves and
+    passes an archetype (via ``--archetype`` or the artifact's own ``archetype.id``).
+
+    Note: ``topology_confirmations``/``cardinality_answers`` shape validation (#308 hole 3)
+    is intentionally not implemented here — it needs a reference-models-side change (giving
+    ``topology.edges`` entries a machine-readable identifier instead of free prose) that is
+    out of scope for this toolkit change; tracked separately in issue #308.
 
     Args:
         artifact: the parsed artifact mapping.
@@ -200,6 +222,9 @@ def validate_artifact(
         valid_tiers: the published tier enum (see
             :func:`~kairos_ontology.core.archetype_loader.load_valid_tiers`). ``None`` uses the
             offline fallback :data:`~kairos_ontology.core.archetype_loader.VALID_TIERS`.
+        archetype: the resolved archetype catalog to check identity/coverage/staleness
+            against (see :func:`~kairos_ontology.core.archetype_loader.load_archetype`).
+            ``None`` skips those checks.
 
     Note:
         The tier ``not_applicable`` (an archetype-side *obligation* level, "deliberately out of
@@ -221,14 +246,14 @@ def validate_artifact(
     if mode not in VALID_MODES:
         errors.append(f"'mode' must be one of {sorted(VALID_MODES)}, got {mode!r}.")
 
-    archetype = artifact.get("archetype")
+    archetype_block = artifact.get("archetype")
     if (
-        not isinstance(archetype, dict)
-        or not isinstance(archetype.get("id"), str)
-        or not archetype["id"].strip()
+        not isinstance(archetype_block, dict)
+        or not isinstance(archetype_block.get("id"), str)
+        or not archetype_block["id"].strip()
     ):
         errors.append("Missing or malformed 'archetype' block (needs an 'id').")
-    elif archetype.get("confirmed_by") != "human":
+    elif archetype_block.get("confirmed_by") != "human":
         errors.append(
             "'archetype.confirmed_by' must be 'human' (DD-149): archetype selection "
             "is never fleet-eligible and must be explicitly confirmed by a person."
@@ -300,10 +325,33 @@ def validate_artifact(
             errors.append(
                 f"core_concepts[{i}] ({display_uri}): 'deviates' requires 'deviation_reason'."
             )
+        # #308 hole 4: the converse was unchecked — a stray 'rename_to'/'deviation_reason' on
+        # an outcome that doesn't call for it validated clean, even though design-domain reads
+        # 'rename_to' to pre-seed local names, so it silently changes downstream modelling.
+        if rename_to and outcome != "conforms-with-rename":
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): 'rename_to' is only valid on "
+                f"'conforms-with-rename', not {outcome!r}."
+            )
+        if deviation_reason and outcome != "deviates":
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): 'deviation_reason' is only valid on "
+                f"'deviates', not {outcome!r}."
+            )
         if rename_to and deviation_reason:
             errors.append(
                 f"core_concepts[{i}] ({display_uri}): 'rename_to' and "
                 "'deviation_reason' are contradictory on one outcome."
+            )
+        business_area = c.get("business_area")
+        # #308 hole 5: business_area is optional, non-authoritative data (see the module
+        # docstring), but was never type-checked at all — {not: a string} validated clean.
+        if business_area is not None and (
+            not isinstance(business_area, str) or not business_area.strip()
+        ):
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): 'business_area' must be a "
+                "non-empty string when present."
             )
         tier = c.get("tier")
         if tier not in tier_set:
@@ -358,6 +406,52 @@ def validate_artifact(
             errors.append(
                 "'scorecard' contradicts 'core_concepts'; regenerate it from the recorded outcomes."
             )
+
+    # #308 holes 1 + 2: `validate` never actually compared the artifact to the archetype it
+    # claims to conform to, so an artifact with incomplete coverage, concepts belonging to a
+    # different archetype, or a stale/tampered hash all validated clean. Opt-in on *archetype*
+    # since resolving one needs a reference-models checkout (offline unit tests skip this).
+    if archetype is not None:
+        catalog_by_uri = {concept.uri: concept for concept in archetype.core_concepts}
+        recorded_uris = {
+            c.get("uri") for c in concepts if isinstance(c, dict) and isinstance(c.get("uri"), str)
+        }
+        for uri in sorted(set(catalog_by_uri) - recorded_uris):
+            cc = catalog_by_uri[uri]
+            errors.append(
+                f"'core_concepts' is missing archetype concept {uri!r} ({cc.label}, "
+                f"tier={cc.tier!r}); archetype {archetype.id!r} requires an outcome for "
+                "every core concept."
+            )
+        for i, c in enumerate(concepts):
+            if not isinstance(c, dict):
+                continue
+            uri = c.get("uri")
+            if not isinstance(uri, str) or not uri.strip():
+                continue
+            cc = catalog_by_uri.get(uri)
+            if cc is None:
+                errors.append(
+                    f"core_concepts[{i}] ({uri}) is not a core concept of archetype "
+                    f"{archetype.id!r}'s catalog."
+                )
+                continue
+            if c.get("label") != cc.label:
+                errors.append(
+                    f"core_concepts[{i}] ({uri}): 'label' {c.get('label')!r} does not match "
+                    f"the catalog label {cc.label!r} for archetype {archetype.id!r}."
+                )
+            if c.get("tier") != cc.tier:
+                errors.append(
+                    f"core_concepts[{i}] ({uri}): 'tier' {c.get('tier')!r} does not match "
+                    f"the catalog tier {cc.tier!r} for archetype {archetype.id!r}."
+                )
+        if is_stale(artifact, archetype):
+            errors.append(
+                "Conformance artifact is stale (DD-090): its recorded 'catalog_hash'/"
+                f"'concept_set_hash' no longer match archetype {archetype.id!r} — rerun "
+                "kairos-design-discovery against the current catalog."
+            )
     return errors
 
 
@@ -396,23 +490,28 @@ def read_artifact(path: Path) -> dict[str, Any]:
 
 
 def open_questions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return unresolved fleet-mode concept judgments (DD-148).
+    """Return unresolved AI-decided concept judgments (DD-148).
 
-    Only meaningful for ``mode: fleet`` artifacts: a concept is unresolved when it was
-    AI-decided (``decided_by`` explicit ``"ai"``, or absent — fleet mode implies AI
-    pre-fill unless a concept is explicitly marked ``decided_by: user``) and either
-    ``needs_confirmation`` is true or ``confidence`` was never recorded. Interactive-mode
-    artifacts never produce open questions, since every choice there was already made
-    with a human present.
+    Keyed on the evidence recorded **per concept** — ``decided_by`` and
+    ``needs_confirmation`` — never on the artifact-level ``mode`` marker. ``mode`` is a
+    self-declared field inside the very artifact this function inspects (the DD-088
+    fleet/interactive session marker); an artifact can claim ``mode: interactive`` while
+    every concept was actually decided by AI and left unconfirmed, and gating on ``mode``
+    let that self-declaration disable the entire check (issue #307). ``mode`` remains
+    useful for provenance/reporting, just never as the condition here.
+
+    A concept is unresolved when it is explicitly ``decided_by: "ai"`` and either
+    ``needs_confirmation`` is true or ``confidence`` was never recorded. This applies in
+    every mode — fleet and interactive alike — because the kairos-design-discovery skill
+    marks every concept's ``decided_by`` explicitly (``"user"`` or ``"ai"``) regardless of
+    session mode; a concept that omits ``decided_by`` altogether predates that bookkeeping
+    (or was never AI-touched) and is not treated as AI-decided here.
     """
-    if artifact.get("mode") != "fleet":
-        return []
     questions: list[dict[str, Any]] = []
     for concept in artifact.get("core_concepts") or []:
         if not isinstance(concept, dict):
             continue
-        decided_by = concept.get("decided_by", "ai")
-        if decided_by != "ai":
+        if concept.get("decided_by") != "ai":
             continue
         needs_confirmation = bool(concept.get("needs_confirmation", False))
         confidence = concept.get("confidence")
@@ -428,7 +527,11 @@ def open_questions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def has_unresolved_fleet_items(artifact: dict[str, Any]) -> bool:
-    """Return True when *artifact* has at least one unresolved fleet-mode judgment."""
+    """Return True when *artifact* has at least one unresolved AI-decided judgment (DD-148).
+
+    Name kept for existing call sites; the check itself is mode-agnostic — see
+    :func:`open_questions`.
+    """
     return bool(open_questions(artifact))
 
 
@@ -459,11 +562,11 @@ def check_discovery_gate(hub_root: Path) -> list[str]:
 
     Used by ``kairos-ontology compile``/``validate`` (DD-148) to hard-fail when business
     discovery hasn't run at all — neither a DD-048 ``businessdiscovery/`` narrative nor a
-    DD-090 conformance artifact exists — or when a conformance artifact exists and ran
-    under fleet mode (DD-088) with concept judgments unconfirmed by a human. The two
-    artifacts are independent: a hub with only a narrative and no conformance run (e.g. no
-    archetype applies) passes; the unresolved-fleet-items check only ever applies to the
-    conformance artifact, since that's the only place judgment provenance is recorded.
+    DD-090 conformance artifact exists — or when a conformance artifact exists with
+    concept judgments unconfirmed by a human, regardless of the session's ``mode`` (DD-088).
+    The two artifacts are independent: a hub with only a narrative and no conformance run
+    (e.g. no archetype applies) passes; the unresolved-judgments check only ever applies to
+    the conformance artifact, since that's the only place judgment provenance is recorded.
 
     Deliberately lighter than ``validate_artifact()``: it never needs the reference-models
     outcome-codes catalog, since compile/validate must be able to run this check without
@@ -490,7 +593,7 @@ def check_discovery_gate(hub_root: Path) -> list[str]:
     for question in open_questions(artifact):
         label = question.get("label") or question.get("uri") or "<unknown concept>"
         errors.append(
-            f"Unresolved fleet-mode discovery item ({question['reason']}): {label} — "
+            f"Unresolved discovery item ({question['reason']}): {label} — "
             "confirm it with a human via kairos-design-discovery before proceeding."
         )
     return errors

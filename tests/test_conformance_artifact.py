@@ -226,6 +226,86 @@ def test_open_questions_ignores_user_decided_entries():
     assert open_questions(art) == []
 
 
+# ---------------------------------------------------------------------------
+# Issue #307: the DD-148 gate must be keyed on per-concept evidence, never on the
+# self-declared, unverifiable 'mode' field. A concept with decided_by: ai and an
+# unresolved judgment must be caught regardless of whether the artifact claims
+# mode: interactive or mode: fleet.
+# ---------------------------------------------------------------------------
+
+
+def test_open_questions_flags_ai_decided_needs_confirmation_in_interactive_mode():
+    """Regression for #307: 'mode: interactive' must not disable the gate.
+
+    Before the fix, ``open_questions`` short-circuited to ``[]`` whenever
+    ``mode != "fleet"``, so an artifact could declare ``mode: interactive`` while every
+    concept was actually ``decided_by: ai`` with ``needs_confirmation: true`` and pass
+    silently. That self-declared 'mode' field lives inside the very artifact being
+    checked and is unverifiable, so it must never be the gate condition.
+    """
+    art = {
+        "mode": "interactive",
+        "core_concepts": [
+            {
+                "uri": "u1",
+                "label": "One",
+                "decided_by": "ai",
+                "needs_confirmation": True,
+                "confidence": 0.9,
+            },
+        ],
+    }
+    questions = open_questions(art)
+    assert len(questions) == 1
+    assert questions[0]["reason"] == "needs_confirmation"
+    assert has_unresolved_fleet_items(art) is True
+
+
+def test_open_questions_flags_ai_decided_needs_confirmation_in_fleet_mode_no_regression():
+    """Same shape as the interactive case above, still flagged under 'mode: fleet'."""
+    art = {
+        "mode": "fleet",
+        "core_concepts": [
+            {
+                "uri": "u1",
+                "label": "One",
+                "decided_by": "ai",
+                "needs_confirmation": True,
+                "confidence": 0.9,
+            },
+        ],
+    }
+    questions = open_questions(art)
+    assert len(questions) == 1
+    assert questions[0]["reason"] == "needs_confirmation"
+
+
+@pytest.mark.parametrize("mode", ["interactive", "fleet"])
+def test_open_questions_empty_when_ai_decisions_are_properly_confirmed(mode):
+    """A properly confirmed AI decision produces no open questions, in either mode."""
+    art = {
+        "mode": mode,
+        "core_concepts": [
+            {
+                "uri": "u1",
+                "label": "One",
+                "decided_by": "ai",
+                "needs_confirmation": False,
+                "confidence": 0.95,
+            },
+            {
+                "uri": "u2",
+                "label": "Two",
+                "decided_by": "ai",
+                "needs_confirmation": False,
+                "confidence": 0.5,
+            },
+        ],
+    }
+    assert open_questions(art) == []
+    assert has_unresolved_fleet_items(art) is False
+
+
 def test_check_discovery_gate_flags_when_neither_artifact_exists(tmp_path):
     errors = check_discovery_gate(tmp_path)
     assert len(errors) == 1
@@ -283,7 +363,29 @@ def test_check_discovery_gate_flags_unresolved_fleet_items(tmp_path, archetype):
     write_artifact(tmp_path, art)
     errors = check_discovery_gate(tmp_path)
     assert len(errors) == 1
-    assert "Unresolved fleet-mode discovery item" in errors[0]
+    assert "Unresolved discovery item" in errors[0]
+
+
+def test_check_discovery_gate_flags_unresolved_items_in_interactive_mode_too(tmp_path, archetype):
+    """Regression for #307: the hard gate must not trust 'mode: interactive' either.
+
+    Byte-for-byte the same per-concept judgment shape as
+    ``test_check_discovery_gate_flags_unresolved_fleet_items`` above — only ``mode`` differs
+    — and it must still fail. Before the fix, writing ``mode: interactive`` disabled this
+    entire hard gate even though every concept was AI-decided and unconfirmed.
+    """
+    outcomes = _outcomes()
+    outcomes[0]["decided_by"] = "ai"
+    outcomes[0]["needs_confirmation"] = True
+    for other in outcomes[1:]:
+        other["decided_by"] = "user"
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    write_artifact(tmp_path, art)
+    errors = check_discovery_gate(tmp_path)
+    assert len(errors) == 1
+    assert "Unresolved discovery item" in errors[0]
 
 
 # --- Tier-enum ownership (#276 Q4/Q5) -------------------------------------------------
@@ -392,3 +494,179 @@ def test_scorecard_equality_still_catches_a_genuinely_wrong_scorecard(refroot, a
     art["scorecard"]["by_tier"]["required"]["conforms"] = 99
     errors = validate_artifact(art, load_outcome_codes(refroot))
     assert any("contradicts 'core_concepts'" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Issue #308: `validate` must actually compare the artifact against its archetype
+# (hole 1: identity/coverage, hole 2: staleness) and tighten conditional-field and
+# business_area validation (holes 4 and 5). Hole 3 (topology_confirmations/
+# cardinality_answers shape) is explicitly out of scope — see validate_artifact's
+# docstring.
+# ---------------------------------------------------------------------------
+
+
+def _full_outcomes():
+    """``_outcomes()`` plus the archetype's fourth concept (``GhostConcept``), for full
+    coverage of the ``test-carrier`` fixture archetype's catalog."""
+    outcomes = _outcomes()
+    outcomes.append(
+        {
+            "uri": "https://example.org/ont/booking#GhostConcept",
+            "label": "Ghost",
+            "tier": "optional",
+            "outcome": "not-applicable",
+        }
+    )
+    return outcomes
+
+
+def test_validate_without_archetype_skips_identity_coverage_and_staleness_checks(
+    refroot, archetype
+):
+    """Backward compatibility: *archetype* is opt-in.
+
+    ``_outcomes()`` only covers 3 of the archetype's 4 concepts, yet this must still
+    validate clean when no archetype is supplied — callers that cannot resolve a
+    reference-models checkout must not be forced to pass one just to get shape/enum
+    validation.
+    """
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=_outcomes(), mode="interactive"
+    )
+    assert validate_artifact(art, load_outcome_codes(refroot)) == []
+
+
+def test_validate_hole1_rejects_incomplete_concept_coverage(refroot, archetype):
+    """Regression for #308 hole 1: an artifact missing an archetype concept must fail.
+
+    Before the fix, ``validate`` never loaded the archetype at all, so an artifact
+    covering only a subset of its declared archetype's concepts validated clean.
+    """
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=_outcomes(), mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot), archetype=archetype)
+    assert any("missing archetype concept" in e and "GhostConcept" in e for e in errors)
+
+
+def test_validate_hole1_accepts_full_concept_coverage(refroot, archetype):
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_full_outcomes(),
+        mode="interactive",
+    )
+    assert validate_artifact(art, load_outcome_codes(refroot), archetype=archetype) == []
+
+
+def test_validate_hole1_rejects_concept_not_in_the_archetypes_catalog(refroot, archetype):
+    """A concept URI that isn't in the resolved archetype's catalog at all.
+
+    Simulates 'archetype.id points at a different archetype than the one actually used'
+    (#308): the recorded concepts don't genuinely belong to the archetype being validated
+    against, which a mere well-formedness check (valid HTTP URI, non-empty label) would
+    never catch.
+    """
+    outcomes = _full_outcomes()
+    outcomes.append(
+        {
+            "uri": "https://example.org/ont/other#NotInCatalog",
+            "label": "Not In Catalog",
+            "tier": "required",
+            "outcome": "conforms",
+        }
+    )
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot), archetype=archetype)
+    assert any("is not a core concept of archetype" in e for e in errors)
+
+
+def test_validate_hole1_rejects_tier_drift_from_the_catalog(refroot, archetype):
+    outcomes = _full_outcomes()
+    outcomes[0]["tier"] = "optional"  # Booking is 'required' in the test-carrier catalog
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot), archetype=archetype)
+    assert any("does not match the catalog tier" in e for e in errors)
+
+
+def test_validate_hole2_rejects_stale_concept_set_hash(refroot, archetype):
+    """Regression for #308 hole 2: validate must call the existing is_stale(), not skip it."""
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_full_outcomes(),
+        mode="interactive",
+    )
+    assert validate_artifact(art, load_outcome_codes(refroot), archetype=archetype) == []
+
+    art["archetype"]["concept_set_hash"] = "deadbeef"
+    assert is_stale(art, archetype) is True  # confirms this reuses the existing is_stale()
+    errors = validate_artifact(art, load_outcome_codes(refroot), archetype=archetype)
+    assert any("stale" in e.lower() for e in errors)
+
+
+@pytest.mark.parametrize("outcome_code", ["partial", "conforms", "not-applicable"])
+def test_validate_hole4_rejects_rename_to_on_a_non_rename_outcome(refroot, archetype, outcome_code):
+    """Regression for #308 hole 4: the converse of the rename_to requirement was unchecked.
+
+    `design-domain` reads `rename_to` to pre-seed local names, so a stray rename on a
+    non-rename outcome would silently change downstream modelling if left unvalidated.
+    """
+    outcomes = [
+        {
+            "uri": "https://example.org/ont/booking#Booking",
+            "label": "Booking",
+            "tier": "required",
+            "outcome": outcome_code,
+            "rename_to": "ShouldNotBeHere",
+        },
+    ]
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("'rename_to' is only valid on 'conforms-with-rename'" in e for e in errors)
+
+
+@pytest.mark.parametrize("outcome_code", ["partial", "conforms", "not-applicable"])
+def test_validate_hole4_rejects_deviation_reason_on_a_non_deviates_outcome(
+    refroot, archetype, outcome_code
+):
+    outcomes = [
+        {
+            "uri": "https://example.org/ont/booking#Booking",
+            "label": "Booking",
+            "tier": "required",
+            "outcome": outcome_code,
+            "deviation_reason": "should not be here",
+        },
+    ]
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("'deviation_reason' is only valid on 'deviates'" in e for e in errors)
+
+
+def test_validate_hole5_rejects_non_string_business_area(refroot, archetype):
+    """Regression for #308 hole 5: business_area had no type validation at all."""
+    outcomes = _outcomes()
+    outcomes[0]["business_area"] = {"not": "a string"}
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("'business_area' must be a" in e for e in errors)
+
+
+def test_validate_hole5_accepts_string_business_area(refroot, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["business_area"] = "Commercial"
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    assert validate_artifact(art, load_outcome_codes(refroot)) == []

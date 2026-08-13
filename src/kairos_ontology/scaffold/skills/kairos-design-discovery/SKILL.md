@@ -81,10 +81,12 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
    (`schema_version`, `scorecard`, hashes, etc.).
 5. `kairos-ontology discovery-conformance validate --file integration/discovery/core-concepts-conformance.yaml`
    — must pass with zero errors before the report is presented as done. Fix and re-validate on
-   any failure; never present an unvalidated artifact as final. If `mode: fleet`, this also
-   fails while any concept has an unresolved AI-decided judgment (`needs_confirmation: true`, or
-   no recorded `confidence`) — resolve those with the human (or pass `--allow-unresolved` only
-   for a diagnostic dry run, never for the final artifact) before presenting the report as done.
+   any failure; never present an unvalidated artifact as final. In any mode — `mode: fleet` or
+   `mode: interactive` alike — this also fails while any concept is `decided_by: "ai"` and has
+   an unresolved judgment (`needs_confirmation: true`, or no recorded `confidence`); resolve
+   those with the human (or pass `--allow-unresolved` only for a diagnostic dry run, never for
+   the final artifact) before presenting the report as done. `mode` records the session type for
+   provenance only — it is never a way to bypass this check.
 
 ### Outcome-code legend (badge emojis)
 
