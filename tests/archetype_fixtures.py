@@ -185,8 +185,15 @@ naming_rule: >
   vocabularies on one class; never substitute a synonym (eta, expected, due).
 anti_patterns:
   - id: synonym-for-estimated-or-requested
-    description: "A property named eta, expectedTime, or due_date instead of estimated*/requested*."
-    rejection_reason: "This is the exact naming drift this pattern ships normative to stop."
+    description: >
+      A temporal property named with a synonym token (eta, etd, ata, atd, expected, due)
+      instead of the published estimated*/requested*/actual* names.
+    rejection_reason: "This is the exact naming drift this pattern was shipped normative to stop."
+    banned_name_tokens: [eta, etd, ata, atd, expected, due]
+    applies_to_ranges: ["xsd:dateTime", "xsd:date", "xsd:time"]
+    exemptions:
+      - name: dueDate
+        reason: "BSP financial term of art -- payment due date, not a quartet-event timestamp."
 grain_collisions:
   - against: "https://example.org/ont/booking#RequestedWindow"
     reason: "A service window is its own grain, not a timestamp on the aggregate."

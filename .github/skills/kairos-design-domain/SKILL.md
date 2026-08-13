@@ -176,7 +176,12 @@ accelerator); on a multi-pack hub that pins no accelerator, add `--accelerator
 <pack>` (same ambiguity as Gate 0). The CLI deterministically
 enforces: one `owl:Ontology` declaration with `rdfs:label` and
 `owl:versionInfo`; every class has `rdfs:label` and `rdfs:comment`; every
-property has `rdfs:label` and `rdfs:domain`; every `owl:DatatypeProperty` has
+property has `rdfs:label` and `rdfs:domain` — except a property whose
+`rdfs:comment` starts with the literal marker `REUSABLE — no rdfs:domain by
+design`, a deliberately domainless "reusable" property (asserting a domain
+would infer that domain's subsumption onto every hub class using the
+property, re-creating the subclass-identity-by-role anti-pattern by the back
+door); every `owl:DatatypeProperty` has
 `rdfs:range`; PascalCase classes
 and camelCase properties; no term declared as more than one of
 {Class, DatatypeProperty, ObjectProperty}. Do not hand-write rdflib checks for
@@ -184,12 +189,17 @@ any of these — the CLI check is the authority.
 
 An `owl:ObjectProperty` with no `rdfs:range` is a naming **warning**, not an
 error: DD-133 §7 lets a `relationships:` entry defer the range and validates the
-relationship on its authored `target:`/`on:` endpoint alone — the reference-model
-`deferred-relationship` shape. Never patch that warning away with `rdfs:range
-owl:Thing`; that is worse than omitting the range, because the compiler rejects a
-declared range that differs from the authored `target:` class
-(`safety.relationship-endpoint`) while an omitted range compiles. It is warned
-separately. Declare the real target class, or leave the range off.
+relationship on its authored `target:`/`on:` endpoint alone. The reference-model
+`deferred-relationship` shape is a **marked stub**, not an omitted range: mint
+the target class now, declare it `owl:Class`, and give it an `rdfs:comment`
+starting with the literal token `STUB (deferred-relationship):` — this keeps
+the relationship visible and mechanically findable (`grep "STUB
+(deferred-relationship):"`) until the target module is onboarded. An omitted
+range is only *tolerated*, not the prescribed shape. Never patch the warning
+away with `rdfs:range owl:Thing`; that is worse than omitting the range,
+because the compiler rejects a declared range that differs from the authored
+`target:` class (`safety.relationship-endpoint`) while an omitted range
+compiles. Declare the real target class, stub it, or leave the range off.
 
 Still confirm manually, since these require judgment the CLI cannot supply:
 
