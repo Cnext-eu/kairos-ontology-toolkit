@@ -2,6 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Integration tests for the import-tmdl command and orchestration."""
 
+import json
 import zipfile
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from kairos_ontology.core.import_tmdl import (
     find_definition_dirs,
     generate_concept_mapping,
     generate_engineering_pack,
+    resolve_pbip_pointer,
     run_import_tmdl,
 )
 
@@ -93,10 +95,15 @@ def _create_semantic_model(base: Path, model_name: str = "TestModel") -> Path:
     return sm_dir
 
 
-def _create_zip(base: Path, model_name: str = "TestModel") -> Path:
-    """Create a ZIP containing a synthetic SemanticModel."""
+def _create_zip(base: Path, model_name: str = "TestModel", suffix: str = ".zip") -> Path:
+    """Create a ZIP containing a synthetic SemanticModel.
+
+    ``suffix`` defaults to ``.zip`` but can be set to ``.pbip`` to build a
+    legacy zip-format PBIP archive — the case ``detect_input_type`` already
+    handled correctly before issue #387's JSON-pointer-sniffing addition.
+    """
     sm_dir = _create_semantic_model(base / "content", model_name)
-    zip_path = base / f"{model_name}.zip"
+    zip_path = base / f"{model_name}{suffix}"
 
     with zipfile.ZipFile(zip_path, "w") as zf:
         for file in sm_dir.rglob("*"):
@@ -105,6 +112,41 @@ def _create_zip(base: Path, model_name: str = "TestModel") -> Path:
                 zf.write(file, arcname)
 
     return zip_path
+
+
+def _create_pbip_pointer(
+    base: Path,
+    model_name: str = "TestModel",
+    include_report: bool = True,
+    include_dataset: bool = True,
+) -> Path:
+    """Create a Fabric git-integration-style ``.pbip`` JSON pointer file.
+
+    Builds the pointer file plus real sibling ``<name>.Report/`` and
+    ``<name>.SemanticModel/`` folders under ``base``, mirroring what a modern
+    Fabric git-integration PBIP project looks like on disk (issue #387).
+    """
+    sm_dir = _create_semantic_model(base, model_name)
+
+    report_dir = base / f"{model_name}.Report"
+    (report_dir / "definition").mkdir(parents=True, exist_ok=True)
+    (report_dir / "definition" / "report.json").write_text("{}", encoding="utf-8")
+    (report_dir / ".platform").write_text("{}", encoding="utf-8")
+
+    artifact: dict = {}
+    if include_report:
+        artifact["report"] = {"path": f"{model_name}.Report"}
+    if include_dataset:
+        artifact["dataset"] = {"path": sm_dir.name}
+
+    pointer_data = {
+        "version": "1.0",
+        "artifacts": [artifact],
+        "settings": {"enableAutoRecovery": True},
+    }
+    pointer_path = base / f"{model_name}.pbip"
+    pointer_path.write_text(json.dumps(pointer_data), encoding="utf-8")
+    return pointer_path
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +171,16 @@ class TestDetectInputType:
     def test_nonexistent_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             detect_input_type(tmp_path / "nonexistent")
+
+    def test_detect_pbip_pointer_file(self, tmp_path):
+        """Issue #387: a modern Fabric git-integration .pbip is JSON, not a zip."""
+        pointer_path = _create_pbip_pointer(tmp_path)
+        assert detect_input_type(pointer_path) == "pointer"
+
+    def test_legacy_zip_format_pbip_is_unaffected(self, tmp_path):
+        """Regression: JSON-sniffing must never change legacy zip .pbip handling."""
+        zip_pbip_path = _create_zip(tmp_path, suffix=".pbip")
+        assert detect_input_type(zip_pbip_path) == "zip"
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +321,17 @@ class TestRunImportTmdl:
 
         files = run_import_tmdl(zip_path, output)
         assert len(files) == 2
+        assert all(f.exists() for f in files)
+
+    def test_from_pbip_pointer(self, tmp_path):
+        """Issue #387: end-to-end parse of a modern Fabric JSON pointer .pbip."""
+        pointer_path = _create_pbip_pointer(tmp_path / "input")
+        output = tmp_path / "output"
+
+        files = run_import_tmdl(pointer_path, output)
+        assert len(files) == 2
+        assert any("engineering-pack.md" in str(f) for f in files)
+        assert any("concept-mapping.yaml" in str(f) for f in files)
         assert all(f.exists() for f in files)
 
     def test_from_single_file(self, tmp_path):
@@ -477,3 +540,99 @@ class TestZipExtractionStaysOutOfTheHub:
         second = sorted(p.name for p in _bi_dir(hub).rglob("*"))
 
         assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Issue #387 — modern Fabric git-integration .pbip is a JSON pointer file, not
+# a zip archive; resolving it to its sibling .Report/.SemanticModel folders
+# ---------------------------------------------------------------------------
+
+
+class TestResolvePbipPointer:
+    def test_resolves_dataset_and_report_folders(self, tmp_path):
+        pointer_path = _create_pbip_pointer(tmp_path)
+
+        resolved = resolve_pbip_pointer(pointer_path)
+
+        assert len(resolved) == 2
+        names = sorted(p.name for p in resolved)
+        assert names == ["TestModel.Report", "TestModel.SemanticModel"]
+        assert all(p.is_dir() for p in resolved)
+
+    def test_resolves_relative_to_pointer_file_not_cwd(self, tmp_path, monkeypatch):
+        """The pointer's paths are relative to its own directory, not the cwd."""
+        project_dir = tmp_path / "project"
+        pointer_path = _create_pbip_pointer(project_dir)
+
+        # Run from an unrelated cwd — resolution must still find the siblings.
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        resolved = resolve_pbip_pointer(pointer_path)
+
+        assert len(resolved) == 2
+        assert all(p.resolve().is_relative_to(project_dir.resolve()) for p in resolved)
+
+    def test_skips_a_single_missing_artifact_folder(self, tmp_path):
+        """Partial exports are tolerated — one present, one missing is not fatal."""
+        pointer_path = _create_pbip_pointer(tmp_path, include_report=False)
+
+        resolved = resolve_pbip_pointer(pointer_path)
+
+        assert len(resolved) == 1
+        assert resolved[0].name == "TestModel.SemanticModel"
+
+    def test_no_artifacts_resolve_raises_clear_actionable_error(self, tmp_path):
+        """The exact scenario hit during this session's dogfood run: the pointer
+        file shipped without the actual .Report/.SemanticModel folder contents.
+
+        Must surface a clear, actionable message — not an unhandled exception
+        or a raw zipfile.BadZipFile-style traceback.
+        """
+        pointer_data = {
+            "version": "1.0",
+            "artifacts": [
+                {
+                    "report": {"path": "Missing.Report"},
+                    "dataset": {"path": "Missing.SemanticModel"},
+                }
+            ],
+        }
+        pointer_path = tmp_path / "Missing.pbip"
+        pointer_path.write_text(json.dumps(pointer_data), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Missing.Report|Missing.SemanticModel"):
+            resolve_pbip_pointer(pointer_path)
+
+    def test_run_import_tmdl_raises_clear_error_when_siblings_missing(self, tmp_path):
+        """End-to-end: run_import_tmdl must not crash with a raw traceback."""
+        pointer_data = {
+            "version": "1.0",
+            "artifacts": [{"dataset": {"path": "Ghost.SemanticModel"}}],
+        }
+        pointer_path = tmp_path / "input" / "Ghost.pbip"
+        pointer_path.parent.mkdir(parents=True)
+        pointer_path.write_text(json.dumps(pointer_data), encoding="utf-8")
+        output = tmp_path / "output"
+
+        with pytest.raises(ValueError, match="Ghost.SemanticModel"):
+            run_import_tmdl(pointer_path, output)
+
+
+class TestRunImportTmdlFromPbipPointer:
+    def test_pointer_end_to_end_matches_folder_result(self, tmp_path):
+        """A pointer .pbip must parse to the same shape as importing the
+        .SemanticModel folder directly — the pipeline is reused, not duplicated.
+        """
+        pointer_path = _create_pbip_pointer(tmp_path / "project")
+        output = tmp_path / "output"
+
+        files = run_import_tmdl(pointer_path, output)
+
+        assert len(files) == 2
+        mapping_path = next(f for f in files if f.name.endswith("concept-mapping.yaml"))
+        data = yaml.safe_load(mapping_path.read_text(encoding="utf-8"))
+        assert data["model_name"] == "TestModel"
+        assert len(data["tables"]) == 2
+        assert len(data["relationships"]) == 1
