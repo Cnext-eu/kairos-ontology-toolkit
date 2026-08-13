@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+#
+# Auto-close issues referenced in merged PRs that did not use closing keywords.
+# If a PR title or body contains an issue number in a parenthetical reference
+# (e.g. "(#123)") but GitHub did not auto-close it, this workflow closes it.
+name: Auto-close referenced issues
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  auto-close:
+    # Only run when the PR was merged (not just closed without merge).
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-close issues referenced in merged PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const prNumber = pr.number;
+            const title = pr.title || "";
+            const body = pr.body || "";
+            const combined = `${title}\n${body}`;
+
+            // Match standalone issue numbers like #123, but exclude closing-keyword references.
+            // Closing keywords are: closes, fixes, resolves (case-insensitive),
+            // optionally followed by "issue" and "in".
+            const closingKeyword = /\b(closes|fixes|resolves)\b\s+(?:issue\s+)?(?:in\s+)?#(\d+)/i;
+
+            // If closing keywords were used, GitHub already auto-closed those issues.
+            // Remove all closing-keyword matches before scanning for bare references.
+            const closingMatches = combined.match(new RegExp(closingKeyword.source, 'gi')) || [];
+
+            // Find all #NNN references in title and body.
+            const allRefs = combined.match(/#(\d+)/g) || [];
+            if (allRefs.length === 0) {
+              core.info("No issue references found in PR title or body.");
+              return;
+            }
+
+            // Extract the numbers that were already covered by closing keywords.
+            const closedNumbers = new Set();
+            for (const m of closingMatches) {
+              const num = m.match(/#(\d+)/);
+              if (num) closedNumbers.add(num[1]);
+            }
+
+            // Find bare #NNN references not already closed.
+            const refPattern = /#(\d+)/g;
+            let match;
+            const toClose = new Set();
+            while ((match = refPattern.exec(combined)) !== null) {
+              const num = match[1];
+              if (!closedNumbers.has(num)) {
+                toClose.add(num);
+              }
+            }
+
+            if (toClose.size === 0) {
+              core.info("All referenced issues were already closed via closing keywords.");
+              return;
+            }
+
+            core.info(`PR title: ${title}`);
+            core.info(`Bare issue references to check: ${[...toClose].join(', ')}`);
+
+            const repo = context.repo;
+            let closedAny = false;
+
+            for (const issueNum of toClose) {
+              try {
+                // Check if the issue exists and is open.
+                const { data: issue } = await github.rest.issues.get({
+                  ...repo,
+                  issue_number: parseInt(issueNum, 10),
+                });
+
+                if (issue.state !== 'open') {
+                  core.info(`Issue #${issueNum} is already ${issue.state}, skipping.`);
+                  continue;
+                }
+
+                if (issue.pull_request) {
+                  core.info(`#${issueNum} is a PR, not an issue, skipping.`);
+                  continue;
+                }
+
+                // Close the issue with a note.
+                await github.rest.issues.createComment({
+                  ...repo,
+                  issue_number: parseInt(issueNum, 10),
+                  body: `Auto-closed by GitHub Action: PR #${prNumber} was merged with a reference to this issue but did not use closing keywords.\n` +
+                        `\n> **Tip:** To auto-close issues on merge, use \`Closes #${issueNum}\`, \`Fixes #${issueNum}\`, or \`Resolves #${issueNum}\` in the PR body.`,
+                });
+
+                await github.rest.issues.update({
+                  ...repo,
+                  issue_number: parseInt(issueNum, 10),
+                  state: 'closed',
+                  state_reason: 'completed',
+                });
+
+                core.info(`Closed issue #${issueNum}.`);
+                closedAny = true;
+              } catch (err) {
+                core.warning(`Could not process issue #${issueNum}: ${err.message}`);
+              }
+            }
+
+            if (!closedAny) {
+              core.info("No issues were auto-closed.");
+            }
