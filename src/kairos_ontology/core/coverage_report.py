@@ -107,6 +107,8 @@ def parse_domain_ontology(
     )
     g = loaded.graph
     root_graph = loaded.sources[0].graph
+    semantic_index = loaded.semantic_index
+    prop_records_by_uri = {p.uri: p for p in semantic_index.properties} if semantic_index else {}
 
     domain_name = ttl_path.stem
     imports: list[str] = []
@@ -144,11 +146,25 @@ def parse_domain_ontology(
             prop_name = prop_uri.split("#")[-1].split("/")[-1]
             prop_label = str(g.value(prop_uri, RDFS.label) or prop_name)
             prop_see_also = [str(sa) for sa in g.objects(prop_uri, RDFS.seeAlso)]
+
+            # Collect directly-asserted rdfs:subPropertyOf links via the canonical
+            # SemanticIndex (DD-103) rather than re-walking the raw graph — this
+            # is the same closure-aware mechanism used elsewhere in the toolkit.
+            # Only distance == 1 (asserted) superproperties are taken; deeper,
+            # transitively-inferred hops are not treated as an explicit alignment
+            # declaration.
+            prop_record = prop_records_by_uri.get(str(prop_uri))
+            prop_sub_property_of = (
+                [link.uri for link in prop_record.superproperties if link.distance == 1]
+                if prop_record
+                else []
+            )
             properties.append(
                 {
                     "name": prop_name,
                     "label": prop_label,
                     "see_also": prop_see_also,
+                    "sub_property_of": prop_sub_property_of,
                 }
             )
 
@@ -188,16 +204,32 @@ def _build_ref_index(ref_domains: list[dict]) -> dict[str, dict]:
 
     Returns dict: lowercased class name → {name, label, domain, uri, properties}.
     Also indexes by full URI for seeAlso matching.
+
+    ``prop_by_uri`` indexes every reference-model property by its full URI,
+    independent of which class it belongs to. This is what lets a domain
+    property's ``rdfs:subPropertyOf`` be credited even when the *containing*
+    ontology class itself did not align to a reference class by name/seeAlso —
+    the property-level signal is checked on its own merits, exactly like the
+    class-level ``rdfs:seeAlso`` → ``by_uri`` lookup above.
     """
     by_name: dict[str, dict] = {}
     by_uri: dict[str, dict] = {}
+    prop_by_uri: dict[str, dict] = {}
     for domain in ref_domains:
         for cls in domain["classes"]:
             entry = {**cls, "domain": domain["domain_name"]}
             by_name[cls["name"].lower()] = entry
             if "uri" in cls:
                 by_uri[cls["uri"]] = entry
-    return {"by_name": by_name, "by_uri": by_uri}
+            for p in cls.get("properties", []):
+                p_uri = p.get("uri")
+                if p_uri:
+                    prop_by_uri[p_uri] = {
+                        **p,
+                        "class": cls["name"],
+                        "domain": domain["domain_name"],
+                    }
+    return {"by_name": by_name, "by_uri": by_uri, "prop_by_uri": prop_by_uri}
 
 
 def align_classes_deterministic(
@@ -272,7 +304,21 @@ def _align_properties(
     ref_cls: dict | None,
     ref_index: dict,
 ) -> list[dict[str, Any]]:
-    """Align ontology properties to reference class properties."""
+    """Align ontology properties to reference class properties.
+
+    Alignment priority:
+    1. **subproperty** — property has ``rdfs:subPropertyOf`` pointing at a
+       reference-model property URI (checked globally, not only within the
+       matched ``ref_cls`` — the single most explicit, formal alignment
+       signal OWL offers for properties; at least as strong as the
+       class-level ``rdfs:seeAlso`` → ``linked`` signal, so it is credited
+       the same 1.0 confidence)
+    2. **linked** — property has ``rdfs:seeAlso`` pointing to a ref property
+    3. **name-match** — property name matches a ref property name
+    4. **specialization** — property name matches a descendant-class property
+       (DD-044 refinement suggestion; not counted in coverage %)
+    5. **custom** — no reference model counterpart
+    """
     ref_props_by_name: dict[str, dict] = {}
     if ref_cls:
         for p in ref_cls.get("properties", []):
@@ -287,22 +333,38 @@ def _align_properties(
                 if p_lower not in spec_props_by_name:
                     spec_props_by_name[p_lower] = (spec["class"], p)
 
+    prop_by_uri: dict[str, dict] = ref_index.get("prop_by_uri", {})
+
     results = []
     for prop in ont_cls.get("properties", []):
         ref_prop = None
+        ref_owner_class: str | None = None
         alignment = "custom"
         confidence = 0.0
 
-        # Check rdfs:seeAlso on property
-        for sa_uri in prop.get("see_also", []):
-            sa_name = _uri_local_name(sa_uri).lower()
-            if sa_name in ref_props_by_name:
-                ref_prop = ref_props_by_name[sa_name]
-                alignment = "linked"
+        # 1. Check rdfs:subPropertyOf links (issue #326) — the most formal
+        #    property-alignment signal OWL has. Matched against the FULL
+        #    reference-model property index, independent of whether the
+        #    containing ontology class itself aligned to a ref class.
+        for sp_uri in prop.get("sub_property_of", []):
+            if sp_uri in prop_by_uri:
+                ref_prop = prop_by_uri[sp_uri]
+                ref_owner_class = ref_prop.get("class")
+                alignment = "subproperty"
                 confidence = 1.0
                 break
 
-        # Check name match within the matched ref class
+        # 2. Check rdfs:seeAlso on property
+        if ref_prop is None:
+            for sa_uri in prop.get("see_also", []):
+                sa_name = _uri_local_name(sa_uri).lower()
+                if sa_name in ref_props_by_name:
+                    ref_prop = ref_props_by_name[sa_name]
+                    alignment = "linked"
+                    confidence = 1.0
+                    break
+
+        # 3. Check name match within the matched ref class
         if ref_prop is None:
             prop_lower = prop["name"].lower()
             if prop_lower in ref_props_by_name:
@@ -319,7 +381,8 @@ def _align_properties(
                 alignment = "specialization"
                 confidence = 0.5
 
-        ref_name = f"{ref_cls['name']}.{ref_prop['name']}" if ref_cls and ref_prop else None
+        ref_owner = ref_owner_class or (ref_cls["name"] if ref_cls else None)
+        ref_name = f"{ref_owner}.{ref_prop['name']}" if ref_owner and ref_prop else None
 
         result_entry: dict[str, Any] = {
             "ontology_property": prop["name"],

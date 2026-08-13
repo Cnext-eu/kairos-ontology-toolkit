@@ -17,6 +17,9 @@ from kairos_ontology.core.analyse_sources import (
     run_analyse_sources,
 )
 from kairos_ontology.core.coverage_report import (
+    _align_properties,
+    _build_ref_index,
+    align_classes_deterministic,
     parse_domain_ontology,
     run_coverage_report,
     trace_source_evidence,
@@ -226,6 +229,123 @@ class TestCoverageReportScenario:
         md_path = write_coverage_markdown(report, tmp_path / "coverage.md")
         assert yaml_path.exists()
         assert md_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Coverage report — rdfs:subPropertyOf alignment (issue #326)
+# ---------------------------------------------------------------------------
+
+# "Client" deliberately does NOT name-match or seeAlso-match any ref-party
+# class (Party/Organisation/Person), so the class itself aligns as "custom".
+# clientTaxRef nonetheless declares a formal rdfs:subPropertyOf edge straight
+# to a reference-model property (ref-party:taxIdentifier) — this must be
+# credited regardless of the (non-)alignment of its containing class, exactly
+# like the class-level rdfs:seeAlso -> "linked" signal is independent of
+# owl:imports/name-match. clientNotes has no alignment signal at all and must
+# remain "custom"/0.0 (no false positives).
+_DOMAIN_WITH_SUBPROPERTY_TTL = """\
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix test: <https://test.example/subprop-coverage#> .
+@prefix ref-party: <https://kairos.cnext.eu/ref/party#> .
+
+<https://test.example/subprop-coverage> a owl:Ontology ;
+    rdfs:label "SubProperty Coverage Test" ;
+    owl:versionInfo "1.0.0" .
+
+test:Client a owl:Class ;
+    rdfs:label "Client" ;
+    rdfs:comment "A hub-specific client entity." .
+
+test:clientTaxRef a owl:DatatypeProperty ;
+    rdfs:label "client tax reference" ;
+    rdfs:domain test:Client ;
+    rdfs:range xsd:string ;
+    rdfs:subPropertyOf ref-party:taxIdentifier .
+
+test:clientNotes a owl:DatatypeProperty ;
+    rdfs:label "client notes" ;
+    rdfs:domain test:Client ;
+    rdfs:range xsd:string .
+"""
+
+
+class TestCoverageSubPropertyOfAlignment:
+    """rdfs:subPropertyOf is credited as a formal property-alignment signal."""
+
+    def _get_ref_domains(self):
+        ref_path = REF_MODELS_DIR / "kairos-ref-party.ttl"
+        from kairos_ontology.core.analyse_sources import parse_reference_model
+
+        return [parse_reference_model(ref_path, include_specializations=True)]
+
+    def test_subpropertyof_credited_even_when_class_is_unmatched(self, tmp_path):
+        """A property's rdfs:subPropertyOf is credited independent of its class."""
+        ont_path = tmp_path / "subprop-domain.ttl"
+        ont_path.write_text(_DOMAIN_WITH_SUBPROPERTY_TTL, encoding="utf-8")
+
+        ont_data = parse_domain_ontology(ont_path)
+        ref_index = _build_ref_index(self._get_ref_domains())
+
+        class_alignments = align_classes_deterministic(ont_data, ref_index)
+        client_align = next(
+            c for c in class_alignments if c["ontology_class"] == "Client"
+        )
+
+        # The class itself has no name/seeAlso match to Party/Organisation/Person.
+        assert client_align["alignment"] == "custom"
+        assert client_align["ref_class"] is None
+
+        prop_alignments = {
+            pa["ontology_property"]: pa for pa in client_align["property_alignments"]
+        }
+
+        # (a) rdfs:subPropertyOf must be credited, not left as custom/0.0.
+        tax_pa = prop_alignments["clientTaxRef"]
+        assert tax_pa["alignment"] == "subproperty"
+        assert tax_pa["confidence"] == 1.0
+        assert tax_pa["ref_property"] == "Party.taxIdentifier"
+
+        # (b) A property with no alignment signal at all stays custom/0.0.
+        notes_pa = prop_alignments["clientNotes"]
+        assert notes_pa["alignment"] == "custom"
+        assert notes_pa["confidence"] == 0.0
+        assert notes_pa["ref_property"] is None
+
+    def test_subpropertyof_direct_align_properties_call(self, tmp_path):
+        """Same check via _align_properties() directly, mirroring the DD-044 tests."""
+        ont_path = tmp_path / "subprop-domain.ttl"
+        ont_path.write_text(_DOMAIN_WITH_SUBPROPERTY_TTL, encoding="utf-8")
+
+        ont_data = parse_domain_ontology(ont_path)
+        ref_index = _build_ref_index(self._get_ref_domains())
+        client_cls = next(c for c in ont_data["classes"] if c["name"] == "Client")
+
+        # ref_cls=None: nothing else in the toolkit resolved this class, yet the
+        # subPropertyOf-declared property must still be credited on its own merit.
+        prop_alignments = _align_properties(client_cls, None, ref_index)
+        by_name = {pa["ontology_property"]: pa for pa in prop_alignments}
+
+        assert by_name["clientTaxRef"]["alignment"] == "subproperty"
+        assert by_name["clientTaxRef"]["confidence"] == 1.0
+        assert by_name["clientNotes"]["alignment"] == "custom"
+        assert by_name["clientNotes"]["confidence"] == 0.0
+
+    def test_coverage_percentage_reflects_subpropertyof_credit(self, tmp_path):
+        """(c) The aggregate Properties: N/M summary counts subproperty matches."""
+        ont_dir = tmp_path / "ontologies"
+        ont_dir.mkdir()
+        (ont_dir / "client.ttl").write_text(_DOMAIN_WITH_SUBPROPERTY_TTL, encoding="utf-8")
+
+        report = run_coverage_report(
+            ontology_dir=ont_dir,
+            ref_models_dir=REF_MODELS_DIR,
+        )
+
+        assert report.total_properties == 2
+        assert report.aligned_properties == 1
+        assert report.property_coverage_pct == 50
 
 
 # ---------------------------------------------------------------------------
