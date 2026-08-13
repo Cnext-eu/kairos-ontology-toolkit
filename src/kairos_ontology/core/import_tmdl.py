@@ -3,14 +3,17 @@
 """Import-TMDL orchestration — detect input type, extract, parse, generate outputs.
 
 This module coordinates the full import-tmdl workflow:
-1. Detect whether input is a ZIP, folder, or standalone file
-2. Extract ZIP if needed and locate SemanticModel definition folders
+1. Detect whether input is a ZIP, Fabric git-integration pointer file, folder,
+   or standalone file
+2. Extract ZIP (or resolve pointer artifacts) and locate SemanticModel
+   definition folders
 3. Parse TMDL content using the tmdl_parser module
 4. Generate Engineering Pack (markdown) and Concept Mapping (YAML)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import tempfile
 import zipfile
@@ -31,15 +34,38 @@ logger = logging.getLogger(__name__)
 _BI_DISCOVERY_RELPATH = Path("integration") / "discovery" / "bi"
 
 
-def detect_input_type(path: Path) -> Literal["zip", "folder", "file"]:
+def _is_pbip_pointer_file(path: Path) -> bool:
+    """Best-effort sniff for a Fabric git-integration ``.pbip`` pointer file.
+
+    A modern Fabric ``.pbip`` is not a ZIP archive at all — it's a small JSON
+    document with an ``artifacts`` list pointing at sibling ``<name>.Report/``
+    and ``<name>.SemanticModel/`` folders on disk (issue #387). Any failure to
+    read/parse, or JSON that doesn't look like a pointer file, means "not a
+    pointer" — the caller falls through to the legacy zip-suffix/magic-byte
+    handling unchanged, so legitimate legacy zip-format ``.pbip`` files are
+    never affected by this sniff.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("artifacts"), list)
+
+
+def detect_input_type(path: Path) -> Literal["zip", "pointer", "folder", "file"]:
     """Detect the type of TMDL input.
 
     Returns:
-        "zip"    — a ZIP/PBIP archive
-        "folder" — a SemanticModel/definition/ directory (or parent)
-        "file"   — a standalone .tmdl file
+        "zip"     — a ZIP/PBIP archive
+        "pointer" — a Fabric git-integration ``.pbip`` pointer file (JSON
+                    referencing sibling ``.Report``/``.SemanticModel`` folders,
+                    not a zip archive — issue #387)
+        "folder"  — a SemanticModel/definition/ directory (or parent)
+        "file"    — a standalone .tmdl file
     """
     if path.is_file():
+        if path.suffix.lower() == ".pbip" and _is_pbip_pointer_file(path):
+            return "pointer"
         if path.suffix.lower() in (".zip", ".pbip"):
             return "zip"
         if path.suffix.lower() == ".tmdl":
@@ -100,6 +126,68 @@ def extract_pbip_zip(zip_path: Path, dest: Path) -> list[Path]:
         zf.extractall(dest)
 
     return find_definition_dirs(dest)
+
+
+def resolve_pbip_pointer(pointer_path: Path) -> list[Path]:
+    """Resolve a Fabric git-integration ``.pbip`` pointer file to artifact folders.
+
+    Reads the pointer JSON, extracts each ``artifacts[].report.path`` /
+    ``artifacts[].dataset.path`` entry, and resolves it relative to the
+    pointer file's own directory (``pointer_path.parent`` — NOT the current
+    working directory, since the pointer is typically opened from elsewhere).
+
+    Individual referenced folders that don't exist on disk are skipped —
+    tolerant of partial exports, matching this codebase's existing style (e.g.
+    import-flatfile's directory-mode tolerance) — but if the pointer
+    references artifacts and *none* of them resolve to an existing folder,
+    that's treated as a hard failure rather than a silent empty result, since
+    it means the export is missing its actual TMDL/report content entirely.
+
+    Args:
+        pointer_path: Path to the ``.pbip`` pointer file.
+
+    Returns:
+        List of resolved, existing artifact folder paths (e.g.
+        ``<name>.Report``, ``<name>.SemanticModel``).
+
+    Raises:
+        ValueError: if the pointer file references one or more artifacts but
+            none of the referenced folders exist on disk.
+    """
+    data = json.loads(pointer_path.read_text(encoding="utf-8"))
+    base = pointer_path.parent
+
+    referenced: list[str] = []
+    resolved: list[Path] = []
+
+    for artifact in data.get("artifacts", []) or []:
+        if not isinstance(artifact, dict):
+            continue
+        for kind in ("report", "dataset"):
+            entry = artifact.get(kind)
+            if not isinstance(entry, dict):
+                continue
+            rel_path = entry.get("path")
+            if not rel_path:
+                continue
+            referenced.append(rel_path)
+            candidate = base / rel_path
+            if candidate.is_dir():
+                resolved.append(candidate)
+
+    if referenced and not resolved:
+        listed = ", ".join(sorted(set(referenced)))
+        raise ValueError(
+            f"PBIP pointer file {pointer_path} references artifact folder(s) "
+            f"({listed}) but none of them exist on disk next to the pointer "
+            "file. This typically means the export shipped the .pbip pointer "
+            "file without the actual '<name>.Report'/'<name>.SemanticModel' "
+            "folder contents — re-export with the full project folder "
+            "structure, or run import-tmdl directly against the "
+            "'<name>.SemanticModel' folder if you already have it."
+        )
+
+    return resolved
 
 
 def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
@@ -316,6 +404,26 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
                 model = parse_model_folder(def_dir)
                 files = _write_outputs(model, output_dir, str(source))
                 generated_files.extend(files)
+
+    elif input_type == "pointer":
+        # Modern Fabric git-integration .pbip — a JSON pointer to sibling
+        # <name>.Report/<name>.SemanticModel folders, not an archive to
+        # extract (issue #387). resolve_pbip_pointer() raises a clear error if
+        # the pointer references artifacts but none resolve on disk; once
+        # resolved, feed each artifact folder into the same
+        # find_definition_dirs()/parse_model_folder() pipeline the "folder"
+        # branch uses (a .Report folder simply yields no definition dirs).
+        artifact_dirs = resolve_pbip_pointer(source)
+        definition_dirs = sorted(
+            {d for folder in artifact_dirs for d in find_definition_dirs(folder)}
+        )
+        if not definition_dirs:
+            logger.warning("No SemanticModel definition/ found via PBIP pointer: %s", source)
+            return []
+        for def_dir in definition_dirs:
+            model = parse_model_folder(def_dir)
+            files = _write_outputs(model, output_dir, str(source))
+            generated_files.extend(files)
 
     elif input_type == "folder":
         definition_dirs = find_definition_dirs(source)
