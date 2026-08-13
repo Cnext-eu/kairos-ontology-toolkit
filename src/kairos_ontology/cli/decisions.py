@@ -130,6 +130,19 @@ def new_decision(
     raise click.ClickException(f"Could not allocate a unique decision id after {attempts} attempts")
 
 
+@decision.command(name="sync-index")
+def sync_index() -> None:
+    """Regenerate ``index.md`` from the records currently on disk.
+
+    Use this after hand-editing a decision record's frontmatter (e.g. flipping
+    ``decision_state`` from ``Proposed`` to ``Accepted``) so the static index
+    stops disagreeing with the live records.
+    """
+    decisions_path = _decisions_dir()
+    _write_index(decisions_path)
+    click.echo(str(decisions_path / "index.md"))
+
+
 @decision.command(name="list")
 def list_decisions() -> None:
     """List Decision Log records."""
