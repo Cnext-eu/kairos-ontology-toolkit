@@ -1858,3 +1858,159 @@ def test_init_no_domain_on_existing_hub_prints_refreshed_banner(tmp_path):
             assert second.exit_code == 0, second.output
             assert "✅ Existing ontology hub scaffold refreshed!" in second.output
             assert "Ontology hub initialized!" not in second.output
+
+
+# ---------------------------------------------------------------------------
+# init --domain auto-syncs _master.ttl's owl:imports (issue #393)
+# ---------------------------------------------------------------------------
+
+
+def test_init_domain_syncs_master_ttl_import(tmp_path):
+    """A fresh `init --domain` scaffold must also be imported by _master.ttl."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(
+                cli,
+                ["init", "--company-domain", "test.com", "--domain", "customer"],
+            )
+            assert result.exit_code == 0, result.output
+            assert "Synced owl:imports" in result.output
+
+            master = Path("ontology-hub/model/ontologies/_master.ttl")
+            content = master.read_text(encoding="utf-8")
+            assert "owl:imports <https://test.com/ont/customer>" in content
+
+
+def test_init_domain_master_sync_is_idempotent_on_rerun(tmp_path):
+    """Re-running `init --domain` for the same domain must not duplicate the import."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(
+                cli,
+                ["init", "--company-domain", "test.com", "--domain", "customer"],
+            )
+            assert first.exit_code == 0, first.output
+
+            # No --force: the domain ontology and _master.ttl already exist and are
+            # left alone, but the (idempotent) sync step still runs.
+            second = runner.invoke(
+                cli,
+                ["init", "--company-domain", "test.com", "--domain", "customer"],
+            )
+            assert second.exit_code == 0, second.output
+            assert "already imports" in second.output
+
+            from kairos_ontology.core.master_ontology import list_active_master_imports
+
+            master = Path("ontology-hub/model/ontologies/_master.ttl")
+            # Exactly one *live* import -- the commented-out scaffold example also
+            # mentions this domain's own company-domain-substituted URL as sample
+            # text, so a raw substring count would over-count; the whole point of
+            # list_active_master_imports is to see past that.
+            assert list_active_master_imports(master) == {"https://test.com/ont/customer"}
+            content = master.read_text(encoding="utf-8")
+            assert content.count("<https://test.com/ont/master> owl:imports") == 1
+
+
+def test_init_domain_master_sync_multiple_domains_sequentially(tmp_path):
+    """Adding a second domain must preserve the first import and untouched content."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(
+                cli,
+                ["init", "--company-domain", "test.com", "--domain", "customer"],
+            )
+            assert first.exit_code == 0, first.output
+
+            master = Path("ontology-hub/model/ontologies/_master.ttl")
+            before = master.read_text(encoding="utf-8")
+            assert "rdfs:label" in before
+            provenance_first_line = before.splitlines()[0]
+
+            second = runner.invoke(
+                cli,
+                ["init", "--company-domain", "test.com", "--domain", "order"],
+            )
+            assert second.exit_code == 0, second.output
+
+            after = master.read_text(encoding="utf-8")
+            assert "owl:imports <https://test.com/ont/customer>" in after
+            assert "owl:imports <https://test.com/ont/order>" in after
+            # Everything from the first write must still be present verbatim
+            # (provenance header / rdfs:label survive untouched) -- only new
+            # content was inserted.
+            assert after.splitlines()[0] == provenance_first_line
+            assert "rdfs:label" in after
+            for line in before.splitlines():
+                assert line in after.splitlines()
+
+
+def test_init_domain_missing_master_ttl_warns_and_does_not_crash(tmp_path, monkeypatch):
+    """A hub with no _master.ttl at sync time must not crash `init --domain`.
+
+    In normal operation _master.ttl always already exists by the time the
+    domain-registration block runs (init's own step 7 recreates it if missing,
+    since only an existing dst + no --force skips that write). To exercise the
+    genuinely-missing guard, the scaffold's own master template is removed
+    (via a monkeypatched _SCAFFOLD_DIR copy) so step 7 has nothing to (re)write
+    from, leaving _master.ttl absent by the time --domain runs.
+    """
+    import shutil as _shutil
+    import kairos_ontology.cli.setup as setup_mod
+
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert first.exit_code == 0, first.output
+
+            master = Path("ontology-hub/model/ontologies/_master.ttl")
+            master.unlink()
+
+            scaffold_copy = tmp_path / "_scaffold_no_master_template"
+            _shutil.copytree(setup_mod._SCAFFOLD_DIR, scaffold_copy)
+            (
+                scaffold_copy
+                / "ontology-hub"
+                / "model"
+                / "ontologies"
+                / "master.ttl.template"
+            ).unlink()
+            monkeypatch.setattr(setup_mod, "_SCAFFOLD_DIR", scaffold_copy)
+
+            second = runner.invoke(
+                cli,
+                ["init", "--company-domain", "test.com", "--domain", "customer"],
+            )
+            assert second.exit_code == 0, second.output
+            assert "_master.ttl not found" in second.output
+            assert not master.exists()
+
+
+def test_init_domain_malformed_master_ttl_skips_sync_safely(tmp_path):
+    """A corrupted _master.ttl must not crash `init --domain`, and must stay untouched."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert first.exit_code == 0, first.output
+
+            master = Path("ontology-hub/model/ontologies/_master.ttl")
+            corrupt = "this is not valid turtle at all {{{ owl:imports <><><"
+            master.write_text(corrupt, encoding="utf-8")
+
+            second = runner.invoke(
+                cli,
+                ["init", "--company-domain", "test.com", "--domain", "customer"],
+            )
+            assert second.exit_code == 0, second.output
+            assert "Could not sync _master.ttl automatically" in second.output
+            assert master.read_text(encoding="utf-8") == corrupt

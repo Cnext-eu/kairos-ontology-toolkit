@@ -194,6 +194,19 @@ and camelCase properties; no term declared as more than one of
 {Class, DatatypeProperty, ObjectProperty}. Do not hand-write rdflib checks for
 any of these — the CLI check is the authority.
 
+The `REUSABLE — no rdfs:domain by design` marker alone only silences the
+naming check; it does not make the property bindable anywhere. A property
+genuinely meant to be shared across more than one sibling class must ALSO
+carry `schema:domainIncludes` triples — one per applicable class — alongside
+the omitted `rdfs:domain`. This is additive, no-entailment domain evidence
+that the compiler already honors (`core/projections/shared.py`'s
+`effective_domain_classes()` and `core/semantic_index.py`'s
+`class_properties()` both treat `schema:domainIncludes` as a domain source
+alongside `rdfs:domain`), so it costs nothing to add and closes the gap
+the marker alone leaves open. Skip the `schema:domainIncludes` triples and
+the property compiles cleanly but can never resolve in any EntityBinding —
+permanently unbindable on every class, not just undeclared on one.
+
 An `owl:ObjectProperty` with no `rdfs:range` is a naming **warning**, not an
 error: DD-133 §7 lets a `relationships:` entry defer the range and validates the
 relationship on its authored `target:`/`on:` endpoint alone. The reference-model
@@ -222,7 +235,10 @@ Do not apply a candidate with syntax, naming, or convention errors.
 
 Identify the hub root from `kairos.yaml`, domain, requested slice, and whether
 this invocation is interactive or fleet. If the request is ambiguous, remain
-interactive.
+interactive. Optionally run `kairos-ontology domain-coverage` first: it is a
+cheap, advisory pre-flight that shows the full blueprint-domain picture — which
+domains are modeled, bound, and actually imported by `_master.ttl` — before
+scope is chosen.
 
 ### 2. Complete source pre-flight
 
@@ -389,7 +405,10 @@ This is the registration step, and nothing else performs it: `init --domain` is
 the only command that maps a domain ontology in `ontology-hub/catalog-v001.xml`.
 Skip it and the patch parses and validates while remaining unresolvable through
 the catalog. Run it from the repo root — the directory that contains
-`ontology-hub/`.
+`ontology-hub/`. The same command now also syncs `_master.ttl`'s `owl:imports`
+automatically, adding the domain's declared ontology IRI there if it is not
+already a live import — a domain can otherwise be fully authored, cataloged,
+and bound yet still unreachable from the hub's single ontology entry point.
 
 The ordering is load-bearing. When `model/ontologies/<domain>.ttl` is absent this
 command *creates a starter ontology* in its place, so running it first hands you
@@ -419,10 +438,11 @@ uv run kairos-ontology guard-scope --check-since <token> --allow "*model/ontolog
 ```
 
 Those three globs are the whole legitimate footprint of one domain: the ontology
-patch, the catalog entry the registration step writes, and `_master.ttl` when the
-hub lists its domain imports there. Each one carries a leading `*` because
-`guard-scope` reports paths relative to the **git repo root**; a hub-relative
-glob matches nothing in the standard `ontology-hub/` layout.
+patch, the catalog entry the registration step writes, and `_master.ttl`, which
+`init --domain` now updates automatically — expect this file to change on every
+domain registration, not just an edge case. Each one carries a leading `*`
+because `guard-scope` reports paths relative to the **git repo root**; a
+hub-relative glob matches nothing in the standard `ontology-hub/` layout.
 
 A non-zero exit names every path that changed outside that scope — treat that as
 blocking, not a self-report. If validation, registration, or the guard fails,
