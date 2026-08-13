@@ -1046,6 +1046,11 @@ def run_validation(
                     )
                 else:
                     print(f"  ✓ {ontology_file.name}")
+            for item in warnings:
+                print(f"    ⚠ {item.message}")
+        imports_warning_count = len(results["imports"]["warnings"])
+        if imports_warning_count:
+            print(f"\n  Imports — Warnings: {imports_warning_count}")
         print()
 
     if decisions_path is not None and Path(decisions_path).is_dir():
@@ -1083,9 +1088,13 @@ def run_validation(
         for warning in dres.warnings:
             if warning.file not in record_names:
                 print(f"  ⚠ {warning.file}: {warning.message}")
+        decisions_warning_count = len(results["decisions"]["warnings"])
+        decisions_warnings_suffix = (
+            f", Warnings: {decisions_warning_count}" if decisions_warning_count else ""
+        )
         print(
             f"\n  Passed: {results['decisions']['passed']}, "
-            f"Failed: {results['decisions']['failed']}\n"
+            f"Failed: {results['decisions']['failed']}{decisions_warnings_suffix}\n"
         )
 
     # Level 1: Syntax Validation
@@ -1121,10 +1130,24 @@ def run_validation(
             )
 
         print(f"\n  Passed: {results['syntax']['passed']}, Failed: {results['syntax']['failed']}\n")
+        naming_warning_count = len(results["naming"]["warnings"])
+        naming_warnings_suffix = (
+            f", Warnings: {naming_warning_count}" if naming_warning_count else ""
+        )
         print(
             f"  Naming/annotation — Passed: {results['naming']['passed']}, "
-            f"Failed: {results['naming']['failed']}\n"
+            f"Failed: {results['naming']['failed']}{naming_warnings_suffix}\n"
         )
+        # Mirror render_validation_markdown's per-section warning rendering (rc22): a
+        # warning nobody sees on the console is a warning nobody acts on, and the JSON/
+        # Markdown reports already surface these (issue #332).
+        if naming_warning_count:
+            print("  Naming/annotation warnings:")
+            for w in results["naming"]["warnings"]:
+                file_ = w.get("file", "")
+                message = w.get("message", "")
+                print(f"    ⚠ {file_}: {message}")
+            print()
 
     # Level 2: SHACL Validation
     if do_shacl and shapes_path.exists():
@@ -1234,17 +1257,34 @@ def run_validation(
         + results["consistency"]["failed"]
         + results["decisions"]["failed"]
     )
+    # Issue #332: warnings never feed the exit code (unchanged), but the final line
+    # must not claim a clean bill of health while ANY section still has open warnings
+    # -- naming/imports/decisions (each carries its own `warnings` list, printed with
+    # its section above, mirroring render_validation_markdown's per-section rendering)
+    # as well as the GDPR scan's warnings (issue #325's precedent for this same
+    # qualified-summary pattern, kept verbatim below for compatibility).
+    section_warning_count = (
+        len(results["naming"]["warnings"])
+        + len(results["imports"]["warnings"])
+        + len(results["decisions"]["warnings"])
+    )
+    total_open_warnings = gdpr_warnings + section_warning_count
+
     if total_failed > 0:
         print(f"\n❌ Validation failed with {total_failed} errors")
         exit(1)
-    elif gdpr_warnings:
-        # Issue #325: never claim a clean bill of health while the GDPR scan (run
-        # earlier in this same invocation) still has unprotected-PII warnings open.
-        # Deliberately non-blocking (exit 0) -- see `gdpr_warnings` docstring above.
-        print(
-            f"\n✅ All validations passed (⚠️  {gdpr_warnings} unprotected PII "
-            "warning(s) from the GDPR scan above remain open)"
-        )
+    elif total_open_warnings:
+        # Deliberately non-blocking (exit 0) -- see `gdpr_warnings` docstring above;
+        # whether warnings should ever fail the run is a separate product decision
+        # this fix does not make.
+        detail_parts = []
+        if gdpr_warnings:
+            detail_parts.append(
+                f"{gdpr_warnings} unprotected PII warning(s) from the GDPR scan above"
+            )
+        if section_warning_count:
+            detail_parts.append(f"{section_warning_count} warning(s) in the sections above")
+        print(f"\n✅ All validations passed (⚠️  {' and '.join(detail_parts)} remain open)")
     else:
         print("\n✅ All validations passed!")
 

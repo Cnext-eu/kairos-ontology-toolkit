@@ -685,6 +685,126 @@ class TestObjectPropertyDeferredRange:
         assert codes == {"property_missing_range"}
 
 
+class TestConsoleWarningsVisibility:
+    """Issue #332: `validate` rendered warnings in the Markdown/JSON report but not on
+    the console, so a run with an open warning printed an unqualified
+    ``Passed: N, Failed: 0`` per-section line and an unqualified
+    ``All validations passed!`` summary -- exactly as if no warning existed."""
+
+    _HEADER = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+"""
+
+    def _write_hub_with_owl_thing_warning(self, temp_dir):
+        """A hub with a real ``property_range_owl_thing`` warning: an object property
+        whose ``rdfs:range`` is ``owl:Thing`` -- the exact scenario from issue #332."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(
+            self._HEADER
+            + """
+:hasMasterWaybill a owl:ObjectProperty ;
+    rdfs:label "Has Master Waybill" ;
+    rdfs:domain :Customer ;
+    rdfs:range owl:Thing .
+""",
+            encoding="utf-8",
+        )
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+        return ontologies_dir, shapes_dir
+
+    def test_section_line_shows_warning_count_when_open(self, temp_dir, capsys):
+        """(a) The naming section's console summary line must show ``Warnings: 1``
+        when one warning is open in that section -- mirroring the existing
+        ``Passed: N, Failed: N`` pattern."""
+        ontologies_dir, shapes_dir = self._write_hub_with_owl_thing_warning(temp_dir)
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+        )
+
+        out = capsys.readouterr().out
+        assert "Naming/annotation — Passed: 1, Failed: 0, Warnings: 1" in out
+        # The warning itself is also printed under its section (mirroring
+        # render_validation_markdown's per-section warning rendering).
+        assert "property_range_owl_thing" in out or "owl:Thing" in out
+
+    def test_final_summary_not_unqualified_when_warning_open(self, temp_dir, capsys):
+        """(b) The final console summary must not be an unqualified
+        "All validations passed!" when a warning is open -- it must name the
+        warning count (or the warning text) instead."""
+        ontologies_dir, shapes_dir = self._write_hub_with_owl_thing_warning(temp_dir)
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+        )
+
+        out = capsys.readouterr().out
+        assert "All validations passed!" not in out
+        assert "All validations passed" in out
+        assert "1 warning(s)" in out or "warning" in out.lower()
+
+    def test_clean_hub_still_prints_unqualified_pass(self, temp_dir, sample_ontology, capsys):
+        """(c) No regression for the clean case: zero warnings and zero errors still
+        print the original unqualified "All validations passed!" line."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+        )
+
+        out = capsys.readouterr().out
+        assert "All validations passed!" in out
+        assert "Warnings:" not in out
+
+    def test_exit_code_unaffected_by_open_warning(self, temp_dir):
+        """(d) Exit code remains 0 when only warnings (no errors) are present --
+        this is purely a console-visibility fix, not an exit-code change."""
+        ontologies_dir, shapes_dir = self._write_hub_with_owl_thing_warning(temp_dir)
+
+        # run_validation() only calls exit() on failure; it must return normally
+        # (no SystemExit) when the sole finding is a warning.
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+        )
+
+
 class TestMarkdownReportWarnings:
     """``render_validation_markdown`` used to key off ``errors`` only and ``continue`` on
     an empty list, so a warning could never reach the report at all."""
