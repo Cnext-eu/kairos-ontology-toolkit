@@ -93,6 +93,88 @@ def test_decision_commands_resolve_from_inside_hub(tmp_path, monkeypatch):
     assert records[0].stem in listed.output
 
 
+def test_decision_new_accepted_without_materiality_fails_fast(tmp_path, monkeypatch):
+    _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["decision", "new", "--title", "T", "--decision-state", "Accepted"]
+    )
+
+    assert result.exit_code != 0
+    assert "--materiality" in result.output
+    # The error should name the valid choices so the fix is actionable.
+    assert "evidence-conflict" in result.output
+    # No half-written record should have been left behind.
+    assert not (tmp_path / "ontology-hub" / "decisions").exists()
+
+
+def test_decision_new_accepted_with_materiality_succeeds(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "new",
+            "--title",
+            "T",
+            "--decision-state",
+            "Accepted",
+            "--materiality",
+            "evidence-conflict",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    decisions_path = hub / "decisions"
+    records = _decision_records(decisions_path)
+    assert len(records) == 1
+    frontmatter_text = records[0].read_text(encoding="utf-8")
+    assert "materiality:" in frontmatter_text
+    assert "evidence-conflict" in frontmatter_text
+    record = validate_decision_bundle(decisions_path).records[0]
+    assert record.materiality == ("evidence-conflict",)
+
+
+def test_decision_new_accepted_with_multiple_materiality(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "new",
+            "--title",
+            "T",
+            "--decision-state",
+            "Accepted",
+            "--materiality",
+            "evidence-conflict",
+            "--materiality",
+            "persistent-consequence",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    decisions_path = hub / "decisions"
+    record = validate_decision_bundle(decisions_path).records[0]
+    assert set(record.materiality) == {"evidence-conflict", "persistent-consequence"}
+
+
+def test_decision_new_proposed_without_materiality_still_allowed(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["decision", "new", "--title", "T"])
+
+    assert result.exit_code == 0, result.output
+    decisions_path = hub / "decisions"
+    assert len(_decision_records(decisions_path)) == 1
+
+
 def test_decision_list_prints_created_ids(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path)
     monkeypatch.chdir(tmp_path)

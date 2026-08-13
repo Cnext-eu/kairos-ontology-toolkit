@@ -14,6 +14,7 @@ import click
 from .. import __version__ as _toolkit_version
 from ..core.decision_records import (
     VALID_DECISION_STATES,
+    VALID_MATERIALITY,
     build_index_markdown,
     generate_decision_id,
     render_new_record,
@@ -69,15 +70,35 @@ def decision() -> None:
     help="Initial decision workflow state.",
 )
 @click.option("--source", multiple=True, help="Evidence resource string; may be repeated.")
+@click.option(
+    "--materiality",
+    "materiality",
+    multiple=True,
+    type=click.Choice(sorted(VALID_MATERIALITY)),
+    help=(
+        "Structured materiality reason; may be repeated. Required when "
+        "--decision-state is Accepted."
+    ),
+)
 @click.option("--id", "record_id", help="Explicit decision record id.")
 def new_decision(
     title: str,
     domain: str | None,
     decision_state: str,
     source: tuple[str, ...],
+    materiality: tuple[str, ...],
     record_id: str | None,
 ) -> None:
     """Create a new Decision Log record and refresh the index."""
+    if decision_state == "Accepted" and not materiality:
+        raise click.ClickException(
+            "--decision-state Accepted requires >=1 --materiality reason (the hub's "
+            "decision-log validator rejects an Accepted record with none). Pass one or "
+            "more of: " + ", ".join(sorted(VALID_MATERIALITY)) + ". If the materiality "
+            "is not yet known, create the record with --decision-state Proposed instead "
+            "and accept it once a reason is decided."
+        )
+
     decisions_path = _decisions_dir()
     attempts = 1 if record_id is not None else _MAX_ID_ATTEMPTS
 
@@ -93,6 +114,7 @@ def new_decision(
                         version=_toolkit_version,
                         domain=domain,
                         decision_state=decision_state,
+                        materiality=list(materiality),
                         sources=list(source),
                     )
                 )
