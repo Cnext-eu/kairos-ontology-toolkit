@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 
 from .policy_specs import (
     AdapterCapability,
@@ -543,7 +544,18 @@ def _matching_deviation(
     adapter: AdapterName,
     requirement: CapabilityRequirementSpec,
     deviations: tuple[ApprovedDeviationSpec, ...],
+    current_date: date,
 ) -> ApprovedDeviationSpec | None:
+    """Return the first approved, unexpired deviation covering *requirement*.
+
+    ``current_date`` is the resolved projection "now" (see
+    :func:`kairos_ontology.core.determinism.resolve_generated_at`), threaded in
+    explicitly by the caller so this module never reads a wall clock directly.
+    A deviation whose ``expiry_date`` has passed relative to ``current_date`` is
+    treated as if it had never been authored -- it is skipped so the search can
+    continue to any other deviation record that might still cover the same
+    rule/scope, rather than failing the match outright.
+    """
     for deviation in deviations:
         if not deviation.approved:
             continue
@@ -552,6 +564,8 @@ def _matching_deviation(
         if deviation.policy_reference.value != requirement.rule_id:
             continue
         if deviation.scope.value not in {requirement.scope, "*"}:
+            continue
+        if date.fromisoformat(deviation.expiry_date.value) < current_date:
             continue
         return deviation
     return None
@@ -562,8 +576,16 @@ def negotiate_capabilities(
     requirements: tuple[CapabilityRequirementSpec, ...],
     deviations: tuple[ApprovedDeviationSpec, ...] = (),
     registry: AdapterCapabilityRegistry = ADAPTER_CAPABILITY_REGISTRY,
+    *,
+    current_date: date,
 ) -> tuple[CapabilityResultSpec, ...]:
-    """Negotiate exact requirements without adapter fallback or silent degradation."""
+    """Negotiate exact requirements without adapter fallback or silent degradation.
+
+    ``current_date`` must be the resolved projection "now" from
+    :func:`kairos_ontology.core.determinism.resolve_generated_at`, supplied by the
+    caller -- this module deliberately never reads a wall clock itself so that
+    expired-deviation handling stays deterministic and reproducible.
+    """
     try:
         adapter_name = adapter if isinstance(adapter, AdapterName) else AdapterName(adapter)
     except ValueError as exc:
@@ -608,7 +630,7 @@ def negotiate_capabilities(
             )
             continue
 
-        deviation = _matching_deviation(adapter_name, requirement, deviations)
+        deviation = _matching_deviation(adapter_name, requirement, deviations, current_date)
         if deviation is not None and capability.allowed_deviation:
             results.append(
                 CapabilityResultSpec(
