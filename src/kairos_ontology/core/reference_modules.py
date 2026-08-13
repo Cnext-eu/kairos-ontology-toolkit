@@ -29,6 +29,21 @@ class DescendantPolicy(str, Enum):
     NONE = "none"
 
 
+_VALID_TIERS = {"required", "recommended", "optional"}
+_TIER_SEVERITY = {"required": 0, "recommended": 1, "optional": 2}
+
+
+def _validate_tier(tier: str, *, context: str) -> str:
+    """Validate a tier string against ``_VALID_TIERS``, raising on the rest."""
+    value = str(tier).strip()
+    if value not in _VALID_TIERS:
+        raise ValueError(
+            f"{context} has invalid tier {value!r}; expected one of "
+            + ", ".join(sorted(_VALID_TIERS))
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class ReferenceModuleProfile:
     """Version-pinned, source-neutral activation policy for one ontology module."""
@@ -47,6 +62,7 @@ class ReferenceModuleProfile:
     accepted_transitive_dependencies: tuple[str, ...] = ()
     local_extension_namespaces: tuple[str, ...] = ()
     legacy: bool = False
+    tier: str = "required"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, legacy: bool = False) -> "ReferenceModuleProfile":
@@ -83,6 +99,11 @@ class ReferenceModuleProfile:
         else:
             allowlist = data.get("projection_allowlist", [])
 
+        tier = _validate_tier(
+            data.get("tier", "required") or "required",
+            context=f"module profile {module_id!r}",
+        )
+
         return cls(
             id=module_id,
             ontology_iri=ontology_iri,
@@ -102,6 +123,7 @@ class ReferenceModuleProfile:
             ),
             local_extension_namespaces=_strings(data.get("local_extension_namespaces", [])),
             legacy=legacy,
+            tier=tier,
         )
 
 
@@ -111,6 +133,7 @@ class DataDomainActivation:
 
     domain: str
     module_ids: tuple[str, ...]
+    module_tier_overrides: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -225,6 +248,7 @@ class ManagedImportRequirement:
     reasons: tuple[str, ...] = ()
     term_uris: tuple[str, ...] = ()
     accepted_transitive: bool = False
+    tier: str = "required"
 
 
 @dataclass(frozen=True)
@@ -477,6 +501,7 @@ def load_accelerator_module_config(
         profiles[profile.id] = profile
 
     domain_modules: dict[str, set[str]] = {}
+    domain_tier_overrides: dict[str, dict[str, str]] = {}
     for group in data.get("groups", []) or []:
         for domain in group.get("domains", []) or []:
             domain_id = str(domain.get("id") or "").strip()
@@ -518,10 +543,21 @@ def load_accelerator_module_config(
                         ),
                     )
                 module_ids.append(profile_id)
+                raw_tier = raw_import.get("tier")
+                if raw_tier is not None:
+                    tier_value = _validate_tier(
+                        raw_tier,
+                        context=f"{path}: domain {domain_id!r} import {profile_id!r}",
+                    )
+                    domain_tier_overrides.setdefault(domain_id, {})[profile_id] = tier_value
             domain_modules.setdefault(domain_id, set()).update(module_ids)
 
     activations = [
-        DataDomainActivation(domain=domain, module_ids=tuple(sorted(module_ids)))
+        DataDomainActivation(
+            domain=domain,
+            module_ids=tuple(sorted(module_ids)),
+            module_tier_overrides=dict(domain_tier_overrides.get(domain, {})),
+        )
         for domain, module_ids in sorted(domain_modules.items())
     ]
 
@@ -889,6 +925,7 @@ def build_managed_import_plan(
         reason: str,
         term_uri: str | None = None,
         accepted_transitive: bool = False,
+        tier: str = "required",
     ) -> None:
         key = (import_iri.rstrip("#"), owner_iri.rstrip("#"))
         entry = requirement_data.setdefault(
@@ -898,6 +935,7 @@ def build_managed_import_plan(
                 "reasons": set(),
                 "terms": set(),
                 "accepted_transitive": accepted_transitive,
+                "tier": tier,
             },
         )
         entry["sources"].add(source)
@@ -905,6 +943,10 @@ def build_managed_import_plan(
         if term_uri:
             entry["terms"].add(term_uri)
         entry["accepted_transitive"] = entry["accepted_transitive"] or accepted_transitive
+        # More severe tier wins when the same import is required at different
+        # tiers by different call sites (e.g. one domain marks it "optional"
+        # while a genuinely authored term-use marks it "required").
+        entry["tier"] = min(entry["tier"], tier, key=_TIER_SEVERITY.__getitem__)
 
     if context and activation:
         for module_id in activation.module_ids:
@@ -916,6 +958,7 @@ def build_managed_import_plan(
                 owner_iri=module.ontology_iri,
                 source=module_id,
                 reason=f"data-domain:{domain}",
+                tier=activation.module_tier_overrides.get(module_id, module.profile.tier),
             )
 
     if context and dependency_graph is not None:
@@ -991,6 +1034,7 @@ def build_managed_import_plan(
             reasons=tuple(sorted(data["reasons"])),
             term_uris=tuple(sorted(data["terms"])),
             accepted_transitive=bool(data["accepted_transitive"]),
+            tier=data["tier"],
         )
         for (iri, owner_iri), data in sorted(requirement_data.items())
     )
@@ -1015,7 +1059,10 @@ def build_managed_import_plan(
         selected_class_uris=plan.selected_class_uris,
         diagnostics=tuple(
             sorted(
-                (*plan.diagnostics, *validate_external_term_imports(ontology_graph, plan)),
+                (
+                    *plan.diagnostics,
+                    *validate_external_term_imports(ontology_graph, plan, context=context),
+                ),
                 key=_diagnostic_key,
             )
         ),
@@ -1023,9 +1070,36 @@ def build_managed_import_plan(
     )
 
 
+def _readable_managed_source(
+    managed_source: str,
+    context: ReferenceModuleContext | None,
+) -> str:
+    """Render a (possibly comma-joined) managed_source module id as human-readable text.
+
+    ``managed_source`` is an internal, comma-joined list of module profile ids (e.g.
+    ``legacy-imo-party``) suitable for structured/machine consumption. For human-facing
+    message prose, resolve each id through *context* to its ontology IRI (falling back to
+    its catalog URI, then to the raw id if the module cannot be resolved) so a reader isn't
+    shown an internal slug with no stated remedy.
+    """
+    if not managed_source:
+        return managed_source
+    parts = []
+    for raw_id in managed_source.split(","):
+        raw_id = raw_id.strip()
+        module = context.module(raw_id) if context is not None else None
+        if module is not None:
+            parts.append(module.ontology_iri or module.profile.catalog_uri or raw_id)
+        else:
+            parts.append(raw_id)
+    return ", ".join(parts)
+
+
 def validate_external_term_imports(
     ontology_graph: Graph,
     plan: ManagedImportPlan,
+    *,
+    context: ReferenceModuleContext | None = None,
 ) -> tuple[ModuleDiagnostic, ...]:
     """Report required imports absent from the root ontology's direct imports."""
     subjects = [
@@ -1042,16 +1116,23 @@ def validate_external_term_imports(
     for requirement in plan.requirements:
         if requirement.import_iri.rstrip("#") in direct:
             continue
+        level = "error" if requirement.tier == "required" else "warning"
+        readable_source = _readable_managed_source(requirement.managed_source, context)
         terms = requirement.term_uris or (None,)
         for term in terms:
+            reason = (
+                f"External term {term}"
+                if term
+                else f"Data-domain activation for {plan.domain!r}"
+            )
             diagnostics.append(
                 ModuleDiagnostic(
-                    "error",
+                    level,
                     "missing_managed_import",
-                    f"External term {term or '(configured module)'} requires "
+                    f"{reason} requires "
                     f"owl:imports <{requirement.import_iri}>; owning ontology is "
                     f"<{requirement.expected_ontology_iri}> and managed source is "
-                    f"{requirement.managed_source}",
+                    f"{readable_source}",
                     term_uri=term,
                     expected_ontology_iri=requirement.expected_ontology_iri,
                     managed_source=requirement.managed_source,

@@ -9,9 +9,11 @@ import yaml
 from rdflib import Graph
 
 from kairos_ontology.core.reference_modules import (
+    build_managed_import_plan,
     build_reference_module_context,
     load_accelerator_module_config,
 )
+from kairos_ontology.core.validator import run_validation
 
 MODULE_IRI = "https://example.org/reference/orders"
 TERM_NS = MODULE_IRI + "#"
@@ -122,6 +124,23 @@ def _domain_graph(*, imported: bool) -> Graph:
     {import_line}
     rdfs:label "Orders" .
 hub:LocalOrder a owl:Class ; rdfs:subClassOf <{TERM_NS}SpecialOrder> .
+""",
+        format="turtle",
+    )
+    return graph
+
+
+def _bare_ontology_graph(iri: str, *, imported_iri: str | None = None) -> Graph:
+    """A minimal owl:Ontology graph with no authored term usage of any module."""
+    import_line = f"owl:imports <{imported_iri}> ;" if imported_iri else ""
+    graph = Graph()
+    graph.parse(
+        data=f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<{iri}> a owl:Ontology ;
+    {import_line}
+    rdfs:label "Bare" .
 """,
         format="turtle",
     )
@@ -253,3 +272,232 @@ def test_invalid_profile_default_annotations_are_blocking(tmp_path):
 
     assert context.modules == ()
     assert context.diagnostics[0].code == "module_default_annotations_invalid"
+
+
+def _set_profile_tier(ref_models, tier: str) -> None:
+    """Inject a ``tier:`` key under the ``orders`` module profile written by
+    ``_write_reference_pack``."""
+    path = (
+        ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint" / "data-domains.yaml"
+    )
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "version_pin: 2.1.0\n", f"version_pin: 2.1.0\n    tier: {tier}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_tier_absent_defaults_to_required_and_missing_import_is_error(tmp_path):
+    """Pins today's exact behavior: no accelerator anywhere sets ``tier:``, so a
+    missing managed import must still be a hard error (issue #324)."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+
+    config = load_accelerator_module_config(ref_models, "generic")
+    assert config.profiles[0].tier == "required"
+
+    context = build_reference_module_context(ref_models, catalog_path=catalog, accelerator="generic")
+    graph = _bare_ontology_graph("https://example.org/hub/orders")
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    assert plan.requirements[0].tier == "required"
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+    assert all(d.level == "error" for d in missing)
+    assert plan.blocking_diagnostics == tuple(missing)
+
+
+def test_profile_tier_recommended_missing_import_is_warning(tmp_path, capsys):
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _set_profile_tier(ref_models, "recommended")
+
+    config = load_accelerator_module_config(ref_models, "generic")
+    assert config.profiles[0].tier == "recommended"
+
+    context = build_reference_module_context(ref_models, catalog_path=catalog, accelerator="generic")
+    graph = _bare_ontology_graph("https://example.org/hub/orders")
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+    assert all(d.level == "warning" for d in missing)
+    assert plan.blocking_diagnostics == ()
+
+    # A full `validate` run must not fail (without --degraded) when the only
+    # finding is a missing "recommended"-tier managed import.
+    ontologies_dir = tmp_path / "ontologies"
+    ontologies_dir.mkdir()
+    (ontologies_dir / "orders.ttl").write_text(
+        """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<https://example.org/hub/orders> a owl:Ontology .
+""",
+        encoding="utf-8",
+    )
+    shapes_dir = tmp_path / "shapes"  # intentionally does not exist
+
+    run_validation(
+        ontologies_path=ontologies_dir,
+        shapes_path=shapes_dir,
+        catalog_path=catalog,
+        do_syntax=False,
+        do_shacl=True,
+        do_consistency=False,
+        ref_models_dir=ref_models,
+        accelerator="generic",
+    )
+
+    captured = capsys.readouterr()
+    assert "All validations passed" in captured.out
+
+
+def test_profile_tier_optional_missing_import_is_warning(tmp_path):
+    """Parity check for the "optional" tier alongside "recommended"."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _set_profile_tier(ref_models, "optional")
+
+    config = load_accelerator_module_config(ref_models, "generic")
+    assert config.profiles[0].tier == "optional"
+
+    context = build_reference_module_context(ref_models, catalog_path=catalog, accelerator="generic")
+    graph = _bare_ontology_graph("https://example.org/hub/orders")
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+    assert all(d.level == "warning" for d in missing)
+    assert plan.blocking_diagnostics == ()
+
+
+def test_invalid_tier_value_is_rejected(tmp_path):
+    ref_models, _catalog = _write_reference_pack(tmp_path)
+    _set_profile_tier(ref_models, "sometimes")
+
+    with pytest.raises(ValueError, match="invalid tier"):
+        load_accelerator_module_config(ref_models, "generic")
+
+
+def test_domain_import_tier_override_beats_profile_default_for_that_domain_only(tmp_path):
+    ref_models = tmp_path / "reference-models"
+    blueprint = ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint"
+    blueprint.mkdir(parents=True)
+    (blueprint / "data-domains.yaml").write_text(
+        f"""\
+module_profiles:
+  - id: orders
+    ontology_iri: {MODULE_IRI}
+    version_pin: 2.1.0
+    tier: optional
+groups:
+  - id: operations
+    domains:
+      - id: orders-a
+        imports:
+          - profile: orders
+            tier: required
+      - id: orders-b
+        imports:
+          - profile: orders
+""",
+        encoding="utf-8",
+    )
+
+    config = load_accelerator_module_config(ref_models, "generic")
+
+    assert config.profile("orders").tier == "optional"
+    assert config.activation("orders-a").module_tier_overrides == {"orders": "required"}
+    assert config.activation("orders-b").module_tier_overrides == {}
+
+
+def test_domain_activation_optional_merges_with_authored_required_to_required(tmp_path):
+    """The same import required as "optional" (domain activation) and as
+    "required" (genuine authored term usage) must merge to "required"/"error"."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _set_profile_tier(ref_models, "optional")
+
+    context = build_reference_module_context(ref_models, catalog_path=catalog, accelerator="generic")
+    # This graph authors a local class that subclasses ex:SpecialOrder, a term
+    # actually owned by the "orders" module -- genuine authored term usage.
+    graph = _domain_graph(imported=False)
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    assert len(plan.requirements) == 1
+    assert plan.requirements[0].tier == "required"
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+    assert all(d.level == "error" for d in missing)
+
+
+def test_domain_activation_message_uses_activation_reason_not_configured_module(tmp_path):
+    ref_models, catalog = _write_reference_pack(tmp_path)
+
+    context = build_reference_module_context(ref_models, catalog_path=catalog, accelerator="generic")
+    graph = _bare_ontology_graph("https://example.org/hub/orders")
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+    for diagnostic in missing:
+        assert "Data-domain activation for" in diagnostic.message
+        assert "orders" in diagnostic.message
+        assert "(configured module)" not in diagnostic.message
+
+
+def test_legacy_import_message_uses_readable_ontology_iri_not_internal_slug(tmp_path):
+    ref_models = tmp_path / "reference-models"
+    blueprint = ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint"
+    blueprint.mkdir(parents=True)
+    legacy_iri = "https://example.org/legacy/imo-party"
+    legacy_ns = legacy_iri + "#"
+    module = ref_models / "modules" / "party.ttl"
+    module.parent.mkdir()
+    module.write_text(
+        f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<{legacy_iri}> a owl:Ontology .
+""",
+        encoding="utf-8",
+    )
+    (blueprint / "data-domains.yaml").write_text(
+        f"""\
+module_profiles: []
+groups:
+  - id: legacy-group
+    domains:
+      - id: party
+        imports:
+          - uri: {legacy_ns}
+            module: imo-party
+""",
+        encoding="utf-8",
+    )
+    catalog = ref_models / "catalog-v001.xml"
+    catalog.write_text(
+        f"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="{legacy_ns}" uri="modules/party.ttl"/>
+  <uri name="{legacy_iri}" uri="modules/party.ttl"/>
+</catalog>
+""",
+        encoding="utf-8",
+    )
+
+    config = load_accelerator_module_config(ref_models, "generic")
+    assert config.profiles[0].id == "legacy-imo-party"
+
+    context = build_reference_module_context(ref_models, catalog_path=catalog, accelerator="generic")
+    assert context.diagnostics == ()
+    assert context.modules[0].ontology_iri == legacy_iri
+
+    graph = _bare_ontology_graph("https://example.org/hub/party")
+    plan = build_managed_import_plan(domain="party", context=context, ontology_graph=graph)
+
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+    for diagnostic in missing:
+        # The structured field stays the raw internal id...
+        assert diagnostic.managed_source == "legacy-imo-party"
+        # ...but the human-facing message prose must be readable instead.
+        assert legacy_iri in diagnostic.message
+        assert "legacy-imo-party" not in diagnostic.message
