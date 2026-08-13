@@ -1835,7 +1835,16 @@ def conformance_build(
         except ArchetypeError as exc:
             click.echo(f"❌ {exc}", err=True)
             raise SystemExit(2) from exc
-        discovery_doc = str(resolved_doc) if resolved_doc else None
+        discovery_doc = None
+        if resolved_doc is not None:
+            # Relative to the reference-models root, matching `conformance_load`'s own
+            # fix (#313) and the real committed fixture convention -- an absolute,
+            # machine-local path here would fail this same command's own default
+            # post-write validation (#308/#313's validate_artifact absolute-path check).
+            try:
+                discovery_doc = resolved_doc.relative_to(root).as_posix()
+            except ValueError:
+                discovery_doc = resolved_doc.name
 
     refmodels_version = _refmodels_version(root)
     valid_tiers = load_valid_tiers(root)
