@@ -1447,11 +1447,27 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
         )
         raise SystemExit(1)
 
+    nothing_found = not any(
+        [
+            report.ok,
+            report.unprocessed,
+            report.changed,
+            report.unverifiable,
+            report.orphan,
+            report.conflict,
+        ]
+    )
+
     if report.has_work:
         n = len(report.unprocessed) + len(report.changed)
         click.echo(f"\n⚠ {n} document(s) need processing (run kairos-design-discovery).")
     elif report.has_warnings:
         click.echo("\n⚠ Discovery documents checked with warnings (not blocking).")
+    elif nothing_found:
+        click.echo(
+            "\n   (no discovery documents found under .import/businessdiscovery/ — "
+            "nothing to check)"
+        )
     else:
         click.echo("\n✅ All discovery documents are processed and up to date.")
 

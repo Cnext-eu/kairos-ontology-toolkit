@@ -84,6 +84,12 @@ def test_run_validation_fails_when_decision_bundle_has_errors(tmp_path: Path) ->
 def test_run_validation_passes_when_decision_bundle_is_valid(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """``_make_hub`` yields an empty ``ontologies_path`` (issue #309's vacuous-set
+    case) alongside a valid decision bundle: the run must not fail (no
+    ``SystemExit``, no decision-bundle error), but with zero domain ontology
+    files present it must report the "nothing was validated" wording rather
+    than the unconditional "All validations passed!" a hub with real, passing
+    content would earn."""
     ontologies_path, shapes_path, decisions_path = _make_hub(tmp_path)
     _write_valid_record(decisions_path)
 
@@ -97,7 +103,10 @@ def test_run_validation_passes_when_decision_bundle_is_valid(
         decisions_path=decisions_path,
     )
 
-    assert "All validations passed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "❌ Validation failed" not in out
+    assert "nothing was validated" in out
+    assert "All validations passed!" not in out
 
 
 def test_run_validation_skips_absent_decision_bundle(tmp_path: Path) -> None:

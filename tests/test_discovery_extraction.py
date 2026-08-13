@@ -238,6 +238,24 @@ def test_cli_discovery_status_warn_only_never_blocks(tmp_path):
     assert result.exit_code == 0
 
 
+def test_cli_discovery_status_empty_import_dir_nothing_to_check(tmp_path):
+    """Issue #309: an EXISTING but empty ``.import/businessdiscovery/`` (and
+    empty/absent ``_extractions/``) must not report "up to date" -- that's
+    indistinguishable from a hub that actually has content and it's all fine.
+    """
+    imp = tmp_path / "import"
+    imp.mkdir(parents=True)
+    ext = tmp_path / "_extractions"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["discovery-status", "--import-dir", str(imp), "--extraction-dir", str(ext)],
+    )
+    assert result.exit_code == 0
+    assert "nothing to check" in result.output
+    assert "up to date" not in result.output
+
+
 def test_cli_discovery_status_no_import_dir(tmp_path):
     runner = CliRunner()
     result = runner.invoke(
