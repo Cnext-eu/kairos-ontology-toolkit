@@ -18,7 +18,7 @@
        ============================================================ -->
 
   <!--
-  <uri name="https://{company_domain}/ont/customer/"
+  <uri name="https://{company_domain}/ont/customer"
        uri="model/ontologies/customer.ttl"/>
   -->
 

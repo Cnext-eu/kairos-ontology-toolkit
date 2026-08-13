@@ -407,9 +407,9 @@ hub's own existing ontology IRIs — the `uri name=` entries already in
 On an already-initialized hub the command is idempotent. Every scaffold write is
 guarded by an "already exists, and no `--force`" check, so the one file it
 changes is `catalog-v001.xml`. Expect roughly fifteen `⏭  … already exists` lines
-closing with `✅ Ontology hub initialized!` — that is the guarded no-op reporting
-itself, not setup being re-run. Never add `--force` to make the output look
-busier: that overwrites the patch you just applied.
+closing with `✅ Domain '<domain>' added to existing ontology hub!` — that is the
+guarded no-op reporting itself, not setup being re-run. Never add `--force` to
+make the output look busier: that overwrites the patch you just applied.
 
 Finally confirm the workspace guard passes:
 
