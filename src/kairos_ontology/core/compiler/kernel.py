@@ -61,6 +61,7 @@ from .adapter import (
 from .bindings import (
     EntityBinding,
     ExprColumn,
+    FieldMapping,
     RelationshipSpec,
     TechnicalField,
     load_entity_binding,
@@ -1899,6 +1900,8 @@ def _binding_safety_diagnostics(
             else ""
         ),
     }
+    fields_by_property_uri: dict[str, FieldMapping] = {}
+    fields_by_output_name: dict[str, FieldMapping] = {}
     for field in binding.fields:
         prop = context.property(field.property)
         if prop is not None and prop.is_object_property:
@@ -1925,6 +1928,50 @@ def _binding_safety_diagnostics(
                     rule_id="DD-133-safety",
                 )
             )
+        if prop is not None:
+            # #343: ``semantic_outputs`` in ``_technical_field_safety_diagnostics`` is built
+            # with ``setdefault`` over exactly this loop's ``fields:`` entries, so two entries
+            # resolving to the same property -- or to different properties whose output
+            # columns collide -- silently discard the second entry instead of erroring. That
+            # is dormant only because today's column matcher requires exact name equality, so
+            # nothing yet produces two ``fields:`` entries for one property; it becomes
+            # reachable the instant any future name-relaxing matcher lands.
+            duplicate_property = fields_by_property_uri.get(prop.uri)
+            if duplicate_property is not None:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="field.duplicate-property",
+                        message=(
+                            f"property '{field.property}' is mapped by more than one "
+                            f"fields: entry (also mapped at '{duplicate_property.pointer}'); "
+                            "each property may be mapped by at most one fields: entry"
+                        ),
+                        location=SourceLocation(path=binding.source_path, pointer=field.pointer),
+                        rule_id="DD-133-safety",
+                    )
+                )
+            else:
+                fields_by_property_uri[prop.uri] = field
+                lower_output = prop.column_name.lower()
+                duplicate_output = fields_by_output_name.get(lower_output)
+                if duplicate_output is not None:
+                    diagnostics.append(
+                        CompileDiagnostic(
+                            code="field.output-collision",
+                            message=(
+                                f"fields: entry for property '{field.property}' produces "
+                                f"output column '{prop.column_name}' which collides "
+                                f"(case-insensitively) with the output column already "
+                                f"produced by property '{duplicate_output.property}'"
+                            ),
+                            location=SourceLocation(
+                                path=binding.source_path, pointer=field.pointer
+                            ),
+                            rule_id="DD-133-safety",
+                        )
+                    )
+                else:
+                    fields_by_output_name[lower_output] = field
     for index, relationship in enumerate(binding.relationships):
         generated_fk = (
             f"{relationship.external_reference.name}_sk"
