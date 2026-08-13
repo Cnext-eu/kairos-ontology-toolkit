@@ -719,3 +719,176 @@ def test_validate_hole5_accepts_string_business_area(refroot, archetype):
         archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
     )
     assert validate_artifact(art, load_outcome_codes(refroot)) == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #389/#390: `likely_domains` shape validation, and domain-scoped
+# open_questions()/has_unresolved_fleet_items()/check_discovery_gate().
+# ---------------------------------------------------------------------------
+
+
+def test_validate_accepts_missing_likely_domains(refroot, archetype):
+    outcomes = _outcomes()
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    assert validate_artifact(art, load_outcome_codes(refroot)) == []
+
+
+def test_validate_accepts_null_likely_domains(refroot, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["likely_domains"] = None
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    assert validate_artifact(art, load_outcome_codes(refroot)) == []
+
+
+def test_validate_accepts_list_of_strings_for_likely_domains(refroot, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["likely_domains"] = ["party", "booking"]
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    assert validate_artifact(art, load_outcome_codes(refroot)) == []
+
+
+def test_validate_rejects_non_list_likely_domains(refroot, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["likely_domains"] = "party"
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("'likely_domains'" in e for e in errors)
+
+
+def test_validate_rejects_likely_domains_with_non_string_entry(refroot, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["likely_domains"] = ["party", 123]
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("'likely_domains'" in e for e in errors)
+
+
+def test_validate_rejects_likely_domains_with_empty_string_entry(refroot, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["likely_domains"] = ["party", "  "]
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="interactive"
+    )
+    errors = validate_artifact(art, load_outcome_codes(refroot))
+    assert any("'likely_domains'" in e for e in errors)
+
+
+def _unresolved_concept(likely_domains=None):
+    concept = {
+        "uri": "u1",
+        "label": "One",
+        "decided_by": "ai",
+        "needs_confirmation": True,
+        "confidence": 0.9,
+    }
+    if likely_domains is not None:
+        concept["likely_domains"] = likely_domains
+    return concept
+
+
+def test_open_questions_domains_none_matches_today_unscoped_behavior():
+    art = {"mode": "fleet", "core_concepts": [_unresolved_concept(["party"])]}
+    questions = open_questions(art, domains=None)
+    assert len(questions) == 1
+    assert questions[0]["domains"] == ["party"]
+
+
+def test_open_questions_empty_domains_list_is_unscoped():
+    art = {"mode": "fleet", "core_concepts": [_unresolved_concept(["party"])]}
+    questions = open_questions(art, domains=[])
+    assert len(questions) == 1
+
+
+def test_open_questions_scopes_out_an_unrelated_domain():
+    art = {"mode": "fleet", "core_concepts": [_unresolved_concept(["customs"])]}
+    assert open_questions(art, domains=["party"]) == []
+    assert has_unresolved_fleet_items(art, domains=["party"]) is False
+
+
+def test_open_questions_scopes_in_a_matching_domain_case_insensitive():
+    art = {"mode": "fleet", "core_concepts": [_unresolved_concept(["Party"])]}
+    questions = open_questions(art, domains=["PARTY"])
+    assert len(questions) == 1
+    assert has_unresolved_fleet_items(art, domains=["PARTY"]) is True
+
+
+def test_open_questions_cross_cutting_default_blocks_regardless_of_domains_filter():
+    # No 'likely_domains' at all -> cross-cutting, always in scope.
+    art = {"mode": "fleet", "core_concepts": [_unresolved_concept(None)]}
+    assert len(open_questions(art, domains=["party"])) == 1
+    assert len(open_questions(art, domains=["customs"])) == 1
+    assert len(open_questions(art, domains=None)) == 1
+
+
+def test_open_questions_cross_cutting_via_empty_likely_domains_list_blocks():
+    art = {"mode": "fleet", "core_concepts": [_unresolved_concept([])]}
+    assert len(open_questions(art, domains=["party"])) == 1
+
+
+def test_check_discovery_gate_scopes_out_unrelated_domain(tmp_path, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["decided_by"] = "ai"
+    outcomes[0]["needs_confirmation"] = True
+    outcomes[0]["likely_domains"] = ["customs"]
+    for other in outcomes[1:]:
+        other["decided_by"] = "user"
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="fleet"
+    )
+    write_artifact(tmp_path, art)
+    assert check_discovery_gate(tmp_path, domains=["party"]) == []
+
+
+def test_check_discovery_gate_still_blocks_on_matching_domain(tmp_path, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["decided_by"] = "ai"
+    outcomes[0]["needs_confirmation"] = True
+    outcomes[0]["likely_domains"] = ["party"]
+    for other in outcomes[1:]:
+        other["decided_by"] = "user"
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="fleet"
+    )
+    write_artifact(tmp_path, art)
+    errors = check_discovery_gate(tmp_path, domains=["party"])
+    assert len(errors) == 1
+
+
+def test_check_discovery_gate_still_blocks_cross_cutting_with_domains_filter(tmp_path, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["decided_by"] = "ai"
+    outcomes[0]["needs_confirmation"] = True
+    # No likely_domains recorded -> cross-cutting, always in scope.
+    for other in outcomes[1:]:
+        other["decided_by"] = "user"
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="fleet"
+    )
+    write_artifact(tmp_path, art)
+    errors = check_discovery_gate(tmp_path, domains=["party"])
+    assert len(errors) == 1
+
+
+def test_check_discovery_gate_no_domains_filter_still_gates_on_everything(tmp_path, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["decided_by"] = "ai"
+    outcomes[0]["needs_confirmation"] = True
+    outcomes[0]["likely_domains"] = ["customs"]
+    for other in outcomes[1:]:
+        other["decided_by"] = "user"
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="fleet"
+    )
+    write_artifact(tmp_path, art)
+    errors = check_discovery_gate(tmp_path)
+    assert len(errors) == 1

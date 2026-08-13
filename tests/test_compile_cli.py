@@ -6,11 +6,28 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
+from kairos_ontology.core.observability import reset_logging
 
 from .test_compiler_kernel import _hub
+
+
+@pytest.fixture(autouse=True)
+def _clean_logging():
+    # `cli`'s root group installs handlers and sets `propagate = False` on the
+    # `kairos_ontology` logger (see configure_logging()); the normal teardown path
+    # only runs on a *successful* invocation (Click's result_callback). A test in
+    # this file that hits a `click.exceptions.Exit`/`SystemExit` path (e.g. the
+    # discovery-gate failures below) skips that teardown and would otherwise leak
+    # `propagate = False` into whichever test runs next in the session, starving
+    # its `caplog` of records (see test_cli_exception_boundary.py's identical
+    # fixture for the same reason).
+    reset_logging()
+    yield
+    reset_logging()
 
 
 def test_compile_requires_exactly_one_mode(tmp_path):
@@ -179,3 +196,53 @@ def test_compile_emit_from_repo_root_lands_in_sibling_publish_root(tmp_path, mon
     expected = repository / "ontology-hub-publish/medallion/dbt/models/silver/party/customer.sql"
     assert expected.is_file()
     assert not (hub / "ontology-hub-publish").exists()
+
+
+# ---------------------------------------------------------------------------
+# Issue #389/#390: `compile <domain>` is inherently single-domain, so an unresolved
+# DD-148 judgment tagged to an unrelated domain must no longer block it; one tagged to
+# the compiled domain, or left cross-cutting (no likely_domains), still must.
+# ---------------------------------------------------------------------------
+
+
+def test_compile_check_succeeds_when_unresolved_judgment_tagged_to_other_domain(
+    tmp_path, monkeypatch
+):
+    from discovery_fixtures import write_discovery_artifact_with_unresolved_judgment
+
+    hub = _hub(tmp_path)
+    write_discovery_artifact_with_unresolved_judgment(hub, likely_domains=["customs"])
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+    assert result.exit_code == 0, result.output
+    assert "compile check passed" in result.output
+
+
+def test_compile_check_fails_when_unresolved_judgment_tagged_to_compiled_domain(
+    tmp_path, monkeypatch
+):
+    from discovery_fixtures import write_discovery_artifact_with_unresolved_judgment
+
+    hub = _hub(tmp_path)
+    write_discovery_artifact_with_unresolved_judgment(hub, likely_domains=["party"])
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+    assert result.exit_code != 0
+    assert "Unresolved discovery item" in result.output
+
+
+def test_compile_check_fails_when_unresolved_judgment_is_cross_cutting(tmp_path, monkeypatch):
+    from discovery_fixtures import write_discovery_artifact_with_unresolved_judgment
+
+    hub = _hub(tmp_path)
+    write_discovery_artifact_with_unresolved_judgment(hub)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+    assert result.exit_code != 0
+    assert "Unresolved discovery item" in result.output

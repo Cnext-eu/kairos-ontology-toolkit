@@ -1657,8 +1657,16 @@ def conformance_load(archetype_id, refmodels_root, output_format):
     help="Do not fail when the artifact has unresolved AI-decided concept judgments "
     "(DD-148). Off by default — unresolved is unsafe everywhere, including CI.",
 )
+@click.option(
+    "--domain",
+    "domains",
+    multiple=True,
+    help="Restrict the unresolved-judgment check (DD-148) to concept(s) tagged to one or "
+    "more domains, plus any cross-cutting concept (no 'likely_domains'). Repeatable. "
+    "Omit to check the whole artifact, matching prior behavior (issue #389/#390).",
+)
 @_REFMODELS_OPTION
-def conformance_validate(artifact_file, archetype_id, allow_unresolved, refmodels_root):
+def conformance_validate(artifact_file, archetype_id, allow_unresolved, domains, refmodels_root):
     """Validate a conformance artifact against the shared outcome-codes enum."""
     from ..core.archetype_loader import (
         ArchetypeError,
@@ -1715,7 +1723,7 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, refmodel
         raise SystemExit(1)
 
     if not allow_unresolved:
-        questions = open_questions(artifact)
+        questions = open_questions(artifact, domains=list(domains) or None)
         if questions:
             click.echo(
                 f"❌ Conformance artifact has {len(questions)} unresolved AI-decided "
@@ -1723,7 +1731,10 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, refmodel
                 err=True,
             )
             for q in questions:
-                click.echo(f"   • {q.get('label') or q.get('uri')} ({q['reason']})", err=True)
+                tag = q.get("domains") or "cross-cutting"
+                click.echo(
+                    f"   • {q.get('label') or q.get('uri')} ({q['reason']}) [{tag}]", err=True
+                )
             raise SystemExit(1)
 
     click.echo(f"✅ Conformance artifact valid: {path}", err=True)
@@ -1761,9 +1772,22 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, refmodel
     help="Passed through to the post-build validation pass (DD-148); same meaning as "
     "`validate --allow-unresolved`.",
 )
+@click.option(
+    "--domain",
+    "domains",
+    multiple=True,
+    help="Passed through to the post-build validation pass (DD-148); same meaning as "
+    "`validate --domain`. Repeatable.",
+)
 @_REFMODELS_OPTION
 def conformance_build(
-    archetype_id, judgments_file, output_path, run_validate, allow_unresolved, refmodels_root
+    archetype_id,
+    judgments_file,
+    output_path,
+    run_validate,
+    allow_unresolved,
+    domains,
+    refmodels_root,
 ):
     """Assemble, write, and (by default) validate a conformance artifact in one step.
 
@@ -1886,7 +1910,7 @@ def conformance_build(
             raise SystemExit(1)
 
         if not allow_unresolved:
-            questions = open_questions(artifact)
+            questions = open_questions(artifact, domains=list(domains) or None)
             if questions:
                 click.echo(
                     f"❌ Conformance artifact has {len(questions)} unresolved AI-decided "
@@ -1895,7 +1919,10 @@ def conformance_build(
                     err=True,
                 )
                 for q in questions:
-                    click.echo(f"   • {q.get('label') or q.get('uri')} ({q['reason']})", err=True)
+                    tag = q.get("domains") or "cross-cutting"
+                    click.echo(
+                        f"   • {q.get('label') or q.get('uri')} ({q['reason']}) [{tag}]", err=True
+                    )
                 raise SystemExit(1)
 
         click.echo(f"✅ Conformance artifact valid: {out_path}", err=True)

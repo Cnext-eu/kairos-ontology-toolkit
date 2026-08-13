@@ -20,6 +20,10 @@ The artifact intentionally carries:
   judgment provenance (``confidence``, ``rationale``, ``references``, ``needs_confirmation``,
   ``decided_by``) so fleet-mode (DD-088) AI-approved choices can be told apart from
   user-confirmed ones and flagged via ``open_questions()`` (DD-148),
+* an optional per-concept ``likely_domains`` (issue #389/#390) — a list of lowercase
+  domain-id strings a concept informs; absent/empty means **cross-cutting** (always in
+  scope), letting ``open_questions()``/``check_discovery_gate()`` narrow unresolved-judgment
+  gating to an active ``--domain`` without ever silently un-gating older artifacts,
 * topology confirmations + cardinality answers,
 * a coverage scorecard.
 
@@ -34,6 +38,7 @@ discovery is missing or has unresolved fleet-mode judgments (DD-148) — see tho
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Collection
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -397,6 +402,15 @@ def validate_artifact(
             errors.append(
                 f"core_concepts[{i}] ({display_uri}): 'references' must be a list of strings."
             )
+        likely_domains = c.get("likely_domains")
+        if likely_domains is not None and (
+            not isinstance(likely_domains, list)
+            or not all(isinstance(d, str) and d.strip() for d in likely_domains)
+        ):
+            errors.append(
+                f"core_concepts[{i}] ({display_uri}): 'likely_domains' must be null or a "
+                "list of non-empty strings."
+            )
         needs_confirmation = c.get("needs_confirmation", False)
         if not isinstance(needs_confirmation, bool):
             errors.append(
@@ -507,8 +521,31 @@ def read_artifact(path: Path) -> dict[str, Any]:
     return data
 
 
-def open_questions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return unresolved AI-decided concept judgments (DD-148).
+def _concept_in_scope(concept: dict[str, Any], domains: Collection[str] | None) -> bool:
+    """Return True when *concept* is in scope for *domains* (issue #389/#390).
+
+    ``domains`` is the caller's active-domain filter (e.g. ``--domain``/``--domains`` on the
+    CLI). ``None`` or empty means unscoped — every concept is in scope, which is exactly
+    today's behavior and matches every existing call site with zero change.
+
+    When *domains* is non-empty, a concept surfaces only when it is **cross-cutting**
+    (its ``likely_domains`` is absent or an empty list — the safe default for every
+    pre-existing artifact, which must never be silently un-gated by this feature) or its
+    ``likely_domains`` case-insensitively intersects *domains*.
+    """
+    if domains is None or not domains:
+        return True
+    likely_domains = concept.get("likely_domains")
+    if not likely_domains:
+        return True
+    wanted = {d.lower() for d in domains}
+    return any(isinstance(d, str) and d.lower() in wanted for d in likely_domains)
+
+
+def open_questions(
+    artifact: dict[str, Any], *, domains: Collection[str] | None = None
+) -> list[dict[str, Any]]:
+    """Return unresolved AI-decided concept judgments (DD-148), optionally domain-scoped.
 
     Keyed on the evidence recorded **per concept** — ``decided_by`` and
     ``needs_confirmation`` — never on the artifact-level ``mode`` marker. ``mode`` is a
@@ -524,12 +561,20 @@ def open_questions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     marks every concept's ``decided_by`` explicitly (``"user"`` or ``"ai"``) regardless of
     session mode; a concept that omits ``decided_by`` altogether predates that bookkeeping
     (or was never AI-touched) and is not treated as AI-decided here.
+
+    Args:
+        artifact: the parsed conformance artifact.
+        domains: optional active-domain filter (issue #389/#390) — see
+            :func:`_concept_in_scope`. ``None`` (the default) is unscoped, matching every
+            pre-existing call site exactly.
     """
     questions: list[dict[str, Any]] = []
     for concept in artifact.get("core_concepts") or []:
         if not isinstance(concept, dict):
             continue
         if concept.get("decided_by") != "ai":
+            continue
+        if not _concept_in_scope(concept, domains):
             continue
         needs_confirmation = bool(concept.get("needs_confirmation", False))
         confidence = concept.get("confidence")
@@ -539,18 +584,22 @@ def open_questions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
                     "uri": concept.get("uri"),
                     "label": concept.get("label"),
                     "reason": "needs_confirmation" if needs_confirmation else "missing confidence",
+                    "domains": concept.get("likely_domains"),
                 }
             )
     return questions
 
 
-def has_unresolved_fleet_items(artifact: dict[str, Any]) -> bool:
+def has_unresolved_fleet_items(
+    artifact: dict[str, Any], *, domains: Collection[str] | None = None
+) -> bool:
     """Return True when *artifact* has at least one unresolved AI-decided judgment (DD-148).
 
     Name kept for existing call sites; the check itself is mode-agnostic — see
-    :func:`open_questions`.
+    :func:`open_questions`. *domains* is threaded straight through — see
+    :func:`_concept_in_scope` for the scoping rule.
     """
-    return bool(open_questions(artifact))
+    return bool(open_questions(artifact, domains=domains))
 
 
 def _has_authored_discovery_narrative(hub_root: Path) -> bool:
@@ -575,7 +624,7 @@ def _has_authored_discovery_narrative(hub_root: Path) -> bool:
         return False
 
 
-def check_discovery_gate(hub_root: Path) -> list[str]:
+def check_discovery_gate(hub_root: Path, *, domains: Collection[str] | None = None) -> list[str]:
     """Return hard-gate error strings for *hub_root* (empty when the gate passes).
 
     Used by ``kairos-ontology compile``/``validate`` (DD-148) to hard-fail when business
@@ -589,6 +638,14 @@ def check_discovery_gate(hub_root: Path) -> list[str]:
     Deliberately lighter than ``validate_artifact()``: it never needs the reference-models
     outcome-codes catalog, since compile/validate must be able to run this check without
     resolving an accelerator.
+
+    Args:
+        domains: optional active-domain filter (issue #389/#390) threaded straight through
+            to :func:`open_questions` — see :func:`_concept_in_scope` for the scoping rule.
+            ``None`` (the default) is unscoped, matching every existing caller's behavior
+            unchanged: an unresolved judgment tagged to an unrelated domain no longer blocks
+            a domain-scoped ``compile``/``validate --domain``, while a cross-cutting one (no
+            ``likely_domains``) or one tagged to the active domain still does.
     """
     hub_root = Path(hub_root)
     path = hub_root / ARTIFACT_RELPATH
@@ -608,7 +665,7 @@ def check_discovery_gate(hub_root: Path) -> list[str]:
         return []
 
     errors = []
-    for question in open_questions(artifact):
+    for question in open_questions(artifact, domains=domains):
         label = question.get("label") or question.get("uri") or "<unknown concept>"
         errors.append(
             f"Unresolved discovery item ({question['reason']}): {label} — "
