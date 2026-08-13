@@ -1133,6 +1133,10 @@ def run_validation(
 
     print(f"\nFound {len(ontology_files)} ontology files\n")
 
+    results["ontology_files_found"] = len(ontology_files)
+    if not ontology_files:
+        print("  (no domain ontology files under model/ontologies — nothing to validate)\n")
+
     # Semantic import preflight is separate from syntax parsing. It catches
     # externally used governed terms whose required owl:imports edge is absent;
     # the canonical loader cannot discover an import edge that was never authored.
@@ -1434,6 +1438,17 @@ def run_validation(
     if total_failed > 0:
         print(f"\n❌ Validation failed with {total_failed} errors")
         exit(1)
+    elif not ontology_files:
+        detail_parts = []
+        if gdpr_warnings:
+            detail_parts.append(f"{gdpr_warnings} unprotected PII warning(s) from the GDPR scan above")
+        if section_warning_count:
+            detail_parts.append(f"{section_warning_count} warning(s) in the sections above")
+        qualifier = f" (⚠️  {' and '.join(detail_parts)} remain open)" if detail_parts else ""
+        print(
+            "\n⚠️  No domain ontology files found under model/ontologies — nothing was "
+            f"validated{qualifier}."
+        )
     elif total_open_warnings:
         # Deliberately non-blocking (exit 0) -- see `gdpr_warnings` docstring above;
         # whether warnings should ever fail the run is a separate product decision

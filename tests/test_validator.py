@@ -66,7 +66,12 @@ class TestValidator:
         assert "Failed:" in captured.out or "✗" in captured.out
 
     def test_empty_ontologies_directory(self, temp_dir, capsys):
-        """Test validation with empty ontologies directory."""
+        """Test validation with empty ontologies directory.
+
+        Issue #309: a hub with zero authored ontologies must not print the
+        same "all validations passed" success line as a hub with real,
+        passing content -- that reads as a vacuous pass.
+        """
         ontologies_dir = temp_dir / "ontologies"
         ontologies_dir.mkdir()
 
@@ -84,6 +89,69 @@ class TestValidator:
 
         captured = capsys.readouterr()
         assert "Found 0 ontology files" in captured.out
+        assert "nothing was validated" in captured.out
+        assert "✅ All validations passed!" not in captured.out
+
+    def test_empty_ontologies_directory_report_marks_zero_files_found(
+        self, temp_dir, capsys
+    ):
+        """Issue #309: the JSON report must be self-describing -- a consumer can
+        check ``ontology_files_found == 0`` directly instead of inferring
+        "vacuous" from all-zero counters."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        report_path = temp_dir / "validation-report.json"
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            report_path=report_path,
+        )
+
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+        assert data["ontology_files_found"] == 0
+
+    def test_empty_ontologies_with_real_decisions_failure_still_fails(
+        self, temp_dir, capsys
+    ):
+        """Issue #309: the new "nothing to validate" branch must never swallow an
+        independent, real failure -- e.g. a malformed decision-log record -- that
+        does not depend on ``ontology_files`` at all."""
+        ontologies_dir = temp_dir / "ontologies"
+        ontologies_dir.mkdir()
+
+        shapes_dir = temp_dir / "shapes"
+        shapes_dir.mkdir()
+
+        decisions_dir = temp_dir / "decisions"
+        decisions_dir.mkdir()
+        (decisions_dir / "HUB-DD-001-broken.md").write_text(
+            "no frontmatter here at all", encoding="utf-8"
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_validation(
+                ontologies_path=ontologies_dir,
+                shapes_path=shapes_dir,
+                catalog_path=None,
+                do_syntax=True,
+                do_shacl=False,
+                do_consistency=False,
+                decisions_path=decisions_dir,
+            )
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "❌ Validation failed" in captured.out
+        assert "nothing was validated" not in captured.out
 
     def test_no_report_written_when_report_path_omitted(
         self, temp_dir, sample_ontology, capsys, monkeypatch
