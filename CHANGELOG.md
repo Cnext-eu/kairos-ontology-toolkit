@@ -348,6 +348,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint/key/model/version-shaped; none has a meaningful empty value): a stale empty key
   the loaded `.env` file itself defines is now cleared before `load_dotenv` runs, so the
   hub's real value can apply; a genuinely-set non-empty override is completely unaffected.
+- **`next`'s inventory-status check ignored accelerator scoping, reporting a false
+  `inventory: missing` on multi-accelerator hubs** (#386) even when the domain-relevant
+  accelerator's inventories were fresh. `_inventory_status` now scopes the same way
+  `check-inventory --domains` already does when a `--domain` filter is given, falling back
+  to the prior unscoped behavior when it isn't.
+- **`import-tmdl` failed with a raw `zipfile.BadZipFile` on a modern Fabric git-integration
+  `.pbip` project** (#387), which is a small JSON pointer file referencing sibling
+  `.Report`/`.SemanticModel` folders, not a zip archive. `.pbip` content is now sniffed
+  before assuming zip; legacy zip-format `.pbip` files are unaffected, and a pointer file
+  whose referenced folders are missing now raises a clear, actionable error instead.
+- **`decision new` had no way to resync a stale `decisions/index.md`** after a record's
+  `decision_state` was hand-edited post-creation (#388). New `decision sync-index` command
+  regenerates the index from the records currently on disk.
+- **`validate --syntax` hard-failed on any unresolved DD-148 discovery-conformance judgment
+  anywhere in the hub, even one with no relevance to the domain being validated** (#389),
+  contradicting the flag's own "syntax only" contract. Discovery-conformance judgments can
+  now carry an optional `likely_domains` tag (#390); `check_discovery_gate`/`compile`/
+  `validate --domain`/`discovery-conformance validate`/`build` all scope unresolved-judgment
+  gating to the active domain (plus any judgment left cross-cutting, the default), while a
+  plain `validate`/`compile` with no domain filter still gates on everything unchanged.
+- **A "REUSABLE — no `rdfs:domain` by design" property shared across multiple classes was
+  silently unbindable in any EntityBinding** (#391) — the compiler already supports
+  `schema:domainIncludes` for exactly this case, but the domain-design skill never
+  documented it. Gate 5 now names the required triple.
+- **The EntityBinding relational-complexity trigger list never mentioned row-level
+  filtering of a mixed-row-type source table** (#392), even though the binding schema has
+  no `where`/filter construct at all. Both copies of the trigger list now name it, and
+  `kairos-design-mapping`'s Gate 1 now requires checking for other Bronze sources that
+  plausibly feed the same canonical class before authoring a single-source binding,
+  routing to `int_merged__<entity>` from the start when one exists (#394) —
+  `kairos-develop-dbt-transformation` now documents both reconciliation strategies
+  (priority-based survivorship via the existing `kairos_survivor` macro, and
+  attribute-level outer-join-with-presence-flags for complementary sources).
+- **A domain could be fully authored, cataloged, bound, and validated yet never imported by
+  `_master.ttl`, leaving it unreachable from the hub's single ontology entry point** (#393).
+  `init --domain` now syncs `_master.ttl`'s `owl:imports` automatically (textual,
+  marker-based editing -- never an rdflib round-trip, to preserve comments/formatting
+  exactly as `sync_domain_catalog_entry` already does for the catalog); a new
+  `domain-coverage` command reports blueprint-domain vs. modeled vs. bound vs.
+  `_master.ttl`-imported status; `validate` now warns (non-blocking) when an authored
+  domain isn't imported.
 
 ## [5.2.1rc4] — 2026-08-12
 
