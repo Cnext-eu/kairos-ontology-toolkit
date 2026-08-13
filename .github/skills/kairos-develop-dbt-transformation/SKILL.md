@@ -42,6 +42,49 @@ contradict the generated-Silver "no staging layer" rule. The EntityBinding
 references the final `int_*` model via `source.dbtModel`. These are conventions,
 not enforced or linted invariants.
 
+### Two reconciliation strategies for `int_merged__<entity>`
+
+Sources feeding a merged model either compete for the same attributes or
+complement each other. Pick the strategy that matches the actual relationship
+between the sources, not the pattern that happens to be more familiar:
+
+- **Survivorship (competing sources).** Two or more sources supply the same
+  attributes for overlapping keys and only one row per key may win. Union the
+  cleaned `stg_*` models, rank with `kairos_survivor` over a mandatory total
+  order (`priority_column` plus deterministic tiebreaks), and keep the rank-1
+  row per natural key. This is the existing pattern the toolkit macros above
+  already support.
+
+- **Attribute-level outer join (complementary sources).** Two or more sources
+  supply *different*, non-overlapping attributes at the same key grain — for
+  example one source has commercial/order attributes and another has
+  operational/routing attributes for the same order key. No row is discarded;
+  instead `full outer join` the sources on the shared natural key, select each
+  source's own non-overlapping columns directly (or `coalesce` any columns
+  that legitimately exist on both sides), and add an explicit boolean
+  presence flag per source (for example `in_<source_a>`, `in_<source_b>`) so
+  downstream consumers can tell which source(s) contributed to each row and
+  scope reports accordingly:
+
+  ```sql
+  select
+      coalesce(a.order_id, b.order_id) as order_id,
+      a.commercial_terms,
+      b.route_code,
+      a.order_id is not null as in_source_a,
+      b.order_id is not null as in_source_b
+  from {{ ref('stg_source_a__orders') }} as a
+  full outer join {{ ref('stg_source_b__orders') }} as b
+      on a.order_id = b.order_id
+  ```
+
+  A dedicated merge macro is optional; prefer authoring the plain SQL pattern
+  above unless the same shape repeats across several models.
+
+Both strategies still author a single contracted `int_merged__<entity>` model
+with one output grain and one properties YAML — the choice only changes the
+SQL between the `stg_*` union and the final select.
+
 ## Workflow
 
 1. Read the target ontology, source vocabulary, PII-safe samples, current binding,
@@ -58,10 +101,15 @@ not enforced or linted invariants.
    separate virtual-source artifact or registry.
 6. Validate with the dbt commands already configured by the project. Fix parse,
    contract, compile, and focused test failures before handoff.
-7. Return to **kairos-design-mapping**. Set `source.dbtModel.name`, `sqlPath`, and
+7. When the model authored in this pass is an `int_merged__<entity>`
+   (survivorship or attribute-level outer-join) model, persist a Decision Log
+   entry with `kairos-ontology decision new`, not ad hoc markdown, capturing
+   the grain, the natural key, which reconciliation strategy was chosen and
+   why, and any sample-evidence/row-count reconciliation performed.
+8. Return to **kairos-design-mapping**. Set `source.dbtModel.name`, `sqlPath`, and
    `contractPath`; make binding grain and source key exactly match the contracted
    `grain_key`.
-8. Run the stateless binding feedback loop:
+9. Run the stateless binding feedback loop:
 
    ```powershell
    $env:KAIROS_SKILL_CONTEXT = "1"
