@@ -175,6 +175,59 @@ def test_decision_new_proposed_without_materiality_still_allowed(tmp_path, monke
     assert len(_decision_records(decisions_path)) == 1
 
 
+def test_decision_sync_index_refreshes_stale_state(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+
+    created = runner.invoke(
+        cli, ["decision", "new", "--id", "HUB-DD-20260101-stale", "--title", "T"]
+    )
+    assert created.exit_code == 0, created.output
+
+    decisions_path = hub / "decisions"
+    record_path = decisions_path / "HUB-DD-20260101-stale.md"
+    frontmatter_text = record_path.read_text(encoding="utf-8")
+    assert "decision_state: Proposed" in frontmatter_text
+
+    index_path = decisions_path / "index.md"
+    assert "Proposed" in index_path.read_text(encoding="utf-8")
+
+    # Hand-edit the record's frontmatter directly on disk (bypassing the CLI),
+    # simulating the real-world scenario where a record is accepted after the
+    # fact but nothing regenerates the index.
+    record_path.write_text(
+        frontmatter_text.replace("decision_state: Proposed", "decision_state: Accepted"),
+        encoding="utf-8",
+    )
+
+    # index.md is now stale: it still reports the pre-edit state.
+    stale_index_text = index_path.read_text(encoding="utf-8")
+    assert "Proposed" in stale_index_text
+    assert "Accepted" not in stale_index_text
+
+    result = runner.invoke(cli, ["decision", "sync-index"])
+
+    assert result.exit_code == 0, result.output
+    assert str(index_path) in result.output
+    refreshed_index_text = index_path.read_text(encoding="utf-8")
+    assert "Accepted" in refreshed_index_text
+    assert "HUB-DD-20260101-stale" in refreshed_index_text
+
+
+def test_decision_sync_index_on_empty_hub_does_not_error(tmp_path, monkeypatch):
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["decision", "sync-index"])
+
+    assert result.exit_code == 0, result.output
+    index_path = hub / "decisions" / "index.md"
+    assert index_path.exists()
+    index_text = index_path.read_text(encoding="utf-8")
+    assert "# Decision Log" in index_text
+
+
 def test_decision_list_prints_created_ids(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path)
     monkeypatch.chdir(tmp_path)
