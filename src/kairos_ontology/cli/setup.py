@@ -112,6 +112,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
     print(f"   Company:   {company_name} ({company_domain})\n")
 
     hub = cwd / "ontology-hub"
+    hub_already_existed = hub.exists()
 
     # 1. Create directory structure
     for relative in _V5_HUB_DIRECTORIES:
@@ -510,7 +511,13 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
                 "in ontology-hub/referencemodels-unpacked/"
             )
 
-    print("\n✅ Ontology hub initialized!")
+    if hub_already_existed:
+        if domain:
+            print(f"\n✅ Domain '{domain}' added to existing ontology hub!")
+        else:
+            print("\n✅ Existing ontology hub scaffold refreshed!")
+    else:
+        print("\n✅ Ontology hub initialized!")
     print("\nNext steps:")
     print(
         "  1. Edit ontology-hub/model/ontologies/*.ttl to define your domain classes and properties"

@@ -1802,3 +1802,59 @@ def test_scaffold_imports_businessdiscovery_readme_present():
     scaffold = Path(kairos_ontology.__file__).parent / "scaffold"
     readme = scaffold / "import" / "businessdiscovery" / "README.md"
     assert readme.is_file()
+
+
+# ---------------------------------------------------------------------------
+# Closing banner (issue #327 sub-finding 2): "initialized" only on a fresh hub
+# ---------------------------------------------------------------------------
+
+
+def test_init_fresh_hub_prints_initialized_banner(tmp_path):
+    """A brand-new hub should still see the original "initialized" banner."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0, result.output
+            assert "✅ Ontology hub initialized!" in result.output
+            assert "added to existing ontology hub" not in result.output
+
+
+def test_init_domain_on_existing_hub_prints_added_banner_not_initialized(tmp_path):
+    """Adding a domain to a live hub must not read like a fresh scaffold re-run (#327).
+
+    Regression for: `init --domain <name>` against an already-existing hub
+    unconditionally printed "✅ Ontology hub initialized!", indistinguishable
+    from a first-time scaffold. It should instead report that the domain was
+    added to the existing hub.
+    """
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert first.exit_code == 0, first.output
+            assert "✅ Ontology hub initialized!" in first.output
+
+            second = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--domain", "party"]
+            )
+            assert second.exit_code == 0, second.output
+            assert "✅ Domain 'party' added to existing ontology hub!" in second.output
+            assert "Ontology hub initialized!" not in second.output
+
+
+def test_init_no_domain_on_existing_hub_prints_refreshed_banner(tmp_path):
+    """Re-running `init` with no --domain on an existing hub reports a refresh, not init."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert first.exit_code == 0, first.output
+
+            second = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert second.exit_code == 0, second.output
+            assert "✅ Existing ontology hub scaffold refreshed!" in second.output
+            assert "Ontology hub initialized!" not in second.output

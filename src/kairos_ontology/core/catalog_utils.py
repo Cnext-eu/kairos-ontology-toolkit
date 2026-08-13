@@ -10,6 +10,7 @@ Provides functions to:
 """
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -413,6 +414,130 @@ def _declared_ontology_iri(ontology_ttl_path: Path) -> Optional[str]:
     return None
 
 
+# --- Textual (non-serializing) catalog editing --------------------------------
+#
+# `sync_domain_catalog_entry` used to round-trip the whole catalog file through
+# `xml.etree.ElementTree` (parse, mutate, `ET.indent`, `tree.write(...)`). That
+# reformats the *entire* file on every call: it drops the prolog comment that
+# precedes the root element (ElementTree doesn't expose comments outside the
+# tree unless specially configured, and never re-emits them on write), strips
+# blank lines, rewrites the XML declaration's quote/case style, drops the
+# trailing newline, and — because insertion always targeted "before the first
+# <nextCatalog>" — landed new entries in the wrong section when a catalog also
+# chains to a shared reference-models catalog.
+#
+# The functions below instead treat the catalog as text and only ever touch the
+# smallest span necessary: either the exact `<uri .../>` element being updated,
+# or a small insertion at a well-defined anchor. Every other byte — comments,
+# blank lines, declaration style, trailing newline, line endings — is left
+# completely untouched. `lxml` was considered and rejected (see DD notes / issue
+# #327): it isn't a dependency of this project, would newly become a hard one
+# for every `init --domain` run, and would only fix the comment-loss defect —
+# the other four defects come from whole-tree re-serialization regardless of
+# which library performs it.
+#
+# CRITICAL: never do `text.splitlines()` + `"\n".join(...)` here. The real
+# template (catalog-v001.xml.template) uses CRLF line endings throughout; a
+# split/rejoin with a hardcoded "\n" would silently convert the whole file to
+# LF, recreating the exact "giant diff for a tiny change" bug this exists to
+# fix. All edits below operate on the raw string via regex/substring search
+# and replace only.
+
+_URI_ELEMENT_RE = re.compile(r"<uri\b[^<]*?/>", re.DOTALL)
+_URI_ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_NEXT_CATALOG_RE = re.compile(r"<nextCatalog\b")
+_CLOSE_CATALOG_RE = re.compile(r"</catalog\s*>")
+_PREFIXED_NAMESPACE_RE = re.compile(r'xmlns:(\w+)\s*=\s*"[^"]*"')
+
+
+def _parse_uri_attrs(tag_text: str) -> Dict[str, str]:
+    """Extract attribute name/value pairs from a raw ``<uri .../>`` tag string."""
+    return dict(_URI_ATTR_RE.findall(tag_text))
+
+
+def _mask_comments(text: str) -> str:
+    """Return *text* with the contents of every ``<!-- ... -->`` blanked out.
+
+    The template ships a commented-out example ``<uri>`` (and a marker comment
+    that even mentions ``<uri>`` in its own prose) so a domain named e.g.
+    "customer" — the template's own example — must never be matched against
+    that commented-out text when looking for a *live* catalog entry. Masking
+    replaces every character inside a comment (including the ``<!--``/``-->``
+    delimiters) with a space, except line-ending characters, which are kept as-
+    is. This preserves both the string length and every character offset, so
+    match spans found against the masked text are directly reusable as slice
+    indices into the original, unmasked text.
+    """
+
+    def _blank(match: "re.Match[str]") -> str:
+        return "".join(ch if ch in ("\r", "\n") else " " for ch in match.group(0))
+
+    return _COMMENT_RE.sub(_blank, text)
+
+
+def _guard_unsupported_catalog_dialect(text: str) -> None:
+    """Raise if *text* looks like a namespace-prefixed catalog dialect.
+
+    This codebase has only ever generated (and this function has only ever been
+    exercised against) catalogs using the default, unprefixed OASIS XML Catalog
+    namespace: bare ``<uri>``/``<nextCatalog>`` elements. A catalog that instead
+    declares e.g. ``xmlns:c="..."`` alongside ``<c:uri>`` elements is a shape our
+    regex-based editing has never handled; refuse rather than risk silently
+    misplacing content by editing a shape we don't understand.
+    """
+    for match in _PREFIXED_NAMESPACE_RE.finditer(text):
+        prefix = match.group(1)
+        if re.search(rf"<{re.escape(prefix)}:uri\b", text):
+            raise ValueError(
+                "Unsupported namespace-prefixed XML catalog dialect detected "
+                f'(xmlns:{prefix}="..." with <{prefix}:uri> elements). '
+                "sync_domain_catalog_entry only supports the bare (unprefixed) "
+                "OASIS XML Catalog element names this toolkit generates."
+            )
+
+
+def _line_start(text: str, pos: int) -> int:
+    """Return the index of the start of the line containing *pos*."""
+    return text.rfind("\n", 0, pos) + 1
+
+
+def _detect_newline(text: str) -> str:
+    """Return the dominant line ending used in *text* (CRLF if present, else LF)."""
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def _validate_catalog_text(
+    text: str, ontology_iri: str, relative_uri: str, catalog_path: Path
+) -> None:
+    """Parse *text* purely to confirm it is well-formed XML with the expected entry.
+
+    This is a validation-only check — the parsed tree is discarded immediately
+    and never used to serialize output, so it cannot reintroduce any of the
+    whole-tree re-serialization defects this module exists to avoid.
+    """
+    try:
+        parsed = ET.fromstring(text.encode("utf-8"))
+    except ET.ParseError as exc:
+        raise ValueError(
+            f"Textual catalog edit produced invalid XML for {catalog_path}: {exc}"
+        ) from exc
+
+    namespace = ""
+    if parsed.tag.startswith("{"):
+        namespace = parsed.tag[1:].split("}", 1)[0]
+    uri_tag = f"{{{namespace}}}uri" if namespace else "uri"
+
+    for element in parsed.findall(uri_tag):
+        if element.get("name") == ontology_iri and element.get("uri") == relative_uri:
+            return
+
+    raise ValueError(
+        f"Textual catalog edit did not produce the expected <uri name={ontology_iri!r} "
+        f"uri={relative_uri!r}/> in {catalog_path}"
+    )
+
+
 def sync_domain_catalog_entry(
     catalog_path: Path,
     ontology_ttl_path: Path,
@@ -424,6 +549,12 @@ def sync_domain_catalog_entry(
     The ontology IRI is read from the file's ``owl:Ontology`` declaration. If no
     declaration is present, ``company_domain`` supplies the conventional fallback
     ``https://<company_domain>/ont/<stem>``.
+
+    This edits the catalog file textually (never via an ``ElementTree`` write)
+    so that everything except the target ``<uri>`` element — the prolog
+    comment, blank lines, XML declaration style, trailing newline, and line
+    endings — is preserved byte-for-byte. See the module-level comment above
+    for why.
 
     Returns:
         The ontology IRI registered in the catalog.
@@ -438,35 +569,70 @@ def sync_domain_catalog_entry(
         ontology_iri = f"https://{company_domain.rstrip('/')}/ont/{ontology_ttl_path.stem}"
 
     relative_uri = _relative_catalog_uri(catalog_path, ontology_ttl_path)
-    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
-    tree = ET.parse(catalog_path, parser=parser)
-    root = tree.getroot()
-    namespace = ""
-    if root.tag.startswith("{"):
-        namespace = root.tag[1:].split("}", 1)[0]
-        ET.register_namespace("", namespace)
 
-    uri_tag = f"{{{namespace}}}uri" if namespace else "uri"
-    next_catalog_tag = f"{{{namespace}}}nextCatalog" if namespace else "nextCatalog"
-    matching_uri = None
-    for child in root:
-        if child.tag != uri_tag:
-            continue
-        if child.get("name") == ontology_iri or child.get("uri") == relative_uri:
-            matching_uri = child
+    # ``newline=""`` disables Python's universal-newlines translation, which
+    # would otherwise silently normalize CRLF -> LF on read (and re-translate
+    # LF -> os.linesep on write, making the result depend on the host OS). This
+    # is what actually guarantees byte-for-byte line-ending preservation here —
+    # not merely avoiding splitlines()/join().
+    with catalog_path.open("r", encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    _guard_unsupported_catalog_dialect(text)
+    nl = _detect_newline(text)
+    new_uri_tag = f'<uri name="{ontology_iri}" uri="{relative_uri}"/>'
+
+    # Comments (the marker's own "<uri>" prose, the commented-out example, a
+    # commented-out <nextCatalog>) must never be mistaken for live elements —
+    # e.g. the template's commented example already uses "customer" as its
+    # sample domain name, which is also a completely realistic real domain
+    # name. Search a masked copy for anything that must only match *live*
+    # markup; masking preserves length/offsets so spans are reusable as-is
+    # against the original text.
+    masked_text = _mask_comments(text)
+
+    # --- Idempotent-update path: an existing *live* entry for this ontology
+    # already exists (by IRI or by relative path) — replace only that
+    # element's span, collapsing any multi-line form to the canonical single
+    # line.
+    matched_span = None
+    for match in _URI_ELEMENT_RE.finditer(masked_text):
+        attrs = _parse_uri_attrs(text[match.start() : match.end()])
+        if attrs.get("name") == ontology_iri or attrs.get("uri") == relative_uri:
+            matched_span = match.span()
             break
 
-    if matching_uri is None:
-        matching_uri = ET.Element(uri_tag)
-        insert_at = len(root)
-        for index, child in enumerate(root):
-            if child.tag == next_catalog_tag:
-                insert_at = index
+    if matched_span is not None:
+        start, end = matched_span
+        new_text = text[:start] + new_uri_tag + text[end:]
+    else:
+        # --- New-entry path: choose an insertion anchor, in priority order. ---
+        insert_pos = None
+        for comment_match in _COMMENT_RE.finditer(text):
+            if "Domain ontologies" in comment_match.group(0):
+                insert_pos = comment_match.end()
                 break
-        root.insert(insert_at, matching_uri)
 
-    matching_uri.set("name", ontology_iri)
-    matching_uri.set("uri", relative_uri)
-    ET.indent(tree, space="  ")
-    tree.write(catalog_path, encoding="utf-8", xml_declaration=True)
+        if insert_pos is not None:
+            # (i) Insert right after the "Domain ontologies" marker comment,
+            # before the commented-out example — the actual bug fix.
+            new_text = text[:insert_pos] + nl + "  " + new_uri_tag + text[insert_pos:]
+        else:
+            next_catalog_match = _NEXT_CATALOG_RE.search(masked_text)
+            if next_catalog_match is not None:
+                # (ii) No marker comment: insert immediately before a *live*
+                # <nextCatalog>, matching today's existing behaviour for a
+                # catalog with no marker comment.
+                line_start = _line_start(text, next_catalog_match.start())
+                new_text = text[:line_start] + "  " + new_uri_tag + nl + text[line_start:]
+            else:
+                # (iii) Last resort: insert immediately before </catalog>.
+                close_match = _CLOSE_CATALOG_RE.search(masked_text)
+                if close_match is None:
+                    raise ValueError(f"Malformed XML catalog (no </catalog> found): {catalog_path}")
+                line_start = _line_start(text, close_match.start())
+                new_text = text[:line_start] + "  " + new_uri_tag + nl + text[line_start:]
+
+    _validate_catalog_text(new_text, ontology_iri, relative_uri, catalog_path)
+    with catalog_path.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(new_text)
     return ontology_iri
