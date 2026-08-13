@@ -35,6 +35,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compacted `rdfs:range` (e.g. `xsd:string`) -- with a styled header row (colored fill, bold
   white text, frozen, auto-filtered) and auto-sized/wrapped columns. Ships under the
   existing `flatfile` extra (`openpyxl`).
+- **`field-mapping-report`**: a new "Core Concepts" worksheet, inserted right after the
+  `Overview` cover sheet, briefly explains every blueprint pattern (`patterns/<id>`) the
+  hub's own ontologies reference in a property's `rdfs:comment` -- pulling the title and a
+  brief explanation straight from the pattern library's own `pattern.md` (its `## Problem`
+  section's first paragraph), paired with one real example: the first (domain, class,
+  property) in the hub that actually cites the pattern, not an invented illustration.
+  Scans both datatype and object properties (`_collect_pattern_examples`), since the
+  patterns most worth explaining here (`deferred-relationship`, `multimodal-order-leg`) are
+  usually documented on the object property, not a scalar. The pattern library is located
+  via `_discover_patterns_root`, checked both inside the hub
+  (`<hub>/ontology-reference-models/blueprints/patterns`) and as a sibling of the hub root.
+  Degrades gracefully -- an explanatory note in the report, no error -- when no ontology
+  references a pattern, when the pattern library isn't checked out, or when a referenced
+  pattern has no `pattern.md`; existing reports with no pattern references are unaffected
+  (no new sheet).
 - **`audit-column-coverage`**: advisory gate flagging source columns with real, populated
   sample data that no EntityBinding references anywhere -- not in `fields:`,
   `technicalFields:`, `identity`/`grain`/`relationships`/`quality`, or `load.incremental`

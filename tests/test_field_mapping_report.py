@@ -9,7 +9,12 @@ from openpyxl import load_workbook
 
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.field_mapping_report import (
+    PatternConcept,
+    _build_core_concepts,
+    _collect_pattern_examples,
+    _discover_patterns_root,
     _domain_properties,
+    _extract_pattern_summary,
     _fact_source_column_uris,
     run_field_mapping_report,
     write_field_mapping_workbook,
@@ -544,3 +549,137 @@ def test_cli_field_mapping_report_writes_workbook(tmp_path):
     assert result.exit_code == 0, result.output
     assert output_path.is_file()
     assert "1 domain(s)" in result.output
+
+
+_PATTERN_TTL = textwrap.dedent("""
+    @prefix cons: <https://example.test/cons#> .
+    @prefix owl: <http://www.w3.org/2002/07/owl#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+    <https://example.test/cons> a owl:Ontology ; owl:versionInfo "1.0.0" .
+    cons:Shipment a owl:Class ; rdfs:label "Shipment" .
+    cons:hasMasterWaybill a owl:ObjectProperty ;
+      rdfs:domain cons:Shipment ;
+      rdfs:comment "The master waybill covering this shipment. Eventual object property under patterns/deferred-relationship: the documents domain is not yet onboarded." .
+    """).strip()
+
+_DEFERRED_RELATIONSHIP_PATTERN_MD = textwrap.dedent("""
+    # Deferred Relationship
+
+    **Normativity:** naming — normative.
+
+    ## Problem
+
+    A domain slice needs to land before the cross-domain key it should link to has
+    conformed. This is the first paragraph of the problem statement.
+
+    Second paragraph should not be included.
+
+    ## Applicability
+
+    Not part of the explanation.
+    """).strip()
+
+
+def _write_pattern_library(root, pattern_id="deferred-relationship", markdown=_DEFERRED_RELATIONSHIP_PATTERN_MD):
+    pattern_dir = root / "ontology-reference-models" / "blueprints" / "patterns" / pattern_id
+    pattern_dir.mkdir(parents=True)
+    (pattern_dir / "pattern.md").write_text(markdown, encoding="utf-8")
+
+
+def test_collect_pattern_examples_finds_object_property_reference(tmp_path):
+    ontology_path = tmp_path / "consignment.ttl"
+    ontology_path.write_text(_PATTERN_TTL, encoding="utf-8")
+
+    examples = _collect_pattern_examples([ontology_path])
+
+    assert set(examples) == {"deferred-relationship"}
+    example = examples["deferred-relationship"]
+    assert example.domain == "consignment"
+    assert example.class_local == "Shipment"
+    assert example.property_local == "hasMasterWaybill"
+    assert example.excerpt.startswith("The master waybill covering this shipment.")
+
+
+def test_discover_patterns_root_checks_hub_root_then_sibling(tmp_path):
+    hub_root = tmp_path / "some-hub" / "ontology-hub"
+    hub_root.mkdir(parents=True)
+
+    assert _discover_patterns_root(hub_root) is None
+
+    _write_pattern_library(hub_root.parent)
+
+    found = _discover_patterns_root(hub_root)
+    assert found == hub_root.parent / "ontology-reference-models" / "blueprints" / "patterns"
+
+
+def test_extract_pattern_summary_reads_title_and_problem_paragraph_only():
+    title, explanation = _extract_pattern_summary(_DEFERRED_RELATIONSHIP_PATTERN_MD)
+
+    assert title == "Deferred Relationship"
+    assert explanation.startswith("A domain slice needs to land")
+    assert "Second paragraph" not in explanation
+    assert "Not part of the explanation" not in explanation
+
+
+def test_build_core_concepts_pairs_pattern_summary_with_real_example(tmp_path):
+    ontology_path = tmp_path / "consignment.ttl"
+    ontology_path.write_text(_PATTERN_TTL, encoding="utf-8")
+    _write_pattern_library(tmp_path)
+
+    notes: list[str] = []
+    concepts = _build_core_concepts([ontology_path], tmp_path, notes)
+
+    assert notes == []
+    assert concepts == [
+        PatternConcept(
+            pattern_id="deferred-relationship",
+            title="Deferred Relationship",
+            explanation=(
+                "A domain slice needs to land before the cross-domain key it should link to "
+                "has conformed. This is the first paragraph of the problem statement."
+            ),
+            example_domain="consignment",
+            example_class="Shipment",
+            example_property="hasMasterWaybill",
+            example_excerpt=concepts[0].example_excerpt,
+        )
+    ]
+    assert concepts[0].example_excerpt.startswith("The master waybill covering this shipment.")
+
+
+def test_build_core_concepts_degrades_gracefully_when_pattern_library_missing(tmp_path):
+    ontology_path = tmp_path / "consignment.ttl"
+    ontology_path.write_text(_PATTERN_TTL, encoding="utf-8")
+
+    notes: list[str] = []
+    concepts = _build_core_concepts([ontology_path], tmp_path, notes)
+
+    assert concepts == []
+    assert any("Blueprint pattern library not found" in note for note in notes)
+
+
+def test_write_field_mapping_workbook_inserts_core_concepts_sheet_second(tmp_path):
+    ontology_dir, binding_dir, sources_dir = _write_hub(tmp_path)
+    (ontology_dir / "consignment.ttl").write_text(_PATTERN_TTL, encoding="utf-8")
+    _write_pattern_library(tmp_path)
+
+    report = run_field_mapping_report(
+        ontologies_path=ontology_dir,
+        bindings_dir=binding_dir,
+        sources_dir=sources_dir,
+        hub_root=tmp_path,
+        source_system="crm",
+    )
+    assert len(report.core_concepts) == 1
+
+    output_path = tmp_path / "out" / "field-mapping-crm.xlsx"
+    write_field_mapping_workbook(report, output_path)
+
+    workbook = load_workbook(output_path)
+    assert workbook.sheetnames == ["Overview", "Core Concepts", "consignment", "party"]
+    concepts_sheet = workbook["Core Concepts"]
+    values = [cell.value for row in concepts_sheet.iter_rows() for cell in row if cell.value]
+    assert "Deferred Relationship" in values
+    assert any("A domain slice needs to land" in v for v in values)
+    assert any("consignment: :Shipment -> :hasMasterWaybill" in v for v in values)
