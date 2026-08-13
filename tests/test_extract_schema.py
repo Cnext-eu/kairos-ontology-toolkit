@@ -522,3 +522,87 @@ class TestImportSourceCwdGuard:
         assert "You appear to be in a dataplatform repo" not in (
             result.output + (result.stderr or "")
         )
+
+
+class TestImportSourceDirNoSampleWarning:
+    """Issue #298: import-source's directory-input branch warns on zero-sample tables."""
+
+    def test_warns_on_tables_with_no_samples(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from kairos_ontology.cli.main import cli
+
+        tables = [
+            TableInfo(
+                name="tblClient",
+                schema="dbo",
+                row_count=10,
+                columns=[
+                    ColumnInfo(name="id", data_type="int", ordinal_position=1, nullable=False),
+                    ColumnInfo(
+                        name="name", data_type="varchar(200)", ordinal_position=2, nullable=True
+                    ),
+                ],
+                # write_extraction_output derives each table's .samples.yaml from
+                # sample_rows (row-shaped), not from ColumnInfo.samples.
+                sample_rows=[{"id": 1, "name": "Acme"}, {"id": 2, "name": "Baker"}],
+            ),
+            TableInfo(
+                name="tblInvoice",
+                schema="dbo",
+                row_count=5,
+                columns=[
+                    ColumnInfo(name="id", data_type="int", ordinal_position=1, nullable=False),
+                ],
+                # No sample_rows -> no .samples.yaml -> zero sampled columns.
+            ),
+        ]
+        result_dir = write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=tables,
+        )
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["import-source", "--from", str(result_dir)])
+
+        assert result.exit_code == 0, result.output
+        combined = result.output + (result.stderr or "")
+        assert "1 of 2 table(s) have no sample evidence" in combined
+        assert "tblInvoice" in combined
+        assert "- tblClient" not in combined
+
+    def test_no_warning_when_every_table_has_samples(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from kairos_ontology.cli.main import cli
+
+        tables = [
+            TableInfo(
+                name="tblClient",
+                schema="dbo",
+                row_count=10,
+                columns=[
+                    ColumnInfo(name="id", data_type="int", ordinal_position=1, nullable=False),
+                ],
+                sample_rows=[{"id": 1}, {"id": 2}],
+            ),
+        ]
+        result_dir = write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=tables,
+        )
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["import-source", "--from", str(result_dir)])
+
+        assert result.exit_code == 0, result.output
+        combined = result.output + (result.stderr or "")
+        assert "have no sample evidence" not in combined

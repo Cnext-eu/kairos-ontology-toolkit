@@ -1682,6 +1682,103 @@ def test_init_force_does_not_clobber_existing_refmodels_checkout(tmp_path):
     assert not any(c[0] == "git" and "clone" in c for c in call_args_list)
 
 
+# ---------------------------------------------------------------------------
+# init: pre-generate reference-model inventories (issue #321)
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_REF_TTL_WITH_CLASSES = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://kairos.cnext.eu/ref/party> a owl:Ontology ;
+    rdfs:label "Party" .
+
+<https://kairos.cnext.eu/ref/party#Party> a owl:Class ;
+    rdfs:label "Party" .
+"""
+
+
+def test_init_generates_reference_model_inventories_by_default(tmp_path):
+    """Issue #321: a freshly-init'd hub should already have referencemodels-unpacked/
+    populated for reference-model TTLs with classes, so check-inventory (DD-047,
+    design-domain's Gate 0) passes immediately without a manual generate-inventory run.
+    """
+    runner = CliRunner()
+    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
+    ref_ttl = (
+        fake_clone_root
+        / "ontology-reference-models"
+        / "derived-ontologies"
+        / "bsp"
+        / "party.ttl"
+    )
+    ref_ttl.parent.mkdir(parents=True, exist_ok=True)
+    ref_ttl.write_text(_SAMPLE_REF_TTL_WITH_CLASSES, encoding="utf-8")
+
+    with mock.patch(
+        "kairos_ontology.cli.main.subprocess.run",
+        side_effect=_materializing_git_side_effect(fake_clone_root),
+    ):
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0, result.output
+            assert "Generated 1 reference-model inventory file" in result.output
+
+            inv_dir = Path("ontology-hub/referencemodels-unpacked")
+            inv_files = list(inv_dir.glob("*-inventory.yaml"))
+            assert [f.name for f in inv_files] == ["bsp-party-inventory.yaml"]
+
+            check_result = runner.invoke(cli, ["check-inventory"])
+            assert check_result.exit_code == 0, check_result.output
+            assert "up to date" in check_result.output
+
+
+def test_init_skip_refmodels_skips_inventory_generation_too(tmp_path):
+    """--skip-refmodels must skip inventory pre-generation cleanly, no crash."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--skip-refmodels"]
+            )
+            assert result.exit_code == 0, result.output
+            assert not Path("ontology-hub/referencemodels-unpacked").exists()
+            assert "Generated" not in result.output
+
+
+def test_init_next_reports_inventory_present_after_generation(tmp_path):
+    """Issue #321: the advisory `next` snapshot should agree inventory_status is PRESENT
+    once init has pre-generated it, matching the hard check-inventory gate.
+    """
+    from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
+
+    runner = CliRunner()
+    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
+    ref_ttl = (
+        fake_clone_root
+        / "ontology-reference-models"
+        / "derived-ontologies"
+        / "bsp"
+        / "party.ttl"
+    )
+    ref_ttl.parent.mkdir(parents=True, exist_ok=True)
+    ref_ttl.write_text(_SAMPLE_REF_TTL_WITH_CLASSES, encoding="utf-8")
+
+    with mock.patch(
+        "kairos_ontology.cli.main.subprocess.run",
+        side_effect=_materializing_git_side_effect(fake_clone_root),
+    ):
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0, result.output
+
+            hub = Path("ontology-hub").resolve()
+            snapshot = gather_hub_input_snapshot(hub, run_compile=False)
+            assert snapshot.inventory_status is InputStatus.PRESENT
+
+
 def test_scaffold_glossary_template_parses():
     """The scaffold glossary template (DD-048) must be valid Turtle with altLabels."""
     import kairos_ontology

@@ -38,6 +38,8 @@ from .next_actions import (
     DomainSnapshot,
     HubInputSnapshot,
     InputStatus,
+    SourceSampleObservation,
+    SourceSampleStatus,
 )
 
 # Thin alias kept for existing call sites (below). The actual predicate lives in
@@ -99,6 +101,99 @@ def _discovery_conformance_status(root: Path) -> DiscoveryConformanceStatus:
     if has_unresolved_fleet_items(artifact):
         return DiscoveryConformanceStatus.UNRESOLVED_FLEET
     return DiscoveryConformanceStatus.VALID
+
+
+def _source_sample_status(sources_dir: Path) -> SourceSampleObservation:
+    """Observe whether discovered source tables carry any sample-value evidence (#298).
+
+    Parses the already-generated source vocabulary TTL under *sources_dir* (only files
+    ``_authored_ttl`` accepts — a scaffold template is never counted) via the existing
+    ``analyse_sources.parse_source_vocabulary`` helper (DD-103: bronze-vocabulary TTL is
+    read there, not via the canonical semantic loader, and this reuses that single
+    established parse site rather than opening a new one) looking for
+    ``kairos-bronze:SourceTable``s and whether any column has a ``kairos-bronze:sampleValues``
+    value. Deliberately defensive, same spirit as :func:`_discovery_conformance_status`:
+    a malformed vocabulary file must reduce coverage, never crash ``kairos-ontology next``.
+
+    Tables are keyed by ``(source-system directory, table name)`` — the first path segment
+    under *sources_dir* is the source system — so same-named tables from different systems
+    (e.g. two systems both having a ``customers`` table) are never conflated into one.
+    """
+    if not sources_dir.is_dir():
+        return SourceSampleObservation()
+
+    from .analyse_sources import parse_source_vocabulary
+
+    try:
+        paths = [p for p in sources_dir.rglob("*") if p.is_file() and _authored_ttl(p)]
+    except OSError:
+        return SourceSampleObservation()
+
+    tables: set[str] = set()
+    tables_with_samples: set[str] = set()
+    for path in paths:
+        try:
+            system = path.relative_to(sources_dir).parts[0]
+        except ValueError:
+            system = path.parent.name
+        try:
+            parsed = parse_source_vocabulary(path)
+        except Exception:
+            continue
+        for table_name, columns in parsed.items():
+            key = f"{system}::{table_name}"
+            tables.add(key)
+            if any(column.get("samples") for column in columns):
+                tables_with_samples.add(key)
+
+    if not tables:
+        return SourceSampleObservation()
+
+    total = len(tables)
+    with_samples = len(tables_with_samples & tables)
+    if with_samples == 0:
+        status = SourceSampleStatus.NONE
+    elif with_samples == total:
+        status = SourceSampleStatus.FULL
+    else:
+        status = SourceSampleStatus.PARTIAL
+    return SourceSampleObservation(
+        status=status, tables_with_samples=with_samples, tables_total=total
+    )
+
+
+def _inventory_status(root: Path) -> InputStatus:
+    """Observe DD-047 materialized reference-inventory freshness (issue #321).
+
+    Mirrors ``check-inventory``'s own gate (``core/inventory.py::check_inventories``) as a
+    defensible presence observation for ``next``: a hub whose ontology/reference-model TTLs
+    have classes but no matching ``referencemodels-unpacked/*-inventory.yaml`` (or a stale
+    one) reports MISSING, which design-domain's Gate 0 blocks on. Wrapped defensively —
+    this must never crash ``kairos-ontology next``.
+    """
+    from .inventory import check_inventories
+
+    ontology_dir = root / "model" / "ontologies"
+    ref_models_dir = None
+    for candidate in (root / "ontology-reference-models", root.parent / "ontology-reference-models"):
+        if candidate.is_dir():
+            ref_models_dir = candidate
+            break
+    catalog_path = root / "catalog-v001.xml"
+
+    try:
+        report = check_inventories(
+            ontology_dir=ontology_dir if ontology_dir.is_dir() else None,
+            ref_models_dir=ref_models_dir,
+            inventory_dir=root / "referencemodels-unpacked",
+            catalog_path=catalog_path if catalog_path.is_file() else None,
+        )
+    except Exception:
+        return InputStatus.UNREADABLE
+
+    if report.missing or report.stale or report.migration_required:
+        return InputStatus.MISSING
+    return InputStatus.PRESENT
 
 
 def _configured_adapter(root: Path) -> str:
@@ -217,6 +312,7 @@ def gather_hub_input_snapshot(
 
     discovery = _dir_status(root / "businessdiscovery", _authored_ttl)
     sources = _dir_status(root / "integration" / "sources", _authored_ttl)
+    source_samples = _source_sample_status(root / "integration" / "sources")
     dbt_transforms = _dir_status(
         root / "integration" / "transforms" / "dbt", lambda p: p.suffix == ".sql"
     )
@@ -290,4 +386,6 @@ def gather_hub_input_snapshot(
         emitted_dbt_project=_emitted_dbt_status(root),
         adapter=_configured_adapter(root),
         discovery_conformance=_discovery_conformance_status(root),
+        source_samples=source_samples,
+        inventory_status=_inventory_status(root),
     )

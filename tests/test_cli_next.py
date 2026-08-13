@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -13,7 +14,12 @@ from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.hub_inspection import _authored_ttl, gather_hub_input_snapshot
-from kairos_ontology.core.next_actions import CompileStatus, DiscoveryConformanceStatus, InputStatus
+from kairos_ontology.core.next_actions import (
+    CompileStatus,
+    DiscoveryConformanceStatus,
+    InputStatus,
+    SourceSampleStatus,
+)
 
 _HUB = Path(__file__).parent / "scenarios" / "v5-hub"
 
@@ -45,7 +51,7 @@ def test_next_json_is_clean_on_stdout_with_banner_on_stderr(hub, monkeypatch):
     result = _invoke(hub, monkeypatch, ["--format", "json"])
     assert result.exit_code == 0
     payload = _stdout_json(result)  # would raise if stdout were polluted
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["compile_ran"] is True
     assert "DD-137" in result.stderr
     kinds = {action["kind"] for action in payload["actions"]}
@@ -207,3 +213,177 @@ def test_next_surfaces_optional_validate_dbt_after_emit(hub, monkeypatch):
     gate = next(a for a in payload["actions"] if a["kind"] == "validate-dbt")
     assert gate["status"] == "optional"
     assert gate["command"] == "kairos-ontology validate-dbt --platform fabric"
+
+
+# ---------------------------------------------------------------------------
+# Issue #298 — source-sample-coverage observation
+# ---------------------------------------------------------------------------
+
+
+def _strip_sample_values(path: Path) -> None:
+    # Remove only the `kb:sampleValues "..." ;` predicate-object pair, never the whole
+    # line: the fixture's Turtle packs multiple predicates (and the closing `.`) onto one
+    # physical line, so deleting the entire line can eat the statement terminator and
+    # corrupt the following triple.
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r'kb:sampleValues\s+"[^"]*"\s*;\s*', "", text)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_gather_snapshot_source_samples_partial_on_unmodified_fixture(hub):
+    # v5-hub ships crm (2 tables, both sampled) + erp (1 table, zero sampled columns).
+    snapshot = gather_hub_input_snapshot(hub)
+    assert snapshot.source_samples.status is SourceSampleStatus.PARTIAL
+    assert snapshot.source_samples.tables_with_samples == 2
+    assert snapshot.source_samples.tables_total == 3
+
+
+def test_gather_snapshot_source_samples_none_when_all_samples_stripped(hub):
+    crm = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
+    erp = hub / "integration" / "sources" / "erp" / "erp.vocabulary.ttl"
+    _strip_sample_values(crm)
+    _strip_sample_values(erp)
+
+    snapshot = gather_hub_input_snapshot(hub)
+    assert snapshot.source_samples.status is SourceSampleStatus.NONE
+    assert snapshot.source_samples.tables_with_samples == 0
+    assert snapshot.source_samples.tables_total == 3
+
+
+def test_gather_snapshot_source_samples_full_when_every_table_sampled(hub):
+    erp = hub / "integration" / "sources" / "erp" / "erp.vocabulary.ttl"
+    with erp.open("a", encoding="utf-8") as handle:
+        handle.write('src:customer_id kb:sampleValues "C-1" .\n')
+
+    snapshot = gather_hub_input_snapshot(hub)
+    assert snapshot.source_samples.status is SourceSampleStatus.FULL
+    assert snapshot.source_samples.tables_with_samples == 3
+    assert snapshot.source_samples.tables_total == 3
+
+
+def test_gather_snapshot_source_samples_not_applicable_when_sources_missing(tmp_path):
+    empty_hub = tmp_path / "empty-hub"
+    (empty_hub / "model" / "ontologies").mkdir(parents=True)
+    snapshot = gather_hub_input_snapshot(empty_hub)
+    assert snapshot.source_samples.status is SourceSampleStatus.NOT_APPLICABLE
+    assert snapshot.source_samples.tables_total == 0
+
+
+def test_next_text_renders_source_sample_suffix(hub, monkeypatch):
+    result = _invoke(hub, monkeypatch, [])
+    assert "sources:        present (samples: 2/3 tables)" in result.output
+
+
+def test_next_text_renders_no_sample_evidence_suffix(hub, monkeypatch):
+    crm = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
+    erp = hub / "integration" / "sources" / "erp" / "erp.vocabulary.ttl"
+    _strip_sample_values(crm)
+    _strip_sample_values(erp)
+
+    result = _invoke(hub, monkeypatch, [])
+    assert "sources:        present (no sample evidence in 3 table(s))" in result.output
+
+
+def test_next_json_includes_source_samples_payload(hub, monkeypatch):
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    assert payload["inputs"]["source_samples"] == {
+        "status": "partial",
+        "tables_with_samples": 2,
+        "tables_total": 3,
+    }
+    # unchanged, existing key untouched (contract stability)
+    assert payload["inputs"]["sources"] == "present"
+
+
+def test_next_surfaces_human_decision_required_when_no_samples_at_all(hub, monkeypatch):
+    crm = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
+    erp = hub / "integration" / "sources" / "erp" / "erp.vocabulary.ttl"
+    _strip_sample_values(crm)
+    _strip_sample_values(erp)
+
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    design_source_actions = [a for a in payload["actions"] if a["kind"] == "design-source"]
+    assert any(a["status"] == "human_decision_required" for a in design_source_actions)
+
+
+# ---------------------------------------------------------------------------
+# Issue #310 — discovery_gate_satisfied surfaced in rendering + JSON
+# ---------------------------------------------------------------------------
+
+
+def test_next_text_shows_gate_satisfied_qualifier_when_conformance_artifact_exists(hub, monkeypatch):
+    # v5-hub ships a valid conformance artifact but no businessdiscovery/ narrative.
+    result = _invoke(hub, monkeypatch, [])
+    assert "discovery:      missing" in result.output
+    assert "compile/validate gate satisfied via conformance artifact — DD-148" in result.output
+
+
+def test_next_json_discovery_fields_consistent_when_gate_satisfied(hub, monkeypatch):
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    assert payload["inputs"]["discovery"] == "missing"
+    assert payload["inputs"]["discovery_conformance"] == "valid"
+    assert payload["inputs"]["discovery_gate_satisfied"] is True
+    action = next(a for a in payload["actions"] if a["kind"] == "design-discovery")
+    assert action["status"] == "human_decision_required"
+    assert action["blocking"] is False
+
+
+def test_next_text_shows_no_qualifier_when_neither_signal_present(hub, monkeypatch):
+    artifact_path = hub / "integration" / "discovery" / "core-concepts-conformance.yaml"
+    artifact_path.unlink()
+
+    result = _invoke(hub, monkeypatch, [])
+    assert "discovery:      missing" in result.output
+    assert "compile/validate gate satisfied" not in result.output
+
+
+def test_next_json_discovery_gate_not_satisfied_when_neither_signal_present(hub, monkeypatch):
+    artifact_path = hub / "integration" / "discovery" / "core-concepts-conformance.yaml"
+    artifact_path.unlink()
+
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    assert payload["inputs"]["discovery"] == "missing"
+    assert payload["inputs"]["discovery_conformance"] == "not_run"
+    assert payload["inputs"]["discovery_gate_satisfied"] is False
+    action = next(a for a in payload["actions"] if a["kind"] == "design-discovery")
+    assert action["status"] == "blocking"
+    assert action["blocking"] is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #321 — DD-047 inventory-freshness gate surfaced in `next`
+# ---------------------------------------------------------------------------
+
+
+def test_next_text_reports_missing_inventory(hub, monkeypatch):
+    # v5-hub's party.ttl has classes but referencemodels-unpacked/ was never generated.
+    result = _invoke(hub, monkeypatch, [])
+    assert "inventory:      missing" in result.output
+
+
+def test_next_json_includes_inventory_status_and_blocking_action(hub, monkeypatch):
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    assert payload["inputs"]["inventory_status"] == "missing"
+    action = next(a for a in payload["actions"] if a["kind"] == "generate-inventory")
+    assert action["status"] == "blocking"
+    assert action["blocking"] is True
+    assert action["command"] == "kairos-ontology generate-inventory"
+    assert action["skill"] == "kairos-design-domain"
+
+
+def test_next_inventory_status_present_once_generated(hub, monkeypatch):
+    from kairos_ontology.core.inventory import generate_inventory, inventory_filename, write_inventory
+
+    ttl = hub / "model" / "ontologies" / "party.ttl"
+    inv = generate_inventory(ttl, include_specializations=False)
+    write_inventory(inv, hub / "referencemodels-unpacked" / inventory_filename(ttl))
+
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    assert payload["inputs"]["inventory_status"] == "present"
+    assert not any(a["kind"] == "generate-inventory" for a in payload["actions"])

@@ -16,6 +16,9 @@ from kairos_ontology.core.next_actions import (
     DomainSnapshot,
     HubInputSnapshot,
     InputStatus,
+    SourceSampleObservation,
+    SourceSampleStatus,
+    discovery_gate_satisfied,
     propose_next_actions,
 )
 
@@ -319,4 +322,113 @@ def test_proposal_is_json_serializable_and_stable():
     first = json.dumps(payload, sort_keys=True)
     second = json.dumps(payload, sort_keys=True)
     assert first == second
-    assert '"schema_version": 2' in first
+    assert '"schema_version": 3' in first
+
+
+# ---------------------------------------------------------------------------
+# Issue #298 — source-sample-coverage observation
+# ---------------------------------------------------------------------------
+
+
+def test_source_samples_none_yields_human_decision_required_action():
+    proposal = propose_next_actions(
+        _hub(
+            source_samples=SourceSampleObservation(
+                status=SourceSampleStatus.NONE, tables_with_samples=0, tables_total=3
+            )
+        )
+    )
+    by_kind = {action.kind: action for action in proposal.actions}
+    action = by_kind["design-source"]
+    assert action.status is ActionStatus.HUMAN_DECISION_REQUIRED
+    assert action.blocking is False
+    assert "3" in action.rationale
+    assert action.skill == "kairos-design-source"
+
+
+def test_source_samples_partial_yields_optional_action_naming_missing_count():
+    proposal = propose_next_actions(
+        _hub(
+            source_samples=SourceSampleObservation(
+                status=SourceSampleStatus.PARTIAL, tables_with_samples=2, tables_total=3
+            )
+        )
+    )
+    by_kind = {action.kind: action for action in proposal.actions}
+    action = by_kind["design-source"]
+    assert action.status is ActionStatus.OPTIONAL
+    assert "1 of 3" in action.rationale
+
+
+def test_source_samples_full_adds_no_action():
+    proposal = propose_next_actions(
+        _hub(
+            source_samples=SourceSampleObservation(
+                status=SourceSampleStatus.FULL, tables_with_samples=3, tables_total=3
+            )
+        )
+    )
+    assert "design-source" not in _kinds(proposal)
+
+
+def test_source_samples_not_applicable_adds_no_action():
+    proposal = propose_next_actions(_hub())
+    assert "design-source" not in _kinds(proposal)
+
+
+# ---------------------------------------------------------------------------
+# Issue #310 — discovery_gate_satisfied single source of truth
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_gate_satisfied_true_when_narrative_present():
+    snapshot = _hub(discovery=InputStatus.PRESENT)
+    assert discovery_gate_satisfied(snapshot) is True
+
+
+def test_discovery_gate_satisfied_true_when_only_conformance_artifact_present():
+    snapshot = _hub(
+        discovery=InputStatus.MISSING,
+        discovery_conformance=DiscoveryConformanceStatus.VALID,
+    )
+    assert discovery_gate_satisfied(snapshot) is True
+
+
+def test_discovery_gate_satisfied_false_when_neither_signal_present():
+    snapshot = _hub(
+        discovery=InputStatus.MISSING,
+        discovery_conformance=DiscoveryConformanceStatus.NOT_RUN,
+    )
+    assert discovery_gate_satisfied(snapshot) is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #321 — DD-047 inventory-freshness gate
+# ---------------------------------------------------------------------------
+
+
+def test_generate_inventory_maps_to_design_domain_skill():
+    assert ACTION_SKILLS["generate-inventory"] == "kairos-design-domain"
+
+
+def test_missing_inventory_yields_blocking_generate_inventory_action():
+    proposal = propose_next_actions(_hub(inventory_status=InputStatus.MISSING))
+    by_kind = {action.kind: action for action in proposal.actions}
+    action = by_kind["generate-inventory"]
+    assert action.status is ActionStatus.BLOCKING
+    assert action.blocking is True
+    assert action.command == "kairos-ontology generate-inventory"
+    assert action.skill == "kairos-design-domain"
+
+
+def test_missing_inventory_action_sorts_before_discovery_gate():
+    proposal = propose_next_actions(
+        _hub(inventory_status=InputStatus.MISSING, discovery=InputStatus.MISSING)
+    )
+    kinds = _kinds(proposal)
+    assert kinds.index("generate-inventory") < kinds.index("design-discovery")
+
+
+def test_present_inventory_adds_no_action():
+    proposal = propose_next_actions(_hub(inventory_status=InputStatus.PRESENT))
+    assert "generate-inventory" not in _kinds(proposal)

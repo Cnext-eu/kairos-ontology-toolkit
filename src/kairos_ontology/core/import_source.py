@@ -224,16 +224,34 @@ def _merge_samples_from_file(schema_dir: Path, tbl_name: str, tbl_data: dict) ->
     """
     samples_path = schema_dir / f"{tbl_name}.samples.yaml"
     if not samples_path.is_file():
+        logger.warning(
+            "No .samples.yaml found for table %r (expected %s) — "
+            "vocabulary will carry zero sample evidence for this table.",
+            tbl_name,
+            samples_path,
+        )
         return
 
     with open(samples_path, encoding="utf-8") as f:
         samples_data = yaml.safe_load(f)
 
     if not samples_data or "rows" not in samples_data:
+        logger.warning(
+            "%s is empty or missing a 'rows' key for table %r — "
+            "vocabulary will carry zero sample evidence for this table.",
+            samples_path,
+            tbl_name,
+        )
         return
 
     rows = samples_data["rows"]
     if not rows:
+        logger.warning(
+            "%s has zero sample rows for table %r — "
+            "vocabulary will carry zero sample evidence for this table.",
+            samples_path,
+            tbl_name,
+        )
         return
 
     # Build per-column sample lists from row data

@@ -21,7 +21,12 @@ from enum import Enum
 
 #: Bumped when the machine-readable proposal contract changes.
 #: v2 adds the optional ``validate-dbt`` gate action and the emitted-dbt-project observation.
-SCHEMA_VERSION = 2
+#: v3 adds three observation sets in one batch: source-sample-coverage evidence
+#: (``source_samples`` / ``SourceSampleObservation``, issue #298), the
+#: ``discovery_conformance``/``discovery_gate_satisfied`` fields mirrored into the rendered
+#: ``discovery:`` status line and JSON payload (issue #310), and the DD-047 materialized
+#: reference-inventory freshness gate (``inventory_status``, issue #321).
+SCHEMA_VERSION = 3
 
 
 class InputStatus(str, Enum):
@@ -56,6 +61,21 @@ class DiscoveryConformanceStatus(str, Enum):
     UNRESOLVED_FLEET = "unresolved_fleet"
 
 
+class SourceSampleStatus(str, Enum):
+    """Observed coverage of source-vocabulary sample evidence (issue #298).
+
+    A defensible presence observation over ``kairos-bronze:sampleValues``, same spirit as
+    :class:`InputStatus` — never "complete". A schema with no sample evidence at all is a
+    real risk signal: mapping confidence built on schema names alone, with zero real data
+    ever inspected.
+    """
+
+    NOT_APPLICABLE = "not_applicable"
+    NONE = "none"
+    PARTIAL = "partial"
+    FULL = "full"
+
+
 class ActionStatus(str, Enum):
     """Why an action appears and how strongly it is proposed."""
 
@@ -73,6 +93,7 @@ ACTION_SKILLS: dict[str, str] = {
     "resolve-discovery-open-questions": "kairos-design-discovery",
     "design-source": "kairos-design-source",
     "design-domain": "kairos-design-domain",
+    "generate-inventory": "kairos-design-domain",
     "author-binding": "kairos-design-mapping",
     "develop-dbt": "kairos-develop-dbt-transformation",
     "run-check": "kairos-execute-validate",
@@ -113,6 +134,20 @@ class DomainSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceSampleObservation:
+    """Observed source-vocabulary sample-evidence coverage (issue #298).
+
+    ``tables_total`` is every ``kairos-bronze:SourceTable`` discovered across authored
+    source vocabulary TTL; ``tables_with_samples`` is the subset where at least one column
+    carries a ``kairos-bronze:sampleValues`` predicate.
+    """
+
+    status: SourceSampleStatus = SourceSampleStatus.NOT_APPLICABLE
+    tables_with_samples: int = 0
+    tables_total: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class HubInputSnapshot:
     """Defensible, in-memory observations of a hub's authored inputs."""
 
@@ -134,6 +169,12 @@ class HubInputSnapshot:
     adapter: str = ""
     #: Validity of the discovery conformance artifact, when present (DD-148).
     discovery_conformance: DiscoveryConformanceStatus = DiscoveryConformanceStatus.NOT_RUN
+    #: Source-vocabulary sample-evidence coverage (issue #298).
+    source_samples: SourceSampleObservation = SourceSampleObservation()
+    #: DD-047 materialized reference-inventory freshness (issue #321). PRESENT by default
+    #: so existing constructor call sites (tests, callers that never observed this) do not
+    #: silently start reporting a spurious blocking gate.
+    inventory_status: InputStatus = InputStatus.PRESENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,8 +230,35 @@ def _sort_key(action: NextAction) -> tuple[int, str, str, str]:
     return (action.priority, action.domain or "", action.kind, action.target or "")
 
 
+def discovery_gate_satisfied(snapshot: HubInputSnapshot) -> bool:
+    """True when DD-148 discovery evidence exists via either signal (narrative or artifact).
+
+    Single source of truth for both the rationale text and the status rendering (#310).
+    """
+    return (
+        snapshot.discovery is InputStatus.PRESENT
+        or snapshot.discovery_conformance is not DiscoveryConformanceStatus.NOT_RUN
+    )
+
+
 def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
     actions: list[NextAction] = []
+    if snapshot.inventory_status is InputStatus.MISSING:
+        actions.append(
+            _action(
+                "generate-inventory",
+                ActionStatus.BLOCKING,
+                rationale=(
+                    "One or more materialized reference-model/ontology inventories under "
+                    "referencemodels-unpacked/ are missing, stale, or require migration "
+                    "(DD-047). kairos-design-domain's Gate 0 (check-inventory) blocks "
+                    "modeling on this until inventories are regenerated."
+                ),
+                command="kairos-ontology generate-inventory",
+                priority=1,
+                blocking=True,
+            )
+        )
     if snapshot.discovery is InputStatus.UNREADABLE:
         actions.append(
             _action(
@@ -205,7 +273,7 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
         # DD-148: kairos-ontology compile/validate accept EITHER a businessdiscovery/
         # narrative (this check) OR a conformance artifact (discovery_conformance) as
         # evidence discovery ran — only block here when neither exists.
-        no_conformance_either = snapshot.discovery_conformance is DiscoveryConformanceStatus.NOT_RUN
+        no_conformance_either = not discovery_gate_satisfied(snapshot)
         actions.append(
             _action(
                 "design-discovery",
@@ -270,6 +338,37 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 ),
                 command="kairos-ontology (invoke kairos-design-source)",
                 priority=20,
+            )
+        )
+    if snapshot.source_samples.status is SourceSampleStatus.NONE:
+        actions.append(
+            _action(
+                "design-source",
+                ActionStatus.HUMAN_DECISION_REQUIRED,
+                rationale=(
+                    f"integration/sources/ has {snapshot.source_samples.tables_total} "
+                    "table(s) but none carry a kairos-bronze:sampleValues predicate — "
+                    "sample evidence is completely absent. Mapping confidence built on "
+                    "schema names alone, with no real data ever inspected. Re-import with "
+                    "real sample data before proceeding."
+                ),
+                command="kairos-ontology (invoke kairos-design-source)",
+                priority=21,
+            )
+        )
+    elif snapshot.source_samples.status is SourceSampleStatus.PARTIAL:
+        missing = snapshot.source_samples.tables_total - snapshot.source_samples.tables_with_samples
+        actions.append(
+            _action(
+                "design-source",
+                ActionStatus.OPTIONAL,
+                rationale=(
+                    f"{missing} of {snapshot.source_samples.tables_total} source table(s) "
+                    "carry no kairos-bronze:sampleValues. Consider re-importing those "
+                    "tables with real sample data for complete mapping evidence."
+                ),
+                command="kairos-ontology (invoke kairos-design-source)",
+                priority=22,
             )
         )
     if not snapshot.domains:
