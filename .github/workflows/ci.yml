@@ -10,8 +10,26 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    env:
+      # Pinned deliberately — DO NOT float this to "main". These contract tests
+      # (tests/test_refmodels_contract.py) run against a real published checkout of
+      # kairos-ontology-referencemodels. Pinning to a tag means an unrelated upstream
+      # release can never turn this repo's CI red on its own; bumping the pin to pick
+      # up a new reference-models release is a deliberate action that must go through
+      # its own PR here, not an automatic side effect of upstream publishing.
+      KAIROS_REFMODELS_REF: v1.16.0
+      KAIROS_REFMODELS_ROOT: ${{ github.workspace }}/kairos-ontology-referencemodels
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout kairos-ontology-referencemodels (pinned, for contract tests)
+        uses: actions/checkout@v4
+        with:
+          repository: Cnext-eu/kairos-ontology-referencemodels
+          ref: ${{ env.KAIROS_REFMODELS_REF }}
+          path: kairos-ontology-referencemodels
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5

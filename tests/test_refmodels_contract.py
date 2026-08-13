@@ -60,6 +60,24 @@ def _refmodels_root() -> Path | None:
 
 REFMODELS_ROOT = _refmodels_root()
 
+
+def _fail_if_missing_in_ci(root: Path | None, environ: dict[str, str]) -> None:
+    """Raise if CI is running this module without a reference-models checkout.
+
+    Extracted as a standalone function so it's unit-testable without needing to
+    reload this module or fork a subprocess (issue #315).
+    """
+    if root is None and environ.get("CI"):
+        raise RuntimeError(
+            "kairos-ontology-referencemodels checkout not found while running in "
+            "CI (the CI environment variable is set). The pinned checkout step in "
+            ".github/workflows/ci.yml is required for this test module and must "
+            "not be skipped or removed."
+        )
+
+
+_fail_if_missing_in_ci(REFMODELS_ROOT, os.environ)
+
 pytestmark = pytest.mark.skipif(
     REFMODELS_ROOT is None,
     reason=(
