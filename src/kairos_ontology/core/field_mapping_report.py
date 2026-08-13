@@ -18,6 +18,7 @@ scalar ``fields:`` mapping does. Only ``fields:``-declared mappings are shown.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +83,7 @@ class FieldMappingReport:
     bindings_dir: str
     sources_dir: str
     rows_by_domain: dict[str, list[FieldMappingRow]] = field(default_factory=dict)
+    core_concepts: list["PatternConcept"] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -182,6 +184,171 @@ def _domain_properties(ontology_path: Path) -> tuple[list[_PropertyMeta], list[s
     return rows, notes
 
 
+@dataclass
+class PatternConcept:
+    """One blueprint pattern this hub's ontologies are authored against, ready for the
+    report's "Core Concepts" sheet: a brief explanation (from the pattern library's own
+    ``pattern.md``) paired with one real example drawn from the hub's own properties."""
+
+    pattern_id: str
+    title: str
+    explanation: str
+    example_domain: str
+    example_class: str
+    example_property: str
+    example_excerpt: str
+
+
+@dataclass
+class _PatternExample:
+    domain: str
+    class_local: str
+    property_local: str
+    excerpt: str
+
+
+#: Matches a blueprint-pattern reference inside authored prose, e.g. an ``rdfs:comment`` that
+#: reads "as patterns/deferred-relationship requires" or "patterns\\multimodal-order-leg grain
+#: 2" (both separators are seen in the wild across this hub's authored comments).
+_PATTERN_REF_RE = re.compile(r"patterns[/\\]([a-z][a-z0-9-]+)")
+
+
+def _pattern_example_excerpt(comment: str, limit: int = 320) -> str:
+    """A short, human-readable excerpt of *comment* for the Core Concepts example: its first
+    sentence (the plain-English description authors tend to lead with), plus whichever later
+    sentence actually names the pattern, if that's a different sentence."""
+    normalized = " ".join(comment.split())
+    sentences = re.split(r"(?<=[.!?])\s+", normalized)
+    if not sentences:
+        return normalized[:limit]
+    first = sentences[0]
+    pattern_sentence = next((s for s in sentences[1:] if "pattern" in s.lower()), "")
+    excerpt = f"{first} {pattern_sentence}".strip() if pattern_sentence else first
+    if len(excerpt) > limit:
+        excerpt = excerpt[: limit - 1].rstrip() + "…"
+    return excerpt
+
+
+def _collect_pattern_examples(ontology_files: list[Path]) -> dict[str, _PatternExample]:
+    """Return, for every blueprint pattern referenced in a property's ``rdfs:comment``
+    anywhere in *ontology_files*, the first (domain, class, property) that references it --
+    a single concrete, real example per pattern, not an invented one.
+
+    Scoped to properties this domain asserts directly (``import_depth == 0``): an imported
+    foundation property's own comment isn't this hub's evidence that it exercises the
+    pattern. Covers both datatype and object properties (unlike ``_domain_properties``,
+    which is scalar-fields-only) because the patterns most worth explaining here --
+    ``deferred-relationship``, ``multimodal-order-leg`` -- are usually documented on the
+    object property, not a scalar.
+    """
+    examples: dict[str, _PatternExample] = {}
+    for ontology_file in ontology_files:
+        domain_name = ontology_file.stem
+        loaded = load_ontology(ontology_file, degraded=True, profile=SemanticProfile.RDFS)
+        index = loaded.semantic_index
+        for record in index.properties:
+            if record.provenance.import_depth != 0 or not record.comment:
+                continue
+            pattern_ids = set(_PATTERN_REF_RE.findall(record.comment))
+            if not pattern_ids:
+                continue
+            class_local = extract_local_name(record.domains[0].uri) if record.domains else ""
+            excerpt = _pattern_example_excerpt(record.comment)
+            for pattern_id in pattern_ids:
+                if pattern_id in examples:
+                    continue
+                examples[pattern_id] = _PatternExample(
+                    domain=domain_name,
+                    class_local=class_local,
+                    property_local=record.name,
+                    excerpt=excerpt,
+                )
+    return examples
+
+
+def _discover_patterns_root(hub_root: Path) -> Path | None:
+    """Locate the blueprint pattern library's ``patterns/`` directory, checked out either
+    inside the hub (``<hub>/ontology-reference-models/...``) or, as this toolkit's own
+    dogfood hubs lay it out, as a sibling of the hub root."""
+    for candidate in (
+        hub_root / "ontology-reference-models" / "blueprints" / "patterns",
+        hub_root.parent / "ontology-reference-models" / "blueprints" / "patterns",
+    ):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _extract_pattern_summary(markdown_text: str, limit: int = 600) -> tuple[str, str]:
+    """Pull a pattern's title (its ``# `` heading) and a brief explanation (its own
+    ``## Problem`` section's first paragraph) straight out of the pattern library's
+    ``pattern.md`` -- authored prose, not a paraphrase, so it stays accurate as patterns
+    evolve."""
+    lines = markdown_text.splitlines()
+    title = ""
+    for line in lines:
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+    problem_lines: list[str] = []
+    in_problem = False
+    for line in lines:
+        if line.startswith("## "):
+            if in_problem:
+                break
+            in_problem = line.strip().lower() == "## problem"
+            continue
+        if in_problem:
+            if not line.strip() and problem_lines:
+                break
+            if line.strip():
+                problem_lines.append(line.strip())
+    explanation = " ".join(problem_lines)
+    if len(explanation) > limit:
+        explanation = explanation[: limit - 1].rstrip() + "…"
+    return title, explanation
+
+
+def _build_core_concepts(
+    ontology_files: list[Path], hub_root: Path, notes: list[str]
+) -> list[PatternConcept]:
+    """Build the "Core Concepts" sheet's content: one entry per blueprint pattern this hub's
+    ontologies actually reference, each paired with a real example. Degrades gracefully (an
+    empty list, plus an explanatory note) rather than failing the whole report when no
+    pattern library is checked out, or when a referenced pattern has no ``pattern.md``.
+    """
+    examples = _collect_pattern_examples(ontology_files)
+    if not examples:
+        return []
+    patterns_root = _discover_patterns_root(hub_root)
+    if patterns_root is None:
+        notes.append(
+            "Blueprint pattern library not found under 'ontology-reference-models/blueprints/"
+            "patterns' (checked the hub root and its parent); skipping the Core Concepts sheet."
+        )
+        return []
+    concepts: list[PatternConcept] = []
+    for pattern_id in sorted(examples):
+        pattern_md = patterns_root / pattern_id / "pattern.md"
+        if not pattern_md.is_file():
+            notes.append(f"No pattern.md found for referenced pattern '{pattern_id}'; skipped.")
+            continue
+        title, explanation = _extract_pattern_summary(pattern_md.read_text(encoding="utf-8"))
+        example = examples[pattern_id]
+        concepts.append(
+            PatternConcept(
+                pattern_id=pattern_id,
+                title=title or pattern_id,
+                explanation=explanation,
+                example_domain=example.domain,
+                example_class=example.class_local,
+                example_property=example.property_local,
+                example_excerpt=example.excerpt,
+            )
+        )
+    return concepts
+
+
 def _fact_source_column_uris(fact: ColumnMappingFact) -> tuple[str, ...]:
     """Return every leaf source-column URI a mapping fact actually reads from.
 
@@ -258,6 +425,8 @@ def run_field_mapping_report(
     if not ontology_files:
         report.notes.append(f"No domain ontology files found under '{ontologies_path}'.")
         return report
+
+    report.core_concepts = _build_core_concepts(ontology_files, hub_root, report.notes)
 
     source_columns = load_source_samples(sources_dir)
     by_table_and_name: dict[tuple[str, str], SourceColumnSample] = {
@@ -381,6 +550,53 @@ def _autosize_columns(sheet) -> None:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
 
 
+def _set_wrapped_row_height(sheet, row_idx: int, text: str, width_chars: int = 120) -> None:
+    lines = max(1, -(-len(text) // width_chars))  # ceil division, no non-str-length import
+    sheet.row_dimensions[row_idx].height = 15 * lines
+
+
+def _write_core_concepts_sheet(sheet, concepts: list[PatternConcept]) -> None:
+    from openpyxl.styles import Alignment, Font
+
+    sheet.append(["Core Concepts"])
+    sheet["A1"].font = Font(bold=True, size=14)
+    sheet.append(
+        [
+            "The blueprint patterns this hub's ontologies are authored against, each with one "
+            "real example drawn from this hub's own classes and properties -- not a generic "
+            "illustration."
+        ]
+    )
+    _set_wrapped_row_height(sheet, 2, sheet["A2"].value)
+    sheet["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+    sheet.append([])
+
+    for concept in concepts:
+        sheet.append([concept.title])
+        sheet.cell(row=sheet.max_row, column=1).font = Font(bold=True, size=12)
+
+        sheet.append([concept.explanation])
+        row = sheet.max_row
+        sheet.cell(row=row, column=1).alignment = Alignment(wrap_text=True, vertical="top")
+        _set_wrapped_row_height(sheet, row, concept.explanation)
+
+        sheet.append(["Example (from this hub):"])
+        sheet.cell(row=sheet.max_row, column=1).font = Font(bold=True, italic=True)
+
+        example_line = (
+            f"{concept.example_domain}: :{concept.example_class} -> "
+            f":{concept.example_property} -- {concept.example_excerpt}"
+        )
+        sheet.append([example_line])
+        row = sheet.max_row
+        sheet.cell(row=row, column=1).alignment = Alignment(wrap_text=True, vertical="top")
+        _set_wrapped_row_height(sheet, row, example_line)
+
+        sheet.append([])
+
+    sheet.column_dimensions["A"].width = 120
+
+
 def write_field_mapping_workbook(report: FieldMappingReport, output_path: Path) -> None:
     """Write *report* to a styled .xlsx workbook, one worksheet per domain plus a cover sheet."""
     try:
@@ -414,6 +630,10 @@ def write_field_mapping_workbook(report: FieldMappingReport, output_path: Path) 
         row[0].font = Font(bold=True)
     cover.column_dimensions["A"].width = 16
     cover.column_dimensions["B"].width = 80
+
+    if report.core_concepts:
+        concepts_sheet = workbook.create_sheet(title="Core Concepts", index=1)
+        _write_core_concepts_sheet(concepts_sheet, report.core_concepts)
 
     for domain_name, rows in report.rows_by_domain.items():
         sheet_title = domain_name[:31]
