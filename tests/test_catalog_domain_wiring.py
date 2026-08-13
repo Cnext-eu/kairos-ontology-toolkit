@@ -143,6 +143,19 @@ def _read_raw(path: Path) -> str:
         return fh.read()
 
 
+def _template_eol() -> str:
+    """The scaffold template's own line-ending sequence, whatever it is.
+
+    Deliberately NOT hardcoded as "\\r\\n": `core.autocrlf` can make a Windows
+    working-tree checkout of this file CRLF while the git-committed blob (and a
+    Linux CI checkout) is LF-only. Tests must assert "preserved as-is," not "is
+    always CRLF" -- detecting it here keeps the assertions correct on every
+    platform instead of only the one they happened to be written on.
+    """
+    raw = _read_raw(_SCAFFOLD_CATALOG_TEMPLATE)
+    return "\r\n" if "\r\n" in raw else "\n"
+
+
 def test_sync_against_real_template_preserves_everything_but_the_new_entry(tmp_path):
     """Full scaffold round-trip (issue #327 sub-finding 3).
 
@@ -152,6 +165,7 @@ def test_sync_against_real_template_preserves_everything_but_the_new_entry(tmp_p
     ontologies" marker comment and the commented-out example — not after the
     "Chain to shared reference-models catalog" comment (the old bug).
     """
+    eol = _template_eol()
     catalog = _real_catalog_from_template(tmp_path)
     ontology = tmp_path / "model" / "ontologies" / "party.ttl"
     _write_ttl(ontology, "https://contoso.example/ont/party")
@@ -161,17 +175,21 @@ def test_sync_against_real_template_preserves_everything_but_the_new_entry(tmp_p
 
     # Prolog comment preserved verbatim (this is exactly what ElementTree used
     # to drop, since it never re-emits comments preceding the root element).
-    assert "<!--\r\n  Local catalog for Contoso domain ontologies." in new_content
+    assert f"<!--{eol}  Local catalog for Contoso domain ontologies." in new_content
     # Blank lines between comment blocks preserved (ET.indent used to strip these).
-    assert "\r\n\r\n  <!-- ============" in new_content
+    assert f"{eol}{eol}  <!-- ============" in new_content
     # XML declaration untouched: double quotes, uppercase encoding.
-    assert new_content.startswith('<?xml version="1.0" encoding="UTF-8"?>\r\n')
+    assert new_content.startswith(f'<?xml version="1.0" encoding="UTF-8"?>{eol}')
     assert "encoding='utf-8'" not in new_content
     # Trailing newline preserved.
-    assert new_content.endswith("</catalog>\r\n")
-    # CRLF preserved throughout (never silently normalized to LF).
-    assert "\r\n" in new_content
-    assert new_content.count("\n") == new_content.count("\r\n")
+    assert new_content.endswith(f"</catalog>{eol}")
+    # The template's own line-ending convention preserved throughout (never
+    # silently normalized to a different style -- this is platform-dependent:
+    # on a CRLF checkout every line must stay CRLF; on an LF checkout, LF).
+    if eol == "\r\n":
+        assert new_content.count("\n") == new_content.count("\r\n")
+    else:
+        assert "\r\n" not in new_content
 
     marker_end = new_content.index("add one <uri> per domain")
     marker_close = new_content.index("-->", marker_end)
@@ -235,8 +253,9 @@ def test_sync_multi_domain_both_entries_placed_correctly(tmp_path):
 
     # Prolog / commented example / nextCatalog untouched.
     assert "Local catalog for Contoso domain ontologies." in content
+    eol = _template_eol()
     assert (
-        '<uri name="https://contoso.example/ont/customer"\r\n'
+        f'<uri name="https://contoso.example/ont/customer"{eol}'
         '       uri="model/ontologies/customer.ttl"/>' in content
     )
     assert "<nextCatalog" in content
