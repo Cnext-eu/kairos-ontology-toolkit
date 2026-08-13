@@ -56,6 +56,75 @@ class TestDotenvAutoLoad:
 
         load_dotenv_mock.assert_not_called()
 
+    # -- Issue #188: a pre-existing empty-string env var must not permanently
+    # -- shadow a real value in the hub's .env. These tests do NOT mock
+    # -- load_dotenv -- they exercise the real python-dotenv interaction so the
+    # -- fix (_clear_stale_empty_env_vars) is actually under test.
+
+    def test_stale_empty_credential_is_overridden_by_real_hub_value(
+        self, tmp_path, monkeypatch
+    ):
+        repo_root = tmp_path / "repo"
+        hub_dir = repo_root / "ontology-hub"
+        (hub_dir / "model" / "ontologies").mkdir(parents=True)
+        hub_env = hub_dir / ".env"
+        hub_env.write_text("AZURE_FOUNDRY_API_KEY=real-secret\n", encoding="utf-8")
+
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "")
+        monkeypatch.chdir(hub_dir)
+
+        _load_dotenv_from_hub()
+
+        assert os.environ["AZURE_FOUNDRY_API_KEY"] == "real-secret"
+
+    def test_genuinely_set_non_empty_value_is_preserved(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "repo"
+        hub_dir = repo_root / "ontology-hub"
+        (hub_dir / "model" / "ontologies").mkdir(parents=True)
+        hub_env = hub_dir / ".env"
+        hub_env.write_text(
+            "AZURE_AI_ENDPOINT=https://hub-configured-value\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("AZURE_AI_ENDPOINT", "https://pre-set-real-value")
+        monkeypatch.chdir(hub_dir)
+
+        _load_dotenv_from_hub()
+
+        assert os.environ["AZURE_AI_ENDPOINT"] == "https://pre-set-real-value"
+
+    def test_unset_key_is_loaded_normally(self, tmp_path, monkeypatch):
+        repo_root = tmp_path / "repo"
+        hub_dir = repo_root / "ontology-hub"
+        (hub_dir / "model" / "ontologies").mkdir(parents=True)
+        hub_env = hub_dir / ".env"
+        hub_env.write_text("AZURE_AI_KEY=fresh-value\n", encoding="utf-8")
+
+        monkeypatch.delenv("AZURE_AI_KEY", raising=False)
+        monkeypatch.chdir(hub_dir)
+
+        _load_dotenv_from_hub()
+
+        assert os.environ["AZURE_AI_KEY"] == "fresh-value"
+
+    def test_fix_is_general_not_azure_specific(self, tmp_path, monkeypatch):
+        """A non-Azure var this same loader handles (a dbt version specifier)
+        must get the same stale-empty-value treatment, proving the fix is not
+        special-cased to Azure credential names.
+        """
+        repo_root = tmp_path / "repo"
+        hub_dir = repo_root / "ontology-hub"
+        (hub_dir / "model" / "ontologies").mkdir(parents=True)
+        hub_env = hub_dir / ".env"
+        hub_env.write_text("KAIROS_DBT_CORE_VERSION=>=1.9,<1.10\n", encoding="utf-8")
+
+        monkeypatch.setenv("KAIROS_DBT_CORE_VERSION", "")
+        monkeypatch.chdir(hub_dir)
+
+        _load_dotenv_from_hub()
+
+        assert os.environ["KAIROS_DBT_CORE_VERSION"] == ">=1.9,<1.10"
+
 
 class TestResolveProviderConfig:
     """Test provider configuration resolution."""
