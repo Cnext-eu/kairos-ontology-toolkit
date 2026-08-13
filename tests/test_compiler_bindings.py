@@ -68,13 +68,17 @@ def test_valid_binding_parses() -> None:
     assert binding.fields[1].expression.fn == "upper"
 
 
-def test_packaged_example_loads() -> None:
-    text = (
+def _packaged_example_text() -> str:
+    return (
         resources.files("kairos_ontology.core.compiler")
         .joinpath("schema")
         .joinpath("example-entity-binding.yaml")
         .read_text(encoding="utf-8")
     )
+
+
+def test_packaged_example_loads() -> None:
+    text = _packaged_example_text()
     binding = load_entity_binding(text, path="example-entity-binding.yaml")
     assert binding.domain == "party"
     assert binding.relationships[0].target == "ref:Country"
@@ -91,6 +95,36 @@ def test_packaged_example_loads() -> None:
     assert binding.technical_fields[0].name == "account_ref"
     assert binding.technical_fields[0].purpose == "relationship"
     assert binding.technical_fields[0].type == "string"
+    # #337: the cross-domain externalReference relationship previously authored
+    # `missingParent: null` (unquoted YAML null, not the string enum token "null") and
+    # `ambiguousParent: first` (schema-valid but rejected by the adapter -- see
+    # test_compiler_kernel.py / test_wire_relationships_diagnostics.py for the
+    # `safety.adapter-unsupported` coverage of that rejection). The canonical example an
+    # author copies from must use values that are both schema-valid AND actually supported.
+    assert binding.relationships[1].target == "billing:Account"
+    assert binding.relationships[1].missing_parent == "null"
+    assert binding.relationships[1].ambiguous_parent == "error"
+
+
+def test_packaged_example_validates_against_its_own_raw_json_schema() -> None:
+    """#337: the shipped example must be valid against the shipped schema on its own terms.
+
+    ``load_entity_binding`` silently aliases an unquoted YAML ``null`` to the string enum
+    token ``"null"`` for ``missingParent`` (see ``_alias_null_tokens``) before ever handing
+    the document to ``jsonschema``, so loading successfully is not proof the document is
+    schema-valid -- an author (or any external tool) validating the raw YAML straight
+    against ``entity-binding.schema.json`` would still see the failure. Exercise the schema
+    validator directly, bypassing the loader's coercion, to close that gap.
+    """
+    import yaml
+    from jsonschema import Draft7Validator
+
+    from kairos_ontology.core.compiler.bindings import _load_schema
+
+    document = yaml.safe_load(_packaged_example_text())
+    validator = Draft7Validator(_load_schema())
+    errors = list(validator.iter_errors(document))
+    assert errors == [], [e.message for e in errors]
 
 
 def test_external_reference_relationship_parses_closed_key_contract() -> None:

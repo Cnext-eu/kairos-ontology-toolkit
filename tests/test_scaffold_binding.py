@@ -372,6 +372,53 @@ def test_stub_appends_missing_import_preserving_existing_content(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# --target-class resolution (#337).
+# ---------------------------------------------------------------------------
+def test_target_class_resolves_domains_own_prefix_against_its_default_namespace(tmp_path):
+    """#337: ``--target-class party:Branch`` was rejected -- only a bare ``:Branch`` (the
+    ontology's own default/empty prefix) or a full IRI worked -- because a domain ontology
+    conventionally self-declares its terms under the empty prefix (``@prefix : <...> .``)
+    rather than an explicit alias for its own domain name. An author naturally typing the
+    domain name itself as an explicit qname prefix should still resolve, since it names the
+    exact same namespace the bare default prefix already does.
+    """
+    from kairos_ontology.core.scaffold_binding import _resolve_class
+
+    hub_root = tmp_path / "ontology-hub"
+    (hub_root / "model" / "ontologies").mkdir(parents=True)
+    (hub_root / "kairos.yaml").write_text(
+        "version: 5\nname: acmehub\nadapter: fabric\n", encoding="utf-8"
+    )
+    party_path = hub_root / "model" / "ontologies" / "party.ttl"
+    party_path.write_text(
+        textwrap.dedent(
+            """
+            @prefix : <https://example.test/party#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+            <https://example.test/party> a owl:Ontology ; rdfs:label "Party" .
+
+            :Branch a owl:Class ; rdfs:label "Branch" .
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    expected_uri = "https://example.test/party#Branch"
+    for token in ("party:Branch", ":Branch", expected_uri):
+        class_uri, loaded, ontology_path = _resolve_class(
+            hub_root, "party", token, catalog_path=None
+        )
+        assert class_uri == expected_uri, token
+        assert ontology_path == party_path
+
+    # A prefix that genuinely isn't declared anywhere in the closure must still fail closed.
+    with pytest.raises(ScaffoldBindingError, match="no declared prefix"):
+        _resolve_class(hub_root, "party", "billing:Account", catalog_path=None)
+
+
+# ---------------------------------------------------------------------------
 # Canonical-tier archetypes: confirmation-gate acceptance test.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(

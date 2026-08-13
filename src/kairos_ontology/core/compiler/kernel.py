@@ -33,7 +33,7 @@ from ..projections.dbt.mapping_specs import SourceMappings
 from ..projections.dbt.mapping_renderers import quote_mapping_identifier
 from ..projections.dbt.policy_bind import EXT as _EXT_NS
 from ..projections.dbt.policy_bind import _data_quality_rules, bind_policy_facts
-from ..projections.dbt.policy_normalize import _source_type
+from ..projections.dbt.policy_normalize import PolicyNormalizationError, _source_type
 from ..projections.dbt.policy_specs import (
     AuthoredValuesFact,
     CanonicalTypeKind,
@@ -2683,6 +2683,21 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             logger.debug(
                 "binding blocked (adapter): %s codes=%s", path.name, _codes_of(exc.diagnostics)
             )
+        except PolicyNormalizationError as exc:
+            # Preserve the error's own specific code (e.g. `identity.authored-key-not-supplied`)
+            # rather than flattening every normalization failure into a generic
+            # `safety.type-incompatible`, which hides the actual DD-108/DD-109/... rule that
+            # fired behind an opaque message string.
+            diagnostics.append(
+                CompileDiagnostic(
+                    code=exc.code,
+                    message=str(exc),
+                    location=SourceLocation(path=binding.source_path),
+                    rule_id=exc.rule_id,
+                )
+            )
+            specs.append(EntityBindingSpec(binding=binding, blocked=True))
+            logger.debug("binding blocked (normalization): %s error=%s", path.name, exc)
         except Exception as exc:
             diagnostics.append(
                 CompileDiagnostic(
