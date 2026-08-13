@@ -23,6 +23,11 @@ ALLOWED_DIRECT_PARSE_SITES = {
     "design_validation.py": "source vocabularies, mapping and extension overlays, and SHACL shapes",
     "draft_model_report.py": "business glossary",
     "import_source.py": "authored source-vocabulary mutation",
+    "master_ontology.py": (
+        "_master.ttl owl:imports sync: read-only owl:Ontology IRI lookup (via "
+        "catalog_utils) and a pre-write Turtle-validity check only, never full "
+        "semantic loading -- the file is edited textually, not reserialized"
+    ),
     "ontology_loader.py": "canonical domain/reference ontology loader",
     "ontology_scope.py": "hub ontology declarations only",
     "ontology_ops.py": "explicit single-file CRUD and syntax API",

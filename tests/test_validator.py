@@ -1124,10 +1124,26 @@ class TestConsoleWarningsVisibility:
 
     def test_clean_hub_still_prints_unqualified_pass(self, temp_dir, sample_ontology, capsys):
         """(c) No regression for the clean case: zero warnings and zero errors still
-        print the original unqualified "All validations passed!" line."""
+        print the original unqualified "All validations passed!" line.
+
+        Issue #393's `_master.ttl` import-sync check is unconditional, so a "clean"
+        hub here must also carry a `_master.ttl` that actually imports the one
+        authored domain -- otherwise that check's own advisory warning would open,
+        which is exactly what a sibling test class covers on its own.
+        """
         ontologies_dir = temp_dir / "ontologies"
         ontologies_dir.mkdir()
         (ontologies_dir / "customer.ttl").write_text(sample_ontology, encoding="utf-8")
+        (ontologies_dir / "_master.ttl").write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n"
+            "<http://kairos.example/ontology/master> a owl:Ontology ;\n"
+            '    rdfs:label "Master"@en ;\n'
+            '    owl:versionInfo "1.0.0" .\n\n'
+            "<http://kairos.example/ontology/master> owl:imports "
+            "<http://kairos.example/ontology/CustomerOntology> .\n",
+            encoding="utf-8",
+        )
         shapes_dir = temp_dir / "shapes"
         shapes_dir.mkdir()
 
@@ -1766,3 +1782,137 @@ ref:Person kairos-ext:silverInclude true .
             extensions_dir=ext_dir,
         )
         assert warnings == []
+
+
+def _master_import_domain_ttl(iri: str, name: str) -> str:
+    return (
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n"
+        f"<{iri}> a owl:Ontology ;\n"
+        f'    rdfs:label "{name}"@en ;\n'
+        f'    owl:versionInfo "1.0.0" .\n'
+    )
+
+
+class TestMasterImportSyncWarning:
+    """The `_master.ttl` owl:imports advisory check (issue #393)."""
+
+    def _run(self, ontologies_dir, tmp_path, report_path=None):
+        shapes_dir = tmp_path / "shapes"
+        shapes_dir.mkdir(exist_ok=True)
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=False,
+            do_shacl=False,
+            do_consistency=False,
+            report_path=report_path,
+        )
+
+    def test_out_of_sync_domain_produces_warning(self, tmp_path):
+        ontologies_dir = tmp_path / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "party.ttl").write_text(
+            _master_import_domain_ttl("https://acme.test/ont/party", "Party"),
+            encoding="utf-8",
+        )
+        (ontologies_dir / "_master.ttl").write_text(
+            _master_import_domain_ttl("https://acme.test/ont/master", "Master"),
+            encoding="utf-8",
+        )
+
+        report_path = tmp_path / "validation-report.json"
+        self._run(ontologies_dir, tmp_path, report_path=report_path)
+
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        warnings = payload["imports"]["warnings"]
+        assert len(warnings) == 1
+        assert "party" in warnings[0]["message"]
+        assert "does not import" in warnings[0]["message"]
+        assert "https://acme.test/ont/party" in warnings[0]["message"]
+        assert "init --domain party" in warnings[0]["message"]
+
+    def test_fully_in_sync_produces_no_warning(self, tmp_path):
+        ontologies_dir = tmp_path / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "party.ttl").write_text(
+            _master_import_domain_ttl("https://acme.test/ont/party", "Party"),
+            encoding="utf-8",
+        )
+        (ontologies_dir / "_master.ttl").write_text(
+            _master_import_domain_ttl("https://acme.test/ont/master", "Master")
+            + "\n<https://acme.test/ont/master> owl:imports <https://acme.test/ont/party> .\n",
+            encoding="utf-8",
+        )
+
+        report_path = tmp_path / "validation-report.json"
+        self._run(ontologies_dir, tmp_path, report_path=report_path)
+
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        assert payload["imports"]["warnings"] == []
+
+    def test_missing_master_ttl_produces_one_warning_not_a_crash(self, tmp_path):
+        ontologies_dir = tmp_path / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "party.ttl").write_text(
+            _master_import_domain_ttl("https://acme.test/ont/party", "Party"),
+            encoding="utf-8",
+        )
+        # No _master.ttl at all.
+
+        report_path = tmp_path / "validation-report.json"
+        self._run(ontologies_dir, tmp_path, report_path=report_path)
+
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        warnings = payload["imports"]["warnings"]
+        assert len(warnings) == 1
+        assert "_master.ttl not found" in warnings[0]["message"]
+
+    def test_malformed_master_ttl_warns_instead_of_crashing(self, tmp_path):
+        ontologies_dir = tmp_path / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "party.ttl").write_text(
+            _master_import_domain_ttl("https://acme.test/ont/party", "Party"),
+            encoding="utf-8",
+        )
+        (ontologies_dir / "_master.ttl").write_text(
+            "this is not valid turtle {{{ owl:imports <><><", encoding="utf-8"
+        )
+
+        report_path = tmp_path / "validation-report.json"
+        self._run(ontologies_dir, tmp_path, report_path=report_path)
+
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        warnings = payload["imports"]["warnings"]
+        assert len(warnings) == 1
+        assert "_master.ttl" in warnings[0]["message"]
+
+    def test_markdown_report_renders_the_warning_via_existing_imports_section(self, tmp_path):
+        ontologies_dir = tmp_path / "ontologies"
+        ontologies_dir.mkdir()
+        (ontologies_dir / "party.ttl").write_text(
+            _master_import_domain_ttl("https://acme.test/ont/party", "Party"),
+            encoding="utf-8",
+        )
+        (ontologies_dir / "_master.ttl").write_text(
+            _master_import_domain_ttl("https://acme.test/ont/master", "Master"),
+            encoding="utf-8",
+        )
+        shapes_dir = tmp_path / "shapes"
+        shapes_dir.mkdir()
+        markdown_report_path = tmp_path / "validation-report.md"
+
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=shapes_dir,
+            catalog_path=None,
+            do_syntax=False,
+            do_shacl=False,
+            do_consistency=False,
+            markdown_report_path=markdown_report_path,
+        )
+
+        markdown = markdown_report_path.read_text(encoding="utf-8")
+        assert "Imports warnings" in markdown
+        assert "does not import" in markdown

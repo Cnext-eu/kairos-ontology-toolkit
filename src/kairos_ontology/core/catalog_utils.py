@@ -538,6 +538,25 @@ def _validate_catalog_text(
     )
 
 
+def validate_turtle_text(text: str, *, context: Path) -> None:
+    """Parse *text* purely to confirm it is well-formed Turtle.
+
+    Mirrors :func:`_validate_catalog_text`'s role for XML catalogs: the parsed
+    graph is discarded immediately and never used to extract domain semantics
+    or to serialize output, so this is a syntax gate for a proposed textual
+    edit before it is written -- not a DD-103 canonical-loader (``core/
+    ontology_loader.py``) bypass, since no semantic index is built or consumed
+    here. Used by :mod:`kairos_ontology.core.master_ontology` to validate a
+    proposed ``_master.ttl`` edit before writing it.
+    """
+    try:
+        Graph().parse(data=text, format="turtle")
+    except Exception as exc:  # noqa: BLE001 - rdflib raises many parser-specific types
+        raise ValueError(
+            f"Proposed textual edit to {context} would not parse as valid Turtle: {exc}"
+        ) from exc
+
+
 def sync_domain_catalog_entry(
     catalog_path: Path,
     ontology_ttl_path: Path,

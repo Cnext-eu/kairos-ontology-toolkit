@@ -1057,6 +1057,168 @@ def check_inventory_cmd(
         click.echo("\n✅ Inventories are present and up to date.")
 
 
+def _render_domain_coverage_text(report) -> None:
+    click.echo(f"   Accelerator: {report.accelerator or '(none)'}")
+    click.echo("")
+    if not report.rows:
+        click.echo(
+            "   No domains found (no blueprint, authored ontology, or binding evidence)."
+        )
+        return
+
+    def _cell(value) -> str:
+        if value is None:
+            return "n/a"
+        return "yes" if value else "no"
+
+    header = ("Domain", "In Blueprint", "Modeled", "EntityBinding", "_master.ttl import")
+    rows = [
+        (
+            row.domain,
+            _cell(row.in_blueprint),
+            _cell(row.modeled),
+            _cell(row.bound),
+            _cell(row.imported),
+        )
+        for row in report.rows
+    ]
+    widths = [max(len(header[i]), *(len(row[i]) for row in rows)) for i in range(len(header))]
+
+    def _format_row(cells) -> str:
+        return "   " + " | ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))
+
+    click.echo(_format_row(header))
+    click.echo("   " + "-+-".join("-" * w for w in widths))
+    for row in rows:
+        click.echo(_format_row(row))
+
+    gap_lines = []
+    for row in report.rows:
+        issues = []
+        if row.in_blueprint is False:
+            issues.append("not in accelerator blueprint")
+        if not row.modeled:
+            issues.append("not modeled")
+        if not row.bound:
+            issues.append("no EntityBinding")
+        if row.modeled and not row.imported:
+            issues.append("not imported by _master.ttl")
+        if issues:
+            gap_lines.append(f"   - {row.domain}: {', '.join(issues)}")
+    if gap_lines:
+        click.echo("")
+        click.echo("   Gaps (advisory — does not fail this command):")
+        for line in gap_lines:
+            click.echo(line)
+
+
+@click.command(name="domain-coverage")
+@click.option(
+    "--ontology-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--ref-models-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontology-reference-models/ directory (default: auto-detect).",
+)
+@click.option(
+    "--bindings-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/bindings/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack whose data-domains.yaml supplies the blueprint domain "
+    "list (default: [tool.kairos].accelerator, else inferred).",
+)
+@click.option("--json-output", "as_json", is_flag=True, default=False)
+def domain_coverage_cmd(ontology_dir, ref_models_dir, bindings_dir, accelerator, as_json):
+    """Advisory domain-coverage table: blueprint x modeled x bound x _master.ttl import.
+
+    Reports, per data domain, whether it is listed in the resolved accelerator's
+    blueprint (data-domains.yaml), has an authored domain ontology TTL, has at
+    least one EntityBinding, and is a live owl:imports in _master.ttl. A domain
+    that is fully modeled, bound, and validated can still be unreachable from the
+    hub's single ontology entry point if _master.ttl never imports it (issue #393)
+    -- this surfaces that gap deterministically, with no LLM call. The table
+    covers the UNION of blueprint-listed domains and authored-ontology stems, so a
+    custom domain outside any blueprint is flagged rather than silently dropped.
+
+    Advisory only: always exits 0, even when gaps are found. There is no --strict
+    mode (deliberately deferred).
+
+    \b
+    Examples:
+      kairos-ontology domain-coverage
+      kairos-ontology domain-coverage --json-output
+      kairos-ontology domain-coverage --accelerator logistics
+    """
+    from ..core.domain_coverage import build_domain_coverage_report
+    from ..core.hub_utils import find_hub_root
+    from ..core.reference_modules import resolve_hub_accelerator_detailed
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=True)
+
+    if ontology_dir:
+        ont_path: Path = Path(ontology_dir)
+    elif hub_root:
+        ont_path = hub_root / "model" / "ontologies"
+    else:
+        raise click.ClickException(
+            "Cannot locate a hub (model/ontologies/ not found). Use --ontology-dir."
+        )
+
+    if ref_models_dir:
+        ref_path: Path | None = Path(ref_models_dir)
+    else:
+        ref_path = _resolve_ref_models_dir(cwd, hub_root)
+
+    if bindings_dir:
+        bind_path = Path(bindings_dir)
+    elif hub_root:
+        bind_path = hub_root / "integration" / "bindings"
+    else:
+        bind_path = ont_path.parent.parent / "integration" / "bindings"
+
+    master_path = ont_path / "_master.ttl"
+
+    try:
+        accelerator_resolution = resolve_hub_accelerator_detailed(
+            explicit=accelerator,
+            hub_root=hub_root,
+            ref_models_dir=ref_path,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    no_accelerator = accelerator_resolution.accelerator is None
+    if no_accelerator and not as_json:
+        click.echo(
+            "ℹ No accelerator pack installed — reporting modeled/bound/imported "
+            "status without a blueprint column."
+        )
+
+    report = build_domain_coverage_report(
+        ontologies_dir=ont_path,
+        bindings_dir=bind_path,
+        master_path=master_path,
+        ref_models_dir=ref_path,
+        accelerator=accelerator_resolution.accelerator,
+    )
+
+    if as_json:
+        click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return
+    _render_domain_coverage_text(report)
+
+
 @click.command(name="draft-model-report")
 @click.option(
     "--analysis-dir",
