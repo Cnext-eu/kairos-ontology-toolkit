@@ -1422,6 +1422,18 @@ def _wire_relationships(
         joins: list[JoinSpec] = []
         fk_columns: list[ColumnSpec] = []
         relation = _resolved_binding_relation(binding, context)
+        # Relationships are wired in two passes so a binding with more than one
+        # relationship landing on the same generated FK/join name (two relationships to the
+        # same target class, or two ``externalReference`` relationships to the same system --
+        # #351) can be disambiguated. The first pass runs every existing defensive check
+        # unchanged and only resolves what the target model/columns/description *would* be;
+        # nothing is named yet. Once every relationship has resolved, target-model
+        # collisions are counted across the whole binding, and the second pass (below the
+        # loop) assigns names: a target hit by exactly one relationship keeps today's plain
+        # ``{target}_sk``/alias (no behavior change for the common case), while a target hit
+        # by more than one relationship qualifies both the FK column and the join alias with
+        # the relationship's own resolved property name so they no longer collide.
+        pending: list[tuple] = []
         for rel_index, relationship in enumerate(binding.relationships):
             pointer = f"/relationships/{rel_index}"
             external = relationship.external_reference
@@ -1526,11 +1538,27 @@ def _wire_relationships(
                 target_columns = tuple(item.column for item in external.key)
                 target_model = external.name
                 description = f"Surrogate reference to external {external.domain}.{external.name}"
-            fk_column = f"{target_model}_sk"
+            pending.append((relationship, prop, target_model, target_columns, description))
+        target_model_counts: dict[str, int] = {}
+        for _, _, target_model, _, _ in pending:
+            target_model_counts[target_model] = target_model_counts.get(target_model, 0) + 1
+        for relationship, prop, target_model, target_columns, description in pending:
+            # #351: a target hit by exactly one relationship keeps the original
+            # ``{target}_sk`` column/alias unchanged. A target hit by more than one
+            # relationship (two relationships to the same class, or two
+            # ``externalReference`` relationships to the same system) is qualified with the
+            # relationship's own resolved property column name so the generated FK column
+            # and join alias no longer collide between them.
+            join_key = (
+                f"{prop.column_name}_{target_model}"
+                if target_model_counts[target_model] > 1
+                else target_model
+            )
+            fk_column = f"{join_key}_sk"
             joins.append(
                 JoinSpec(
                     join_type="left",
-                    alias=target_model,
+                    alias=join_key,
                     condition="",
                     referenced_model=f"{{{{ ref('{target_model}') }}}}",
                     fk_column=fk_column,
@@ -1561,7 +1589,7 @@ def _wire_relationships(
             fk_columns.append(
                 ColumnSpec(
                     name=fk_column,
-                    expression=f"{quote(target_model)}.{quote(f'{target_model}_sk')}",
+                    expression=f"{quote(join_key)}.{quote(f'{target_model}_sk')}",
                     data_type="string",
                     canonical_type=CanonicalTypeSpec(CanonicalTypeKind.STRING),
                     nullable=relationship.missing_parent != "error",
@@ -1621,8 +1649,21 @@ def _project_relationship_match_counts(shaped, bindings, context):
                     else ""
                 )
                 if prop is not None and target_model:
+                    # #351: the join alias is not always the bare ``target_model`` any
+                    # more -- ``_wire_relationships`` qualifies it with the relationship's
+                    # own property name when more than one relationship targets the same
+                    # model, to avoid a duplicate-alias/duplicate-FK-column collision. Look
+                    # up the alias it actually assigned instead of re-deriving it here, so
+                    # this stays correct however that disambiguation is computed. The
+                    # target's own surrogate key column is unaffected by that renaming --
+                    # it always lives on the joined side as ``{target_model}_sk``.
+                    join = next(
+                        (item for item in model.joins if item.relationship_uri == prop.uri),
+                        None,
+                    )
+                    alias = join.alias if join is not None else target_model
                     replacements[temporal_match_count_column(prop.uri)] = (
-                        f"COUNT({quote(target_model)}."
+                        f"COUNT({quote(alias)}."
                         f"{quote(f'{target_model}_sk')}) "
                         f"OVER (PARTITION BY {partition})",
                         prop.uri,
