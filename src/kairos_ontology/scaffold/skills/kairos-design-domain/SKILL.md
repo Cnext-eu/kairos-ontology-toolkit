@@ -84,6 +84,13 @@ installed/current local reference-model version from
 update reference models. Route an approved update through **kairos-toolkit-ops**
 and rerun the same check.
 
+If this gate is blocking, run `kairos-ontology generate-inventory` and commit the
+result — it materializes the missing/stale `referencemodels-unpacked/*.yaml`
+files this gate checks. A hub scaffolded by `kairos-ontology init` (with
+reference models fetched, the default) already has these pre-generated, so a
+freshly-scaffolded hub should not hit this block; a stale inventory after a
+reference-model update still requires rerunning `generate-inventory`.
+
 ### Gate 1: Source completeness
 
 Run this gate on every modeling pass, including the first:

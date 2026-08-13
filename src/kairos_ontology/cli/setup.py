@@ -472,6 +472,44 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
             print(f"  ⚠  {message}")
             print("       Run 'kairos-ontology update-refmodels' manually.")
 
+    # 9b. Pre-generate materialized reference-model inventories (issue #321).
+    #
+    # `init` fetches ontology-reference-models/ above but, until now, never populated
+    # referencemodels-unpacked/ — so a hub freshly scaffolded by `init` (which also
+    # fetches reference models by default) failed `check-inventory`'s DD-047 gate on
+    # schema names alone, before a designer ever touched anything. Generate what's
+    # possible here; each source TTL's failure only reduces coverage, never aborts
+    # `init` (matching `generate-inventory`'s own per-file try/except style).
+    if not skip_refmodels and refmodels_dest.is_dir() and _looks_like_refmodels_root(refmodels_dest):
+        from ..core.inventory import (
+            generate_inventory,
+            inventory_filename,
+            iter_reference_inventory_sources,
+            write_inventory,
+        )
+
+        inventories_written = 0
+        for ttl_file in iter_reference_inventory_sources(refmodels_dest):
+            try:
+                inv = generate_inventory(
+                    ttl_file,
+                    catalog_path=catalog_dst if catalog_dst.is_file() else None,
+                )
+                if not inv["classes"]:
+                    continue
+                yaml_path = hub / "referencemodels-unpacked" / inventory_filename(
+                    ttl_file, ref_models_dir=refmodels_dest
+                )
+                write_inventory(inv, yaml_path)
+                inventories_written += 1
+            except Exception:
+                continue
+        if inventories_written:
+            print(
+                f"  ✓ Generated {inventories_written} reference-model inventory file(s) "
+                "in ontology-hub/referencemodels-unpacked/"
+            )
+
     print("\n✅ Ontology hub initialized!")
     print("\nNext steps:")
     print(

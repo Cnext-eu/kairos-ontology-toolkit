@@ -1209,16 +1209,31 @@ def _next_action_dict(action) -> dict:
 
 
 def _render_next_text(proposal, snapshot) -> None:
+    from ..core.next_actions import InputStatus, SourceSampleStatus, discovery_gate_satisfied
+
     click.echo("🧭 Kairos next-action proposal (advisory — recomputed, not stored)")
     click.echo(f"   Hub: {proposal.hub_root}")
     click.echo(f"   {proposal.summary}")
     click.echo("")
     click.echo("   Authored inputs (presence only — completeness is never inferred):")
-    click.echo(f"     discovery:      {snapshot.discovery.value}")
-    click.echo(f"     sources:        {snapshot.sources.value}")
+    discovery_state = snapshot.discovery.value
+    if snapshot.discovery is InputStatus.MISSING and discovery_gate_satisfied(snapshot):
+        discovery_state += " (compile/validate gate satisfied via conformance artifact — DD-148)"
+    click.echo(f"     discovery:      {discovery_state}")
+    sources_state = snapshot.sources.value
+    sample_status = snapshot.source_samples.status
+    if sample_status is SourceSampleStatus.NONE:
+        sources_state += f" (no sample evidence in {snapshot.source_samples.tables_total} table(s))"
+    elif sample_status in (SourceSampleStatus.PARTIAL, SourceSampleStatus.FULL):
+        sources_state += (
+            f" (samples: {snapshot.source_samples.tables_with_samples}/"
+            f"{snapshot.source_samples.tables_total} tables)"
+        )
+    click.echo(f"     sources:        {sources_state}")
     click.echo(f"     dbt transforms: {snapshot.dbt_transforms.value}")
     click.echo(f"     shapes:         {snapshot.shapes.value}")
     click.echo(f"     emitted dbt:    {snapshot.emitted_dbt_project.value}")
+    click.echo(f"     inventory:      {snapshot.inventory_status.value}")
     if not proposal.actions:
         return
     click.echo("")
@@ -1250,7 +1265,7 @@ def next_action_cmd(domains, output_format, no_compile):
     """Propose the next stateless action(s) from authored hub inputs (advisory, DD-137)."""
     from ..core.hub_utils import find_hub_root
     from ..core.hub_inspection import gather_hub_input_snapshot
-    from ..core.next_actions import SCHEMA_VERSION, propose_next_actions
+    from ..core.next_actions import SCHEMA_VERSION, discovery_gate_satisfied, propose_next_actions
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
     if hub_root is None:
@@ -1284,10 +1299,18 @@ def next_action_cmd(domains, output_format, no_compile):
             "compile_ran": snapshot.compile_ran,
             "inputs": {
                 "discovery": snapshot.discovery.value,
+                "discovery_conformance": snapshot.discovery_conformance.value,
+                "discovery_gate_satisfied": discovery_gate_satisfied(snapshot),
                 "sources": snapshot.sources.value,
+                "source_samples": {
+                    "status": snapshot.source_samples.status.value,
+                    "tables_with_samples": snapshot.source_samples.tables_with_samples,
+                    "tables_total": snapshot.source_samples.tables_total,
+                },
                 "dbt_transforms": snapshot.dbt_transforms.value,
                 "shapes": snapshot.shapes.value,
                 "emitted_dbt_project": snapshot.emitted_dbt_project.value,
+                "inventory_status": snapshot.inventory_status.value,
             },
             "actions": [_next_action_dict(action) for action in proposal.actions],
         }

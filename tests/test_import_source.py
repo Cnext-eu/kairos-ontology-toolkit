@@ -596,6 +596,122 @@ class TestParseSourceSchemaDir:
         result = parse_source_schema_dir(system_dir)
         assert "samples" not in result["tables"][0]["columns"][0]
 
+    def test_warns_when_no_samples_yaml_file(self, tmp_path, caplog):
+        """Issue #298: missing .samples.yaml must be logged, not silently swallowed."""
+        import logging
+
+        import yaml
+
+        system_dir = tmp_path / "testapp"
+        system_dir.mkdir()
+
+        manifest = {
+            "version": "1.1",
+            "system": "testapp",
+            "platform": "fabric",
+            "tables": ["tblClient"],
+        }
+        (system_dir / "_manifest.yaml").write_text(
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8"
+        )
+        table_data = {
+            "name": "tblClient",
+            "columns": [
+                {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+            ],
+        }
+        (system_dir / "tblClient.yaml").write_text(
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            parse_source_schema_dir(system_dir)
+
+        assert any(
+            "tblClient" in record.message and "No .samples.yaml" in record.message
+            for record in caplog.records
+        )
+
+    def test_warns_when_samples_yaml_empty_or_missing_rows(self, tmp_path, caplog):
+        """Issue #298: an empty/no-`rows` .samples.yaml must be logged."""
+        import logging
+
+        import yaml
+
+        system_dir = tmp_path / "testapp"
+        system_dir.mkdir()
+
+        manifest = {
+            "version": "1.1",
+            "system": "testapp",
+            "platform": "fabric",
+            "tables": ["tblClient"],
+        }
+        (system_dir / "_manifest.yaml").write_text(
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8"
+        )
+        table_data = {
+            "name": "tblClient",
+            "columns": [
+                {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+            ],
+        }
+        (system_dir / "tblClient.yaml").write_text(
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8"
+        )
+        # No 'rows' key at all.
+        (system_dir / "tblClient.samples.yaml").write_text(
+            yaml.dump({"table": "tblClient"}, default_flow_style=False), encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            parse_source_schema_dir(system_dir)
+
+        assert any(
+            "tblClient" in record.message and "missing a 'rows' key" in record.message
+            for record in caplog.records
+        )
+
+    def test_warns_when_samples_yaml_has_zero_rows(self, tmp_path, caplog):
+        """Issue #298: a `rows: []` .samples.yaml must be logged."""
+        import logging
+
+        import yaml
+
+        system_dir = tmp_path / "testapp"
+        system_dir.mkdir()
+
+        manifest = {
+            "version": "1.1",
+            "system": "testapp",
+            "platform": "fabric",
+            "tables": ["tblClient"],
+        }
+        (system_dir / "_manifest.yaml").write_text(
+            yaml.dump(manifest, default_flow_style=False), encoding="utf-8"
+        )
+        table_data = {
+            "name": "tblClient",
+            "columns": [
+                {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+            ],
+        }
+        (system_dir / "tblClient.yaml").write_text(
+            yaml.dump(table_data, default_flow_style=False), encoding="utf-8"
+        )
+        (system_dir / "tblClient.samples.yaml").write_text(
+            yaml.dump({"table": "tblClient", "rows": []}, default_flow_style=False),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            parse_source_schema_dir(system_dir)
+
+        assert any(
+            "tblClient" in record.message and "zero sample rows" in record.message
+            for record in caplog.records
+        )
+
     def test_preserves_existing_inline_samples(self, tmp_path):
         """If table YAML already has inline samples (old format), they are preserved."""
         import yaml

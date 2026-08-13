@@ -211,6 +211,25 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         except ValueError as e:
             click.echo(f"\n❌ {e}", err=True)
             raise SystemExit(1)
+
+        # Issue #298: a table with zero sampled columns produces a vocabulary with no
+        # signal anyone is told about. Surface it as an aggregate warning up front so it
+        # isn't silently buried in _merge_samples_from_file's per-table logger.warning
+        # calls (which the CLI does not echo).
+        tables_without_samples = [
+            tbl.get("name", "?")
+            for tbl in data.get("tables", [])
+            if not any(col.get("samples") for col in tbl.get("columns", []))
+        ]
+        if tables_without_samples:
+            click.echo(
+                f"⚠️  {len(tables_without_samples)} of {len(data.get('tables', []))} "
+                "table(s) have no sample evidence:",
+                err=True,
+            )
+            for name in tables_without_samples:
+                click.echo(f"   - {name}", err=True)
+
         # Write a temporary combined YAML for run_import_source
         import tempfile
         import yaml as _yaml
