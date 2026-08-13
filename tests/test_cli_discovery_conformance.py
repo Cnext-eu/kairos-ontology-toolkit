@@ -140,7 +140,60 @@ def test_load_unknown_archetype_exits_nonzero(refroot):
     assert res.stdout.strip() == ""  # no machine output on failure
 
 
+def _full_test_carrier_outcomes():
+    """Cover all four ``test-carrier`` archetype concepts (issue #308 hole 1: the CLI's
+    ``validate`` now resolves and checks coverage against the artifact's own
+    ``archetype.id``, so a partial-coverage artifact would fail)."""
+    return [
+        {
+            "uri": "https://example.org/ont/booking#Booking",
+            "label": "Booking",
+            "tier": "required",
+            "outcome": "conforms",
+        },
+        {
+            "uri": "https://example.org/ont/booking#CargoItem",
+            "label": "Cargo Item",
+            "tier": "required",
+            "outcome": "conforms",
+        },
+        {
+            "uri": "https://example.org/ont/party#BookingParty",
+            "label": "Booking Party",
+            "tier": "recommended",
+            "outcome": "conforms",
+        },
+        {
+            "uri": "https://example.org/ont/booking#GhostConcept",
+            "label": "Ghost",
+            "tier": "optional",
+            "outcome": "not-applicable",
+        },
+    ]
+
+
 def test_validate_valid_artifact(tmp_path, refroot):
+    archetype = load_archetype(refroot, "test-carrier")
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_full_test_carrier_outcomes(),
+        mode="interactive",
+    )
+    hub = tmp_path / "hub"
+    path = write_artifact(hub, art)
+    res = _run(
+        ["discovery-conformance", "validate", "--file", str(path), "--refmodels-root", str(refroot)]
+    )
+    assert res.exit_code == 0, res.output
+    assert "valid" in res.stderr
+
+
+def test_validate_rejects_incomplete_concept_coverage_via_artifacts_own_archetype_id(
+    tmp_path, refroot
+):
+    """#308 hole 1, wired end-to-end: validate resolves archetype.id from the artifact
+    itself (no --archetype flag) and checks coverage against it."""
     archetype = load_archetype(refroot, "test-carrier")
     art = build_artifact(
         archetype=archetype,
@@ -160,8 +213,27 @@ def test_validate_valid_artifact(tmp_path, refroot):
     res = _run(
         ["discovery-conformance", "validate", "--file", str(path), "--refmodels-root", str(refroot)]
     )
-    assert res.exit_code == 0, res.output
-    assert "valid" in res.stderr
+    assert res.exit_code == 1
+    assert "missing archetype concept" in res.stderr
+
+
+def test_validate_rejects_stale_hash_via_artifacts_own_archetype_id(tmp_path, refroot):
+    """#308 hole 2, wired end-to-end: validate calls is_stale() against the resolved archetype."""
+    archetype = load_archetype(refroot, "test-carrier")
+    art = build_artifact(
+        archetype=archetype,
+        refmodels_version="1.11.0",
+        outcomes=_full_test_carrier_outcomes(),
+        mode="interactive",
+    )
+    art["archetype"]["concept_set_hash"] = "deadbeef"
+    hub = tmp_path / "hub"
+    path = write_artifact(hub, art)
+    res = _run(
+        ["discovery-conformance", "validate", "--file", str(path), "--refmodels-root", str(refroot)]
+    )
+    assert res.exit_code == 1
+    assert "stale" in res.stderr.lower()
 
 
 def test_validate_invalid_artifact_exits_one(tmp_path, refroot):

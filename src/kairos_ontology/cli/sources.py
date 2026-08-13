@@ -1600,17 +1600,28 @@ def conformance_load(archetype_id, refmodels_root, output_format):
     "core-concepts-conformance.yaml).",
 )
 @click.option(
+    "--archetype",
+    "archetype_id",
+    default=None,
+    help="Archetype id to validate identity/coverage/staleness against (DD-090, "
+    "issue #308). Default: the artifact's own 'archetype.id' field.",
+)
+@click.option(
     "--allow-unresolved",
     is_flag=True,
     default=False,
-    help="Do not fail when the artifact (mode: fleet) has unresolved AI-decided "
-    "concept judgments (DD-148). Off by default — unresolved is unsafe everywhere, "
-    "including CI.",
+    help="Do not fail when the artifact has unresolved AI-decided concept judgments "
+    "(DD-148). Off by default — unresolved is unsafe everywhere, including CI.",
 )
 @_REFMODELS_OPTION
-def conformance_validate(artifact_file, allow_unresolved, refmodels_root):
+def conformance_validate(artifact_file, archetype_id, allow_unresolved, refmodels_root):
     """Validate a conformance artifact against the shared outcome-codes enum."""
-    from ..core.archetype_loader import load_outcome_codes, load_valid_tiers
+    from ..core.archetype_loader import (
+        ArchetypeError,
+        load_archetype,
+        load_outcome_codes,
+        load_valid_tiers,
+    )
     from ..core.conformance_artifact import (
         ARTIFACT_RELPATH,
         ConformanceArtifactError,
@@ -1636,7 +1647,23 @@ def conformance_validate(artifact_file, allow_unresolved, refmodels_root):
         click.echo(f"❌ {exc}", err=True)
         raise SystemExit(2) from exc
 
-    errors = validate_artifact(artifact, load_outcome_codes(root), load_valid_tiers(root))
+    # #308 hole 1/2: resolve the archetype the artifact claims to conform to (explicit
+    # --archetype, or falling back to the artifact's own 'archetype.id') so validate_artifact
+    # can actually check identity/coverage/staleness instead of only shape/enum validity.
+    resolved_archetype_id = archetype_id or (
+        (artifact.get("archetype") or {}).get("id") if isinstance(artifact, dict) else None
+    )
+    archetype = None
+    if isinstance(resolved_archetype_id, str) and resolved_archetype_id.strip():
+        try:
+            archetype = load_archetype(root, resolved_archetype_id)
+        except ArchetypeError as exc:
+            click.echo(f"❌ {exc}", err=True)
+            raise SystemExit(2) from exc
+
+    errors = validate_artifact(
+        artifact, load_outcome_codes(root), load_valid_tiers(root), archetype=archetype
+    )
     if errors:
         click.echo(f"❌ Conformance artifact invalid ({len(errors)} error(s)):", err=True)
         for e in errors:
@@ -1647,7 +1674,7 @@ def conformance_validate(artifact_file, allow_unresolved, refmodels_root):
         questions = open_questions(artifact)
         if questions:
             click.echo(
-                f"❌ Conformance artifact has {len(questions)} unresolved fleet-mode "
+                f"❌ Conformance artifact has {len(questions)} unresolved AI-decided "
                 "item(s) (DD-148) — a human must confirm these via kairos-design-discovery:",
                 err=True,
             )
