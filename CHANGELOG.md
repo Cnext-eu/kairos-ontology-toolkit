@@ -174,6 +174,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now nest their arguments under `arguments:`. Scoped to v5 only — the legacy v4 projector
   (`medallion_dbt_projector.py`) emits its own, separate generic test and is unaffected.
 
+### Fixed
+- **Two relationships from one binding to the same target class collided on the generated Silver
+  FK column name** (#351). `_wire_relationships` (`core/compiler/kernel.py`) now qualifies the FK
+  column/join alias with the relationship's own property name whenever a binding has more than one
+  relationship to the same target (or `externalReference` system) -- the common single-relationship
+  case keeps its existing `{target}_sk` name unchanged. Previously both relationships emitted an
+  identically-named column, which the schema-YAML renderer silently collapsed while the raw
+  `model.columns` tuple did not, tripping the Silver parity gate (`compiler.render-failed: ...
+  schema YAML columns differ from spec`) -- or, worse, losing one relationship's materialization
+  entirely if a hub worked around the collision by hand.
+- **`decision new --decision-state Accepted` scaffolded a record its own validator immediately
+  rejected**, with no CLI way to fix it short of hand-editing YAML frontmatter (#349). `decision
+  new` now has a `--materiality` option (repeatable, `click.Choice` over `VALID_MATERIALITY`); an
+  `Accepted` record with no `--materiality` fails fast at creation with a clear error naming the
+  valid choices, instead of failing silently at the next `validate` run. Separately, a decision
+  record's `sources[].resource` local paths now resolve against the hub root instead of
+  `decisions/`'s own directory, matching every other path-citation convention a hub uses.
+- **`scaffold-binding` proposed a system audit timestamp as a table's grain** (#346).
+  `GB_SystemLastEditTimeUtc`-shaped columns (and the rest of the `SystemCreateTimeUtc` /
+  `SystemLastEditTimeUtc` / `SystemCreateUser` / `SystemLastEditUser` family) are now excluded from
+  grain candidacy, and a `<prefix>_PK`-shaped non-nullable column tied for the table-wide highest
+  distinct count is now recognized and preferred ahead of the distinct-count proxy that used to
+  pick the audit column on small samples. A remaining no-good-candidate case is now worded
+  explicitly as a **guess**, not a NOTE that reads like a finding. Separately, `--out` pointing at
+  an existing directory now raises a clean CLI error instead of crashing with a raw `PermissionError`
+  traceback.
+- **`validate` rendered warnings in the Markdown/JSON report but never the console** (#332), so a
+  run with open warnings (e.g. a `property_range_owl_thing` latent-compile-failure warning) printed
+  an unqualified `✅ All validations passed!` with no indication anything was open. Every section
+  that can carry warnings now prints a `Warnings: N` count and the warnings themselves, and the
+  final summary line is never unqualified while any section has one open. Exit code is unchanged --
+  warnings still never fail the run; this is a console-visibility fix only.
+- **`coverage-report` ignored `rdfs:subPropertyOf` when aligning properties**, while crediting the
+  weaker `rdfs:seeAlso` signal for classes (#326). A hub with ten explicit `subPropertyOf` links to
+  reference-model properties reported `Properties: 1/99 (1%)`, reading as a failed model when it
+  wasn't. Property alignment now checks `subPropertyOf` first (a new `alignment: "subproperty"`,
+  `confidence: 1.0` tier, resolved via the canonical `SemanticIndex`), crediting the single most
+  explicit, formal alignment signal OWL offers for properties.
+
 ## [5.2.1rc4] — 2026-08-12
 
 ### Fixed
