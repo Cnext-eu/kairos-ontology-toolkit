@@ -4,6 +4,14 @@
 
 -
 
+## Linked Issues
+
+<!-- Use GitHub closing keywords so issues auto-close on merge.
+     Example:  Closes #123   |   Fixes #456   |   Resolves #789
+     Do NOT use parenthetical references like "(#123)" — they link but do not close. -->
+
+Closes #
+
 ## Checklist
 
 - [ ] Tests pass (`python -m pytest`)
