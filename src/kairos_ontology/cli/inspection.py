@@ -19,6 +19,7 @@ from .shared import (
     _autodetect_analysis_dir,
     _format_refmodels_fetch_provenance,
     _git_head_sha,
+    _git_ignored_snapshot,
     _git_repo_root,
     _git_status_snapshot,
     _resolve_ref_models_dir,
@@ -1506,7 +1507,18 @@ def _guard_scope_state(repo_dir: Path, repo_root: Path) -> dict[str, list[str]]:
     return {path: [code, _worktree_fingerprint(repo_root / path)] for path, code in entries.items()}
 
 
-def _read_guard_token(token_path: Path) -> tuple[str, dict[str, list[str]]]:
+def _guard_scope_ignored_state(repo_root: Path, roots: tuple[str, ...]) -> dict[str, list[str]]:
+    """Snapshot every gitignored file under *roots*, keyed the same way as
+    :func:`_guard_scope_state` so the two dicts merge into one uniformly diffable
+    fingerprint map. *roots* are the ``--ignored-root`` paths opted in at
+    ``--snapshot`` time (repo-root-relative); an empty tuple means nothing is
+    scanned — this is only ever called when there is at least one root.
+    """
+    entries = _parse_porcelain_entries(_git_ignored_snapshot(repo_root, roots))
+    return {path: [code, _worktree_fingerprint(repo_root / path)] for path, code in entries.items()}
+
+
+def _read_guard_token(token_path: Path) -> tuple[str, dict[str, list[str]], tuple[str, ...]]:
     """Load a guard-scope token, hard-failing on any format this build cannot read.
 
     The token carries an explicit format marker on its first line and is
@@ -1514,6 +1526,11 @@ def _read_guard_token(token_path: Path) -> tuple[str, dict[str, list[str]]]:
     only safe response: a token this build cannot parse would otherwise be read
     as an empty or garbled baseline, and a guard that misreads its baseline
     reports a *pass*.
+
+    ``ignored_roots`` defaults to an empty tuple when absent from the token,
+    so a token written before ``--ignored-root`` existed still parses and
+    behaves exactly as it did before (no gitignored-path visibility, same as
+    always).
     """
     raw = token_path.read_text(encoding="utf-8")
     marker, _, payload = raw.partition("\n")
@@ -1527,13 +1544,23 @@ def _read_guard_token(token_path: Path) -> tuple[str, dict[str, list[str]]]:
         token = json.loads(payload)
         head = token["head"]
         entries = token["entries"]
-        if not isinstance(head, str) or not isinstance(entries, dict):
+        ignored_roots = token.get("ignored_roots", [])
+        if (
+            not isinstance(head, str)
+            or not isinstance(entries, dict)
+            or not isinstance(ignored_roots, list)
+            or not all(isinstance(root, str) for root in ignored_roots)
+        ):
             raise ValueError("unexpected token shape")
     except (ValueError, KeyError, TypeError) as exc:
         raise click.ClickException(
             f"Corrupt guard-scope token {token_path}: {exc}. Take a fresh --snapshot."
         ) from exc
-    return head, {path: list(value) for path, value in entries.items()}
+    return (
+        head,
+        {path: list(value) for path, value in entries.items()},
+        tuple(ignored_roots),
+    )
 
 
 @click.command(name="guard-scope")
@@ -1556,7 +1583,21 @@ def _read_guard_token(token_path: Path) -> tuple[str, dict[str, list[str]]]:
     help="Glob (relative to the git repo root) allowed to have changed since the "
     "snapshot. Repeatable. Only valid with --check-since.",
 )
-def guard_scope_cmd(snapshot: bool, check_since: Path | None, allow_globs: tuple[str, ...]) -> None:
+@click.option(
+    "--ignored-root",
+    "ignored_roots",
+    multiple=True,
+    help="Path (relative to the git repo root) of a gitignored tree to also "
+    "fingerprint, opt-in and bounded. Repeatable. Only valid with --snapshot — "
+    "the resolved root list is stored inside the token itself, and --check-since "
+    "reads it back from there, so the two calls can never disagree on scope.",
+)
+def guard_scope_cmd(
+    snapshot: bool,
+    check_since: Path | None,
+    allow_globs: tuple[str, ...],
+    ignored_roots: tuple[str, ...],
+) -> None:
     """Deterministic 'no unexpected file changed' guard for a bounded skill gate.
 
     Replaces a self-reported "confirm no other file changed" instruction with
@@ -1565,10 +1606,13 @@ def guard_scope_cmd(snapshot: bool, check_since: Path | None, allow_globs: tuple
     repo, and git's own working-tree status is the only source of truth.
 
     \b
-    --snapshot
+    --snapshot [--ignored-root PATH ...]
         Capture the current working-tree status (tracked and untracked
         changes) and print the token path to stdout. Pass that path to
-        --check-since at the end of the bounded work.
+        --check-since at the end of the bounded work. Each --ignored-root
+        (repo-root-relative, repeatable) additionally fingerprints every
+        gitignored file under that path, so a write there is no longer
+        invisible; the resolved root list travels inside the token itself.
     --check-since TOKEN --allow GLOB [--allow GLOB ...]
         Compare current status against the snapshot at TOKEN. Any path whose
         content or git status differs from the snapshot — including one that
@@ -1576,11 +1620,14 @@ def guard_scope_cmd(snapshot: bool, check_since: Path | None, allow_globs: tuple
         disappeared from git's output — fails the command unless it matches at
         least one --allow glob (non-zero exit, every offending path is named).
         A commit moving HEAD inside the window also fails. On success, the
-        token file is removed.
+        token file is removed. If the token was taken with --ignored-root,
+        those same roots are re-scanned here automatically (no --ignored-root
+        flag is accepted on this side — the token is the single source of scope).
 
-    Scope of the guarantee: the guard sees exactly what git reports, so writes
-    into gitignored trees are invisible to it and a passing result does not
-    attest to those paths.
+    Scope of the guarantee: the guard sees exactly what git reports, plus any
+    path passed via --ignored-root at snapshot time. It remains blind to
+    writes into any other gitignored path — a passing result does not attest
+    to those.
     """
     if snapshot and check_since is not None:
         raise click.UsageError("--snapshot and --check-since are mutually exclusive.")
@@ -1588,14 +1635,23 @@ def guard_scope_cmd(snapshot: bool, check_since: Path | None, allow_globs: tuple
         raise click.UsageError("exactly one of --snapshot or --check-since is required.")
     if snapshot and allow_globs:
         raise click.UsageError("--allow is only valid with --check-since.")
+    if ignored_roots and not snapshot:
+        raise click.UsageError(
+            "--ignored-root is only valid with --snapshot; --check-since reads the "
+            "ignored roots back from the token itself."
+        )
 
     repo_dir = Path.cwd()
     repo_root = _git_repo_root(repo_dir)
 
     if snapshot:
+        entries = _guard_scope_state(repo_dir, repo_root)
+        if ignored_roots:
+            entries.update(_guard_scope_ignored_state(repo_root, ignored_roots))
         token = {
             "head": _git_head_sha(repo_dir),
-            "entries": _guard_scope_state(repo_dir, repo_root),
+            "entries": entries,
+            "ignored_roots": list(ignored_roots),
         }
         fd, token_name = tempfile.mkstemp(prefix="kairos-guard-scope-", suffix=".txt")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -1607,9 +1663,11 @@ def guard_scope_cmd(snapshot: bool, check_since: Path | None, allow_globs: tuple
         click.echo(token_name)
         return
 
-    baseline_head, baseline = _read_guard_token(check_since)
+    baseline_head, baseline, token_ignored_roots = _read_guard_token(check_since)
     current_head = _git_head_sha(repo_dir)
     current = _guard_scope_state(repo_dir, repo_root)
+    if token_ignored_roots:
+        current.update(_guard_scope_ignored_state(repo_root, token_ignored_roots))
 
     # Compare in both directions: a path that *left* git's output — an
     # already-dirty untracked file that was deleted, or a dirty tracked file

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -40,8 +41,11 @@ def _init_repo(repo_dir):
     return tracked
 
 
-def _snapshot():
-    result = CliRunner().invoke(cli, ["guard-scope", "--snapshot"])
+def _snapshot(*ignored_roots):
+    args = ["guard-scope", "--snapshot"]
+    for root in ignored_roots:
+        args += ["--ignored-root", root]
+    result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
     return result.output.strip()
 
@@ -428,3 +432,118 @@ def test_published_skill_allow_glob_matches_a_real_hub_path(skill, placeholders,
         assert fnmatch.fnmatch(root_layout, glob), (
             f"{skill}: --allow {glob!r} cannot match the root-hub layout {root_layout!r}"
         )
+
+
+# --- #312: opt-in visibility into gitignored paths via --ignored-root --------
+
+IGNORED_DIR = "ontology-hub-publish"
+IGNORED_FILE_REL = f"{IGNORED_DIR}/validation-report.json"
+
+
+def _init_repo_with_ignored_publish_dir(repo_dir):
+    """Like _init_repo, but also scaffolds the real hub .gitignore shape for
+    ontology-hub-publish/: directories are explicitly un-ignored so only the
+    files within are ignored (required for git to report them individually
+    under --ignored=matching rather than collapsing the whole directory)."""
+    tracked = _init_repo(repo_dir)
+    gitignore = repo_dir / ".gitignore"
+    gitignore.write_text(
+        f"{IGNORED_DIR}/**\n!{IGNORED_DIR}/**/\n!{IGNORED_DIR}/**/.gitkeep\n",
+        encoding="utf-8",
+    )
+    _git(repo_dir, "add", "-A")
+    _git(repo_dir, "commit", "-q", "-m", "scaffold gitignore for the publish dir")
+    return tracked
+
+
+def _write_ignored_report(repo_dir):
+    ignored_file = repo_dir / IGNORED_FILE_REL
+    ignored_file.parent.mkdir(parents=True, exist_ok=True)
+    ignored_file.write_text('{"passed": true}', encoding="utf-8")
+    return ignored_file
+
+
+def test_write_into_gitignored_path_is_invisible_without_opt_in(tmp_path, monkeypatch):
+    """Documents the gap #312 reports: with no --ignored-root, a write landing in
+    a gitignored tree (e.g. validate's report) is completely invisible to the guard."""
+    _init_repo_with_ignored_publish_dir(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    token = _snapshot()  # no --ignored-root
+
+    _write_ignored_report(tmp_path)
+
+    check = _check(token)
+    assert check.exit_code == 0, check.output
+
+
+def test_write_into_opted_in_ignored_root_is_detected_and_named(tmp_path, monkeypatch):
+    _init_repo_with_ignored_publish_dir(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    token = _snapshot(IGNORED_DIR)
+
+    _write_ignored_report(tmp_path)
+
+    check = _check(token)
+
+    assert check.exit_code != 0
+    assert IGNORED_FILE_REL in check.output
+
+
+def test_write_into_opted_in_ignored_root_passes_when_allowed(tmp_path, monkeypatch):
+    _init_repo_with_ignored_publish_dir(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    token = _snapshot(IGNORED_DIR)
+
+    _write_ignored_report(tmp_path)
+
+    check = _check(token, f"{IGNORED_DIR}/*.json")
+
+    assert check.exit_code == 0, check.output
+
+
+def test_ignored_root_combined_with_check_since_is_a_usage_error(tmp_path, monkeypatch):
+    _init_repo_with_ignored_publish_dir(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    token = _snapshot()
+
+    result = CliRunner().invoke(
+        cli,
+        ["guard-scope", "--check-since", token, "--ignored-root", IGNORED_DIR],
+    )
+
+    assert result.exit_code == 2
+    assert "only valid with --snapshot" in result.output
+
+
+def test_old_token_without_ignored_roots_key_still_parses_and_works(tmp_path, monkeypatch):
+    """A token written before --ignored-root existed lacks the key entirely; it must
+    still parse and behave exactly as it did before (empty ignored scope)."""
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    old_token_path = tmp_path.parent / "pre-ignored-roots-token.txt"
+    old_token_path.write_text(
+        "kairos-guard-scope/1\n" + json.dumps({"head": head, "entries": {}}),
+        encoding="utf-8",
+    )
+
+    check = _check(str(old_token_path))
+
+    assert check.exit_code == 0, check.output
+
+
+def test_help_documents_the_ignored_root_opt_in():
+    help_text = CliRunner().invoke(cli, ["guard-scope", "--help"]).output
+    assert "--ignored-root" in help_text

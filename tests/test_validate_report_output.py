@@ -151,3 +151,42 @@ def test_report_path_with_both_format_rejected(tmp_path, monkeypatch):
     )
     assert result.exit_code != 0
     assert "both" in result.output
+
+
+# ---------------------------------------------------------------------------
+# #312: --report-format none writes no report file at all
+# ---------------------------------------------------------------------------
+
+
+def test_report_format_none_writes_no_report_file(tmp_path, monkeypatch):
+    """--report-format none must leave both the JSON and Markdown report paths
+    unwritten — there is no way today to run validate without a forced write."""
+    hub = _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["validate", "--syntax", "--report-format", "none"])
+    assert result.exit_code == 0, result.output
+
+    assert not (hub.parent / "ontology-hub-publish" / "validation-report.json").exists()
+    assert not (hub.parent / "ontology-hub-publish" / "validation-report.md").exists()
+
+
+def test_report_path_with_none_format_rejected(tmp_path, monkeypatch):
+    """--report-path combined with --report-format none is rejected the same way
+    'both' already is: there is no report to direct to an explicit path."""
+    _make_hub(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "validate",
+            "--syntax",
+            "--report-format",
+            "none",
+            "--report-path",
+            str(tmp_path / "report.out"),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "none" in result.output
