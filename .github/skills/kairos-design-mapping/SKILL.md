@@ -469,6 +469,9 @@ out-of-scope work. Artifact generation is a separate execution step.
 - Running `compile --emit` while designing a binding.
 - Writing anything except accepted binding or dbt authoring changes.
 - Exposing unredacted samples to the LLM or committed files.
+- Reading a raw ontology serialization (`.ttl`/`.rdf`/`.owl`) as text; use
+  `resolve-ontology`, `show-class-inventory`, `list-class-properties`, or
+  `explain-term` instead.
 
 ## Related skills
 

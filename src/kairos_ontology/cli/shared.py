@@ -1011,6 +1011,13 @@ _RETIRED_MANAGED_SCAFFOLD_FILES = {
     ),
 }
 
+# SHA-256 of every previously-shipped scaffold/claude-settings.json generation. `update`
+# replaces a hub's file only when it matches one of these, so a hand-extended settings file
+# (extra allow rules, hooks, model settings) is never destroyed — it gets an advisory instead.
+_KNOWN_CLAUDE_SETTINGS_HASHES = (
+    "08c0b53faf0ea032c4746e460ae85e41e8f7731f999778d730e114e50ce037f5",  # .ttl-only, pre-DD-103 broadening
+)
+
 _RETIRED_SCAFFOLD_DIRECTORIES = (
     "ontology-hub/referencemodels-unpacked",
     "ontology-hub/.kairos-state/phases/dbt-transformation",

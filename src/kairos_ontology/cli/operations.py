@@ -21,6 +21,7 @@ from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target regist
 
 from .shared import (
     _DependencyFilesSnapshot,
+    _KNOWN_CLAUDE_SETTINGS_HASHES,
     _MANAGED_MARKER_RE,
     _RETIRED_MANAGED_SCAFFOLD_FILES,
     _RETIRED_SCAFFOLD_DIRECTORIES,
@@ -404,6 +405,44 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
             local_path.rmdir()
             removed_assets.append(rel_path + "/")
 
+    # --- Reconcile .claude/settings.json (semantic-access boundary — DD-103) -
+    # This file cannot be added to the managed-refresh loop above: it has no
+    # version marker because `_stamp_managed` injects an HTML comment, which
+    # would make the JSON invalid — and Claude Code rejects an invalid
+    # settings file as a whole, silently voiding every deny rule in it.
+    # Instead, `update` only ever replaces a hub's copy when its hash matches
+    # a *known, superseded* scaffold generation (`_KNOWN_CLAUDE_SETTINGS_HASHES`).
+    # A hand-extended settings file (extra allow rules, hooks, model config)
+    # is never overwritten — it gets an advisory instead.
+    #
+    # This status is deliberately tracked outside the managed_map `created` /
+    # `missing` / `outdated` / `updated` lists above: only the "superseded
+    # hash" case is real drift that should fail `update --check` (so
+    # scaffold/github-workflows/managed-check.yml catches it). A hub simply
+    # missing the file, or one carrying local customizations, is reported but
+    # must not flip the exit code.
+    claude_settings_status: str | None = None  # "missing" | "outdated" | "advisory"
+    claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
+    claude_settings_dst = repo_root / ".claude" / "settings.json"
+    claude_settings_rel = ".claude/settings.json"
+    if claude_settings_src.is_file():
+        if not claude_settings_dst.is_file():
+            claude_settings_status = "missing"
+            if not check:
+                claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(claude_settings_src, claude_settings_dst)
+        else:
+            local_hash = hashlib.sha256(claude_settings_dst.read_bytes()).hexdigest()
+            scaffold_hash = hashlib.sha256(claude_settings_src.read_bytes()).hexdigest()
+            if local_hash == scaffold_hash:
+                pass  # already current; silent no-op
+            elif local_hash in _KNOWN_CLAUDE_SETTINGS_HASHES:
+                claude_settings_status = "outdated"
+                if not check:
+                    shutil.copy2(claude_settings_src, claude_settings_dst)
+            else:
+                claude_settings_status = "advisory"
+
     # --- Report -------------------------------------------------------------
     if check:
         if outdated:
@@ -422,7 +461,28 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
             print(f"⚠  {len(retired_assets)} retired scaffold asset(s) to remove:")
             for path in retired_assets:
                 print(f"   {path}")
-        if not outdated and not missing and not stale and not retired_assets:
+        if claude_settings_status == "missing":
+            print(
+                f"ℹ  {claude_settings_rel} not present — run `update` (without --check) to create it."
+            )
+        elif claude_settings_status == "outdated":
+            print(
+                f"⚠  {claude_settings_rel} needs updating: the DD-103 semantic-access boundary\n"
+                f"   was broadened (.ttl/.rdf/.owl, not just .ttl)."
+            )
+        elif claude_settings_status == "advisory":
+            print(
+                f"ℹ  {claude_settings_rel} has local customizations and was left alone.\n"
+                f"   The DD-103 semantic-access boundary was broadened (.ttl/.rdf/.owl, not\n"
+                f"   just .ttl) — please review and merge the updated deny rules by hand."
+            )
+        if (
+            not outdated
+            and not missing
+            and not stale
+            and not retired_assets
+            and claude_settings_status != "outdated"
+        ):
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
         else:
             raise SystemExit(1)
@@ -443,6 +503,16 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
             print(f"🗑️  Removed {len(removed_assets)} retired scaffold asset(s):")
             for path in removed_assets:
                 print(f"   {path}")
+        if claude_settings_status == "missing":
+            print(f"  ✓ Created {claude_settings_rel} (denies raw ttl/rdf/owl Read/Grep)")
+        elif claude_settings_status == "outdated":
+            print(f"  ✓ Updated {claude_settings_rel} (semantic-access boundary broadened)")
+        elif claude_settings_status == "advisory":
+            print(
+                f"ℹ  {claude_settings_rel} has local customizations and was left alone.\n"
+                f"   The DD-103 semantic-access boundary was broadened (.ttl/.rdf/.owl, not\n"
+                f"   just .ttl) — please review and merge the updated deny rules by hand."
+            )
         if not updated and not created and not removed and not removed_assets:
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
 
@@ -461,15 +531,6 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
         if not env_example_dst.is_file() and env_example_src.is_file():
             shutil.copy2(env_example_src, env_example_dst)
             print("  ✓ Created .env.example (AI provider configuration template)")
-
-    # --- Ensure .claude/settings.json exists (TTL access boundary — DD-103) --
-    if not check:
-        claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
-        claude_settings_dst = repo_root / ".claude" / "settings.json"
-        if not claude_settings_dst.is_file() and claude_settings_src.is_file():
-            claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(claude_settings_src, claude_settings_dst)
-            print("  ✓ Created .claude/settings.json (denies raw TTL Read/Grep)")
 
     # --- Ensure .devcontainer exists (VS Code Dev Container) -----------------
     if not check:
