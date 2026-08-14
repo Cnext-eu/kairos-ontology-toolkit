@@ -2,8 +2,16 @@
 # Copyright 2026 Cnext.eu
 #
 # Auto-close issues referenced in merged PRs that did not use closing keywords.
-# If a PR title or body contains an issue number in a parenthetical reference
-# (e.g. "(#123)") but GitHub did not auto-close it, this workflow closes it.
+#
+# Only **parenthetical** references close an issue — e.g. "(#123)", matching this
+# repo's squash-title convention ("fix: … (#286, #338) (#402)"). A bare "#123" in
+# prose is a cross-reference, not a claim that the work is done.
+#
+# That distinction is load-bearing. This workflow previously closed every "#NNN"
+# it found anywhere in the title or body, so a PR saying "deferred to #422" or
+# "split out as #423" was indistinguishable from one saying it fixed them — and
+# when PR #425 merged it closed two deliberately-deferred follow-ups as
+# "completed". A reference is not a fix.
 name: Auto-close referenced issues
 
 on:
@@ -30,47 +38,48 @@ jobs:
             const body = pr.body || "";
             const combined = `${title}\n${body}`;
 
-            // Match standalone issue numbers like #123, but exclude closing-keyword references.
-            // Closing keywords are: closes, fixes, resolves (case-insensitive),
-            // optionally followed by "issue" and "in".
+            // Closing keywords: GitHub has already closed these itself, so skip them.
             const closingKeyword = /\b(closes|fixes|resolves)\b\s+(?:issue\s+)?(?:in\s+)?#(\d+)/i;
-
-            // If closing keywords were used, GitHub already auto-closed those issues.
-            // Remove all closing-keyword matches before scanning for bare references.
             const closingMatches = combined.match(new RegExp(closingKeyword.source, 'gi')) || [];
-
-            // Find all #NNN references in title and body.
-            const allRefs = combined.match(/#(\d+)/g) || [];
-            if (allRefs.length === 0) {
-              core.info("No issue references found in PR title or body.");
-              return;
-            }
-
-            // Extract the numbers that were already covered by closing keywords.
             const closedNumbers = new Set();
             for (const m of closingMatches) {
               const num = m.match(/#(\d+)/);
               if (num) closedNumbers.add(num[1]);
             }
 
-            // Find bare #NNN references not already closed.
-            const refPattern = /#(\d+)/g;
-            let match;
+            // Words that mark a reference as explicitly NOT a fix. If any appears shortly
+            // before the parenthetical, the reference is a pointer, not a claim of work done.
+            const NON_FIXING = /\b(refs?|references?|related|see|see also|deferred?|defers?|split out|splits? out|supersed(es|ed)|blocked by|blocks|part of|follows?|follow[- ]?ups?|tracked in|tracking|per|cf|context|discussion|depends on|prerequisite)\b[^.!?]{0,80}$/i;
+
+            // Only parenthetical groups containing an issue number, per the contract above.
+            const groupPattern = /\(([^()]*#\d+[^()]*)\)/g;
             const toClose = new Set();
-            while ((match = refPattern.exec(combined)) !== null) {
-              const num = match[1];
-              if (!closedNumbers.has(num)) {
+            const skipped = [];
+            let group;
+            while ((group = groupPattern.exec(combined)) !== null) {
+              const preceding = combined.slice(Math.max(0, group.index - 90), group.index);
+              const isNonFixing = NON_FIXING.test(preceding);
+              const nums = group[1].match(/#(\d+)/g) || [];
+              for (const raw of nums) {
+                const num = raw.slice(1);
+                if (num === String(prNumber)) continue;      // the PR's own squash-title suffix
+                if (closedNumbers.has(num)) continue;        // GitHub already closed it
+                if (isNonFixing) { skipped.push(`#${num}`); continue; }
                 toClose.add(num);
               }
             }
 
+            if (skipped.length > 0) {
+              core.info(`Skipped non-fixing references: ${skipped.join(', ')}`);
+            }
+
             if (toClose.size === 0) {
-              core.info("All referenced issues were already closed via closing keywords.");
+              core.info("No parenthetical issue references to close.");
               return;
             }
 
             core.info(`PR title: ${title}`);
-            core.info(`Bare issue references to check: ${[...toClose].join(', ')}`);
+            core.info(`Parenthetical issue references to check: ${[...toClose].join(', ')}`);
 
             const repo = context.repo;
             let closedAny = false;
@@ -97,8 +106,9 @@ jobs:
                 await github.rest.issues.createComment({
                   ...repo,
                   issue_number: parseInt(issueNum, 10),
-                  body: `Auto-closed by GitHub Action: PR #${prNumber} was merged with a reference to this issue but did not use closing keywords.\n` +
-                        `\n> **Tip:** To auto-close issues on merge, use \`Closes #${issueNum}\`, \`Fixes #${issueNum}\`, or \`Resolves #${issueNum}\` in the PR body.`,
+                  body: `Auto-closed by GitHub Action: PR #${prNumber} was merged with a parenthetical reference to this issue but did not use closing keywords.\n` +
+                        `\n> **Tip:** To auto-close issues on merge, use \`Closes #${issueNum}\`, \`Fixes #${issueNum}\`, or \`Resolves #${issueNum}\` in the PR body.` +
+                        `\n>\n> If a PR only *mentions* an issue it does not fix, write it as a bare \`#${issueNum}\` (no parentheses) or prefix it with \`Refs\`/\`Related\`/\`Deferred to\` — this workflow will then leave it open.`,
                 });
 
                 await github.rest.issues.update({
