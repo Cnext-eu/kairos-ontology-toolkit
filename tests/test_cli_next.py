@@ -387,3 +387,155 @@ def test_next_inventory_status_present_once_generated(hub, monkeypatch):
     payload = _stdout_json(result)
     assert payload["inputs"]["inventory_status"] == "present"
     assert not any(a["kind"] == "generate-inventory" for a in payload["actions"])
+
+
+# ---------------------------------------------------------------------------
+# Issue #386 — inventory_status must scope to --domain on multi-accelerator hubs
+# ---------------------------------------------------------------------------
+
+_MULTI_ACCEL_PARTY_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ref-party: <https://kairos.cnext.eu/ref/party#> .
+
+<https://kairos.cnext.eu/ref/party> a owl:Ontology ;
+    rdfs:label "Party" .
+
+ref-party:Party a owl:Class ;
+    rdfs:label "Party" .
+
+ref-party:partyName a owl:DatatypeProperty ;
+    rdfs:domain ref-party:Party ;
+    rdfs:range xsd:string .
+"""
+
+_MULTI_ACCEL_BOOKING_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ref-booking: <https://kairos.cnext.eu/ref/booking#> .
+
+<https://kairos.cnext.eu/ref/booking> a owl:Ontology ;
+    rdfs:label "Booking" .
+
+ref-booking:Booking a owl:Class ;
+    rdfs:label "Booking" .
+
+ref-booking:bookingRef a owl:DatatypeProperty ;
+    rdfs:domain ref-booking:Booking ;
+    rdfs:range xsd:string .
+"""
+
+_MULTI_ACCEL_CATALOG_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog" prefer="public">
+  <uri name="https://kairos.cnext.eu/ref/party" uri="ontology-reference-models/party.ttl"/>
+  <uri name="https://kairos.cnext.eu/ref/booking" uri="ontology-reference-models/booking.ttl"/>
+</catalog>
+"""
+
+_PARTY_DATA_DOMAINS_YAML = """\
+groups:
+  - id: acme-party
+    domains:
+      - id: party
+        name: Party
+        imports:
+          - uri: https://kairos.cnext.eu/ref/party#
+            module: party
+"""
+
+_BOOKING_DATA_DOMAINS_YAML = """\
+groups:
+  - id: acme-logistics
+    domains:
+      - id: booking
+        name: Booking
+        imports:
+          - uri: https://kairos.cnext.eu/ref/booking#
+            module: booking
+"""
+
+
+@pytest.fixture()
+def multi_accelerator_hub(tmp_path: Path) -> Path:
+    """Two independently-installed accelerator packs, each owning one domain (#386).
+
+    ``party``'s pack (``acme-party``) never gets its inventory generated; ``booking``'s
+    pack (``acme-logistics``) does. This is the shape issue #386 complains about: a
+    hub with an irrelevant accelerator's stale/missing inventory must not block a
+    ``--domain`` query for an unrelated, genuinely-ready domain.
+    """
+    root = tmp_path / "hub"
+    (root / "model" / "ontologies").mkdir(parents=True)
+    (root / "kairos.yaml").write_text("adapter: fabric\n", encoding="utf-8")
+
+    ref_dir = root / "ontology-reference-models"
+    ref_dir.mkdir()
+    (ref_dir / "party.ttl").write_text(_MULTI_ACCEL_PARTY_TTL, encoding="utf-8")
+    (ref_dir / "booking.ttl").write_text(_MULTI_ACCEL_BOOKING_TTL, encoding="utf-8")
+
+    party_pack = ref_dir / "accelerator-packs" / "acme-party" / "client-hub-blueprint"
+    party_pack.mkdir(parents=True)
+    (party_pack / "data-domains.yaml").write_text(_PARTY_DATA_DOMAINS_YAML, encoding="utf-8")
+
+    booking_pack = ref_dir / "accelerator-packs" / "acme-logistics" / "client-hub-blueprint"
+    booking_pack.mkdir(parents=True)
+    (booking_pack / "data-domains.yaml").write_text(_BOOKING_DATA_DOMAINS_YAML, encoding="utf-8")
+
+    (root / "catalog-v001.xml").write_text(_MULTI_ACCEL_CATALOG_XML, encoding="utf-8")
+
+    # Only booking's inventory is generated/fresh. party's is left entirely missing —
+    # the "unrelated accelerator" failure a --domain booking query must not see.
+    from kairos_ontology.core.inventory import generate_inventory, write_inventory
+
+    inv = generate_inventory(
+        ref_dir / "booking.ttl",
+        include_specializations=True,
+        catalog_path=root / "catalog-v001.xml",
+    )
+    write_inventory(inv, root / "referencemodels-unpacked" / "booking-inventory.yaml")
+
+    return root
+
+
+def test_next_domain_scoped_inventory_ignores_unrelated_accelerator(
+    multi_accelerator_hub, monkeypatch
+):
+    # party's accelerator pack never had its inventory generated at all, but the
+    # query is scoped to booking (a different, unrelated accelerator pack) — the
+    # out-of-scope missing party inventory must not block booking's readiness (#386).
+    result = _invoke(
+        multi_accelerator_hub, monkeypatch, ["--domain", "booking", "--format", "json"]
+    )
+    payload = _stdout_json(result)
+    assert payload["inputs"]["inventory_status"] == "present"
+    assert not any(a["kind"] == "generate-inventory" for a in payload["actions"])
+
+
+def test_next_domain_scoped_inventory_still_blocks_relevant_gap(
+    multi_accelerator_hub, monkeypatch
+):
+    # party's own inventory really is missing, and the query is scoped to party
+    # itself — this must still block. The fix must scope, not blanket-suppress.
+    result = _invoke(
+        multi_accelerator_hub, monkeypatch, ["--domain", "party", "--format", "json"]
+    )
+    payload = _stdout_json(result)
+    assert payload["inputs"]["inventory_status"] == "missing"
+    action = next(a for a in payload["actions"] if a["kind"] == "generate-inventory")
+    assert action["blocking"] is True
+
+
+def test_next_without_domain_filter_reports_unscoped_inventory_status(
+    multi_accelerator_hub, monkeypatch
+):
+    # Regression: omitting --domain (the common case) must behave exactly as
+    # before — the plain repo-wide check_inventories() result, unscoped. party's
+    # missing inventory blocks even with no domain filter to disambiguate.
+    result = _invoke(multi_accelerator_hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    assert payload["inputs"]["inventory_status"] == "missing"
+    action = next(a for a in payload["actions"] if a["kind"] == "generate-inventory")
+    assert action["blocking"] is True

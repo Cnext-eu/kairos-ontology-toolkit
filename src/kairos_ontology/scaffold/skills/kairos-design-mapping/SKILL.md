@@ -90,8 +90,9 @@ One binding document maps:
 The binding references source columns and ontology terms; it never copies their
 definitions. Source vocabularies/contracts remain Bronze authority. The
 ontology remains canonical semantic authority. Ordinary dbt SQL/YAML owns
-joins, windows, aggregations, ranking, deduplication, JSON expansion, complex
-fallback, or grain changes.
+joins, windows, aggregation, ranking, deduplication, JSON expansion,
+multi-relation fallback, survivorship, row-level filtering/subsetting of a
+mixed-row-type source table, or a grain change.
 
 Work on one source system, one domain, and one entity binding at a time.
 
@@ -104,11 +105,36 @@ Before proposing a binding:
 1. read the selected source vocabulary or dbt output contract;
 2. read the target ontology import closure;
 3. verify the selected source contains the required relation and columns;
-4. use only already-redacted, masked, aggregated, or synthetic examples.
+4. enumerate whether other Bronze sources under `integration/sources/` also
+   plausibly target the same canonical class — check today either with
+   `kairos-ontology fit-report --class <X> --source <system>.<table>` run
+   against each candidate source, or by reasoning over the hub's own source
+   inventory; this is a workflow check, not a new tool;
+5. use only already-redacted, masked, aggregated, or synthetic examples.
 
 Never expose or persist raw PII, sensitive free text, proprietary samples, or
 credentials. An unredacted sample blocks the workflow and must return to the
 source privacy/redaction process.
+
+If step 4 finds more than one plausible source for the same canonical class,
+do not bind `source.relation` directly to a single source, even if only one
+source is being wired up in this pass. Route straight to the
+`int_merged__<entity>` pattern via **kairos-develop-dbt-transformation** from
+the start, so the second source's eventual arrival is a union, not a rewrite.
+
+**Decision rule — when multi-source matters.** Default to `int_merged__<entity>`
+from day one for any canonical class that is (or subclasses) a master/
+business-entity accelerator class — for example Party, Location,
+TransportOrder, or Equipment — because these predictably accrete additional
+Bronze sources over an enterprise's system-migration lifecycle. Skip the
+merged pattern for genuinely closed reference/governed-code-list classes —
+for example an `EquipmentTypeCode`-style governed vocabulary, a seed
+dimension, or a date spine — since these structurally will not gain a second
+source, and the extra model/YAML/test/decision-record ceremony is pure
+overhead with no future payoff. This overhead is authoring/maintenance cost
+only, not runtime cost: `int_merged__*` models are materialized as a `view`
+by this toolkit's own dbt template convention, so an unused single-source
+union costs nothing at query time.
 
 ### Gate 2: Explicit confirmation
 
@@ -291,7 +317,8 @@ nesting, or ambiguous null behavior must be corrected rather than waived.
 ### 5. Route relational complexity
 
 If correct meaning requires joins, windows, aggregation, ranking, deduplication,
-JSON expansion, multi-relation fallback, survivorship, or a grain change, stop
+JSON expansion, multi-relation fallback, survivorship, row-level
+filtering/subsetting of a mixed-row-type source table, or a grain change, stop
 binding that physical relation and invoke
 **kairos-develop-dbt-transformation**. The handoff must author ordinary dbt
 SQL plus an authoritative YAML output contract. It must not create a candidate

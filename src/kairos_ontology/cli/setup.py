@@ -13,6 +13,7 @@ from ..core._provenance import provenance_comment
 from ..core.catalog_utils import sync_domain_catalog_entry
 from ..core.decision_records import build_index_markdown
 from ..core.hub_utils import publish_root
+from ..core.master_ontology import MasterOntologySyncError, sync_master_ontology_import
 
 # Importing the design-time MDM package registers the additive ``mdm-profile``
 # projection target with the core projector (registry pattern, MDM-DD-002).
@@ -438,6 +439,37 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
                 company_domain=company_domain,
             )
             print(f"  ✓ Registered {ontology_iri} in ontology-hub/catalog-v001.xml")
+
+            # Issue #393: a domain can be authored, cataloged, bound, and validated
+            # yet never imported by _master.ttl -- silently unreachable from the
+            # hub's single ontology entry point. Sync it automatically here so that
+            # gap can no longer occur by default. Best-effort/secondary: never
+            # crashes `init` -- a missing or unreadable _master.ttl only warns.
+            if master_dst.exists():
+                try:
+                    inserted = sync_master_ontology_import(master_dst, ontology_iri)
+                except MasterOntologySyncError as exc:
+                    print(
+                        f"  ⚠ Could not sync _master.ttl automatically: {exc}\n"
+                        f"      Add \"owl:imports <{ontology_iri}>\" to "
+                        "ontology-hub/model/ontologies/_master.ttl manually."
+                    )
+                else:
+                    if inserted:
+                        print(
+                            f"  ✓ Synced owl:imports <{ontology_iri}> into "
+                            "ontology-hub/model/ontologies/_master.ttl"
+                        )
+                    else:
+                        print(
+                            f"  ⏭  ontology-hub/model/ontologies/_master.ttl already imports "
+                            f"{ontology_iri}"
+                        )
+            else:
+                print(
+                    "  ⚠ ontology-hub/model/ontologies/_master.ttl not found; "
+                    "skipping owl:imports sync."
+                )
 
     # 9. Fetch ontology-reference-models/ at the repo root (issue #290).
     #

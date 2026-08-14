@@ -77,6 +77,7 @@ from .inspection import (
     field_mapping_report_cmd,
     generate_inventory_cmd,
     check_inventory_cmd,
+    domain_coverage_cmd,
     draft_model_report_cmd,
     next_action_cmd,
     design_landscape_cmd,
@@ -277,6 +278,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(field_mapping_report_cmd)
     group.add_command(generate_inventory_cmd)
     group.add_command(check_inventory_cmd)
+    group.add_command(domain_coverage_cmd)
     group.add_command(draft_model_report_cmd)
     group.add_command(next_action_cmd)
     group.add_command(design_landscape_cmd)

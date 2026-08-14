@@ -15,7 +15,9 @@ import json
 # Canonical PII keyword list lives in ._samples (single source of truth, also
 # used by the sample-exposure masking policy); re-exported for compatibility.
 from ._samples import PII_KEYWORDS, _normalize
+from .catalog_utils import _declared_ontology_iri
 from .hub_utils import is_domain_ontology_stem
+from .master_ontology import list_active_master_imports
 from .archetype_loader import ArchetypeError
 from .pattern_loader import PatternError, load_pattern
 from .reference_modules import (
@@ -1136,6 +1138,57 @@ def run_validation(
     results["ontology_files_found"] = len(ontology_files)
     if not ontology_files:
         print("  (no domain ontology files under model/ontologies — nothing to validate)\n")
+
+    # _master.ttl import-sync check (issue #393): a cheap, purely structural check
+    # that a domain fully authored, cataloged, bound, and otherwise valid can still
+    # be unreachable from the hub's single ontology entry point if _master.ttl never
+    # imports it. Deliberately unconditional -- unlike the managed-import preflight
+    # below, this does not depend on --shacl/--consistency, and it reuses the
+    # existing imports/warnings bucket so it flows through every counting/printing/
+    # markdown-rendering path with zero new rendering code.
+    master_path = ontologies_path / "_master.ttl"
+    if not master_path.is_file():
+        results["imports"]["warnings"].append(
+            {
+                "message": (
+                    "_master.ttl not found — domain ontologies are not unified "
+                    "under a master graph."
+                )
+            }
+        )
+    else:
+        try:
+            active_master_imports = {
+                iri.rstrip("/") for iri in list_active_master_imports(master_path)
+            }
+        except Exception as exc:  # defensive: a malformed _master.ttl must never crash validate
+            active_master_imports = None
+            results["imports"]["warnings"].append(
+                {
+                    "file": str(master_path),
+                    "message": f"_master.ttl could not be read for the import-sync check: {exc}",
+                }
+            )
+        if active_master_imports is not None:
+            for ontology_file in ontology_files:
+                try:
+                    declared_iri = _declared_ontology_iri(ontology_file)
+                except Exception:
+                    continue  # syntax errors are already reported by Level 1 below
+                if not declared_iri:
+                    continue
+                if declared_iri.rstrip("/") not in active_master_imports:
+                    results["imports"]["warnings"].append(
+                        {
+                            "file": str(ontology_file),
+                            "message": (
+                                f"_master.ttl does not import {ontology_file.stem} "
+                                f"({declared_iri}) — run "
+                                f'"kairos-ontology init --domain {ontology_file.stem}" to add '
+                                f'it, or add "owl:imports <{declared_iri}>" manually.'
+                            ),
+                        }
+                    )
 
     # Semantic import preflight is separate from syntax parsing. It catches
     # externally used governed terms whose required owl:imports edge is absent;
