@@ -202,7 +202,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-148](#dd-148-discovery-before-design-and-fleet-mode-open-question-hard-gates-amends-dd-059) | Discovery-Before-Design and Fleet-Mode Open-Question Hard Gates (Amends DD-059) | Accepted | 2026-08-10 |
 | [DD-149](#dd-149-human-confirmed-archetype-selection-amends-dd-088dd-090) | Human-Confirmed Archetype Selection (Amends DD-088/DD-090) | Accepted | 2026-08-10 |
 | [DD-150](#dd-150-reference-models-owns-the-tier-enum-the-toolkit-derives-ontology-tier-amends-dd-146) | Reference-models owns the tier enum; the toolkit derives ontology tier (Amends DD-146) | Accepted | 2026-08-10 |
-| [DD-151](#dd-151-structured-logging-foundation--opt-in-opentelemetry-bridge) | Structured logging foundation + opt-in OpenTelemetry bridge | Accepted | 2026-08-10 |
+| [DD-151](#dd-151-structured-logging-foundation--opt-in-opentelemetry-bridge) | Structured logging foundation + opt-in OpenTelemetry bridge | Accepted | 2026-08-14 |
+| [DD-152](#dd-152-reference-models-resolve-from-a-shared-versioned-machine-level-cache-supersedes-dd-036s-location) | Reference Models Resolve From a Shared, Versioned Machine-Level Cache (Supersedes DD-036's Location) | Proposed | 2026-08-14 |
 
 ---
 
@@ -2102,6 +2103,37 @@ Remove all git submodule logic. Reference models are committed directly into
 - Hub repo size slightly increases (reference model .ttl files are committed)
 - `update-refmodels` becomes the single way to refresh reference models
 
+### Amendment (2026-08-14): the location, not the mechanism, is superseded by DD-152 (proposed)
+
+DD-152 proposes fetching reference models into a shared, versioned, per-user cache
+(`%LOCALAPPDATA%\kairos\rm\<version>\`, XDG equivalent elsewhere) instead of committing them into the
+hub. It reverses **where** the files live and nothing else. Precisely:
+
+**Still holds, unchanged.** Git submodules stay gone permanently — no `.gitmodules`, no
+`submodules: true`, no recursive checkout, and no second update path. `update-refmodels` remains the
+single way to refresh reference models, and its implementation
+(`_fetch_reference_models`: sparse shallow clone → validate → swap into place) is reused verbatim by
+DD-152, including the clone-root `VERSION` copy and `FETCH_PROVENANCE.json`. The migration note above
+("existing hubs must remove their submodule…") is still correct for any hub still carrying one. The
+Copilot/agent-can-read-the-models property is also preserved — DD-152 keeps the models resolvable
+through the catalog, just from outside the workspace.
+
+**Superseded by DD-152.** Only the Decision's destination — "committed directly into
+`ontology-reference-models/` as regular files" — and the two statements that follow from it: the
+accepted consequence *"hub repo size slightly increases"* (at 17.5 MB / 560 files per hub, permanently
+in history, this proved not to be slight) and the rationale bullet *"files are version-controlled in
+the hub repo — easy to diff/track changes"*, which DD-152 explicitly gives up and replaces with a
+committed version pin plus a reference-models stamp in the DD-047 inventory envelope.
+
+**Not invalidated.** DD-152 adds the cache as the **last** entry in `resolve_refmodels_root`'s existing
+precedence chain (explicit flag → `KAIROS_REFMODELS_ROOT` → sibling/hub-relative folder scan → cache).
+A hub with `ontology-reference-models/` on disk keeps resolving from it exactly as DD-036 specifies. The
+vendored layout therefore ceases to be the *default*; it does not become unsupported, and migration is
+opt-in per hub.
+
+**Status of this amendment.** DD-152 is `Proposed`. Until it is Accepted, DD-036 is in force as written
+and vendoring remains the shipped behaviour.
+
 ---
 
 ## DD-037: uv as Standard Environment Manager for Hub Repos
@@ -2789,6 +2821,56 @@ now made by code, not by the model.
   classification, CLI exit codes for fresh/missing/warn-only/strict).
 - A true blocking gate still depends on the operator/agent actually running
   `check-inventory`; CI hubs may additionally wire it as a pipeline step.
+
+### Amendment (2026-08-14): read-only sources that change wholesale (DD-152, proposed)
+
+Under DD-152 reference models resolve from a shared, versioned, out-of-repo cache. Source ontologies
+become **read-only** and stop changing file-by-file: they change **wholesale**, at the moment a hub
+resolves a different reference-models version. The mechanism of this gate survives that intact; its
+classification guidance and its remedy do not.
+
+**Unchanged.** `compute_source_hash` and the `source_sha256` envelope field are indifferent to where the
+source lives — bytes are bytes, and a cache path hashes exactly like a repo path. The `ok`/`stale`
+distinction, the deterministic content-hash-not-mtime rationale, `--strict`/`--warn-only`, and the
+non-zero exit on missing/stale all stand.
+
+**`stale` changes cause and remedy.** Under vendoring, `stale` meant "a source TTL in this repo was
+edited or refreshed", and the Decision's step 4 remedy — regenerate the inventory and commit it —
+addressed one or a few files. Under DD-152 nothing edits a source in place; instead **every** inventory
+reclassifies to `stale` simultaneously the first time a hub runs against a new cached version. The
+`design-domain` Step 0c.1b 🚦 gate must say this, or a routine reference-models bump reads to an operator
+(and to an LLM) as N independent failures rather than one expected upgrade step. The remedy is a
+deliberate bulk regeneration performed *as part of* the version upgrade, and it is the inventories that
+get committed — the sources no longer can be.
+
+**`unverifiable` must not absorb resolution failures.** It means exactly one thing: a pre-DD-047
+inventory with no stored hash. It must never be reached because a source could not be *found*. A source
+that the cache or catalog fails to resolve is a resolution failure and must surface as one (a
+`missing_import`/resolver diagnostic), because `unverifiable` only warns and `--strict` is the sole thing
+that escalates it — classifying an unresolvable source as `unverifiable` would convert DD-152's principal
+hazard, silent partial closure resolution, into a warning nobody reads. `check_inventories` should be
+explicit that an unresolvable source root is a hard error, not a classification.
+
+**`orphan` gains a second legitimate cause.** An inventory with no source now also occurs when the newly
+resolved reference-models version no longer publishes that module. Still warn rather than block, but the
+message should distinguish "the source was removed from this hub" from "the upstream version dropped it",
+since the second is normal during an upgrade and the first is not.
+
+**Addition: stamp the reference-models identity in the envelope.** `generate_inventory()` should record
+the reference-models identity it was generated against — the resolved version/ref, and the commit from
+`FETCH_PROVENANCE.json` where available — alongside `source_sha256`. Optional and additive, `None` for
+graph-sourced inventories, and safe on the same compatibility argument `source_sha256` itself relied on
+(existing readers ignore unknown keys). It buys two things: `check-inventory` can report "40 inventories
+are stale because this hub moved from v1.15.0 to v1.16.0" instead of 40 unexplained hash mismatches, and
+— once the models are no longer committed — the envelope becomes the **only durable record in the hub of
+which reference-model bytes the model was authored against**. The stamp must not participate in inventory
+filenames or in `_closure_hash` inputs; DD-152's additive-only overlay requirement exists precisely so
+those stay byte-stable across the move, and an envelope field that fed either would defeat it.
+
+**Still true.** The pass/fail decision remains code-level and deterministic, and a truly blocking gate
+still depends on the operator, agent or CI pipeline actually invoking `check-inventory`.
+
+**Status of this amendment.** DD-152 is `Proposed`; none of the above applies until it is Accepted.
 
 ---
 
@@ -10559,3 +10641,199 @@ namespaces toolkit attributes as `kairos.*`.
 - SPDX/Apache-2.0 headers on every new .py file. 100-char ruff lines.
 - Future: real-run dbt observability in the dataplatform scaffold is a separate change.
 
+---
+
+## DD-152: Reference Models Resolve From a Shared, Versioned Machine-Level Cache (Supersedes DD-036's Location)
+
+**Status:** Proposed
+**Date:** 2026-08-14
+**Affects:** `cli/shared.py` (`_fetch_reference_models`, refmodels discovery), `core/catalog_utils.py`
+(`CatalogResolver`), `core/archetype_loader.py` (`resolve_refmodels_root`, version drift),
+`core/ontology_loader.py` (`stable_root`), hub scaffolding (`claude-settings.json`, `.gitignore`),
+hub CI workflows, DD-036, DD-047
+**Implementation:** None — proposal for review. Nothing is implemented until this entry is Accepted.
+
+### Context
+
+A hub vendors **17.5 MB / 560 files** of reference models into `ontology-reference-models/`, **409 of
+them raw ontology serialisations** (297 `.rdf` + 112 `.ttl`), all committed to git, and `init` fetches
+them by default (#290). DD-036 chose this deliberately over submodules and accepted "hub repo size
+slightly increases" as the cost. At one client hub the cost is no longer slight, and it is paid three
+times over: permanently in every hub's git history, once per client as a pinned duplicate of bytes
+nobody edits, and once per agent workspace — raw ontology sitting inside the tree the agent reads.
+
+That third cost is why the DD-103 agent boundary has to exist as a **deny-list** at all. The
+concurrent DD-103 amendment extends those globs to `.rdf`/`.owl` and re-anchors them to the project
+root, which closes the holes that were open — but a deny-list is a guardrail, not a sandbox: `Bash`,
+`cat` and `git show` still reach the files, and the rules only bind agents that honour that settings
+file. The boundary is a policy over files that are present. Absence is stronger than policy.
+
+Nothing about the vendored *content* is wrong. What is wrong is the *location*.
+
+### Decision
+
+**Reference models are fetched into a shared, versioned, per-user location outside every repository**
+— `%LOCALAPPDATA%\kairos\rm\<version>\` on Windows, the XDG equivalent
+(`${XDG_CACHE_HOME:-~/.cache}/kairos/rm/<version>/`) elsewhere. One copy per version per machine,
+shared by every hub on it. The hub does not gitignore the models; it simply does not contain them.
+
+**The short prefix is a requirement, not an aesthetic.** The longest path inside the tree is **144
+characters** relative to the inner reference-models root (170 including the
+`ontology-reference-models/` prefix; the upstream FIBO `fibo/BE/GovernmentEntities/…` paths are the
+binding constraint). Against `MAX_PATH` that leaves 115 characters of prefix budget. Vendored in a
+realistic user-profile hub the total is **235** — it fits, which is why nobody has hit this.
+`.venv\Lib\site-packages\kairos_ontology_referencemodels\ontology-reference-models\…` totals **291**,
+exceeding `MAX_PATH` by **31**; a global Python or `uv tool` install totals 286/287. A
+`%LOCALAPPDATA%\kairos\rm\<version>\` prefix sits well under. **These figures are arithmetic, not
+observed failures** — the machine they were measured on has `LongPathsEnabled=1` and therefore cannot
+reproduce the fault. Any location this decision picks must carry the short-prefix constraint
+explicitly, because the constraint is invisible to the developers most likely to change it.
+
+**Fetching reuses `_fetch_reference_models` (`cli/shared.py:1724-1847`) as-is.** #290's work is
+preserved, not replaced: the sparse shallow clone, the assemble-off-to-the-side-then-swap that keeps a
+partial Windows `copytree` from leaving a tree that "looks valid", the clone-root `VERSION` copied in
+beside the subtree, and `FETCH_PROVENANCE.json`. Only the destination changes.
+
+**Resolution is an additive catalog overlay.** `CatalogResolver.__init__`
+(`core/catalog_utils.py:138-142`) gains `extra_catalogs`, with the default resolved **inside
+`__init__`** rather than threaded through `load_ontology`. This is the load-bearing choice in the
+whole proposal. There are **8 `CatalogResolver` construction sites** (`cli/shared.py:1392`,
+`core/analyse_sources.py:859`, `core/archetype_topology.py:159`, `core/catalog_test.py:41`,
+`core/inventory.py:609`, `core/ontology_loader.py:241`, `core/propose_alignment.py:462`,
+`core/reference_modules.py:587`) and roughly **14 independent catalog-discovery sites** across
+`cli/` and `core/` that locate `catalog-v001.xml` by their own means (five in `cli/inspection.py`
+alone). A threaded parameter would reach a small minority, and the majority would degrade **silently**
+— a `<nextCatalog>` that does not exist is a `warning`-level diagnostic
+(`catalog_utils.py:210-216`), not an error, so the failure mode of a missed site is a hub that quietly
+resolves less of its closure. Defaulting in the constructor is the only variant where forgetting a
+call site is inert rather than harmful. The `catalog_path is not None` gate at
+`core/ontology_loader.py:241` must be fixed in the same change, and note that
+`core/design_landscape.py:403-408` *raises* on a missing reference-models directory where everything
+else warns.
+
+**The overlay must be additive-only, and this is a correctness constraint, not a style preference.**
+`stable_root` derives from `Path(catalog_path).resolve().parent`
+(`core/ontology_loader.py:233-239`) and feeds `source_identity` → `_closure_hash` → the DD-047
+inventory envelope. If the overlay can displace or reorder the hub catalog's own resolutions, closure
+hashes become machine-dependent and every inventory in every hub churns on the next run. Additive-only
+means: the hub catalog is still the root, its entries still win, and the overlay only supplies
+resolutions the hub catalog does not already provide.
+
+**Precedence extends `resolve_refmodels_root`'s existing chain** (`core/archetype_loader.py:139-184`)
+rather than replacing it: explicit `--refmodels-root`, then `KAIROS_REFMODELS_ROOT`, then the existing
+sibling/hub-relative folder scan, then the cache. A hub that still has
+`ontology-reference-models/` on disk keeps resolving from it and is unaffected. Migration is therefore
+opt-in per hub, and DD-036's layout stays valid — it stops being the *default*, it does not become
+wrong.
+
+If resolution is ever moved into an installed package, use `importlib.resources.files()`, which
+returns a real `pathlib.Path` for both wheel and editable installs, and **assert
+`isinstance(root, Path)` so a zip-import regression fails loudly**. Never call `as_file()` on a
+directory traversable: its default behaviour recursively replicates the tree into a temp directory
+deleted on context exit — a 17.5 MB extraction per invocation. House convention for packaged data is
+`__file__`-relative (`core/design_validation.py:284-286`, `core/binding_archetypes.py:40-43`).
+
+### Rejected alternatives
+
+- **Ship reference models as a Python wheel resolved via `importlib.resources`.** Rejected on
+  distribution, and the path budget is only the second reason. **There is no package index.** The
+  toolkit itself installs from a GitHub-Release-asset direct URL
+  (`scaffold/pyproject.toml.template:7`, `.github/workflows/release.yml:105-109`), so a second
+  distribution has exactly two options: pin it *inside* the toolkit wheel — which makes every
+  reference-models release require a toolkit release, destroying the only reason to separate them — or
+  add a second hub-side URL pin, which reproduces the multi-pin divergence #297 was filed to remove
+  (five strings for one version, kept in agreement by nothing). "`update-refmodels` becomes
+  `pip install -U`" is simply not on offer. Separately, `site-packages` is the *worst* location on path
+  length: **291 characters, over `MAX_PATH` by 31**, some 56 characters worse than vendoring.
+- **Bake an absolute cache path into the committed `catalog-v001.xml`.** The catalog is a committed,
+  shared, user-editable artifact; an absolute machine path makes it non-portable across every developer
+  and CI runner, and because `stable_root` is the catalog's parent directory it would also make
+  `source_identity` machine-specific. Rejected.
+- **Generate the catalog at run time.** Turns a committed contract artifact into a build output.
+  `catalog-v001.xml` is referenced by name from ~14 discovery sites and both scaffold templates, is the
+  one `.xml` the DD-103 boundary deliberately lets an agent read, and is intentionally hand-editable
+  under DD-024's hash-tolerant resolution. Generation would also silently discard whatever a hub had
+  added to it. Rejected.
+- **Symlink or junction the hub path into the cache.** Windows symlink creation needs Developer Mode
+  or elevation; junctions are directory-only and unknown to git, so git either tracks a placeholder or
+  walks through and stages the 560 files this decision exists to remove. It also buys nothing on path
+  length, since resolution still traverses the hub-side prefix. Rejected.
+- **`KAIROS_REFMODELS_ROOT` only.** This is the status quo, not a decision — the variable already
+  exists and is already second in `resolve_refmodels_root`'s precedence. As the *primary* mechanism it
+  requires every user, shell, IDE, CI job and agent session to set it correctly, manages no fetching or
+  versioning, and when unset degrades through a `warning`-level missing-`nextCatalog` path rather than
+  failing. It remains essential as the air-gap escape hatch; it is not a distribution strategy.
+
+### Consequences
+
+- **This is the first machine-level state the toolkit has ever owned.** There is currently no
+  `Path.home()`, `%APPDATA%` or `platformdirs` use anywhere in `src/` — the toolkit reads and writes
+  only inside the repo it was pointed at. That property ends here, and with it come failure modes the
+  codebase has no precedent for: profile redirection and roaming profiles in managed corporate estates,
+  per-user caches on shared build agents, and read-only or quota-limited profile directories.
+- **Cache lifecycle becomes the toolkit's problem.** Nothing deletes a `<version>` directory, so
+  versions accumulate at 17.5 MB each. Two hubs can fetch the same version concurrently — the existing
+  build-off-to-the-side-then-swap makes a partial tree unlikely but does not make the swap atomic
+  against a concurrent reader. Invalidation, a `--prune`/GC story, and a documented "delete this
+  directory" recovery step are in scope for the implementation, not optional follow-ups.
+- **Every hub's CI must populate the cache.** Today the models arrive with the checkout and nothing
+  needs to know they exist. After this, every workflow that runs `compile`, `validate`,
+  `check-inventory`, `design-landscape` or `discovery-conformance` needs a fetch step and a cache key.
+  This is the largest migration cost and it lands in client repositories, not in this one.
+- **Offline and air-gapped use regresses.** A clone is currently self-sufficient. Afterwards, a cold
+  machine with no network cannot resolve the closure at all. `KAIROS_REFMODELS_ROOT` plus a documented
+  pre-seed procedure (copy a known-good `<version>` directory into place) are therefore mandatory
+  deliverables, not documentation nice-to-haves.
+- **Historical reproducibility weakens, and this is the direct counterweight to DD-036's rationale.**
+  DD-036 valued "files are version-controlled in the hub repo — easy to diff/track changes". Under
+  DD-152 a hub no longer records the bytes it was authored against; `FETCH_PROVENANCE.json` moves into
+  the cache along with the models. A committed pin in the hub is the replacement, and the DD-047
+  envelope stamp below is where it becomes verifiable.
+- **The DD-103 boundary becomes structural for migrated hubs but the deny-list cannot be deleted.**
+  The `ontology-reference-models/**` globs in `scaffold/claude-settings.json` become vestigial once a
+  hub has no such directory, and remain necessary for every hub that still does. They stay, inert, for
+  as long as both layouts are supported — a permanent piece of dead-looking configuration that a future
+  reader will be tempted to remove. The `model/ontologies/**` and `model/shapes/**` globs are
+  untouched: hub-authored ontology never leaves the repo, so the deny-list remains the only mechanism
+  there.
+- **Path budget improves rather than merely holding.** The tree moves from 235 characters to a prefix
+  well inside budget, which also removes the latent `copytree` hazard `_fetch_reference_models`
+  currently documents in its own docstring.
+- **The acceptance test is byte-equality, not "it works".** Closure hashes and DD-047 inventory
+  filenames must be identical before and after the move on the same hub; a `compile --check` and
+  `validate` must complete with **zero `missing_import` warnings** and no `ontology-reference-models/`
+  in the hub. Silent partial resolution is the failure this proposal must be tested against, because it
+  is the failure the warning-level catalog diagnostics make easy.
+
+### Open questions
+
+These are genuinely unresolved. This entry should not move to Accepted until both have answers.
+
+1. **What is `<version>` in the cache path — which string is authoritative?** `VERSION` is **15
+   files**, not one: the repository root plus 14 per-module and per-pack files under
+   `ontology-reference-models/` (`blueprints/{archetypes,ontology,patterns}`,
+   `accelerator-packs/{financial-services,logistics}`, and nine `derived-ontologies/*`). Only the root
+   one is a candidate for substitution by a distribution version; the 14 are read by `_module_version`
+   (`core/archetype_loader.py:411-456`) to check `compatible_with.ontology_versions` pins and must keep
+   shipping verbatim. Meanwhile `repo_tag_range` (`core/archetype_loader.py:459-495`) is a **git tag**
+   range whose schema the reference-models repo owns, compared via `packaging` against whatever
+   `_refmodels_version` reads — which is why `_fetch_reference_models` copies the clone-root `VERSION`
+   in beside the subtree at all. So the git tag (`v1.16.0`), the root `VERSION` (`1.16.0`) and any
+   future distribution version are three strings kept in agreement by nothing, and PEP 440
+   normalisation diverges from tag form for non-final releases. The straightforward candidate is the
+   **resolved git ref actually fetched**, since that is what `_fetch_reference_models` accepts and what
+   `FETCH_PROVENANCE.json` records — but naming it here without settling the relationship to
+   `repo_tag_range` would just move the ambiguity into a directory name.
+2. **Aggregate third-party attribution is not reaching hubs today, and the cache inherits that.**
+   FIBO (MIT, © 2020 Enterprise Data Management Council) and IATA ONE Record (MIT, © 2025 IATA-Cargo)
+   each carry a `LICENSE` inside their `current/` directory, and those files *are* vendored. An
+   aggregate `NOTICE` naming both, with paths, copyrights and the Apache-2.0/MIT compatibility
+   statement, exists at the **upstream reference-models repository root** — but
+   `_fetch_reference_models` copies only the `ontology-reference-models/` subtree plus the clone-root
+   `VERSION`, so neither the root `LICENSE` nor the root `NOTICE` has ever reached a hub. Moving to a
+   cache does not create this gap and does not fix it; it carries it to a new location while removing
+   the per-file `LICENSE` copies from the repo a downstream consumer would clone. Recorded as an
+   observation for review, not as legal advice: whoever owns redistribution terms should decide whether
+   the fetch should also copy the root `LICENSE`/`NOTICE`.
+
+---
