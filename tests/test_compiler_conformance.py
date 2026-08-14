@@ -216,6 +216,10 @@ def test_rejects_incompatible_grain_identity_and_property_types(contracts, code)
         _plan(first, second, contracts=contracts)
 
     assert code in _codes(excinfo.value)
+    # Issue #286(E): a conformance mismatch should teach the resolution pattern
+    # (normalize + bind once via int_merged__<entity>), not just name the violation.
+    matching = [item for item in excinfo.value.diagnostics if item.code == code]
+    assert "int_merged__<entity>" in matching[0].message
 
 
 def test_rejects_duplicate_source_and_precedence_with_stable_locations() -> None:

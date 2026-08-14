@@ -183,6 +183,21 @@ def test_technical_field_purpose_is_a_closed_enum(bad_purpose: str) -> None:
     assert "binding.schema" in _codes(excinfo.value)
 
 
+def test_technical_field_purpose_carried_is_accepted() -> None:
+    """Issue #338 item 4: a plain carried column that is none of identity/quality/
+    relationship (e.g. an alternate external code space) now has an honest value."""
+    doc = VALID + textwrap.dedent("""\
+        technicalFields:
+          - name: iata_code_map
+            expression: account_id
+            type: string
+            nullable: true
+            purpose: carried
+        """)
+    binding = load_entity_binding(doc, path="technical.binding.yaml")
+    assert binding.technical_fields[0].purpose == "carried"
+
+
 def test_technical_field_reuses_the_closed_expression_grammar() -> None:
     """A disallowed function inside a technicalFields expression is rejected identically."""
     doc = VALID + textwrap.dedent("""\
@@ -565,6 +580,98 @@ def test_technical_field_replaces_the_scalar_field_workaround_and_compiles_clean
     # A technical field is never an ontology property: it must not also show up in the
     # semantic `fields` explain pairs.
     assert "party:country_code" not in {prop for prop, _ in entity.fields}
+
+
+def test_pure_relationship_binding_with_empty_fields_compiles_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """Issue #338 item 1: a class whose only property is an object property has nothing
+    for fields: -- it is now schema-valid with fields: [] as long as relationships: is
+    non-empty, and the identity/join-local columns are carried via technicalFields
+    (already the documented workaround, DD-139), not a fields: entry."""
+    hub = _hub(tmp_path)
+    binding_path = _customer_binding_path(hub)
+    binding_path.write_text(
+        textwrap.dedent("""\
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: crm-customer
+              domain: party
+            source:
+              relation: crm.customers
+            target:
+              class: party:Customer
+            grain:
+              columns: [customer_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [customer_id]
+            load:
+              mode: full-refresh
+            fields: []
+            technicalFields:
+              - name: customer_id
+                expression: customer_id
+                type: string
+                nullable: false
+                purpose: identity
+              - name: country_code
+                expression: country_code
+                type: string
+                nullable: true
+                purpose: relationship
+            relationships:
+              - property: party:country
+                target: party:Country
+                join:
+                  - local: country_code
+                    foreign: code
+                cardinality: many-to-one
+                mode: non-temporal
+                missingParent: error
+                ambiguousParent: error
+            quality:
+              - kind: unique
+                columns: [customer_id]
+              - kind: not-null
+                columns: [customer_id]
+            """),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert result.succeeded, result.diagnostics.items
+    entity = next(item for item in result.explain.entities if item.name == "crm-customer")
+    assert entity.fields == ()
+
+
+def test_empty_fields_without_relationships_is_still_rejected() -> None:
+    """The relaxation is scoped: fields: [] alone (no relationships:) still maps nothing
+    at all and must still be rejected, not silently accepted as an empty no-op binding."""
+    doc = textwrap.dedent("""\
+        apiVersion: kairos.eu/v5
+        kind: EntityBinding
+        metadata:
+          name: crm-customer-to-party
+          domain: party
+        source:
+          relation: crm.customers
+        target:
+          class: party:Customer
+        grain:
+          columns: [customer_id]
+        identity:
+          strategy: source-natural
+          sourceKey: [customer_id]
+        load:
+          mode: full-refresh
+        fields: []
+        """)
+    with pytest.raises(CompileError) as excinfo:
+        load_entity_binding(doc, path="bad.yaml")
+    assert "binding.schema" in _codes(excinfo.value)
 
 
 def test_technical_field_output_collision_with_semantic_field_is_rejected(tmp_path: Path) -> None:

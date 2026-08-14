@@ -579,12 +579,24 @@ def open_questions(
         needs_confirmation = bool(concept.get("needs_confirmation", False))
         confidence = concept.get("confidence")
         if needs_confirmation or confidence is None:
+            likely_domains = concept.get("likely_domains")
+            if likely_domains:
+                scope_reason = (
+                    "tagged to domain(s): " + ", ".join(str(d) for d in likely_domains)
+                )
+            else:
+                scope_reason = "cross-cutting (no likely_domains tagged)"
             questions.append(
                 {
                     "uri": concept.get("uri"),
                     "label": concept.get("label"),
                     "reason": "needs_confirmation" if needs_confirmation else "missing confidence",
-                    "domains": concept.get("likely_domains"),
+                    "domains": likely_domains,
+                    # issue #396: record *why* this concept is in scope so a caller
+                    # blocked by a cross-cutting-by-default item (untagged
+                    # likely_domains) can tell that apart from one genuinely tagged
+                    # to the active domain, without reading this module's source.
+                    "scope_reason": scope_reason,
                 }
             )
     return questions
@@ -667,8 +679,10 @@ def check_discovery_gate(hub_root: Path, *, domains: Collection[str] | None = No
     errors = []
     for question in open_questions(artifact, domains=domains):
         label = question.get("label") or question.get("uri") or "<unknown concept>"
+        scope_reason = question.get("scope_reason")
+        scope_suffix = f" [in scope: {scope_reason}]" if scope_reason else ""
         errors.append(
-            f"Unresolved discovery item ({question['reason']}): {label} — "
+            f"Unresolved discovery item ({question['reason']}): {label}{scope_suffix} — "
             "confirm it with a human via kairos-design-discovery before proceeding."
         )
     return errors

@@ -14,7 +14,8 @@ import yaml
 from rdflib import Graph, Namespace, RDF, RDFS
 
 from .compiler import CompileError, adapt_binding, load_entity_binding, resolve_scope
-from .compiler.kernel import _binding_domain, _binding_source_ref
+from .compiler.dbt_lineage import resolve_dbt_model_contributing_sources
+from .compiler.kernel import _binding_dbt_paths, _binding_domain, _binding_source_ref
 from .projections.dbt.mapping_bind import mapping_context
 from .projections.dbt.mapping_specs import ColumnMappingFact, SourceMappings
 from .projections.medallion_dbt_projector import _parse_skos_mappings
@@ -378,17 +379,34 @@ def _diagnostics_message(exc: CompileError) -> str:
     return "; ".join(diagnostic.message for diagnostic in exc.diagnostics)
 
 
-def _binding_matches_system(text: str, source_system: str) -> bool:
-    """True when *text*'s declared ``source.relation`` belongs to *source_system*.
+def _binding_matches_system(
+    text: str, source_system: str, *, hub_root: Path | None = None
+) -> bool:
+    """True when *text*'s declared source belongs to *source_system*.
 
-    Matched on the relation's first dot-segment (e.g. ``"cargowise"`` in
-    ``"cargowise.GlbStaff.sample"``) -- always present on a resolvable binding, unlike a
-    matching bronze ``SourceColumn``/sample entry, which issue #298 documents may not exist
-    for every declared column.
+    A ``source.relation`` binding matches on the relation's first dot-segment (e.g.
+    ``"cargowise"`` in ``"cargowise.GlbStaff.sample"``) -- always present on a resolvable
+    binding, unlike a matching bronze ``SourceColumn``/sample entry, which issue #298
+    documents may not exist for every declared column.
+
+    A ``source.dbtModel`` binding has no direct relation to sniff. Previously this always
+    returned ``False`` for it under every ``source_system`` -- a dbt-model binding whose
+    contracted model is itself fed by real source systems (via ``source()``/``ref()``) was
+    unconditionally excluded, not merely misattributed (issue #400). When *hub_root* is
+    given, it matches when *source_system* is one of the model's transitively resolved
+    contributing sources, traced from the model's own declared ``sqlPath``.
     """
     relation = _binding_source_ref(text)
-    system = relation.split(".", 1)[0] if relation else ""
-    return system.lower() == source_system.lower()
+    if relation:
+        system = relation.split(".", 1)[0]
+        return system.lower() == source_system.lower()
+    if hub_root is None:
+        return False
+    sql_path, _contract_path = _binding_dbt_paths(text)
+    if not sql_path:
+        return False
+    sources, _fully_traceable = resolve_dbt_model_contributing_sources(hub_root, sql_path)
+    return source_system.lower() in {system.lower() for system in sources}
 
 
 def resolve_v5_column_facts(
@@ -445,7 +463,9 @@ def resolve_v5_column_facts(
                     )
                 )
                 continue
-            if source_system is not None and not _binding_matches_system(text, source_system):
+            if source_system is not None and not _binding_matches_system(
+                text, source_system, hub_root=hub_root
+            ):
                 continue
             try:
                 binding = load_entity_binding(text, path=str(path))

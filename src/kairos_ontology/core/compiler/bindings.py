@@ -346,8 +346,10 @@ class TechnicalField:
     Materializes a source expression as a Silver output column without asserting a new
     ontology property. Distinguishable from a semantic :class:`FieldMapping`: it carries its
     own closed-enum ``type``/``nullable`` contract and a ``purpose`` label (``identity``,
-    ``quality``, or ``relationship``) instead of an ontology ``property`` reference. Never
-    auto-materialized -- only ever produced by an authored ``technicalFields:`` entry.
+    ``quality``, ``relationship``, or ``carried`` -- issue #338 item 4, a plain carried
+    column that is none of the other three, e.g. an alternate external code space)
+    instead of an ontology ``property`` reference. Never auto-materialized -- only ever
+    produced by an authored ``technicalFields:`` entry.
     """
 
     name: str

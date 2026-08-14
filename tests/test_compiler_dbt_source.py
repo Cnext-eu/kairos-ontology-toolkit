@@ -52,6 +52,7 @@ def _model() -> dict:
                 "virtual_source_iri": "https://example.com/source/dbt#intCustomer",
                 "grain": "one row per customer",
                 "grain_key": ["customer_id"],
+                "supported_adapters": ["fabric"],
             }
         },
         "columns": [
@@ -141,6 +142,20 @@ def test_relation_binding_is_rejected_with_stable_missing_model_code(tmp_path: P
         (lambda model: model.update(name="other"), "dbt-source.model-unresolved"),
         (
             lambda model: model["meta"]["kairos"].update(virtual_source_iri="relative"),
+            "dbt-source.contract-invalid",
+        ),
+        (
+            lambda model: model["meta"]["kairos"].pop("supported_adapters"),
+            "dbt-source.contract-invalid",
+        ),
+        (
+            lambda model: model["meta"]["kairos"].update(supported_adapters=["snowflake"]),
+            "dbt-source.contract-invalid",
+        ),
+        (
+            lambda model: model["meta"]["kairos"].update(
+                supported_adapters=["fabric", "fabric"]
+            ),
             "dbt-source.contract-invalid",
         ),
     ],

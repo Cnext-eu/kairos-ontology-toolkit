@@ -835,6 +835,18 @@ def test_open_questions_cross_cutting_via_empty_likely_domains_list_blocks():
     assert len(open_questions(art, domains=["party"])) == 1
 
 
+def test_open_questions_scope_reason_cross_cutting_when_untagged():
+    art = {"mode": "fleet", "core_concepts": [_unresolved_concept(None)]}
+    questions = open_questions(art, domains=["party"])
+    assert questions[0]["scope_reason"] == "cross-cutting (no likely_domains tagged)"
+
+
+def test_open_questions_scope_reason_names_tagged_domains():
+    art = {"mode": "fleet", "core_concepts": [_unresolved_concept(["party", "booking"])]}
+    questions = open_questions(art, domains=["party"])
+    assert questions[0]["scope_reason"] == "tagged to domain(s): party, booking"
+
+
 def test_check_discovery_gate_scopes_out_unrelated_domain(tmp_path, archetype):
     outcomes = _outcomes()
     outcomes[0]["decided_by"] = "ai"
@@ -877,6 +889,26 @@ def test_check_discovery_gate_still_blocks_cross_cutting_with_domains_filter(tmp
     write_artifact(tmp_path, art)
     errors = check_discovery_gate(tmp_path, domains=["party"])
     assert len(errors) == 1
+    # Issue #396: the message must say *why* it's in scope, so an author blocked by
+    # an untagged (cross-cutting-by-default) item can tell it apart from one
+    # genuinely tagged to the active domain, without reading the source.
+    assert "cross-cutting (no likely_domains tagged)" in errors[0]
+
+
+def test_check_discovery_gate_message_names_the_matching_tagged_domain(tmp_path, archetype):
+    outcomes = _outcomes()
+    outcomes[0]["decided_by"] = "ai"
+    outcomes[0]["needs_confirmation"] = True
+    outcomes[0]["likely_domains"] = ["party"]
+    for other in outcomes[1:]:
+        other["decided_by"] = "user"
+    art = build_artifact(
+        archetype=archetype, refmodels_version="1.11.0", outcomes=outcomes, mode="fleet"
+    )
+    write_artifact(tmp_path, art)
+    errors = check_discovery_gate(tmp_path, domains=["party"])
+    assert len(errors) == 1
+    assert "tagged to domain(s): party" in errors[0]
 
 
 def test_check_discovery_gate_no_domains_filter_still_gates_on_everything(tmp_path, archetype):

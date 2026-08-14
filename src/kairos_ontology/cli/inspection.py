@@ -173,6 +173,11 @@ def _render_fit_report_text(result) -> None:
         )
     else:
         click.echo("   Evidence: none")
+        if result.source_system and result.notes:
+            # Issue #397: --source's "Evidence: none" is indistinguishable from a real
+            # negative result unless the reason (usually: no prior propose-alignment
+            # run) is right next to it, not just buried in the Notes section below.
+            click.echo(f"     ({result.notes[0]})")
     if result.technical_fields:
         purposes = ", ".join(f"{item.name} [{item.purpose}]" for item in result.technical_fields)
         click.echo(
@@ -285,6 +290,128 @@ def fit_report_cmd(class_token, ontology, domain, catalog, source, binding_path,
         click.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
         return
     _render_fit_report_text(result)
+
+
+def _render_plan_sources_text(result) -> None:
+    click.echo(f"📐 plan-sources — {result.class_token} ({result.class_uri})")
+    click.echo("   DD-133 §3c: raw multi-source conformance requires identical grain/identity")
+    click.echo("   type-kinds, identity strategy, and property type set across every binding.")
+    click.echo("")
+    if not result.bindings:
+        click.echo("   Existing bindings: none")
+    else:
+        click.echo(f"   Existing bindings ({len(result.bindings)}):")
+        for fact in result.bindings:
+            click.echo(f"     - {fact.name} [{fact.source_ref}] ({fact.source_path})")
+            grain = ", ".join(f"{col.name}:{col.kind or col.data_type or '?'}" for col in fact.grain)
+            identity = ", ".join(
+                f"{col.name}:{col.kind or col.data_type or '?'}" for col in fact.identity
+            )
+            click.echo(f"       grain: {grain or '(none)'}")
+            click.echo(f"       identity [{fact.identity_strategy}]: {identity or '(none)'}")
+            if fact.conformance_group:
+                click.echo(
+                    f"       conformance: group={fact.conformance_group} "
+                    f"precedence={fact.source_precedence} conflict={fact.conflict} "
+                    f"union={fact.union_mode}"
+                )
+    if result.candidate is not None:
+        candidate = result.candidate
+        click.echo("")
+        click.echo(f"   Candidate: {candidate.source_system}.{candidate.source_table}")
+        if candidate.key_columns:
+            columns = ", ".join(
+                f"{col.name}:{col.kind or col.data_type or '?'}" for col in candidate.key_columns
+            )
+            click.echo(f"     columns: {columns}")
+        if candidate.compatible is True:
+            click.echo("     ✓ identity type-kinds match — raw conformance is feasible")
+        elif candidate.compatible is False:
+            click.echo("     ✗ identity type-kinds do NOT match — raw conformance would fail")
+        for note in candidate.notes:
+            click.echo(f"     - {note}")
+
+
+@click.command(name="plan-sources")
+@click.option(
+    "--class",
+    "class_token",
+    required=True,
+    help="Full class IRI or a 'prefix:Local' qname to preview conformance for.",
+)
+@click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
+@click.option(
+    "--source",
+    default=None,
+    help="Candidate '<system>.<table>' not yet bound, to preview against existing bindings.",
+)
+@click.option(
+    "--key-column",
+    "key_columns",
+    multiple=True,
+    help="Candidate source column that would serve as the identity key. Repeatable, in "
+    "sourceKey order. Only meaningful together with --source.",
+)
+@click.option(
+    "--format",
+    "out_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text).",
+)
+def plan_sources_cmd(class_token, ontology, domain, source, key_columns, out_format):
+    """Preview DD-133 §3c multi-source conformance before authoring bindings (issue #286).
+
+    Reports the grain/identity type-kinds of every existing binding already targeting
+    --class, and — when --source (plus --key-column) is given — whether that candidate
+    could satisfy the same conformance contract if bound directly. This runs the same
+    type-kind comparison `compile` runs, one step earlier: before hand-authoring a second
+    (or third...) binding to a class, not after `compile --check` fails.
+
+    \b
+    Examples:
+      kairos-ontology plan-sources --class acc:TradeParty --domain party
+      kairos-ontology plan-sources --class acc:TradeParty --domain party \\
+        --source erp.parties --key-column party_id
+    """
+    from ..core.plan_sources import PlanSourcesError, run_plan_sources
+    from ..core.hub_utils import find_hub_root
+
+    hub_root = find_hub_root(Path.cwd(), require_model=True)
+    if ontology:
+        path = Path(ontology)
+    elif domain:
+        if hub_root is None:
+            raise click.ClickException("Cannot locate a hub for --domain.")
+        path = hub_root / "model" / "ontologies" / f"{domain}.ttl"
+    else:
+        raise click.UsageError("Provide --ontology or --domain.")
+
+    if hub_root is None:
+        raise click.ClickException("Cannot locate a hub root.")
+    bindings_dir = hub_root / "integration" / "bindings"
+    sources_dir = hub_root / "integration" / "sources"
+
+    try:
+        result = run_plan_sources(
+            path,
+            class_token,
+            hub_root=hub_root,
+            bindings_dir=bindings_dir if bindings_dir.is_dir() else None,
+            sources_dir=sources_dir,
+            source=source,
+            key_columns=key_columns,
+        )
+    except PlanSourcesError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if out_format == "json":
+        from dataclasses import asdict
+
+        click.echo(json.dumps(asdict(result), indent=2, sort_keys=True))
+        return
+    _render_plan_sources_text(result)
 
 
 @click.command(name="explain-term")

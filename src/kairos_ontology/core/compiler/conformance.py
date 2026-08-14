@@ -130,6 +130,15 @@ def _validate_contract_shape(
     return diagnostics
 
 
+_CONFORMANCE_RESOLUTION_HINT = (
+    "raw multi-source conformance requires identical grain/identity/property type-kinds "
+    "across every binding in the group; if sources are structurally heterogeneous, "
+    "normalize them in a contracted dbt intermediate and bind once instead — see "
+    "kairos-develop-dbt-transformation/SKILL.md's 'Two reconciliation strategies for "
+    "int_merged__<entity>' (issue #286)"
+)
+
+
 def _compare_group_contracts(
     canonical: EntityBinding,
     binding: EntityBinding,
@@ -142,7 +151,8 @@ def _compare_group_contracts(
             _diagnostic(
                 binding,
                 "conformance.grain-incompatible",
-                f"grain/type contract differs from binding '{canonical.name}'",
+                f"grain/type contract differs from binding '{canonical.name}' — "
+                f"{_CONFORMANCE_RESOLUTION_HINT}",
                 "/grain/columns",
             )
         )
@@ -154,7 +164,8 @@ def _compare_group_contracts(
             _diagnostic(
                 binding,
                 "conformance.identity-incompatible",
-                f"identity strategy/type contract differs from binding '{canonical.name}'",
+                f"identity strategy/type contract differs from binding '{canonical.name}' — "
+                f"{_CONFORMANCE_RESOLUTION_HINT}",
                 "/identity",
             )
         )
@@ -163,7 +174,8 @@ def _compare_group_contracts(
             _diagnostic(
                 binding,
                 "conformance.property-incompatible",
-                f"property/type contract differs from binding '{canonical.name}'",
+                f"property/type contract differs from binding '{canonical.name}' — "
+                f"{_CONFORMANCE_RESOLUTION_HINT}",
                 "/fields",
             )
         )

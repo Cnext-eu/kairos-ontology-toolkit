@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from ..dbt_contracts import SUPPORTED_ADAPTERS
 from ..projections.dbt.policy_normalize import _source_type
 from .adapter import ResolvedColumn, ResolvedRelation
 from .bindings import EntityBinding
@@ -250,6 +251,26 @@ def resolve_dbt_model_source(binding: EntityBinding, hub_root: str | Path) -> Re
 
     model = _selected_model(binding, _load_contract(binding, contract_path))
     kairos = _kairos_meta(binding, model)
+    # Issue #397: this is the same meta.kairos.supported_adapters rule dbt_contracts.py's
+    # stricter, bundle-time _parse_contract() already enforces (SUPPORTED_ADAPTERS
+    # imported from there to avoid drift) — checking it here at compile time closes the
+    # gap where a malformed contract passed `compile --check`/`--emit` and was only
+    # caught later, by a separate tool, during `generate`/bundling.
+    supported_adapters = kairos.get("supported_adapters")
+    if (
+        not isinstance(supported_adapters, list)
+        or not supported_adapters
+        or any(not isinstance(item, str) or not item.strip() for item in supported_adapters)
+        or len(set(supported_adapters)) != len(supported_adapters)
+        or not set(supported_adapters) <= SUPPORTED_ADAPTERS
+    ):
+        raise _failure(
+            binding,
+            "dbt-source.contract-invalid",
+            "selected dbt model must declare a non-empty, valid "
+            f"meta.kairos.supported_adapters (one or more of {sorted(SUPPORTED_ADAPTERS)})",
+            "contractPath",
+        )
     grain = kairos.get("grain")
     grain_key = kairos.get("grain_key")
     if not isinstance(grain, str) or not grain.strip():

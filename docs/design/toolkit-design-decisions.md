@@ -9474,6 +9474,16 @@ DD-138 explicitly preserves. `compile --explain` labels technical outputs separa
 (`ExplainEntity.technical_fields`), distinct from the semantic `fields` pairs. As originally
 decided, implicit auto-materialization remains rejected: the compiler never creates a technical
 field on its own — every one must be explicitly authored in the binding YAML.
+**Correction (#338, items 1 and 4):** two real dogfood gaps in this construct's boundary are
+closed. First, `purpose` gains a fourth enum value, `carried`, for a plain materialized column
+that is honestly none of `identity`/`quality`/`relationship` (e.g. an alternate external code
+space) — previously an author had to pick a value known to be wrong. Second, `fields:` no longer
+requires at least one entry unconditionally: `entity-binding.schema.json` now allows `fields: []`
+when `relationships:` is non-empty (`allOf`/`if`/`then`), unblocking a class whose only property is
+an object property (a pure junction/link entity, e.g. a many-to-many association row) — its own
+identity and any relationship `join.local` columns are still carried via `technicalFields:` exactly
+as already described above, no compiler change beyond the schema was needed. `fields: []` alone,
+with no `relationships:` entry, still maps nothing at all and remains rejected.
 
 ### Context
 

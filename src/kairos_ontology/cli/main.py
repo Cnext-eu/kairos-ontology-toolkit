@@ -45,6 +45,7 @@ from .projections import (
     scaffold_silver_ext_cmd,
 )
 from .scaffold_binding import scaffold_binding_cmd
+from .scaffold_staging import scaffold_staging_cmd
 from .scaffold_system import scaffold_system_cmd
 from .setup import (
     init,
@@ -72,6 +73,7 @@ from .inspection import (
     show_class_inventory_cmd,
     list_class_properties_cmd,
     fit_report_cmd,
+    plan_sources_cmd,
     explain_term_cmd,
     coverage_report_cmd,
     field_mapping_report_cmd,
@@ -148,6 +150,16 @@ class _KairosGroup(click.Group):
             _log_unhandled_exception(exc)
             _teardown_observability(ctx)
             raise
+
+    def main(self, *args, **kwargs):
+        # Issue #398: Click's Windows default expands an unquoted-by-the-time-it-
+        # reaches-argv glob (e.g. --allow "*binding.yaml") against the filesystem
+        # before our own option parsing ever sees it, turning one glob argument into
+        # dozens of literal positional arguments. Every documented invocation in this
+        # toolkit's skills passes globs as literal filter strings, never as file
+        # arguments meant for shell-style expansion, so this expansion is never wanted.
+        kwargs.setdefault("windows_expand_args", False)
+        return super().main(*args, **kwargs)
 
 
 @click.group(cls=_KairosGroup)
@@ -250,6 +262,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(scaffold_mapping_cmd)
     group.add_command(scaffold_silver_ext_cmd)
     group.add_command(scaffold_binding_cmd)
+    group.add_command(scaffold_staging_cmd)
     group.add_command(scaffold_system_cmd)
     group.add_command(init)
     group.add_command(migrate)
@@ -273,6 +286,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(show_class_inventory_cmd)
     group.add_command(list_class_properties_cmd)
     group.add_command(fit_report_cmd)
+    group.add_command(plan_sources_cmd)
     group.add_command(explain_term_cmd)
     group.add_command(coverage_report_cmd)
     group.add_command(field_mapping_report_cmd)

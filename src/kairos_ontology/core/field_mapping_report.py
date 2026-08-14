@@ -14,6 +14,13 @@ Object properties (relationships) are out of scope for this report: EntityBindin
 ``relationships:`` joins are wired later in the compile pipeline (``_wire_relationships``,
 ``core/compiler/kernel.py``) and don't carry a single representative "value" the way a
 scalar ``fields:`` mapping does. Only ``fields:``-declared mappings are shown.
+
+A ``source.dbtModel`` binding contributes fields via a contracted dbt model rather than a
+direct ``source.relation`` table -- this report attributes those fields to every source
+system the model transitively resolves via its own ``source()``/``ref()`` calls (issue
+#400), and notes explicitly (per binding) that this is a model/source-system provenance
+view, not a direct table mapping. It does not require, and never implies the need for, a
+duplicate per-source EntityBinding merely for this report's sake.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .compiler.kernel import _binding_dbt_paths, _binding_source_ref
 from .hub_utils import is_domain_ontology_stem
 from .ontology_loader import SemanticProfile, load_ontology
 from .projections.dbt.mapping_bind import expression_input_uris
@@ -30,6 +38,7 @@ from .projections.dbt.mapping_specs import ColumnMappingFact
 from .projections.uri_utils import extract_local_name
 from .silver_sample_audit import (
     SourceColumnSample,
+    _binding_matches_system,
     _resolve_source_column,
     load_source_samples,
     resolve_v5_column_facts,
@@ -394,6 +403,33 @@ def _source_column_display(
     return f"{extract_local_name(table_uri)}.{name}", ""
 
 
+def _dbt_model_names_for_system(
+    bindings_dir: Path, hub_root: Path, source_system: str
+) -> tuple[str, ...]:
+    """Return the contracted dbt model name(s) that contributed *source_system* fields.
+
+    Issue #400: a ``source.dbtModel`` binding's fields are model/source-system provenance,
+    not a direct table mapping -- the report should say so, not present them as if they
+    came from a plain relation binding.
+    """
+    if not bindings_dir.is_dir():
+        return ()
+    names: set[str] = set()
+    for path in bindings_dir.glob("*.binding.yaml"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _binding_source_ref(text):
+            continue
+        sql_path, _contract_path = _binding_dbt_paths(text)
+        if not sql_path:
+            continue
+        if _binding_matches_system(text, source_system, hub_root=hub_root):
+            names.add(Path(sql_path).stem)
+    return tuple(sorted(names))
+
+
 def run_field_mapping_report(
     *,
     ontologies_path: Path,
@@ -442,6 +478,16 @@ def run_field_mapping_report(
     facts, findings = resolve_v5_column_facts(hub_root, bindings_dir, source_system=source_system)
     for finding in findings:
         report.notes.append(finding.message)
+
+    dbt_model_names = _dbt_model_names_for_system(bindings_dir, hub_root, source_system)
+    if dbt_model_names:
+        report.notes.append(
+            f"'{source_system}' also contributes fields via contracted dbt model(s) "
+            f"{', '.join(dbt_model_names)} (source.dbtModel bindings, issue #400): this "
+            "report is a model/source-system provenance view for those fields, not a "
+            "direct table mapping, and does not require a duplicate EntityBinding per "
+            "source."
+        )
 
     rows_by_property: dict[str, list] = {}
     for fact in facts:
