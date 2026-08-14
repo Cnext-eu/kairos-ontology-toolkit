@@ -67,7 +67,13 @@ def test_refmodels_provenance_writer_records_unknown_commit_as_null(tmp_path):
 
 
 def test_update_refmodels_persists_resolved_fetch_provenance(tmp_path):
-    """The fetch flow persists requested ref and resolved commit after copying the subtree."""
+    """The fetch flow persists requested ref and resolved commit after copying the subtree.
+
+    Regression (#413): this fake clone deliberately has no root LICENSE/NOTICE (only
+    upstreams that publish them do), so this also proves the fetch still succeeds and
+    lands VERSION-less/LICENSE-less/NOTICE-less content without erroring when they're
+    absent.
+    """
     dest = tmp_path / "ontology-reference-models"
     fake_clone_dir = tmp_path / "fake-clone"
     fake_refmodels = fake_clone_dir / "ontology-reference-models"
@@ -103,6 +109,9 @@ def test_update_refmodels_persists_resolved_fetch_provenance(tmp_path):
     assert payload["commit"] == "abcdef1234567890"
     assert "VERSION" not in payload
     assert "version" not in payload
+    # Fetch succeeds cleanly even though the clone root has no LICENSE/NOTICE.
+    assert not (dest / "LICENSE").exists()
+    assert not (dest / "NOTICE").exists()
 
 
 def test_check_inventory_surfaces_refmodels_provenance(tmp_path):

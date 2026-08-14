@@ -451,7 +451,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
                 except MasterOntologySyncError as exc:
                     print(
                         f"  ⚠ Could not sync _master.ttl automatically: {exc}\n"
-                        f"      Add \"owl:imports <{ontology_iri}>\" to "
+                        f'      Add "owl:imports <{ontology_iri}>" to '
                         "ontology-hub/model/ontologies/_master.ttl manually."
                     )
                 else:
@@ -513,7 +513,11 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
     # schema names alone, before a designer ever touched anything. Generate what's
     # possible here; each source TTL's failure only reduces coverage, never aborts
     # `init` (matching `generate-inventory`'s own per-file try/except style).
-    if not skip_refmodels and refmodels_dest.is_dir() and _looks_like_refmodels_root(refmodels_dest):
+    if (
+        not skip_refmodels
+        and refmodels_dest.is_dir()
+        and _looks_like_refmodels_root(refmodels_dest)
+    ):
         from ..core.inventory import (
             generate_inventory,
             inventory_filename,
@@ -527,11 +531,14 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
                 inv = generate_inventory(
                     ttl_file,
                     catalog_path=catalog_dst if catalog_dst.is_file() else None,
+                    relative_to=refmodels_dest,
                 )
                 if not inv["classes"]:
                     continue
-                yaml_path = hub / "referencemodels-unpacked" / inventory_filename(
-                    ttl_file, ref_models_dir=refmodels_dest
+                yaml_path = (
+                    hub
+                    / "referencemodels-unpacked"
+                    / inventory_filename(ttl_file, ref_models_dir=refmodels_dest)
                 )
                 write_inventory(inv, yaml_path)
                 inventories_written += 1

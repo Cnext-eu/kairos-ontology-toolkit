@@ -15,14 +15,14 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
 from rdflib import Graph, OWL, RDF, RDFS
 
 from .analyse_sources import parse_reference_model
+from .determinism import resolve_generated_at
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,30 @@ def _ref_model_id(ttl_path: Path, *, ref_models_dir: Path | None) -> str | None:
         if idx + 1 < len(parts):
             return parts[idx + 1].lower()
     return None
+
+
+def _provenance_path(ttl_path: Path, *, relative_to: Path | None) -> str:
+    """Portable, committed-artifact-safe provenance for *ttl_path* (POSIX, relative).
+
+    An absolute machine-local path (e.g. ``C:\\Git\\hub\\...``) baked into a
+    committed inventory produces spurious diffs for every other clone of the
+    hub (issue #404). Relativising to *relative_to* — the same root passed to
+    :func:`inventory_filename` at the call site — keeps ``generated_from``
+    portable while staying symmetric with :func:`_ref_model_id`'s own fallback
+    chain, which is what makes write and read derivation agree. Falls back to
+    a ``derived-ontologies``-rooted path (mirroring the read-side marker
+    search in :func:`_ref_model_id`), then to the bare filename.
+    """
+    if relative_to is not None:
+        try:
+            return ttl_path.resolve().relative_to(relative_to.resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+    parts = ttl_path.parts
+    if "derived-ontologies" in parts:
+        idx = parts.index("derived-ontologies")
+        return PurePosixPath(*parts[idx:]).as_posix()
+    return ttl_path.name
 
 
 def is_archived_ref_model_source(ttl_path: Path, *, ref_models_dir: Path | None = None) -> bool:
@@ -236,6 +260,7 @@ def generate_inventory(
     domain_name: str | None = None,
     include_specializations: bool = True,
     catalog_path: Path | None = None,
+    relative_to: Path | None = None,
 ) -> dict[str, Any]:
     """Generate a materialized inventory from an ontology or reference model.
 
@@ -247,6 +272,12 @@ def generate_inventory(
         graph: Pre-loaded rdflib Graph.
         domain_name: Override domain name.
         include_specializations: Walk ``subClassOf`` downward (default True).
+        relative_to: Root *ttl_path*'s ``generated_from`` provenance is made
+            relative to (issue #404) — pass the same root used to compute the
+            inventory's filename via :func:`inventory_filename` so
+            ``generated_from`` derivation stays symmetric with it. ``None``
+            (the default) falls back to a ``derived-ontologies``-rooted path
+            or the bare filename; see :func:`_provenance_path`.
 
     Returns:
         Dict suitable for YAML serialization.
@@ -275,8 +306,10 @@ def generate_inventory(
 
     inventory: dict[str, Any] = {
         "version": INVENTORY_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "generated_from": str(ttl_path) if ttl_path else "(graph)",
+        "generated_at": resolve_generated_at().isoformat(timespec="seconds"),
+        "generated_from": _provenance_path(ttl_path, relative_to=relative_to)
+        if ttl_path
+        else "(graph)",
         "source_sha256": compute_source_hash(ttl_path) if ttl_path else None,
         "closure_hash": load_result.closure_hash if load_result else None,
         "semantic_profile": (load_result.profile.value if load_result else "asserted"),

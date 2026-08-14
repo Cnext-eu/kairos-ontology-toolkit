@@ -266,6 +266,50 @@ class TestCollisionFreshness:
         assert report.stale == []
         assert not report.is_blocking
 
+    def test_legacy_absolute_generated_from_still_checks_ok(self, tmp_path):
+        """Back-compat (#404): a pre-#404 inventory carrying a machine-local, absolute
+        ``generated_from`` must still check fresh. Migration is not required for this
+        field because it feeds no hash — freshness compares ``closure_hash`` only.
+
+        The DD-054 filename derivation from that legacy value is deliberately asserted
+        as **platform-dependent**, because it is. ``_canonical_filename_from_generated_from``
+        does ``Path(str(generated_from))`` and looks for the ``derived-ontologies``
+        marker in ``.parts``; on POSIX a backslash is an ordinary character, so a Windows
+        absolute value collapses to a single component, the marker is not found, and the
+        guard skips (returns ``None``) instead of deriving. That skip is safe — it is why
+        this test's real assertion is the ``check_inventories`` outcome, which holds on
+        both platforms. Pinning the asymmetry here rather than tolerating it matters:
+        normalising separators in the reader would *activate* the guard for legacy values
+        on POSIX, which is a behaviour change deliberately kept out of the #404 fix.
+        """
+        import os
+
+        from kairos_ontology.core.inventory import _canonical_filename_from_generated_from
+
+        ref_root = tmp_path / "ontology-reference-models"
+        inv_dir = tmp_path / "model" / "inventory"
+        inv_dir.mkdir(parents=True)
+        ttl = self._write(ref_root, "BSP", "TradeParty")
+
+        inv = generate_inventory(ttl, relative_to=ref_root)
+        inv["generated_from"] = (
+            r"C:\Git\hub\ontology-reference-models\derived-ontologies\BSP\current\party\party.ttl"
+        )
+        derived = _canonical_filename_from_generated_from(inv)
+        if os.name == "nt":
+            assert derived == "bsp-party-inventory.yaml"
+        else:
+            assert derived is None
+        write_inventory(inv, inv_dir / "bsp-party-inventory.yaml")
+
+        # The guarantee that matters, and it is platform-independent.
+        report = check_inventories(
+            ontology_dir=None, ref_models_dir=ref_root, inventory_dir=inv_dir
+        )
+        assert report.ok == ["bsp-party"]
+        assert report.stale == []
+        assert not report.is_blocking
+
 
 class TestCheckInventoryCLI:
     def test_cli_passes_when_fresh(self, tmp_path):
