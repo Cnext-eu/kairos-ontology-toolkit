@@ -149,6 +149,16 @@ class _KairosGroup(click.Group):
             _teardown_observability(ctx)
             raise
 
+    def main(self, *args, **kwargs):
+        # Issue #398: Click's Windows default expands an unquoted-by-the-time-it-
+        # reaches-argv glob (e.g. --allow "*binding.yaml") against the filesystem
+        # before our own option parsing ever sees it, turning one glob argument into
+        # dozens of literal positional arguments. Every documented invocation in this
+        # toolkit's skills passes globs as literal filter strings, never as file
+        # arguments meant for shell-style expansion, so this expansion is never wanted.
+        kwargs.setdefault("windows_expand_args", False)
+        return super().main(*args, **kwargs)
+
 
 @click.group(cls=_KairosGroup)
 @click.version_option(version=_toolkit_version, package_name="kairos-ontology-toolkit")

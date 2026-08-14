@@ -337,6 +337,22 @@ mode, and both missing/ambiguous parent actions. The target must resolve to
 another materializable binding or a declared external reference with a key
 contract.
 
+**Self-referential relationships (same class → same class) are not supported.**
+A `relationships:` entry whose `target` resolves to the binding's own
+`target.class` (e.g. a `party:Party` parent/child company hierarchy modeled as
+`party:Party` → `party:Party`) fails compile with
+`relationship.self-reference-unsupported` (`DD-133-safety`): the generated join
+would emit `ref('<model>')` inside that same model (a dbt dependency cycle) and
+a second `<model>_sk` column colliding with the model's own surrogate key. This
+applies even though the same parent/child shape across two *different* classes
+compiles fine. There is no supported construct for this today (real feature
+support is a separate compiler change, not a workflow step). The documented
+interim workaround: keep the foreign-key column materialized as a
+`technicalFields:` entry with `purpose: relationship` (same mechanism already
+used for not-yet-resolvable cross-domain FKs) instead of a `relationships:`
+entry — this carries the raw key column into the silver output without
+authoring the join Kairos cannot yet compile.
+
 For cross-domain targets, author `externalReference` explicitly. Its `name` is
 the parent dbt model in the unified medallion project, `domain` is the owning
 domain, and `key` is the ordered parent-side key contract. Each `key[].column`
