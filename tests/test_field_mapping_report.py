@@ -462,6 +462,114 @@ def test_run_field_mapping_report_dedups_two_bindings_same_system(tmp_path):
     assert rows["customerName"].sample_value == "Acme"
 
 
+def _add_dbt_merged_binding(hub_root, binding_dir):
+    """Wire a source.dbtModel binding whose model merges crm + erp via source() calls.
+
+    Issue #400: previously _binding_source_ref only read source.relation, so this binding
+    was excluded from the report under EVERY --source-system, not merely misattributed.
+    """
+    models_dir = hub_root / "integration" / "transforms" / "dbt" / "models" / "intermediate"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    (models_dir / "int_merged__party.sql").write_text(
+        textwrap.dedent(
+            """
+            select customer_id, customer_name from {{ source('crm', 'customers') }}
+            union all
+            select acct_id as customer_id, acct_name as customer_name
+            from {{ source('erp', 'accounts') }}
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (models_dir / "int_merged__party.yml").write_text(
+        textwrap.dedent(
+            """
+            version: 2
+            models:
+              - name: int_merged__party
+                description: "Merged party model for lineage test."
+                config:
+                  materialized: view
+                  contract:
+                    enforced: true
+                meta:
+                  kairos:
+                    target_class: https://example.test/party#Customer
+                    virtual_source_iri: https://example.test/source/dbt#party-merged
+                    grain: one row per customer
+                    grain_key: [customer_id]
+                    supported_adapters: [fabric]
+                columns:
+                  - name: customer_id
+                    data_type: string
+                    data_tests: [not_null]
+                  - name: customer_name
+                    data_type: string
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (binding_dir / "merged-party.binding.yaml").write_text(
+        textwrap.dedent(
+            """
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: merged-party
+              domain: party
+            source:
+              dbtModel:
+                name: int_merged__party
+                sqlPath: integration/transforms/dbt/models/intermediate/int_merged__party.sql
+                contractPath: integration/transforms/dbt/models/intermediate/int_merged__party.yml
+            target:
+              class: party:Customer
+            grain:
+              columns: [customer_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [customer_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: party:loyaltyTier
+                expression: customer_id
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+
+def test_run_field_mapping_report_includes_dbt_model_bindings(tmp_path):
+    ontology_dir, binding_dir, sources_dir = _write_hub(tmp_path)
+    _add_dbt_merged_binding(tmp_path, binding_dir)
+
+    crm_report = run_field_mapping_report(
+        ontologies_path=ontology_dir,
+        bindings_dir=binding_dir,
+        sources_dir=sources_dir,
+        hub_root=tmp_path,
+        source_system="crm",
+    )
+    erp_report = run_field_mapping_report(
+        ontologies_path=ontology_dir,
+        bindings_dir=binding_dir,
+        sources_dir=sources_dir,
+        hub_root=tmp_path,
+        source_system="erp",
+    )
+
+    # Previously invisible under EVERY source system -- now attributed to both crm and
+    # erp, since int_merged__party.sql genuinely sources from both via source() calls.
+    crm_rows = {row.property_local: row for row in crm_report.rows_by_domain["party"]}
+    erp_rows = {row.property_local: row for row in erp_report.rows_by_domain["party"]}
+    assert crm_rows["loyaltyTier"].source_columns != ()
+    assert erp_rows["loyaltyTier"].source_columns != ()
+
+    assert any("int_merged__party" in note for note in crm_report.notes)
+    assert any("provenance view" in note for note in crm_report.notes)
+
+
 def test_run_field_mapping_report_domain_filter(tmp_path):
     ontology_dir, binding_dir, sources_dir = _write_hub(tmp_path)
 
