@@ -306,6 +306,69 @@ def test_generate_decision_id_shape():
     assert dr._ID_RE.match(rid)
 
 
+def test_template_body_matches_scaffold_copy():
+    """D4/#416c: `TEMPLATE_BODY`'s docstring calls it the "single source of
+    truth shared by the `decision` CLI and the hub scaffold template", but
+    nothing enforced that -- the scaffold `.template` file is an independent
+    literal copy that could silently drift. Pin the equality so a drift there
+    is caught instead of silently making the #416c lint (keyed off
+    `TEMPLATE_BODY`) miss a stale scaffold copy."""
+    scaffold_path = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "kairos_ontology"
+        / "scaffold"
+        / "ontology-hub"
+        / "decisions"
+        / "HUB-DD-template.md.template"
+    )
+    text = scaffold_path.read_text(encoding="utf-8")
+    _, sep, body = text.partition("-->")
+    assert sep, "scaffold template must contain the closing '-->' comment marker"
+    assert body.strip() == dr.TEMPLATE_BODY.strip()
+
+
+def test_unedited_template_body_warns_when_proposed(bundle: Path):
+    fm = (
+        "type: Decision Record\nid: HUB-DD-20260728-x\ntitle: T\n"
+        "status: draft\ndecision_state: Proposed\n"
+        "generated: { by: kairos-ontology-toolkit/9.9.9 }\n"
+    )
+    _write(bundle, "HUB-DD-20260728-x.md", fm, body=dr.TEMPLATE_BODY)
+    result = dr.validate_decision_bundle(bundle)
+    assert not any(e.code == "unedited_template_body" for e in result.errors)
+    assert any(w.code == "unedited_template_body" for w in result.warnings)
+
+
+def test_unedited_template_body_errors_when_accepted(bundle: Path):
+    fm = _accepted_fm("HUB-DD-20260728-x")
+    _write(bundle, "HUB-DD-20260728-x.md", fm, body=dr.TEMPLATE_BODY)
+    result = dr.validate_decision_bundle(bundle)
+    assert any(e.code == "unedited_template_body" for e in result.errors)
+    assert not any(w.code == "unedited_template_body" for w in result.warnings)
+
+
+def test_unedited_template_body_errors_when_superseded(bundle: Path):
+    fm = (
+        "type: Decision Record\nid: HUB-DD-20260728-x\ntitle: T\n"
+        "status: deprecated\ndecision_state: Superseded\n"
+        "generated: { by: human:me }\n"
+        "sources:\n  - { resource: https://example.com/x }\n"
+    )
+    _write(bundle, "HUB-DD-20260728-x.md", fm, body=dr.TEMPLATE_BODY)
+    result = dr.validate_decision_bundle(bundle)
+    assert any(e.code == "unedited_template_body" for e in result.errors)
+
+
+def test_genuine_authored_body_never_flagged_as_unedited_template(bundle: Path):
+    """`_VALID_BODY` is real authored prose -- the control proving the lint
+    does not fire on genuine content, even at the Accepted gate."""
+    _write(bundle, "HUB-DD-20260728-a1b2c3.md", _accepted_fm("HUB-DD-20260728-a1b2c3"))
+    result = dr.validate_decision_bundle(bundle)
+    assert not any(e.code == "unedited_template_body" for e in result.errors)
+    assert not any(w.code == "unedited_template_body" for w in result.warnings)
+
+
 def test_build_index_derives_superseded_by(bundle: Path):
     a = _accepted_fm("HUB-DD-20260728-a") + "supersedes: [HUB-DD-20260728-b]\n"
     _write(bundle, "HUB-DD-20260728-a.md", a)

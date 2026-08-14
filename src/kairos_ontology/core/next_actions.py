@@ -231,7 +231,7 @@ def _sort_key(action: NextAction) -> tuple[int, str, str, str]:
 
 
 def discovery_gate_satisfied(snapshot: HubInputSnapshot) -> bool:
-    """True when DD-148 discovery evidence exists via either signal (narrative or artifact).
+    """True when DD-148 discovery evidence exists via either signal (glossary TTL or artifact).
 
     Single source of truth for both the rationale text and the status rendering (#310).
     """
@@ -264,15 +264,16 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
             _action(
                 "design-discovery",
                 ActionStatus.HUMAN_DECISION_REQUIRED,
-                rationale="integration/discovery/ is present but unreadable; resolve access.",
+                rationale="businessdiscovery/ is present but unreadable; resolve access.",
                 command="kairos-ontology (invoke kairos-design-discovery)",
                 priority=5,
             )
         )
     elif snapshot.discovery is InputStatus.MISSING:
-        # DD-148: kairos-ontology compile/validate accept EITHER a businessdiscovery/
-        # narrative (this check) OR a conformance artifact (discovery_conformance) as
-        # evidence discovery ran — only block here when neither exists.
+        # DD-148: kairos-ontology compile/validate accept EITHER an authored
+        # businessdiscovery/*.ttl glossary (this check) OR a conformance artifact
+        # (discovery_conformance) as evidence discovery ran — only block here when
+        # neither exists.
         no_conformance_either = not discovery_gate_satisfied(snapshot)
         actions.append(
             _action(
@@ -282,15 +283,16 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 else ActionStatus.HUMAN_DECISION_REQUIRED,
                 rationale=(
                     (
-                        "No business discovery evidence found — neither a "
-                        "businessdiscovery/ narrative nor a discovery conformance "
-                        "artifact (DD-148). kairos-ontology compile/validate now "
-                        "hard-fail on this — run kairos-design-discovery before design "
-                        "proceeds."
+                        "No business discovery evidence found — neither an authored "
+                        "businessdiscovery/*.ttl glossary (prose notes in that folder "
+                        "don't satisfy DD-048) nor a discovery conformance artifact "
+                        "(DD-148). kairos-ontology compile/validate now hard-fail on "
+                        "this — run kairos-design-discovery before design proceeds."
                     )
                     if no_conformance_either
                     else (
-                        "No authored businessdiscovery/ narrative found, though a "
+                        "No authored businessdiscovery/*.ttl glossary found (prose "
+                        "notes in that folder don't satisfy DD-048), though a "
                         "discovery conformance artifact exists and satisfies the "
                         "compile/validate gate (DD-148). Still recommended for full "
                         "business-terminology alignment."

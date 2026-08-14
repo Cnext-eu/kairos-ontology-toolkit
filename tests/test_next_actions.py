@@ -70,9 +70,9 @@ def test_fresh_hub_blocks_on_discovery_but_leaves_source_and_domain_advisory():
     assert by_kind["design-source"].blocking is False
 
 
-def test_conformance_artifact_alone_satisfies_discovery_without_narrative():
+def test_conformance_artifact_alone_satisfies_discovery_without_glossary_ttl():
     # DD-148: businessdiscovery/ (DD-048) and the conformance artifact (DD-090) are
-    # independent — a valid conformance artifact downgrades the missing-narrative
+    # independent — a valid conformance artifact downgrades the missing-glossary-ttl
     # signal from BLOCKING to advisory, matching what check_discovery_gate() enforces.
     proposal = propose_next_actions(
         _hub(
@@ -381,7 +381,7 @@ def test_source_samples_not_applicable_adds_no_action():
 # ---------------------------------------------------------------------------
 
 
-def test_discovery_gate_satisfied_true_when_narrative_present():
+def test_discovery_gate_satisfied_true_when_glossary_ttl_present():
     snapshot = _hub(discovery=InputStatus.PRESENT)
     assert discovery_gate_satisfied(snapshot) is True
 

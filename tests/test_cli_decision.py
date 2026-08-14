@@ -214,6 +214,18 @@ def test_decision_sync_index_refreshes_stale_state(tmp_path, monkeypatch):
     assert "Accepted" in refreshed_index_text
     assert "HUB-DD-20260101-stale" in refreshed_index_text
 
+    # D4/#416c: the hand-edit above flipped decision_state to Accepted but left
+    # the body untouched -- still the unedited scaffold TEMPLATE_BODY. That is
+    # unambiguously wrong for an Accepted record (D1), so it must now surface
+    # as an error (previously nothing caught this: _has_rejected_alternative is
+    # fooled by the template's own placeholder row).
+    after = validate_decision_bundle(decisions_path)
+    assert any(e.code == "unedited_template_body" for e in after.errors)
+    # sync-index itself only renders the index from records, so a validator
+    # error does not fail the command -- but the diagnostic is now surfaced,
+    # not silently discarded (D5).
+    assert "unedited scaffold template" in result.output
+
 
 def test_decision_sync_index_on_empty_hub_does_not_error(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path)

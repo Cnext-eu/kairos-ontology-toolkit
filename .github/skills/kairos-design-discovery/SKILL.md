@@ -68,8 +68,21 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
    payload is complete and hashed (`catalog_hash`, `concept_set_hash`) — treat it as ground
    truth over any manual read of the archetype file. Review `warnings` (version drift, missing
    discovery doc) before proceeding.
-3. Author **only** the per-concept business judgment as data: `outcome` (one of the loaded
-   codes), `rename_to` or `deviation_reason` where applicable, `confidence`, `rationale`,
+3. `kairos-ontology discovery-conformance judgments-template --archetype <id> --output <path>`
+   — scaffold the `build --judgments-file` input: one entry per concept from step 2, with
+   `uri`/`label`/`tier` already pre-filled from the archetype catalog (do not edit those two —
+   `build` derives them from the catalog itself if you delete them instead, issue #410) and
+   every field you must actually decide left as an `<CONFIRM_...>` sentinel. Never
+   hand-transcribe the concept list into a new file and never hand-script this file's
+   structure — that is exactly the one-off generator the opening section of this phase
+   forbids, and it used to be the only way to learn this contract (three requirements were
+   discoverable only via a failed `build`: `label` required, `label` must exactly equal the
+   catalog label, `confidence` must be a float, not a `high`/`medium`/`low` word).
+4. Replace every `<CONFIRM_...>` sentinel with the real per-concept business judgment:
+   `outcome` (one of the codes loaded in step 1), `rename_to` or `deviation_reason` where the
+   outcome calls for it, `confidence` **as a float between `0.0` and `1.0`** (never the words
+   `high`/`medium`/`low` — that scale belongs to a different, unrelated field, extraction
+   `visual_evidence.confidence` in `_extractions/*.yaml`; do not reuse it here), `rationale`,
    `references`, `needs_confirmation`, `decided_by` (`"user"` or `"ai"` — mark every
    AI-approved choice `"ai"`; never mark an AI choice `"user"`), and optional `likely_domains`
    (a list of lowercase domain-id strings the concept informs — a concept may inform more than
@@ -83,13 +96,8 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
    currently-planned domains this belongs to": that collides with the cross-cutting meaning and
    will block `compile`/`validate` for every domain, including ones that have nothing to do with
    the concept, until it is retagged. This is the actual discovery analysis and cannot be
-   automated — everything else (the concept list, tiers, topology) comes from step 2.
-4. Write the step-3 judgments as a plain YAML (or JSON) file — `mode: "interactive"` or
-   `mode: "fleet"` to match this session (DD-088), a `core_concepts` list with one outcome dict
-   per concept from step 2 (`uri`, `outcome`, `tier`, `confidence`, `rationale`, `references`,
-   `needs_confirmation`, `decided_by`, `likely_domains` (optional, defaults to cross-cutting),
-   plus `rename_to`/`deviation_reason` where applicable), and optional
-   `topology_confirmations`/`cardinality_answers`. Then run:
+   automated — everything else (the concept list, tiers, topology, and the file's structure)
+   comes from steps 2-3. Then run:
 
    `kairos-ontology discovery-conformance build --archetype <id> --judgments-file <path>`
 
@@ -98,8 +106,8 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
    `integration/discovery/core-concepts-conformance.yaml`, and — by default — immediately
    validates it, in one step. Hand-rolling the envelope yourself, or calling
    `kairos_ontology.core.conformance_artifact.build_artifact()`/`write_artifact()` directly, is
-   exactly the "one-off script" the opening section of this phase forbids; write the judgments
-   file and let `build` assemble and persist the artifact instead.
+   exactly the "one-off script" the opening section of this phase forbids; fill in the
+   scaffolded judgments file and let `build` assemble and persist the artifact instead.
 5. `build` already runs the same checks as `discovery-conformance validate` and fails loudly
    (non-zero exit, printed errors) on any problem — treat that failure the same way you would a
    separate `validate` failure: fix the judgments file (or the archetype/discovery data) and

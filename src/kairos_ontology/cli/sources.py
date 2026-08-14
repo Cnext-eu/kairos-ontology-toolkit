@@ -348,6 +348,24 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         tmp_cleanup.unlink()
 
 
+def _echo_privacy_coverage(report) -> None:
+    """Report a clean privacy result *and what it covered* (#415).
+
+    The old message — "privacy-safe for supported patterns" — read as an unqualified
+    all-clear while naming no patterns, so a reader could not tell that coordinate columns
+    are not among them. A latitude/longitude pair left beside a redacted address in the
+    same row re-identifies it by reverse-geocoding, and the command reported success. The
+    kinds come from the detectors themselves so this can never overstate coverage.
+    """
+    kinds = ", ".join(report.checked_kinds)
+    click.echo(f"✅ No unredacted PII found in {report.files_scanned} artifact(s).")
+    click.echo(f"   Patterns checked: {kinds}.")
+    click.echo(
+        "   Not checked: geographic coordinates — a latitude/longitude pair can "
+        "re-identify a redacted address in the same row (#423)."
+    )
+
+
 @click.command(name="source-privacy")
 @click.option(
     "--sources",
@@ -407,7 +425,7 @@ def source_privacy_cmd(sources, fix):
                 err=True,
             )
             raise SystemExit(1)
-        click.echo("✅ Source sample artifacts are privacy-safe for supported patterns.")
+        _echo_privacy_coverage(remaining)
         return
 
     if report.findings:
@@ -416,7 +434,7 @@ def source_privacy_cmd(sources, fix):
             err=True,
         )
         raise SystemExit(1)
-    click.echo("✅ Source sample artifacts are privacy-safe for supported patterns.")
+    _echo_privacy_coverage(report)
 
 
 @click.command(name="import-flatfile")
@@ -425,7 +443,8 @@ def source_privacy_cmd(sources, fix):
     "from_path",
     type=click.Path(exists=True),
     required=True,
-    help="Path to CSV file, Excel file, Parquet file, or directory of flat files.",
+    help="Path to CSV file, .xlsx file, Parquet file, or directory of flat files "
+    "(non-recursive — top-level files only; pass --recursive for nested export trees).",
 )
 @click.option(
     "--system",
@@ -463,6 +482,15 @@ def source_privacy_cmd(sources, fix):
     default=False,
     help="Keep auto-detected technical/metadata columns (volume, subfolder, etc.).",
 )
+@click.option(
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="Directory mode only: walk the full subtree instead of just the top level. "
+    "Table names are then derived from each file's path relative to --from "
+    "(lowercased, separators collapsed) so same-basename files in different "
+    "subdirectories don't collide.",
+)
 def import_flatfile(
     from_path,
     system_name,
@@ -471,8 +499,9 @@ def import_flatfile(
     max_rows,
     exclude_columns,
     keep_technical,
+    recursive,
 ):
-    """Import CSV/Excel/Parquet flat files as source schema documentation.
+    """Import CSV/.xlsx/Parquet flat files as source schema documentation.
 
     Reads flat files and produces the standard source schema format
     (_manifest.yaml + per-table YAML + samples). Use import-source afterwards
@@ -484,12 +513,14 @@ def import_flatfile(
       - Single .xlsx file → 1 table per worksheet
       - Single .parquet file → 1 table
       - Directory of .csv/.xlsx/.parquet files → 1 table per file/sheet
+        (non-recursive by default; pass --recursive for nested export trees)
 
     \b
     Directory mode tolerates unreadable files: each one is skipped with a
     warning and the rest are imported (exit 0). If no file in the directory
     can be read, nothing is written and the exit code is 1. A single file
-    given directly always fails fast.
+    given directly always fails fast. Legacy .xls files are recognized but
+    never readable — convert to .xlsx first.
 
     \b
     Examples:
@@ -497,6 +528,7 @@ def import_flatfile(
       kairos-ontology import-flatfile --from data/report.xlsx --system finance
       kairos-ontology import-flatfile --from exports/orders.parquet --system wms
       kairos-ontology import-flatfile --from data-exports/ --system legacy-erp
+      kairos-ontology import-flatfile --from nested-exports/ --recursive --system legacy-erp
       kairos-ontology import-flatfile --from .input/data --system erp \\
         --exclude-columns "volume,subfolder,table"
 
@@ -504,7 +536,12 @@ def import_flatfile(
     Next step after import-flatfile:
       kairos-ontology import-source --from integration/sources/{system}/
     """
-    from ..core.import_flatfile import list_flatfile_candidates, run_import_flatfile
+    from ..core.import_flatfile import (
+        SUPPORTED_FLATFILE_SUFFIXES,
+        list_flatfile_candidates,
+        missing_flatfile_extras,
+        run_import_flatfile,
+    )
 
     source_path = Path(from_path)
     output_dir = Path(output) if output else None
@@ -518,7 +555,45 @@ def import_flatfile(
 
     # Candidate count for the partial-failure report, taken from the same helper
     # the import loop uses so "M of K" cannot disagree with what was attempted.
-    candidate_count = len(list_flatfile_candidates(source_path)) if source_path.is_dir() else 1
+    candidates = (
+        list_flatfile_candidates(source_path, recursive=recursive)
+        if source_path.is_dir()
+        else [source_path]
+    )
+    candidate_count = len(candidates)
+
+    # Ergonomics fix (issue #407 item 2): directory mode is non-recursive by
+    # default, so a nested export tree reports "No CSV, Excel, or Parquet files
+    # found" — indistinguishable from "wrong path". When --recursive was NOT
+    # passed and nothing was found at the top level, check one level further
+    # (one extra rglob) so a genuinely nested tree gets a message pointing at
+    # --recursive instead of the generic not-found error. This does not change
+    # core defaults or touch the write path — nothing has been written yet.
+    if source_path.is_dir() and not recursive and candidate_count == 0:
+        nested = [
+            f
+            for f in source_path.rglob("*")
+            if f.is_file() and f.suffix.lower() in SUPPORTED_FLATFILE_SUFFIXES
+        ]
+        if nested:
+            click.echo(
+                f"\n❌ found {len(nested)} candidate file(s) in subdirectories — "
+                "directory mode is non-recursive (use --recursive)",
+                err=True,
+            )
+            raise SystemExit(1)
+
+    # Preflight (issue #407 item 1): a directory of files needing a missing
+    # optional extra (e.g. openpyxl for .xlsx, pyarrow for .parquet) would
+    # otherwise produce one near-identical warning per file plus a single huge
+    # aggregate ValueError from run_import_flatfile. Fail once, up front, with
+    # the install command — before anything is written.
+    missing_extras = missing_flatfile_extras(candidates)
+    if missing_extras:
+        click.echo("\n❌ Missing optional dependency for this input:", err=True)
+        for extra, install_cmd in sorted(missing_extras.items()):
+            click.echo(f"   - install with: {install_cmd}", err=True)
+        raise SystemExit(1)
 
     try:
         result_dir, table_count, samples_count, failures = run_import_flatfile(
@@ -530,6 +605,7 @@ def import_flatfile(
             exclude_columns=exclude_set,
             keep_technical=keep_technical,
             return_count=True,
+            recursive=recursive,
         )
     except (ValueError, ImportError) as e:
         click.echo(f"\n❌ {e}", err=True)
@@ -1410,7 +1486,11 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
     **changed** documents on a rerun instead of re-reading everything.
 
     Informational by default (exit 0).  Pass ``--strict`` to exit non-zero when
-    there is work to do (new or changed documents).
+    there is work to do (new or changed documents) or when a matched extraction
+    record still looks like an unedited placeholder (TODO/empty summary,
+    strategy, or ``extracted_terms``). Byte-identical duplicate documents and
+    the ``processed``/``partial``/``skipped`` status breakdown are always
+    reported but never block, even under ``--strict``.
 
     \\b
     Examples:
@@ -1457,10 +1537,39 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
         click.echo(f"   ⚠ {name}: conflicting provenance (claimed by >1 extraction)")
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan extraction (no matching source document)")
+    # C1/#417: byte-identical documents are additive information, never subtracted
+    # from the work count below — a duplicate with no extraction record still
+    # needs processing.
+    for group in report.duplicate:
+        click.echo(f"   ⧉ duplicate content ({len(group)} documents): {', '.join(group)}")
+    # D3/#416a: placeholder-shaped extraction content (TODO/empty summary,
+    # strategy, extracted_terms). Always advisory; see has_content_warnings.
+    for entry in report.content_warnings:
+        click.echo(f"   ⚠ placeholder content — {entry}")
 
-    if report.has_work and strict and not warn_only:
+    if report.status_counts:
+        # C2/#416b: `status: processed | partial | skipped` is documented but was
+        # read nowhere in src/ — surface the breakdown instead of a single green line.
+        parts = [
+            f"{count} {status}" for status, count in sorted(report.status_counts.items()) if count
+        ]
+        click.echo(f"   Σ extraction status: {', '.join(parts)}")
+
+    # C3: `--strict` fails on `has_work` (unchanged) and, newly, on
+    # `has_content_warnings` — but the two are OR'd together only under
+    # `--strict`, mirroring `cli/inspection.py`'s
+    # `blocking = report.is_blocking or (strict and report.unverifiable)` shape.
+    # `has_content_warnings` is deliberately NOT folded into `has_work` itself:
+    # doing so would make `--strict` unconvergeable on a hub with
+    # legitimately-`partial` records (the #405 pathology this plan also fixes)
+    # and would make the "N document(s) need processing" count below name
+    # already-processed documents as needing processing.
+    if strict and not warn_only and (report.has_work or report.has_content_warnings):
+        reason = (
+            "new/changed documents" if report.has_work else "placeholder-shaped extraction content"
+        )
         click.echo(
-            "\n❌ Discovery documents need processing. Run the "
+            f"\n❌ Discovery documents need processing ({reason}). Run the "
             "kairos-design-discovery skill to extract new/changed documents.",
             err=True,
         )
@@ -1748,7 +1857,15 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, domains,
     required=True,
     type=click.Path(exists=True, dir_okay=False),
     help="YAML or JSON file with mode, core_concepts outcomes, and optional "
-    "topology_confirmations/cardinality_answers.",
+    "topology_confirmations/cardinality_answers. Scaffold one with "
+    "`discovery-conformance judgments-template --archetype <id>` rather than "
+    "hand-writing it. Per core_concepts entry: 'uri' and 'outcome' (one of the codes "
+    "from `list-archetypes`' outcome_codes, e.g. conforms/conforms-with-rename/partial/"
+    "deviates/not-applicable) are required; 'label'/'tier' are optional and derived from "
+    "the archetype catalog when absent (a present-but-wrong value still fails validation); "
+    "'confidence' must be a float between 0.0 and 1.0 (not 'high'/'medium'/'low' — that "
+    "scale belongs to a different, unrelated field in _extractions/*.yaml) or omitted "
+    "entirely.",
 )
 @click.option(
     "--output",
@@ -1796,7 +1913,20 @@ def conformance_build(
     (``mode``, ``core_concepts`` outcome dicts, optional ``topology_confirmations`` /
     ``cardinality_answers`` / ``discovery_doc`` / ``archetype_confirmed_by``) rather than
     inventing a new envelope, so a human or the kairos-design-discovery skill only ever
-    has to write plain YAML/JSON, never a one-off Python script.
+    has to write plain YAML/JSON, never a one-off Python script. Use
+    ``discovery-conformance judgments-template --archetype <id>`` to scaffold that file
+    instead of hand-writing or hand-scripting it (issue #410) — it pre-fills ``uri``/
+    ``label``/``tier`` per concept from the archetype catalog, leaving only the business
+    judgment fields (``outcome``, ``confidence``, ``rationale``, ...) to fill in.
+
+    Each ``core_concepts`` entry needs a ``uri`` and an ``outcome`` (one of the codes
+    published by ``list-archetypes``' ``outcome_codes`` — never hardcode ``high``/
+    ``medium``/``low``, that is a different field's scale, e.g. visual-evidence
+    ``confidence`` in ``_extractions/*.yaml``). ``label``/``tier`` are optional — when
+    absent they are derived from the archetype's own catalog for that ``uri``; when
+    present they must exactly match the catalog (a wrong value still fails validation,
+    it is never silently accepted or silently corrected). ``confidence`` is optional and,
+    when present, must be a float between ``0.0`` and ``1.0``.
 
     By default this also runs the same checks ``discovery-conformance validate`` runs, so
     a caller ends up with either a validated artifact or a clear failure — pass
@@ -1815,6 +1945,7 @@ def conformance_build(
     )
     from ..core.conformance_artifact import (
         build_artifact,
+        derive_missing_identity,
         open_questions,
         validate_artifact,
         write_artifact,
@@ -1851,6 +1982,12 @@ def conformance_build(
             err=True,
         )
         raise SystemExit(2)
+
+    # #410: 'label'/'tier' are optional in the judgments file — derive them from the
+    # already-resolved archetype's own catalog when a concept's entry omits them, so an
+    # author only ever has to hand-write the actual business judgment. A present-but-wrong
+    # value is left untouched (validate_artifact still catches it below).
+    core_concepts = derive_missing_identity(core_concepts, archetype)
 
     discovery_doc = judgments.get("discovery_doc")
     if not discovery_doc:
@@ -1926,6 +2063,111 @@ def conformance_build(
                 raise SystemExit(1)
 
         click.echo(f"✅ Conformance artifact valid: {out_path}", err=True)
+
+
+@discovery_conformance.command(name="judgments-template")
+@click.option(
+    "--archetype", "archetype_id", required=True, help="Archetype id to scaffold a template for."
+)
+@click.option(
+    "--mode",
+    "session_mode",
+    # Mirrors conformance_artifact.VALID_MODES (DD-088); kept as a literal here rather than
+    # imported at module scope so this module's other commands can keep their established
+    # lazy-import-inside-the-function convention.
+    type=click.Choice(["interactive", "fleet"]),
+    default="interactive",
+    show_default=True,
+    help="Session mode (DD-088) to pre-fill; edit if the actual session differs.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Where to write the template (default: echo to stdout).",
+)
+@click.option(
+    "--overwrite", is_flag=True, default=False, help="Explicitly replace an existing file."
+)
+@_REFMODELS_OPTION
+@_FORMAT_OPTION
+def conformance_judgments_template(
+    archetype_id, session_mode, output_path, overwrite, refmodels_root, output_format
+):
+    """Scaffold a ``build --judgments-file`` template, one entry per archetype concept.
+
+    Phase 2.5 of ``kairos-design-discovery`` forbids hand-transcribing or hand-scripting the
+    concept list (DD-090); before this command, the only way to learn the judgments-file
+    contract was a failed ``build`` — three separate requirements (``label`` required,
+    ``label`` must exactly equal the catalog label, ``confidence`` is a float 0.0-1.0, not
+    ``high``/``medium``/``low``) were each discoverable only that way (issue #410). This
+    projects ``load``'s own ``core_concepts`` (``uri``/``label``/``tier``, straight from the
+    archetype catalog) into ``build``'s input envelope, leaving only the business-judgment
+    fields for a human or the skill's interview to fill in.
+
+    Fields an author must actually fill in (``outcome``, ``rationale``) carry an
+    ``<CONFIRM_...>`` sentinel — the same family ``scaffold-binding``/``scaffold-staging``
+    already use — so an unedited template is mechanically detectable via
+    ``core.hub_utils.is_scaffold_placeholder_text``, not just documented convention.
+    ``label``/``tier`` are pre-filled from the catalog and should not be edited; ``build``
+    also derives them itself when a concept's entry omits them (issue #410), so they may be
+    deleted from an entry instead of copied by hand.
+    """
+    from ..core.archetype_loader import ArchetypeError, load_archetype, load_outcome_codes
+    from ..core.authoring_scaffolds import AuthoringScaffoldError, write_text
+    from ..core.hub_utils import find_hub_root
+
+    root = _resolve_conformance_root(refmodels_root)
+    try:
+        archetype = load_archetype(root, archetype_id)
+    except ArchetypeError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(2) from exc
+
+    outcome_codes = load_outcome_codes(root)
+    outcome_sentinel = f"<CONFIRM_OUTCOME:{'|'.join(outcome_codes)}>"
+
+    core_concepts = [
+        {
+            "uri": concept.uri,
+            "label": concept.label,
+            "tier": concept.tier,
+            "outcome": outcome_sentinel,
+            "confidence": None,
+            "rationale": "<CONFIRM_RATIONALE>",
+            "references": [],
+            "needs_confirmation": False,
+            "decided_by": "ai",
+            "likely_domains": [],
+        }
+        for concept in archetype.core_concepts
+    ]
+    payload = {"mode": session_mode, "core_concepts": core_concepts}
+
+    if output_path is None:
+        _emit(payload, output_format)
+        return
+
+    if output_format == "yaml":
+        import yaml
+
+        content = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+    else:
+        content = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    out = Path(output_path)
+    destination = out if out.is_absolute() else ((hub_root / out) if hub_root else out)
+    try:
+        write_text(destination, content, overwrite=overwrite)
+    except AuthoringScaffoldError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"✓ Wrote judgments-file template ({len(core_concepts)} concept(s)): {destination}",
+        err=True,
+    )
 
 
 @click.command(name="build-glossary")
@@ -2063,6 +2305,13 @@ def build_glossary_cmd(
         f"   ✓ Wrote {len(result.concepts)} concept(s) from "
         f"{len(result.sources)} extraction file(s)."
     )
+    if result.excluded_sources:
+        # C4/#417/#416b: `status: skipped` extraction files are excluded — the
+        # document was never actually read, so its `extracted_terms` (if any)
+        # would be stale/hypothetical rather than confirmed evidence.
+        click.echo(
+            f"   ⏭ Excluded {len(result.excluded_sources)} extraction file(s) with status: skipped."
+        )
     if result.skipped_terms:
         click.echo(f"   ⏭ Skipped {result.skipped_terms} term(s) (no prefLabel or filtered).")
     click.echo("\n✅ Glossary built.")

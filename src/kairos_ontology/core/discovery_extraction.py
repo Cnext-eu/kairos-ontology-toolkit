@@ -35,6 +35,7 @@ from typing import Any
 
 import yaml
 
+from .hub_utils import is_scaffold_placeholder_text
 from .inventory import compute_source_hash
 
 # Marker used to reduce a stored ``source_path`` to a key relative to the
@@ -202,6 +203,54 @@ def load_extraction(path: Path) -> dict[str, Any]:
     return data
 
 
+#: Extraction ``status`` values documented at
+#: ``scaffold/ontology-hub/businessdiscovery/_extractions/README.md`` (C2, #416b).
+#: A record whose ``status`` is missing or not one of these is bucketed as
+#: ``"unknown"`` rather than silently folded into ``"processed"``.
+_KNOWN_EXTRACTION_STATUSES = frozenset({"processed", "partial", "skipped"})
+
+
+def _normalize_extraction_status(value: Any) -> str:
+    if isinstance(value, str) and value.strip() in _KNOWN_EXTRACTION_STATUSES:
+        return value.strip()
+    return "unknown"
+
+
+def _extraction_content_issues(data: dict[str, Any]) -> list[str]:
+    """Return human-readable content-lint issues for a readable extraction record.
+
+    D3/#416a: ``check_discovery_docs`` historically validated only ``source_path``
+    and ``source_sha256`` -- a record with ``strategy: TODO``, ``summary: TODO``
+    and ``extracted_terms: []`` passed cleanly (including under ``--strict``) as
+    long as the digest matched. These are advisory (see D1: a ``partial`` record
+    is an author judgement with no automated remedy), always warnings, and
+    surfaced via :attr:`DiscoveryStatusReport.content_warnings` /
+    :attr:`~DiscoveryStatusReport.has_content_warnings` -- never folded into
+    :attr:`~DiscoveryStatusReport.has_work`.
+
+    An empty ``extracted_terms`` is not flagged for a ``skipped`` record: the
+    author deliberately decided the document was not worth extracting, so no
+    terms is the *expected*, not a placeholder, outcome for that status.
+    """
+    issues: list[str] = []
+    summary = data.get("summary")
+    if not isinstance(summary, str) or not summary.strip() or is_scaffold_placeholder_text(summary):
+        issues.append("placeholder or empty summary")
+
+    strategy = data.get("strategy")
+    if (
+        not isinstance(strategy, str)
+        or not strategy.strip()
+        or is_scaffold_placeholder_text(strategy)
+    ):
+        issues.append("placeholder or empty strategy")
+
+    if not data.get("extracted_terms") and data.get("status") != "skipped":
+        issues.append("empty extracted_terms")
+
+    return issues
+
+
 @dataclass
 class DiscoveryStatusReport:
     """Result of a deterministic discovery-document freshness check (DD-060).
@@ -211,6 +260,26 @@ class DiscoveryStatusReport:
     *orphan* holds extraction file names that no longer have a matching source
     document, and *conflict* holds source paths claimed by more than one
     extraction record.
+
+    *duplicate* (C1, #417) holds groups of source-relative paths whose raw
+    document bytes are byte-identical (each group has >=2 members); a document
+    with no extraction record yet can still be part of a duplicate group, and
+    duplicates are additive information only -- they never subtract from
+    :attr:`has_work` (a duplicate with no extraction record still needs
+    processing).
+
+    *content_warnings* (D3, #416a) holds ``"{path}: {issue; issue}"`` entries
+    for a matched extraction record whose content looks like an unedited
+    placeholder (see :func:`_extraction_content_issues`). These are
+    ``--strict``-eligible (:attr:`has_content_warnings`) but deliberately kept
+    **out of** :attr:`has_work`: folding them in would make ``--strict``
+    unconvergeable on a hub with legitimately-``partial`` records (recreating
+    the #405 pathology) and would make already-processed documents be counted
+    as "needing processing".
+
+    *status_counts* (C2, #416b) tallies the ``status`` field (``processed`` |
+    ``partial`` | ``skipped`` | ``unknown``) across every document matched to a
+    readable extraction record.
     """
 
     unprocessed: list[str] = field(default_factory=list)
@@ -219,6 +288,9 @@ class DiscoveryStatusReport:
     ok: list[str] = field(default_factory=list)
     orphan: list[str] = field(default_factory=list)
     conflict: list[str] = field(default_factory=list)
+    duplicate: list[list[str]] = field(default_factory=list)
+    content_warnings: list[str] = field(default_factory=list)
+    status_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def has_work(self) -> bool:
@@ -227,8 +299,27 @@ class DiscoveryStatusReport:
 
     @property
     def has_warnings(self) -> bool:
-        """True when an extraction has no stored hash, is orphaned, or conflicts."""
-        return bool(self.unverifiable or self.orphan or self.conflict)
+        """True when an extraction has no stored hash, is orphaned, conflicts, is
+        duplicated, or has placeholder-shaped content."""
+        return bool(
+            self.unverifiable
+            or self.orphan
+            or self.conflict
+            or self.duplicate
+            or self.content_warnings
+        )
+
+    @property
+    def has_content_warnings(self) -> bool:
+        """True when >=1 matched extraction record looks like an unedited placeholder.
+
+        C3/#416a: a **new**, ``--strict``-eligible property, deliberately kept
+        separate from :attr:`has_work` -- see the class docstring and the
+        ``discovery_status_cmd`` CLI, which mirrors
+        ``cli/inspection.py``'s ``blocking = report.is_blocking or (strict and
+        report.unverifiable)`` shape by OR-ing this in only under ``--strict``.
+        """
+        return bool(self.content_warnings)
 
 
 def _index_extractions(
@@ -285,13 +376,24 @@ def check_discovery_docs(
       - **ok**           — extraction exists and hash matches.
       - **conflict**     — more than one extraction claims the document's source path.
       - **orphan**       — extraction file with no corresponding source document.
+      - **duplicate**    — >=2 documents share identical bytes (C1, #417).
+
+    Every document's content is hashed exactly once here (even one with no
+    extraction yet, or an unreadable one) so that byte-identical documents can
+    be grouped into :attr:`~DiscoveryStatusReport.duplicate` regardless of their
+    freshness classification -- this is a deliberate full read per document
+    (not free), justified by a real hub where 7 of 56 documents were
+    byte-identical and reported as 7 independent units of work.
     """
     report = DiscoveryStatusReport()
     by_name, by_source_key = _index_extractions(extraction_dir, import_dir)
     consumed: set[str] = set()
+    hash_to_paths: dict[str, list[str]] = {}
 
     for doc in iter_discovery_documents(import_dir):
         rel = source_relative_path(doc, import_dir)
+        digest = compute_source_hash(doc)
+        hash_to_paths.setdefault(digest, []).append(rel)
 
         match: str | None = None
         candidates = by_source_key.get(rel)
@@ -321,12 +423,19 @@ def check_discovery_docs(
             report.changed.append(rel)
             continue
 
+        status = _normalize_extraction_status(data.get("status"))
+        report.status_counts[status] = report.status_counts.get(status, 0) + 1
+
+        issues = _extraction_content_issues(data)
+        if issues:
+            report.content_warnings.append(f"{rel}: {'; '.join(issues)}")
+
         stored = data.get("source_sha256")
         if not stored:
             report.unverifiable.append(rel)
             continue
 
-        if stored != compute_source_hash(doc):
+        if stored != digest:
             report.changed.append(rel)
         else:
             report.ok.append(rel)
@@ -334,5 +443,10 @@ def check_discovery_docs(
     for name in sorted(by_name):
         if name not in consumed:
             report.orphan.append(name)
+
+    for paths in hash_to_paths.values():
+        if len(paths) > 1:
+            report.duplicate.append(sorted(paths))
+    report.duplicate.sort(key=lambda group: group[0])
 
     return report

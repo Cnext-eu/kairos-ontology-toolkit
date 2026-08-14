@@ -17,6 +17,7 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDFS
 
 from ._samples import (
+    DETECTED_PII_KINDS,
     SAMPLE_PRIVACY_POLICY,
     SAMPLE_PRIVACY_VERSION,
     SamplePrivacyError,
@@ -38,6 +39,10 @@ class SourcePrivacyReport:
     files_scanned: int = 0
     findings: list[tuple[Path, SamplePrivacyFinding]] = field(default_factory=list)
     changed_files: list[Path] = field(default_factory=list)
+    #: Redaction kinds actually looked for during this run, so a clean result can state
+    #: what it covered instead of implying universal discovery (#415). Derived from the
+    #: detectors themselves, never hand-maintained.
+    checked_kinds: tuple[str, ...] = DETECTED_PII_KINDS
 
     @property
     def passed(self) -> bool:

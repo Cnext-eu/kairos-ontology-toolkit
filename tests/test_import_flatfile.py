@@ -1262,3 +1262,161 @@ class TestDirectoryImportResilience:
 
         assert table_count == 1
         assert [name for name, _reason in failures] == ["broken.xlsx"]
+
+
+class TestLegacyXlsUnsupported:
+    """Issue #407 item 4: .xls stays a recognized candidate but is never routed to
+    openpyxl's ``InvalidFileException`` (neither ValueError nor ImportError, so it
+    would otherwise escape single-file mode as an unhandled exception)."""
+
+    def test_single_file_xls_raises_clean_value_error(self, tmp_path):
+        xls_file = tmp_path / "legacy.xls"
+        xls_file.write_bytes(b"not a real xls file")
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(ValueError, match="legacy .xls is not supported"):
+            run_import_flatfile(xls_file, output_dir=output_dir)
+
+        assert not output_dir.exists()
+
+    def test_directory_xls_is_a_named_skip_not_a_crash(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        (input_dir / "items.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
+        (input_dir / "legacy.xls").write_bytes(b"not a real xls file")
+
+        _result, table_count, _samples, failures = run_import_flatfile(
+            input_dir, system_name="legacy", output_dir=tmp_path / "out", return_count=True
+        )
+
+        assert table_count == 1
+        assert [name for name, _reason in failures] == ["legacy.xls"]
+        assert "legacy .xls is not supported" in failures[0][1]
+
+    def test_xls_stays_a_listed_candidate(self, tmp_path):
+        """Removing .xls from the candidate set would silently regress directory
+        mode's diagnostics from a named skip to the generic not-found message."""
+        (tmp_path / "legacy.xls").write_bytes(b"not a real xls file")
+
+        names = [p.name for p in list_flatfile_candidates(tmp_path)]
+
+        assert names == ["legacy.xls"]
+
+
+class TestMissingFlatfileExtras:
+    """Issue #407 item 1: a directory of files needing a missing optional extra
+    should be diagnosed once, keyed on actual importability rather than suffix."""
+
+    def test_no_missing_extras_when_everything_importable(self, tmp_path):
+        from kairos_ontology.core.import_flatfile import missing_flatfile_extras
+
+        candidates = [tmp_path / "a.csv", tmp_path / "b.xlsx", tmp_path / "c.parquet"]
+
+        assert missing_flatfile_extras(candidates) == {}
+
+    def test_csv_only_never_probes_any_extra(self, tmp_path):
+        from kairos_ontology.core.import_flatfile import missing_flatfile_extras
+
+        candidates = [tmp_path / "a.csv"]
+
+        assert missing_flatfile_extras(candidates) == {}
+
+    def test_keys_on_importability_not_suffix(self, tmp_path, monkeypatch):
+        import kairos_ontology.core.import_flatfile as flatfile_mod
+
+        real_import_module = flatfile_mod.importlib.import_module
+
+        def fake_import_module(name, *args, **kwargs):
+            if name == "openpyxl":
+                raise ImportError("simulated missing openpyxl")
+            return real_import_module(name, *args, **kwargs)
+
+        monkeypatch.setattr(flatfile_mod.importlib, "import_module", fake_import_module)
+
+        result = flatfile_mod.missing_flatfile_extras([tmp_path / "a.xlsx"])
+
+        assert result == {"flatfile": "pip install kairos-ontology-toolkit[flatfile]"}
+
+    def test_xls_never_reported_as_a_missing_extra(self, tmp_path, monkeypatch):
+        """Installing openpyxl would not make .xls work (#407 item 4), so it must
+        never be diagnosed as an extras problem, even when openpyxl is absent."""
+        import kairos_ontology.core.import_flatfile as flatfile_mod
+
+        def fake_import_module(name, *args, **kwargs):
+            if name == "openpyxl":
+                raise ImportError("simulated missing openpyxl")
+            raise AssertionError(f"unexpected import probe: {name}")
+
+        monkeypatch.setattr(flatfile_mod.importlib, "import_module", fake_import_module)
+
+        result = flatfile_mod.missing_flatfile_extras([tmp_path / "legacy.xls"])
+
+        assert result == {}
+
+    def test_parquet_missing_extra_reports_parquet_install_command(self, tmp_path, monkeypatch):
+        import kairos_ontology.core.import_flatfile as flatfile_mod
+
+        real_import_module = flatfile_mod.importlib.import_module
+
+        def fake_import_module(name, *args, **kwargs):
+            if name == "pyarrow":
+                raise ImportError("simulated missing pyarrow")
+            return real_import_module(name, *args, **kwargs)
+
+        monkeypatch.setattr(flatfile_mod.importlib, "import_module", fake_import_module)
+
+        result = flatfile_mod.missing_flatfile_extras([tmp_path / "a.parquet"])
+
+        assert result == {"parquet": "pip install kairos-ontology-toolkit[parquet]"}
+
+
+class TestRecursiveDirectoryMode:
+    """Issue #407 item 2: directory mode stays non-recursive by default;
+    ``--recursive``/``recursive=True`` opts into walking the full subtree, deriving
+    table names from the path relative to ``source_dir`` so same-basename files in
+    different subdirectories don't collide."""
+
+    def test_default_is_non_recursive(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        nested_dir = input_dir / "2024"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "orders.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
+
+        assert list_flatfile_candidates(input_dir) == []
+        assert list_flatfile_candidates(input_dir, recursive=True) == [nested_dir / "orders.csv"]
+
+    def test_non_recursive_run_ignores_nested_files_entirely(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        nested_dir = input_dir / "2024"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "orders.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="No CSV, Excel, or Parquet files found"):
+            run_import_flatfile(input_dir, system_name="legacy", output_dir=tmp_path / "out")
+
+    def test_recursive_run_derives_names_from_relative_path(self, tmp_path):
+        input_dir = tmp_path / "exports"
+        (input_dir / "2024").mkdir(parents=True)
+        (input_dir / "2025").mkdir(parents=True)
+        (input_dir / "2024" / "orders.csv").write_text("id,sku\n1,A\n", encoding="utf-8")
+        (input_dir / "2025" / "orders.csv").write_text("id,sku\n2,B\n", encoding="utf-8")
+
+        result_dir = run_import_flatfile(
+            input_dir, system_name="legacy", output_dir=tmp_path / "out", recursive=True
+        )
+
+        assert (result_dir / "2024-orders.yaml").exists()
+        assert (result_dir / "2025-orders.yaml").exists()
+
+    def test_recursive_top_level_file_name_unchanged_in_shape(self, tmp_path):
+        """A top-level file under a recursive run still names by its own stem
+        (just lowercased/slugged) — no directory prefix is invented for it."""
+        input_dir = tmp_path / "exports"
+        input_dir.mkdir()
+        (input_dir / "Customers.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+        result_dir = run_import_flatfile(
+            input_dir, system_name="legacy", output_dir=tmp_path / "out", recursive=True
+        )
+
+        assert (result_dir / "customers.yaml").exists()

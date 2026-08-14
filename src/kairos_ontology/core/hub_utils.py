@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,81 @@ def is_domain_ontology(path: Path) -> bool:
     See :func:`is_domain_ontology_stem` for the exclusion rules.
     """
     return is_domain_ontology_stem(path.stem)
+
+
+# --- Placeholder / unedited-template detection (D2, issue #416) -----------
+#
+# Single shared home for "is this scaffold-provided text or a real, authored
+# answer" predicates, so the extraction-content lint (#416a) and the decision
+# content lint (#416c) key off one definition instead of two independently
+# drifting heuristics. This subsumes the ``<CONFIRM_...>`` sentinel family
+# already used by ``scaffold_staging.py``/``scaffold_binding.py`` (e.g.
+# ``SENTINEL_TARGET_CLASS = "<CONFIRM_TARGET_CLASS>"``): those are angle-bracket
+# stubs like any other, so the generic check below recognises them without
+# either module needing to import this one or duplicate the pattern.
+
+_PLACEHOLDER_TOKEN_RE = re.compile(r"<[^<>]+>")
+_PLACEHOLDER_WORDS = frozenset({"TODO", "TBD"})
+_WORD_RE = re.compile(r"[A-Za-z]+")
+
+
+def is_scaffold_placeholder_text(value: Any) -> bool:
+    """Return True when *value* still reads like an unedited scaffold stub.
+
+    Recognises angle-bracket placeholders (``<option>``, ``<CONFIRM_GRAIN>``,
+    ...) and bare ``TODO``/``TBD`` markers. A non-string value is never a
+    placeholder (nothing to flag); an empty/blank string is also not itself a
+    placeholder -- callers that also want to reject *empty* should check that
+    separately (see :func:`placeholder_fields`).
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    if _PLACEHOLDER_TOKEN_RE.search(text):
+        return True
+    tokens = {t.upper() for t in _WORD_RE.findall(text)}
+    return bool(tokens & _PLACEHOLDER_WORDS)
+
+
+def placeholder_fields(
+    mapping: dict[str, Any] | None,
+    *,
+    required: tuple[str, ...],
+) -> list[str]:
+    """Return the subset of *required* keys that are missing, empty, or placeholder text.
+
+    Generic "is this field actually filled in" check shared by content-lint
+    callers (extraction ``summary``/``strategy`` for #416a; decision
+    frontmatter fields for #416c). A key counts as unfilled when it is absent,
+    ``None``, blank/placeholder text, or an empty list/tuple/dict.
+    """
+    if not isinstance(mapping, dict):
+        return list(required)
+    unfilled: list[str] = []
+    for key in required:
+        value = mapping.get(key)
+        if value is None:
+            unfilled.append(key)
+        elif isinstance(value, str):
+            if not value.strip() or is_scaffold_placeholder_text(value):
+                unfilled.append(key)
+        elif isinstance(value, (list, tuple, dict)) and not value:
+            unfilled.append(key)
+    return unfilled
+
+
+def body_is_unedited_template(body: str, template: str) -> bool:
+    """Return True when *body* is, modulo surrounding whitespace, *template* verbatim.
+
+    Keys a lint off exact identity with a known scaffold body (e.g.
+    ``decision_records.TEMPLATE_BODY``) rather than a fragile heuristic over
+    the body's structure -- see #416c: the existing rejected-alternative
+    heuristic is fooled by the template's own placeholder row, which is
+    exactly the "unedited stub" case this function exists to catch instead.
+    """
+    return body.strip() == template.strip()
 
 
 def publish_root(hub: Path) -> Path:

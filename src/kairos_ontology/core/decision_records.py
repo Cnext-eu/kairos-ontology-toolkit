@@ -35,7 +35,7 @@ from typing import Any
 
 import yaml
 
-from .hub_utils import find_hub_root
+from .hub_utils import body_is_unedited_template, find_hub_root
 
 # --- OKF bundle conventions -------------------------------------------------
 
@@ -521,6 +521,35 @@ def _validate_record(
             "an Accepted decision must document >=1 rejected alternative",
             rel,
         )
+
+    # --- unedited template body (D4, #416c) --------------------------------
+    # _has_rejected_alternative above is fooled by the template's own
+    # `| <option> | <why it was not chosen> |` placeholder row -- that table
+    # row is exactly how an unedited stub currently slips past the Accepted
+    # gate. Keying this lint off exact identity with TEMPLATE_BODY catches
+    # that stub directly. Severity follows D1's decision (validate is not
+    # skill-gate-exempt and folds these errors into `exit(1)`, and a fresh
+    # `decision new` record is Proposed *by construction* -- see
+    # cli/decisions.py::new_decision's default): a still-unedited Proposed or
+    # Rejected record is only a warning (the intended, in-progress workflow
+    # must not turn `validate` red); Accepted or Superseded is unambiguously
+    # wrong and is an error.
+    if body_is_unedited_template(record.body, TEMPLATE_BODY):
+        if state in ("Accepted", "Superseded"):
+            _err(
+                diags,
+                "unedited_template_body",
+                f"record body is still the unedited scaffold template but decision_state "
+                f"is '{state}' -- replace every placeholder section before accepting",
+                rel,
+            )
+        else:
+            _warn(
+                diags,
+                "unedited_template_body",
+                "record body still matches the unedited scaffold template",
+                rel,
+            )
 
     # --- provenance (generated) -------------------------------------------
     generated = record.generated

@@ -254,30 +254,43 @@ def _kind_from_person_column_tokens(tokens: set[str]) -> str | None:
     return None
 
 
+# Column-name keyword -> redaction kind. Hoisted to module scope (unchanged content) so
+# DETECTED_PII_KINDS below can be *derived* from the detectors rather than restated beside
+# them: `source-privacy` reports the patterns it checked, and a hand-maintained second list
+# would eventually claim coverage the detectors do not have (#415).
+_NAMED_KINDS: tuple[tuple[str, str], ...] = (
+    ("email", "email"),
+    ("phone", "phone"),
+    ("iban", "iban"),
+    ("address", "address"),
+    ("passport", "passport"),
+    ("national_id", "identifier"),
+    ("tax_id", "identifier"),
+    ("ssn", "identifier"),
+    ("date_of_birth", "birth-date"),
+    ("birth_place", "birth-place"),
+    ("first_name", "name"),
+    ("last_name", "name"),
+    ("maiden_name", "name"),
+    ("gender", "demographic"),
+    ("ethnicity", "demographic"),
+    ("religion", "demographic"),
+    ("health", "health"),
+    ("nationality", "demographic"),
+    ("marital_status", "demographic"),
+)
+
+#: Redaction kinds this module can actually detect, for coverage reporting. Derived from
+#: `_NAMED_KINDS` plus the value-shape detectors in `_kind_from_text`, the person-token
+#: kinds, and the `pii-column` fallback. Notably absent: geographic coordinates — see #423.
+DETECTED_PII_KINDS: tuple[str, ...] = tuple(
+    sorted({kind for _, kind in _NAMED_KINDS} | {"identifier", "name", "pii-column"})
+)
+
+
 def _kind_from_name(name: str | None, *, context_name: str | None = None) -> str | None:
     norm = _normalize(name or "")
-    named_kinds = (
-        ("email", "email"),
-        ("phone", "phone"),
-        ("iban", "iban"),
-        ("address", "address"),
-        ("passport", "passport"),
-        ("national_id", "identifier"),
-        ("tax_id", "identifier"),
-        ("ssn", "identifier"),
-        ("date_of_birth", "birth-date"),
-        ("birth_place", "birth-place"),
-        ("first_name", "name"),
-        ("last_name", "name"),
-        ("maiden_name", "name"),
-        ("gender", "demographic"),
-        ("ethnicity", "demographic"),
-        ("religion", "demographic"),
-        ("health", "health"),
-        ("nationality", "demographic"),
-        ("marital_status", "demographic"),
-    )
-    for keyword, kind in named_kinds:
+    for keyword, kind in _NAMED_KINDS:
         if keyword in norm:
             return kind
     tokens = _name_tokens(name)

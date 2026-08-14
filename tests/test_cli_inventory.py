@@ -54,7 +54,7 @@ class TestGenerateInventoryCLI:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Generated" in result.output
+        assert "1 generated" in result.output
 
         yaml_file = out_dir / "party-inventory.yaml"
         assert yaml_file.exists()
@@ -258,6 +258,217 @@ class TestInventoryCollisionRegression:
         names = {c["name"] for c in inv["classes"]}
         assert "CurrentTradeParty" in names
         assert "ArchivedTradeParty" not in names
+
+
+class TestGenerateInventoryExcludesPatternTemplates:
+    """Issue #406: every ``blueprints/patterns/<id>/template.ttl`` collapses onto the
+    same ``template-inventory.yaml`` name (``_ref_model_id`` only namespaces paths
+    under ``derived-ontologies``) — a collision that scales with the pattern library,
+    not a two-file accident. These files are copyable authoring stubs (placeholder
+    ``https://example.org/`` namespaces, deliberately no ``owl:versionInfo``) and
+    should never have been inventoried at all.
+
+    Modeled directly on
+    ``test_generate_inventory_ignores_archived_reference_model_versions`` above.
+    """
+
+    _TEMPLATE_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://example.org/pattern> a owl:Ontology ; rdfs:label "Pattern Template" .
+<https://example.org/pattern#Thing> a owl:Class ; rdfs:label "Thing" .
+"""
+
+    def test_generate_inventory_excludes_pattern_library_templates(self, tmp_path, monkeypatch):
+        ref_root = tmp_path / "ontology-reference-models"
+        real = ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text(
+            TestInventoryCollisionRegression()._ref_ttl("BSP", "TradeParty"), encoding="utf-8"
+        )
+
+        for pattern_id in ("deferred-relationship", "multimodal-order-leg"):
+            template = ref_root / "blueprints" / "patterns" / pattern_id / "template.ttl"
+            template.parent.mkdir(parents=True, exist_ok=True)
+            template.write_text(self._TEMPLATE_TTL, encoding="utf-8")
+
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["generate-inventory"])
+        assert result.exit_code == 0, result.output
+        assert "❌" not in result.output
+        assert "collision" not in result.output.lower()
+
+        inv_dir = tmp_path / "referencemodels-unpacked"
+        assert (inv_dir / "bsp-party-inventory.yaml").is_file()
+        # Neither pattern template produced an inventory, under any name.
+        assert not (inv_dir / "template-inventory.yaml").exists()
+        assert not any(p.name == "template-inventory.yaml" for p in inv_dir.glob("*"))
+
+        check = CliRunner().invoke(cli, ["check-inventory"])
+        assert check.exit_code == 0, check.output
+        assert "MIGRATION REQUIRED" not in check.output
+
+
+class TestGenerateInventoryExitCodeInvariant:
+    """Issue #405 / DD-153: a source that never produces an artifact must fail the
+    command *only when the failure is author-actionable* — a DD-054 name collision
+    always blocks, but a parse exception on a source the hub author does not own
+    (e.g. a vendored reference-model checkout) is advisory unless it is the *only*
+    thing a target attempted (total failure), or ``--strict`` escalates it.
+
+    Both directions of the DD-153 invariant are asserted: ``exit != 0 ⟹ a ❌ line was
+    printed`` and ``❌ printed ⟹ exit != 0``. The repo violated the second direction
+    before the #405 fix — a DD-054 name collision printed ``❌`` but still exited 0
+    (``cli/inspection.py`` around the old ``produced_by`` collision check). It was
+    later violated the *other* way (this suite's regression target): every partial
+    failure was made blocking regardless of reason, which relocated #405's
+    unconvergeable-forever pathology from ``check-inventory`` to
+    ``generate-inventory`` whenever the failing source was vendored and unfixable by
+    the hub author — exactly what DD-153 rejects.
+    """
+
+    def test_partial_parse_failure_on_unowned_source_exits_zero_and_prints_warning(
+        self, tmp_path, monkeypatch
+    ):
+        """A mix of one good and one unparseable reference-model source (the actual
+        #405 shape once dozens of vendored TTLs are involved: most build, a few
+        vendored ones don't) must not block — REASON_EXCEPTION is advisory, not a
+        blocking-kind reason, and the target still produced an artifact overall."""
+        ref_dir = tmp_path / "ontology-reference-models"
+        ref_dir.mkdir(parents=True)
+        (ref_dir / "party.ttl").write_text(SAMPLE_REF_TTL, encoding="utf-8")
+        (ref_dir / "broken.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["generate-inventory"])
+
+        # Direction: no ❌ was printed, so exit == 0 (not blocking).
+        assert result.exit_code == 0, result.output
+        assert "❌" not in result.output
+        assert "⚠" in result.output
+        assert "1 failed" in result.output
+
+    def test_total_failure_of_a_target_exits_nonzero_and_prints_cross_mark(
+        self, tmp_path, monkeypatch
+    ):
+        """The exact #405 regression, unchanged: a ref-models dir whose *only*
+        source is un-inventoriable produces nothing at all for that target — a total
+        failure, which blocks regardless of reason (not merely "was it a
+        collision")."""
+        ref_dir = tmp_path / "ontology-reference-models"
+        ref_dir.mkdir(parents=True)
+        (ref_dir / "broken.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["generate-inventory"])
+
+        assert result.exit_code != 0
+        assert "❌" in result.output
+        assert "1 failed" in result.output
+
+    def test_collision_exits_nonzero_and_prints_cross_mark(self, tmp_path, monkeypatch):
+        """A DD-054 name collision must block, even though the other source in the
+        same run succeeds — fixing the exit!=0 ⟺ ❌-printed invariant's violated
+        direction (a collision used to print ❌ and still exit 0)."""
+        ref_root = tmp_path / "ontology-reference-models"
+        first = ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        second = ref_root / "derived-ontologies" / "BSP" / "current" / "legacy-party" / "party.ttl"
+        for path, cls in ((first, "TradeParty"), (second, "LegacyTradeParty")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                TestInventoryCollisionRegression()._ref_ttl("BSP", cls), encoding="utf-8"
+            )
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["generate-inventory"])
+
+        # Direction 1: exit != 0 ⟹ a ❌ line was printed.
+        assert result.exit_code != 0
+        assert "❌" in result.output
+        # Direction 2 (the previously-violated one): a collision was reported, and
+        # that reporting is exactly why the exit is non-zero.
+        assert "collision" in result.output.lower()
+        assert "1 failed" in result.output
+
+
+class TestGenerateInventoryPrune:
+    """Issue #405/#406 (A2): ``--prune`` must never delete a still-live source's
+    committed inventory, whether because that source failed this run, or because
+    one of the two scope roots was not resolved this run."""
+
+    def test_failing_source_keeps_its_existing_inventory(self, tmp_path, monkeypatch):
+        ref_dir = tmp_path / "ontology-reference-models"
+        ref_dir.mkdir(parents=True)
+        ttl = ref_dir / "party.ttl"
+        ttl.write_text(SAMPLE_REF_TTL, encoding="utf-8")
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+
+        first = runner.invoke(cli, ["generate-inventory"])
+        assert first.exit_code == 0, first.output
+        inv_path = tmp_path / "referencemodels-unpacked" / "party-inventory.yaml"
+        assert inv_path.is_file()
+
+        # Break the source after it has a committed, good inventory.
+        ttl.write_text("this is not valid turtle @@@ ###", encoding="utf-8")
+
+        second = runner.invoke(cli, ["generate-inventory"])
+        assert second.exit_code != 0, second.output
+        # The previously-good inventory must survive — it was never re-produced
+        # this run, but it is still a live (merely currently-broken) source, not
+        # an orphan.
+        assert inv_path.is_file()
+
+    def test_ontology_dir_only_run_does_not_delete_reference_model_inventories(
+        self, tmp_path, monkeypatch
+    ):
+        hub = tmp_path / "hub"
+        ont_dir = hub / "model" / "ontologies"
+        ont_dir.mkdir(parents=True)
+        (ont_dir / "client.ttl").write_text(
+            """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://acme.example/ontology/client> a owl:Ontology ; rdfs:label "Client" .
+<https://acme.example/ontology/client#Customer> a owl:Class ; rdfs:label "Customer" .
+""",
+            encoding="utf-8",
+        )
+        # Deliberately NOT under any location `_resolve_ref_models_dir` auto-detects,
+        # so a plain `--ontology-dir`-only rerun cannot find it either.
+        ref_dir = tmp_path / "elsewhere" / "ontology-reference-models"
+        ref_dir.mkdir(parents=True)
+        (ref_dir / "party.ttl").write_text(SAMPLE_REF_TTL, encoding="utf-8")
+
+        monkeypatch.chdir(hub)
+        runner = CliRunner()
+
+        first = runner.invoke(
+            cli,
+            [
+                "generate-inventory",
+                "--ontology-dir",
+                str(ont_dir),
+                "--ref-models-dir",
+                str(ref_dir),
+            ],
+        )
+        assert first.exit_code == 0, first.output
+        ref_inv = hub / "referencemodels-unpacked" / "party-inventory.yaml"
+        assert ref_inv.is_file()
+
+        second = runner.invoke(cli, ["generate-inventory", "--ontology-dir", str(ont_dir)])
+        assert second.exit_code == 0, second.output
+        assert "Skipping prune" in second.output
+        # The reference-model inventory must survive an ontology-only run that could
+        # not resolve the reference-models scope at all.
+        assert ref_inv.is_file()
 
 
 class TestResolveRefModelsDir:

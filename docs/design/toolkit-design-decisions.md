@@ -204,6 +204,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-150](#dd-150-reference-models-owns-the-tier-enum-the-toolkit-derives-ontology-tier-amends-dd-146) | Reference-models owns the tier enum; the toolkit derives ontology tier (Amends DD-146) | Accepted | 2026-08-10 |
 | [DD-151](#dd-151-structured-logging-foundation--opt-in-opentelemetry-bridge) | Structured logging foundation + opt-in OpenTelemetry bridge | Accepted | 2026-08-14 |
 | [DD-152](#dd-152-reference-models-resolve-from-a-shared-versioned-machine-level-cache-supersedes-dd-036s-location) | Reference Models Resolve From a Shared, Versioned Machine-Level Cache (Supersedes DD-036's Location) | Proposed | 2026-08-14 |
+| [DD-153](#dd-153-command-outcome-and-exit-code-contract) | Command Outcome and Exit-Code Contract | Accepted | 2026-08-14 |
 
 ---
 
@@ -2872,6 +2873,37 @@ still depends on the operator, agent or CI pipeline actually invoking `check-inv
 
 **Status of this amendment.** DD-152 is `Proposed`; none of the above applies until it is Accepted.
 
+### Amendment (2026-08-14): the `unbuildable` classification, and why it deliberately weakens a gate
+
+This gate had no bucket for *"this source cannot be built at all"*. A source whose closure fails to resolve
+was collapsed into one of two existing buckets, both **blocking**: into `missing`, because
+`_source_has_classes` deliberately returned `True` when it could not parse a file ("treat as having classes
+so the check surfaces it"), or into `stale`, when regeneration raised during the freshness comparison. Both
+are indistinguishable from *"you forgot to regenerate"*.
+
+That mattered because `check-inventory`'s remediation names exactly one command — `generate-inventory` — and
+for these sources that command **cannot help**. The user is told to run a fix that reports success and clears
+nothing, so the pair `check-inventory` → `generate-inventory` → `check-inventory` never converges (#405).
+The reporter was accurate about severity and wrong about cause.
+
+**Decision.** Add an `unbuildable` classification: a source that was enumerated but cannot be parsed or have
+its closure resolved. It is **non-blocking by default and `--strict`-eligible**, exactly mirroring
+`unverifiable`, and `check-inventory` selects a third remediation message naming the real remedy — fix the
+source TTL — rather than the generic one.
+
+**This is a deliberate weakening of a gate, and the rationale is ownership, not convenience.**
+`iter_reference_inventory_sources` enumerates the **vendored** reference-models tree. A hub author cannot fix
+an unparseable TTL in there, and a gate that blocks on it blocks every hub that resolves that version, with
+no available remedy. That is the same reasoning already recorded for `catalog-test` — fail only for what the
+hub author owns and can fix — and for `init`'s pre-generation loop, where a source TTL's failure "only
+reduces coverage, never aborts". A hub that genuinely wants CI teeth escalates with `--strict`.
+
+**What did not change.** `unverifiable` keeps its single meaning (a pre-DD-047 inventory with no stored hash)
+and must not absorb build failures. Freshness still compares `closure_hash` only. Both `is_blocking`
+properties explicitly exclude `unbuildable`; `has_warnings` includes it. `scope_inventory_report` and
+`classify_domain_scope` compose it, so the domain-scoped check remains the authority for a given design and
+an out-of-scope unbuildable source stays out of scope.
+
 ---
 
 ## DD-048: Business Discovery Phase & Company SKOS Glossary
@@ -3281,6 +3313,41 @@ so they transparently pick up the now-complete set with no code change.
 - Any future same-model/same-stem collision is a loud error (a deterministic
   disambiguation guard can be added if such a case ever arises).
 
+### Amendment (2026-08-14): the collision was not loud, and `--prune` deleted good inventories
+
+Two claims above did not hold in the implementation. Recording both, and what replaced them.
+
+**"Aborts loudly on any residual same-name collision" was not true.** The generator printed a `❌ Inventory
+name collision … Report this (DD-054 disambiguation gap)` line to stderr and then `continue`d, touching no
+counter and no exit code — a `❌` in a command that exits 0. The colliding source was silently absent from
+the run, and because the *checker* still enumerated it and compared against the winner's stored hash, the
+losing key was reported **permanently `STALE`**: unfixable by any number of `generate-inventory` runs (#406).
+A collision now routes to a real failure bucket and blocks, which is what this DD always claimed.
+
+**The collision was not a two-file accident, and the root cause is here in the naming rule.** `_ref_model_id`
+namespaces only paths containing a `derived-ontologies` segment, so a reference-model TTL outside that tree
+falls through to bare `{stem}-inventory.yaml`. Every `blueprints/patterns/*/template.ttl` therefore collapses
+to the same `template-inventory.yaml` — the collision scales with the pattern library. Those files are
+copyable stubs carrying `https://example.org/` placeholder namespaces and deliberately no `owl:versionInfo`;
+a semantic-index inventory of one has no consumer. They are now **excluded from inventory enumeration**, in
+`iter_reference_inventory_sources` rather than at any call site, so generator and checker agree by
+construction (the same reason the `archive/` exclusion lives there).
+
+**`--prune` was a data-loss path, and the obvious guard would not have closed it.** Prune unlinked every
+`*-inventory.yaml` absent from the set of files the run wrote. Two ways that set was wrongly incomplete:
+
+1. a source that **failed** never entered it, so its previously-good committed inventory was deleted —
+   turning a transient closure failure into a `missing` on the next check, i.e. the fix command destroyed the
+   evidence that the source had ever been fine;
+2. worse, **scope**: only *one* of the ontology / reference-model roots need resolve, so a run scoped to the
+   hub alone reported **zero failures** and deleted every reference-model inventory, with no warning at all.
+
+Because of (2), gating prune on "no failures this run" is insufficient — that path has no failures. Prune is
+now defined by what the run could positively account for: it **hard-skips with an explanation** when either
+scope root was unresolved, and otherwise reuses the checker's own orphan notion, which is built from the
+sources it enumerated regardless of parse success. A source that merely fails is still *seen*, so it can
+never be mistaken for orphaned.
+
 ---
 
 ## DD-055: Business Discovery Materializes Reference-Model Breadth & Links Glossary to Ref-Model IRIs
@@ -3643,6 +3710,47 @@ provenance committed alongside the deliverable it explains.
   README on `update`.
 - The extraction schema is intentionally generic — company-terminology extraction is the
   worked example, not a hard requirement.
+
+### Amendment (2026-08-14): `status` becomes load-bearing, and content is linted
+
+Three gaps in this design surfaced together during an unattended delivery run (#416, #417).
+
+**`status` was documented and read nowhere.** The schema defines
+`status: processed | partial | skipped`, and the design's whole posture is that partial coverage should be
+recorded honestly rather than overstated. But no code read the field: `discovery-status` validated
+`source_path` and `source_sha256` only, and printed one unqualified success line. On a real hub 23 of 56
+records were legitimately `partial` — long documents where only decision-bearing sections were read — and
+that judgment was invisible to every gate. The schema offered an honesty mechanism that nothing consumed.
+`status` is now read and reported.
+
+**The gate validated provenance, not content.** A record whose `strategy` and `summary` were literally
+`TODO` with `extracted_terms: []`, but whose path and digest were correct, passed `discovery-status --strict`.
+For interactive use that is minor; for an unattended run these records **are** the deliverable — the thing a
+human is asked to trust instead of watching the run — and an empty stub was indistinguishable from real work.
+Content is now linted, generalising the principle already established for the glossary TTL (DD-103 amendment,
+#288): scaffold-provided or placeholder content is not authored evidence.
+
+**Severity is deliberately asymmetric.** Extraction content findings **warn** and are `--strict`-eligible;
+they never error. `partial` is an author's judgment with no automated remedy, and a hub carrying 23 honest
+partials must not acquire 23 unclearable errors — the same advisory rationale recorded for `catalog-test`.
+New findings route into a **separate** strict-eligible property rather than the existing work signal:
+widening that would have made `--strict` unconvergeable on such a hub, recreating precisely the
+non-converging loop that #405 reports, and would have counted already-processed documents as needing work.
+
+**Duplicate documents are now detected.** The status check hashes each staged document, but never compared
+digests *across* documents; 7 of 56 tracked documents on the same hub were byte-identical and were reported as
+7 independent units of work. Duplicates are reported **additively** — a duplicate with no extraction record
+still needs processing, so the work count is unchanged. Note the digest was previously computed only for
+already-matched records, so this costs one full read per unmatched document; that cost is accepted knowingly.
+
+**Consequence for `build-glossary`.** It read `extracted_terms` from every record regardless of `status`, so a
+`skipped` record's terms landed in the company glossary. Harmless while `status` was inert; a contradiction the
+moment it became load-bearing. `skipped` records are now excluded and the count surfaced; `partial` records are
+still included, because partial coverage is coverage.
+
+**Still open.** This DD names `kairos-design-discovery` (Phase 1 / Phase 4) as the producer of extraction
+records, but no skill currently references `discovery-status`, `_extractions/`, or `build-glossary` at all —
+the producer contract is undocumented in the place meant to produce it.
 
 ### Amendment (2026-07-22): recursive discovery + provenance-based matching
 
@@ -4681,6 +4789,32 @@ human-confirmed mapping flow.
   deterministic, value-free `source-privacy --fix` workflow.
 - Detection is deliberately bounded to supported patterns and PII-related column
   names; this policy does not claim universal discovery of sensitive information.
+
+### Amendment (2026-08-14): the bound must be stated in the output, not only here
+
+The consequence above — "does not claim universal discovery" — was recorded in this document and **not** in
+the command. `source-privacy` printed `✅ Source sample artifacts are privacy-safe for supported patterns.`,
+which names no patterns, so a reader could not tell which ones. The concrete case that surfaced it (#415): a
+road-haulage export where three address components were correctly redacted while `CoordinateLatitude` /
+`CoordinateLongitude` persisted at six decimal places (~0.1 m) in the same row — the address recoverable by
+reverse-geocoding the two columns beside it, under an unqualified all-clear.
+
+**Decision.** A clean result now states its coverage: the number of artifacts scanned, the redaction kinds
+actually looked for, and the known gap. The kind list is **derived from the detectors** (`DETECTED_PII_KINDS`,
+built from the same table `_kind_from_name` iterates) rather than maintained beside them, because a
+hand-written coverage list would eventually claim detection the code does not have — which is the failure this
+amendment exists to prevent, one level up.
+
+**The detector itself is deliberately deferred** to #423, not skipped. Three separate mechanisms make the
+obvious implementations wrong, and each is recorded there: blanket-redacting decimals would regress #302
+(whose exemption is value-shape, not datatype — gating on datatype was explicitly rejected); a range-only rule
+breaks existing fixtures, since `3.14159265358979` and `0.123456789` are both valid latitudes; and precision
+reduction cannot work through `is_redaction_token`, the sole idempotence mechanism, without forcing a 2-decimal
+threshold — roughly 1.1 km, which still identifies a rural facility. A privacy gate must be binary; "coarser"
+is not "safe".
+
+Stating the bound is therefore the honest interim: the guarantee is unchanged, but it is no longer
+overstated at the point of use.
 
 ---
 
@@ -10835,5 +10969,90 @@ These are genuinely unresolved. This entry should not move to Accepted until bot
    the per-file `LICENSE` copies from the repo a downstream consumer would clone. Recorded as an
    observation for review, not as legal advice: whoever owns redistribution terms should decide whether
    the fetch should also copy the root `LICENSE`/`NOTICE`.
+
+---
+
+## DD-153: Command Outcome and Exit-Code Contract
+
+**Status:** Accepted
+**Date:** 2026-08-14
+**Affects:** every CLI command that reports partial success; `core/command_outcome.py`,
+`generate-inventory`, `check-inventory`, `import-flatfile`, `propose-alignment`, `scaffold-system`
+**Implementation:** `src/kairos_ontology/core/command_outcome.py`, `cli/inspection.py`
+(`generate_inventory_cmd`, `check_inventory_cmd`), `core/inventory.py` (`InventoryCheckReport`)
+
+### Context
+
+Partial-failure policy was decided per command, so two commands facing the same question gave opposite
+answers, and there were **76 hand-rolled `raise SystemExit(...)` sites** across `cli/` with no documented
+rule about which code to use. Thirteen already used exit 2 for "cannot locate or parse the inputs"; fifteen
+comparable sites used 1. Nothing recorded which was correct.
+
+The concrete failure that forced this (#405): `generate-inventory` printed
+`✅ Generated 78 inventory file(s)` and exited **0** while three sources failed to build and a fourth was
+skipped by a filename collision — the collision even printing `❌` in a command that then reported success.
+`written` was the only counter the command kept, so the summary line had no denominator to divide by. In an
+unattended run the exit code is the entire signal, and it did not distinguish "78 generated cleanly" from
+"78 generated, 4 lost, and the next command will refuse to proceed".
+
+#408 proposed the invariant `exit == 0 ⟺ failed == []`, naming `import-flatfile` as the reference semantics.
+Those two are incompatible: `import-flatfile` deliberately exits **0** on partial failure and 1 only on total
+failure. A per-command `failure_policy` flag was considered and rejected — it does not resolve the ambiguity,
+it relocates it to whoever sets the flag, and it mis-classifies `import-flatfile`, which is legitimately both.
+
+### Decision
+
+Blocking-ness is **intrinsic to the outcome, not a property of the command**:
+
+```
+is_blocking =
+      no artifact produced for any requested target     # total failure
+   or an explicitly-named target failed                 # a directly-named input always fails fast
+   or (strict and advisory_findings)                    # the escalation axis
+```
+
+This generalises a shape the codebase already used — `blocking = report.is_blocking or (strict and
+report.unverifiable)`. `CommandOutcome` carries `succeeded` / `skipped` / `failed` plus per-target
+`attempted` / `produced` / `failed` counts, and exposes named `is_blocking` and `has_warnings` properties so
+no CLI re-derives the rule inline. A target's `total_failure` requires **both** attempts and failures, so an
+empty or wholly-skipped target is never mistaken for a broken one.
+
+Exit codes:
+
+- **0** — every attempted target produced its artifact. `skipped` never affects the code.
+- **0 + a `⚠` line** — partial failure where output was still written. The summary always carries the
+  denominator (`78 generated, 3 failed, 1 skipped`).
+- **1** — the command did not do what was asked: total failure, an explicitly-named target failed, or an
+  escalation gate (`--strict`, `--fail-on`) was crossed.
+- **2** — the inputs to attempt the work could not be located or parsed.
+
+Two invariants, both testable, and the second was being violated:
+
+- `exit != 0` ⟹ at least one `❌`/`⛔` line was printed.
+- a `❌` line was printed ⟹ `exit != 0`.
+
+### Rejected alternatives
+
+- **Per-command `failure_policy ∈ {blocking, advisory}`.** Mis-classifies `import-flatfile`, which is both,
+  and turns an unclassified failure into a configuration question.
+- **Make every partial failure blocking.** Would render `generate-inventory` unconvergeable: it enumerates the
+  vendored reference-models tree, which a hub author cannot repair, so a single unparseable upstream TTL would
+  block every hub resolving that version. Ownership is the test — fail for what the author can fix.
+- **A machine-readable failure manifest** written by the generator and read by the checker. Solves the
+  remediation-text problem but adds an artifact and a staleness question; the `unbuildable` classification
+  (DD-047 amendment) achieves the same result inside the existing report.
+
+### Consequences
+
+- `generate-inventory` now exits 1 when it produced nothing from a non-empty source set, or on a DD-054
+  collision, and prints a denominator summary. A single unbuildable vendored source stays advisory.
+- `import-flatfile`'s documented behaviour is unchanged — partial reads still exit 0 — and it now expresses
+  that through the shared rule rather than a local convention.
+- Migrating the remaining hand-rolled `SystemExit` sites is deliberately incremental. The behaviour-changing
+  subset is the ~15 input-resolution sites that should move from 1 to 2; the rest is a mechanical swap and can
+  follow. Until then the contract is documented but not uniformly enforced, which is an honest description of
+  the state rather than a claim of completion.
+- Any new command reporting more than one outcome should return a `CommandOutcome` rather than hand-rolling an
+  exit, so the invariants above hold by construction.
 
 ---

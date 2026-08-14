@@ -103,8 +103,9 @@ If no relevant source vocabulary exists, or the user says more evidence is
 needed, stop and invoke **kairos-design-source**. Return here only after the
 evidence is available. Never model against an empty source set.
 
-Discovery is no longer optional (DD-148): if there is neither a `businessdiscovery/`
-narrative (DD-048) nor a discovery conformance artifact at
+Discovery is no longer optional (DD-148): if there is neither an authored
+`businessdiscovery/*.ttl` glossary (DD-048; prose notes in that folder don't satisfy
+it — see its README) nor a discovery conformance artifact at
 `integration/discovery/core-concepts-conformance.yaml` (DD-090), STOP and invoke
 **kairos-design-discovery** first — do not proceed on inferred business terms. The
 two are independent; either is enough to pass this baseline check. If a conformance
@@ -116,7 +117,7 @@ are actively designing no longer blocks you here; one tagged to the active domai
 left **cross-cutting** (no `likely_domains`, the default), still does. If any
 in-scope unresolved judgment exists, STOP and invoke **kairos-design-discovery** so a
 human confirms it before design proceeds — this check applies regardless of whether a
-`businessdiscovery/` narrative exists. `kairos-ontology compile`/`validate --domain`
+`businessdiscovery/*.ttl` glossary exists. `kairos-ontology compile`/`validate --domain`
 enforce both checks the same way and hard-fail otherwise — this gate only lets you
 catch it earlier.
 

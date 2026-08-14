@@ -103,6 +103,107 @@ def test_total_directory_failure_exits_one_and_writes_nothing(tmp_path):
     assert not output_dir.exists()
 
 
+def test_nested_directory_without_recursive_hints_at_flag(tmp_path):
+    """Issue #407 item 2: a nested export tree must read as 'wrong shape', not
+    'wrong path' — and must not be confused with the unreadable-files message."""
+    input_dir = tmp_path / "input"
+    nested_dir = input_dir / "2024"
+    nested_dir.mkdir(parents=True)
+    (nested_dir / "orders.csv").write_text("id,sku\n1,ABC\n", encoding="utf-8")
+
+    output_dir = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        import_flatfile,
+        ["--from", str(input_dir), "--system", "legacy", "--output", str(output_dir)],
+    )
+
+    assert result.exit_code == 1
+    assert "found 1 candidate file(s) in subdirectories" in result.output
+    assert "--recursive" in result.output
+    assert "could not be read" not in result.output
+    assert not output_dir.exists()
+
+
+def test_recursive_flag_imports_nested_directory(tmp_path):
+    """Issue #407 item 2: --recursive opts into the nested tree and derives
+    collision-safe table names from each file's path relative to --from."""
+    input_dir = tmp_path / "input"
+    (input_dir / "2024").mkdir(parents=True)
+    (input_dir / "2025").mkdir(parents=True)
+    (input_dir / "2024" / "orders.csv").write_text("id,sku\n1,A\n", encoding="utf-8")
+    (input_dir / "2025" / "orders.csv").write_text("id,sku\n2,B\n", encoding="utf-8")
+
+    output_dir = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        import_flatfile,
+        [
+            "--from",
+            str(input_dir),
+            "--system",
+            "legacy",
+            "--output",
+            str(output_dir),
+            "--recursive",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "📊 2 table(s) documented" in result.output
+    assert (output_dir / "2024-orders.yaml").exists()
+    assert (output_dir / "2025-orders.yaml").exists()
+
+
+def test_xlsx_missing_extra_preflight_fails_once_and_writes_nothing(tmp_path, monkeypatch):
+    """Issue #407 item 1: 32 identical per-file warnings plus a huge aggregate
+    ValueError becomes one precise, actionable failure, with nothing written."""
+    import kairos_ontology.core.import_flatfile as flatfile_mod
+
+    real_import_module = flatfile_mod.importlib.import_module
+
+    def fake_import_module(name, *args, **kwargs):
+        if name == "openpyxl":
+            raise ImportError("simulated missing openpyxl")
+        return real_import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(flatfile_mod.importlib, "import_module", fake_import_module)
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    for i in range(3):
+        (input_dir / f"sheet{i}.xlsx").write_bytes(b"not a real xlsx")
+
+    output_dir = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        import_flatfile,
+        ["--from", str(input_dir), "--system", "legacy", "--output", str(output_dir)],
+    )
+
+    assert result.exit_code == 1
+    assert result.output.count("pip install kairos-ontology-toolkit[flatfile]") == 1
+    assert not output_dir.exists()
+
+
+def test_single_file_xls_gives_clean_cli_error_not_a_traceback(tmp_path):
+    """Issue #407 item 4: .xls in single-file mode used to escape as an unhandled
+    InvalidFileException (not a ValueError/ImportError); now it's a clean exit 1."""
+    xls_file = tmp_path / "legacy.xls"
+    xls_file.write_bytes(b"not a real xls file")
+    output_dir = tmp_path / "out"
+
+    result = CliRunner().invoke(
+        import_flatfile,
+        ["--from", str(xls_file), "--system", "legacy", "--output", str(output_dir)],
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "legacy .xls is not supported" in result.output
+    assert not output_dir.exists()
+
+
 def test_tz_aware_parquet_directory_imports_cleanly(tmp_path):
     """The real #293 symptom: a named-zone timestamp column lost its whole table."""
     pytest.importorskip("pyarrow")

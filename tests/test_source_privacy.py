@@ -132,8 +132,13 @@ def test_cli_blocks_then_fixes_without_echoing_values(tmp_path):
         env=env,
     )
     assert fix.exit_code == 0
-    assert "privacy-safe" in fix.output
+    assert "No unredacted PII found" in fix.output
     assert "person@example.com" not in fix.output
+    # A clean result must state its coverage rather than imply universal discovery (#415):
+    # the patterns actually checked, and the coordinate gap that is not among them (#423).
+    assert "Patterns checked:" in fix.output
+    assert "email" in fix.output
+    assert "Not checked: geographic coordinates" in fix.output
 
 
 def test_orphaned_table_yaml_is_checked_and_fixed(tmp_path):
