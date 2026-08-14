@@ -28,7 +28,9 @@ GLOSSARY_NS = "https://acme.com/glossary#"
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def _write_extraction(extraction_dir: Path, slug: str, terms: list[dict]) -> Path:
+def _write_extraction(
+    extraction_dir: Path, slug: str, terms: list[dict], *, status: str = "processed"
+) -> Path:
     extraction_dir.mkdir(parents=True, exist_ok=True)
     data = {
         "version": "1.0",
@@ -37,7 +39,7 @@ def _write_extraction(extraction_dir: Path, slug: str, terms: list[dict]) -> Pat
         "strategy": "company-terminology-v1",
         "summary": "test",
         "extracted_terms": terms,
-        "status": "processed",
+        "status": status,
     }
     path = extraction_dir / f"{slug}.extraction.yaml"
     with open(path, "w", encoding="utf-8") as f:
@@ -83,13 +85,53 @@ def test_collect_terms_across_files(tmp_path: Path):
     ext = tmp_path / "_extractions"
     _write_extraction(ext, "a-pdf", [{"altLabel": "HBL", "prefLabel": "Transport Document"}])
     _write_extraction(ext, "b-pdf", [{"altLabel": "Leg", "prefLabel": "Shipment Movement"}])
-    terms, sources = collect_terms(ext)
+    terms, sources, excluded = collect_terms(ext)
     assert len(terms) == 2
     assert sources == ["a-pdf.extraction.yaml", "b-pdf.extraction.yaml"]
+    assert excluded == []
 
 
 def test_collect_terms_missing_dir(tmp_path: Path):
-    assert collect_terms(tmp_path / "nope") == ([], [])
+    assert collect_terms(tmp_path / "nope") == ([], [], [])
+
+
+def test_collect_terms_excludes_skipped_status(tmp_path: Path):
+    """C4/#417/#416b: a `skipped` record's terms must not reach the glossary --
+    the document was never actually read, so its terms would be
+    stale/hypothetical rather than confirmed evidence."""
+    ext = tmp_path / "_extractions"
+    _write_extraction(
+        ext,
+        "kept-pdf",
+        [{"altLabel": "HBL", "prefLabel": "Transport Document"}],
+        status="processed",
+    )
+    _write_extraction(
+        ext,
+        "skipped-pdf",
+        [{"altLabel": "Ghost", "prefLabel": "Should Not Appear"}],
+        status="skipped",
+    )
+    terms, sources, excluded = collect_terms(ext)
+    assert [t["prefLabel"] for t in terms] == ["Transport Document"]
+    assert sources == ["kept-pdf.extraction.yaml"]
+    assert excluded == ["skipped-pdf.extraction.yaml"]
+
+
+def test_collect_terms_keeps_partial_status(tmp_path: Path):
+    """Unlike `skipped`, a `partial` record's terms are real confirmed evidence
+    for the sections that *were* read, so they are included."""
+    ext = tmp_path / "_extractions"
+    _write_extraction(
+        ext,
+        "partial-pdf",
+        [{"altLabel": "Leg", "prefLabel": "Shipment Movement"}],
+        status="partial",
+    )
+    terms, sources, excluded = collect_terms(ext)
+    assert [t["prefLabel"] for t in terms] == ["Shipment Movement"]
+    assert sources == ["partial-pdf.extraction.yaml"]
+    assert excluded == []
 
 
 def test_aggregate_groups_by_linked_iri():
@@ -274,6 +316,32 @@ def test_cli_build_glossary(tmp_path: Path, monkeypatch):
     g = Graph()
     g.parse(out, format="turtle")
     assert (None, SKOS.prefLabel, Literal("Shipment Movement", lang="en")) in g
+
+
+def test_cli_build_glossary_reports_excluded_skipped_sources(tmp_path: Path, monkeypatch):
+    """C4/#417/#416b: the CLI must surface how many extraction files were
+    excluded because their status is `skipped`, not just silently drop them."""
+    hub = tmp_path / "ontology-hub"
+    (hub / "model" / "ontologies").mkdir(parents=True)
+    (hub / "README.md").write_text(
+        "| **Company name**   | Acme Logistics |\n| **Company domain** | acme.com |\n",
+        encoding="utf-8",
+    )
+    ext = hub / "businessdiscovery" / "_extractions"
+    _write_extraction(ext, "terms-pdf", [{"altLabel": "Leg", "prefLabel": "Shipment Movement"}])
+    _write_extraction(
+        ext, "irrelevant-pdf", [{"altLabel": "Ghost", "prefLabel": "Ghost"}], status="skipped"
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["build-glossary"])
+    assert result.exit_code == 0, result.output
+    assert "Excluded 1 extraction file(s) with status: skipped" in result.output
+
+    out = hub / "businessdiscovery" / "acme-glossary.ttl"
+    g = Graph()
+    g.parse(out, format="turtle")
+    assert (None, SKOS.prefLabel, Literal("Ghost", lang="en")) not in g
 
 
 def test_cli_build_glossary_no_extractions(tmp_path: Path, monkeypatch):

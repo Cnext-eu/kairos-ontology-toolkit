@@ -37,14 +37,19 @@ def _make_doc(directory: Path, name: str, content: bytes = b"hello") -> Path:
 
 
 def _write_extraction_for(doc: Path, extraction_dir: Path, *, sha: str | None) -> Path:
+    # Deliberately non-placeholder content (real summary/strategy, >=1 term):
+    # these fixtures back the "clean, fully-processed" scenarios (`has_warnings
+    # is False` etc.), so they must not themselves trip the D3/#416a content
+    # lint. Tests that specifically exercise that lint construct their own
+    # placeholder-shaped records instead of using this helper.
     data = {
         "version": EXTRACTION_VERSION,
         "source_file": doc.name,
         "source_path": str(doc),
         "source_sha256": sha,
         "strategy": "company-terminology-v1",
-        "summary": "test",
-        "extracted_terms": [],
+        "summary": "A short human-authored summary of what was extracted.",
+        "extracted_terms": [{"altLabel": "Alt", "prefLabel": "Term"}],
         "status": "processed",
     }
     return write_extraction(data, extraction_dir / extraction_filename(doc))
@@ -284,6 +289,7 @@ def _write_extraction_rel(
     filename: str | None = None,
 ) -> Path:
     """Write an extraction record using canonical relative-path provenance."""
+    # Non-placeholder content — see the note on `_write_extraction_for` above.
     stored = source_path if source_path is not None else f".import/businessdiscovery/{rel}"
     data = {
         "version": EXTRACTION_VERSION,
@@ -291,8 +297,8 @@ def _write_extraction_rel(
         "source_path": stored,
         "source_sha256": sha,
         "strategy": "company-terminology-v1",
-        "summary": "test",
-        "extracted_terms": [],
+        "summary": "A short human-authored summary of what was extracted.",
+        "extracted_terms": [{"altLabel": "Alt", "prefLabel": "Term"}],
         "status": "processed",
     }
     name = filename or extraction_filename(rel, relative_path=rel)
@@ -444,3 +450,210 @@ def test_cli_discovery_status_reports_nested_path(tmp_path):
     )
     assert result.exit_code == 0
     assert "sub/new.pdf" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# Duplicate detection (C1, #417)
+# --------------------------------------------------------------------------- #
+def test_duplicate_documents_reported_additively(tmp_path):
+    """Two byte-identical documents are grouped as a duplicate, and neither is
+    subtracted from the work count -- a duplicate with no extraction record
+    still needs processing (report additively, per the plan)."""
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    _make_doc(imp, "a.pdf", content=b"identical bytes")
+    _make_doc(imp, "b.pdf", content=b"identical bytes")
+    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
+    assert report.duplicate == [["a.pdf", "b.pdf"]]
+    # Both are still unprocessed independently — duplication does not collapse
+    # them into a single unit of work.
+    assert sorted(report.unprocessed) == ["a.pdf", "b.pdf"]
+    assert report.has_work is True
+    assert report.has_warnings is True
+
+
+def test_non_duplicate_documents_not_grouped(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    _make_doc(imp, "a.pdf", content=b"one")
+    _make_doc(imp, "b.pdf", content=b"two")
+    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
+    assert report.duplicate == []
+
+
+def test_duplicate_detected_even_when_one_side_already_processed(tmp_path):
+    """A duplicate is still surfaced even if one copy already has a matching,
+    up-to-date extraction — the digest is computed for every document, not
+    only unmatched ones."""
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc_a = _make_doc(imp, "a.pdf", content=b"identical bytes")
+    _make_doc(imp, "b.pdf", content=b"identical bytes")
+    _write_extraction_for(doc_a, ext, sha=compute_source_hash(doc_a))
+    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
+    assert report.duplicate == [["a.pdf", "b.pdf"]]
+    assert report.ok == ["a.pdf"]
+    assert report.unprocessed == ["b.pdf"]
+
+
+# --------------------------------------------------------------------------- #
+# Status surfacing (C2, #416b)
+# --------------------------------------------------------------------------- #
+def test_partial_status_surfaced_in_status_counts(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_extraction_for(doc, ext, sha=compute_source_hash(doc))
+    # Flip the freshly-written, otherwise-clean record's status to `partial`.
+    ext_file = ext / extraction_filename(doc)
+    text = ext_file.read_text(encoding="utf-8").replace("status: processed", "status: partial")
+    ext_file.write_text(text, encoding="utf-8")
+
+    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
+    assert report.status_counts == {"partial": 1}
+    assert report.ok == ["doc.pdf"]
+
+
+def test_cli_discovery_status_reports_status_breakdown(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_extraction_for(doc, ext, sha=compute_source_hash(doc))
+    ext_file = ext / extraction_filename(doc)
+    text = ext_file.read_text(encoding="utf-8").replace("status: processed", "status: partial")
+    ext_file.write_text(text, encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["discovery-status", "--import-dir", str(imp), "--extraction-dir", str(ext)],
+    )
+    assert result.exit_code == 0
+    assert "1 partial" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# Extraction content lint (D3, #416a)
+# --------------------------------------------------------------------------- #
+def _write_placeholder_extraction(doc: Path, extraction_dir: Path, *, sha: str | None) -> Path:
+    data = {
+        "version": EXTRACTION_VERSION,
+        "source_file": doc.name,
+        "source_path": str(doc),
+        "source_sha256": sha,
+        "strategy": "TODO",
+        "summary": "TODO",
+        "extracted_terms": [],
+        "status": "processed",
+    }
+    return write_extraction(data, extraction_dir / extraction_filename(doc))
+
+
+def test_placeholder_content_is_warning_not_work(tmp_path):
+    """A record with `strategy: TODO`, `summary: TODO`, `extracted_terms: []`
+    and a correct digest must not become `has_work` -- it is an author-content
+    problem, not a freshness problem (D1/D3)."""
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_placeholder_extraction(doc, ext, sha=compute_source_hash(doc))
+
+    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
+    assert report.ok == ["doc.pdf"]
+    assert report.has_work is False
+    assert report.has_content_warnings is True
+    assert len(report.content_warnings) == 1
+    assert "doc.pdf" in report.content_warnings[0]
+
+
+def test_skipped_status_not_flagged_for_empty_terms(tmp_path):
+    """An intentionally `skipped` document legitimately has no extracted
+    terms -- that must not be flagged as placeholder content."""
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    data = {
+        "version": EXTRACTION_VERSION,
+        "source_file": doc.name,
+        "source_path": str(doc),
+        "source_sha256": compute_source_hash(doc),
+        "strategy": "company-terminology-v1",
+        "summary": "Reviewed and determined not relevant to this discovery.",
+        "extracted_terms": [],
+        "status": "skipped",
+    }
+    write_extraction(data, ext / extraction_filename(doc))
+
+    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
+    assert report.content_warnings == []
+    assert report.status_counts == {"skipped": 1}
+
+
+def test_cli_discovery_status_strict_blocks_on_placeholder_content(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_placeholder_extraction(doc, ext, sha=compute_source_hash(doc))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "discovery-status",
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
+            "--strict",
+        ],
+    )
+    assert result.exit_code == 1
+
+
+def test_cli_discovery_status_non_strict_does_not_block_on_placeholder_content(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_placeholder_extraction(doc, ext, sha=compute_source_hash(doc))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["discovery-status", "--import-dir", str(imp), "--extraction-dir", str(ext)],
+    )
+    assert result.exit_code == 0
+
+
+def test_strict_stays_convergeable_on_partial_only_hub(tmp_path):
+    """C3, the trap: --strict must stay convergeable on a hub where every
+    record is legitimately `partial` (long documents, only decision-bearing
+    sections read) with genuine, non-placeholder content -- widening
+    `has_work` to cover this would recreate the #405 pathology of an
+    unconvergeable --strict."""
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        doc = _make_doc(imp, name)
+        _write_extraction_for(doc, ext, sha=compute_source_hash(doc))
+        ext_file = ext / extraction_filename(doc)
+        text = ext_file.read_text(encoding="utf-8").replace("status: processed", "status: partial")
+        ext_file.write_text(text, encoding="utf-8")
+
+    report = check_discovery_docs(import_dir=imp, extraction_dir=ext)
+    assert report.status_counts == {"partial": 3}
+    assert report.has_work is False
+    assert report.has_content_warnings is False
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "discovery-status",
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
+            "--strict",
+        ],
+    )
+    assert result.exit_code == 0, result.output

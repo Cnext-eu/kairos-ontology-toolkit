@@ -67,6 +67,13 @@ class GlossaryConcept:
     link_relation: str = _SEE_ALSO
 
 
+#: Extraction ``status`` (README.md:68) whose terms are excluded from the
+#: glossary (C4, #417/#416b): the document was never actually read, so any
+#: ``extracted_terms`` present would be stale/hypothetical rather than
+#: confirmed evidence.
+_EXCLUDED_STATUS = "skipped"
+
+
 @dataclass
 class GlossaryBuildResult:
     """Outcome of a glossary build (for CLI reporting)."""
@@ -74,6 +81,7 @@ class GlossaryBuildResult:
     concepts: list[GlossaryConcept] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     skipped_terms: int = 0
+    excluded_sources: list[str] = field(default_factory=list)
 
 
 def to_pascal_case(text: str) -> str:
@@ -129,23 +137,37 @@ def _table_value(markdown: str, field_label: str) -> str | None:
     return value or None
 
 
-def collect_terms(extraction_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+def collect_terms(
+    extraction_dir: Path,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
     """Load every extracted term across all extraction files in *extraction_dir*.
 
-    Returns ``(terms, sources)`` where *terms* is the flat list of term dicts (in
-    deterministic file-then-order order) and *sources* is the sorted list of
-    extraction filenames that were read.
+    Returns ``(terms, sources, excluded_sources)`` where *terms* is the flat list
+    of term dicts (in deterministic file-then-order order), *sources* is the
+    sorted list of extraction filenames whose terms were included, and
+    *excluded_sources* is the sorted list of extraction filenames whose terms
+    were excluded because their ``status`` is ``skipped`` (C4, #417/#416b) --
+    ``processed`` and ``partial`` records are both included: a ``partial``
+    record is real, confirmed evidence for the section(s) that *were* read;
+    only a genuinely unread/skipped document contributes no terms. A record
+    with a missing/unrecognized ``status`` is treated as included, for
+    backward compatibility with extraction files written before ``status`` was
+    read anywhere (C2).
     """
     terms: list[dict[str, Any]] = []
     sources: list[str] = []
+    excluded_sources: list[str] = []
     if not extraction_dir.is_dir():
-        return (terms, sources)
+        return (terms, sources, excluded_sources)
 
     for path in sorted(extraction_dir.glob(f"*{EXTRACTION_SUFFIX}")):
         try:
             data = load_extraction(path)
         except Exception as exc:  # noqa: BLE001 - report and continue
             logger.warning("Skipping unreadable extraction %s: %s", path, exc)
+            continue
+        if data.get("status") == _EXCLUDED_STATUS:
+            excluded_sources.append(path.name)
             continue
         sources.append(path.name)
         extracted = data.get("extracted_terms")
@@ -154,7 +176,7 @@ def collect_terms(extraction_dir: Path) -> tuple[list[dict[str, Any]], list[str]
         for entry in extracted:
             if isinstance(entry, dict):
                 terms.append(entry)
-    return (terms, sources)
+    return (terms, sources, excluded_sources)
 
 
 def _normalize_relation(value: Any) -> str:
@@ -293,7 +315,7 @@ def build_glossary(
 
     Returns a :class:`GlossaryBuildResult` describing what was written.
     """
-    terms, sources = collect_terms(extraction_dir)
+    terms, sources, excluded_sources = collect_terms(extraction_dir)
     concepts, skipped = aggregate_concepts(terms, company_specific_only=company_specific_only)
     graph = build_glossary_graph(
         concepts,
@@ -302,4 +324,9 @@ def build_glossary(
         scheme_description=scheme_description,
     )
     write_glossary_graph(graph, output_path)
-    return GlossaryBuildResult(concepts=concepts, sources=sources, skipped_terms=skipped)
+    return GlossaryBuildResult(
+        concepts=concepts,
+        sources=sources,
+        skipped_terms=skipped,
+        excluded_sources=excluded_sources,
+    )

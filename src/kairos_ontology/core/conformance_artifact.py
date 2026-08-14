@@ -127,6 +127,50 @@ def _scorecard_comparable_form(scorecard: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def derive_missing_identity(
+    outcomes: list[dict[str, Any]], archetype: Archetype
+) -> list[dict[str, Any]]:
+    """Fill in each outcome's missing/blank ``label``/``tier`` from *archetype*'s catalog.
+
+    ``validate_artifact`` requires ``label`` to exactly equal the catalog label and ``tier``
+    to exactly equal the catalog tier for the concept's ``uri`` -- a field that can only ever
+    be correct one way. Requiring an author (or the 174-concept fleet-mode judgments file
+    that motivated this) to hand-transcribe it added no information, only hand-copying risk
+    (issue #410). ``discovery-conformance build`` already holds the resolved *archetype*
+    before calling :func:`build_artifact`, so this derives both fields there instead of
+    forcing every caller to look them up.
+
+    Only a **missing or blank** ``label``/``tier`` is derived; a present-but-*wrong* value is
+    left untouched so :func:`validate_artifact`'s catalog-identity check still catches it --
+    silently "fixing" a wrong value here would defeat that check instead of complementing it.
+
+    A ``uri`` that does not match any concept in *archetype*'s catalog (or an entry that
+    isn't even a mapping) is left alone; :func:`validate_artifact`'s own "not a core concept
+    of this archetype's catalog" error already covers that case more precisely than a
+    derivation could.
+
+    Mutates and returns *outcomes* in place (a plain list of dicts freshly parsed from YAML/JSON,
+    never shared with a caller that needs the original object identity preserved).
+    """
+    catalog_by_uri = {concept.uri: concept for concept in archetype.core_concepts}
+    for entry in outcomes:
+        if not isinstance(entry, dict):
+            continue
+        uri = entry.get("uri")
+        if not isinstance(uri, str):
+            continue
+        concept = catalog_by_uri.get(uri)
+        if concept is None:
+            continue
+        label = entry.get("label")
+        if not isinstance(label, str) or not label.strip():
+            entry["label"] = concept.label
+        tier = entry.get("tier")
+        if not isinstance(tier, str) or not tier.strip():
+            entry["tier"] = concept.tier
+    return outcomes
+
+
 def build_artifact(
     *,
     archetype: Archetype,
@@ -145,10 +189,14 @@ def build_artifact(
     Args:
         archetype: the loaded archetype catalog.
         refmodels_version: resolved reference-models repo version (or None).
-        outcomes: per-concept outcome dicts (``uri``, ``label``, ``tier``, ``outcome``,
-            optional ``rename_to`` / ``deviation_reason`` / ``business_area``, and the
-            per-concept judgment-provenance fields ``confidence``, ``rationale``,
-            ``references``, ``needs_confirmation``, ``decided_by`` — see DD-148).
+        outcomes: per-concept outcome dicts (``uri``, ``outcome``, optional ``rename_to`` /
+            ``deviation_reason`` / ``business_area``, and the per-concept judgment-provenance
+            fields ``confidence``, ``rationale``, ``references``, ``needs_confirmation``,
+            ``decided_by`` — see DD-148). ``label``/``tier`` are also expected but need not be
+            supplied by the caller — pass *outcomes* through :func:`derive_missing_identity`
+            first (as ``discovery-conformance build`` does) to fill them in from *archetype*'s
+            catalog when absent; :func:`validate_artifact` still requires both to be present
+            and to match the catalog by the time it runs.
         mode: ``"interactive"`` or ``"fleet"`` (DD-088) — the session mode this
             conformance run was produced under. Durable, since the session itself
             isn't persisted; ``open_questions()`` only inspects fleet-mode artifacts.
@@ -581,9 +629,7 @@ def open_questions(
         if needs_confirmation or confidence is None:
             likely_domains = concept.get("likely_domains")
             if likely_domains:
-                scope_reason = (
-                    "tagged to domain(s): " + ", ".join(str(d) for d in likely_domains)
-                )
+                scope_reason = "tagged to domain(s): " + ", ".join(str(d) for d in likely_domains)
             else:
                 scope_reason = "cross-cutting (no likely_domains tagged)"
             questions.append(
@@ -614,7 +660,7 @@ def has_unresolved_fleet_items(
     return bool(open_questions(artifact, domains=domains))
 
 
-def _has_authored_discovery_narrative(hub_root: Path) -> bool:
+def _has_authored_discovery_glossary_ttl(hub_root: Path) -> bool:
     """Return True when ``businessdiscovery/`` has any authored (non-template) .ttl file.
 
     Uses the shared ``hub_utils.is_authored_discovery_ttl`` predicate (rather than a local
@@ -624,8 +670,9 @@ def _has_authored_discovery_narrative(hub_root: Path) -> bool:
     such here would silently disable this gate on a hub with zero real discovery content
     (issue #288). ``hub_utils`` is a dependency-light leaf module — importing it here does
     not create a cycle with ``hub_inspection`` (which imports from this module). This is the
-    DD-048 discovery narrative/glossary, a separate artifact from the DD-090 conformance YAML
-    this module otherwise deals with — either satisfies "discovery ran".
+    DD-048 discovery glossary (a SKOS ``.ttl`` overlay — prose notes in the folder don't
+    count), a separate artifact from the DD-090 conformance YAML this module otherwise deals
+    with — either satisfies "discovery ran".
     """
     root = Path(hub_root) / "businessdiscovery"
     if not root.is_dir():
@@ -640,10 +687,10 @@ def check_discovery_gate(hub_root: Path, *, domains: Collection[str] | None = No
     """Return hard-gate error strings for *hub_root* (empty when the gate passes).
 
     Used by ``kairos-ontology compile``/``validate`` (DD-148) to hard-fail when business
-    discovery hasn't run at all — neither a DD-048 ``businessdiscovery/`` narrative nor a
+    discovery hasn't run at all — neither a DD-048 ``businessdiscovery/*.ttl`` glossary nor a
     DD-090 conformance artifact exists — or when a conformance artifact exists with
     concept judgments unconfirmed by a human, regardless of the session's ``mode`` (DD-088).
-    The two artifacts are independent: a hub with only a narrative and no conformance run
+    The two artifacts are independent: a hub with only a glossary and no conformance run
     (e.g. no archetype applies) passes; the unresolved-judgments check only ever applies to
     the conformance artifact, since that's the only place judgment provenance is recorded.
 
@@ -668,7 +715,7 @@ def check_discovery_gate(hub_root: Path, *, domains: Collection[str] | None = No
         except ConformanceArtifactError as exc:
             return [str(exc)]
 
-    if artifact is None and not _has_authored_discovery_narrative(hub_root):
+    if artifact is None and not _has_authored_discovery_glossary_ttl(hub_root):
         return [
             "No business discovery evidence found (neither businessdiscovery/*.ttl nor "
             f"{ARTIFACT_RELPATH}) — run kairos-design-discovery first."

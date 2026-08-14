@@ -151,6 +151,56 @@ Deterministic aggregation only -- no LLM calls, no raw TTL text reads (DD-103). 
 "0a" minimal cut: a flat, per-class report. It does not attempt domain-clustering/regrouping
 suggestions or an LLM narrative pass.
 
+## `discovery-conformance`
+
+Subcommands supporting the Core Concepts Conformance phase (Phase 2.5, DD-090) of
+`kairos-design-discovery`: `list-archetypes`, `load`, `judgments-template`, `build`, `validate`.
+`list-archetypes`/`load`/`validate` are read-only/machine-output helpers (`--format json|yaml`,
+default `json`); `judgments-template` and `build` write files.
+
+```
+kairos-ontology discovery-conformance judgments-template --archetype <id> \
+  [--mode interactive|fleet] [--output <path>] [--overwrite] [--format json|yaml] \
+  [--refmodels-root <path>]
+
+kairos-ontology discovery-conformance build --archetype <id> \
+  --judgments-file <path> [--output <path>] [--validate/--no-validate] \
+  [--allow-unresolved] [--domain <id> ...] [--refmodels-root <path>]
+```
+
+`build --judgments-file` is the only hand-authored input in this phase; every other command
+(and `--judgments-file`'s own `uri`/`label`/`tier` per concept) derives from the reference-models
+archetype catalog. Before this toolkit release, its schema had to be learned by running a failed
+`build` -- three requirements were each discoverable only that way (issue #410):
+
+* `label` is required.
+* `label` must exactly equal the catalog label for that `uri`.
+* `confidence` must be a float between `0.0` and `1.0` -- not the words `high`/`medium`/`low`
+  (that scale belongs to a different, unrelated field: extraction `visual_evidence.confidence`
+  in `_extractions/*.yaml`; do not reuse it here).
+
+`judgments-template --archetype <id>` scaffolds the file instead of requiring it to be
+hand-written or hand-scripted: it emits one `core_concepts` entry per archetype concept,
+pre-filled with `uri`/`label`/`tier` from the catalog, and an `<CONFIRM_...>` sentinel
+(detectable via `core.hub_utils.is_scaffold_placeholder_text`, the same family
+`scaffold-binding`/`scaffold-staging` already use) in every field that still needs a real
+business judgment. Writes to stdout by default; `--output` writes to a file and refuses to
+overwrite an existing one without `--overwrite` (`scaffold-mapping`'s convention).
+
+`build` now also makes `label`/`tier` **optional** in `--judgments-file`: when a concept's entry
+omits either, `build` derives it from the resolved archetype's own catalog for that `uri` before
+assembling the artifact. A concept's entry that supplies a *wrong* `label`/`tier` still fails
+validation exactly as before -- only a missing/blank value is derived, never a present one
+silently corrected.
+
+`--judgments-file`'s full per-concept shape: `uri` (required), `outcome` (required, one of the
+codes from `list-archetypes`' `outcome_codes`), `label`/`tier` (optional, derived when absent),
+`rename_to`/`deviation_reason` (required together with the matching `outcome`), `confidence`
+(optional float `0.0`-`1.0`), `rationale` (optional string), `references` (optional list of
+strings), `needs_confirmation` (optional bool, default `false`), `decided_by` (`"user"` or
+`"ai"`), `likely_domains` (optional list of lowercase domain-id strings; empty/absent means
+cross-cutting -- in scope for every domain).
+
 ## Removed commands
 
 The following commands do not exist and must not appear in active procedures:

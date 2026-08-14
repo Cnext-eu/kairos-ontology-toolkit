@@ -15,6 +15,8 @@ from .. import __version__ as _toolkit_version
 from ..core.decision_records import (
     VALID_DECISION_STATES,
     VALID_MATERIALITY,
+    DecisionDiagnostic,
+    DecisionValidationResult,
     build_index_markdown,
     generate_decision_id,
     render_new_record,
@@ -37,9 +39,16 @@ def _decisions_dir(cwd: Path | None = None) -> Path:
     return decisions_path
 
 
-def _write_index(decisions_path: Path) -> None:
-    """Atomically regenerate ``index.md`` for *decisions_path*."""
-    index_text = build_index_markdown(validate_decision_bundle(decisions_path).records)
+def _write_index(decisions_path: Path) -> DecisionValidationResult:
+    """Atomically regenerate ``index.md`` for *decisions_path*.
+
+    Returns the full validation result (not just the ``records`` used to
+    render the index) so callers can surface the diagnostics that
+    ``validate_decision_bundle`` already computes instead of discarding them
+    (D5, #416c) -- e.g. ``no_sources``, ``missing_materiality``.
+    """
+    result = validate_decision_bundle(decisions_path)
+    index_text = build_index_markdown(result.records)
     temp_path = decisions_path / f".index.{secrets.token_hex(6)}.tmp"
     try:
         temp_path.write_text(index_text, encoding="utf-8")
@@ -47,6 +56,20 @@ def _write_index(decisions_path: Path) -> None:
     finally:
         if temp_path.exists():
             temp_path.unlink()
+    return result
+
+
+def _echo_diagnostics(
+    diagnostics: list[DecisionDiagnostic],
+    *,
+    only_file: str | None = None,
+) -> None:
+    """Print validator diagnostics that were previously silently discarded (D5, #416c)."""
+    for diag in diagnostics:
+        if only_file is not None and diag.file != only_file:
+            continue
+        marker = "✗" if diag.level == "error" else "⚠"
+        click.echo(f"   {marker} {diag.file}: {diag.message}")
 
 
 def _new_record_id(explicit_id: str | None) -> str:
@@ -123,8 +146,9 @@ def new_decision(
                 raise click.ClickException(f"Decision record already exists: {target}") from None
             continue
 
-        _write_index(decisions_path)
+        result = _write_index(decisions_path)
         click.echo(str(target))
+        _echo_diagnostics(result.diagnostics, only_file=target.name)
         return
 
     raise click.ClickException(f"Could not allocate a unique decision id after {attempts} attempts")
@@ -139,8 +163,9 @@ def sync_index() -> None:
     stops disagreeing with the live records.
     """
     decisions_path = _decisions_dir()
-    _write_index(decisions_path)
+    result = _write_index(decisions_path)
     click.echo(str(decisions_path / "index.md"))
+    _echo_diagnostics(result.diagnostics)
 
 
 @decision.command(name="list")
@@ -152,3 +177,4 @@ def list_decisions() -> None:
         click.echo(
             f"{record.id or record.path.stem}\t{record.decision_state or ''}\t{record.title or ''}"
         )
+        _echo_diagnostics(result.diagnostics, only_file=record.path.name)

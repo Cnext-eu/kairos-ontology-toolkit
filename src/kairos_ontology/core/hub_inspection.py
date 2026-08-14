@@ -182,7 +182,10 @@ def _inventory_status(root: Path, domains: Collection[str] | None = None) -> Inp
 
     ontology_dir = root / "model" / "ontologies"
     ref_models_dir = None
-    for candidate in (root / "ontology-reference-models", root.parent / "ontology-reference-models"):
+    for candidate in (
+        root / "ontology-reference-models",
+        root.parent / "ontology-reference-models",
+    ):
         if candidate.is_dir():
             ref_models_dir = candidate
             break
@@ -200,7 +203,7 @@ def _inventory_status(root: Path, domains: Collection[str] | None = None) -> Inp
         return InputStatus.UNREADABLE
 
     if not domains:
-        if report.missing or report.stale or report.migration_required:
+        if report.is_blocking:
             return InputStatus.MISSING
         return InputStatus.PRESENT
 
@@ -226,7 +229,7 @@ def _inventory_status(root: Path, domains: Collection[str] | None = None) -> Inp
         # Accelerator resolution can legitimately raise on genuine ambiguity — this is
         # an advisory observation for `next`, not a hard gate, so fall back to the
         # unscoped repo-wide result rather than propagating an exception.
-        if report.missing or report.stale or report.migration_required:
+        if report.is_blocking:
             return InputStatus.MISSING
         return InputStatus.PRESENT
 

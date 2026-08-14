@@ -7,7 +7,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`discovery-conformance judgments-template`** (#410). Phase 2.5 of `kairos-design-discovery` forbids
+  hand-transcribing or hand-scripting the concept list, then required a `--judgments-file` whose schema had no
+  scaffold and incomplete documentation — so every author had to write exactly the serializer the skill
+  discourages, discovering the contract by failed `build`. Three requirements were undiscoverable: `label` was
+  required, it had to *exactly* match the catalog label, and `confidence` had to be a float 0.0-1.0 rather than
+  `high`/`medium`/`low` (a plausible mistake, since the unrelated extraction schema uses that scale for a
+  different field). On a 174-concept archetype each cost a full author-generate-build cycle.
+  The new command emits `build`'s exact input envelope with `uri`/`label`/`tier` pre-filled from the catalog and
+  `<CONFIRM_…>` sentinels on the fields an author must actually decide, so an unedited template is caught by the
+  content lint above rather than silently accepted. The `outcome` enum is loaded live from the reference models
+  rather than hardcoded. Output follows `scaffold-mapping`'s convention: stdout without `--output`, and a refusal
+  to clobber without `--overwrite`.
+- **`label` and `tier` are now optional in a judgments file** and derived from the archetype catalog when absent
+  (#410). Both were validated identically and both were derivable from data the command already held — a field
+  that can only ever be correct one way adds no information, only failure modes, and it was the single largest
+  source of hand-copying in a large file. A value that *is* supplied is still validated, so a genuinely wrong
+  `label` or `tier` still fails.
+- **`discovery-status` now reports duplicate documents and extraction `status`** (#417, #416). It already
+  hashed each staged document for change detection but never compared digests *across* documents — on a real
+  hub 7 of 56 tracked documents were byte-identical and were reported as 7 independent units of work.
+  Duplicates are reported **additively**: a duplicate that has no extraction record still needs processing,
+  so nothing is subtracted from the work count. Separately, `status: processed | partial | skipped` was
+  documented in the extraction schema and read **nowhere** in the toolkit; on the same hub 23 of 56 records
+  were legitimately `partial` (long documents where only decision-bearing sections were read) and the command
+  printed one unqualified green line. It now prints the breakdown.
+  New findings route into a **separate strict-eligible property**, deliberately not into the existing
+  work signal: widening that would have made `--strict` unconvergeable on a hub with legitimately-partial
+  records — the same pathology as #405 — and would have listed already-processed documents as needing work.
+
+### Changed
+- **`build-glossary` now excludes `status: skipped` extraction records** and reports how many it excluded.
+  It read `extracted_terms` from every record regardless of status, so a skipped record's terms landed in the
+  company glossary. This only became a *contradiction* once `status` became load-bearing (above), so it is
+  fixed in the same change rather than left to be discovered later. `partial` records are still included —
+  partial coverage is honest coverage.
+
 ### Fixed
+- **`source-privacy` reported an unqualified all-clear that named no patterns** (#415). It printed
+  `✅ Source sample artifacts are privacy-safe for supported patterns.` — DD-075 always recorded that detection
+  is bounded, but the bound lived in the design doc rather than the output, so a reader could not tell which
+  patterns were covered. The case that surfaced it: three address components correctly redacted while
+  `CoordinateLatitude`/`CoordinateLongitude` persisted at six decimal places (~0.1 m) in the same row, leaving
+  the address recoverable by reverse-geocoding the two columns beside it. A clean result now reports the
+  artifact count, the redaction kinds actually looked for, and the coordinate gap explicitly (#423).
+  The kind list is **derived from the detectors** rather than maintained alongside them — a hand-written
+  coverage list would eventually claim detection the code does not have, which is the same class of failure
+  this fix exists to remove.
+  **The detector is deferred to #423, not skipped**, because three separate mechanisms make the obvious
+  implementations wrong: blanket-redacting decimals would regress #302 (whose exemption is value-shape, not
+  datatype — datatype gating was explicitly rejected and a test forbids it); a range-only rule breaks existing
+  fixtures, since `3.14159265358979` and `0.123456789` are both valid latitudes; and precision reduction cannot
+  pass through `is_redaction_token`, the sole idempotence mechanism, without a 2-decimal threshold — roughly
+  1.1 km, which still identifies a rural facility. A privacy gate has to be binary.
+- **`import-flatfile` was hard to use in four specific ways** (#407). A missing optional extra produced one
+  warning *per file* and then a multi-thousand-character aggregate repeating the same install hint — there is
+  now a single preflight that keys on the extra being **importable**, not on the suffix, so a corrupt `.xlsx`
+  is still tolerated when openpyxl is present. Directory mode is non-recursive and never said so, reporting
+  `No … files found` for a nested tree, which reads as "wrong path" rather than "wrong shape"; it now says how
+  many candidates are in subdirectories, and `--recursive` derives table names from the path relative to
+  `--from` so nested same-basename files no longer collide. Legacy `.xls` raised an `InvalidFileException` that
+  escaped the CLI's handler as an unhandled traceback in single-file mode; both dispatch sites now raise a
+  clean "convert to .xlsx" error. `.xls` deliberately **stays** a recognised candidate — dropping it from the
+  suffix set would have degraded directory mode from a named skip to `No … files found`.
+  Item 3 of that issue (`row_count`) is **not** included: it turned out to be a semantic collision between the
+  two import paths that drives enum detection, and is tracked separately as #422.
+- **`generate-inventory --prune` deleted committed inventories** (#405, found while planning it — not in the
+  issue). Prune is on by default and unlinked every `*-inventory.yaml` absent from the set the run wrote. Two
+  paths made that set wrongly incomplete: a source that **failed** never entered it, so its previously-good
+  committed inventory was deleted — the fix command destroying the evidence that the source had ever been fine;
+  and, worse, only *one* of the ontology / reference-model roots need resolve, so a run scoped to the hub alone
+  reported **zero failures** and deleted **every** reference-model inventory with no warning at all. Because of
+  the second path, the obvious guard — "don't prune if anything failed" — would not have closed it. Prune now
+  hard-skips with an explanation when either scope root was unresolved, and otherwise reuses the checker's own
+  orphan notion, which is built from the sources it enumerated regardless of parse success; a source that merely
+  fails is still *seen*, so it can never be mistaken for orphaned.
+- **`generate-inventory` reported success while losing inventories** (#405, #408). It printed
+  `✅ Generated N inventory file(s)` and exited 0 while sources failed to build and others were skipped by a
+  filename collision — the collision printing `❌` in a command that then reported success. `written` was the only
+  counter it kept, so the summary had no denominator. Outcomes are now tracked in a shared `CommandOutcome`
+  (`core/command_outcome.py`) whose blocking rule is **intrinsic to the outcome**, not a per-command policy:
+  no artifact produced for a requested target, or an explicitly-named target failing, or an escalation flag.
+  A per-command `blocking`/`advisory` flag was rejected — it mis-classifies `import-flatfile`, which is
+  legitimately both (partial reads exit 0, total failure exits 1). Recorded as **DD-153**, along with the
+  exit-code convention the 76 hand-rolled `SystemExit` sites never had. A single unbuildable *vendored*
+  reference-model source stays advisory, because a hub author cannot repair it.
+- **`check-inventory` sent users into a loop it could not clear** (#405). A source whose closure failed to
+  resolve was collapsed into `missing` or `stale` — both blocking, both indistinguishable from "you forgot to
+  regenerate" — and the remediation named exactly one command, `generate-inventory`, which cannot fix an
+  unparseable source. So `check-inventory` → `generate-inventory` → `check-inventory` never converged. A new
+  `unbuildable` classification (non-blocking, `--strict`-eligible, mirroring `unverifiable`) now carries those
+  sources and selects a remediation message naming the real remedy. See the DD-047 amendment for why weakening
+  this gate is correct rather than convenient.
+- **Two blueprint pattern templates collided on one inventory filename, leaving `template` permanently STALE**
+  (#406). `blueprints/patterns/*/template.ttl` files fall outside the `derived-ontologies` tree that the DD-054
+  naming rule namespaces on, so **every** pattern template collapses to `template-inventory.yaml` — the collision
+  scales with the pattern library rather than being a two-file accident. Those files are copyable stubs with
+  `https://example.org/` placeholder namespaces and deliberately no `owl:versionInfo`, so an inventory of one has
+  no consumer; they are now excluded from enumeration in `iter_reference_inventory_sources`, so generator and
+  checker agree by construction. DD-054 also claimed the generator "aborts loudly on any residual same-name
+  collision" — it did not; it does now.
+- **Trust artifacts accepted placeholder content and reported green** (#416). The artifacts an unattended run
+  produces *as its evidence of work* had no content validation: an extraction record whose `strategy` and
+  `summary` were literally `TODO` with `extracted_terms: []` passed `discovery-status --strict`, because only
+  `source_path` and `source_sha256` were ever read; and an unedited decision-record template indexed as a
+  normal **Accepted** record. The second is subtler than "no validation" — `_has_rejected_alternative` scans
+  for a table row with non-separator cells, and the shipped template's own
+  `| <option> | <why it was not chosen> |` satisfies exactly that, so the stub *passed an existing check*.
+  Content linting is now shared in `core/hub_utils.py` (joining `is_authored_discovery_ttl` from #288, whose
+  principle this generalises: scaffold-provided content is not authored evidence), and subsumes the
+  `<CONFIRM_…>` sentinel family so that convention is enforced rather than incidental.
+  **Severity is deliberately asymmetric.** Extraction findings and unedited `Proposed`/`Rejected` records
+  **warn**; only `Accepted`/`Superseded` records with an unedited body **error**. An error-level lint would
+  have turned `kairos-ontology validate` red on every hub with one in-progress record, because the
+  decision-record validator's errors fold into `validate`'s exit code — and an unedited record is `Proposed`
+  *by construction*, since that is `decision new`'s default. Accepting a record whose rejected-alternatives
+  table is still a placeholder is the case that is unambiguously wrong.
+  Also: `sync-index` and `decision list` computed validation diagnostics and then **discarded** them
+  entirely, so even the checks that already existed were invisible. They are now surfaced.
+- **`next` said "narrative" for a check that only accepts a glossary TTL** (#411). The predicate behind
+  *"No authored businessdiscovery/ narrative found"* matches authored `.ttl` files only, so prose notes in
+  that folder never counted — correct behaviour, since the DD-048 artifact is the SKOS glossary, but the
+  message named a genre rather than the artifact. A user who had authored a substantial markdown business
+  narrative was told none existed, and the only way to resolve the contradiction was to read the source. The
+  strings now name `businessdiscovery/*.ttl` and add the parenthetical that saves the source dive. The
+  predicate was renamed to match what it does, and one rationale that named `integration/discovery/` for a
+  signal computed from `businessdiscovery/` was corrected. No behaviour change.
 - **Inventories embedded an absolute machine-local path, so they were not portable** (#404).
   `generated_from` was `str(ttl_path)` — an absolute path from whichever machine ran
   `generate-inventory` — written into an artifact that is committed and reviewed. One real hub had all

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import copy
+import importlib
 import logging
 import re
 import sys
@@ -135,7 +136,10 @@ def infer_column_type(values: list[str]) -> str:
 
 
 def read_csv_table(
-    path: Path, max_rows: int = DEFAULT_MAX_ROWS, sample_size: int = DEFAULT_SAMPLE_SIZE
+    path: Path,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
+    table_stem: str | None = None,
 ) -> dict[str, Any]:
     """Read a CSV file and produce a table data dict.
 
@@ -143,11 +147,14 @@ def read_csv_table(
         path: Path to the .csv file.
         max_rows: Maximum rows to read for type inference.
         sample_size: Number of sample rows to store.
+        table_stem: Override for the table name (default: ``path.stem``). Used by
+            ``--recursive`` directory mode to derive a collision-safe name from
+            the file's path relative to ``--from`` instead of the bare filename.
 
     Returns:
         Dict with keys: name, row_count, columns, sample_rows.
     """
-    table_name = path.stem
+    table_name = table_stem if table_stem is not None else path.stem
 
     with open(path, encoding="utf-8-sig", newline="") as f:
         # Sniff the dialect
@@ -211,16 +218,26 @@ def read_csv_table(
 
 
 def read_xlsx_tables(
-    path: Path, max_rows: int = DEFAULT_MAX_ROWS, sample_size: int = DEFAULT_SAMPLE_SIZE
+    path: Path,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
+    table_stem: str | None = None,
 ) -> list[dict[str, Any]]:
     """Read an Excel workbook and produce one table dict per worksheet.
 
     Requires openpyxl (install via: pip install kairos-ontology-toolkit[flatfile]).
+    Legacy ``.xls`` is never routed here — callers must reject it before calling
+    (see the dispatch sites in ``run_import_flatfile``): openpyxl raises
+    ``InvalidFileException`` for ``.xls``, which is neither ``ValueError`` nor
+    ``ImportError``.
 
     Args:
         path: Path to the .xlsx file.
         max_rows: Maximum rows to read per sheet for type inference.
         sample_size: Number of sample rows to store.
+        table_stem: Override for the file-level name component (default:
+            ``path.stem``). Used by ``--recursive`` directory mode to derive a
+            collision-safe name from the file's path relative to ``--from``.
 
     Returns:
         List of table data dicts (same format as read_csv_table).
@@ -233,12 +250,13 @@ def read_xlsx_tables(
             "Install with: pip install kairos-ontology-toolkit[flatfile]"
         )
 
+    stem = table_stem if table_stem is not None else path.stem
     wb = load_workbook(path, read_only=True, data_only=True)
     tables = []
 
     has_multiple_sheets = len(wb.sheetnames) > 1
     for sheet_name in wb.sheetnames:
-        table_name = f"{path.stem}__{sheet_name}" if has_multiple_sheets else path.stem
+        table_name = f"{stem}__{sheet_name}" if has_multiple_sheets else stem
         ws = wb[sheet_name]
         rows_iter = ws.iter_rows(values_only=True)
 
@@ -379,7 +397,10 @@ def _arrow_column_to_pylist(column: Any, field_type: Any) -> list:
 
 
 def read_parquet_table(
-    path: Path, max_rows: int = DEFAULT_MAX_ROWS, sample_size: int = DEFAULT_SAMPLE_SIZE
+    path: Path,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
+    table_stem: str | None = None,
 ) -> dict[str, Any]:
     """Read a single Parquet file into a table data dict.
 
@@ -392,6 +413,9 @@ def read_parquet_table(
         path: Path to the .parquet file.
         max_rows: Maximum rows to read for sampling.
         sample_size: Number of sample rows to store.
+        table_stem: Override for the table name (default: ``path.stem``). Used by
+            ``--recursive`` directory mode to derive a collision-safe name from
+            the file's path relative to ``--from`` instead of the bare filename.
 
     Returns:
         Dict with keys: name, row_count, columns, sample_rows.
@@ -404,7 +428,7 @@ def read_parquet_table(
             "Install with: pip install kairos-ontology-toolkit[parquet]"
         )
 
-    table_name = path.stem
+    table_name = table_stem if table_stem is not None else path.stem
     pf = pq.ParquetFile(path)
 
     # Read at most max_rows rows (a single batch) — never the whole file.
@@ -658,16 +682,100 @@ def exclude_columns_from_tables(
 # --------------------------------------------------------------------------- #
 
 
-def list_flatfile_candidates(source_dir: Path) -> list[Path]:
+def list_flatfile_candidates(source_dir: Path, recursive: bool = False) -> list[Path]:
     """Return the sorted files in ``source_dir`` directory mode will try to read.
 
     Callers reporting "M of K file(s) could not be read" must derive K from this
     same helper, so the denominator can never drift from the set the import loop
     actually attempts.
+
+    Directory mode is non-recursive by default: only files directly inside
+    ``source_dir`` are candidates (``Path.iterdir()``), matching a single flat
+    export folder. Pass ``recursive=True`` to walk the full subtree
+    (``Path.rglob("*")``) for a nested export tree — callers doing this must
+    also derive table names from each file's path relative to ``source_dir``
+    (see ``run_import_flatfile``), or same-basename files in different
+    subdirectories will collide.
     """
+    if recursive:
+        return sorted(
+            f
+            for f in source_dir.rglob("*")
+            if f.is_file() and f.suffix.lower() in SUPPORTED_FLATFILE_SUFFIXES
+        )
     return [
         f for f in sorted(source_dir.iterdir()) if f.suffix.lower() in SUPPORTED_FLATFILE_SUFFIXES
     ]
+
+
+def _relative_table_name(path: Path, base: Path) -> str:
+    """Derive a filesystem-safe table-name stem from ``path`` relative to ``base``.
+
+    Only used in ``--recursive`` directory mode, where nested files can share a
+    basename (e.g. ``2024/orders.csv`` vs ``2025/orders.csv``) that would
+    otherwise collide once flattened into a single directory of
+    ``{table}.yaml`` files. Lowercases and collapses path separators/anything
+    non-alphanumeric to a single hyphen, matching the slug style already used
+    for nested business-discovery documents
+    (``discovery_extraction.slugify_source_name``). The exact-duplicate guard
+    in ``write_source_dir`` remains the backstop if two distinct relative
+    paths still collapse to the same slug.
+    """
+    rel = path.relative_to(base).with_suffix("")
+    slug = re.sub(r"[^a-z0-9]+", "-", str(rel).replace("\\", "/").lower()).strip("-")
+    return slug or path.stem.lower()
+
+
+# Suffix -> (module name to probe, extra name that provides it). Only suffixes
+# whose reader needs an optional dependency are listed. ``.xls`` is deliberately
+# absent: it is never actually supported (see the explicit dispatch-site guard
+# in ``run_import_flatfile``), so it must not be reported as an "install
+# openpyxl and it'll work" problem — installing openpyxl would not fix it.
+_EXTRA_REQUIREMENTS: dict[str, tuple[str, str]] = {
+    ".xlsx": ("openpyxl", "flatfile"),
+    ".parquet": ("pyarrow", "parquet"),
+}
+
+
+def missing_flatfile_extras(candidates: list[Path]) -> dict[str, str]:
+    """Return install commands for optional extras ``candidates`` need but lack.
+
+    Keyed on whether the backing module actually imports, not on suffix alone: a
+    directory full of ``.xlsx`` files reports nothing here once ``openpyxl`` is
+    installed, even though every candidate has that suffix. Only extras actually
+    required by at least one candidate's suffix are probed, so a directory with
+    no Excel or Parquet files never mentions either.
+
+    This exists so the CLI can preflight a whole batch and fail once, before
+    ``run_import_flatfile`` would otherwise raise the same ``ImportError`` once
+    per candidate file (directory mode's per-file ``except Exception`` catches
+    it independently for each file) — see issue #407. ``run_import_flatfile``
+    itself does not call this; it is opt-in for the CLI (and any other library
+    caller) so a corrupted/mislabeled single file still gets its own precise
+    error instead of being swept into an "extras missing" diagnosis.
+
+    Args:
+        candidates: Files that will be attempted (from ``list_flatfile_candidates``
+            for directory mode, or a single-element list for one file).
+
+    Returns:
+        Dict of extra name -> ``pip install ...`` command, for extras actually
+        needed (by suffix) and not importable. Empty when nothing is missing.
+    """
+    needed: dict[str, str] = {}  # extra name -> module name
+    for candidate in candidates:
+        requirement = _EXTRA_REQUIREMENTS.get(candidate.suffix.lower())
+        if requirement:
+            module_name, extra = requirement
+            needed[extra] = module_name
+
+    missing: dict[str, str] = {}
+    for extra, module_name in needed.items():
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            missing[extra] = f"pip install kairos-ontology-toolkit[{extra}]"
+    return missing
 
 
 def run_import_flatfile(
@@ -679,20 +787,30 @@ def run_import_flatfile(
     exclude_columns: set[str] | None = None,
     keep_technical: bool = False,
     return_count: bool = False,
+    recursive: bool = False,
 ) -> Path | tuple[Path, int, int, list[tuple[str, str]]]:
     """Orchestrate the flatfile import workflow.
 
     Accepts a single CSV, single XLSX, single Parquet, or a directory containing
     CSV/XLSX/Parquet files.
 
+    Directory mode is non-recursive by default — only files directly inside
+    ``source_path`` are read (see ``list_flatfile_candidates``); nested
+    subdirectories are ignored unless ``recursive=True``. When recursive, each
+    file's table name is derived from its path relative to ``source_path``
+    (lowercased, separators collapsed) instead of the bare filename, so
+    same-basename files in different subdirectories don't collide once
+    flattened into one output directory (the duplicate-name guard in
+    ``write_source_dir`` is the backstop if a collision still happens).
+
     Exit-code policy — directory mode is partial-failure tolerant; single-file
     mode is fail-fast:
     - Directory mode: each file is read independently. A file that raises
-      (corrupt/truncated parquet, malformed CSV, missing openpyxl, ...) is
-      skipped and recorded in the returned ``failures`` list; the remaining
-      readable files are still imported and written. This mirrors the
-      ``catalog-test``/``propose-alignment`` convention of partial success
-      over aborting a whole run for one bad input.
+      (corrupt/truncated parquet, malformed CSV, missing openpyxl, legacy
+      ``.xls``, ...) is skipped and recorded in the returned ``failures`` list;
+      the remaining readable files are still imported and written. This
+      mirrors the ``catalog-test``/``propose-alignment`` convention of partial
+      success over aborting a whole run for one bad input.
     - Zero readable files (directory has no CSV/XLSX/Parquet, or every file
       present failed to read) is a hard failure: ``ValueError`` is raised and
       nothing is written. Callers (the CLI) map this to a non-zero exit.
@@ -700,6 +818,13 @@ def run_import_flatfile(
       always fails fast — an unsupported extension or a read error propagates
       immediately as the underlying exception. There is no "partial" outcome
       for a single file.
+    - Legacy ``.xls`` is a recognized candidate (so directory mode reports it
+      by name instead of silently ignoring it) but is never actually readable:
+      both dispatch sites below raise ``ValueError`` for it explicitly, rather
+      than routing it to the openpyxl-based Excel reader, which raises
+      ``InvalidFileException`` — neither a ``ValueError`` nor an
+      ``ImportError``, so it would otherwise escape single-file mode as an
+      unhandled exception.
 
     Args:
         source_path: Path to CSV, XLSX file, or directory.
@@ -713,6 +838,8 @@ def run_import_flatfile(
             ``(output_dir, table_count, sample_file_count, failures)`` where
             ``failures`` is a list of ``(filename, "ExceptionType: message")``
             tuples for files skipped in directory mode (empty otherwise).
+        recursive: If True, walk the full subtree of a directory input instead
+            of only its top level. No effect on single-file input.
 
     Returns:
         Path to the output directory, or a tuple with counts from this import.
@@ -726,7 +853,9 @@ def run_import_flatfile(
 
         if suffix == ".csv":
             tables.append(read_csv_table(source_path, max_rows, sample_size))
-        elif suffix in (".xlsx", ".xls"):
+        elif suffix == ".xls":
+            raise ValueError("legacy .xls is not supported — convert to .xlsx")
+        elif suffix == ".xlsx":
             tables.extend(read_xlsx_tables(source_path, max_rows, sample_size))
         elif suffix == ".parquet":
             tables.append(read_parquet_table(source_path, max_rows, sample_size))
@@ -735,15 +864,20 @@ def run_import_flatfile(
 
     elif source_path.is_dir():
         default_name = source_path.name
-        for f in list_flatfile_candidates(source_path):
+        for f in list_flatfile_candidates(source_path, recursive=recursive):
             suffix = f.suffix.lower()
+            table_stem = _relative_table_name(f, source_path) if recursive else None
             try:
                 if suffix == ".csv":
-                    tables.append(read_csv_table(f, max_rows, sample_size))
-                elif suffix in (".xlsx", ".xls"):
-                    tables.extend(read_xlsx_tables(f, max_rows, sample_size))
+                    tables.append(read_csv_table(f, max_rows, sample_size, table_stem=table_stem))
+                elif suffix == ".xls":
+                    raise ValueError("legacy .xls is not supported — convert to .xlsx")
+                elif suffix == ".xlsx":
+                    tables.extend(read_xlsx_tables(f, max_rows, sample_size, table_stem=table_stem))
                 elif suffix == ".parquet":
-                    tables.append(read_parquet_table(f, max_rows, sample_size))
+                    tables.append(
+                        read_parquet_table(f, max_rows, sample_size, table_stem=table_stem)
+                    )
             except Exception as exc:
                 logger.warning("Skipping unreadable file %s: %s", f.name, exc)
                 failures.append((f.name, f"{type(exc).__name__}: {exc}"))
@@ -778,9 +912,7 @@ def run_import_flatfile(
     if output_dir is None:
         from .hub_utils import resolve_hub_output_dir
 
-        output_dir, hub_root = resolve_hub_output_dir(
-            Path("integration") / "sources" / system_name
-        )
+        output_dir, hub_root = resolve_hub_output_dir(Path("integration") / "sources" / system_name)
         if hub_root is None:
             logger.warning(
                 "Could not detect ontology-hub root (no ontology-hub/ or "

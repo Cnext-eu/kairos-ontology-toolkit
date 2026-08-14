@@ -780,10 +780,21 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
       kairos-ontology generate-inventory --output-dir referencemodels-unpacked/
       kairos-ontology generate-inventory --ref-models-dir path/to/refs/
     """
+    from ..core.command_outcome import (
+        REASON_COLLISION,
+        REASON_EMPTY,
+        REASON_EXCEPTION,
+        REASON_EXCLUDED,
+        CommandOutcome,
+        CommandOutcomeDecline,
+        CommandOutcomeTarget,
+    )
     from ..core.inventory import (
+        check_inventories,
         find_legacy_inventory_files,
         generate_inventory,
         inventory_filename,
+        is_pattern_template_source,
         iter_reference_inventory_sources,
         legacy_inventory_error,
         write_inventory,
@@ -836,79 +847,219 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
             click.echo(f"   - {legacy_inventory_error(finding)}", err=True)
         raise SystemExit(1)
 
+    catalog_path = (
+        hub_root / "catalog-v001.xml"
+        if hub_root and (hub_root / "catalog-v001.xml").is_file()
+        else None
+    )
+
     click.echo("📦 Generating materialized inventories")
     written: list[Path] = []
+    failed: list[CommandOutcomeDecline] = []
+    skipped: list[CommandOutcomeDecline] = []
+    targets: list[CommandOutcomeTarget] = []
 
     # Process reference models
+    ref_resolved = bool(ref_path and ref_path.is_dir())
     produced_by: dict[str, Path] = {}
-    if ref_path and ref_path.is_dir():
+    if ref_resolved:
         click.echo(f"   Reference models: {ref_path}")
         ref_ttls = iter_reference_inventory_sources(ref_path)
+        ref_produced = 0
+        ref_failed = 0
         for ttl_file in ref_ttls:
-            try:
-                catalog_path = (
-                    hub_root / "catalog-v001.xml"
-                    if hub_root and (hub_root / "catalog-v001.xml").is_file()
-                    else None
+            stem = ttl_file.stem
+            # Filename derivation is pure path arithmetic (no parsing), so the
+            # collision check runs before generation is even attempted — a colliding
+            # source is a failure regardless of whether it would have parsed cleanly.
+            fname = inventory_filename(ttl_file, ref_models_dir=ref_path)
+            if fname in produced_by and produced_by[fname] != ttl_file:
+                detail = (
+                    f"inventory name collision: {fname} already written from "
+                    f"{produced_by[fname]}; skipping {ttl_file}. "
+                    "Report this (DD-054 disambiguation gap)."
                 )
+                click.echo(f"   ❌ Inventory name collision: {fname} — {detail}", err=True)
+                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_COLLISION, detail))
+                ref_failed += 1
+                continue
+
+            try:
                 inv = generate_inventory(ttl_file, catalog_path=catalog_path, relative_to=ref_path)
-                if not inv["classes"]:
-                    continue
-                stem = ttl_file.stem
-                fname = inventory_filename(ttl_file, ref_models_dir=ref_path)
-                if fname in produced_by and produced_by[fname] != ttl_file:
-                    click.echo(
-                        f"   ❌ Inventory name collision: {fname} already written "
-                        f"from {produced_by[fname]}; skipping {ttl_file}. "
-                        "Report this (DD-054 disambiguation gap).",
-                        err=True,
-                    )
-                    continue
-                produced_by[fname] = ttl_file
-                yaml_path = out_path / fname
-                write_inventory(inv, yaml_path)
-                written.append(yaml_path)
-                n_classes = len(inv["classes"])
-                n_specs = sum(len(c.get("specializations", [])) for c in inv["classes"])
-                click.echo(f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations")
             except Exception as e:
-                click.echo(f"   ⚠ Failed to process {ttl_file.name}: {e}", err=True)
+                detail = f"{type(e).__name__}: {e}"
+                # Advisory, not `❌`: DD-153's ownership rule (fail only for what the
+                # hub author owns and can fix) — a parse exception is frequently a
+                # vendored `ontology-reference-models/` source the author cannot
+                # edit, so this alone must never print a `❌` that a plain (non-
+                # strict, non-total-failure) run would then contradict by exiting 0.
+                click.echo(f"   ⚠ Failed to parse {ttl_file.name}: {detail}", err=True)
+                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
+                ref_failed += 1
+                continue
+
+            if not inv["classes"]:
+                skipped.append(
+                    CommandOutcomeDecline(str(ttl_file), REASON_EMPTY, "source yields no classes.")
+                )
+                continue
+
+            produced_by[fname] = ttl_file
+            yaml_path = out_path / fname
+            try:
+                write_inventory(inv, yaml_path)
+            except OSError as e:
+                detail = f"{type(e).__name__}: {e}"
+                # Advisory, not `❌` — same ownership rationale as the parse-failure
+                # branch above.
+                click.echo(
+                    f"   ⚠ Failed to write inventory for {ttl_file.name}: {detail}", err=True
+                )
+                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
+                ref_failed += 1
+                del produced_by[fname]
+                continue
+            written.append(yaml_path)
+            ref_produced += 1
+            n_classes = len(inv["classes"])
+            n_specs = sum(len(c.get("specializations", [])) for c in inv["classes"])
+            click.echo(f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations")
+
+        targets.append(
+            CommandOutcomeTarget(
+                "reference-models",
+                attempted=len(ref_ttls),
+                produced=ref_produced,
+                failed=ref_failed,
+            )
+        )
+
+        # Pattern-library template stubs (blueprints/patterns/*/template.ttl) never
+        # reach ref_ttls at all — iter_reference_inventory_sources excludes them
+        # (issue #406) — but they are still worth naming explicitly as "skipped by
+        # design" rather than leaving them silently unaccounted for.
+        excluded_patterns = [
+            ttl
+            for ttl in sorted(ref_path.glob("**/*.ttl"))
+            if is_pattern_template_source(ttl, ref_models_dir=ref_path)
+        ]
+        for ttl_file in excluded_patterns:
+            skipped.append(
+                CommandOutcomeDecline(
+                    str(ttl_file),
+                    REASON_EXCLUDED,
+                    "pattern-library template stub (placeholder namespace, no "
+                    "owl:versionInfo) — not a real reference-model source.",
+                )
+            )
 
     # Process domain ontologies
-    if ont_path and ont_path.is_dir():
+    ont_resolved = bool(ont_path and ont_path.is_dir())
+    if ont_resolved:
         click.echo(f"   Ontologies: {ont_path}")
         ont_ttls = sorted(ont_path.glob("**/*.ttl"))
+        ont_produced = 0
+        ont_failed = 0
         for ttl_file in ont_ttls:
             try:
-                catalog_path = (
-                    hub_root / "catalog-v001.xml"
-                    if hub_root and (hub_root / "catalog-v001.xml").is_file()
-                    else None
-                )
                 inv = generate_inventory(
                     ttl_file,
                     include_specializations=False,
                     catalog_path=catalog_path,
                     relative_to=hub_root,
                 )
-                if not inv["classes"]:
-                    continue
-                stem = ttl_file.stem
-                yaml_path = out_path / inventory_filename(ttl_file)
-                write_inventory(inv, yaml_path)
-                written.append(yaml_path)
-                click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
             except Exception as e:
-                click.echo(f"   ⚠ Failed to process {ttl_file.name}: {e}", err=True)
+                detail = f"{type(e).__name__}: {e}"
+                # Advisory, not `❌` — same ownership rationale as the reference-model
+                # branch above.
+                click.echo(f"   ⚠ Failed to parse {ttl_file.name}: {detail}", err=True)
+                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
+                ont_failed += 1
+                continue
+
+            if not inv["classes"]:
+                skipped.append(
+                    CommandOutcomeDecline(str(ttl_file), REASON_EMPTY, "source yields no classes.")
+                )
+                continue
+
+            stem = ttl_file.stem
+            yaml_path = out_path / inventory_filename(ttl_file)
+            try:
+                write_inventory(inv, yaml_path)
+            except OSError as e:
+                detail = f"{type(e).__name__}: {e}"
+                # Advisory, not `❌` — same ownership rationale as the reference-model
+                # branch above.
+                click.echo(
+                    f"   ⚠ Failed to write inventory for {ttl_file.name}: {detail}", err=True
+                )
+                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
+                ont_failed += 1
+                continue
+            written.append(yaml_path)
+            ont_produced += 1
+            click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
+
+        targets.append(
+            CommandOutcomeTarget(
+                "ontologies",
+                attempted=len(ont_ttls),
+                produced=ont_produced,
+                failed=ont_failed,
+            )
+        )
 
     if prune and out_path.is_dir():
-        produced = {p.name for p in written}
-        for existing in sorted(out_path.glob("*-inventory.yaml")):
-            if existing.name not in produced:
-                existing.unlink()
-                click.echo(f"   🧹 Pruned orphaned inventory: {existing.name}")
+        if not (ont_resolved and ref_resolved):
+            if not ont_resolved and not ref_resolved:
+                unresolved_scope = "ontology and reference-model"
+            elif not ont_resolved:
+                unresolved_scope = "ontology"
+            else:
+                unresolved_scope = "reference-model"
+            click.echo(
+                f"   ⏭  Skipping prune: the {unresolved_scope} scope was not resolved "
+                "this run. Pruning requires both scopes reconciled, so a committed "
+                "inventory belonging to the unresolved scope is never mistaken for "
+                "orphaned. Pass --ontology-dir/--ref-models-dir explicitly, or rerun "
+                "with --no-prune to silence this."
+            )
+        else:
+            # Reuse the checker's own orphan notion (core/inventory.py) rather than a
+            # second, independently-maintained "produced this run" set — a source that
+            # failed this run is still a live source (it stays out of `report.orphan`
+            # via `seen_files`, unconditional of whether it built successfully), so its
+            # previously-committed inventory is never deleted out from under it.
+            prune_report = check_inventories(
+                ontology_dir=ont_path,
+                ref_models_dir=ref_path,
+                inventory_dir=out_path,
+                catalog_path=catalog_path,
+            )
+            for orphan_name in prune_report.orphan:
+                (out_path / orphan_name).unlink()
+                click.echo(f"   🧹 Pruned orphaned inventory: {orphan_name}")
 
-    click.echo(f"\n✅ Generated {len(written)} inventory file(s) in {out_path}")
+    outcome = CommandOutcome(
+        command="generate-inventory",
+        produced=tuple(str(p) for p in written),
+        failed=tuple(failed),
+        skipped=tuple(skipped),
+        targets=tuple(targets),
+    )
+    summary = f"{len(written)} generated, {len(failed)} failed, {len(skipped)} skipped"
+    if outcome.is_blocking:
+        # DD-153 invariant: a ❌ line is printed iff the exit code is non-zero.
+        click.echo(f"\n❌ {summary} in {out_path}", err=True)
+        raise SystemExit(1)
+    if outcome.has_warnings:
+        # Non-blocking failures/skips still exit 0 (e.g. an exception on a vendored
+        # source the author does not own) — surfaced as a warning, not a cross mark,
+        # so the ❌⟺exit!=0 invariant holds in both directions.
+        click.echo(f"\n⚠ {summary} in {out_path}")
+    else:
+        click.echo(f"\n✅ {summary} in {out_path}")
 
 
 @click.command(name="check-inventory")
@@ -1084,6 +1235,11 @@ def check_inventory_cmd(
             click.echo(f"   ❌ {stem}: STALE (source changed since generation)", err=True)
     for stem in report.unverifiable:
         click.echo(f"   ⚠ {stem}: cannot verify freshness (no stored hash — regenerate)")
+    for stem in report.unbuildable:
+        click.echo(
+            f"   ⚠ {stem}: cannot build inventory (source TTL fails to parse — "
+            "generate-inventory cannot fix this until the source itself is fixed)"
+        )
     for name in report.orphan:
         click.echo(f"   ⚠ {name}: orphan inventory (no matching source TTL)")
     for diagnostic in report.migration_required:
@@ -1162,16 +1318,25 @@ def check_inventory_cmd(
     # unrelated missing/stale inventory does not block the active domain (F5). The
     # repository-wide failures above are still shown for visibility.
     if scope is not None:
-        blocking = scope.is_blocking or (strict and scope.unverifiable)
+        blocking = scope.is_blocking or (strict and (scope.unverifiable or scope.unbuildable))
     else:
-        blocking = report.is_blocking or (strict and report.unverifiable)
+        blocking = report.is_blocking or (strict and (report.unverifiable or report.unbuildable))
 
     if blocking and not warn_only:
-        next_step = (
-            "`kairos-ontology migrate --hub <hub>` and commit the result"
-            if report.migration_required
-            else "`kairos-ontology generate-inventory` and commit the result"
-        )
+        unbuildable_in_scope = scope.unbuildable if scope is not None else report.unbuildable
+        if report.migration_required:
+            next_step = "`kairos-ontology migrate --hub <hub>` and commit the result"
+        elif not (report.missing or report.stale) and unbuildable_in_scope:
+            # Distinct from the generic "run generate-inventory" remediation below:
+            # regenerating cannot fix a source that does not parse (issue #405/#408 —
+            # unbuildable is a closure failure, not staleness).
+            next_step = (
+                "fix the unbuildable source TTL(s) named above (a parse/import error) "
+                "— `generate-inventory` cannot produce an inventory for them until the "
+                "source itself is fixed"
+            )
+        else:
+            next_step = "`kairos-ontology generate-inventory` and commit the result"
         click.echo(
             f"\n❌ Inventory check failed. Run {next_step} before modeling.",
             err=True,

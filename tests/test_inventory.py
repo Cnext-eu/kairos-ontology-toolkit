@@ -190,6 +190,79 @@ class TestInventoryFilename:
         assert inventory_filename(ttl, ref_models_dir=ref_root) == "party-inventory.yaml"
 
 
+class TestIsPatternTemplateSource:
+    """Issue #406: pattern-library template stubs must never be inventoried — every
+    ``blueprints/patterns/<id>/template.ttl`` would otherwise collapse onto the same
+    ``template-inventory.yaml`` name (``_ref_model_id`` only namespaces paths under
+    ``derived-ontologies``)."""
+
+    def test_matches_pattern_template(self, tmp_path):
+        from kairos_ontology.core.inventory import is_pattern_template_source
+
+        ref_root = tmp_path / "ontology-reference-models"
+        ttl = ref_root / "blueprints" / "patterns" / "deferred-relationship" / "template.ttl"
+        assert is_pattern_template_source(ttl, ref_models_dir=ref_root) is True
+
+    def test_different_pattern_id_also_matches(self, tmp_path):
+        from kairos_ontology.core.inventory import is_pattern_template_source
+
+        ref_root = tmp_path / "ontology-reference-models"
+        ttl = ref_root / "blueprints" / "patterns" / "multimodal-order-leg" / "template.ttl"
+        assert is_pattern_template_source(ttl, ref_models_dir=ref_root) is True
+
+    def test_does_not_match_real_reference_model(self, tmp_path):
+        from kairos_ontology.core.inventory import is_pattern_template_source
+
+        ref_root = tmp_path / "ontology-reference-models"
+        ttl = ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        assert is_pattern_template_source(ttl, ref_models_dir=ref_root) is False
+
+    def test_does_not_match_archetype_blueprints(self, tmp_path):
+        """``blueprints/archetypes/`` is a sibling of ``blueprints/patterns/`` and must
+        not be caught by the same two-segment subsequence match."""
+        from kairos_ontology.core.inventory import is_pattern_template_source
+
+        ref_root = tmp_path / "ontology-reference-models"
+        ttl = ref_root / "blueprints" / "archetypes" / "passthrough.yaml"
+        assert is_pattern_template_source(ttl, ref_models_dir=ref_root) is False
+
+    def test_un_normalized_root_still_matches(self, tmp_path):
+        """The predicate is resolved the same way ``pattern_loader._patterns_dir`` is
+        (via ``normalize_refmodels_root``'s sibling-checkout tolerance): passing the
+        repository root rather than the inner ``ontology-reference-models/`` must not
+        make it miss."""
+        from kairos_ontology.core.inventory import is_pattern_template_source
+
+        repo_root = tmp_path
+        ttl = (
+            repo_root
+            / "ontology-reference-models"
+            / "blueprints"
+            / "patterns"
+            / "deferred-relationship"
+            / "template.ttl"
+        )
+        # Even without passing ref_models_dir at all, the two-segment subsequence
+        # match still finds "blueprints/patterns" anywhere in the absolute parts.
+        assert is_pattern_template_source(ttl) is True
+
+    def test_iter_reference_inventory_sources_excludes_pattern_templates(self, tmp_path):
+        from kairos_ontology.core.inventory import iter_reference_inventory_sources
+
+        ref_root = tmp_path / "ontology-reference-models"
+        real = ref_root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        real.parent.mkdir(parents=True)
+        real.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+        for pattern_id in ("deferred-relationship", "multimodal-order-leg"):
+            template = ref_root / "blueprints" / "patterns" / pattern_id / "template.ttl"
+            template.parent.mkdir(parents=True)
+            template.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+
+        sources = iter_reference_inventory_sources(ref_root)
+
+        assert sources == [real]
+
+
 class TestGeneratedFromProvenance:
     """Issue #404: ``generated_from`` must be portable, not a machine-local path."""
 

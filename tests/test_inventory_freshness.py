@@ -178,6 +178,32 @@ class TestCheckInventories:
         assert "empty" not in report.missing
         assert report.ok == ["party"]
 
+    def test_unparseable_source_is_unbuildable_not_missing(self, tmp_path):
+        """Issue #405/#408: a source TTL that cannot be parsed at all is a closure
+        failure, not a missing inventory — ``generate-inventory`` cannot fix it
+        either, so "run generate-inventory" would be an unactionable remediation."""
+        ref_dir, inv_dir = _make_ref(tmp_path)
+        _generate(ref_dir, inv_dir)
+        (ref_dir / "broken.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
+        report = check_inventories(ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir)
+        assert report.unbuildable == ["broken"]
+        assert "broken" not in report.missing
+        assert not report.is_blocking
+        assert report.has_warnings
+
+    def test_unparseable_source_with_stale_committed_inventory_is_unbuildable(self, tmp_path):
+        """A previously-good, committed inventory whose source has since been broken
+        is a closure failure (unbuildable), not staleness — regenerating cannot fix
+        a source that no longer parses."""
+        ref_dir, inv_dir = _make_ref(tmp_path)
+        _generate(ref_dir, inv_dir)
+        (ref_dir / "party.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
+        report = check_inventories(ontology_dir=None, ref_models_dir=ref_dir, inventory_dir=inv_dir)
+        assert report.unbuildable == ["party"]
+        assert report.stale == []
+        assert not report.is_blocking
+        assert report.has_warnings
+
     def test_orphan_inventory_warns(self, tmp_path):
         ref_dir, inv_dir = _make_ref(tmp_path)
         _generate(ref_dir, inv_dir)
@@ -378,3 +404,42 @@ class TestCheckInventoryCLI:
             ],
         )
         assert result.exit_code == 1
+
+    def test_cli_unbuildable_is_non_blocking_by_default(self, tmp_path):
+        ref_dir, inv_dir = _make_ref(tmp_path)
+        _generate(ref_dir, inv_dir)
+        (ref_dir / "broken.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-inventory",
+                "--ref-models-dir",
+                str(ref_dir),
+                "--inventory-dir",
+                str(inv_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "cannot build inventory" in result.output
+
+    def test_cli_strict_fails_on_unbuildable(self, tmp_path):
+        """--strict escalates unbuildable exactly like unverifiable, and the
+        remediation names the real situation instead of the unactionable generic
+        'run generate-inventory' (issue #405/#408)."""
+        ref_dir, inv_dir = _make_ref(tmp_path)
+        _generate(ref_dir, inv_dir)
+        (ref_dir / "party.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
+        result = CliRunner().invoke(
+            cli,
+            [
+                "check-inventory",
+                "--ref-models-dir",
+                str(ref_dir),
+                "--inventory-dir",
+                str(inv_dir),
+                "--strict",
+            ],
+        )
+        assert result.exit_code == 1, result.output
+        assert "fix the unbuildable source" in result.output
+        assert "generate-inventory` and commit the result" not in result.output

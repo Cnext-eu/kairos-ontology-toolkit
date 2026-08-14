@@ -5,8 +5,11 @@
 from pathlib import Path
 
 from kairos_ontology.core.hub_utils import (
+    body_is_unedited_template,
     find_hub_root,
     find_managed_root,
+    is_scaffold_placeholder_text,
+    placeholder_fields,
     publish_root,
     resolve_hub_output_dir,
 )
@@ -219,3 +222,86 @@ class TestResolveHubOutputDir:
 
         assert root == hub
         assert output == hub / "integration" / "discovery" / "bi"
+
+
+class TestIsScaffoldPlaceholderText:
+    """Tests for is_scaffold_placeholder_text() (D2, #416)."""
+
+    def test_angle_bracket_stub_is_placeholder(self):
+        assert is_scaffold_placeholder_text("<option>") is True
+
+    def test_confirm_sentinel_is_placeholder(self):
+        """Subsumes the `<CONFIRM_...>` sentinel family used by scaffold_staging.py
+        / scaffold_binding.py -- an angle-bracket stub like any other."""
+        assert is_scaffold_placeholder_text("<CONFIRM_TARGET_CLASS>") is True
+
+    def test_bare_todo_is_placeholder(self):
+        assert is_scaffold_placeholder_text("TODO") is True
+
+    def test_bare_tbd_is_placeholder(self):
+        assert is_scaffold_placeholder_text("TBD") is True
+
+    def test_todo_within_sentence_is_placeholder(self):
+        assert is_scaffold_placeholder_text("TODO: fill this in") is True
+
+    def test_real_prose_is_not_placeholder(self):
+        assert is_scaffold_placeholder_text("A short human-authored summary.") is False
+
+    def test_empty_string_is_not_placeholder(self):
+        """Blank is a separate concern (missing), not itself a placeholder."""
+        assert is_scaffold_placeholder_text("") is False
+        assert is_scaffold_placeholder_text("   ") is False
+
+    def test_non_string_is_not_placeholder(self):
+        assert is_scaffold_placeholder_text(None) is False
+        assert is_scaffold_placeholder_text([]) is False
+
+    def test_word_containing_todo_as_substring_is_not_flagged(self):
+        """`_WORD_RE` tokenizes on word boundaries, so this must not
+        false-positive on a real word merely containing the letters."""
+        assert is_scaffold_placeholder_text("Autodocumentation pipeline") is False
+
+
+class TestPlaceholderFields:
+    """Tests for placeholder_fields() (D2, #416)."""
+
+    def test_missing_key_is_unfilled(self):
+        assert placeholder_fields({}, required=("summary",)) == ["summary"]
+
+    def test_none_value_is_unfilled(self):
+        assert placeholder_fields({"summary": None}, required=("summary",)) == ["summary"]
+
+    def test_blank_string_is_unfilled(self):
+        assert placeholder_fields({"summary": "   "}, required=("summary",)) == ["summary"]
+
+    def test_placeholder_string_is_unfilled(self):
+        assert placeholder_fields({"summary": "TODO"}, required=("summary",)) == ["summary"]
+
+    def test_empty_list_is_unfilled(self):
+        assert placeholder_fields({"terms": []}, required=("terms",)) == ["terms"]
+
+    def test_real_value_is_filled(self):
+        assert placeholder_fields({"summary": "Real content."}, required=("summary",)) == []
+
+    def test_non_mapping_reports_all_required_as_unfilled(self):
+        assert placeholder_fields(None, required=("a", "b")) == ["a", "b"]
+
+    def test_only_requested_keys_are_checked(self):
+        assert placeholder_fields({"a": "TODO", "b": "fine"}, required=("b",)) == []
+
+
+class TestBodyIsUneditedTemplate:
+    """Tests for body_is_unedited_template() (D2, #416)."""
+
+    def test_identical_body_is_unedited(self):
+        template = "# Context\n\n<fill in>\n"
+        assert body_is_unedited_template(template, template) is True
+
+    def test_whitespace_only_difference_is_still_unedited(self):
+        template = "# Context\n\n<fill in>\n"
+        assert body_is_unedited_template("  " + template + "\n\n", template) is True
+
+    def test_edited_body_is_not_unedited(self):
+        template = "# Context\n\n<fill in>\n"
+        edited = "# Context\n\nReal, authored content.\n"
+        assert body_is_unedited_template(edited, template) is False

@@ -23,6 +23,7 @@ from rdflib import Graph, OWL, RDF, RDFS
 
 from .analyse_sources import parse_reference_model
 from .determinism import resolve_generated_at
+from .pattern_loader import _PATTERNS_SUBDIR
 
 logger = logging.getLogger(__name__)
 
@@ -139,12 +140,58 @@ def is_archived_ref_model_source(ttl_path: Path, *, ref_models_dir: Path | None 
     return any(part.lower() == "archive" for part in parts)
 
 
+#: Mirrors ``core/pattern_loader.py``'s ``_PATTERNS_SUBDIR`` ("blueprints/patterns", a
+#: two-segment path — unlike the single-segment ``archive`` check above, so this is
+#: matched as a subsequence over ``.parts``, not a single-part membership test).
+#: ``pattern_loader`` (and its ``archetype_loader`` dependency) import cleanly with no
+#: module-level cycle back to this module — verified before adding this import — so
+#: the constant is imported directly rather than duplicated as a literal here.
+_PATTERN_LIBRARY_SUBDIR_PARTS: tuple[str, ...] = tuple(
+    part.lower() for part in _PATTERNS_SUBDIR.parts
+)
+
+
+def is_pattern_template_source(ttl_path: Path, *, ref_models_dir: Path | None = None) -> bool:
+    """Return True when *ttl_path* is a pattern-library authoring stub, not real content.
+
+    ``blueprints/patterns/<id>/template.ttl`` files (see ``core/pattern_loader.py``)
+    are copyable examples: they carry placeholder ``https://example.org/`` namespaces
+    and deliberately no ``owl:versionInfo``. ``_ref_model_id`` only namespaces paths
+    under ``derived-ontologies``, so every pattern's ``template.ttl`` collapses onto the
+    same ``template-inventory.yaml`` name — a collision that scales with the pattern
+    library, not a two-file accident (issue #406). These files should never have been
+    inventoried in the first place, so they are excluded at the source here rather than
+    patched around downstream.
+
+    Matches ``blueprints/patterns`` as a two-segment subsequence of *ttl_path*'s parts
+    (unlike the single-segment ``archive`` check in
+    :func:`is_archived_ref_model_source`), and normalizes relative to *ref_models_dir*
+    the same way that function does, so the predicate does not miss on an
+    un-normalized root.
+    """
+    if ref_models_dir is not None:
+        try:
+            parts = ttl_path.resolve().relative_to(ref_models_dir.resolve()).parts
+        except ValueError:
+            parts = ttl_path.parts
+    else:
+        parts = ttl_path.parts
+
+    parts_lower = tuple(p.lower() for p in parts)
+    n = len(_PATTERN_LIBRARY_SUBDIR_PARTS)
+    return any(
+        parts_lower[i : i + n] == _PATTERN_LIBRARY_SUBDIR_PARTS
+        for i in range(len(parts_lower) - n + 1)
+    )
+
+
 def iter_reference_inventory_sources(ref_models_dir: Path) -> list[Path]:
     """Return current reference-model TTLs that should produce/check inventories."""
     return [
         ttl
         for ttl in sorted(ref_models_dir.glob("**/*.ttl"))
         if not is_archived_ref_model_source(ttl, ref_models_dir=ref_models_dir)
+        and not is_pattern_template_source(ttl, ref_models_dir=ref_models_dir)
     ]
 
 
@@ -460,30 +507,39 @@ class InventoryCheckReport:
     missing: list[str] = field(default_factory=list)
     stale: list[str] = field(default_factory=list)
     unverifiable: list[str] = field(default_factory=list)
+    unbuildable: list[str] = field(default_factory=list)
     ok: list[str] = field(default_factory=list)
     orphan: list[str] = field(default_factory=list)
     migration_required: list[str] = field(default_factory=list)
 
     @property
     def is_blocking(self) -> bool:
-        """True when an inventory is missing, stale, or requires format migration."""
+        """True when an inventory is missing, stale, or requires format migration.
+
+        ``unbuildable`` is deliberately excluded — exactly like ``unverifiable`` — it is
+        non-blocking by default and only escalates under ``--strict`` (see
+        ``check_inventory_cmd``'s ``blocking`` derivation).
+        """
         return bool(self.missing or self.stale or self.migration_required)
 
     @property
     def has_warnings(self) -> bool:
-        """True when an unverifiable (no stored hash) or orphan inventory exists."""
-        return bool(self.unverifiable or self.orphan)
+        """True when an unverifiable, unbuildable, or orphan inventory exists."""
+        return bool(self.unverifiable or self.unbuildable or self.orphan)
 
 
 def _source_has_classes(ttl_path: Path, *, include_specializations: bool) -> bool:
-    """Return True if a source TTL yields at least one class (mirrors generate-inventory)."""
-    try:
-        parsed = parse_reference_model(ttl_path, include_specializations=include_specializations)
-        return bool(parsed["classes"])
-    except Exception:
-        # If it cannot be parsed at all we cannot judge — treat as having classes
-        # so the check surfaces it rather than silently skipping.
-        return True
+    """Return True if a source TTL yields at least one class (mirrors generate-inventory).
+
+    Raises whatever :func:`~kairos_ontology.core.analyse_sources.parse_reference_model`
+    raises when *ttl_path* cannot be parsed at all — the caller classifies that as
+    ``unbuildable`` rather than guessing. A source that cannot be parsed is not
+    "missing an inventory" (running ``generate-inventory`` cannot fix it either), so
+    silently treating it as if it had classes collapsed a closure failure into a
+    misleading, unactionable "missing" remediation (see :class:`InventoryCheckReport`).
+    """
+    parsed = parse_reference_model(ttl_path, include_specializations=include_specializations)
+    return bool(parsed["classes"])
 
 
 def check_inventories(
@@ -504,6 +560,11 @@ def check_inventories(
       - **missing**  — source has classes but no inventory file → blocking.
       - **stale**    — inventory exists but its stored hash differs → blocking.
       - **unverifiable** — inventory exists but has no stored hash (pre-DD-047) → warn.
+      - **unbuildable** — the source TTL itself cannot be parsed (a closure failure,
+        not staleness) → warn by default, ``--strict``-eligible. ``generate-inventory``
+        cannot produce a fresh inventory for a source that does not parse, so this is
+        kept distinct from **missing**/**stale** (whose remediation — "run
+        generate-inventory" — is actionable and would not be for this case).
       - **ok**       — inventory exists and hash matches.
       - **orphan**   — inventory file with no corresponding source TTL → warn.
       - **migration_required** — retired stem-named ref inventory → blocking.
@@ -534,7 +595,14 @@ def check_inventories(
         seen_files.add(fname)
 
         if not yaml_path.exists():
-            if _source_has_classes(ttl_file, include_specializations=include_specializations):
+            try:
+                has_classes = _source_has_classes(
+                    ttl_file, include_specializations=include_specializations
+                )
+            except Exception:
+                report.unbuildable.append(key)
+                continue
+            if has_classes:
                 report.missing.append(key)
             continue
 
@@ -563,7 +631,9 @@ def check_inventories(
                 catalog_path=catalog_path,
             ).get("closure_hash")
         except Exception:
-            report.stale.append(key)
+            # The source no longer parses — a closure failure, not a hash mismatch.
+            # "stale" implies regenerating would fix it; it would not here.
+            report.unbuildable.append(key)
             continue
         if stored != current:
             report.stale.append(key)
@@ -598,13 +668,18 @@ class DomainScope:
     missing: list[str] = field(default_factory=list)
     stale: list[str] = field(default_factory=list)
     unverifiable: list[str] = field(default_factory=list)
+    unbuildable: list[str] = field(default_factory=list)
     ok: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     migration_required: list[str] = field(default_factory=list)
 
     @property
     def is_blocking(self) -> bool:
-        """True when an in-scope inventory is missing or stale."""
+        """True when an in-scope inventory is missing or stale.
+
+        ``unbuildable`` — like ``unverifiable`` — is deliberately excluded; it is
+        non-blocking by default and only escalates under ``--strict``.
+        """
         return bool(self.missing or self.stale or self.migration_required)
 
 
@@ -681,6 +756,7 @@ def scope_inventory_report(
     scope.missing = sorted(k for k in report.missing if k in scope.keys)
     scope.stale = sorted(k for k in report.stale if k in scope.keys)
     scope.unverifiable = sorted(k for k in report.unverifiable if k in scope.keys)
+    scope.unbuildable = sorted(k for k in report.unbuildable if k in scope.keys)
     scope.ok = sorted(k for k in report.ok if k in scope.keys)
     # Stem-named reference inventories are globally unsafe: a scoped workflow must
     # not silently consume one while another domain is being modeled.
@@ -730,7 +806,13 @@ def classify_domain_scope(
     if keys:
         return ACCELERATOR_PROFILE, keys
 
-    all_keys = set(report.ok) | set(report.missing) | set(report.stale) | set(report.unverifiable)
+    all_keys = (
+        set(report.ok)
+        | set(report.missing)
+        | set(report.stale)
+        | set(report.unverifiable)
+        | set(report.unbuildable)
+    )
     direct = {k for k in all_keys if lower in k.lower() or k.lower() in lower}
     if direct:
         return DIRECT_PROFILE, direct

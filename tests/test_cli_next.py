@@ -313,7 +313,9 @@ def test_next_surfaces_human_decision_required_when_no_samples_at_all(hub, monke
 # ---------------------------------------------------------------------------
 
 
-def test_next_text_shows_gate_satisfied_qualifier_when_conformance_artifact_exists(hub, monkeypatch):
+def test_next_text_shows_gate_satisfied_qualifier_when_conformance_artifact_exists(
+    hub, monkeypatch
+):
     # v5-hub ships a valid conformance artifact but no businessdiscovery/ narrative.
     result = _invoke(hub, monkeypatch, [])
     assert "discovery:      missing" in result.output
@@ -377,7 +379,11 @@ def test_next_json_includes_inventory_status_and_blocking_action(hub, monkeypatc
 
 
 def test_next_inventory_status_present_once_generated(hub, monkeypatch):
-    from kairos_ontology.core.inventory import generate_inventory, inventory_filename, write_inventory
+    from kairos_ontology.core.inventory import (
+        generate_inventory,
+        inventory_filename,
+        write_inventory,
+    )
 
     ttl = hub / "model" / "ontologies" / "party.ttl"
     inv = generate_inventory(ttl, include_specializations=False)
@@ -387,6 +393,32 @@ def test_next_inventory_status_present_once_generated(hub, monkeypatch):
     payload = _stdout_json(result)
     assert payload["inputs"]["inventory_status"] == "present"
     assert not any(a["kind"] == "generate-inventory" for a in payload["actions"])
+
+
+def test_next_inventory_status_present_with_unbuildable_reference_model(hub, monkeypatch):
+    """Issue #405/#408 (B3/B4): an unbuildable (unparseable) reference-model source
+    is non-blocking by default — it must not make ``next``'s ``inventory_status``
+    MISSING once the hub's own local ontology inventory is present. Also exercises
+    ``hub_inspection.py``'s collapse to ``report.is_blocking`` (previously an inline
+    copy of the blocking rule that would have silently drifted once ``unbuildable``
+    was added to :class:`InventoryCheckReport`)."""
+    from kairos_ontology.core.inventory import (
+        generate_inventory,
+        inventory_filename,
+        write_inventory,
+    )
+
+    ttl = hub / "model" / "ontologies" / "party.ttl"
+    inv = generate_inventory(ttl, include_specializations=False)
+    write_inventory(inv, hub / "referencemodels-unpacked" / inventory_filename(ttl))
+
+    ref_dir = hub / "ontology-reference-models"
+    ref_dir.mkdir()
+    (ref_dir / "broken.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
+
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    payload = _stdout_json(result)
+    assert payload["inputs"]["inventory_status"] == "present"
 
 
 # ---------------------------------------------------------------------------
@@ -514,14 +546,10 @@ def test_next_domain_scoped_inventory_ignores_unrelated_accelerator(
     assert not any(a["kind"] == "generate-inventory" for a in payload["actions"])
 
 
-def test_next_domain_scoped_inventory_still_blocks_relevant_gap(
-    multi_accelerator_hub, monkeypatch
-):
+def test_next_domain_scoped_inventory_still_blocks_relevant_gap(multi_accelerator_hub, monkeypatch):
     # party's own inventory really is missing, and the query is scoped to party
     # itself — this must still block. The fix must scope, not blanket-suppress.
-    result = _invoke(
-        multi_accelerator_hub, monkeypatch, ["--domain", "party", "--format", "json"]
-    )
+    result = _invoke(multi_accelerator_hub, monkeypatch, ["--domain", "party", "--format", "json"])
     payload = _stdout_json(result)
     assert payload["inputs"]["inventory_status"] == "missing"
     action = next(a for a in payload["actions"] if a["kind"] == "generate-inventory")

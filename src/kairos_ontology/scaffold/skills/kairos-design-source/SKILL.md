@@ -23,7 +23,9 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
    or select a subset. In fleet mode, default to importing every candidate and record the decision
    with its rationale.
 3. Set `KAIROS_SKILL_CONTEXT=1` before skill-owned CLI calls.
-4. For flat files, run `kairos-ontology import-flatfile --from <path> --system <name>`.
+4. For flat files, run `kairos-ontology import-flatfile --from <path> --system <name>`. Directory
+   mode only reads the top level (non-recursive); pass `--recursive` for a nested export tree.
+   Legacy `.xls` is recognized but never readable — ask the user to convert to `.xlsx` first.
 5. For extracted schema YAML, run
    `kairos-ontology import-source --from <path> --system <name>`.
 6. For a batch, run the matching import command once per selected source (or point `--from` at a
