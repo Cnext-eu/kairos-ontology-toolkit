@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.2] — 2026-08-14
+
 ### Added
 - **`field-mapping-report`**: generates an Excel workbook (one worksheet per domain) listing
   every declared scalar `owl:DatatypeProperty` field with its ontology-authored description
@@ -66,6 +68,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by default, with `--fail-on any`. `SourceColumnSample` (`core/silver_sample_audit.py`) gained
   `distinct_count`/`nullable`/`row_count`, read from the bronze vocabulary's existing
   `kairos-bronze:distinctCount`/`nullable`/`rowCount` predicates.
+- **`kairos-toolkit-dogfood` and `kairos-flow-autopilot` skills**: formalize two
+  opposite-intent variants of running the full hub lifecycle end to end, distilled from two
+  real client dogfood sessions plus prior art in issue #339. `kairos-toolkit-dogfood` is the
+  adversarial, exploratory loop whose purpose is finding real toolkit gaps against a real
+  hub's data -- the hub built along the way is instrumental, not the deliverable; success is
+  measured by confirmed findings, not hub polish. `kairos-flow-autopilot` is the opposite
+  intent -- fleet-managed, bounded-stage autonomous delivery of a real client hub, with a
+  declared-up-front scope contract, escalation guardrails that extend rather than relax
+  `kairos-design-mapping`'s existing DD-088 fleet-mode stop-conditions, a Decision Log
+  treated as the primary deliverable (not a debugging aid), and a human-readable
+  transparency report as the run's closing artifact. Both also document the previously
+  unreferenced-by-any-skill `field-mapping-report` command (`kairos-execute-report` gained
+  the same reference), since a prior dogfood session hand-built an equivalent report from
+  scratch, in the wrong location, for lack of any skill pointing at the command that
+  already existed.
 
 ### Fixed
 - **`audit-silver-samples` (DD-089) read only the v4 `model/mappings/` SKOS surface, so on a v5
