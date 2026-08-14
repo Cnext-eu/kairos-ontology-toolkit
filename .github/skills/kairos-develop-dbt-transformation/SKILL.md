@@ -42,6 +42,26 @@ contradict the generated-Silver "no staging layer" rule. The EntityBinding
 references the final `int_*` model via `source.dbtModel`. These are conventions,
 not enforced or linted invariants.
 
+**`scaffold-staging` generates this layering (issue #399).**
+`kairos-ontology scaffold-staging --entity <entity> --domain <domain> --source
+<system>.<table> --source <system>.<table> [...]` writes one
+`stg_<source>__<entity>.sql` + properties YAML per `--source` (reusing the same
+per-table staging SELECT `scaffold-binding`'s passthrough archetype already
+generates, each independently contracted with `config.contract.enforced: true`
+and no `meta.kairos` — a stage is never itself a bindable virtual source) plus
+one `int_merged__<entity>.sql` + properties YAML with the full `meta.kairos`
+block. The merged model's SQL unions only the columns common to every source
+stage and leaves `<CONFIRM_NATURAL_KEY_COLUMN>`/`<CONFIRM_PRIORITY_COLUMN>`
+sentinels for `kairos_survivor` (irreducible modeling judgment, not something a
+scaffold can infer); its YAML leaves `<CONFIRM_TARGET_CLASS>`/
+`<CONFIRM_VIRTUAL_SOURCE_IRI>`/`<CONFIRM_GRAIN_KEY_COLUMN>`/
+`<CONFIRM_SUPPORTED_ADAPTER>` sentinels, so `compile --check` rejects the
+contract until a human confirms them — the same sentinel-skeleton philosophy
+`scaffold-binding` already uses for grain and identity. Prefer this over
+hand-authoring the layering from scratch; only fall back to the plain SQL
+pattern above for the attribute-level outer-join strategy, which the scaffold
+does not attempt to generate (it always starts from the survivorship shape).
+
 ### Two reconciliation strategies for `int_merged__<entity>`
 
 Sources feeding a merged model either compete for the same attributes or

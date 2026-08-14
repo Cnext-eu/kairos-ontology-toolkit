@@ -45,6 +45,7 @@ from .projections import (
     scaffold_silver_ext_cmd,
 )
 from .scaffold_binding import scaffold_binding_cmd
+from .scaffold_staging import scaffold_staging_cmd
 from .scaffold_system import scaffold_system_cmd
 from .setup import (
     init,
@@ -261,6 +262,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(scaffold_mapping_cmd)
     group.add_command(scaffold_silver_ext_cmd)
     group.add_command(scaffold_binding_cmd)
+    group.add_command(scaffold_staging_cmd)
     group.add_command(scaffold_system_cmd)
     group.add_command(init)
     group.add_command(migrate)

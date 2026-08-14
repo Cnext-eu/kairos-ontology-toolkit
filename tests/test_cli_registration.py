@@ -45,6 +45,7 @@ RETAINED_COMMANDS = {
     "propose-alignment",
     "resolve-ontology",
     "scaffold-binding",
+    "scaffold-staging",
     "scaffold-system",
     "scaffold-mapping",
     "scaffold-silver-ext",
