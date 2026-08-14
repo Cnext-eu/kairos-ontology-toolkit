@@ -303,7 +303,9 @@ def _render_plan_sources_text(result) -> None:
         click.echo(f"   Existing bindings ({len(result.bindings)}):")
         for fact in result.bindings:
             click.echo(f"     - {fact.name} [{fact.source_ref}] ({fact.source_path})")
-            grain = ", ".join(f"{col.name}:{col.kind or col.data_type or '?'}" for col in fact.grain)
+            grain = ", ".join(
+                f"{col.name}:{col.kind or col.data_type or '?'}" for col in fact.grain
+            )
             identity = ", ".join(
                 f"{col.name}:{col.kind or col.data_type or '?'}" for col in fact.identity
             )
@@ -690,7 +692,9 @@ def field_mapping_report_cmd(ontologies, bindings, sources, source_system, domai
         sources_dir = Path(sources)
 
     if output is None:
-        report_dir = publish_root(hub_root) / "reports" if hub_root else Path("ontology-hub-publish/reports")
+        report_dir = (
+            publish_root(hub_root) / "reports" if hub_root else Path("ontology-hub-publish/reports")
+        )
         output_path = report_dir / f"field-mapping-{source_system}.xlsx"
     else:
         output_path = Path(output)
@@ -847,7 +851,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
                     if hub_root and (hub_root / "catalog-v001.xml").is_file()
                     else None
                 )
-                inv = generate_inventory(ttl_file, catalog_path=catalog_path)
+                inv = generate_inventory(ttl_file, catalog_path=catalog_path, relative_to=ref_path)
                 if not inv["classes"]:
                     continue
                 stem = ttl_file.stem
@@ -885,6 +889,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
                     ttl_file,
                     include_specializations=False,
                     catalog_path=catalog_path,
+                    relative_to=hub_root,
                 )
                 if not inv["classes"]:
                     continue
@@ -1188,9 +1193,7 @@ def _render_domain_coverage_text(report) -> None:
     click.echo(f"   Accelerator: {report.accelerator or '(none)'}")
     click.echo("")
     if not report.rows:
-        click.echo(
-            "   No domains found (no blueprint, authored ontology, or binding evidence)."
-        )
+        click.echo("   No domains found (no blueprint, authored ontology, or binding evidence).")
         return
 
     def _cell(value) -> str:

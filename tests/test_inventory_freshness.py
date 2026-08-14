@@ -266,6 +266,31 @@ class TestCollisionFreshness:
         assert report.stale == []
         assert not report.is_blocking
 
+    def test_legacy_absolute_generated_from_still_derives_and_checks_ok(self, tmp_path):
+        """Back-compat (#404): a pre-#404 inventory with a machine-local, absolute
+        ``generated_from`` must still derive its canonical filename and check fresh;
+        migration is not required for this field since it feeds no hash."""
+        from kairos_ontology.core.inventory import _canonical_filename_from_generated_from
+
+        ref_root = tmp_path / "ontology-reference-models"
+        inv_dir = tmp_path / "model" / "inventory"
+        inv_dir.mkdir(parents=True)
+        ttl = self._write(ref_root, "BSP", "TradeParty")
+
+        inv = generate_inventory(ttl, relative_to=ref_root)
+        inv["generated_from"] = (
+            r"C:\Git\hub\ontology-reference-models\derived-ontologies\BSP\current\party\party.ttl"
+        )
+        assert _canonical_filename_from_generated_from(inv) == "bsp-party-inventory.yaml"
+        write_inventory(inv, inv_dir / "bsp-party-inventory.yaml")
+
+        report = check_inventories(
+            ontology_dir=None, ref_models_dir=ref_root, inventory_dir=inv_dir
+        )
+        assert report.ok == ["bsp-party"]
+        assert report.stale == []
+        assert not report.is_blocking
+
 
 class TestCheckInventoryCLI:
     def test_cli_passes_when_fresh(self, tmp_path):

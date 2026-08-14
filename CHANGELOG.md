@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Inventories embedded an absolute machine-local path, so they were not portable** (#404).
+  `generated_from` was `str(ttl_path)` — an absolute path from whichever machine ran
+  `generate-inventory` — written into an artifact that is committed and reviewed. One real hub had all
+  75 inventories carrying `C:\Git\<hub>\…` while the hub itself lived on `G:\`, so the recorded path
+  did not resolve on the machine holding the file. It is now stored relative to the reference-models
+  root (or hub root), with POSIX separators.
+  The field cannot simply be blanked: it is re-read by `_canonical_filename_from_generated_from()` to
+  derive the canonical inventory filename (DD-054). The relativisation is therefore anchored to **the
+  same root passed to `inventory_filename`**, and the `derived-ontologies` marker fallback runs only
+  when relativisation is impossible — never instead of it. Truncating at the marker looks equivalent
+  and is not: with a root pointed at `…/ontology-reference-models/derived-ontologies` it derives
+  `bsp-party-inventory.yaml` for a file actually named `party-inventory.yaml`, and that mismatch is
+  swallowed as `stale`. `.as_posix()` is likewise load-bearing rather than cosmetic — a relative value
+  containing backslashes fails to parse on Linux exactly as an absolute one does. Legacy absolute
+  values still derive correctly, and freshness is unaffected because it compares `closure_hash` only.
+- **Regenerating inventories rewrote every file even when nothing had changed** (#404). `generated_at`
+  used `datetime.now()`, so all 75 files churned on every run and genuine inventory changes were hard
+  to see in review. It now uses the existing `core/determinism.resolve_generated_at()`, honouring
+  `KAIROS_GENERATED_AT` / `SOURCE_DATE_EPOCH`. Without this, the portability fix alone would not have
+  removed the diff noise the issue was filed about.
+- **The reference-models fetch never copied the upstream root `LICENSE`/`NOTICE`** (#413), so the
+  aggregate third-party attribution — naming FIBO (MIT, © 2020 EDM Council) and IATA ONE Record
+  (MIT, © 2025 IATA-Cargo) alongside the toolkit's own Apache-2.0 terms — never travelled with the
+  ~409 vendored ontology files. The sparse checkout takes only the `ontology-reference-models/`
+  subtree, and the fetcher already reached into the clone root for `VERSION`; it now copies all three,
+  each independently guarded so an upstream lacking them cannot break the fetch. The per-family MIT
+  licences already arrived, since they sit inside the copied subtree; it was the document explaining
+  the set as a whole that did not.
 - **The DD-103 agent boundary left most raw ontology exposed, and could be escaped by choice of
   working directory.** The scaffolded `.claude/settings.json` denied only `*.ttl`, but a fetched
   reference-model tree is **297 `.rdf` to 112 `.ttl`** — and the toolkit itself treats `.rdf` as a

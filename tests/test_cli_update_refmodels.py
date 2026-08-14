@@ -75,6 +75,11 @@ class TestUpdateRefmodels:
         (fake_refmodels / "VERSION").write_text("1.2.0\n")
         (fake_refmodels / "catalog-v001.xml").write_text("<catalog/>")
         (fake_refmodels / "blueprints" / "archetypes").mkdir(parents=True)
+        # Upstream also keeps LICENSE/NOTICE at the clone *root* (a sibling of
+        # ontology-reference-models/, outside the sparse-checked-out subtree) —
+        # regression coverage for issue #413.
+        (fake_clone_dir / "LICENSE").write_text("Apache License 2.0\n")
+        (fake_clone_dir / "NOTICE").write_text("Includes FIBO and IATA ONE Record (MIT).\n")
 
         call_count = {"n": 0}
 
@@ -108,6 +113,9 @@ class TestUpdateRefmodels:
         assert not (dest / "old-file.ttl").exists()
         # New content should be present
         assert (dest / "party.ttl").exists()
+        # Root LICENSE/NOTICE reach the hub alongside VERSION (issue #413).
+        assert (dest / "LICENSE").read_text().strip() == "Apache License 2.0"
+        assert "FIBO" in (dest / "NOTICE").read_text()
 
     def test_missing_remote_folder(self, runner, hub_structure, tmp_path):
         """Should fail when the expected folder is not in the cloned repo."""

@@ -1465,15 +1465,20 @@ def _make_fake_refmodels_clone(tmp_path, name="fake-refmodels-clone"):
 
     ``_looks_like_refmodels_root`` (core/archetype_loader.py) requires
     ``catalog-v001.xml`` + ``blueprints/archetypes/`` inside the copied
-    ``ontology-reference-models/`` subdir; upstream keeps ``VERSION`` at the
-    clone *root* (a sibling of that subdir), which is why it's placed there
-    rather than inside ``ontology-reference-models/``.
+    ``ontology-reference-models/`` subdir; upstream keeps ``VERSION``,
+    ``LICENSE``, and ``NOTICE`` at the clone *root* (siblings of that subdir),
+    which is why they're placed there rather than inside
+    ``ontology-reference-models/`` (issue #413).
     """
     clone_root = tmp_path / name
     refmodels = clone_root / "ontology-reference-models"
     (refmodels / "blueprints" / "archetypes").mkdir(parents=True)
     (refmodels / "catalog-v001.xml").write_text("<catalog/>", encoding="utf-8")
     (clone_root / "VERSION").write_text("2026.08\n", encoding="utf-8")
+    (clone_root / "LICENSE").write_text("Apache License 2.0\n", encoding="utf-8")
+    (clone_root / "NOTICE").write_text(
+        "Includes FIBO (MIT) and IATA ONE Record (MIT) attributions.\n", encoding="utf-8"
+    )
     return clone_root
 
 
@@ -1527,6 +1532,8 @@ def test_init_fetches_reference_models_by_default(tmp_path):
             assert (dest / "catalog-v001.xml").is_file()
             assert (dest / "blueprints" / "archetypes").is_dir()
             assert (dest / "VERSION").read_text(encoding="utf-8").strip() == "2026.08"
+            assert (dest / "LICENSE").read_text(encoding="utf-8").strip() == "Apache License 2.0"
+            assert "FIBO" in (dest / "NOTICE").read_text(encoding="utf-8")
             provenance = json.loads((dest / "FETCH_PROVENANCE.json").read_text(encoding="utf-8"))
             assert provenance["ref"] == "main"
             assert provenance["commit"] == "abcdef1234567890"
@@ -1707,11 +1714,7 @@ def test_init_generates_reference_model_inventories_by_default(tmp_path):
     runner = CliRunner()
     fake_clone_root = _make_fake_refmodels_clone(tmp_path)
     ref_ttl = (
-        fake_clone_root
-        / "ontology-reference-models"
-        / "derived-ontologies"
-        / "bsp"
-        / "party.ttl"
+        fake_clone_root / "ontology-reference-models" / "derived-ontologies" / "bsp" / "party.ttl"
     )
     ref_ttl.parent.mkdir(parents=True, exist_ok=True)
     ref_ttl.write_text(_SAMPLE_REF_TTL_WITH_CLASSES, encoding="utf-8")
@@ -1757,11 +1760,7 @@ def test_init_next_reports_inventory_present_after_generation(tmp_path):
     runner = CliRunner()
     fake_clone_root = _make_fake_refmodels_clone(tmp_path)
     ref_ttl = (
-        fake_clone_root
-        / "ontology-reference-models"
-        / "derived-ontologies"
-        / "bsp"
-        / "party.ttl"
+        fake_clone_root / "ontology-reference-models" / "derived-ontologies" / "bsp" / "party.ttl"
     )
     ref_ttl.parent.mkdir(parents=True, exist_ok=True)
     ref_ttl.write_text(_SAMPLE_REF_TTL_WITH_CLASSES, encoding="utf-8")
@@ -1977,11 +1976,7 @@ def test_init_domain_missing_master_ttl_warns_and_does_not_crash(tmp_path, monke
             scaffold_copy = tmp_path / "_scaffold_no_master_template"
             _shutil.copytree(setup_mod._SCAFFOLD_DIR, scaffold_copy)
             (
-                scaffold_copy
-                / "ontology-hub"
-                / "model"
-                / "ontologies"
-                / "master.ttl.template"
+                scaffold_copy / "ontology-hub" / "model" / "ontologies" / "master.ttl.template"
             ).unlink()
             monkeypatch.setattr(setup_mod, "_SCAFFOLD_DIR", scaffold_copy)
 

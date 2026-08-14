@@ -1822,12 +1822,17 @@ def _fetch_reference_models(dest: Path, git_ref: str) -> tuple[bool, str | None,
         build_dir = holder_dir / dest.name
         shutil.copytree(src, build_dir)
 
-        # Upstream keeps VERSION at the clone root (sibling of the copied subdir),
-        # so version-drift checks (which read <dest>/VERSION) would otherwise never
-        # see it. Copy it in alongside the subtree when present.
-        version_src = clone_dir / "VERSION"
-        if version_src.is_file():
-            shutil.copy2(version_src, build_dir / "VERSION")
+        # Upstream keeps VERSION, LICENSE, and NOTICE at the clone root (siblings of
+        # the copied subdir) rather than inside the sparse-checked-out subtree, so
+        # version-drift checks (which read <dest>/VERSION) and licensing/attribution
+        # (LICENSE, and NOTICE naming FIBO and IATA ONE Record's third-party terms)
+        # would otherwise never reach a hub. Copy them in alongside the subtree when
+        # present, each independently guarded so an upstream lacking one cannot
+        # break the fetch.
+        for root_file in ("VERSION", "LICENSE", "NOTICE"):
+            root_src = clone_dir / root_file
+            if root_src.is_file():
+                shutil.copy2(root_src, build_dir / root_file)
 
         if not _looks_like_refmodels_root(build_dir):
             return (

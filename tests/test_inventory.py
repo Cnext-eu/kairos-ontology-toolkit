@@ -2,9 +2,13 @@
 # Copyright 2026 Cnext.eu
 """Tests for inventory module (DD-044)."""
 
+from pathlib import PurePosixPath, PureWindowsPath
+
 import pytest
+from rdflib import Graph
 
 from kairos_ontology.core.inventory import (
+    _canonical_filename_from_generated_from,
     generate_inventory,
     inventory_filename,
     write_inventory,
@@ -52,7 +56,10 @@ class TestGenerateInventory:
         assert inv["version"] == INVENTORY_VERSION
         assert inv["domain_name"] == "Party"
         assert "generated_at" in inv
-        assert str(ref_file) in inv["generated_from"]
+        # No root was passed and the source isn't under either root, so
+        # provenance falls back to the bare filename (issue #404) — not the
+        # machine-local absolute path.
+        assert inv["generated_from"] == "party.ttl"
         assert inv["source_sha256"]  # provenance hash present (DD-047)
 
     def test_includes_specializations_by_default(self, tmp_path):
@@ -181,3 +188,82 @@ class TestInventoryFilename:
         ref_root = tmp_path / "refs"
         ttl = ref_root / "party.ttl"
         assert inventory_filename(ttl, ref_models_dir=ref_root) == "party-inventory.yaml"
+
+
+class TestGeneratedFromProvenance:
+    """Issue #404: ``generated_from`` must be portable, not a machine-local path."""
+
+    def test_relative_to_root(self, tmp_path):
+        root = tmp_path / "ontology-reference-models"
+        ttl = root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        ttl.parent.mkdir(parents=True)
+        ttl.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+
+        inv = generate_inventory(ttl, relative_to=root)
+
+        assert inv["generated_from"] == "derived-ontologies/BSP/current/party/party.ttl"
+
+    def test_relative_generated_from_is_portable(self, tmp_path):
+        root = tmp_path / "ontology-reference-models"
+        ttl = root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        ttl.parent.mkdir(parents=True)
+        ttl.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+
+        inv = generate_inventory(ttl, relative_to=root)
+        v = inv["generated_from"]
+
+        assert not PurePosixPath(v).is_absolute()
+        assert "\\" not in v
+        assert ":" not in v
+
+    def test_round_trip_filename_derivation_ontology_reference_models_root(self, tmp_path):
+        # Normal case: --ref-models-dir points at ontology-reference-models/ itself,
+        # so the relative provenance still contains the derived-ontologies marker.
+        root = tmp_path / "ontology-reference-models"
+        ttl = root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        ttl.parent.mkdir(parents=True)
+        ttl.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+
+        inv = generate_inventory(ttl, relative_to=root)
+        canonical = _canonical_filename_from_generated_from(inv)
+        expected = inventory_filename(ttl, ref_models_dir=root)
+
+        assert expected == "bsp-party-inventory.yaml"
+        assert canonical == expected
+
+    def test_round_trip_filename_derivation_derived_ontologies_root(self, tmp_path):
+        # Hazard case: --ref-models-dir points *at* derived-ontologies/ itself (the
+        # CLI passes --ref-models-dir straight through, unnormalised). The relative
+        # provenance then has no derived-ontologies marker to find, so the reader
+        # must not assert a namespaced filename it cannot derive — it must agree
+        # with (or defer to) the un-namespaced name generate-inventory actually
+        # wrote, never raise a mismatch.
+        ref_root = tmp_path / "ontology-reference-models"
+        derived_root = ref_root / "derived-ontologies"
+        ttl = derived_root / "BSP" / "current" / "party" / "party.ttl"
+        ttl.parent.mkdir(parents=True)
+        ttl.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+
+        inv = generate_inventory(ttl, relative_to=derived_root)
+        canonical = _canonical_filename_from_generated_from(inv)
+        expected = inventory_filename(ttl, ref_models_dir=derived_root)
+
+        assert expected == "party-inventory.yaml"
+        assert canonical is None or canonical == expected
+
+    def test_relative_generated_from_cross_os_parse(self, tmp_path):
+        root = tmp_path / "ontology-reference-models"
+        ttl = root / "derived-ontologies" / "BSP" / "current" / "party" / "party.ttl"
+        ttl.parent.mkdir(parents=True)
+        ttl.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+
+        inv = generate_inventory(ttl, relative_to=root)
+        v = inv["generated_from"]
+
+        assert "derived-ontologies" in PurePosixPath(v).parts
+        assert PureWindowsPath(v).stem == "party"
+
+    def test_graph_sentinel_unchanged(self):
+        inv = generate_inventory(graph=Graph(), domain_name="Party")
+
+        assert inv["generated_from"] == "(graph)"
