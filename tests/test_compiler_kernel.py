@@ -461,6 +461,7 @@ def test_contracted_dbt_model_compiles_as_virtual_ref_source(tmp_path):
                 grain: one row per customer
                 grain_key: [customer_id]
                 virtual_source_iri: https://example.test/virtual/customer-stage
+                supported_adapters: [fabric]
             columns:
               - {name: customer_id, data_type: string, data_tests: [not_null]}
               - {name: customer_name, data_type: string}
@@ -511,6 +512,7 @@ def _write_contracted_models(hub: Path, names: list[str]) -> None:
             "        grain: one row per customer\n"
             "        grain_key: [customer_id]\n"
             f"        virtual_source_iri: https://example.test/virtual/{name}\n"
+            "        supported_adapters: [fabric]\n"
             "    columns:\n"
             "      - {name: customer_id, data_type: string, data_tests: [not_null]}\n"
             "      - {name: customer_name, data_type: string}\n"

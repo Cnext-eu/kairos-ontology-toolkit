@@ -173,6 +173,11 @@ def _render_fit_report_text(result) -> None:
         )
     else:
         click.echo("   Evidence: none")
+        if result.source_system and result.notes:
+            # Issue #397: --source's "Evidence: none" is indistinguishable from a real
+            # negative result unless the reason (usually: no prior propose-alignment
+            # run) is right next to it, not just buried in the Notes section below.
+            click.echo(f"     ({result.notes[0]})")
     if result.technical_fields:
         purposes = ", ".join(f"{item.name} [{item.purpose}]" for item in result.technical_fields)
         click.echo(

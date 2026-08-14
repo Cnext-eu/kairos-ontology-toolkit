@@ -12,6 +12,7 @@ models:
         virtual_source_iri: https://example.test/source/dbt#customer-stage
         grain: one row per customer
         grain_key: [customer_id]
+        supported_adapters: [fabric]
     columns:
       - name: customer_id
         data_type: string

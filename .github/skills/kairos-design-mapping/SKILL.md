@@ -58,7 +58,13 @@ accelerate the common case:
   reports populated properties, unpopulated ones (what you can still choose from), and
   orphan columns that don't map anywhere. Use it to inspect coverage before hand-authoring
   a complex binding: `kairos-ontology fit-report --class <IRI> --binding
-  <path>` or `--source <system>.<table>`.
+  <path>` or `--source <system>.<table>`. **`--source` mode requires a prior
+  `kairos-ontology propose-alignment` run for that source** — it reads its evidence from
+  `propose-alignment`'s output under `integration/sources/_analysis/`, never from the raw
+  source vocabulary directly. Without that prior run, `--source` returns `Evidence: none`
+  for every candidate — indistinguishable from a genuine negative result — so run
+  `propose-alignment` first, or fall back to `--binding` mode or direct vocabulary
+  reasoning (Gate 1 step 4 below already permits this alternative).
 
 **When to reach for scaffold-binding vs. hand-authoring:** Use scaffold-binding for
 mechanical, single-source patterns. Hand-author (this skill) when you need complex joins,
@@ -108,8 +114,10 @@ Before proposing a binding:
 4. enumerate whether other Bronze sources under `integration/sources/` also
    plausibly target the same canonical class — check today either with
    `kairos-ontology fit-report --class <X> --source <system>.<table>` run
-   against each candidate source, or by reasoning over the hub's own source
-   inventory; this is a workflow check, not a new tool;
+   against each candidate source (requires a prior `propose-alignment` run per
+   the `fit-report` note above — without it, every candidate reports
+   `Evidence: none`, not a real negative), or by reasoning over the hub's own
+   source inventory; this is a workflow check, not a new tool;
 5. use only already-redacted, masked, aggregated, or synthetic examples.
 
 Never expose or persist raw PII, sensitive free text, proprietary samples, or
