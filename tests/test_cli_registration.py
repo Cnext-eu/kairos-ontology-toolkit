@@ -40,6 +40,7 @@ RETAINED_COMMANDS = {
     "migrate",
     "new-repo",
     "next",
+    "plan-sources",
     "project",
     "propose-alignment",
     "resolve-ontology",

@@ -144,6 +144,31 @@ only, not runtime cost: `int_merged__*` models are materialized as a `view`
 by this toolkit's own dbt template convention, so an unused single-source
 union costs nothing at query time.
 
+**If the target class already has an existing `EntityBinding`** (found via step 4
+or by checking `integration/bindings/` directly), authoring a second
+`source.relation` binding to it puts both bindings in the same DD-133 §3c
+conformance group whether or not you declare `conformance:` explicitly —
+`compile` requires it once a second binding targets the same class. Before
+authoring, state this contract up front rather than discovering it only when
+`compile --check` fails: **every binding in the group must share identical
+grain type-kinds, an identical identity strategy and type-kinds, an identical
+mapped-property type set, and the same load/SCD/relationship/conflict/union
+policy.** Run `kairos-ontology plan-sources --class <IRI>` first (see below) to
+see the existing binding's grain/identity type-kinds and confirm the new
+source can actually satisfy that contract before hand-authoring 2+ bindings
+worth of work. If the sources have heterogeneous key types (e.g. one string,
+one integer natural key), raw conformance is structurally infeasible — route to
+`int_merged__<entity>` (above) instead of a second `source.relation` binding.
+
+**`plan-sources` — preview conformance before authoring.**
+`kairos-ontology plan-sources --class <IRI> [--source <system>.<table>]` reports,
+for a canonical class: its existing bindings' grain/identity type-kinds, and —
+when `--source` is given — whether that candidate source's column types would
+satisfy or violate the DD-133 §3c contract if bound directly. This runs the same
+conformance-type comparison `compile` runs, one step earlier in the workflow, so
+a raw-conformance-infeasible pairing (e.g. disjoint key types) is caught before
+any bindings are hand-authored, not after.
+
 ### Gate 2: Explicit confirmation
 
 Interactive mode requires explicit approval for source→class alignment, grain,
