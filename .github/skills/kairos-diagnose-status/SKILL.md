@@ -31,7 +31,9 @@ Render the proposal's input observations only:
 
 Report each input as present, missing, or unreadable exactly as returned. Never
 treat file presence as completeness, or output files as proof about authored
-inputs.
+inputs. Confirm ontology/SHACL inputs by presence only — never read a raw
+`.ttl`/`.rdf`/`.owl` file as text; use `resolve-ontology`, `show-class-inventory`,
+`list-class-properties`, or `explain-term` if semantic detail is needed.
 
 ## Current compiler diagnostics
 

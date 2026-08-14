@@ -75,14 +75,15 @@ Passing compilation does not replace downstream dbt, adapter, deployment, securi
 
 ## Semantic access (DD-103)
 
-- Never read `.ttl` files directly as raw text — an LLM cannot reliably reconstruct
-  prefix-relative IRIs, transitively inherited properties across an `owl:imports` chain, or
-  equivalence/inverse relationships from serialized Turtle. Use the CLI's semantic commands
-  instead: `kairos-ontology resolve-ontology`, `kairos-ontology show-class-inventory`,
-  `kairos-ontology explain-term`, `kairos-ontology list-class-properties`.
-- `.claude/settings.json` denies `Read`/`Grep` on `model/ontologies/**/*.ttl`,
-  `model/shapes/**/*.ttl`, and `ontology-reference-models/**/*.ttl` to enforce this for
-  Claude Code sessions; other agents must follow the same rule voluntarily.
+- Never read raw ontology serializations (`.ttl`, `.rdf`, `.owl`) directly as text — an LLM
+  cannot reliably reconstruct prefix-relative IRIs, transitively inherited properties across an
+  `owl:imports` chain, or equivalence/inverse relationships from serialized RDF. Use the CLI's
+  semantic commands instead: `kairos-ontology resolve-ontology`, `kairos-ontology
+  show-class-inventory`, `kairos-ontology explain-term`, `kairos-ontology list-class-properties`.
+- `.claude/settings.json` is the source of truth for the enforced deny rules for Claude Code
+  sessions; consult it rather than this document for the exact guarded paths.
+- This is a guardrail, not a sandbox: shell tools can still reach these files directly, and
+  agents other than Claude Code are bound only by this convention, not by enforcement.
 
 ## Skill routing
 

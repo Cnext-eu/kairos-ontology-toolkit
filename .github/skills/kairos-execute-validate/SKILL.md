@@ -15,6 +15,9 @@ Validation is read-only unless the user explicitly requests an output file.
 4. Preserve ordered, source-located compiler diagnostics without changing their severity.
 5. Distinguish ontology validity, binding compilation, and runtime dbt/platform testing.
 6. Route fixes to the owning source, ontology, mapping, Gold, or MDM skill.
+7. Never read a raw ontology serialization (`.ttl`/`.rdf`/`.owl`) as text; treat
+   `validate`/`compile` diagnostics, or `resolve-ontology`/`show-class-inventory`/
+   `list-class-properties`/`explain-term` output, as authoritative.
 
 ## Three distinct "dbt check" tiers — do not conflate them
 

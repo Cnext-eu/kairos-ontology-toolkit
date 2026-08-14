@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The DD-103 agent boundary left most raw ontology exposed, and could be escaped by choice of
+  working directory.** The scaffolded `.claude/settings.json` denied only `*.ttl`, but a fetched
+  reference-model tree is **297 `.rdf` to 112 `.ttl`** — and the toolkit itself treats `.rdf` as a
+  first-class serialisation (`core/validator.py` and `core/projector.py` both glob `**/*.rdf`
+  alongside `**/*.ttl`). So the majority of raw ontology, all of FIBO, was never covered. The deny
+  list now spans `.ttl`/`.rdf`/`.owl`, keeping `.json` and `.xml` deliberately readable: the tree
+  carries 19 JSON *Schemas* the toolkit itself consumes and no JSON-LD ontologies, and
+  `catalog-v001.xml` must be readable for domain registration.
+  Two further problems were found while fixing it. A `./`-prefixed permission path anchors to the
+  **current working directory**, not the project root — and this toolkit deliberately supports being
+  run from inside `ontology-hub/` (DD-064), which voided the whole boundary from there. And `Grep(...)`
+  rules may never have matched anything, since permission matching is documented against `Read`/`Edit`
+  only. Both claims come from documentation that cannot be verified against the installed runtime, so
+  rules are now emitted in **both** anchorings and **both** tool prefixes: the redundancy is
+  deliberate fail-closed behaviour and should not be tidied away without measuring first.
+- **Existing hubs never received boundary updates at all.** `.claude/settings.json` was created once
+  and never revisited: it is absent from the managed-file map, and `update` only wrote it when missing
+  — with the check wrapped so `update --check` (and therefore the `managed-check` workflow) could not
+  even report drift. It cannot use the managed-marker mechanism, because that marker is an HTML
+  comment and a settings file that fails validation is rejected *as a whole*, which would silently
+  void every rule. `update` now recognises previously-shipped generations by SHA-256 and replaces only
+  those, reports them in `--check`, and leaves a hand-extended file untouched with an advisory rather
+  than destroying local edits.
+- **A managed skill instructed the agent to read a file the boundary already blocked.**
+  `kairos-design-domain` told it to open `model/ontologies/*.ttl` to recover the ontology IRI; it now
+  uses `resolve-ontology`. The same prohibition was added to the five skills that sit next to ontology
+  files, which — unlike the settings JSON — are managed and therefore reach existing hubs. The
+  `copilot-instructions.md` boundary section no longer restates the deny globs inline (it went stale
+  the moment they changed) and now states plainly that this is a guardrail, not a sandbox: shell tools
+  still reach these files, and non-Claude agents are bound only by convention.
+
 ## [5.2.2] — 2026-08-14
 
 ### Added

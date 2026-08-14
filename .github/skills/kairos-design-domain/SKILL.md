@@ -425,8 +425,9 @@ parameter: the catalog entry uses the IRI declared by the `owl:Ontology` in the
 `.ttl` whenever one is declared, and `--company-domain` only supplies
 `https://<company-domain>/ont/<domain>` when none is. Take the value from the
 hub's own existing ontology IRIs — the `uri name=` entries already in
-`catalog-v001.xml`, or the `owl:Ontology` line of a sibling
-`model/ontologies/*.ttl`. Never invent one.
+`catalog-v001.xml`, or a sibling domain's `ontology_iri`, read via
+`kairos-ontology resolve-ontology <domain> --json-output` rather than opening
+`model/ontologies/*.ttl` directly. Never invent one.
 
 On an already-initialized hub the command is idempotent. Every scaffold write is
 guarded by an "already exists, and no `--force`" check, so the one file it
@@ -480,6 +481,9 @@ diff review, and ontology integrity still apply.
   patch, the catalog entry `init --domain` registers, and `_master.ttl`.
 - Leaving a new domain unregistered — a `.ttl` with no `catalog-v001.xml` entry
   is invisible to every catalog-resolved import.
+- Reading a raw ontology serialization (`.ttl`/`.rdf`/`.owl`) as text; use
+  `resolve-ontology`, `show-class-inventory`, `list-class-properties`, or
+  `explain-term` instead.
 
 ## Related skills
 
