@@ -73,9 +73,17 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
    `references`, `needs_confirmation`, `decided_by` (`"user"` or `"ai"` — mark every
    AI-approved choice `"ai"`; never mark an AI choice `"user"`), and optional `likely_domains`
    (a list of lowercase domain-id strings the concept informs — a concept may inform more than
-   one domain; omit or leave empty for a **cross-cutting** concept, which stays in scope for
-   every domain). This is the actual discovery analysis and cannot be automated — everything
-   else (the concept list, tiers, topology) comes from step 2.
+   one domain). **Tag `likely_domains` with the concept's real best-guess domain even when that
+   domain has no `.ttl` modeled in the hub yet** — the discovery gate (issue #396) only checks
+   whether the tag matches the domain being compiled/validated, it never requires the domain to
+   already exist. Only omit `likely_domains` (or leave it empty) for a concept that is
+   **genuinely cross-cutting** — applies to literally every domain, forever (e.g. a GDPR/PII
+   concern, a master-data-quality rule) — since an absent/empty tag stays in scope for every
+   domain's gate as the safe default. Do not use "omit" as a stand-in for "not sure which of my
+   currently-planned domains this belongs to": that collides with the cross-cutting meaning and
+   will block `compile`/`validate` for every domain, including ones that have nothing to do with
+   the concept, until it is retagged. This is the actual discovery analysis and cannot be
+   automated — everything else (the concept list, tiers, topology) comes from step 2.
 4. Write the step-3 judgments as a plain YAML (or JSON) file — `mode: "interactive"` or
    `mode: "fleet"` to match this session (DD-088), a `core_concepts` list with one outcome dict
    per concept from step 2 (`uri`, `outcome`, `tier`, `confidence`, `rationale`, `references`,
