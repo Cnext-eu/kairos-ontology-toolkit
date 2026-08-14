@@ -21,6 +21,19 @@ Produce an on-demand, read-only review from authored inputs and canonical compil
 4. Show unmapped source columns or ontology properties only as review observations; neither changes
    the closed binding contract automatically.
 5. Link each finding to its source location and owning design skill.
+6. For a stakeholder-facing view of the same bindings — one worksheet per domain, every declared
+   scalar field alongside its mapped source column and a real sample value, for one source system
+   at a time — generate the Excel workbook instead of restating the same review by hand:
+
+   ```powershell
+   $env:KAIROS_SKILL_CONTEXT = "1"
+   uv run kairos-ontology field-mapping-report --source-system <system> [--domain <domain>]
+   ```
+
+   Written by default to `ontology-hub-publish/reports/field-mapping-<system>.xlsx`. Object
+   properties/relationships are out of scope for this report (see its own `--help`); it only covers
+   `fields:`-declared scalar mappings. Do not hand-build an equivalent workbook — this command
+   already exists.
 
 Do not regenerate execution logic, infer missing bindings, or persist operational state. The
 CompilePlan explanation is the authority for what will be emitted; the report is only a human view.
