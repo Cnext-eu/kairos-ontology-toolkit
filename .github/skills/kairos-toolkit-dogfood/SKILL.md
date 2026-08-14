@@ -154,10 +154,10 @@ unnoticed. Per stage, verify directly:
 - **EntityBinding authoring**: re-run `compile <domain> --check`/`--explain` yourself
   after the agent reports success — do not relay a reported exit code you did not
   see.
-- **Multi-source decisions**: when an agent claims "single-source, no merge
+- **Multi-source decisions**: when an agent asserts "single-source, no merge
   needed," spot-check its cited evidence (grain, primary key, column overlap)
   directly rather than trusting the narrative — a plausible-sounding justification
-  for skipping the more expensive merge path is exactly the kind of claim worth
+  for skipping the more expensive merge path is exactly the kind of assertion worth
   distrusting most.
 - **Fix batches from a follow-up implementation cycle**: diff review plus, for the
   most consequential fixes, a live empirical run against this session's own real
@@ -196,7 +196,7 @@ independently-reproduced gaps unfiled until asked to check.
 
 When filing, combine related findings into one issue rather than filing one per
 symptom — group by root-cause proximity ("the design-time tooling doesn't check
-what its own gate claims to check"), not by which stage surfaced them. Cite exact
+what its own gate is supposed to check"), not by which stage surfaced them. Cite exact
 file:line, a real repro against this session's hub, and — critically — confirm the
 finding is not already filed or already fixed before writing it up (`gh issue list
 --search <keyword>`); more than one dogfood session has cited a bug already fixed
