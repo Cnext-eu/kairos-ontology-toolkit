@@ -78,3 +78,38 @@ def test_autopilot_skill_files_are_byte_identical(root):
     master = (REPO_ROOT / ".github" / "skills" / "kairos-flow-autopilot" / "SKILL.md").read_bytes()
     scaffold = (root / "kairos-flow-autopilot" / "SKILL.md").read_bytes()
     assert master == scaffold
+
+
+# ---------------------------------------------------------------------------
+# SHACL cross-reference anchors (#483)
+# ---------------------------------------------------------------------------
+
+DOMAIN_SHACL_ANCHOR = (
+    "EntityBinding authoring (kairos-design-mapping) does **not** author SHACL shapes"
+)
+
+MAPPING_SHACL_ANCHOR = (
+    "SHACL governance shapes are authored during domain design"
+)
+
+
+@pytest.mark.parametrize("root", SKILL_ROOTS, ids=["github", "scaffold"])
+def test_domain_skill_has_shacl_mapping_anchor(root):
+    """kairos-design-domain SKILL.md must cross-reference binding/SHACL (#483)."""
+    assert DOMAIN_SHACL_ANCHOR in _skill(root, "kairos-design-domain")
+
+
+@pytest.mark.parametrize("root", SKILL_ROOTS, ids=["github", "scaffold"])
+def test_mapping_skill_has_shacl_domain_anchor(root):
+    """kairos-design-mapping SKILL.md must cross-reference SHACL governance (#483)."""
+    assert MAPPING_SHACL_ANCHOR in _skill(root, "kairos-design-mapping")
+
+
+@pytest.mark.parametrize("skill_name", ["kairos-design-domain", "kairos-design-mapping"])
+def test_skill_copies_are_byte_identical(skill_name):
+    """The .github/ master and scaffold copy must be byte-identical."""
+    master = (REPO_ROOT / ".github" / "skills" / skill_name / "SKILL.md").read_bytes()
+    scaffold = (
+        REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills" / skill_name / "SKILL.md"
+    ).read_bytes()
+    assert master == scaffold

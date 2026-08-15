@@ -232,7 +232,8 @@ def test_policy_normalization_error_preserves_its_own_code(tmp_path):
             "identity.authored-key-not-supplied",
             "authored naturalKey identity OUTPUT column(s) must be explicitly materialized "
             "as a mapped fields: entry or an authored technicalFields: entry (DD-139) on "
-            "'customer'; missing output column(s): gc_pk.",
+            "'customer'; missing output column(s): gc_pk. Output column names are derived "
+            "from source column names via snake_case conversion (e.g. 'OrderNo' → 'order_no').",
             rule_id="DD-108-business-identity",
             resource_uri="https://example.test/party#Customer",
         )

@@ -84,6 +84,56 @@ _BINDING = textwrap.dedent(
 ).strip()
 
 
+_BINDING_MISMATCHED_KEY = textwrap.dedent(
+    """
+    apiVersion: kairos.eu/v5
+    kind: EntityBinding
+    metadata:
+      name: erp-party
+      domain: party
+    source:
+      relation: erp.parties
+    target:
+      class: party:Party
+    grain:
+      columns: [party_id]
+    identity:
+      strategy: source-natural
+      sourceKey: [party_id]
+    load:
+      mode: full-refresh
+    fields:
+      - property: party:partyId
+        expression: party_id
+    """
+).strip()
+
+
+_BINDING_MATCHED_KEY = textwrap.dedent(
+    """
+    apiVersion: kairos.eu/v5
+    kind: EntityBinding
+    metadata:
+      name: pos-party
+      domain: party
+    source:
+      relation: pos.customers
+    target:
+      class: party:Party
+    grain:
+      columns: [customer_id]
+    identity:
+      strategy: source-natural
+      sourceKey: [customer_id]
+    load:
+      mode: full-refresh
+    fields:
+      - property: party:partyId
+        expression: customer_id
+    """
+).strip()
+
+
 def _hub(tmp_path: Path, *, with_binding: bool = True) -> tuple[Path, Path]:
     hub = tmp_path / "hub"
     ontology_path = hub / "model" / "ontologies" / "party.ttl"
@@ -94,6 +144,60 @@ def _hub(tmp_path: Path, *, with_binding: bool = True) -> tuple[Path, Path]:
         bindings_dir = hub / "integration" / "bindings"
         bindings_dir.mkdir(parents=True)
         (bindings_dir / "crm-party.binding.yaml").write_text(_BINDING, encoding="utf-8")
+    return hub, ontology_path
+
+
+def _hub_with_conflicting_bindings(
+    tmp_path: Path,
+    *,
+    second_binding: str,
+    conformance: bool = True,
+) -> tuple[Path, Path]:
+    """Build a hub with two bindings targeting the same class.
+
+    When *conformance* is true, both bindings share a conformance group, exercising
+    the mismatch check. When false, the bindings have no conformance block at all.
+    The *second_binding* YAML is inserted verbatim; the first binding is extended
+    with the same optional conformance block when requested.
+    """
+    hub = tmp_path / "hub"
+    ontology_path = hub / "model" / "ontologies" / "party.ttl"
+    _write_ontology(ontology_path)
+    sources_dir = hub / "integration" / "sources"
+    _write_source_table(sources_dir, "crm", "customers", [("customer_id", "string")])
+
+    second_relation = second_binding.split("relation:")[1].split("\n")[0].strip()
+    second_system, second_table = second_relation.split(".", 1)
+    _write_source_table(
+        sources_dir, second_system, second_table, [(second_table.rstrip("s") + "_id", "string")]
+    )
+
+    conf_block = ""
+    if conformance:
+        conf_block = textwrap.dedent(
+            """
+            conformance:
+              group: party-group
+              sourcePrecedence: 1
+              conflict: error
+              union:
+                mode: union-all
+            """
+        ).strip()
+
+    first = _BINDING
+    if conformance:
+        first = first.rstrip() + "\n\n" + conf_block
+
+    second = second_binding.rstrip()
+    if conformance:
+        second = second + "\n\n" + conf_block
+
+    bindings_dir = hub / "integration" / "bindings"
+    bindings_dir.mkdir(parents=True)
+    (bindings_dir / "crm-party.binding.yaml").write_text(first, encoding="utf-8")
+    (bindings_dir / "second-party.binding.yaml").write_text(second, encoding="utf-8")
+
     return hub, ontology_path
 
 
@@ -220,3 +324,135 @@ def test_cli_smoke(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "crm-party" in result.output
     assert "customer_id" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Issue #484 — zero-datatype-properties warning in plan-sources
+# ---------------------------------------------------------------------------
+
+def _write_ontology_no_datatype_properties(ontology_path: Path) -> None:
+    """An ontology whose only class has object properties but no datatype properties."""
+    ontology_path.parent.mkdir(parents=True, exist_ok=True)
+    domain = Namespace("https://example.test/party#")
+    graph = Graph()
+    graph.bind("party", domain)
+    graph.add((URIRef("https://example.test/party"), RDF.type, OWL.Ontology))
+    graph.add((URIRef("https://example.test/party"), RDFS.label, Literal("Party")))
+    graph.add((URIRef("https://example.test/party"), OWL.versionInfo, Literal("1.0.0")))
+    graph.add((domain.Party, RDF.type, OWL.Class))
+    graph.add((domain.Party, RDFS.label, Literal("Party")))
+    graph.add((domain.knows, RDF.type, OWL.ObjectProperty))
+    graph.add((domain.knows, RDFS.domain, domain.Party))
+    graph.add((domain.knows, RDFS.range, domain.Party))
+    graph.serialize(ontology_path, format="turtle")
+
+
+def _hub_no_datatype_properties(tmp_path: Path) -> tuple[Path, Path]:
+    hub = tmp_path / "hub"
+    ontology_path = hub / "model" / "ontologies" / "party.ttl"
+    _write_ontology_no_datatype_properties(ontology_path)
+    sources_dir = hub / "integration" / "sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    return hub, ontology_path
+
+
+def test_plan_sources_warns_when_zero_datatype_properties(tmp_path):
+    hub, ontology_path = _hub_no_datatype_properties(tmp_path)
+
+    result = run_plan_sources(
+        ontology_path,
+        "party:Party",
+        hub_root=hub,
+        bindings_dir=hub / "integration" / "bindings",
+        sources_dir=hub / "integration" / "sources",
+    )
+
+    assert any("zero datatype properties" in w for w in result.warnings)
+    assert any("kairos-design-domain" in w for w in result.warnings)
+
+
+def test_plan_sources_does_not_warn_when_datatype_properties_exist(tmp_path):
+    hub, ontology_path = _hub(tmp_path)
+
+    result = run_plan_sources(
+        ontology_path,
+        "party:Party",
+        hub_root=hub,
+        bindings_dir=hub / "integration" / "bindings",
+        sources_dir=hub / "integration" / "sources",
+    )
+
+    assert result.warnings == ()
+
+
+def test_plan_sources_cli_displays_zero_datatype_warning(tmp_path, monkeypatch):
+    hub, _ = _hub_no_datatype_properties(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli, ["plan-sources", "--class", "party:Party", "--domain", "party"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "zero datatype properties" in result.output
+
+
+def test_natural_key_mismatch_across_bindings_produces_warning(tmp_path):
+    hub, ontology_path = _hub_with_conflicting_bindings(
+        tmp_path, second_binding=_BINDING_MISMATCHED_KEY, conformance=True
+    )
+
+    result = run_plan_sources(
+        ontology_path,
+        "party:Party",
+        hub_root=hub,
+        bindings_dir=hub / "integration" / "bindings",
+        sources_dir=hub / "integration" / "sources",
+    )
+
+    assert len(result.bindings) == 2
+    all_warnings = [w for fact in result.bindings for w in fact.warnings]
+    assert len(all_warnings) >= 1
+    assert any("raw conformance is infeasible" in w for w in all_warnings)
+    assert any("int_merged__<entity>" in w for w in all_warnings)
+    assert any("party-group" in w for w in all_warnings)
+    # Both bindings get the warning since they're in the same group
+    for fact in result.bindings:
+        assert len(fact.warnings) >= 1
+
+
+def test_matching_natural_keys_do_not_produce_warning(tmp_path):
+    hub, ontology_path = _hub_with_conflicting_bindings(
+        tmp_path, second_binding=_BINDING_MATCHED_KEY, conformance=True
+    )
+
+    result = run_plan_sources(
+        ontology_path,
+        "party:Party",
+        hub_root=hub,
+        bindings_dir=hub / "integration" / "bindings",
+        sources_dir=hub / "integration" / "sources",
+    )
+
+    assert len(result.bindings) == 2
+    for fact in result.bindings:
+        assert fact.warnings == ()
+
+
+def test_bindings_without_conformance_group_skipped(tmp_path):
+    hub, ontology_path = _hub_with_conflicting_bindings(
+        tmp_path, second_binding=_BINDING_MISMATCHED_KEY, conformance=False
+    )
+
+    result = run_plan_sources(
+        ontology_path,
+        "party:Party",
+        hub_root=hub,
+        bindings_dir=hub / "integration" / "bindings",
+        sources_dir=hub / "integration" / "sources",
+    )
+
+    assert len(result.bindings) == 2
+    for fact in result.bindings:
+        assert fact.conformance_group is None
+        assert fact.warnings == ()

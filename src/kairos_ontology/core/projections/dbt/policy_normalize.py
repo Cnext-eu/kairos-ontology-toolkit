@@ -3698,15 +3698,25 @@ def _validate_identity_columns(
         or _NULL_EXPRESSION.match(columns[key.lower()].expression or "")
     )
     if missing:
+        missing_detail: list[str] = []
+        for key in missing:
+            snake = camel_to_snake(key) if key != key.lower() else key
+            if snake != key:
+                missing_detail.append(f"{key} (expected snake_case output name: {snake})")
+            else:
+                missing_detail.append(key)
+        missing_str = ", ".join(missing_detail)
         raise PolicyNormalizationError(
             "identity.authored-key-not-supplied",
             (
                 "authored naturalKey identity OUTPUT column(s) must be explicitly materialized "
                 f"as a mapped fields: entry or an authored technicalFields: entry (DD-139) on "
                 f"{candidate.identity.model_name!r}; missing output column(s): "
-                f"{', '.join(missing)}. Each naturalKey component must correspond to a fields: "
-                "entry whose target property emits that output column, or a technicalFields: "
-                "entry whose name is that output column"
+                f"{missing_str}. Output column names are derived from source column names via "
+                "snake_case conversion (e.g. 'OrderNo' → 'order_no'). Each naturalKey component "
+                "must correspond to a fields: entry whose target property emits that output "
+                "column, or a technicalFields: entry whose name matches that output column name "
+                "exactly"
             ),
             rule_id="DD-108-business-identity",
             resource_uri=identity.entity_uri,

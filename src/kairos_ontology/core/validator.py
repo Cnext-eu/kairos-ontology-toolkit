@@ -2,26 +2,30 @@
 # Copyright 2026 Cnext.eu
 """Ontology validation module - syntax, SHACL, consistency, GDPR PII scanning."""
 
+import json
 import logging
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+from pyshacl import validate as shacl_validate
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
-
-# SKOS namespace (rdflib does not ship a built-in SKOS namespace constant).
-SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
-from pyshacl import validate as shacl_validate
-import json
 
 # Canonical PII keyword list lives in ._samples (single source of truth, also
 # used by the sample-exposure masking policy); re-exported for compatibility.
 from ._samples import PII_KEYWORDS, _normalize
+from .archetype_loader import ArchetypeError
 from .catalog_utils import _declared_ontology_iri
+from .compiler.kernel import (
+    _binding_domain,
+    _binding_source_ref,
+    _binding_target_class,
+    _source_relations,
+)
 from .hub_utils import is_domain_ontology_stem
 from .master_ontology import list_active_master_imports
-from .archetype_loader import ArchetypeError
 from .pattern_loader import PatternError, load_pattern
 from .reference_modules import (
     ModuleDiagnostic,
@@ -29,17 +33,9 @@ from .reference_modules import (
     build_managed_import_plan,
     build_reference_module_context,
 )
-# Lightweight, best-effort binding/source-relation readers (issue #325). These are the
-# same tolerant helpers `resolve_scope()` uses to build a compile scope (kernel.py
-# ~line 564-650) and that hub_inspection.py/design_landscape.py already reach into at
-# module scope for advisory reporting — reused here rather than re-parsing binding YAML
-# or source vocabulary TTL a second, subtly different way.
-from .compiler.kernel import (
-    _binding_domain,
-    _binding_source_ref,
-    _binding_target_class,
-    _source_relations,
-)
+
+# SKOS namespace (rdflib does not ship a built-in SKOS namespace constant).
+SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
 
 logger = logging.getLogger(__name__)
 

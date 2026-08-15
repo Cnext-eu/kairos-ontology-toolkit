@@ -47,7 +47,7 @@ def _make_minimal_hub(root: Path, company_domain: str = COMPANY) -> Path:
     # catalog-v001.xml
     catalog_path = hub / "catalog-v001.xml"
     catalog_path.write_text(
-        f"""\
+        """\
 <?xml version="1.0" encoding="UTF-8"?>
 <catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
 

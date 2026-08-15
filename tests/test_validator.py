@@ -2088,7 +2088,6 @@ def test_validate_managed_imports_with_modes_served_skips_mode_specific(tmp_path
     imports whose mode is not served."""
     from kairos_ontology.core.reference_modules import (
         build_reference_module_context,
-        load_accelerator_module_config,
     )
     from kairos_ontology.core.validator import validate_managed_imports
 
@@ -2152,7 +2151,7 @@ groups:
     ontologies_dir.mkdir()
     ontology_file = ontologies_dir / "orders.ttl"
     ontology_file.write_text(
-        f"""\
+        """\
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 <https://example.org/hub/orders> a owl:Ontology ;
@@ -2185,7 +2184,6 @@ groups:
 
 def test_run_validation_modes_served_filters_mode_specific(tmp_path):
     """run_validation with modes_served skips mode-specific managed imports."""
-    from kairos_ontology.core.reference_modules import build_reference_module_context
 
     ref_models = tmp_path / "reference-models"
     blueprint = ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint"
@@ -2239,7 +2237,7 @@ groups:
     ontologies_dir = tmp_path / "ontologies"
     ontologies_dir.mkdir()
     (ontologies_dir / "orders.ttl").write_text(
-        f"""\
+        """\
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 <https://example.org/hub/orders> a owl:Ontology ;

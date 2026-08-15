@@ -485,7 +485,6 @@ class TestDomainCoverageAcceleratorDataDomainsMissing:
     def test_stderr_notice_when_ref_models_missing(self, hub, monkeypatch):
         """Configure accelerator in pyproject.toml but don't install ref-models;
         expect the stderr notice (#467)."""
-        import tomllib
 
         # Write pyproject.toml with accelerator config.
         (hub / "pyproject.toml").write_text(
