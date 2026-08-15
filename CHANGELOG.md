@@ -376,6 +376,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (no new diagnostics) and is also rendered in the text output as
     `grain: {column} via {mechanism} → {output}`.
 
+  - **Partial-match sentinels in scaffold-binding** (#450). `scaffold-binding` now emits
+    `<CONFIRM_PROPERTY:…>` sentinel entries for orphan columns (no property match and no
+    technical field) even in partial-match relations — previously sentinels were only emitted
+    when zero properties matched. The sentinel entries are merged into the `fields:` list
+    before YAML serialization (not appended as raw text), keeping the binding structurally
+    valid and making orphans visible at `compile --check` time as `safety.property-unresolved`
+    until a human or `propose-alignment` maps them.
+
   ## [5.2.2] — 2026-08-14
 
 ### Added

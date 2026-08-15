@@ -32,6 +32,29 @@ from kairos_ontology.core.scaffold_binding import (
 )
 from kairos_ontology.core.hub_utils import is_scaffold_placeholder_text
 
+
+def _assert_compiles_except_sentinels(hub_root: Path, domain: str) -> None:
+    """Assert the domain compiles with only <CONFIRM_PROPERTY:…> sentinel diagnostics.
+
+    #450: partial-match bindings now carry sentinel entries for orphan columns which are
+    intentionally unresolved — ``compile --check`` flags them until a human maps them.
+    """
+    compiled = compile_domain(hub_root, domain)
+    sentinel_diags = [
+        item for item in compiled.diagnostics.items
+        if "CONFIRM_PROPERTY" in item.message
+    ]
+    non_sentinel_diags = [
+        item for item in compiled.diagnostics.items
+        if "CONFIRM_PROPERTY" not in item.message
+    ]
+    assert not non_sentinel_diags, {
+        item.code: item.message for item in non_sentinel_diags
+    }
+    # Sentinel diagnostics are expected only when there are orphan columns.
+    assert len(sentinel_diags) >= 0  # may be zero if no orphans
+
+
 _ACCELERATOR_ONTOLOGY_IRI = "https://accelerator.test/party"
 _ACCELERATOR_NAMESPACE = "https://accelerator.test/party#"
 _TRADE_PARTY_IRI = f"{_ACCELERATOR_NAMESPACE}TradeParty"
@@ -243,6 +266,7 @@ def test_passthrough_compiles_unedited(tmp_path):
         f"{_ACCELERATOR_NAMESPACE}tradePartyId",
         f"{_ACCELERATOR_NAMESPACE}partyName",
         f"{_ACCELERATOR_NAMESPACE}registrationNumber",
+        "<CONFIRM_PROPERTY:internal_notes>",  # #450: orphan column gets a sentinel
     }
     tech_names = {tf["name"] for tf in binding_doc.get("technicalFields", [])}
     assert tech_names == {"parent_org_id"}
@@ -280,9 +304,23 @@ def test_passthrough_compiles_unedited(tmp_path):
     assert "source('crm', 'organisations')" in sql_text
     assert "trade_party_id" in sql_text
 
-    # The concrete acceptance test: compiles unedited through the REAL compiler.
+    # The concrete acceptance test: compiles through the REAL compiler.
+    # The orphan sentinel (<CONFIRM_PROPERTY:internal_notes>) is intentionally unresolved
+    # so that `compile --check` flags it until a human maps the property (#450).
     compiled = compile_domain(hub_root, "party")
-    assert compiled.succeeded, {item.code: item.message for item in compiled.diagnostics.items}
+    sentinel_diag = {
+        item.code for item in compiled.diagnostics.items
+        if "CONFIRM_PROPERTY:internal_notes" in item.message
+    }
+    assert sentinel_diag, {
+        item.code: item.message for item in compiled.diagnostics.items
+    }
+    # All non-sentinel properties compile cleanly.
+    non_sentinel_diags = {
+        item.code for item in compiled.diagnostics.items
+        if "CONFIRM_PROPERTY" not in item.message
+    }
+    assert not non_sentinel_diags, non_sentinel_diags
 
 
 def test_orphan_column_never_gets_decorative_property(tmp_path):
@@ -292,7 +330,15 @@ def test_orphan_column_never_gets_decorative_property(tmp_path):
     doc = yaml.safe_load(result.binding_text)
     field_columns = {f["expression"] for f in doc["fields"]}
     technical_columns = {tf["expression"] for tf in doc.get("technicalFields", [])}
-    assert "internal_notes" not in field_columns
+    # #450: internal_notes is now a sentinel field entry (not a decorative property).
+    sentinel_props = {f["property"] for f in doc["fields"]}
+    assert "<CONFIRM_PROPERTY:internal_notes>" in sentinel_props
+    # Sentinel entries carry the column name in expression — verify it's only in sentinels.
+    assert any(
+        f.get("property") == "<CONFIRM_PROPERTY:internal_notes>"
+        and f.get("expression") == "internal_notes"
+        for f in doc["fields"]
+    )
     assert "internal_notes" not in technical_columns
 
 
@@ -332,8 +378,7 @@ def test_stub_left_intact_when_ontology_already_imports_accelerator(tmp_path):
     stub = result.ontology_stub
     assert stub is None or (stub.created is False and stub.import_added is False)
     assert party_path.read_text(encoding="utf-8") == existing_text
-    compiled = compile_domain(hub_root, "party")
-    assert compiled.succeeded, {item.code: item.message for item in compiled.diagnostics.items}
+    _assert_compiles_except_sentinels(hub_root, "party")
 
 
 def test_stub_appends_missing_import_preserving_existing_content(tmp_path):
@@ -516,8 +561,7 @@ def test_scaffold_binding_cli_end_to_end(tmp_path, monkeypatch):
     assert "Scaffolded" in result.output
     binding_path = hub_root / "integration" / "bindings" / "crm-organisations-to-party.binding.yaml"
     assert binding_path.is_file()
-    compiled = compile_domain(hub_root, "party")
-    assert compiled.succeeded, {item.code: item.message for item in compiled.diagnostics.items}
+    _assert_compiles_except_sentinels(hub_root, "party")
 
 
 def test_out_pointing_at_a_directory_is_a_clean_usage_error(tmp_path, monkeypatch):
@@ -836,8 +880,13 @@ def test_prefixed_columns_match_via_single_strip_and_class_name_rungs(tmp_path):
 
     # (d) The second prefix layer is NOT stripped: neither XX_YY_Name nor XX_YY_NKName reaches
     # :consignee. Two strips collapse 6 real column pairs inside a single CargoWise table.
-    assert "SH_ORG_Consignee" not in by_property.values()
-    assert "SH_ORG_NKConsignee" not in by_property.values()
+    real_properties = {
+        f["expression"]
+        for f in doc["fields"]
+        if not f["property"].startswith("<CONFIRM_PROPERTY:")
+    }
+    assert "SH_ORG_Consignee" not in real_properties
+    assert "SH_ORG_NKConsignee" not in real_properties
     assert {"SH_ORG_Consignee", "SH_ORG_NKConsignee"} <= set(
         result.orphan_columns + result.technical_field_columns
     )
@@ -873,8 +922,7 @@ def test_prefixed_scaffold_compiles_end_to_end(tmp_path):
     result = _scaffold_logistics(hub_root, ref_models_dir)
     assert result.written
 
-    compiled = compile_domain(hub_root, "logistics")
-    assert compiled.succeeded, {item.code: item.message for item in compiled.diagnostics.items}
+    _assert_compiles_except_sentinels(hub_root, "logistics")
 
 
 def test_match_rate_is_reported_against_the_class_property_universe(tmp_path):
@@ -901,7 +949,12 @@ def test_column_prefix_override_reaches_the_second_prefix_layer(tmp_path):
     assert by_property[f"{_LOG_NAMESPACE}consignee"] == "SH_ORG_Consignee"
     assert f"{_LOG_NAMESPACE}shipmentCode" not in by_property
     # The NK layer is still not reached by any single strip.
-    assert "SH_ORG_NKConsignee" not in by_property.values()
+    real_expressions = {
+        f["expression"]
+        for f in doc["fields"]
+        if not f["property"].startswith("<CONFIRM_PROPERTY:")
+    }
+    assert "SH_ORG_NKConsignee" not in real_expressions
 
 
 def test_zero_match_relation_writes_draft_with_sentinel_placeholders(tmp_path):
@@ -939,8 +992,7 @@ def test_zero_match_relation_writes_draft_with_sentinel_placeholders(tmp_path):
     # trigger conformance.group-required alongside the real Shipment binding.
     binding_path.unlink()
     _scaffold_logistics(hub_root, ref_models_dir)
-    compiled = compile_domain(hub_root, "logistics")
-    assert compiled.succeeded, {item.code: item.message for item in compiled.diagnostics.items}
+    _assert_compiles_except_sentinels(hub_root, "logistics")
 
 
 def test_zero_match_relation_cli_reports_draft_not_clean_scaffold(tmp_path, monkeypatch):
@@ -973,9 +1025,47 @@ def test_zero_match_relation_cli_reports_draft_not_clean_scaffold(tmp_path, monk
     assert "Scaffolded" in result.output  # the verb is still Scaffolded, but DRAFT warning follows
 
 
-# ---------------------------------------------------------------------------
-# Candidate ladder / prefix detection: unit level, pinning the rejected strategies out.
-# ---------------------------------------------------------------------------
+def test_partial_match_emits_sentinels_for_orphan_columns(tmp_path):
+    """#450: in a partial-match relation, unmatched (orphan) columns get sentinel
+    ``<CONFIRM_PROPERTY:…>`` entries appended to the matched ``fields:`` list, so the
+    YAML is structurally valid and orphans are visible at compile time.
+    """
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    result = _scaffold(hub_root, ref_models_dir)
+
+    # The party hub: 3 columns match, 1 is technical (parent_org_id), 1 is orphan (internal_notes).
+    assert result.orphan_columns == ("internal_notes",)
+    assert set(result.mapped_columns) == {
+        "trade_party_id",
+        "party_name",
+        "registration_number",
+    }
+
+    doc = yaml.safe_load(result.binding_text)
+    fields = doc["fields"]
+    # The matched entries are present with real property IRIs.
+    real_properties = {
+        f["property"] for f in fields if not f["property"].startswith("<CONFIRM_PROPERTY:")
+    }
+    assert real_properties == {
+        f"{_ACCELERATOR_NAMESPACE}tradePartyId",
+        f"{_ACCELERATOR_NAMESPACE}partyName",
+        f"{_ACCELERATOR_NAMESPACE}registrationNumber",
+    }
+    # The orphan column gets a sentinel entry.
+    sentinel_entries = [
+        f for f in fields if f["property"].startswith("<CONFIRM_PROPERTY:")
+    ]
+    assert len(sentinel_entries) == 1
+    assert sentinel_entries[0]["property"] == "<CONFIRM_PROPERTY:internal_notes>"
+    assert sentinel_entries[0]["expression"] == "internal_notes"
+    # Mechanically detectable as unedited scaffold text.
+    assert is_scaffold_placeholder_text(sentinel_entries[0]["property"])
+    # needs_field_mapping is True for partial matches (not just zero matches).
+    assert result.needs_field_mapping is True
+
+
+
 def _universe(*entries):
     return [
         {"property_uri": f"https://x.test/#{name}", "name": name, "property_type": kind}

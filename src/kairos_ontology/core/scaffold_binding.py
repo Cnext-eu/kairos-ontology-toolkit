@@ -1402,13 +1402,36 @@ def run_scaffold_binding(
     field_entries = (
         seed_fields if seed_fields is not None else _build_field_entries(columns, matches)
     )
-    # An empty `fields:` violates the schema (`required`, `minItems: 1`), so it is never written:
-    # the key is omitted entirely and the run is failed into a `.draft` artifact below (#336).
+    comment_hooks: dict[str, list[str]] = {}
+    # #444/#450: Emit <CONFIRM_PROPERTY:…> sentinel entries for columns with no property match.
+    # In a zero-match relation, ALL columns get sentinels. In a partial-match relation, only
+    # the orphan columns (no property match and no technical field) get sentinels, appended to
+    # the already-matched ``fields:`` list so the YAML is structurally valid and the orphans are
+    # visible at compile time as ``binding.unknown-property`` until mapped.
+    sentinel_columns: list[SourceColumn] = []
+    needs_field_mapping = False
+    if seed_fields is None:
+        if not field_entries:
+            sentinel_columns = list(columns)
+            needs_field_mapping = True
+        elif orphan_columns:
+            orphan_set = frozenset(orphan_columns)
+            sentinel_columns = [c for c in columns if c.name in orphan_set]
+            needs_field_mapping = True
+    if sentinel_columns:
+        field_entries = list(field_entries) + _build_sentinel_field_entries(
+            tuple(sentinel_columns)
+        )
+        comment_hooks.setdefault("fields", []).extend([
+            "# Sentinels: replace each <CONFIRM_PROPERTY:…> below with a real property IRI"
+            " (or remove the entry if the column is genuinely unused), then re-run"
+            " `compile --check`.",
+            "# Run `kairos-ontology propose-alignment` for LLM-assisted mapping.",
+        ])
     if field_entries:
         doc["fields"] = field_entries
     if technical_entries:
         doc["technicalFields"] = technical_entries
-    comment_hooks: dict[str, list[str]] = {}
     if archetype.scaffold_relationship_example:
         doc["relationships"] = [
             {
@@ -1548,29 +1571,6 @@ def run_scaffold_binding(
     for note in notes:
         header_lines.append(f"# NOTE: {note}")
     binding_text = "\n".join(header_lines) + "\n" + rendered
-    needs_field_mapping = False
-    if not field_entries:
-        # #444: When zero datatype properties match, emit a draft binding with sentinel
-        # placeholders per source column instead of refusing.  Each ``fields:`` entry carries
-        # a ``<CONFIRM_PROPERTY:<column>>`` sentinel that is mechanically detectable via
-        # ``core.hub_utils.is_scaffold_placeholder_text``.  The binding is schema-valid
-        # (``fields:`` is non-empty) but ``compile --check`` will flag every property as
-        # ``binding.unknown-property`` until a human or ``propose-alignment`` replaces them.
-        sentinel_entries = _build_sentinel_field_entries(columns)
-        sentinel_block = yaml.safe_dump(
-            {"fields": sentinel_entries},
-            sort_keys=False,
-            default_flow_style=False,
-            allow_unicode=True,
-            width=100,
-        )
-        binding_text += "\n# fields: DRAFT -- zero columns matched a datatype property.\n"
-        binding_text += f"# {len(columns)} of {len(columns)} columns need manual property mapping.\n"
-        binding_text += "# Run `kairos-ontology propose-alignment` for LLM-assisted mapping,\n"
-        binding_text += "# or replace each <CONFIRM_PROPERTY:...> sentinel below with a real\n"
-        binding_text += "# property IRI, then re-run `compile --check`.\n"
-        binding_text += sentinel_block
-        needs_field_mapping = True
 
     default_out = hub_root / "integration" / "bindings" / f"{doc['metadata']['name']}.binding.yaml"
     resolved_out = Path(out_path) if out_path is not None else default_out
@@ -1585,10 +1585,13 @@ def run_scaffold_binding(
         resolved_out.write_text(binding_text, encoding="utf-8")
         written = True
     if needs_field_mapping:
+        unmapped_count = len(sentinel_columns)
+        total_count = len(columns)
         notes.append(
-            "Draft binding written with sentinel placeholders -- 0 columns matched a "
-            "datatype property. Replace each <CONFIRM_PROPERTY:...> sentinel with a real "
-            "property IRI, or run `kairos-ontology propose-alignment` for LLM-assisted mapping."
+            f"Draft binding written with {unmapped_count} sentinel placeholder(s)"
+            f" ({unmapped_count} of {total_count} columns need manual property mapping)."
+            " Replace each <CONFIRM_PROPERTY:...> sentinel with a real property IRI,"
+            " or run `kairos-ontology propose-alignment` for LLM-assisted mapping."
         )
 
     dbt_model_path: Path | None = None
