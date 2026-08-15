@@ -120,17 +120,59 @@ class TestReadCsvTable:
         assert len(result["sample_rows"]) == 3
 
     def test_max_rows_limits_reading(self, tmp_path):
+        """A capped read knows the window size but NOT the table cardinality (#422)."""
         csv_file = tmp_path / "huge.csv"
         lines = ["id,val\n"] + [f"{i},item{i}\n" for i in range(500)]
         csv_file.write_text("".join(lines), encoding="utf-8")
         result = read_csv_table(csv_file, max_rows=10)
+        assert result["rows_sampled"] == 10
+        assert result["row_count"] is None
+
+    def test_exactly_max_rows_is_a_full_read(self, tmp_path):
+        """Natural loop exhaustion at exactly max_rows rows = full read, true count (#422)."""
+        csv_file = tmp_path / "exact.csv"
+        lines = ["id,val\n"] + [f"{i},item{i}\n" for i in range(10)]
+        csv_file.write_text("".join(lines), encoding="utf-8")
+        result = read_csv_table(csv_file, max_rows=10)
         assert result["row_count"] == 10
+        assert result["rows_sampled"] == 10
+
+    def test_full_read_reports_true_count_and_window(self, tmp_path):
+        csv_file = tmp_path / "small.csv"
+        csv_file.write_text("id\n1\n2\n3\n", encoding="utf-8")
+        result = read_csv_table(csv_file, max_rows=10)
+        assert result["row_count"] == 3
+        assert result["rows_sampled"] == 3
 
     def test_no_headers_raises(self, tmp_path):
         csv_file = tmp_path / "empty.csv"
         csv_file.write_text("", encoding="utf-8")
         with pytest.raises(ValueError, match="No headers"):
             read_csv_table(csv_file)
+
+
+class TestReadXlsxProfilingEvidence:
+    """#422: per-sheet cap-hit detection mirrors the CSV reader."""
+
+    def test_capped_and_full_sheet(self, tmp_path):
+        openpyxl = pytest.importorskip("openpyxl")
+        from kairos_ontology.core.import_flatfile import read_xlsx_tables
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["id"])
+        for i in range(20):
+            ws.append([i])
+        path = tmp_path / "book.xlsx"
+        wb.save(path)
+
+        capped = read_xlsx_tables(path, max_rows=5)[0]
+        assert capped["row_count"] is None
+        assert capped["rows_sampled"] == 5
+
+        full = read_xlsx_tables(path, max_rows=100)[0]
+        assert full["row_count"] == 20
+        assert full["rows_sampled"] == 20
 
 
 # --------------------------------------------------------------------------- #
@@ -156,7 +198,7 @@ class TestWriteSourceDir:
 
         manifest = yaml.safe_load((output / "_manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["system"] == "erp"
-        assert manifest["version"] == "1.1"
+        assert manifest["version"] == "1.2"
         assert manifest["tables"] == ["orders"]
 
     def test_writes_table_yaml_without_samples(self, tmp_path):
@@ -321,6 +363,61 @@ class TestWriteSourceDir:
         write_source_dir(tables, "erp", output_dir)
 
         assert not stale.exists()
+
+
+class TestProfilingEvidenceYaml:
+    """#422 / DD-156: row_count = true table cardinality, OMITTED when unknown;
+    rows_sampled = profiling-window size, always written for flatfile tables."""
+
+    def test_capped_import_omits_row_count_and_writes_rows_sampled(self, tmp_path):
+        import yaml
+
+        csv_file = tmp_path / "input" / "big.csv"
+        csv_file.parent.mkdir()
+        lines = ["id\n"] + [f"{i}\n" for i in range(50)]
+        csv_file.write_text("".join(lines), encoding="utf-8")
+
+        output_dir = tmp_path / "out" / "big"
+        run_import_flatfile(csv_file, output_dir=output_dir, max_rows=10)
+
+        table_data = yaml.safe_load((output_dir / "big.yaml").read_text(encoding="utf-8"))
+        assert "row_count" not in table_data
+        assert table_data["rows_sampled"] == 10
+
+    def test_full_read_writes_both_fields_equal(self, tmp_path):
+        import yaml
+
+        csv_file = tmp_path / "input" / "small.csv"
+        csv_file.parent.mkdir()
+        csv_file.write_text("id\n1\n2\n3\n", encoding="utf-8")
+
+        output_dir = tmp_path / "out" / "small"
+        run_import_flatfile(csv_file, output_dir=output_dir)
+
+        table_data = yaml.safe_load((output_dir / "small.yaml").read_text(encoding="utf-8"))
+        assert table_data["row_count"] == 3
+        assert table_data["rows_sampled"] == 3
+
+    def test_write_source_dir_never_invents_a_zero_row_count(self, tmp_path):
+        """The old `.get("row_count", 0)` default asserted a false cardinality."""
+        import yaml
+
+        tables = [
+            {
+                "name": "capped",
+                "row_count": None,
+                "rows_sampled": 1000,
+                "columns": [
+                    {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+                ],
+                "sample_rows": [{"id": "1"}],
+            }
+        ]
+        output = write_source_dir(tables, "erp", tmp_path / "erp")
+
+        table_data = yaml.safe_load((output / "capped.yaml").read_text(encoding="utf-8"))
+        assert "row_count" not in table_data
+        assert table_data["rows_sampled"] == 1000
 
 
 # --------------------------------------------------------------------------- #
@@ -788,7 +885,8 @@ class TestReadParquetTable:
         assert by_name["email"]["nullable"] is True
 
     def test_max_rows_caps_sampling(self, tmp_path):
-        """Only sample data is read — never the whole file."""
+        """Only sample data is read — never the whole file — but the true row
+        count comes for free from the Parquet footer metadata (#422)."""
         pq_file = tmp_path / "huge.parquet"
         _write_parquet(
             pq_file,
@@ -798,7 +896,8 @@ class TestReadParquetTable:
         )
 
         table = read_parquet_table(pq_file, max_rows=100)
-        assert table["row_count"] == 100
+        assert table["rows_sampled"] == 100
+        assert table["row_count"] == 5000
 
     def test_sample_rows_limited(self, tmp_path):
         pq_file = tmp_path / "big.parquet"

@@ -17,7 +17,7 @@
 <https://kairos.cnext.eu/bronze>
     a owl:Ontology ;
     rdfs:label "Kairos Bronze Layer Vocabulary" ;
-    owl:versionInfo "1.1.0" ;
+    owl:versionInfo "1.1.1" ;
     rdfs:comment "Schema vocabulary for describing source system tables and columns in the bronze layer." .
 
 # ---------------------------------------------------------------------------
@@ -109,6 +109,18 @@ kairos-bronze:rowCount a owl:DatatypeProperty ;
     rdfs:comment "The true total row count of the source relation." ;
     rdfs:domain kairos-bronze:SourceTable ;
     rdfs:range xsd:integer .
+
+kairos-bronze:rowsSampled a owl:DatatypeProperty ;
+    rdfs:label "rows sampled" ;
+    rdfs:comment "Number of rows read into the profiling window that produced sample/distinct evidence. Absent when profiling ran over the full table (warehouse extraction)." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:integer .
+
+kairos-bronze:distinctScope a owl:DatatypeProperty ;
+    rdfs:label "distinct scope" ;
+    rdfs:comment "Scope of the distinct-count evidence: 'table' (counted over the full relation) or 'sample' (counted within a profiling window). Absent on legacy vocabularies — treat as unknown, never as 'table'." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:string .
 
 # ---------------------------------------------------------------------------
 # Source Column properties

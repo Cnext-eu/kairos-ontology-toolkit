@@ -309,6 +309,243 @@ class TestGenerateVocabularyTtl:
 
 
 # --------------------------------------------------------------------------- #
+# Profiling Evidence Tests (#422 / DD-156)
+# --------------------------------------------------------------------------- #
+
+from kairos_ontology.core.import_source import (  # noqa: E402
+    normalize_profiling_evidence,
+    _distinct_scope,
+)
+
+NS = Namespace("https://kairos.cnext.eu/source/testapp#")
+
+
+def _evidence_data(**table_fields):
+    data = {
+        "version": "1.2",
+        "system": "testapp",
+        "platform": "flatfile",
+        "tables": [
+            {
+                "name": "orders",
+                "columns": [{"name": "id", "data_type": "int", "nullable": False}],
+                **table_fields,
+            }
+        ],
+    }
+    return data
+
+
+class TestDistinctScope:
+    def test_table_when_no_window_recorded(self):
+        assert _distinct_scope(100, None) == "table"
+
+    def test_table_when_window_covers_table(self):
+        assert _distinct_scope(100, 100) == "table"
+
+    def test_sample_when_window_smaller(self):
+        assert _distinct_scope(5000, 100) == "sample"
+
+    def test_sample_when_cardinality_unknown(self):
+        assert _distinct_scope(None, 100) == "sample"
+
+    def test_omitted_when_no_evidence_at_all(self):
+        """H2: never assert 'table' with zero evidence."""
+        assert _distinct_scope(None, None) is None
+
+
+class TestProfilingEvidenceEmission:
+    """All three predicates, on both generation paths."""
+
+    def _graph_whole(self, data):
+        g = Graph()
+        g.parse(data=generate_vocabulary_ttl(data), format="turtle")
+        return g
+
+    def _graph_per_table(self, data):
+        g = Graph()
+        g.parse(data=generate_vocabulary_per_table(data)["orders"], format="turtle")
+        return g
+
+    def test_full_evidence_both_paths(self):
+        data = _evidence_data(row_count=250, rows_sampled=250)
+        for g in (self._graph_whole(data), self._graph_per_table(data)):
+            assert int(g.value(NS["orders"], KAIROS_BRONZE.rowCount)) == 250
+            assert int(g.value(NS["orders"], KAIROS_BRONZE.rowsSampled)) == 250
+            assert str(g.value(NS["orders"], KAIROS_BRONZE.distinctScope)) == "table"
+
+    def test_capped_window_both_paths(self):
+        data = _evidence_data(rows_sampled=1000)
+        for g in (self._graph_whole(data), self._graph_per_table(data)):
+            assert g.value(NS["orders"], KAIROS_BRONZE.rowCount) is None
+            assert int(g.value(NS["orders"], KAIROS_BRONZE.rowsSampled)) == 1000
+            assert str(g.value(NS["orders"], KAIROS_BRONZE.distinctScope)) == "sample"
+
+    def test_no_evidence_emits_no_scope_both_paths(self):
+        data = _evidence_data()
+        for g in (self._graph_whole(data), self._graph_per_table(data)):
+            assert g.value(NS["orders"], KAIROS_BRONZE.rowCount) is None
+            assert g.value(NS["orders"], KAIROS_BRONZE.rowsSampled) is None
+            assert g.value(NS["orders"], KAIROS_BRONZE.distinctScope) is None
+
+
+class TestNormalizeProfilingEvidence:
+    """Legacy (v1.0/1.1) row_count is reinterpreted by platform allowlist (H3)."""
+
+    def _legacy(self, platform, version="1.1"):
+        data = _evidence_data(row_count=1000)
+        data["version"] = version
+        if platform is None:
+            data.pop("platform")
+        else:
+            data["platform"] = platform
+        return data
+
+    def test_legacy_flatfile_row_count_becomes_rows_sampled(self):
+        data = normalize_profiling_evidence(self._legacy("flatfile"))
+        tbl = data["tables"][0]
+        assert "row_count" not in tbl
+        assert tbl["rows_sampled"] == 1000
+
+    def test_legacy_unknown_and_missing_platform_are_untrusted(self):
+        for platform in ("unknown", None):
+            tbl = normalize_profiling_evidence(self._legacy(platform))["tables"][0]
+            assert "row_count" not in tbl
+            assert tbl["rows_sampled"] == 1000
+
+    def test_legacy_warehouse_platform_keeps_row_count(self):
+        for platform in ("fabric-warehouse", "fabric-lakehouse", "databricks"):
+            tbl = normalize_profiling_evidence(self._legacy(platform))["tables"][0]
+            assert tbl["row_count"] == 1000
+            assert tbl.get("rows_sampled") is None
+
+    def test_v12_data_is_untouched(self):
+        data = _evidence_data(row_count=1000)
+        tbl = normalize_profiling_evidence(data)["tables"][0]
+        assert tbl["row_count"] == 1000
+
+    def test_legacy_without_row_count_stays_bare(self):
+        """dbt-macro v1.0 shape: platform present, no profiling fields → no scope."""
+        data = self._legacy("flatfile")
+        del data["tables"][0]["row_count"]
+        data = normalize_profiling_evidence(data)
+        tbl = data["tables"][0]
+        assert "row_count" not in tbl and "rows_sampled" not in tbl
+        g = Graph()
+        g.parse(data=generate_vocabulary_ttl(data), format="turtle")
+        assert g.value(NS["orders"], KAIROS_BRONZE.distinctScope) is None
+
+
+class TestRunImportSourceLegacyNormalization:
+    """End-to-end: a legacy v1.1 flatfile YAML emits rowsSampled + scope 'sample',
+    never a rowCount claiming true cardinality it does not have."""
+
+    def test_legacy_flatfile_yaml_end_to_end(self, tmp_path):
+        import yaml
+
+        data = _evidence_data(row_count=1000)
+        data["version"] = "1.1"
+        yaml_path = tmp_path / "legacy.yaml"
+        yaml_path.write_text(yaml.dump(data), encoding="utf-8")
+
+        output_dir = tmp_path / "out"
+        result_path, _ = run_import_source(yaml_path, output_dir=output_dir, enrich=False)
+
+        g = Graph()
+        g.parse(result_path, format="turtle")
+        assert g.value(NS["orders"], KAIROS_BRONZE.rowCount) is None
+        assert int(g.value(NS["orders"], KAIROS_BRONZE.rowsSampled)) == 1000
+        assert str(g.value(NS["orders"], KAIROS_BRONZE.distinctScope)) == "sample"
+
+    def test_legacy_warehouse_yaml_end_to_end(self, tmp_path):
+        import yaml
+
+        data = _evidence_data(row_count=1000)
+        data["version"] = "1.1"
+        data["platform"] = "fabric-warehouse"
+        yaml_path = tmp_path / "legacy.yaml"
+        yaml_path.write_text(yaml.dump(data), encoding="utf-8")
+
+        output_dir = tmp_path / "out"
+        result_path, _ = run_import_source(yaml_path, output_dir=output_dir, enrich=False)
+
+        g = Graph()
+        g.parse(result_path, format="turtle")
+        assert int(g.value(NS["orders"], KAIROS_BRONZE.rowCount)) == 1000
+        assert g.value(NS["orders"], KAIROS_BRONZE.rowsSampled) is None
+        assert str(g.value(NS["orders"], KAIROS_BRONZE.distinctScope)) == "table"
+
+
+class TestMergeReplacesProfilingEvidence:
+    """H1: re-running import-source over an existing monolithic TTL must replace
+    the stale legacy rowCount/scope in place, not keep it forever."""
+
+    def _existing_with_legacy_row_count(self, tmp_path):
+        ttl = """\
+@prefix testapp: <https://kairos.cnext.eu/source/testapp#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+testapp:testapp a kairos-bronze:SourceSystem ;
+    rdfs:label "testapp" .
+
+testapp:orders a kairos-bronze:SourceTable ;
+    rdfs:label "orders" ;
+    kairos-bronze:sourceSystem testapp:testapp ;
+    kairos-bronze:tableName "orders" ;
+    kairos-bronze:rowCount "1000"^^xsd:integer ;
+    kairos-bronze:distinctScope "table" .
+
+testapp:orders_id a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable testapp:orders ;
+    kairos-bronze:columnName "id" ;
+    kairos-bronze:dataType "int" ;
+    kairos-bronze:nullable "false"^^xsd:boolean .
+"""
+        path = tmp_path / "testapp.vocabulary.ttl"
+        path.write_text(ttl, encoding="utf-8")
+        return path
+
+    def test_stale_row_count_and_scope_replaced(self, tmp_path):
+        existing = self._existing_with_legacy_row_count(tmp_path)
+        # Fresh capped flatfile evidence: cardinality unknown, window of 1000.
+        data = _evidence_data(rows_sampled=1000)
+
+        ttl, _ = merge_with_existing(data, existing)
+
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        assert g.value(NS["orders"], KAIROS_BRONZE.rowCount) is None
+        assert int(g.value(NS["orders"], KAIROS_BRONZE.rowsSampled)) == 1000
+        assert str(g.value(NS["orders"], KAIROS_BRONZE.distinctScope)) == "sample"
+
+    def test_fresh_true_count_replaces_stale_window_count(self, tmp_path):
+        existing = self._existing_with_legacy_row_count(tmp_path)
+        data = _evidence_data(row_count=5000, rows_sampled=1000)
+
+        ttl, _ = merge_with_existing(data, existing)
+
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        assert int(g.value(NS["orders"], KAIROS_BRONZE.rowCount)) == 5000
+        assert str(g.value(NS["orders"], KAIROS_BRONZE.distinctScope)) == "sample"
+
+    def test_tables_absent_from_new_data_keep_their_evidence(self, tmp_path):
+        """Only introspected tables are managed — a deprecated table's evidence
+        is preserved like its other non-managed triples."""
+        existing = self._existing_with_legacy_row_count(tmp_path)
+        data = _evidence_data(rows_sampled=10)
+        data["tables"][0]["name"] = "other_table"
+
+        ttl, _ = merge_with_existing(data, existing)
+
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        assert int(g.value(NS["orders"], KAIROS_BRONZE.rowCount)) == 1000
+
+
+# --------------------------------------------------------------------------- #
 # Merge Tests
 # --------------------------------------------------------------------------- #
 

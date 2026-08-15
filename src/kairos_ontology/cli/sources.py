@@ -1086,9 +1086,11 @@ def audit_column_coverage_cmd(sources, bindings, fail_on):
         click.echo(f"⚠️  {len(report.orphan_columns)} unmapped column(s) with real data:")
         for finding in report.orphan_columns:
             bindings_note = ", ".join(finding.binding_names)
+            # row_count may be absent (#422: capped flatfile reads omit it).
+            row_total = "?" if finding.row_count is None else finding.row_count
             click.echo(
                 f"   {finding.table}.{finding.column} "
-                f"(distinct={finding.distinct_count}/{finding.row_count}, "
+                f"(distinct={finding.distinct_count}/{row_total}, "
                 f"type={finding.data_type}) sample={finding.sample_value!r} "
                 f"[bound by: {bindings_note}]"
             )

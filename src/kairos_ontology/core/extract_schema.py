@@ -108,7 +108,10 @@ class ExtractionManifest:
     extracted_at: str
     tables: list[str] = field(default_factory=list)
     sample_size: int = DEFAULT_SAMPLE_SIZE
-    version: str = "1.1"
+    # v1.2 (#422): row_count is true table cardinality. Warehouse extraction
+    # already profiles with full-table COUNT(*)/COUNT(DISTINCT), so no
+    # rows_sampled field is written here — samples are display-only evidence.
+    version: str = "1.2"
 
 
 # --------------------------------------------------------------------------- #

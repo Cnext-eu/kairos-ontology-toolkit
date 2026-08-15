@@ -38,6 +38,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records — the same pathology as #405 — and would have listed already-processed documents as needing work.
 
 ### Changed
+- **`row_count` now means true table cardinality — one meaning per profiling field** (#422, DD-156).
+  It previously meant full-table `COUNT(*)` on the warehouse path but capped-read *window size* on the
+  flatfile path, so consumers thresholding on it treated 1,000-row windows as population truth. Schema YAML
+  v1.2 splits the evidence: `row_count`/`kairos-bronze:rowCount` = true cardinality only, **omitted when
+  unknown** (capped CSV/XLSX reads; the old `0` default is gone); new `rows_sampled`/`kairos-bronze:rowsSampled`
+  = profiling-window size; new `kairos-bronze:distinctScope` (`table`/`sample`, omitted when there is no
+  evidence either way) says whether distinct/sample evidence covers the full relation. Parquet now reports the
+  true count for free from file metadata (also fixing a latent multi-row-group undercount). Legacy v1.0/1.1
+  YAML is normalized on import by platform allowlist: only warehouse-emitted platforms keep `row_count`;
+  flatfile/unknown/missing reinterpret it as `rows_sampled`. Enum suggestions now require exhaustive evidence,
+  and cardinality-based FK matching is knowingly disabled on capped flatfiles (both advisory-only — the old
+  behavior fabricated them from windows). **Migration is regeneration**: re-run `import-flatfile` +
+  `import-source`; the three predicates are merge-managed, so a refreshed import updates them in place in
+  existing vocabulary TTLs. Note: `suggest-shapes` does not yet read `distinctScope` — #424 stays live until
+  its follow-up PR lands (no worse than today).
 - **`kairos-bronze.ttl` now declares every predicate `import-source` emits** (chore; groundwork for #422/#424).
   The importer emitted ten `kairos-bronze:` predicates that the scaffold vocabulary never declared —
   `rowCount`, `distinctCount`, `sampleValues`, `formatHint`, `suggestedEnum`, `enumValues`,
