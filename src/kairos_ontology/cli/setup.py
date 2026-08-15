@@ -526,6 +526,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
         )
 
         inventories_written = 0
+        inventories_unchanged = 0
         for ttl_file in iter_reference_inventory_sources(refmodels_dest):
             try:
                 inv = generate_inventory(
@@ -540,14 +541,26 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
                     / "referencemodels-unpacked"
                     / inventory_filename(ttl_file, ref_models_dir=refmodels_dest)
                 )
-                write_inventory(inv, yaml_path)
-                inventories_written += 1
-            except Exception:
+                if write_inventory(inv, yaml_path):
+                    inventories_written += 1
+                else:
+                    inventories_unchanged += 1
+            except Exception as exc:
+                # Coverage-reducing, never init-aborting — but say which file, so a
+                # per-file error is not silently swallowed (issue #419 hardening).
+                print(f"  ⚠  Skipped inventory for {ttl_file.stem}: {type(exc).__name__}: {exc}")
                 continue
         if inventories_written:
             print(
                 f"  ✓ Generated {inventories_written} reference-model inventory file(s) "
                 "in ontology-hub/referencemodels-unpacked/"
+            )
+        elif inventories_unchanged:
+            # Content-addressed writes (DD-154): the idempotent rerun path. This
+            # line must not contain the word "Generated" (pinned by test_init.py).
+            print(
+                f"  ✓ {inventories_unchanged} reference-model inventory file(s) "
+                "already up to date in ontology-hub/referencemodels-unpacked/"
             )
 
     if hub_already_existed:

@@ -150,6 +150,83 @@ class TestWriteAndLoadInventory:
         assert "registrationNumber" in prop_names
 
 
+class TestContentAddressedWrites:
+    """DD-154 (#419): write_inventory skips content-identical rewrites so idempotent
+    reruns (init --domain, generate-inventory) produce zero diff churn — only a
+    change to something other than ``generated_at`` triggers a write."""
+
+    def _inventory(self, tmp_path):
+        ref_file = tmp_path / "party.ttl"
+        if not ref_file.exists():
+            ref_file.write_text(SAMPLE_REF_MODEL_TTL, encoding="utf-8")
+        return generate_inventory(ref_file)
+
+    def test_first_write_returns_true(self, tmp_path):
+        inv = self._inventory(tmp_path)
+        out_path = tmp_path / "inv.yaml"
+
+        assert write_inventory(inv, out_path) is True
+        assert out_path.exists()
+
+    def test_identical_rewrite_skips_and_preserves_bytes_and_mtime(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KAIROS_GENERATED_AT", "2026-08-01T00:00:00Z")
+        inv = self._inventory(tmp_path)
+        out_path = tmp_path / "inv.yaml"
+        assert write_inventory(inv, out_path) is True
+        before_bytes = out_path.read_bytes()
+        before_mtime = out_path.stat().st_mtime_ns
+
+        # A later run stamps a different generated_at — the only churn of #419.
+        monkeypatch.setenv("KAIROS_GENERATED_AT", "2026-08-15T12:34:56Z")
+        inv2 = self._inventory(tmp_path)
+        assert inv2["generated_at"] != inv["generated_at"]
+
+        assert write_inventory(inv2, out_path) is False
+        assert out_path.read_bytes() == before_bytes
+        assert out_path.stat().st_mtime_ns == before_mtime
+
+    def test_content_change_writes_even_with_same_generated_at(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KAIROS_GENERATED_AT", "2026-08-01T00:00:00Z")
+        inv = self._inventory(tmp_path)
+        out_path = tmp_path / "inv.yaml"
+        assert write_inventory(inv, out_path) is True
+
+        changed = dict(inv)
+        changed["domain_name"] = "PartyRenamed"
+        assert changed["generated_at"] == inv["generated_at"]
+
+        assert write_inventory(changed, out_path) is True
+        assert "PartyRenamed" in out_path.read_text(encoding="utf-8")
+
+    def test_corrupt_existing_file_is_rewritten_without_raising(self, tmp_path):
+        inv = self._inventory(tmp_path)
+        out_path = tmp_path / "inv.yaml"
+        out_path.write_bytes(b"\xff\xfegarbage not yaml \x00\x9c")
+
+        assert write_inventory(inv, out_path) is True
+        loaded = load_inventory(out_path)
+        assert loaded["domain_name"] == "Party"
+
+    def test_crlf_and_lf_checkouts_both_compare_equal(self, tmp_path, monkeypatch):
+        """A CRLF checkout (Windows core.autocrlf) and an LF checkout must both
+        compare equal to the freshly-dumped envelope — the compare is
+        newline-normalised, so neither causes perpetual rewrites."""
+        monkeypatch.setenv("KAIROS_GENERATED_AT", "2026-08-01T00:00:00Z")
+        inv = self._inventory(tmp_path)
+        out_path = tmp_path / "inv.yaml"
+        assert write_inventory(inv, out_path) is True
+
+        # read_text normalises to \n regardless of what the platform wrote.
+        text = out_path.read_text(encoding="utf-8")
+        for newline_variant in ("\n", "\r\n"):
+            checkout_bytes = text.replace("\n", newline_variant).encode("utf-8")
+            out_path.write_bytes(checkout_bytes)
+
+            assert write_inventory(inv, out_path) is False
+            # Skipped: the bytes are left exactly as the checkout produced them.
+            assert out_path.read_bytes() == checkout_bytes
+
+
 class TestInventoryFilename:
     """DD-054: reference-model inventories are namespaced by owning model."""
 

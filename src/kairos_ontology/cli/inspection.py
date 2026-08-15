@@ -855,6 +855,8 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
 
     click.echo("📦 Generating materialized inventories")
     written: list[Path] = []
+    writes = 0
+    unchanged = 0
     failed: list[CommandOutcomeDecline] = []
     skipped: list[CommandOutcomeDecline] = []
     targets: list[CommandOutcomeTarget] = []
@@ -907,7 +909,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
             produced_by[fname] = ttl_file
             yaml_path = out_path / fname
             try:
-                write_inventory(inv, yaml_path)
+                wrote = write_inventory(inv, yaml_path)
             except OSError as e:
                 detail = f"{type(e).__name__}: {e}"
                 # Advisory, not `❌` — same ownership rationale as the parse-failure
@@ -919,11 +921,18 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
                 ref_failed += 1
                 del produced_by[fname]
                 continue
+            # An unchanged file still counts as produced (DD-153/DD-154) — the
+            # artifact exists and is current; only the write was elided.
             written.append(yaml_path)
             ref_produced += 1
             n_classes = len(inv["classes"])
-            n_specs = sum(len(c.get("specializations", [])) for c in inv["classes"])
-            click.echo(f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations")
+            if wrote:
+                writes += 1
+                n_specs = sum(len(c.get("specializations", [])) for c in inv["classes"])
+                click.echo(f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations")
+            else:
+                unchanged += 1
+                click.echo(f"   ⏭ {stem}: up to date ({n_classes} classes)")
 
         targets.append(
             CommandOutcomeTarget(
@@ -986,7 +995,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
             stem = ttl_file.stem
             yaml_path = out_path / inventory_filename(ttl_file)
             try:
-                write_inventory(inv, yaml_path)
+                wrote = write_inventory(inv, yaml_path)
             except OSError as e:
                 detail = f"{type(e).__name__}: {e}"
                 # Advisory, not `❌` — same ownership rationale as the reference-model
@@ -997,9 +1006,15 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
                 failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
                 ont_failed += 1
                 continue
+            # Unchanged still counts as produced (DD-153/DD-154).
             written.append(yaml_path)
             ont_produced += 1
-            click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
+            if wrote:
+                writes += 1
+                click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
+            else:
+                unchanged += 1
+                click.echo(f"   ⏭ {stem}: up to date ({len(inv['classes'])} classes)")
 
         targets.append(
             CommandOutcomeTarget(
@@ -1048,7 +1063,12 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
         skipped=tuple(skipped),
         targets=tuple(targets),
     )
-    summary = f"{len(written)} generated, {len(failed)} failed, {len(skipped)} skipped"
+    # "generated" counts actual writes only (DD-154) — an idempotent rerun says
+    # "0 generated, N unchanged", not "N generated".
+    summary = (
+        f"{writes} generated, {unchanged} unchanged, "
+        f"{len(failed)} failed, {len(skipped)} skipped"
+    )
     if outcome.is_blocking:
         # DD-153 invariant: a ❌ line is printed iff the exit code is non-zero.
         click.echo(f"\n❌ {summary} in {out_path}", err=True)

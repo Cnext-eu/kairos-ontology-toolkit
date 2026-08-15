@@ -109,6 +109,46 @@ class TestGenerateInventoryCLI:
         customer = next(c for c in inv["classes"] if c["name"] == "Customer")
         assert "specializations" not in customer
 
+    def test_second_run_reports_unchanged_not_generated(self, tmp_path):
+        """Issue #419 / DD-154: a rerun over unchanged sources writes nothing —
+        "generated" counts actual writes, unchanged files are reported separately,
+        and the on-disk inventory is byte-identical across runs."""
+        ref_dir = tmp_path / "model" / "reference-models"
+        ref_dir.mkdir(parents=True)
+        ttl = ref_dir / "party.ttl"
+        ttl.write_text(SAMPLE_REF_TTL, encoding="utf-8")
+        out_dir = tmp_path / "model" / "inventory"
+        args = [
+            "generate-inventory",
+            "--ref-models-dir",
+            str(ref_dir),
+            "--output-dir",
+            str(out_dir),
+        ]
+        runner = CliRunner()
+
+        first = runner.invoke(cli, args)
+        assert first.exit_code == 0, first.output
+        assert "1 generated, 0 unchanged" in first.output
+        yaml_file = out_dir / "party-inventory.yaml"
+        first_bytes = yaml_file.read_bytes()
+
+        second = runner.invoke(cli, args)
+        assert second.exit_code == 0, second.output
+        assert "0 generated, 1 unchanged" in second.output
+        assert "⏭ party: up to date" in second.output
+        assert yaml_file.read_bytes() == first_bytes
+
+        # A real content change regenerates.
+        ttl.write_text(
+            SAMPLE_REF_TTL + '\nref-party:Person a owl:Class ; rdfs:label "Person" .\n',
+            encoding="utf-8",
+        )
+        third = runner.invoke(cli, args)
+        assert third.exit_code == 0, third.output
+        assert "1 generated, 0 unchanged" in third.output
+        assert yaml_file.read_bytes() != first_bytes
+
     def test_no_dirs_fails(self, tmp_path):
         runner = CliRunner()
         result = runner.invoke(

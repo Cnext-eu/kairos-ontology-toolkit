@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial coverage is honest coverage.
 
 ### Fixed
+- **Inventory writes are content-addressed — `init --domain` no longer rewrites all 79 reference-model
+  inventories on every run** (#419, DD-154). The envelope is a pure function of the source TTLs except
+  `generated_at`, so every registration produced a 78-file diff in which only the timestamp changed — and the
+  documented 3-glob `guard-scope --check-since` footprint hard-failed on every registration. `write_inventory`
+  now compares the new YAML text against the existing file (newline-normalised, ignoring the `generated_at:`
+  line) and skips the write when nothing else changed; any compare failure falls through to a plain write.
+  Unchanged files still count as produced (DD-153) — `generate-inventory` reports them as
+  `N generated, M unchanged, …` where "generated" counts actual writes, and an idempotent rerun of `init` or
+  `generate-inventory` produces a zero-file diff. `generated_at` in a committed inventory now means "when the
+  content last changed". **Release note:** run `generate-inventory` once after upgrading, before the next
+  domain registration, so the expected one-time full rewrite (toolkit version bump + the #414 `generated_from`
+  migration) lands outside a registration diff.
 - **`source-privacy` reported an unqualified all-clear that named no patterns** (#415). It printed
   `✅ Source sample artifacts are privacy-safe for supported patterns.` — DD-075 always recorded that detection
   is bounded, but the bound lived in the design doc rather than the output, so a reader could not tell which
