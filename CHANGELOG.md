@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0] — 2026-08-15
+
 ### Added
 - **`kairos-ontology register-concept`** — hub-side registration of source-discovered concepts
   (#505 Layer B, DD-162). Of the three mechanisms #505 reported as blocking a domain from being
