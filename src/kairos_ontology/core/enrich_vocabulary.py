@@ -98,6 +98,14 @@ def detect_enums(
 
     Heuristic: distinct_count <= threshold AND row_count >= min_rows
     AND distinct_count / row_count < ratio.
+
+    ``row_count`` must be true table cardinality, not a sample size — the ratio
+    below is only meaningful against the real denominator. import-flatfile's
+    CSV/XLSX readers leave the table's ``row_count`` unset for exactly this
+    reason (they only ever measure the rows read for inference, capped at
+    ``--max-rows``); ``not row_count`` here means both "genuinely no rows" and
+    "cardinality unknown" are treated the same way — skip rather than guess.
+    Absent a real count, an absent suggestion is better than a wrong one (#422).
     """
     if not row_count or row_count < min_rows:
         return []
@@ -260,7 +268,9 @@ def enrich_source_schema(
 
     Mutates `data` in-place by adding enrichment fields to columns and tables:
     - Column-level: `suggested_enum`, `enum_values`, `format_hint`, `suggested_fk`
-    - Table-level: (row_count already present from extraction)
+    - Table-level: (row_count, if a true count is known, already present from
+      extraction; import-flatfile's CSV/XLSX path leaves it unset, and
+      detect_enums treats that the same as "no rows" — see its docstring)
 
     Args:
         data: Parsed source-schema dict (v1.1 expected but safe for v1.0).

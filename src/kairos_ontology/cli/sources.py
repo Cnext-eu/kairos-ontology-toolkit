@@ -352,18 +352,15 @@ def _echo_privacy_coverage(report) -> None:
     """Report a clean privacy result *and what it covered* (#415).
 
     The old message — "privacy-safe for supported patterns" — read as an unqualified
-    all-clear while naming no patterns, so a reader could not tell that coordinate columns
-    are not among them. A latitude/longitude pair left beside a redacted address in the
-    same row re-identifies it by reverse-geocoding, and the command reported success. The
-    kinds come from the detectors themselves so this can never overstate coverage.
+    all-clear while naming no patterns, so a reader could not tell what was actually
+    checked. #423 closed the coordinate gap this message used to call out explicitly
+    (a latitude/longitude pair left beside a redacted address re-identifies it by
+    reverse-geocoding): ``location`` is now one of the detected kinds below. The kinds
+    come from the detectors themselves so this can never overstate coverage.
     """
     kinds = ", ".join(report.checked_kinds)
     click.echo(f"✅ No unredacted PII found in {report.files_scanned} artifact(s).")
     click.echo(f"   Patterns checked: {kinds}.")
-    click.echo(
-        "   Not checked: geographic coordinates — a latitude/longitude pair can "
-        "re-identify a redacted address in the same row (#423)."
-    )
 
 
 @click.command(name="source-privacy")
@@ -1087,7 +1084,10 @@ def audit_column_coverage_cmd(sources, bindings, fail_on):
             bindings_note = ", ".join(finding.binding_names)
             click.echo(
                 f"   {finding.table}.{finding.column} "
-                f"(distinct={finding.distinct_count}/{finding.row_count}, "
+                # row_count is None when the source was imported from a flat file, where
+                # only a capped sample is read and true cardinality is unknown (#422).
+                # Render that as "?" rather than letting f-string print the literal "None".
+                f"(distinct={finding.distinct_count}/{finding.row_count or '?'}, "
                 f"type={finding.data_type}) sample={finding.sample_value!r} "
                 f"[bound by: {bindings_note}]"
             )

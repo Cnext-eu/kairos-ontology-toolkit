@@ -92,7 +92,10 @@ _REDACTION_TOKEN_RE = re.compile(
 )
 
 SAMPLE_PRIVACY_POLICY = "redact-detected-pii"
-SAMPLE_PRIVACY_VERSION = "1"
+#: Bumped for the #423 location detector: artifacts stamped "1" were sanitised
+#: under a policy that did not check coordinate columns, so a "1" stamp must not
+#: be read as having had that coverage.
+SAMPLE_PRIVACY_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -280,11 +283,23 @@ _NAMED_KINDS: tuple[tuple[str, str], ...] = (
     ("marital_status", "demographic"),
 )
 
+# Geo column-name vocabulary for the location detector (#423). Whole-token matched via
+# `_name_tokens` (already camelCase/snake_case aware), never substring matched, so this
+# never fires on `translation`, `longName`, `relation`, `plate` or `latency`. Deliberately
+# NOT folded into `_NAMED_KINDS`/`_kind_from_name`: see `_kind_from_geo` below for why.
+_LAT_NAME_TOKENS = {"latitude", "lat"}
+_LON_NAME_TOKENS = {"longitude", "lon", "lng"}
+_GEO_NAME_TOKENS = _LAT_NAME_TOKENS | _LON_NAME_TOKENS | {"coordinate", "geo"}
+_LOCATION_KIND = "location"
+
 #: Redaction kinds this module can actually detect, for coverage reporting. Derived from
 #: `_NAMED_KINDS` plus the value-shape detectors in `_kind_from_text`, the person-token
-#: kinds, and the `pii-column` fallback. Notably absent: geographic coordinates — see #423.
+#: kinds, the `pii-column` fallback, and the `_LOCATION_KIND` geo detector (#423) — the
+#: same constant `_kind_from_geo` returns, so this list cannot drift from what it detects.
 DETECTED_PII_KINDS: tuple[str, ...] = tuple(
-    sorted({kind for _, kind in _NAMED_KINDS} | {"identifier", "name", "pii-column"})
+    sorted(
+        {kind for _, kind in _NAMED_KINDS} | {"identifier", "name", "pii-column", _LOCATION_KIND}
+    )
 )
 
 
@@ -354,6 +369,48 @@ def _kind_from_nested(value: Any) -> str | None:
     return _kind_from_text(value)
 
 
+def _kind_from_geo(column_name: str | None, value: Any) -> str | None:
+    """Location detector for coordinate columns beside a redacted address (#423).
+
+    CONTAINMENT: deliberately NOT part of ``_kind_from_name`` and therefore
+    unreachable from ``is_pii_column`` — which ``propose_alignment`` and
+    ``suggest_shapes`` consume for alignment/shape suggestion. Geo keywords in
+    ``_kind_from_name`` would mask ordinary geographic columns there, exactly the
+    side effect this must avoid. This helper must only be called from the
+    persistence-path functions below (``detect_sample_pii_kind``,
+    ``redact_sample_value``, ``find_unredacted_sample_pii``).
+
+    Name-gated primarily: a whole-token match against a small geo vocabulary.
+    ``_name_tokens`` already splits on separators and camelCase boundaries, so
+    this matches ``CoordinateLatitude`` (tokens ``coordinate``, ``latitude``) but
+    never fires on ``translation``, ``longName``, ``relation``, ``plate`` or
+    ``latency`` (each a single token that is not itself a geo token).
+
+    Range plausibility (lat in [-90, 90], lon in [-180, 180]) is a *secondary*
+    filter only, applied after the name gate — never the trigger by itself. That
+    keeps the #302 fixtures (``3.14159265358979``, ``0.123456789``, both valid
+    latitudes) green in non-geo columns such as ``amount`` or ``ratio``.
+    """
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return None
+    tokens = _name_tokens(column_name)
+    if not tokens & _GEO_NAME_TOKENS:
+        return None
+    text = str(value).strip()
+    if not text or is_redaction_token(text):
+        return None
+    match = _NUMERIC_LITERAL_RE.fullmatch(text)
+    if not match or not match.group("fraction"):
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    is_lat_only = bool(tokens & _LAT_NAME_TOKENS) and not (tokens & _LON_NAME_TOKENS)
+    bound = 90.0 if is_lat_only else 180.0
+    return _LOCATION_KIND if -bound <= number <= bound else None
+
+
 def detect_sample_pii_kind(
     column_name: str | None,
     value: Any,
@@ -368,7 +425,11 @@ def detect_sample_pii_kind(
     be threaded through by every caller that has table context; omitting it
     reverts to the column-name-only classification.
     """
-    return _kind_from_name(column_name, context_name=context_name) or _kind_from_nested(value)
+    return (
+        _kind_from_name(column_name, context_name=context_name)
+        or _kind_from_geo(column_name, value)
+        or _kind_from_nested(value)
+    )
 
 
 def redact_sample_value(
@@ -385,7 +446,11 @@ def redact_sample_value(
     """
     if value is None or is_redaction_token(value):
         return value, None
-    kind = _kind_from_name(column, context_name=table) or _kind_from_nested(value)
+    kind = (
+        _kind_from_name(column, context_name=table)
+        or _kind_from_geo(column, value)
+        or _kind_from_nested(value)
+    )
     if not kind:
         return value, None
     finding = SamplePrivacyFinding(table=table, column=column, kind=kind)
@@ -437,7 +502,11 @@ def find_unredacted_sample_pii(
         for column, value in row.items():
             if is_redaction_token(value):
                 continue
-            kind = _kind_from_name(str(column), context_name=table) or _kind_from_nested(value)
+            kind = (
+                _kind_from_name(str(column), context_name=table)
+                or _kind_from_geo(str(column), value)
+                or _kind_from_nested(value)
+            )
             if kind:
                 findings.append(SamplePrivacyFinding(table=table, column=str(column), kind=kind))
     return findings

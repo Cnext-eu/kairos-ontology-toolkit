@@ -54,6 +54,24 @@ class TestEnumDetection:
         result = detect_enums("small_table", columns, row_count=50)
         assert len(result) == 0
 
+    def test_unknown_row_count_skipped(self):
+        """#422: import-flatfile's CSV/XLSX path leaves row_count unset when it
+        only knows a capped sample size, not true cardinality. detect_enums must
+        treat that missing value the same as "too few rows" — skip rather than
+        compute a ratio against a wrong denominator — even though the column
+        below (5 distinct values) would otherwise read as an obvious enum.
+        """
+        columns = [
+            {
+                "name": "status",
+                "data_type": "varchar(20)",
+                "distinct_count": 5,
+                "samples": ["active", "inactive", "pending", "closed", "draft"],
+            },
+        ]
+        result = detect_enums("orders", columns, row_count=None)
+        assert len(result) == 0
+
     def test_single_distinct_skipped(self):
         columns = [
             {"name": "constant", "data_type": "int", "distinct_count": 1, "samples": ["0"]},
@@ -359,3 +377,30 @@ class TestEnrichSourceSchema:
         data = {"version": "1.1", "system": "x", "tables": []}
         result = enrich_source_schema(data)
         assert result is data
+
+    def test_no_enum_suggestion_when_row_count_missing(self):
+        """#422: a table parsed from a CSV/XLSX-imported YAML has no row_count key
+        at all (only rows_sampled). Even an obvious low-cardinality column must
+        not be suggested as an enum without a true cardinality to test it against.
+        """
+        data = {
+            "version": "1.1",
+            "system": "flatfile_import",
+            "tables": [
+                {
+                    "name": "orders",
+                    "rows_sampled": 1000,
+                    "columns": [
+                        {
+                            "name": "status",
+                            "data_type": "varchar(20)",
+                            "distinct_count": 4,
+                            "samples": ["open", "closed", "pending", "cancelled"],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = enrich_source_schema(data)
+        status_col = result["tables"][0]["columns"][0]
+        assert "suggested_enum" not in status_col

@@ -4,6 +4,7 @@
 
 import pytest
 
+from kairos_ontology.core._samples import SAMPLE_PRIVACY_VERSION
 from kairos_ontology.core.import_flatfile import (
     infer_column_type,
     list_flatfile_candidates,
@@ -87,7 +88,11 @@ class TestReadCsvTable:
         result = read_csv_table(csv_file)
 
         assert result["name"] == "customers"
-        assert result["row_count"] == 3
+        # CSV never reports true cardinality (#422): only rows_sampled, the
+        # rows actually read for inference. row_count is left unset even when,
+        # as here, every row in the file happened to be read.
+        assert result["rows_sampled"] == 3
+        assert "row_count" not in result
         assert len(result["columns"]) == 4
 
         # Check column types
@@ -120,17 +125,68 @@ class TestReadCsvTable:
         assert len(result["sample_rows"]) == 3
 
     def test_max_rows_limits_reading(self, tmp_path):
+        """The 500-row file is capped at 10 rows read. Pre-#422 this was
+        (wrongly) exposed as ``row_count`` — a sample size masquerading as the
+        table's true cardinality. Now it is only ``rows_sampled``, and
+        ``row_count`` (true cardinality) is correctly left unset: a CSV read
+        that stopped early has no way to know how many rows remain.
+        """
         csv_file = tmp_path / "huge.csv"
         lines = ["id,val\n"] + [f"{i},item{i}\n" for i in range(500)]
         csv_file.write_text("".join(lines), encoding="utf-8")
         result = read_csv_table(csv_file, max_rows=10)
-        assert result["row_count"] == 10
+        assert result["rows_sampled"] == 10
+        assert "row_count" not in result
 
     def test_no_headers_raises(self, tmp_path):
         csv_file = tmp_path / "empty.csv"
         csv_file.write_text("", encoding="utf-8")
         with pytest.raises(ValueError, match="No headers"):
             read_csv_table(csv_file)
+
+
+# --------------------------------------------------------------------------- #
+# Excel Reading Tests
+# --------------------------------------------------------------------------- #
+
+openpyxl = pytest.importorskip("openpyxl")
+
+
+class TestReadXlsxTables:
+    def test_basic_xlsx_reports_rows_sampled_not_row_count(self, tmp_path):
+        """XLSX gets the same treatment as CSV (#422): rows_sampled only, never
+        row_count — a workbook read for inference has no true cardinality."""
+        from kairos_ontology.core.import_flatfile import read_xlsx_tables
+
+        xlsx_file = tmp_path / "customers.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["id", "name"])
+        ws.append([1, "Alice"])
+        ws.append([2, "Bob"])
+        wb.save(xlsx_file)
+
+        tables = read_xlsx_tables(xlsx_file)
+
+        assert len(tables) == 1
+        assert tables[0]["rows_sampled"] == 2
+        assert "row_count" not in tables[0]
+
+    def test_xlsx_max_rows_caps_rows_sampled(self, tmp_path):
+        from kairos_ontology.core.import_flatfile import read_xlsx_tables
+
+        xlsx_file = tmp_path / "big.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["id"])
+        for i in range(50):
+            ws.append([i])
+        wb.save(xlsx_file)
+
+        tables = read_xlsx_tables(xlsx_file, max_rows=10)
+
+        assert tables[0]["rows_sampled"] == 10
+        assert "row_count" not in tables[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -183,6 +239,67 @@ class TestWriteSourceDir:
         table_data = yaml.safe_load((output / "orders.yaml").read_text(encoding="utf-8"))
         # Table YAML should NOT have inline samples (they go to .samples.yaml)
         assert "samples" not in table_data["columns"][0]
+
+    def test_writes_rows_sampled_without_row_count(self, tmp_path):
+        """CSV/XLSX table dicts carry rows_sampled but no row_count key (#422);
+        the writer must not backfill row_count with a default of 0 — that would
+        resurrect the exact sample-size-as-cardinality confusion being fixed."""
+        tables = [
+            {
+                "name": "orders",
+                "rows_sampled": 5,
+                "columns": [
+                    {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+                ],
+                "sample_rows": [{"id": "1"}],
+            }
+        ]
+        output = write_source_dir(tables, "test", tmp_path / "test")
+
+        import yaml
+
+        table_data = yaml.safe_load((output / "orders.yaml").read_text(encoding="utf-8"))
+        assert table_data["rows_sampled"] == 5
+        assert "row_count" not in table_data
+
+    def test_writes_both_row_count_and_rows_sampled_when_both_present(self, tmp_path):
+        """The Parquet reader supplies both; the writer must persist both."""
+        tables = [
+            {
+                "name": "orders",
+                "row_count": 50000,
+                "rows_sampled": 1000,
+                "columns": [
+                    {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+                ],
+                "sample_rows": [{"id": "1"}],
+            }
+        ]
+        output = write_source_dir(tables, "test", tmp_path / "test")
+
+        import yaml
+
+        table_data = yaml.safe_load((output / "orders.yaml").read_text(encoding="utf-8"))
+        assert table_data["row_count"] == 50000
+        assert table_data["rows_sampled"] == 1000
+
+    def test_omits_both_when_neither_present(self, tmp_path):
+        tables = [
+            {
+                "name": "orders",
+                "columns": [
+                    {"name": "id", "data_type": "int", "ordinal_position": 1, "nullable": False}
+                ],
+                "sample_rows": [{"id": "1"}],
+            }
+        ]
+        output = write_source_dir(tables, "test", tmp_path / "test")
+
+        import yaml
+
+        table_data = yaml.safe_load((output / "orders.yaml").read_text(encoding="utf-8"))
+        assert "row_count" not in table_data
+        assert "rows_sampled" not in table_data
 
     def test_writes_samples_yaml(self, tmp_path):
         tables = [
@@ -240,7 +357,7 @@ class TestWriteSourceDir:
         assert samples["sample_privacy"]["policy"] == "redact-detected-pii"
 
         manifest = yaml.safe_load((output / "_manifest.yaml").read_text(encoding="utf-8"))
-        assert manifest["sample_privacy"]["version"] == "1"
+        assert manifest["sample_privacy"]["version"] == SAMPLE_PRIVACY_VERSION
 
     def test_persists_timestamps_and_numbers_but_redacts_text_pii(self, tmp_path):
         """End-to-end through the function the importers call (#302).
@@ -374,7 +491,7 @@ class TestNoneValuesInCsv:
             encoding="utf-8",
         )
         result = read_csv_table(csv_file)
-        assert result["row_count"] == 3
+        assert result["rows_sampled"] == 3
         col_map = {c["name"]: c for c in result["columns"]}
         assert col_map["name"]["nullable"] is True  # row 2 has empty name
 
@@ -387,7 +504,7 @@ class TestNoneValuesInCsv:
             encoding="utf-8",
         )
         result = read_csv_table(csv_file)
-        assert result["row_count"] == 2
+        assert result["rows_sampled"] == 2
         assert len(result["columns"]) == 2
 
 
@@ -402,7 +519,7 @@ class TestLargeFieldLimit:
             encoding="utf-8",
         )
         result = read_csv_table(csv_file)
-        assert result["row_count"] == 1
+        assert result["rows_sampled"] == 1
         col_map = {c["name"]: c for c in result["columns"]}
         assert col_map["payload"]["data_type"] == "varchar(max)"
 
@@ -696,6 +813,11 @@ class TestFlatfileToImportSourcePipeline:
         # Should have the accounts table
         assert "accounts" in ttl.lower() or "Accounts" in ttl
 
+        # #422: CSV never has a true row count, so kairos-bronze:rowCount must
+        # never appear in the emitted TTL for this table — not even as the
+        # (wrong) sample size that used to be persisted here.
+        assert "rowCount" not in ttl
+
 
 # --------------------------------------------------------------------------- #
 # Parquet Reading Tests
@@ -761,7 +883,11 @@ class TestReadParquetTable:
         table = read_parquet_table(pq_file)
 
         assert table["name"] == "customers"
+        # Parquet gets true cardinality for free from footer metadata (#422),
+        # in addition to rows_sampled (the rows actually read for inference).
+        # Here the whole file fits under the default max_rows, so both agree.
         assert table["row_count"] == 3
+        assert table["rows_sampled"] == 3
         by_name = {c["name"]: c for c in table["columns"]}
         assert by_name["id"]["data_type"] == "bigint"
         assert by_name["name"]["data_type"] == "varchar(max)"
@@ -788,7 +914,14 @@ class TestReadParquetTable:
         assert by_name["email"]["nullable"] is True
 
     def test_max_rows_caps_sampling(self, tmp_path):
-        """Only sample data is read — never the whole file."""
+        """Only sample data is read — never the whole file.
+
+        row_count still reports the true 5000-row cardinality (read for free
+        from Parquet footer metadata, no data scan needed), while rows_sampled
+        reflects the 100-row cap actually applied to the data read for
+        inference/samples (#422). Before this fix, row_count itself was
+        wrongly pinned at the capped value.
+        """
         pq_file = tmp_path / "huge.parquet"
         _write_parquet(
             pq_file,
@@ -798,7 +931,8 @@ class TestReadParquetTable:
         )
 
         table = read_parquet_table(pq_file, max_rows=100)
-        assert table["row_count"] == 100
+        assert table["row_count"] == 5000
+        assert table["rows_sampled"] == 100
 
     def test_sample_rows_limited(self, tmp_path):
         pq_file = tmp_path / "big.parquet"
@@ -846,6 +980,18 @@ class TestReadParquetTable:
         with pytest.raises(ImportError, match=r"\[parquet\]"):
             read_parquet_table(pq_file)
 
+    def test_empty_parquet_file_reports_zero_true_row_count(self, tmp_path):
+        """The empty-batch branch also uses footer metadata for row_count (#422),
+        not just the "at least one batch" path exercised by the other tests."""
+        pq_file = tmp_path / "empty.parquet"
+        _write_parquet(pq_file, {"id": pa.array([], type=pa.int64())})
+
+        table = read_parquet_table(pq_file)
+
+        assert table["row_count"] == 0
+        assert table["rows_sampled"] == 0
+        assert table["sample_rows"] == []
+
 
 class TestRunImportFlatfileParquet:
     def test_single_parquet(self, tmp_path):
@@ -885,6 +1031,43 @@ class TestRunImportFlatfileParquet:
 
         manifest = yaml.safe_load((result / "_manifest.yaml").read_text(encoding="utf-8"))
         assert sorted(manifest["tables"]) == ["items", "orders"]
+
+    def test_true_row_count_survives_to_bronze_ttl(self, tmp_path):
+        """#422: Parquet's free true row count (from footer metadata, capped at
+        max_rows=2 rows sampled here vs. 5 true rows) must reach the emitted TTL
+        as kairos-bronze:rowCount with the TRUE value, not the sampled one."""
+        from kairos_ontology.core.import_source import (
+            parse_source_schema_dir,
+            generate_vocabulary_ttl,
+        )
+
+        pq_file = tmp_path / "input" / "orders.parquet"
+        pq_file.parent.mkdir()
+        _write_parquet(pq_file, {"id": pa.array(list(range(5)), type=pa.int64())})
+
+        source_dir = tmp_path / "sources" / "wms"
+        run_import_flatfile(
+            pq_file, system_name="wms", output_dir=source_dir, max_rows=2, return_count=False
+        )
+
+        table_yaml = source_dir / "orders.yaml"
+        import yaml
+
+        table_data = yaml.safe_load(table_yaml.read_text(encoding="utf-8"))
+        assert table_data["row_count"] == 5
+        assert table_data["rows_sampled"] == 2
+
+        data = parse_source_schema_dir(source_dir)
+        ttl = generate_vocabulary_ttl(data)
+
+        from rdflib import Graph, Namespace
+
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        kairos_bronze = Namespace("https://kairos.cnext.eu/bronze#")
+        row_counts = list(g.objects(predicate=kairos_bronze.rowCount))
+        assert len(row_counts) == 1
+        assert int(row_counts[0]) == 5
 
 
 # --------------------------------------------------------------------------- #
@@ -1035,6 +1218,7 @@ class TestTimezoneAwareTimestamps:
         table = read_parquet_table(pq_file)
 
         assert table["row_count"] == 2
+        assert table["rows_sampled"] == 2
 
     def test_mixed_null_and_non_null_named_zone_column(self, tmp_path):
         import datetime as dt

@@ -135,10 +135,13 @@ def test_cli_blocks_then_fixes_without_echoing_values(tmp_path):
     assert "No unredacted PII found" in fix.output
     assert "person@example.com" not in fix.output
     # A clean result must state its coverage rather than imply universal discovery (#415):
-    # the patterns actually checked, and the coordinate gap that is not among them (#423).
+    # the patterns actually checked. #423 closed the coordinate gap this message used to
+    # call out explicitly, so "location" is now one of the checked patterns instead, and
+    # the old "Not checked: geographic coordinates" line is gone.
     assert "Patterns checked:" in fix.output
     assert "email" in fix.output
-    assert "Not checked: geographic coordinates" in fix.output
+    assert "location" in fix.output
+    assert "Not checked: geographic coordinates" not in fix.output
 
 
 def test_orphaned_table_yaml_is_checked_and_fixed(tmp_path):
@@ -195,6 +198,89 @@ def test_fix_rolls_back_all_files_when_publication_fails(tmp_path, monkeypatch):
 
     assert samples_path.read_text(encoding="utf-8") == original_samples
     assert ttl_path.read_text(encoding="utf-8") == original_ttl
+
+
+def _build_geo_source_dir(tmp_path: Path) -> Path:
+    """A samples artifact with a redacted-address column beside a coordinate pair.
+
+    Mirrors the reported #423 scenario: three address components correctly
+    redacted while ``CoordinateLatitude``/``CoordinateLongitude`` persisted
+    unredacted (~0.1 m precision) in the same row.
+    """
+    source_dir = tmp_path / "integration" / "sources" / "logistics"
+    source_dir.mkdir(parents=True)
+    (source_dir / "_manifest.yaml").write_text(
+        yaml.safe_dump(
+            {"version": "1.1", "system": "logistics", "tables": ["premises"]},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (source_dir / "premises.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "premises",
+                "columns": [
+                    {"name": "StreetAddress", "data_type": "nvarchar(200)"},
+                    {"name": "CoordinateLatitude", "data_type": "decimal(9,6)"},
+                    {"name": "CoordinateLongitude", "data_type": "decimal(9,6)"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (source_dir / "premises.samples.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "table": "premises",
+                "rows": [
+                    {
+                        "StreetAddress": "Kerkstraat 12, 9000 Gent",
+                        "CoordinateLatitude": "51.219448",
+                        "CoordinateLongitude": "3.224739",
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return source_dir
+
+
+def test_coordinate_pair_beside_redacted_address_is_found_and_fixed(tmp_path):
+    source_dir = _build_geo_source_dir(tmp_path)
+
+    report = run_source_privacy(source_dir)
+    kinds = {finding.kind for _, finding in report.findings}
+    assert kinds == {"address", "location"}
+
+    fixed = run_source_privacy(source_dir, fix=True)
+    assert len(fixed.changed_files) == 1
+
+    # The trap that aborts persistence: a residual gate re-run must find nothing left,
+    # proving the redactor's opaque token and the gate's detector agree (#423).
+    rerun = run_source_privacy(source_dir)
+    assert rerun.passed
+
+    samples_raw = (source_dir / "premises.samples.yaml").read_text(encoding="utf-8")
+    assert "Kerkstraat" not in samples_raw
+    assert "51.219448" not in samples_raw
+    assert "3.224739" not in samples_raw
+    samples = yaml.safe_load(samples_raw)
+    row = samples["rows"][0]
+    assert row["CoordinateLatitude"] == (
+        "<redacted kind=location source=premises.CoordinateLatitude datatype=decimal(9,6)>"
+    )
+    assert row["CoordinateLongitude"] == (
+        "<redacted kind=location source=premises.CoordinateLongitude datatype=decimal(9,6)>"
+    )
+
+    # Running the fix again is a no-op: nothing left to rewrite.
+    idempotent = run_source_privacy(source_dir, fix=True)
+    assert idempotent.changed_files == []
+    assert idempotent.passed
 
 
 def test_generic_name_column_not_flagged_on_non_person_table(tmp_path):

@@ -2299,6 +2299,38 @@ the same fields.
    - **Row count**: `kairos-bronze:rowCount` on SourceTable
    - All annotations are *suggestions* — design-source skill uses them interactively
 
+### Amendment (2026-08-14): `row_count` means cardinality, never sample size (#422)
+
+`row_count` meant two different things depending on which import path wrote it, and no consumer could tell
+them apart. `extract-schema` set it from a real `SELECT COUNT(*)`; `import-flatfile` set it to the rows read
+for type inference, capped at `--max-rows` (default 1000), so every larger table persisted exactly
+`row_count: 1000`.
+
+That is not a display problem. The enum rule quoted above — `distinct_count ≤ 25 && row_count ≥ 100 &&
+ratio < 0.1` — divides by this field. A cap of 1000 **inflates** the ratio, so enum suggestions were
+**suppressed on exactly the large tables where a governed code list matters most**: a column with 80 distinct
+values in a 2 M-row table has a true ratio of 0.00004 but reads 0.08 against the cap, and at 120 distinct
+values it fell out of the threshold entirely and was silently dropped. `audit-silver-samples` and
+`audit-column-coverage` read the same field.
+
+**Decision.** `row_count` keeps one meaning — **true table cardinality** — and is simply **absent** when
+unknown. A new `rows_sampled` carries what the flatfile path actually measured. A missing value is honest; a
+wrong one silently corrupts inference.
+
+- **CSV / XLSX** emit `rows_sampled` only, unconditionally — the field's presence must not depend on whether
+  a file happened to be smaller than the cap.
+- **Parquet** emits **both**: a true `row_count` from `ParquetFile.metadata.num_rows`, which the footer
+  carries at no I/O cost, plus `rows_sampled`.
+- **`kairos-bronze:rowCount` is emitted only for true cardinality.** Both emission sites already guarded on
+  `is not None`, so leaving the key unset was sufficient — no RDF change was required.
+- **`rows_sampled` stays YAML-only, with no RDF predicate.** It describes how the import was performed, not a
+  fact about the source table, and no RDF consumer needs it.
+- **Enum inference skips unknown cardinality** rather than computing a ratio against a sample size. The
+  existing `if not row_count` guard already treats `None` as skip; that behaviour is now intentional and
+  documented rather than incidental. FK-by-cardinality matching does the same.
+
+Readers must tolerate both shapes: source YAML already in the wild carries the old capped `row_count`.
+
 6. **Platform-generic design** — driver abstraction:
    - Fabric Warehouse/Lakehouse (pyodbc + Azure CLI/SPN token)
    - Databricks (databricks-sql-connector + PAT or Azure CLI token)
@@ -3060,6 +3092,9 @@ Add native Parquet support to `import-flatfile`:
    data** — at most `max_rows` rows via a single
    `ParquetFile.iter_batches(batch_size=max_rows)` batch — and never materialises
    the full file. `row_count` reflects the rows actually read.
+   *(Superseded 2026-08-14 by the #422 amendment below: the sampled count is now
+   `rows_sampled`, and Parquet additionally reports a true `row_count` taken from
+   the footer metadata at no I/O cost.)*
 2. **Direct Arrow→SQL type mapping** (`_arrow_type_to_sql()`): because Parquet
    carries a reliable typed schema, column data types are mapped directly to the
    SQL-like vocabulary (`bigint`/`int`/`decimal`/`date`/`datetime`/`bit`/
@@ -4805,16 +4840,44 @@ built from the same table `_kind_from_name` iterates) rather than maintained bes
 hand-written coverage list would eventually claim detection the code does not have — which is the failure this
 amendment exists to prevent, one level up.
 
-**The detector itself is deliberately deferred** to #423, not skipped. Three separate mechanisms make the
-obvious implementations wrong, and each is recorded there: blanket-redacting decimals would regress #302
-(whose exemption is value-shape, not datatype — gating on datatype was explicitly rejected); a range-only rule
-breaks existing fixtures, since `3.14159265358979` and `0.123456789` are both valid latitudes; and precision
-reduction cannot work through `is_redaction_token`, the sole idempotence mechanism, without forcing a 2-decimal
-threshold — roughly 1.1 km, which still identifies a rural facility. A privacy gate must be binary; "coarser"
-is not "safe".
+**The detector itself was deliberately deferred** to #423 rather than rushed, because three separate
+mechanisms make the obvious implementations wrong: blanket-redacting decimals would regress #302 (whose
+exemption is value-shape, not datatype — gating on datatype was explicitly rejected); a range-only rule breaks
+existing fixtures, since `3.14159265358979` and `0.123456789` are both valid latitudes; and precision
+reduction cannot work through `is_redaction_token`, the sole idempotence mechanism, without forcing a
+2-decimal threshold — roughly 1.1 km, which still identifies a rural facility. A privacy gate must be binary;
+"coarser" is not "safe".
 
-Stating the bound is therefore the honest interim: the guarantee is unchanged, but it is no longer
-overstated at the point of use.
+### Amendment (2026-08-14, later): coordinates are now covered (#423)
+
+The detector landed, avoiding all three traps above. Recording the shape, because two of its properties are
+load-bearing and invisible from the outside:
+
+**Containment is the design, not a detail.** The geo signal lives in a helper consulted **only** from the
+three persistence-path functions (`detect_sample_pii_kind`, `redact_sample_value`,
+`find_unredacted_sample_pii`). It is deliberately **not** reachable from `_kind_from_name`, because
+`is_pii_column` calls that and feeds `propose_alignment` and `suggest_shapes` — putting geo keywords there
+would mask geographic columns during alignment and shape suggestion, which is a modelling regression, not a
+privacy win. A test asserts `is_pii_column` returns `False` for coordinate columns specifically so a future
+refactor that folds the detector into `_kind_from_name` fails loudly rather than quietly degrading mapping.
+No geo terms were added to `PII_KEYWORDS`, which remains shared *by identity* with the GDPR validator.
+
+**Name-gated, range-filtered, opaque token.** Whole-token matching over the existing camelCase/snake_case
+tokenizer (so `translation`, `longName`, `relation`, `plate`, `latency` do not fire), with the coordinate
+range as a *secondary* filter only — never the primary trigger, or the #302 fixtures break. Redaction is the
+ordinary `<redacted kind=location …>` token, so idempotence holds by construction and the redactor and the
+residual gate cannot disagree; a round-trip test proves it, because disagreement there aborts persistence
+rather than merely mis-reporting.
+
+`SAMPLE_PRIVACY_VERSION` moves to `"2"`: an artifact stamped `"1"` was sanitised under a policy that did not
+check coordinates, and must not be read as having had that coverage. `DETECTED_PII_KINDS` gains `location`
+through the same constant the detector returns, so the advertised coverage cannot drift from what the code
+does — the property this pair of amendments exists to protect.
+
+**Still deferred:** the sibling-address signal (treating coordinates as location whenever an address-class
+rule fired in the same relation). It needs the column list threaded through ~7 call sites — #266 threaded only
+the table *name* — and the redactor and gate must receive the identical sibling set or the gate aborts on what
+the redactor left alone. Name-gating covers the reported case; this remains a refinement, not a gap.
 
 ---
 

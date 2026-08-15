@@ -152,7 +152,14 @@ def read_csv_table(
             the file's path relative to ``--from`` instead of the bare filename.
 
     Returns:
-        Dict with keys: name, row_count, columns, sample_rows.
+        Dict with keys: name, rows_sampled, columns, sample_rows. There is no
+        ``row_count`` key — a CSV read only ever reads the rows it read (an
+        honest measurement, but not necessarily the table's true cardinality:
+        it is capped at ``max_rows``, so a larger file reads exactly
+        ``max_rows`` rows without knowing how many more remain). Getting the
+        true count would require a full scan, which this reader deliberately
+        never does (see the docstrings on ``read_csv_table``'s callers). See
+        issue #422.
     """
     table_name = table_stem if table_stem is not None else path.stem
 
@@ -176,7 +183,7 @@ def read_csv_table(
                 break
             all_rows.append(row)
 
-    row_count = len(all_rows)
+    rows_sampled = len(all_rows)
 
     # Build column metadata
     columns = []
@@ -187,7 +194,7 @@ def read_csv_table(
             if (row.get(col_name) or "").strip()
         ]
         distinct_values = list(dict.fromkeys(non_empty_values))
-        nullable = len(non_empty_values) < row_count
+        nullable = len(non_empty_values) < rows_sampled
 
         col_dict: dict[str, Any] = {
             "name": col_name,
@@ -206,7 +213,7 @@ def read_csv_table(
 
     return {
         "name": table_name,
-        "row_count": row_count,
+        "rows_sampled": rows_sampled,
         "columns": columns,
         "sample_rows": sample_rows,
     }
@@ -240,7 +247,8 @@ def read_xlsx_tables(
             collision-safe name from the file's path relative to ``--from``.
 
     Returns:
-        List of table data dicts (same format as read_csv_table).
+        List of table data dicts (same format as read_csv_table — ``rows_sampled``,
+        no ``row_count``; see that function's docstring for why).
     """
     try:
         from openpyxl import load_workbook
@@ -280,8 +288,8 @@ def read_xlsx_tables(
                 row_dict[col_name] = str(val) if val is not None else ""
             all_rows.append(row_dict)
 
-        row_count = len(all_rows)
-        if row_count == 0:
+        rows_sampled = len(all_rows)
+        if rows_sampled == 0:
             continue
 
         # Build column metadata
@@ -293,7 +301,7 @@ def read_xlsx_tables(
                 if (row.get(col_name) or "").strip()
             ]
             distinct_values = list(dict.fromkeys(non_empty_values))
-            nullable = len(non_empty_values) < row_count
+            nullable = len(non_empty_values) < rows_sampled
 
             col_dict: dict[str, Any] = {
                 "name": col_name,
@@ -312,7 +320,7 @@ def read_xlsx_tables(
         tables.append(
             {
                 "name": table_name,
-                "row_count": row_count,
+                "rows_sampled": rows_sampled,
                 "columns": columns,
                 "sample_rows": sample_rows,
             }
@@ -404,10 +412,19 @@ def read_parquet_table(
 ) -> dict[str, Any]:
     """Read a single Parquet file into a table data dict.
 
-    Only sample data is read — at most ``max_rows`` rows are pulled (a single
-    Arrow batch). The full Parquet body is never loaded into memory, mirroring
-    the CSV/Excel readers. Column data types come directly from the Parquet
-    schema; sample values are stringified to match the YAML output format.
+    Only sample data is read for type inference and samples — at most ``max_rows``
+    rows are pulled (a single Arrow batch), and the full Parquet body is never
+    loaded into memory, mirroring the CSV/Excel readers. Column data types come
+    directly from the Parquet schema; sample values are stringified to match the
+    YAML output format.
+
+    Unlike CSV/XLSX, Parquet carries the true row count in its footer metadata
+    (``ParquetFile.metadata.num_rows``, the sum of each row group's row count) —
+    reading it costs nothing beyond opening the file, no data scan required. So,
+    uniquely among the flatfile readers, this one returns a real ``row_count``
+    *in addition to* ``rows_sampled`` (the latter is still capped at ``max_rows``
+    and drives ``nullable``/``distinct_count``/samples, which are computed only
+    over the rows actually read). See issue #422.
 
     Args:
         path: Path to the .parquet file.
@@ -418,7 +435,7 @@ def read_parquet_table(
             the file's path relative to ``--from`` instead of the bare filename.
 
     Returns:
-        Dict with keys: name, row_count, columns, sample_rows.
+        Dict with keys: name, row_count, rows_sampled, columns, sample_rows.
     """
     try:
         import pyarrow.parquet as pq
@@ -430,6 +447,9 @@ def read_parquet_table(
 
     table_name = table_stem if table_stem is not None else path.stem
     pf = pq.ParquetFile(path)
+
+    # True table cardinality, free from the footer metadata — no data read.
+    true_row_count = pf.metadata.num_rows
 
     # Read at most max_rows rows (a single batch) — never the whole file.
     batch = None
@@ -453,12 +473,13 @@ def read_parquet_table(
         ]
         return {
             "name": table_name,
-            "row_count": 0,
+            "row_count": true_row_count,
+            "rows_sampled": 0,
             "columns": columns,
             "sample_rows": [],
         }
 
-    row_count = batch.num_rows
+    rows_sampled = batch.num_rows
 
     # Build per-row string dicts for samples (mirrors CSV/XLSX format).
     # Naive timestamp[us] columns pass straight through to_pylist(); tz-aware
@@ -475,7 +496,7 @@ def read_parquet_table(
         raw_values = column_values[col_name]
         non_empty_values = [str(v).strip() for v in raw_values if v is not None and str(v).strip()]
         distinct_values = list(dict.fromkeys(non_empty_values))
-        nullable = len(non_empty_values) < row_count
+        nullable = len(non_empty_values) < rows_sampled
 
         col_dict: dict[str, Any] = {
             "name": col_name,
@@ -491,7 +512,7 @@ def read_parquet_table(
 
     # Sample rows (raw dicts for .samples.yaml), stringified, empties dropped.
     sample_rows = []
-    for r in range(min(sample_size, row_count)):
+    for r in range(min(sample_size, rows_sampled)):
         row = {
             col_name: str(column_values[col_name][r]).strip()
             for col_name in headers
@@ -501,7 +522,8 @@ def read_parquet_table(
 
     return {
         "name": table_name,
-        "row_count": row_count,
+        "row_count": true_row_count,
+        "rows_sampled": rows_sampled,
         "columns": columns,
         "sample_rows": sample_rows,
     }
@@ -577,14 +599,22 @@ def write_source_dir(
     for table in safe_tables:
         tbl_name = table["name"]
 
-        # Schema metadata (without sample_rows — those go in .samples.yaml)
-        table_yaml = {
-            "name": tbl_name,
-            "row_count": table.get("row_count", 0),
-            "columns": [
-                {k: v for k, v in col.items() if k != "samples"} for col in table["columns"]
-            ],
-        }
+        # Schema metadata (without sample_rows — those go in .samples.yaml).
+        # row_count is true cardinality and is only written when known (Parquet,
+        # via footer metadata, or an externally-supplied value) — a missing value
+        # is honest, a sample size masquerading as it is not (#422). rows_sampled
+        # is the CSV/XLSX/Parquet reader's actual measurement: rows read for type
+        # inference, capped at --max-rows.
+        table_yaml: dict[str, Any] = {"name": tbl_name}
+        row_count = table.get("row_count")
+        if row_count is not None:
+            table_yaml["row_count"] = row_count
+        rows_sampled = table.get("rows_sampled")
+        if rows_sampled is not None:
+            table_yaml["rows_sampled"] = rows_sampled
+        table_yaml["columns"] = [
+            {k: v for k, v in col.items() if k != "samples"} for col in table["columns"]
+        ]
         with open(output_dir / f"{tbl_name}.yaml", "w", encoding="utf-8") as f:
             yaml.dump(table_yaml, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 

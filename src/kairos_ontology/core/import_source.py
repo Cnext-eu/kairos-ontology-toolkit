@@ -380,7 +380,16 @@ def generate_vocabulary_ttl(data: dict) -> str:
         if pk_cols:
             g.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_cols))))
 
-        # Row count (v1.1 enrichment)
+        # Row count (v1.1 enrichment). `row_count` means true table cardinality
+        # (a real SELECT COUNT(*) from extract-schema, or Parquet's free footer
+        # metadata count from import-flatfile) — never a capped sample size, so
+        # emitting it here whenever present is safe. import-flatfile's CSV/XLSX
+        # readers leave the key unset rather than filling it with the rows read
+        # for type inference (that value lives in `rows_sampled` instead, which
+        # is intentionally YAML-only — it describes how the import was done, not
+        # a fact about the source table, and no consumer here needs it as RDF).
+        # A missing `row_count` is honest; a sample size wearing its name is not
+        # (#422).
         row_count = tbl.get("row_count")
         if row_count is not None:
             g.add((tbl_uri, KAIROS_BRONZE.rowCount, Literal(row_count, datatype=XSD.integer)))
@@ -607,6 +616,8 @@ def _add_table_to_graph(g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef
     if pk_cols:
         g.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_cols))))
 
+    # row_count is true cardinality only; see generate_vocabulary_ttl's fuller
+    # comment on the same check (#422). rows_sampled, if present, is not emitted.
     row_count = tbl.get("row_count")
     if row_count is not None:
         g.add((tbl_uri, KAIROS_BRONZE.rowCount, Literal(row_count, datatype=XSD.integer)))

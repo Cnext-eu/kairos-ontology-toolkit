@@ -5,7 +5,9 @@
 import pytest
 
 from kairos_ontology.core._samples import (
+    DETECTED_PII_KINDS,
     PII_KEYWORDS,
+    SAMPLE_PRIVACY_VERSION,
     SamplePrivacyError,
     _kind_from_text,
     assert_no_unredacted_sample_pii,
@@ -408,3 +410,152 @@ class TestExemptionsDoNotWeakenDetection:
         )
         assert is_redaction_token(redacted)
         assert finding is not None and finding.kind == expected_kind
+
+
+class TestLocationDetector:
+    """#423: a coordinate pair beside a redacted address must not stay in the clear."""
+
+    def test_sample_privacy_version_bumped(self):
+        # Artifacts stamped "1" were sanitised under a policy without location (#423);
+        # only `policy` (unchanged) is test-asserted elsewhere, so bumping this is safe.
+        assert SAMPLE_PRIVACY_VERSION == "2"
+        assert "location" in DETECTED_PII_KINDS
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("CoordinateLatitude", "51.219448"),
+            ("CoordinateLongitude", "3.224739"),
+            ("Latitude", "51.219448"),
+            ("Longitude", "3.224739"),
+            ("lat", "51.219448"),
+            ("lon", "3.224739"),
+            ("lng", "3.224739"),
+            ("geo_location", "3.224739"),
+        ],
+    )
+    def test_coordinate_pair_is_detected_and_redacted(self, column: str, value: str):
+        assert detect_sample_pii_kind(column, value) == "location"
+        redacted, finding = redact_sample_value(
+            value,
+            table="addresses",
+            column=column,
+            data_type="decimal(9,6)",
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == "location"
+        assert redacted == (
+            f"<redacted kind=location source=addresses.{column} datatype=decimal(9,6)>"
+        )
+
+    def test_out_of_range_geo_value_is_not_flagged(self):
+        # Range plausibility is a secondary filter: values outside a lat/lon's
+        # physical range are not coordinates, even in a geo-named column.
+        assert detect_sample_pii_kind("Latitude", "123.456789") is None
+        assert detect_sample_pii_kind("Longitude", "200.123456") is None
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            # False-positive guards for the whole-token matching rule: none of these
+            # column names carry a whole geo token, only a substring lookalike.
+            ("TranslationKey", "3.14159265358979"),
+            ("LongName", "3.14159265358979"),
+            ("RelationId", "0.123456789"),
+            ("LicensePlate", "51.219448"),
+            ("NetworkLatency", "51.219448"),
+        ],
+    )
+    def test_geo_name_lookalikes_are_not_flagged(self, column: str, value: str):
+        assert detect_sample_pii_kind(column, value) is None
+        redacted, finding = redact_sample_value(
+            value,
+            table="events",
+            column=column,
+            data_type="decimal(18,9)",
+        )
+        assert redacted == value
+        assert finding is None
+
+    @pytest.mark.parametrize("value", ["3.14159265358979", "0.123456789"])
+    def test_302_fixtures_stay_green_in_non_geo_columns(self, value: str):
+        # The #302 regression fixtures: both are valid latitudes, so a range-only
+        # rule would misclassify them. They must remain untouched here too.
+        assert detect_sample_pii_kind("amount", value) is None
+        redacted, finding = redact_sample_value(
+            value,
+            table="invoices",
+            column="amount",
+            data_type="decimal(18,9)",
+        )
+        assert redacted == value
+        assert finding is None
+
+    def test_has_address_on_file_bit_column_unaffected(self):
+        # A boolean address flag must keep yielding "address", not be reinterpreted
+        # by the new geo detector.
+        redacted, finding = redact_sample_value(
+            "True",
+            table="people",
+            column="HasAddressOnFile",
+            data_type="bit",
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == "address"
+
+    def test_is_pii_column_does_not_report_geo_columns(self):
+        # Containment property (#423): the geo detector must be reachable ONLY from
+        # the persistence path, never from `_kind_from_name`/`is_pii_column` — which
+        # `propose_alignment` and `suggest_shapes` consume for alignment/shape
+        # suggestion. A future refactor that folds it into `_kind_from_name` must
+        # fail this test loudly.
+        assert not is_pii_column("CoordinateLatitude")
+        assert not is_pii_column("CoordinateLongitude")
+        assert not is_pii_column("Latitude", sample_values=["51.219448"])
+        assert not is_pii_column("Longitude", sample_values=["3.224739"])
+        assert not is_pii_column("lat")
+        assert not is_pii_column("lon")
+
+    def test_address_and_coordinates_redacted_together_in_one_row(self):
+        # The reported scenario: a redacted address beside a coordinate pair that
+        # used to persist unredacted in the clear (~0.1 m precision) in the same row.
+        row = {
+            "StreetAddress": "Kerkstraat 12",
+            "PostalCode": "9000",
+            "CoordinateLatitude": "51.219448",
+            "CoordinateLongitude": "3.224739",
+        }
+        safe_rows, findings = redact_sample_rows([row], table="addresses")
+        kinds = {finding.column: finding.kind for finding in findings}
+        assert kinds["StreetAddress"] == "address"
+        assert kinds["CoordinateLatitude"] == "location"
+        assert kinds["CoordinateLongitude"] == "location"
+        assert is_redaction_token(safe_rows[0]["StreetAddress"])
+        assert is_redaction_token(safe_rows[0]["CoordinateLatitude"])
+        assert is_redaction_token(safe_rows[0]["CoordinateLongitude"])
+        # PostalCode carries no PII keyword and no geo token: left untouched.
+        assert safe_rows[0]["PostalCode"] == "9000"
+
+    def test_idempotent_redaction_gate_agrees_with_redactor(self):
+        """The trap that aborts persistence: a non-token residual re-fires the gate.
+
+        Precision reduction (e.g. writing back ``51.33``) would not be an opaque
+        token, so `find_unredacted_sample_pii` would re-detect it and
+        `SamplePrivacyError` would abort persistence. The opaque `kind=location`
+        token must be idempotent by construction.
+        """
+        row = {
+            "CoordinateLatitude": "51.219448",
+            "CoordinateLongitude": "3.224739",
+        }
+        safe_rows, findings = redact_sample_rows([row], table="addresses")
+        assert len(findings) == 2
+
+        # First pass leaves nothing detectable.
+        assert find_unredacted_sample_pii(safe_rows, table="addresses") == []
+
+        # Running the redactor again on the already-redacted rows is a no-op.
+        safe_rows_again, findings_again = redact_sample_rows(safe_rows, table="addresses")
+        assert safe_rows_again == safe_rows
+        assert findings_again == []
+        assert find_unredacted_sample_pii(safe_rows_again, table="addresses") == []

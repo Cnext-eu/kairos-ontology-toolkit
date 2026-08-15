@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`source-privacy` now detects coordinate columns** (#423). A redacted address was recoverable from the
+  latitude/longitude pair beside it in the same row — three address components correctly tokenised while
+  `CoordinateLatitude`/`CoordinateLongitude` persisted at ~0.1 m precision, under a clean result. Coordinates
+  are now redacted as `<redacted kind=location …>`.
+  Three properties are deliberate and load-bearing. **Containment:** the detector is reachable only from the
+  persistence path, never from `_kind_from_name` — `is_pii_column` calls that and feeds `propose-alignment`
+  and `suggest-shapes`, so geo keywords there would mask geographic columns during modelling, a regression
+  dressed up as a privacy win. A test asserts `is_pii_column` stays `False` for coordinate columns so a future
+  refactor fails loudly. **No precision reduction:** an opaque token, because `is_redaction_token` is the only
+  idempotence mechanism, so a "coarsened" `51.33` would re-trip the residual gate and abort persistence — and
+  a 2-decimal threshold is ~1.1 km, which still identifies a rural facility. A privacy gate has to be binary.
+  **Name-gated, range-filtered:** whole-token matching (so `translation`, `longName`, `relation`, `latency`
+  do not fire) with the coordinate range as a secondary filter only — a range-only rule would flag
+  `3.14159265358979` and `0.123456789`, both valid latitudes, which #302 established are not PII.
+  `SAMPLE_PRIVACY_VERSION` moves to `"2"`: artifacts stamped `"1"` were sanitised without this coverage.
+- **`rows_sampled` on flat-file source imports** (#422). See the `Changed` entry below — this is the field
+  that now carries what the importer actually measured.
 - **`discovery-conformance judgments-template`** (#410). Phase 2.5 of `kairos-design-discovery` forbids
   hand-transcribing or hand-scripting the concept list, then required a `--judgments-file` whose schema had no
   scaffold and incomplete documentation — so every author had to write exactly the serializer the skill
@@ -38,6 +55,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records — the same pathology as #405 — and would have listed already-processed documents as needing work.
 
 ### Changed
+- **`row_count` means table cardinality and nothing else; flat-file imports report `rows_sampled`** (#422).
+  The field meant two different things depending on which import path wrote it: `extract-schema` set it from a
+  real `SELECT COUNT(*)`, while `import-flatfile` set it to the rows read for type inference, capped at
+  `--max-rows` (default 1000) — so every larger table persisted exactly `row_count: 1000`, and no consumer
+  could tell the two apart.
+  That was not cosmetic. Enum detection divides by this field (`distinct / row_count` against a 0.1 ratio), so
+  a cap of 1000 **inflated** the ratio and **suppressed enum suggestions on exactly the large tables where a
+  governed code list matters most** — a column with 80 distinct values in a 2M-row table has a true ratio of
+  0.00004 but reads 0.08 against the cap, and at 120 distinct values it was silently dropped. It also becomes
+  `kairos-bronze:rowCount` in the bronze RDF and is read by `audit-silver-samples` and `audit-column-coverage`.
+  Now: CSV and XLSX emit `rows_sampled` only and leave `row_count` **absent** — unconditionally, so the field's
+  presence never depends on whether a file happened to be smaller than the cap. A missing value is honest; a
+  wrong one silently corrupts inference. **Parquet emits both**, taking a true `row_count` from
+  `ParquetFile.metadata.num_rows`, which the footer carries at no I/O cost. `kairos-bronze:rowCount` is
+  therefore emitted only for true cardinality — both emission sites already guarded on `is not None`, so no RDF
+  change was needed. Enum inference and FK-by-cardinality matching skip unknown cardinality rather than
+  computing against a sample size. `rows_sampled` stays YAML-only: it describes how the import ran, not a fact
+  about the source table. Readers tolerate both shapes, since source YAML already in the wild carries the old
+  capped value.
 - **`build-glossary` now excludes `status: skipped` extraction records** and reports how many it excluded.
   It read `extracted_terms` from every record regardless of status, so a skipped record's terms landed in the
   company glossary. This only became a *contradiction* once `status` became load-bearing (above), so it is
