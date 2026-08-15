@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`kairos-ontology register-concept`** — hub-side registration of source-discovered concepts
+  (#505 Layer B, DD-162). Of the three mechanisms #505 reported as blocking a domain from being
+  modeled, two did not exist as described: the archetype tier `not_applicable` (Layer A) is not in
+  the published tier enum at all (`VALID_TIERS = ("required", "recommended", "optional")` —
+  ref-models #82 was closed for exactly that reason), and the `not-applicable` *outcome* (Layer C)
+  is issue #507. The third is real and had no answer: **a business concept that exists in the source
+  data but has no entry in the archetype catalog is invisible to the entire system.** Discovery only
+  ever iterates the catalog, so such a concept cannot be judged, cannot carry a `likely_domains` tag,
+  never reaches `design-landscape`, and never becomes an authored domain. On the CLdN hub roughly ten
+  BI-relevant concepts sat in that hole (planning zones, tariff scales, empty-unit lifecycle,
+  distance/toll matrix, order source attribution). DD-160 surfaced the *domain*-level version of this
+  gap; this is the concept-level counterpart.
+  Registrations are written to `integration/discovery/registered-concepts.yaml` and mirrored by
+  `discovery-conformance build` into a **sibling** `registered_concepts` list in the conformance
+  artifact — never merged into `core_concepts`, because `validate_artifact`'s coverage/identity
+  checks require every entry there to be a real catalog concept and `concept_set_hash` staleness
+  would fire on every registration. Registering a concept must not make the archetype look wrong.
+  The reference-models archetype schema is **not** extended: registration is hub-side only, so the
+  catalog stays a stable shared contract and one hub's extra concept never needs a cross-repo
+  release. A URI already in the catalog is rejected — it belongs in `core_concepts` with a real
+  discovery judgment. Registered concepts always carry tier `optional` (the source data argued them
+  in; no blueprint recommended them) and are counted separately from the archetype scorecard so
+  conformance percentages stay comparable across hubs.
+  An `ai`/`autopilot` registration without a confidence, or flagged `needs_confirmation`, blocks
+  `compile`/`validate` through the existing DD-148 gate — inventing a concept the blueprint omitted
+  is a strictly larger authority than judging one it included. `--source-evidence` and `--rationale`
+  are both mandatory. Surfaced downstream by `design-landscape` (via a synthetic class record —
+  required, since the report's join skips any URI the activated accelerator modules do not declare,
+  which is every registered concept by construction) and by `kairos-ontology next` as
+  `model-registered-concept`, routed to kairos-design-domain. `next` proposal `schema_version` 5→6.
+  The conformance artifact gains an optional `registered_concepts` key; absence is indistinguishable
+  from empty, so no artifact already on disk is invalidated.
 - **Discovery judgments are now source-evidence aware** (#507, Layer C of #505). During discovery an
   `optional`-tier concept with real source data behind it was routinely judged `not-applicable` — the
   one outcome `design_landscape` treats as the *opposite* of demand evidence. On the CLdN hub that

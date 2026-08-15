@@ -52,7 +52,7 @@ never graph-authority project targets. `project --target all` excludes them.
 | Compile/project | `compile`, `project`, `mdm-validate` |
 | Author bindings | `scaffold-binding`, `scaffold-system`, `scaffold-staging`, `propose-relationships` |
 | Validate | `validate`, `validate-dbt`, `catalog-test`, `validate-mapping`, `validate-silver-ext`, `suggest-shapes` |
-| Source/discovery | `import-source`, `import-flatfile`, `import-tmdl`, `extract-schema`, `show-source-schema`, `source-privacy`, `analyse-sources`, `audit-silver-samples`, `audit-column-coverage`, `propose-alignment`, `build-glossary`, `list-patterns`, `discovery-status`, `discovery-conformance` |
+| Source/discovery | `import-source`, `import-flatfile`, `import-tmdl`, `extract-schema`, `show-source-schema`, `source-privacy`, `analyse-sources`, `audit-silver-samples`, `audit-column-coverage`, `propose-alignment`, `build-glossary`, `list-patterns`, `discovery-status`, `discovery-conformance`, `register-concept` |
 | Inspect/report | `resolve-ontology`, `show-class-inventory`, `list-class-properties`, `fit-report`, `inverse-scan`, `plan-sources`, `explain-term`, `coverage-report`, `field-mapping-report`, `generate-inventory`, `check-inventory`, `domain-coverage`, `draft-model-report`, `next`, `design-landscape`, `guard-scope`, `check-ai-config`, `suggest-type` |
 | Legacy scaffold helpers | `scaffold-mapping`, `scaffold-silver-ext` |
 | Setup/update | `init`, `new-repo`, `migrate`, `init-dataplatform`, `scaffold-domain`, `update`, `update-refmodels` |
@@ -207,6 +207,41 @@ dropped.
 Deterministic aggregation only -- no LLM calls, no raw TTL text reads (DD-103). This is the
 "0a" minimal cut: a flat, per-class report. It does not attempt domain-clustering/regrouping
 suggestions or an LLM narrative pass.
+
+## `register-concept`
+
+Registers a source-discovered concept the archetype catalog does not contain (issue #505
+Layer B, DD-162).
+
+```
+kairos-ontology register-concept --uri <IRI> --label <label> \
+  --source-system <system> --source-evidence <table[.column]> ... \
+  --rationale <text> [--domain <id> ...] [--decided-by user|ai|autopilot] \
+  [--confidence <0.0-1.0>] [--needs-confirmation] [--reference <text> ...] \
+  [--force] [--archetype <id>] [--refmodels-root <path>] [--format json|yaml]
+```
+
+Discovery only ever iterates the archetype catalog, so a concept that exists in the source data
+and nowhere in the catalog could not be judged, could not carry a `likely_domains` tag, never
+reached `design-landscape`, and never became an authored domain. This command records it
+hub-side, in `integration/discovery/registered-concepts.yaml`, which
+`discovery-conformance build` mirrors into the artifact's `registered_concepts` list.
+
+* That list is a **sibling** of `core_concepts`, never merged into it — `validate_artifact`'s
+  coverage/identity checks require every `core_concepts` entry to be a real catalog concept, and
+  `concept_set_hash` staleness would fire on every registration. Registering a concept must not
+  make the archetype look wrong. A URI in both is an error.
+* A URI already in the archetype catalog is **rejected**: it belongs in `core_concepts` with a
+  real discovery judgment, not routed around the coverage checks.
+* Registered concepts always carry tier `optional`, and are counted separately from the
+  archetype scorecard so conformance percentages stay comparable across hubs.
+* `--source-evidence` and `--rationale` are mandatory.
+* An `ai`/`autopilot` registration without `--confidence`, or with `--needs-confirmation`,
+  blocks `compile`/`validate` until a human confirms it (DD-148) — adding a concept the
+  blueprint deliberately omitted is a larger authority than judging one it included.
+* Surfaced afterwards by `design-landscape` (with `discovery.registered: true`) and by
+  `kairos-ontology next` as `model-registered-concept`. Registration records that the concept
+  belongs; authoring the class is still a domain-design decision.
 
 ## `discovery-conformance`
 

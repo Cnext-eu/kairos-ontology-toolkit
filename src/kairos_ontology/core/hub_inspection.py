@@ -17,6 +17,8 @@ from __future__ import annotations
 from collections.abc import Collection
 from pathlib import Path
 
+import yaml
+
 from .compiler import (
     CompileMode,
     CompileError,
@@ -238,6 +240,41 @@ def _source_domain_coverage_status(root: Path) -> SourceDomainCoverageObservatio
         deferred=_domains(STATUS_DEFERRED),
         unassigned_tables=len(report.unassigned_source_tables),
     )
+
+
+def _registered_concepts_unbound(root: Path) -> int:
+    """Count registered concepts (#505 Layer B) no EntityBinding targets yet.
+
+    Matches by the binding's ``target.class`` **URI**, read with a plain YAML load: a binding
+    that does not parse is ``compile --check``'s problem to report, and treating it as "targets
+    nothing" would only inflate this count. Bindings usually write ``target.class`` as a
+    ``prefix:Local`` token rather than a URI, so a token that happens to resolve to a
+    registered concept is *not* matched here -- the count can therefore overstate, never
+    understate, which is the safe direction for an advisory nudge.
+
+    Wrapped defensively: a malformed registrations file must never crash ``next``.
+    """
+    from .registered_concepts import read_registered
+
+    try:
+        registered = read_registered(root)
+    except Exception:  # noqa: BLE001 - advisory observation only
+        return 0
+    if not registered:
+        return 0
+
+    targeted: set[str] = set()
+    bindings_dir = root / "integration" / "bindings"
+    if bindings_dir.is_dir():
+        for path in sorted(bindings_dir.glob("*.binding.yaml")):
+            try:
+                document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            target = document.get("target") if isinstance(document, dict) else None
+            if isinstance(target, dict) and isinstance(target.get("class"), str):
+                targeted.add(target["class"].strip())
+    return sum(1 for entry in registered if str(entry.get("uri") or "") not in targeted)
 
 
 def _inventory_status(root: Path, domains: Collection[str] | None = None) -> InputStatus:
@@ -542,4 +579,5 @@ def gather_hub_input_snapshot(
         inventory_status=_inventory_status(root, domains),
         bi_concept_mappings=_bi_concept_mapping_status(root),
         source_domain_coverage=_source_domain_coverage_status(root),
+        registered_concepts_unbound=_registered_concepts_unbound(root),
     )

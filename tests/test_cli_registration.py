@@ -22,6 +22,7 @@ RETAINED_COMMANDS = {
     "design-landscape",
     "discovery-conformance",
     "discovery-status",
+    "register-concept",
     "domain-coverage",
     "draft-model-report",
     "explain-term",
