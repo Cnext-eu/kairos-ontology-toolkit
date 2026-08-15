@@ -231,6 +231,114 @@ def test_local_source_path_resolves_relative_to_hub_root_not_decisions_dir(
     assert not any(w.code == "unresolved_source" for w in result.warnings)
 
 
+# --- #420: nested-hub repo-root fallback for .import/ evidence ---------------
+
+
+def _accepted_fm_with_sources(record_id: str, resources: list[str]) -> str:
+    src_lines = "".join(f"  - {{ id: s{i}, resource: '{r}' }}\n" for i, r in enumerate(resources))
+    return (
+        "type: Decision Record\n"
+        f"id: {record_id}\n"
+        "title: T\n"
+        "status: stable\n"
+        "decision_state: Accepted\n"
+        "materiality: [evidence-conflict]\n"
+        "generated: { by: human:me }\n"
+        f"sources:\n{src_lines}"
+    )
+
+
+@pytest.fixture()
+def nested_bundle(tmp_path: Path) -> Path:
+    """A decisions bundle inside a *nested* hub: ``<repo>/ontology-hub/decisions``,
+    where ``<repo>`` carries the toolkit pin that ``find_managed_root`` anchors on
+    (same fixture shape as tests/test_hub_utils.py::_make_pin_hub)."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.kairos]\nchannel = "stable"\n', encoding="utf-8"
+    )
+    hub = tmp_path / "ontology-hub"
+    (hub / "model" / "ontologies").mkdir(parents=True)
+    d = hub / "decisions"
+    d.mkdir()
+    return d
+
+
+def _unresolved(result) -> list[str]:
+    return [w.message for w in result.warnings if w.code == "unresolved_source"]
+
+
+def test_nested_hub_import_citation_resolves_from_repo_root(nested_bundle: Path, tmp_path: Path):
+    """issue #420: `.import/` evidence is a repo-root *sibling* of a nested hub,
+    so a hub-root join can never reach it — the repo root must be probed."""
+    evidence = tmp_path / ".import" / "businessdiscovery" / "x.md"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("evidence", encoding="utf-8")
+    fm = _accepted_fm_with_sources(
+        "HUB-DD-20260815-a1", [".import/businessdiscovery/x.md"]
+    )
+    _write(nested_bundle, "HUB-DD-20260815-a1.md", fm)
+    assert _unresolved(dr.validate_decision_bundle(nested_bundle)) == []
+
+
+def test_nested_hub_backslash_pdf_citation_resolves(nested_bundle: Path, tmp_path: Path):
+    """Backslash-separated `.import\\...\\y.pdf` citations exist in the wild and
+    must be normalized before joining (a raw backslash string is one opaque
+    filename on POSIX); .pdf must count as a local path at all (#420)."""
+    evidence = tmp_path / ".import" / "businessdiscovery" / "y.pdf"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("pdf", encoding="utf-8")
+    fm = _accepted_fm_with_sources(
+        "HUB-DD-20260815-a2", [r".import\businessdiscovery\y.pdf"]
+    )
+    _write(nested_bundle, "HUB-DD-20260815-a2.md", fm)
+    assert _unresolved(dr.validate_decision_bundle(nested_bundle)) == []
+
+
+def test_nested_hub_missing_import_citation_still_warns(nested_bundle: Path):
+    fm = _accepted_fm_with_sources("HUB-DD-20260815-a3", [".import/gone/missing.pdf"])
+    _write(nested_bundle, "HUB-DD-20260815-a3.md", fm)
+    assert len(_unresolved(dr.validate_decision_bundle(nested_bundle))) == 1
+
+
+def test_repo_root_never_probed_for_non_convention_paths(nested_bundle: Path, tmp_path: Path):
+    """Scoping (#420): a rotted hub citation must NOT be satisfied by a
+    same-named file at the repo root — only `.import/` and
+    `ontology-reference-models/` first segments get the second base."""
+    notes = tmp_path / "docs" / "notes.md"
+    notes.parent.mkdir(parents=True)
+    notes.write_text("repo-level notes", encoding="utf-8")
+    fm = _accepted_fm_with_sources("HUB-DD-20260815-a4", ["docs/notes.md"])
+    _write(nested_bundle, "HUB-DD-20260815-a4.md", fm)
+    assert len(_unresolved(dr.validate_decision_bundle(nested_bundle))) == 1
+
+
+def test_standalone_hub_import_resolves_only_via_hub_root(bundle: Path, tmp_path: Path):
+    """A standalone hub (no toolkit-pinned ancestor) keeps hub-root-only
+    resolution: `.import/` under the hub root resolves; there is no second base."""
+    evidence = tmp_path / ".import" / "a.md"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("evidence", encoding="utf-8")
+    fm = _accepted_fm_with_sources(
+        "HUB-DD-20260815-a5", [".import/a.md", ".import/missing.md"]
+    )
+    _write(bundle, "HUB-DD-20260815-a5.md", fm)
+    warnings = _unresolved(dr.validate_decision_bundle(bundle))
+    assert len(warnings) == 1
+    assert ".import/missing.md" in warnings[0]
+
+
+def test_binary_extension_citation_checked_case_insensitively(bundle: Path, tmp_path: Path):
+    """`report.PDF` must be recognized as a local path (#420): warned while
+    missing, resolved once the file exists under the hub root."""
+    fm = _accepted_fm_with_sources("HUB-DD-20260815-a6", ["evidence/report.PDF"])
+    _write(bundle, "HUB-DD-20260815-a6.md", fm)
+    assert len(_unresolved(dr.validate_decision_bundle(bundle))) == 1
+    target = tmp_path / "evidence" / "report.PDF"
+    target.parent.mkdir(parents=True)
+    target.write_text("pdf", encoding="utf-8")
+    assert _unresolved(dr.validate_decision_bundle(bundle)) == []
+
+
 def test_stale_after_warns_when_past(bundle: Path):
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     fm = _accepted_fm("HUB-DD-20260728-x") + f"stale_after: {yesterday}\n"

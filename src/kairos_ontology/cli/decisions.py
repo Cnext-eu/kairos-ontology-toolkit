@@ -92,7 +92,15 @@ def decision() -> None:
     show_default=True,
     help="Initial decision workflow state.",
 )
-@click.option("--source", multiple=True, help="Evidence resource string; may be repeated.")
+@click.option(
+    "--source",
+    multiple=True,
+    help=(
+        "Evidence resource string; may be repeated. Local paths resolve from the "
+        "hub root; on nested hubs, .import/... evidence also resolves from the "
+        "repo root."
+    ),
+)
 @click.option(
     "--materiality",
     "materiality",
