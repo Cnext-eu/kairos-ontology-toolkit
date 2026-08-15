@@ -92,7 +92,7 @@ _REDACTION_TOKEN_RE = re.compile(
 )
 
 SAMPLE_PRIVACY_POLICY = "redact-detected-pii"
-SAMPLE_PRIVACY_VERSION = "1"
+SAMPLE_PRIVACY_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -280,11 +280,32 @@ _NAMED_KINDS: tuple[tuple[str, str], ...] = (
     ("marital_status", "demographic"),
 )
 
+# Location-bearing column-name tokens -> the numeric range a coordinate value must
+# fall within to be treated as a geographic coordinate (#423). Matched as FULL WORDS
+# via `_name_tokens` only — substring matching would fire on "relationship"/"platform"
+# (*lat*) and "long_description"/"clone" (*lon*). For the same reason the abbreviations
+# `lat`, `lon`, and `geo` are deliberately EXCLUDED here (latency, longitude-lookalike
+# prose, geo_score all pass the range filter); they are deferred to the sibling-address
+# follow-on of #423. `_name_tokens` singularizes "coordinates" -> "coordinate".
+_LOCATION_TOKEN_RANGES: dict[str, tuple[float, float]] = {
+    "latitude": (-90.0, 90.0),
+    "longitude": (-180.0, 180.0),
+    "lng": (-180.0, 180.0),
+    "coordinate": (-180.0, 180.0),
+}
+_LOCATION_KIND = "location"
+
 #: Redaction kinds this module can actually detect, for coverage reporting. Derived from
 #: `_NAMED_KINDS` plus the value-shape detectors in `_kind_from_text`, the person-token
-#: kinds, and the `pii-column` fallback. Notably absent: geographic coordinates — see #423.
+#: kinds, the `pii-column` fallback, and the coordinate detector fed by
+#: `_LOCATION_TOKEN_RANGES` (#423). Still not detected: lat/lon/geo-abbreviated column
+#: names and WKT geometries — see the DD-075 second amendment.
 DETECTED_PII_KINDS: tuple[str, ...] = tuple(
-    sorted({kind for _, kind in _NAMED_KINDS} | {"identifier", "name", "pii-column"})
+    sorted(
+        {kind for _, kind in _NAMED_KINDS}
+        | {"identifier", "name", "pii-column"}
+        | ({_LOCATION_KIND} if _LOCATION_TOKEN_RANGES else set())
+    )
 )
 
 
@@ -338,10 +359,54 @@ def _kind_from_text(value: Any) -> str | None:
     return None
 
 
+def _location_component_in_range(text: str, low: float, high: float) -> bool:
+    """True when *text* is a numeric literal with a TEXTUAL fractional part in range.
+
+    The fractional part must be present in the string form (mirrors
+    `_NUMERIC_LITERAL_RE`'s fraction group). ``float.is_integer()`` would be wrong
+    here: ``"51.0"`` has a textual fraction and is a real coordinate, while a bare
+    ``"51"`` is an ordinary number and must stay exempt.
+    """
+    match = _NUMERIC_LITERAL_RE.fullmatch(text)
+    if not match or not match.group("fraction"):
+        return False
+    return low <= float(text) <= high
+
+
+def _kind_from_location(column_name: str | None, value: Any) -> str | None:
+    """Detect a geographic coordinate by column-name token AND value shape (#423).
+
+    Name+value only — no declared datatypes (the persistence gate receives none, so
+    any datatype-keyed rule would make the redactor and the gate disagree). Per-token
+    range: latitude alone -> [-90, 90]; longitude/lng -> [-180, 180]; a coordinate
+    token or multiple location tokens -> the union range [-180, 180].
+    """
+    matched = _name_tokens(column_name) & _LOCATION_TOKEN_RANGES.keys()
+    if not matched:
+        return None
+    # Not `str(value or "")`: a float 0.0 is falsy but "0.0" is a real coordinate.
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return None
+    low = min(_LOCATION_TOKEN_RANGES[token][0] for token in matched)
+    high = max(_LOCATION_TOKEN_RANGES[token][1] for token in matched)
+    if _location_component_in_range(text, low, high):
+        return _LOCATION_KIND
+    # Single-column "lat,lon" pair ("51.33,4.12" / "51.33, 4.12"): both parts must be
+    # fractional numerics within the union range. WKT geometries (``POINT(4.12 51.33)``)
+    # are explicitly out of scope — deferred, see the DD-075 second amendment.
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) == 2 and all(_location_component_in_range(part, -180.0, 180.0) for part in parts):
+        return _LOCATION_KIND
+    return None
+
+
 def _kind_from_nested(value: Any) -> str | None:
     if isinstance(value, dict):
         for key, nested in value.items():
-            kind = _kind_from_name(str(key)) or _kind_from_nested(nested)
+            # Route through detect_sample_pii_kind so nested entries such as
+            # {"latitude": 51.33} get the same name+value pairing as columns.
+            kind = detect_sample_pii_kind(str(key), nested)
             if kind:
                 return kind
         return None
@@ -367,8 +432,18 @@ def detect_sample_pii_kind(
     relations that have no person/driver subject (e.g. ``TransportStop``). It must
     be threaded through by every caller that has table context; omitting it
     reverts to the column-name-only classification.
+
+    The coordinate check sits BETWEEN the name and nested/text checks: name-keyword
+    kinds keep priority (``health_latitude`` stays ``health``) and a shaped value in
+    a location-named column is still caught (a ``latitude`` column holding an email
+    reads ``email``). It is deliberately NOT part of ``_kind_from_name`` so the
+    display/suggestion paths (``is_pii_column``) never gain location awareness.
     """
-    return _kind_from_name(column_name, context_name=context_name) or _kind_from_nested(value)
+    return (
+        _kind_from_name(column_name, context_name=context_name)
+        or _kind_from_location(column_name, value)
+        or _kind_from_nested(value)
+    )
 
 
 def redact_sample_value(
@@ -385,7 +460,7 @@ def redact_sample_value(
     """
     if value is None or is_redaction_token(value):
         return value, None
-    kind = _kind_from_name(column, context_name=table) or _kind_from_nested(value)
+    kind = detect_sample_pii_kind(column, value, context_name=table)
     if not kind:
         return value, None
     finding = SamplePrivacyFinding(table=table, column=column, kind=kind)
@@ -437,7 +512,7 @@ def find_unredacted_sample_pii(
         for column, value in row.items():
             if is_redaction_token(value):
                 continue
-            kind = _kind_from_name(str(column), context_name=table) or _kind_from_nested(value)
+            kind = detect_sample_pii_kind(str(column), value, context_name=table)
             if kind:
                 findings.append(SamplePrivacyFinding(table=table, column=str(column), kind=kind))
     return findings

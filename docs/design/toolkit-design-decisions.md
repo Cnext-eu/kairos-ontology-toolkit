@@ -4846,6 +4846,44 @@ is not "safe".
 Stating the bound is therefore the honest interim: the guarantee is unchanged, but it is no longer
 overstated at the point of use.
 
+### Second amendment (2026-08-15): the deferred coordinate detector ships (#423)
+
+The interim above ends: the persistence path now detects geographic coordinates by **pairing the column
+name with the value shape**, which is what the three recorded wrong-fix mechanisms all lacked. The detector
+never touches declared datatypes (the #302 exemption stays value-shape; the residual gate receives no
+`column_types`, so a datatype-keyed rule would make the redactor and the gate disagree — the exact failure
+`test_redacted_rows_pass_the_persistence_gate` pins), and it is binary: a matched value is replaced with an
+opaque `<redacted kind=location …>` token, never coarsened.
+
+**Shipped.**
+- **Tokens** (full-word matches via `_name_tokens` only, never substrings): `latitude` → [-90, 90];
+  `longitude`, `lng` → [-180, 180]; `coordinate(s)` or multiple location tokens → the union range
+  [-180, 180], because a generic coordinate column can hold either axis.
+- **Value shape**: a numeric literal whose **string form carries a fractional part**
+  (`_NUMERIC_LITERAL_RE`'s fraction group — not `float.is_integer()`, which would exempt real coordinates
+  like `51.0`) inside the applicable range; or a comma-separated `"lat,lon"` pair whose two parts both
+  satisfy that rule within the union range (a common single-column export format that would otherwise
+  silently escape).
+- **Containment**: the check lives in `detect_sample_pii_kind` (persistence path), between the name-keyword
+  and nested/text checks — name kinds keep priority (`health_latitude` stays `health`) and shaped values in
+  location columns are still caught. It is **not** in `_kind_from_name`, so `is_pii_column` and the
+  display/suggestion paths (`propose_alignment`, `suggest_shapes`) gain no location awareness; tests pin
+  `is_pii_column("latitude")` False. Nested `{"latitude": 51.33}` values are detected because
+  `_kind_from_nested`'s dict branch now routes through `detect_sample_pii_kind`, which also makes the
+  redactor and every residual gate provably share one classifier.
+- `"location"` enters `DETECTED_PII_KINDS` derived from the token table (`_LOCATION_TOKEN_RANGES`), never
+  hand-appended — the same discipline the first amendment established for the coverage report.
+
+**Deferred.**
+- The abbreviations `lat`, `lon`, `geo`: as bare tokens they false-positive on `latency`/`geo_score`-class
+  names once range-filtered values appear beside them; they move to the sibling-address follow-on of #423
+  (which can use row context to disambiguate).
+- WKT geometries (`POINT(4.12 51.33)`) and other structured spatial encodings.
+
+`SAMPLE_PRIVACY_VERSION` bumps "1" → "2" as **inert bookkeeping** — nothing reads it back and no migration
+keys on it; it only records which policy generated an artifact. Existing hubs therefore keep persisted
+coordinates until `source-privacy --fix` is run once.
+
 ---
 
 ## DD-076: `suggest-shapes` — draft SHACL from source profiling

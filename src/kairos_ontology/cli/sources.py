@@ -354,16 +354,18 @@ def _echo_privacy_coverage(report) -> None:
 
     The old message — "privacy-safe for supported patterns" — read as an unqualified
     all-clear while naming no patterns, so a reader could not tell that coordinate columns
-    are not among them. A latitude/longitude pair left beside a redacted address in the
-    same row re-identifies it by reverse-geocoding, and the command reported success. The
-    kinds come from the detectors themselves so this can never overstate coverage.
+    were not among them (they are since #423; abbreviated lat/lon/geo names and WKT still
+    are not). A latitude/longitude pair left beside a redacted address in the same row
+    re-identifies it by reverse-geocoding, and the command reported success. The kinds
+    come from the detectors themselves so this can never overstate coverage.
     """
     kinds = ", ".join(report.checked_kinds)
     click.echo(f"✅ No unredacted PII found in {report.files_scanned} artifact(s).")
     click.echo(f"   Patterns checked: {kinds}.")
     click.echo(
-        "   Not checked: geographic coordinates — a latitude/longitude pair can "
-        "re-identify a redacted address in the same row (#423)."
+        "   Coordinates checked: latitude/longitude/lng/coordinate columns with "
+        'in-range fractional values, including single-column "lat,lon" pairs (#423). '
+        "Still not checked: lat/lon/geo-abbreviated column names and WKT geometries."
     )
 
 

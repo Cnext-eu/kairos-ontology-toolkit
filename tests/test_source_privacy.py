@@ -135,10 +135,69 @@ def test_cli_blocks_then_fixes_without_echoing_values(tmp_path):
     assert "No unredacted PII found" in fix.output
     assert "person@example.com" not in fix.output
     # A clean result must state its coverage rather than imply universal discovery (#415):
-    # the patterns actually checked, and the coordinate gap that is not among them (#423).
+    # the patterns actually checked — coordinates now among them (#423) — and the
+    # residual gap (abbreviated lat/lon/geo column names, WKT geometries).
     assert "Patterns checked:" in fix.output
     assert "email" in fix.output
-    assert "Not checked: geographic coordinates" in fix.output
+    assert "location" in fix.output
+    assert "Coordinates checked: latitude/longitude/lng/coordinate" in fix.output
+    assert "Still not checked:" in fix.output
+
+
+def test_coordinate_columns_are_found_and_fixed(tmp_path):
+    """Latitude/longitude values are caught in YAML and Turtle artifacts (#423)."""
+    source_dir = tmp_path / "sources"
+    source_dir.mkdir(parents=True)
+    (source_dir / "stops.samples.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "table": "stops",
+                "rows": [
+                    {
+                        "latitude": 51.334217,
+                        "longitude": 4.123456,
+                        "coordinates": "51.33, 4.12",
+                        "status": "open",
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (source_dir / "tms.vocabulary.ttl").write_text(
+        """\
+@prefix tms: <https://kairos.cnext.eu/source/tms#> .
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+
+tms:stops a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "stops" .
+
+tms:stops_latitude a kairos-bronze:SourceColumn ;
+    kairos-bronze:sourceTable tms:stops ;
+    kairos-bronze:columnName "latitude" ;
+    kairos-bronze:dataType "decimal(9,6)" ;
+    kairos-bronze:sampleValues "51.334217" .
+""",
+        encoding="utf-8",
+    )
+
+    report = run_source_privacy(source_dir)
+
+    assert not report.passed
+    assert {finding.kind for _, finding in report.findings} == {"location"}
+    assert "location" in report.checked_kinds
+
+    run_source_privacy(source_dir, fix=True)
+    samples_raw = (source_dir / "stops.samples.yaml").read_text(encoding="utf-8")
+    ttl_raw = (source_dir / "tms.vocabulary.ttl").read_text(encoding="utf-8")
+    assert "51.334217" not in samples_raw
+    assert "51.33" not in samples_raw
+    assert "kind=location" in samples_raw
+    assert "51.334217" not in ttl_raw
+    assert "kind=location" in ttl_raw
+    assert "open" in samples_raw  # non-coordinate values survive
+    assert run_source_privacy(source_dir).passed
 
 
 def test_orphaned_table_yaml_is_checked_and_fixed(tmp_path):
