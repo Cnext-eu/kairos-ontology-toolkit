@@ -584,7 +584,8 @@ def validate_silver_ext_cmd(domain, catalog, shapes_override):
     "--enum-distinct-max",
     type=int,
     default=12,
-    help="Max distinct values to emit an sh:in enum (default: 12).",
+    help="Max distinct values to emit an sh:in enum when full-table distinct "
+    'evidence exists (kairos-bronze:distinctScope="table"; default: 12).',
 )
 @click.option(
     "--no-sample-values",
@@ -600,10 +601,12 @@ def suggest_shapes_cmd(source, mappings, out, enum_distinct_max, no_sample_value
     """DD-076: generate a DRAFT SHACL file from bronze source profiling metadata.
 
     Produces advisory PropertyShapes (datatype always; format pattern, nullability
-    minCount, and distinctCount-backed enums when reliable evidence exists) that a
-    human reviews and promotes into model/shapes/. PII values are never enumerated
-    and are always masked. Output is written outside the loaded shapes directory so
-    the validator does not pick it up automatically.
+    minCount, and sh:in enums only from full-table distinct evidence — i.e. the
+    vocabulary asserts kairos-bronze:distinctScope="table"; sample-scoped or legacy
+    evidence yields advisory comments instead) that a human reviews and promotes
+    into model/shapes/. PII values are never enumerated and are always masked.
+    Output is written outside the loaded shapes directory so the validator does
+    not pick it up automatically.
 
     \b
     Examples:

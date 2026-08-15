@@ -4895,6 +4895,53 @@ Writing outside the loaded shapes dir is the safety mechanism that makes
   is enforced until a human moves and renames the file.
 - `kairos-bronze:distinctCount` is the reliability signal for enums; absent it,
   the command emits only an advisory "possible enum (unverified)" comment.
+  *(Amended 2026-08-15, see below: distinctCount alone is NOT the signal — it
+  must carry `distinctScope="table"`.)*
+
+### Amendment (2026-08-15): `sh:in` requires full-table distinct evidence (#424, DD-156)
+
+"distinctCount is the reliability signal for enums" is falsified for windowed
+profiling. On a real hub, 82% of 217 generated `sh:in` enums were single-value
+and several were provably wrong (`booking_status` → only `"TO_REQUEST"` of 5
+real values): the flatfile path counted distincts inside an n≤1000 (and
+sample-persisted n=5) window, and `suggest-shapes` treated that as population
+truth. DD-156 gives the graph the evidence to tell the difference; this
+amendment makes `suggest-shapes` read it:
+
+- **distinctCount is trusted for `sh:in` only when the table asserts
+  `kairos-bronze:distinctScope="table"`.** Sample-scoped evidence
+  (`distinctScope="sample"`) and legacy evidence (scope absent — vocabulary
+  predates DD-156) produce **advisory comments only**, never a constraint:
+  - saturated window (`distinctCount >= rowsSampled`): the evidence cannot
+    distinguish an enum from an open value set;
+  - window below the enum floor (`rowsSampled < DEFAULT_ENUM_MIN_ROWS` = 100):
+    re-import with a larger `--max-rows` or profile the warehouse table;
+  - unsaturated ≥100-row window with `distinctCount ≤ --enum-distinct-max`:
+    "possible enum … not verified against full data";
+  - legacy (scope absent, distinctCount present): "regenerate the source
+    vocabulary with import-source".
+- **Temporal (`xsd:date`/`dateTime`/`time`), decimal/float/double, boolean, and
+  UUID columns are never enumerated**, regardless of scope. Boolean `sh:in`
+  adds nothing over `sh:datatype` and brittle lexical forms cause false
+  violations; UUID detection uses `kairos-bronze:formatHint == "uuid"` OR the
+  sample-derived format pattern — load-bearing because SQL Server
+  `uniqueidentifier` maps to `xsd:string`. Integer stays eligible (integer
+  status codes are legitimate enums). These columns get no enum comment either
+  (`sh:datatype` already carries the signal).
+- **Floor rule, precedence pinned:** when the table's true cardinality
+  (`kairos-bronze:rowCount`) is KNOWN, `sh:in` additionally requires
+  `rowCount >= DEFAULT_ENUM_MIN_ROWS` (100, shared with `enrich_vocabulary`).
+  When `rowCount` is absent but `distinctScope="table"` is explicitly asserted
+  (warehouse-shaped evidence), the floor does NOT apply — the scope assertion
+  itself is the trust anchor.
+- Unchanged: PII columns are never enumerated; `sh:in` still requires
+  `0 < distinctCount ≤ --enum-distinct-max` and the ≤5 persisted samples to
+  cover the full distinct set (the values come from the samples).
+
+Consequence for existing hubs: legacy vocabularies produce advisories instead
+of enums until regenerated (`import-flatfile` + `import-source`); capped
+flatfile imports never produce `sh:in`. The suggestions this suppresses are
+exactly the ones the old rule fabricated.
 
 ---
 
@@ -11196,6 +11243,6 @@ were exactly the ones the old semantics fabricated.
 - `column-coverage-audit` display renders an unknown denominator as `distinct=N/?`.
 - DD-050 and DD-039 amended; DD-076's "distinctCount is the reliability signal" is
   falsified for windowed evidence and is addressed by #424 (suggest-shapes reads
-  `distinctScope`) in a follow-up PR.
+  `distinctScope` — see DD-076's 2026-08-15 amendment).
 
 ---

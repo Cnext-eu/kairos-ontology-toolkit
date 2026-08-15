@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records — the same pathology as #405 — and would have listed already-processed documents as needing work.
 
 ### Changed
+- **`suggest-shapes` emits `sh:in` enums only from full-table distinct evidence** (#424, DD-076 amendment).
+  On a real hub, 82% of 217 generated `sh:in` enums were single-value and several provably wrong
+  (`booking_status` → only `"TO_REQUEST"` of 5 real values): a distinctCount computed inside a capped
+  profiling window was treated as population truth. `sh:in` now additionally requires the table to assert
+  `kairos-bronze:distinctScope="table"` (the DD-156 evidence contract), a non-temporal/non-decimal/non-boolean/
+  non-UUID datatype (integer status codes stay eligible; UUID is caught via `formatHint` or the sample pattern —
+  SQL Server `uniqueidentifier` maps to `xsd:string`), and — when the true `rowCount` is known — at least
+  100 rows. Sample-scoped evidence yields per-case advisory comments instead (saturated window / window below
+  the 100-row floor / unsaturated "possible enum … not verified against full data"). **Behavior change for
+  existing hubs**: legacy vocabularies (no `distinctScope`) produce a "regenerate the source vocabulary with
+  import-source" advisory instead of enums until re-imported, and capped flatfile imports never produce `sh:in`
+  — the drafts stop emitting exactly the weakly-evidenced enums the old rule fabricated.
 - **`row_count` now means true table cardinality — one meaning per profiling field** (#422, DD-156).
   It previously meant full-table `COUNT(*)` on the warehouse path but capped-read *window size* on the
   flatfile path, so consumers thresholding on it treated 1,000-row windows as population truth. Schema YAML
@@ -51,8 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and cardinality-based FK matching is knowingly disabled on capped flatfiles (both advisory-only — the old
   behavior fabricated them from windows). **Migration is regeneration**: re-run `import-flatfile` +
   `import-source`; the three predicates are merge-managed, so a refreshed import updates them in place in
-  existing vocabulary TTLs. Note: `suggest-shapes` does not yet read `distinctScope` — #424 stays live until
-  its follow-up PR lands (no worse than today).
+  existing vocabulary TTLs. `suggest-shapes` consumes this contract (#424, entry above).
 - **`kairos-bronze.ttl` now declares every predicate `import-source` emits** (chore; groundwork for #422/#424).
   The importer emitted ten `kairos-bronze:` predicates that the scaffold vocabulary never declared —
   `rowCount`, `distinctCount`, `sampleValues`, `formatHint`, `suggestedEnum`, `enumValues`,
