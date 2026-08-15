@@ -1,0 +1,152 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+"""Tests for ai_preflight module (DD-159)."""
+
+import pytest
+
+from kairos_ontology.core.ai_preflight import (
+    preflight_ai_provider,
+    preflight_all_roles,
+    require_ai_provider,
+    AIRolePreflight,
+    STATUS_OK,
+    STATUS_NOT_CONFIGURED,
+    STATUS_MISCONFIGURED,
+    STATUS_UNREACHABLE,
+    STATUS_UNPROBED,
+)
+from kairos_ontology.core.ai_provider import (
+    ROLE_AFFINITY,
+    ROLE_ALIGNMENT,
+    NotConfigured,
+    Unreachable,
+)
+
+
+class TestPreflightNoConfig:
+    """When no provider is configured, preflight reports not_configured."""
+
+    def test_single_role_not_configured(self):
+        result = preflight_ai_provider(ROLE_AFFINITY, probe=False)
+        assert result.status == STATUS_NOT_CONFIGURED
+        assert result.is_blocking
+        assert not result.is_ok
+        assert result.error
+        assert result.remediation
+
+    def test_all_roles_not_configured(self):
+        report = preflight_all_roles(probe=False)
+        assert len(report.roles) == 2
+        assert all(r.status == STATUS_NOT_CONFIGURED for r in report.roles)
+        assert report.is_blocking
+
+    def test_json_no_api_key(self):
+        """JSON output must never contain api_key."""
+        report = preflight_all_roles(probe=False)
+        d = report.to_dict()
+        assert "api_key" not in d
+        for role in d["roles"]:
+            assert "api_key" not in role
+
+
+class TestPreflightWithConfig:
+    """When a provider is configured, preflight reports unprobed (no probe) or ok (probe)."""
+
+    def test_unprobed_with_github_token(self, github_provider_env):
+        result = preflight_ai_provider(ROLE_AFFINITY, probe=False)
+        assert result.status == STATUS_UNPROBED
+        assert result.provider == "github"
+        assert result.model
+        assert result.endpoint
+        assert not result.is_blocking
+        assert result.has_warnings
+
+    def test_unprobed_all_roles(self, github_provider_env):
+        report = preflight_all_roles(probe=False)
+        assert all(r.status == STATUS_UNPROBED for r in report.roles)
+        assert not report.is_blocking
+        assert report.has_warnings
+
+    def test_probed_ok(self, github_provider_env, monkeypatch):
+        """Probe succeeds → status=ok."""
+        import kairos_ontology.core.ai_preflight as ap
+
+        def fake_probe(config, *, timeout_s=10.0):
+            return None
+
+        monkeypatch.setattr(ap, "_probe_client", fake_probe)
+        result = preflight_ai_provider(ROLE_AFFINITY, probe=True)
+        assert result.status == STATUS_OK
+        assert result.is_ok
+        assert not result.is_blocking
+
+    def test_probed_unreachable(self, github_provider_env, monkeypatch):
+        """Probe fails → status=unreachable."""
+        import kairos_ontology.core.ai_preflight as ap
+
+        def fake_probe(config, *, timeout_s=10.0):
+            raise Unreachable("connection refused")
+
+        monkeypatch.setattr(ap, "_probe_client", fake_probe)
+        result = preflight_ai_provider(ROLE_AFFINITY, probe=True)
+        assert result.status == STATUS_UNREACHABLE
+        assert result.is_blocking
+        assert "connection refused" in result.error
+
+
+class TestRequireAIProvider:
+    """require_ai_provider raises typed exceptions when not usable."""
+
+    def test_raises_not_configured(self):
+        with pytest.raises(NotConfigured):
+            require_ai_provider(ROLE_AFFINITY)
+
+    def test_raises_not_configured_alignment(self):
+        with pytest.raises(NotConfigured):
+            require_ai_provider(ROLE_ALIGNMENT)
+
+    def test_no_op_when_configured(self, github_provider_env):
+        """When configured (unprobed), require_ai_provider does not raise."""
+        require_ai_provider(ROLE_AFFINITY, probe=False)
+
+    def test_raises_unreachable(self, github_provider_env, monkeypatch):
+        import kairos_ontology.core.ai_preflight as ap
+
+        def fake_probe(config, *, timeout_s=10.0):
+            raise Unreachable("timeout")
+
+        monkeypatch.setattr(ap, "_probe_client", fake_probe)
+        with pytest.raises(Unreachable):
+            require_ai_provider(ROLE_AFFINITY, probe=True)
+
+
+class TestAIRolePreflightDataclass:
+    """AIRolePreflight.to_dict excludes empty fields and never includes api_key."""
+
+    def test_to_dict_minimal(self):
+        r = AIRolePreflight(role="affinity", status=STATUS_NOT_CONFIGURED)
+        d = r.to_dict()
+        assert d == {"role": "affinity", "status": "not_configured"}
+
+    def test_to_dict_no_api_key_even_if_present(self):
+        r = AIRolePreflight(role="affinity", status=STATUS_OK, provider="github")
+        d = r.to_dict()
+        assert "api_key" not in d
+        assert d["provider"] == "github"
+
+
+class TestEndpointWithoutKey:
+    """Per-role endpoint set without key → misconfigured (DD-159 / A1 fix)."""
+
+    def test_misconfigured(self, monkeypatch):
+        monkeypatch.setenv("KAIROS_AI_AFFINITY_ENDPOINT", "http://localhost:8080/v1")
+        result = preflight_ai_provider(ROLE_AFFINITY, probe=False)
+        assert result.status == STATUS_MISCONFIGURED
+        assert result.is_blocking
+
+    def test_key_none_opt_in(self, monkeypatch):
+        monkeypatch.setenv("KAIROS_AI_AFFINITY_ENDPOINT", "http://localhost:8080/v1")
+        monkeypatch.setenv("KAIROS_AI_AFFINITY_KEY", "none")
+        result = preflight_ai_provider(ROLE_AFFINITY, probe=False)
+        assert result.status == STATUS_UNPROBED
+        assert not result.is_blocking

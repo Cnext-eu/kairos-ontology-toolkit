@@ -136,6 +136,9 @@ class TestUnresolvedAnchorEmitsNoRelationshipClusters:
         client = _mock_client_never_called()
         with (
             mock.patch(
+                "kairos_ontology.core.propose_alignment.require_ai_provider",
+            ),
+            mock.patch(
                 "kairos_ontology.core.propose_alignment.get_ai_client",
                 return_value=client,
             ),

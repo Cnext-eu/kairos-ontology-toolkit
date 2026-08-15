@@ -26,6 +26,10 @@ AUTOPILOT_ANCHORS = [
     # Stage ladder
     "validate",
     "compile --check",
+    # Stage 0 AI provider preflight
+    "check-ai-config",
+    "Stage 0 pre-flight: AI provider",
+    "**STOP**",
     # Decision Log as primary deliverable
     "Decision Log",
     "decision sync-index",
@@ -42,7 +46,12 @@ AUTOPILOT_ANCHORS = [
     "escalates",
     # Transparency report
     "transparency report",
-]
+        "Source coverage metric",
+        "Unbound tables over 1000 rows",
+        "Conformance-risk list",
+        "**BLOCKED**",
+        "Zero-relationships flag",
+    ]
 
 
 def _skill(root: Path, name: str) -> str:

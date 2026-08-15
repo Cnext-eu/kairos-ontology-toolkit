@@ -210,6 +210,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-156](#dd-156-profiling-evidence-semantics-rowcount-rowssampled-distinctscope) | Profiling evidence semantics: row_count, rows_sampled, distinctScope | Accepted | 2026-08-15 |
 | [DD-157](#dd-157-domain-ownership-surfacing-and-demand-evidence-routing) | Domain ownership surfacing and demand-evidence routing | Accepted | 2026-08-15 |
 | [DD-158](#dd-158-reference-models-resolve-from-an-installed-python-package-supersedes-dd-152-amends-dd-036) | Reference Models Resolve From an Installed Python Package (Supersedes DD-152, Amends DD-036) | Accepted | 2026-08-15 |
+| [DD-159](#dd-159-llm-judgment-steps-must-never-auto-degrade) | LLM Judgment Steps Must Never Auto-Degrade | Accepted | 2026-07-28 |
 
 ---
 
@@ -8273,7 +8274,7 @@ recorded* provenance stamp — never guessing — keeps the provenance policy ho
 `generation_model`/`generation_error`, `OUTCOME_SEMANTIC_SUCCESS` /
 `OUTCOME_PROVIDER_FAILURE` / `OUTCOME_FALLBACK_ONLY`, `AlignmentTotalFailureError`,
 `ClaimRegistry.generation_outcomes` (`GenerationOutcome`), `ClaimCheckReport
-.incomplete_generation`, `propose-alignment --allow-fallback-registry`,
+.incomplete_generation`, `propose-alignment --allow-fallback-output`,
 `ai_provider.create_chat_completion`/`sanitize_provider_error`
 
 ### Context
@@ -8308,7 +8309,7 @@ raises `AlignmentTotalFailureError` after flushing the cache — the CLI catches
 distinctly from `EnvironmentError`/`ValueError`, prints no success line, and exits
 1. A domain whose tables are 100% `fallback_only` is skipped by default (an
 all-placeholder registry must never masquerade as a real proposal); the new
-`--allow-fallback-registry` flag opts into writing it anyway, with its
+`--allow-fallback-output` flag opts into writing it anyway, with its
 `generation_outcomes` recording the incomplete status.
 
 `ClaimRegistry` gains an additive `generation_outcomes: list[GenerationOutcome]`
@@ -8355,7 +8356,7 @@ any existing registry, gate, or the concurrent claim-gates work's own compositio
   (no new keys emitted, no new CLI output beyond the model preflight line).
 - A domain with all tables `fallback_only` is no longer written by default — a
   behavioral change from writing an all-placeholder registry unconditionally;
-  `--allow-fallback-registry` restores the old file-producing behavior explicitly.
+  `--allow-fallback-output` restores the old file-producing behavior explicitly.
 - A total-failure run now exits 1 instead of 0; callers/scripts relying on the old
   silent-success behavior on total outage must handle the new exit code.
 - `check-claims` output gains a non-blocking `incomplete_generation` warning
@@ -8367,6 +8368,103 @@ any existing registry, gate, or the concurrent claim-gates work's own compositio
   the run. DD-128 also makes the preflight's provider config endpoint/auth-only —
   the caller-resolved model is authoritative and is never re-derived from
   `KAIROS_AI_{ROLE}_MODEL` here.
+
+---
+
+## DD-159: LLM Judgment Steps Must Never Auto-Degrade
+
+**Status:** Accepted
+**Date:** 2026-07-28
+**Affects:** `core/ai_provider.py`, `core/ai_preflight.py`,
+`core/generation_outcome.py`, `core/propose_alignment.py`,
+`core/analyse_sources.py`, `cli/inspection.py` (`check-ai-config`),
+`cli/sources.py`
+**Implementation:** `AIProviderError`/`NotConfigured`/`Misconfigured`/`Unreachable`
+exception hierarchy, `require_ai_provider`/`preflight_ai_provider`,
+`check-ai-config` command, `analyse-sources` total-failure guard
+(`AffinityTotalFailureError`), `propose-alignment` preflight via
+`require_ai_provider`, skill gate 0 (autopilot Stage 0 pre-flight, mapping
+Gate 0, source step 11)
+
+### Context
+
+An LLM judgment step (source affinity analysis, alignment proposal) could
+previously fall through to a heuristic or a plausible-empty result when the AI
+provider was missing, misconfigured, or unreachable.  The toolkit's
+`analyse-sources` even cached fabricated fallback domains at `confidence: 0.0`
+as if they were real results, poisoning subsequent runs from cache.  The wrong
+CLI flag name (`--allow-fallback-registry` instead of `--allow-fallback-output`)
+was also documented in error messages and design docs, sending users to a flag
+that does not exist.
+
+### Decision
+
+The toolkit now treats any LLM judgment step as a three-tier policy:
+
+1. **Mechanical** — deterministic passes (imports, vocabulary parsing, lexical
+   matching) are always available and are not a "fallback."
+2. **Judgment** — the LLM is the sole authority.  It must either run or fail fast
+   with a typed `AIProviderError`.  It must never auto-degrade to a heuristic or
+   produce plausible-empty output.  `require_ai_provider` is the raising
+   preflight gates at the entry of each judgment loop.
+3. **Blocked** — explicitly-invalid sentinels (`domain: ""`, `confidence: null`,
+   `generation_*` keys on `TableAssignment`) or nothing.  Never plausible.
+
+`ai_preflight.require_ai_provider(role, *, model, probe=False)` is the single
+raising wrapper commands call before entering a judgment loop.  It returns the
+resolved `AIProviderConfig` so callers do not need a second
+`resolve_provider_config` call.  `preflight_ai_provider` / `preflight_all_roles`
+never raise for config reasons — they return statuses
+(`ok` / `not_configured` / `misconfigured` / `unreachable` / `unprobed`) — so
+the `check-ai-config` diagnostic command can report without crashing.
+
+A new `check-ai-config` CLI command prints per-role status with computed
+remediation, supports `--format text|json`, `--role`, `--model`, `--probe`,
+`--strict`, and never prints secret values (env var names only, no `api_key`
+field in JSON).  Probe stays opt-in on working commands (`--preflight-probe`);
+`check-ai-config` defaults to `--probe` because it is a diagnostic.
+
+`analyse-sources` now: (1) never caches a failed table
+(`generation_outcome == SEMANTIC_SUCCESS` gate); (2) records typed outcomes
+(`generation_outcome`/`generation_error`/`generation_provider`/`generation_model`)
+on `TableAssignment`; (3) hoists the client and prefights before the cost banner;
+(4) stages writes and raises `AffinityTotalFailureError` on total failure (exits
+1, caught in `cli/sources.py`).  Failed tables persist with `domain: ""` +
+`confidence: null` + `generation_*` keys, so both downstream readers skip them
+automatically.
+
+`propose-alignment` calls `require_ai_provider` before per-table fan-out and
+deleted the old `except EnvironmentError` swallow that silently fell through to
+heuristic mode.  The wrong flag name `--allow-fallback-registry` was corrected
+to `--allow-fallback-output` everywhere (code, docs, changelog, tests).
+`require_ai_provider` now returns the resolved provider config, eliminating the
+second `resolve_provider_config` call (and the need to mock it separately in
+tests).
+
+Skill documents pin the preflight as a hard gate:
+`kairos-flow-autopilot` Stage 0 pre-flight with a **STOP** guardrail,
+`kairos-design-mapping` Gate 0, `kairos-design-source` step 11 amendment.
+
+### Rationale
+
+A tool that silently substitutes a heuristic for an LLM judgment step produces
+output that looks trustworthy but is not.  The only safe policy is fail-fast:
+surface the missing/misconfigured provider up front with a one-line remediation,
+and never let a judgment step fall through to plausible-empty output.  Typed
+exceptions (subclassing `EnvironmentError`) preserve existing catch sites and
+test assertions.  The preflight-then-return pattern avoids a double env lookup
+and keeps the test surface minimal (one mock instead of two).
+
+### Consequences
+
+- `analyse-sources` exits 1 on total provider failure (was 0).  Partial failure
+    still exits 0 with a visible warning.
+- `*-affinity.yaml` gains optional `generation_*` keys and `domain: ""` for
+    failed tables.  `schema_version` stays 2.  External consumers assuming every
+    table has a non-empty domain will break.
+- A hub with `KAIROS_AI_{ROLE}_ENDPOINT` and no `_KEY` now errors instead of
+    401-ing every call.  Opt out with `_KEY=none`.
+- The wrong flag name `--allow-fallback-registry` is gone from all surfaces.
 
 ---
 
@@ -8691,7 +8789,7 @@ different kind of open question.
   additive to the Claim Registry schema; existing registries without them continue to load
   unchanged (tolerant loading verified against the pre-existing "good registry" fixture).
 - A domain whose *only* tables are unresolved-anchor tables is gated behind
-  `--allow-fallback-registry` exactly like any other all-fallback domain
+  `--allow-fallback-output` exactly like any other all-fallback domain
   (DD-121) — an unresolved anchor's synthetic outcome is `fallback_only`, not a distinct
   gate.
 - Out of scope for this change: surfacing `unresolved_anchors` in `check-claims`/
@@ -9135,7 +9233,7 @@ Three defects surfaced in review of the RC7 lifecycle work (DD-121, DD-122, DD-1
    that no registry was written. The per-domain write gate only skipped a domain that was
    *entirely* `provider_failure` or *entirely* `fallback_only`, so a domain **mixing** the
    two (e.g. one table with an ambiguous anchor, one whose provider call failed) — and an
-   opted-in `--allow-fallback-registry` domain — was written inside the loop, before the
+   opted-in `--allow-fallback-output` domain — was written inside the loop, before the
    run-wide verdict existed. The error then claimed nothing had been written.
 3. **Model precedence inverted.** `propose_alignment_cmd` resolves model precedence
    (explicit `--model` > `--high-accuracy` preset > `KAIROS_AI_ALIGNMENT_MODEL` >
@@ -9196,7 +9294,7 @@ at the point of use.
 - `propose-alignment`'s `✓ Written` / `🧭 Unresolved anchors` lines are now printed after
   all domains are processed (the commit phase), not interleaved with per-domain analysis.
   Returned paths, file contents, and per-domain skip reporting are unchanged.
-- On total semantic failure, an opted-in (`--allow-fallback-registry`) fallback-only domain
+- On total semantic failure, an opted-in (`--allow-fallback-output`) fallback-only domain
   is no longer written — a deliberate narrowing of DD-121's stated behavior, in favor of the
   stronger, uniform no-write guarantee.
 - `KAIROS_AI_ALIGNMENT_MODEL` no longer overrides `--model`/`--high-accuracy`; a hub that

@@ -104,6 +104,15 @@ Work on one source system, one domain, and one entity binding at a time.
 
 ## Hard gates
 
+### Gate 0: AI provider preflight
+
+Before entering the LLM judgment loop for a binding, run
+`kairos-ontology check-ai-config --role alignment`.  If the role is
+`not_configured` or `misconfigured`, stop and print the remediation — do not
+substitute a heuristic, do not auto-degrade, do not produce a plausible-empty
+binding (DD-159).  This gate does not block a deterministic-only pass (a user
+who is not invoking the LLM yet), but it must be green before any LLM step.
+
 ### Gate 1: Complete, PII-safe evidence
 
 Before proposing a binding:
@@ -301,6 +310,11 @@ and capabilities and requires deterministic bounded expressions.
 Raw SQL and technical-cleanup functions such as `cast`, `trim`, `replace`, and
 `json-*` are not binding expressions.
 
+Null policy is compiler-inferred from expression structure and target range; it
+must not be authored at field level. The `null` literal and kind-specific
+operators (`is-null`, `coalesce`, `nullif`) are the only null-control levers.
+Do not add a `nullPolicy` key to a `fields:` entry.
+
 ## Binding loop
 
 ### 1. Select one entity scope
@@ -332,6 +346,14 @@ Keep these concepts separate:
 
 Do not infer identity solely from a column name. Require evidence for uniqueness
 and nullability, and add focused `not-null`/`unique` checks when supported.
+
+`technicalFields:` with `purpose: identity` materializes a source column into
+Silver output for identity use without asserting an ontology property. Use it
+when a key column must reach Silver but has no canonical property (e.g. a
+composite key component, or a surrogate FK). Do not double-map: a column that
+appears in both `fields:` (as a `property:`) and `technicalFields:` raises
+`identity.ambiguous-key-mapping` at compile time. See `exemplar-binding.yaml`
+for a worked example with a composite grain and `purpose: identity`.
 
 ### 4. Propose fields in bounded batches
 

@@ -911,8 +911,13 @@ def _parse_expression(
                 "expression.literal-datatype",
                 "literal expression requires a 'datatype'",
             )
+        _literal = node["literal"]
+        if isinstance(_literal, bool):
+            _lexical = "true" if _literal else "false"
+        else:
+            _lexical = str(_literal)
         return ExprLiteral(
-            lexical=str(node["literal"]),
+            lexical=_lexical,
             datatype=str(node["datatype"]),
             null_policy=null_policy,
             pointer=pointer,

@@ -167,6 +167,9 @@ def _run(tmp_path, *, cross_module):
         kw = {"cross_module": True, "accelerator": "logistics", "ref_models_dir": tmp_path}
     with (
         mock.patch(
+            "kairos_ontology.core.propose_alignment.require_ai_provider",
+        ),
+        mock.patch(
             "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
         ),
         mock.patch(

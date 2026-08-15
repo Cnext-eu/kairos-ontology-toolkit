@@ -25,6 +25,12 @@ from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import SidecarCache, compute_entry_hash, open_cache
 from .source_catalog import build_source_catalog
+from .ai_provider import ROLE_AFFINITY, sanitize_provider_error
+from .generation_outcome import (
+    OUTCOME_PROVIDER_FAILURE,
+    OUTCOME_SEMANTIC_SUCCESS,
+    OUTCOME_UNRESOLVED_ANSWER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +80,17 @@ class TableAssignment:
     domain: str
     domain_group: str = ""
     domain_uris: list[str] = field(default_factory=list)
-    confidence: float = 0.0
+    confidence: float | None = 0.0
     likely_entity: str = ""
     rationale: str = ""
     indicative_columns: list[str] = field(default_factory=list)
     # Each entry: {"domain", "domain_group", "domain_uris"}
     secondary_domains: list[dict[str, Any]] = field(default_factory=list)
+    # DD-159: typed generation outcome per table.
+    generation_outcome: str = OUTCOME_SEMANTIC_SUCCESS
+    generation_error: str = ""
+    generation_provider: str = ""
+    generation_model: str = ""
 
 
 @dataclass
@@ -103,6 +114,19 @@ class SourceAnalysis:
     model_used: str
     table_assignments: list[TableAssignment] = field(default_factory=list)
     sample_evidence: SampleEvidence | None = None
+
+
+class AffinityTotalFailureError(RuntimeError):
+    """Raised when every attempted table's semantic generation failed.
+
+    "Attempted" excludes tables served from the per-table sidecar cache (no
+    LLM call made). When raised, **no** affinity YAML was written by the run:
+    writes are staged and committed only after the run-wide verdict is known,
+    so a pre-existing affinity file for this system is left byte-identical.
+    Callers must exit non-zero and never report success.
+
+    Mirrors :class:`propose_alignment.AlignmentTotalFailureError`.
+    """
 
 
 def _filter_analysis_by_domain(
@@ -978,15 +1002,22 @@ def _as_str_list(val: Any) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _get_openai_client():
+def _get_openai_client(model: str = DEFAULT_MODEL):
     """Create an OpenAI client configured for the active AI provider.
 
     Uses the ``affinity`` role so a per-role endpoint/model override applies to the
     high-volume table → domain classification call (issue #182).
-    """
-    from kairos_ontology.core.ai_provider import ROLE_AFFINITY, get_ai_client
 
-    return get_ai_client(role=ROLE_AFFINITY)
+    Calls :func:`require_ai_provider` first so a missing/misconfigured provider
+    fails fast before any table is attempted, instead of silently failing every
+    table and caching fabricated fallback domains (DD-159).
+    """
+    from kairos_ontology.core.ai_preflight import require_ai_provider
+
+    require_ai_provider(ROLE_AFFINITY, model=model, probe=False)
+    from kairos_ontology.core.ai_provider import get_ai_client
+
+    return get_ai_client(model=model, role=ROLE_AFFINITY)
 
 
 def _format_columns(columns: list[dict[str, Any]]) -> str:
@@ -1071,30 +1102,26 @@ def analyse_table_single_call(
     valid_ids = set(candidate_ids)
     prompt = _build_single_call_prompt(table_name, columns, candidates)
 
-    try:
-        response = call_with_backoff(
-            lambda: client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert data architect. You classify source system "
-                            "tables into business data domains based on table names, column "
-                            "names, and sample data values. You always pick exactly one "
-                            "primary domain. Always respond with valid JSON."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
+    response = call_with_backoff(
+        lambda: client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert data architect. You classify source system "
+                        "tables into business data domains based on table names, column "
+                        "names, and sample data values. You always pick exactly one "
+                        "primary domain. Always respond with valid JSON."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
         )
-        result = json.loads(response.choices[0].message.content)
-    except Exception as e:
-        logger.warning("LLM single-call analysis failed for table %s: %s", table_name, e)
-        result = {}
+    )
+    result = json.loads(response.choices[0].message.content)
     if not isinstance(result, dict):
         result = {}
 
@@ -1105,6 +1132,7 @@ def analyse_table_single_call(
         likely_entity = str(result.get("likely_entity", "") or "")
         rationale = str(result.get("rationale", "") or "")
         indicative = _as_str_list(result.get("indicative_columns"))
+        fell_back = False
     else:
         domain_id = _pick_fallback(valid_ids, fallback_ids)
         confidence = 0.0
@@ -1114,6 +1142,7 @@ def analyse_table_single_call(
             or f"Model returned no valid domain; fell back to '{domain_id}'."
         )
         indicative = []
+        fell_back = True
 
     secondaries: list[str] = []
     for raw_sid in _as_str_list(result.get("secondary_domains")):
@@ -1130,6 +1159,7 @@ def analyse_table_single_call(
         "likely_entity": likely_entity,
         "rationale": rationale,
         "indicative_columns": indicative,
+        "_fell_back": fell_back,
     }
 
 
@@ -1172,6 +1202,7 @@ def analyse_source_system(
     cache: SidecarCache | None = None,
     system_name: str | None = None,
     tables: dict[str, list[dict[str, Any]]] | None = None,
+    client=None,
 ) -> SourceAnalysis:
     """Analyse one source system against candidate domains, table by table.
 
@@ -1221,7 +1252,8 @@ def analyse_source_system(
             f"availability before modeling. Missing samples: {missing or '(none)'}."
         )
 
-    client = _get_openai_client()
+    if client is None:
+        client = _get_openai_client(model)
     candidates = _build_candidates(ref_domains)
     meta_by_id = {c["id"]: c for c in candidates}
     # Stable signature of the candidate domain set for cache-key invalidation.
@@ -1260,34 +1292,63 @@ def analyse_source_system(
                     "res": cached,
                     "cache_key": cache_key,
                     "from_cache": True,
+                    "generation_outcome": OUTCOME_SEMANTIC_SUCCESS,
+                    "generation_error": "",
+                    "generation_provider": "",
+                    "generation_model": model,
                 }
         try:
             res = analyse_table_single_call(client, model, tbl_name, columns, candidates)
+            # If the model returned an unresolvable domain, analyse_table_single_call
+            # picks a fallback — record the outcome so we don't cache it as success.
+            if res.get("_fell_back", False):
+                outcome = OUTCOME_UNRESOLVED_ANSWER
+            else:
+                outcome = OUTCOME_SEMANTIC_SUCCESS
+            error_msg = ""
         except Exception as exc:  # noqa: BLE001 — isolate one table failure
             logger.warning("Classification failed for %s.%s: %s", sys_name, tbl_name, exc)
+            error_msg = sanitize_provider_error(exc)
             res = {
-                "domain": _pick_fallback(set(meta_by_id), FALLBACK_DOMAIN_IDS),
+                "domain": "",
                 "secondary_domains": [],
                 "confidence": 0.0,
                 "likely_entity": "",
-                "rationale": f"Classification error: {exc}",
+                "rationale": f"Classification error: {error_msg}",
                 "indicative_columns": [],
             }
+            outcome = OUTCOME_PROVIDER_FAILURE
         return {
             "table": tbl_name,
             "columns": columns,
             "res": res,
             "cache_key": cache_key,
             "from_cache": False,
+            "generation_outcome": outcome,
+            "generation_error": error_msg,
+            "generation_provider": "",
+            "generation_model": model,
         }
 
     def _report_classified(entry: dict[str, Any]) -> None:
         res = entry["res"]
         cache_marker = " (cached)" if entry["from_cache"] else ""
-        report(
-            f"      ✓ {entry['table']} → {res['domain']} "
-            f"({res['confidence']:.2f}) {res['likely_entity']}{cache_marker}",
-        )
+        outcome = entry.get("generation_outcome", OUTCOME_SEMANTIC_SUCCESS)
+        if outcome == OUTCOME_PROVIDER_FAILURE:
+            report(
+                f"      ⚠ {entry['table']} → classification FAILED: "
+                f"{entry.get('generation_error', '(unknown)')}{cache_marker}",
+            )
+        elif outcome == OUTCOME_UNRESOLVED_ANSWER:
+            report(
+                f"      ⚠ {entry['table']} → {res['domain']} "
+                f"(fallback — model returned unresolvable domain){cache_marker}",
+            )
+        else:
+            report(
+                f"      ✓ {entry['table']} → {res['domain']} "
+                f"({res['confidence']:.2f}) {res['likely_entity']}{cache_marker}",
+            )
 
     classified = map_concurrent(
         _classify,
@@ -1301,7 +1362,15 @@ def analyse_source_system(
         tbl_name = entry["table"]
         columns = entry["columns"]
         res = entry["res"]
-        if cache is not None and not entry["from_cache"] and entry["cache_key"]:
+        outcome = entry.get("generation_outcome", OUTCOME_SEMANTIC_SUCCESS)
+        error_msg = entry.get("generation_error", "")
+        # DD-159: never cache a failure or fallback — only cache semantic success.
+        if (
+            cache is not None
+            and not entry["from_cache"]
+            and entry["cache_key"]
+            and outcome == OUTCOME_SEMANTIC_SUCCESS
+        ):
             cache.put(entry["cache_key"], res)
 
         domain_id = res["domain"]
@@ -1318,20 +1387,29 @@ def analyse_source_system(
                 }
             )
 
-        assignments.append(
-            TableAssignment(
-                table=tbl_name,
-                total_columns=len(columns),
-                domain=domain_id,
-                domain_group=meta.get("group", ""),
-                domain_uris=meta.get("uris", []),
-                confidence=res["confidence"],
-                likely_entity=res["likely_entity"],
-                rationale=res["rationale"],
-                indicative_columns=res["indicative_columns"],
-                secondary_domains=secondary,
-            )
+        ta = TableAssignment(
+            table=tbl_name,
+            total_columns=len(columns),
+            domain=domain_id,
+            domain_group=meta.get("group", ""),
+            domain_uris=meta.get("uris", []),
+            confidence=res["confidence"],
+            likely_entity=res["likely_entity"],
+            rationale=res["rationale"],
+            indicative_columns=res["indicative_columns"],
+            secondary_domains=secondary,
+            generation_outcome=outcome,
+            generation_error=error_msg,
+            generation_provider=entry.get("generation_provider", ""),
+            generation_model=entry.get("generation_model", ""),
         )
+        if outcome != OUTCOME_SEMANTIC_SUCCESS:
+            # Normalize failed assignments: empty domain + null confidence.
+            ta.domain = ""
+            ta.confidence = None
+            ta.domain_group = ""
+            ta.domain_uris = []
+        assignments.append(ta)
 
     return SourceAnalysis(
         system=sys_name,
@@ -1392,6 +1470,16 @@ def write_analysis_output(analysis: SourceAnalysis, output_dir: Path) -> Path:
         }
         if ta.secondary_domains:
             table_dict["secondary_domains"] = ta.secondary_domains
+        # DD-159: emit generation_* only on non-success so happy-path YAML
+        # stays byte-identical (no extra keys).
+        if ta.generation_outcome != OUTCOME_SEMANTIC_SUCCESS:
+            table_dict["generation_outcome"] = ta.generation_outcome
+            if ta.generation_error:
+                table_dict["generation_error"] = ta.generation_error
+            if ta.generation_provider:
+                table_dict["generation_provider"] = ta.generation_provider
+            if ta.generation_model:
+                table_dict["generation_model"] = ta.generation_model
         data["tables"].append(table_dict)
 
         entry = summary.setdefault(
@@ -1636,6 +1724,12 @@ def run_analyse_sources(
 
     analyses: list[SourceAnalysis] = []
 
+    # DD-159: preflight the AI provider before the cost banner and loop,
+    # so a missing/misconfigured provider fails fast instead of silently
+    # failing every table and caching fabricated fallbacks.
+    from .ai_preflight import require_ai_provider
+    require_ai_provider(ROLE_AFFINITY, model=model, probe=False)
+
     # Per-table sidecar cache; disabled with --force.
     cache = open_cache(output_dir, "analyse-sources", enabled=not force)
 
@@ -1677,18 +1771,56 @@ def run_analyse_sources(
             system_name=sys_name,
             tables=tables,
         )
-        classified_count = len(analysis.table_assignments)
+
+        # DD-159: detect total failure for this system — every attempted
+        # (non-cached) table was a provider failure. Cached tables are excluded
+        # from "attempted" since no LLM call was made.
+        attempted = [
+            ta for ta in analysis.table_assignments
+            if ta.generation_outcome != OUTCOME_SEMANTIC_SUCCESS
+        ]
+        all_attempted_failed = (
+            bool(analysis.table_assignments)
+            and all(
+                ta.generation_outcome == OUTCOME_PROVIDER_FAILURE
+                for ta in analysis.table_assignments
+            )
+        )
+        if all_attempted_failed:
+            # Total failure: do NOT write — leave any pre-existing file untouched.
+            report(
+                f"  ⛔ {sys_name}: total provider failure — "
+                f"{len(analysis.table_assignments)} table(s) all failed. "
+                f"Affinity file not written."
+            )
+            raise AffinityTotalFailureError(
+                f"Every table in '{sys_name}' failed classification "
+                f"({len(analysis.table_assignments)} table(s)). "
+                f"No affinity file was written. Check AI provider configuration "
+                f"with: kairos-ontology check-ai-config"
+            )
+
+        # Partial failure: warn but proceed.
+        if attempted:
+            report(
+                f"  ⚠ {sys_name}: {len(attempted)} table(s) had non-success outcomes "
+                f"(partial failure — file will be written with empty domains)."
+            )
+
         # Apply the --domains OUTPUT filter (primary-domain match) after the
         # table was classified against the full candidate set (issue #189).
         if output_domain_filter:
             analysis = _filter_analysis_by_domain(analysis, output_domain_filter)
         analyses.append(analysis)
 
+    # Staged writes: commit all analyses AFTER the loop succeeded.
+    for analysis in analyses:
         output_file = write_analysis_output(analysis, output_dir)
         output_files.append(output_file)
         n_tables = len(analysis.table_assignments)
         domains_hit = {ta.domain for ta in analysis.table_assignments}
         if output_domain_filter:
+            classified_count = n_tables
             report(
                 f"    → {n_tables}/{classified_count} table(s) kept "
                 f"(--domains filter) into {len(domains_hit)} domain(s) "

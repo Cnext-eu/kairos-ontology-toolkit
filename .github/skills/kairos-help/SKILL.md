@@ -41,6 +41,7 @@ keeps all downstream systems consistent with it, automatically.
 | `kairos-design-mapping` | Author EntityBinding YAML | "Bind the billing.invoices table to the Invoice entity." |
 | `scaffold-binding` | Auto-scaffold first-draft bindings | "Generate a skeleton binding for the crm.organisations table." |
 | `fit-report` | Inspect property coverage before mapping | "Show me which Invoice properties my data already populates." |
+| `inverse-scan` | Find candidate source tables for a class | "Which source tables have columns matching Invoice properties?" |
 | `kairos-develop-dbt-transformation` | Complex contracted dbt SQL | "Write a dbt model to dedupe invoice line items." |
 | `kairos-design-gold` | Design Gold/BI products | "Create a Gold model for monthly invoice summaries." |
 | `kairos-design-mdm` | Author MDM policy | "Define survivorship rules for duplicate customers." |
@@ -51,7 +52,6 @@ keeps all downstream systems consistent with it, automatically.
 | `kairos-package-dataplatform` | Consume artifacts downstream | "Wire the billing dbt package into our platform repo." |
 | `kairos-toolkit-dev` | Develop the toolkit itself | "Add a new CLI flag to the compile command." |
 | `kairos-toolkit-ops` | Release/update managed files | "Bump the toolkit version and sync scaffold files." |
-| `SC-feature-branch` | Start a feature branch | "Create a feature branch for the invoice binding work." |
 | `SC-merge-pr` | Open/merge a PR | "Open a PR to merge this feature branch." |
 | `SC-document` | Manage Outline wiki docs | "Update the wiki page for our ontology conventions." |
 

@@ -74,6 +74,7 @@ SENTINEL_PARENT_DOMAIN = "<CONFIRM_PARENT_DOMAIN>"
 SENTINEL_PARENT_ENTITY_NAME = "<CONFIRM_PARENT_ENTITY_NAME>"
 SENTINEL_PARENT_KEY_COLUMN = "<CONFIRM_PARENT_KEY_COLUMN>"
 SENTINEL_LOCAL_FK_COLUMN = "<CONFIRM_LOCAL_FK_COLUMN>"
+SENTINEL_RELATIONSHIP_PROPERTY = "<CONFIRM_RELATIONSHIP_PROPERTY>"
 
 _TECHNICAL_FIELD_TYPES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"bigint", re.IGNORECASE), "int64"),
@@ -404,6 +405,100 @@ def classify_technical_field(column: SourceColumn) -> str | None:
     if _FK_SHAPED_NAME.search(column.name):
         return "relationship"
     return None
+
+
+# --------------------------------------------------------------------------------------
+# Cross-source foreign-key scanner (issue #457, tier 1 — deterministic, no LLM).
+# --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CrossSourceFKMatch:
+    """One tier-1 cross-source FK candidate (exact name equality, deterministic)."""
+
+    local_column: str
+    target_binding_name: str
+    target_class: str
+    target_domain: str
+    foreign_identity_column: str
+
+
+def scan_cross_source_fks(
+    hub_root: Path,
+    columns: tuple[SourceColumn, ...],
+    *,
+    exclude_name: str | None = None,
+) -> tuple[CrossSourceFKMatch, ...]:
+    """Scan existing bindings for identity columns matching FK-shaped columns in *columns*.
+
+    Tier 1 (deterministic, no LLM): for each FK-shaped column (``*_id`` / ``*_fk`` / ``*_code``)
+    in the table being scaffolded, every existing binding's identity ``sourceKey`` columns are
+    checked for **exact normalized name equality**. A match is a candidate relationship that the
+    author must confirm (tier 2) — it is never auto-authored.
+
+    *exclude_name* skips the binding being scaffolded (by its ``metadata.name``), so re-running
+    ``scaffold-binding`` on a table that already has a binding does not match against itself.
+
+    Returns a tuple of :class:`CrossSourceFKMatch`, one per (local_column, target_binding)
+    pair. A single local column may match multiple bindings; each match is reported separately
+    so the author can disambiguate.
+    """
+    bindings_dir = hub_root / "integration" / "bindings"
+    if not bindings_dir.is_dir():
+        return ()
+
+    # Build the identity-column index from existing bindings (normalized name -> list of
+    # (binding_name, target_class, domain, identity_column)).
+    index: dict[str, list[tuple[str, str, str, str]]] = {}
+    for path in sorted(bindings_dir.glob("*.binding.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        meta = data.get("metadata")
+        if not isinstance(meta, dict):
+            continue
+        name = meta.get("name", "")
+        if exclude_name is not None and name == exclude_name:
+            continue
+        domain = meta.get("domain", "")
+        target = data.get("target", {})
+        target_class = target.get("class", "") if isinstance(target, dict) else ""
+        identity = data.get("identity", {})
+        source_key = identity.get("sourceKey", []) if isinstance(identity, dict) else []
+        if not isinstance(source_key, list):
+            continue
+        for col in source_key:
+            if isinstance(col, str) and col:
+                index.setdefault(_normalize(col), []).append(
+                    (name, target_class, domain, col)
+                )
+
+    # For each FK-shaped column in the current table, check for exact normalized name equality
+    # against existing bindings' identity columns.  The candidate ladder's prefix-stripping
+    # rungs are intentionally NOT applied here: a prefix-stripped match (``order_trade_party_id``
+    # -> ``trade_party_id``) is a *weaker* signal than exact equality and is reserved for a
+    # future tier.  Tier 1 is deliberately high-precision, zero false positives.
+    matches: list[CrossSourceFKMatch] = []
+    for column in columns:
+        if not _FK_SHAPED_NAME.search(column.name):
+            continue
+        key = _normalize(column.name)
+        if key in index:
+            for binding_name, target_class, domain, identity_col in index[key]:
+                matches.append(
+                    CrossSourceFKMatch(
+                        local_column=column.name,
+                        target_binding_name=binding_name,
+                        target_class=target_class,
+                        target_domain=domain,
+                        foreign_identity_column=identity_col,
+                    )
+                )
+
+    return tuple(matches)
 
 
 # --------------------------------------------------------------------------------------
@@ -960,6 +1055,7 @@ class ScaffoldBindingResult:
     technical_field_columns: tuple[str, ...] = ()
     orphan_columns: tuple[str, ...] = ()
     relationship_candidates: tuple[tuple[str, str], ...] = ()
+    cross_source_fk_matches: tuple["CrossSourceFKMatch", ...] = ()
     column_prefix: str | None = None
     matched_property_count: int = 0
     datatype_property_count: int = 0
@@ -1257,6 +1353,20 @@ def run_scaffold_binding(
             }
         )
 
+    # Cross-source FK scanner (issue #457, tier 1 — deterministic, no LLM).
+    binding_name = f"{system}-{table}-to-{resolved_domain}"
+    fk_matches = scan_cross_source_fks(hub_root, columns, exclude_name=binding_name)
+    if fk_matches:
+        summary = ", ".join(
+            f"{m.local_column} -> {m.target_binding_name}.{m.foreign_identity_column}"
+            for m in fk_matches
+        )
+        notes.append(
+            f"cross-source FK scan: {len(fk_matches)} candidate relationship(s) by exact "
+            f"identity-column name match: {summary}. Confirm each against the target binding "
+            "before authoring a relationships: entry."
+        )
+
     if archetype.grain_mode == "derive":
         grain_columns, grain_note = propose_grain_columns(
             columns, pk_columns, column_prefix=match_result.column_prefix
@@ -1291,13 +1401,36 @@ def run_scaffold_binding(
     field_entries = (
         seed_fields if seed_fields is not None else _build_field_entries(columns, matches)
     )
-    # An empty `fields:` violates the schema (`required`, `minItems: 1`), so it is never written:
-    # the key is omitted entirely and the run is failed into a `.draft` artifact below (#336).
+    comment_hooks: dict[str, list[str]] = {}
+    # #444/#450: Emit <CONFIRM_PROPERTY:…> sentinel entries for columns with no property match.
+    # In a zero-match relation, ALL columns get sentinels. In a partial-match relation, only
+    # the orphan columns (no property match and no technical field) get sentinels, appended to
+    # the already-matched ``fields:`` list so the YAML is structurally valid and the orphans are
+    # visible at compile time as ``binding.unknown-property`` until mapped.
+    sentinel_columns: list[SourceColumn] = []
+    needs_field_mapping = False
+    if seed_fields is None:
+        if not field_entries:
+            sentinel_columns = list(columns)
+            needs_field_mapping = True
+        elif orphan_columns:
+            orphan_set = frozenset(orphan_columns)
+            sentinel_columns = [c for c in columns if c.name in orphan_set]
+            needs_field_mapping = True
+    if sentinel_columns:
+        field_entries = list(field_entries) + _build_sentinel_field_entries(
+            tuple(sentinel_columns)
+        )
+        comment_hooks.setdefault("fields", []).extend([
+            "# Sentinels: replace each <CONFIRM_PROPERTY:…> below with a real property IRI"
+            " (or remove the entry if the column is genuinely unused), then re-run"
+            " `compile --check`.",
+            "# Run `kairos-ontology propose-alignment` for LLM-assisted mapping.",
+        ])
     if field_entries:
         doc["fields"] = field_entries
     if technical_entries:
         doc["technicalFields"] = technical_entries
-    comment_hooks: dict[str, list[str]] = {}
     if archetype.scaffold_relationship_example:
         doc["relationships"] = [
             {
@@ -1404,6 +1537,18 @@ def run_scaffold_binding(
             "# Author a relationships: entry for each one you confirm; each is kept as a DD-139 "
             "technical field meanwhile so its value still reaches Silver."
         )
+    if fk_matches:
+        header_lines.append(
+            f"# Cross-source FK candidates -- exact identity-column name match ({len(fk_matches)}):"
+        )
+        for m in fk_matches:
+            header_lines.append(
+                f"#   {m.local_column} -> {m.target_binding_name} "
+                f"({m.target_class}, domain: {m.target_domain})."
+            )
+        header_lines.append(
+            "# Confirm each candidate before authoring a relationships: entry (tier 2 judgment)."
+        )
     if mapped_columns:
         header_lines.append(
             f"# Mapped columns ({len(mapped_columns)}): {', '.join(mapped_columns)}"
@@ -1425,29 +1570,6 @@ def run_scaffold_binding(
     for note in notes:
         header_lines.append(f"# NOTE: {note}")
     binding_text = "\n".join(header_lines) + "\n" + rendered
-    needs_field_mapping = False
-    if not field_entries:
-        # #444: When zero datatype properties match, emit a draft binding with sentinel
-        # placeholders per source column instead of refusing.  Each ``fields:`` entry carries
-        # a ``<CONFIRM_PROPERTY:<column>>`` sentinel that is mechanically detectable via
-        # ``core.hub_utils.is_scaffold_placeholder_text``.  The binding is schema-valid
-        # (``fields:`` is non-empty) but ``compile --check`` will flag every property as
-        # ``binding.unknown-property`` until a human or ``propose-alignment`` replaces them.
-        sentinel_entries = _build_sentinel_field_entries(columns)
-        sentinel_block = yaml.safe_dump(
-            {"fields": sentinel_entries},
-            sort_keys=False,
-            default_flow_style=False,
-            allow_unicode=True,
-            width=100,
-        )
-        binding_text += "\n# fields: DRAFT -- zero columns matched a datatype property.\n"
-        binding_text += f"# {len(columns)} of {len(columns)} columns need manual property mapping.\n"
-        binding_text += "# Run `kairos-ontology propose-alignment` for LLM-assisted mapping,\n"
-        binding_text += "# or replace each <CONFIRM_PROPERTY:...> sentinel below with a real\n"
-        binding_text += "# property IRI, then re-run `compile --check`.\n"
-        binding_text += sentinel_block
-        needs_field_mapping = True
 
     default_out = hub_root / "integration" / "bindings" / f"{doc['metadata']['name']}.binding.yaml"
     resolved_out = Path(out_path) if out_path is not None else default_out
@@ -1462,10 +1584,13 @@ def run_scaffold_binding(
         resolved_out.write_text(binding_text, encoding="utf-8")
         written = True
     if needs_field_mapping:
+        unmapped_count = len(sentinel_columns)
+        total_count = len(columns)
         notes.append(
-            "Draft binding written with sentinel placeholders -- 0 columns matched a "
-            "datatype property. Replace each <CONFIRM_PROPERTY:...> sentinel with a real "
-            "property IRI, or run `kairos-ontology propose-alignment` for LLM-assisted mapping."
+            f"Draft binding written with {unmapped_count} sentinel placeholder(s)"
+            f" ({unmapped_count} of {total_count} columns need manual property mapping)."
+            " Replace each <CONFIRM_PROPERTY:...> sentinel with a real property IRI,"
+            " or run `kairos-ontology propose-alignment` for LLM-assisted mapping."
         )
 
     dbt_model_path: Path | None = None
@@ -1503,6 +1628,7 @@ def run_scaffold_binding(
         technical_field_columns=tuple(technical_columns),
         orphan_columns=tuple(orphan_columns),
         relationship_candidates=relationship_candidates,
+        cross_source_fk_matches=fk_matches,
         column_prefix=match_result.column_prefix,
         matched_property_count=matched_property_count,
         datatype_property_count=match_result.datatype_property_count,

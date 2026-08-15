@@ -209,7 +209,6 @@ class TestInitDataplatform:
             "kairos-help",
             "kairos-diagnose-status",
             "kairos-toolkit-ops",
-            "SC-feature-branch",
             "SC-merge-pr",
             "SC-document",
         ]

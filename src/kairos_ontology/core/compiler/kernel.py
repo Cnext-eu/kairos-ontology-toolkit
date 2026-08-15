@@ -60,7 +60,12 @@ from .adapter import (
 )
 from .bindings import (
     EntityBinding,
+    ExprCase,
     ExprColumn,
+    ExprFunction,
+    ExprMacro,
+    ExprOperator,
+    Expression,
     FieldMapping,
     RelationshipSpec,
     TechnicalField,
@@ -80,6 +85,7 @@ from .result import (
     ExplainConformance,
     ExplainDataQuality,
     ExplainEntity,
+    ExplainGrainMechanism,
     ExplainLoad,
     ExplainQualityCheck,
     ExplainRelationship,
@@ -1788,6 +1794,114 @@ def _explain_technical_field(binding: EntityBinding) -> tuple[ExplainTechnicalFi
     )
 
 
+def _expression_source_columns(expression: Expression) -> tuple[str, ...]:
+    """Return every source column referenced by an authored expression."""
+    ordered: list[str] = []
+
+    def walk(expr: Expression) -> None:
+        if isinstance(expr, ExprColumn):
+            ordered.append(expr.column)
+        elif isinstance(expr, (ExprOperator, ExprFunction, ExprMacro)):
+            for arg in expr.args:
+                walk(arg)
+        elif isinstance(expr, ExprCase):
+            for branch in expr.branches:
+                walk(branch.when)
+                walk(branch.then)
+            if expr.else_ is not None:
+                walk(expr.else_)
+
+    walk(expression)
+    return tuple(dict.fromkeys(ordered))
+
+
+def _explain_grain(binding: EntityBinding) -> tuple[ExplainGrainMechanism, ...]:
+    """Classify how each grain column is materialized (DD-159 additive grain audit).
+
+    Mirrors ``adapter._resolve_identity_output_columns`` classification but for
+    **grain** columns, and is explain-only (no diagnostics).  The mechanism labels
+    let a reviewer see whether a grain column is carried by a direct ontology
+    property, a DD-139 technical field, an expression, or nothing at all.
+    """
+    mechanisms: list[ExplainGrainMechanism] = []
+    for column in binding.grain.columns:
+        direct_targets = [
+            field.property
+            for field in binding.fields
+            if isinstance(field.expression, ExprColumn)
+            and field.expression.column == column
+        ]
+        distinct_direct = list(dict.fromkeys(direct_targets))
+        if len(distinct_direct) == 1:
+            mechanisms.append(
+                ExplainGrainMechanism(
+                    column=column,
+                    mechanism="direct-field",
+                    output=distinct_direct[0],
+                )
+            )
+            continue
+        if len(distinct_direct) > 1:
+            mechanisms.append(
+                ExplainGrainMechanism(
+                    column=column,
+                    mechanism="direct-field",
+                    output=", ".join(distinct_direct),
+                )
+            )
+            continue
+        technical_targets = [
+            tech.name
+            for tech in binding.technical_fields
+            if isinstance(tech.expression, ExprColumn)
+            and tech.expression.column == column
+        ]
+        distinct_technical = list(dict.fromkeys(technical_targets))
+        if len(distinct_technical) == 1:
+            mechanisms.append(
+                ExplainGrainMechanism(
+                    column=column,
+                    mechanism="technical-field",
+                    output=distinct_technical[0],
+                )
+            )
+            continue
+        if len(distinct_technical) > 1:
+            mechanisms.append(
+                ExplainGrainMechanism(
+                    column=column,
+                    mechanism="technical-field",
+                    output=", ".join(distinct_technical),
+                )
+            )
+            continue
+        expression_targets = list(
+            dict.fromkeys(
+                field.property
+                for field in binding.fields
+                if not isinstance(field.expression, ExprColumn)
+                and column in _expression_source_columns(field.expression)
+            )
+        )
+        if expression_targets:
+            mechanisms.append(
+                ExplainGrainMechanism(
+                    column=column,
+                    mechanism="expression-only",
+                    output=", ".join(expression_targets),
+                )
+            )
+        else:
+            mechanisms.append(
+                ExplainGrainMechanism(
+                    column=column,
+                    mechanism="absent",
+                    output="",
+                )
+            )
+    return tuple(mechanisms)
+
+
 def _quality_model_name(context: ResolutionContext, target_class: str) -> str:
     """Return the deterministic silver model name for a target class, or empty."""
     klass = context.klass(target_class)
@@ -2948,6 +3062,7 @@ def _explain_plan(plan: CompilePlan, artifact_paths: tuple[str, ...]) -> Explain
                 identity_strategy=entity.binding.identity.strategy,
                 fields=_explain_field(entity.binding),
                 technical_fields=_explain_technical_field(entity.binding),
+                grain_mechanisms=_explain_grain(entity.binding),
                 relationships=tuple(rel.target for rel in entity.binding.relationships),
                 source_kind=(
                     "dbt-model" if entity.binding.source.dbt_model is not None else "relation"

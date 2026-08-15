@@ -779,6 +779,7 @@ def analyse_sources_cmd(
         load_data_domains,
         list_accelerator_packs,
         make_reporter,
+        AffinityTotalFailureError,
     )
     from ..core.ai_provider import DEFAULT_MODEL, ROLE_AFFINITY, resolve_role_model
     from ..core.hub_utils import find_hub_root
@@ -921,6 +922,9 @@ def analyse_sources_cmd(
         raise SystemExit(1)
     except ValueError as e:
         click.echo(f"\n❌ {e}", err=True)
+        raise SystemExit(1)
+    except AffinityTotalFailureError as e:
+        click.echo(f"\n⛔ {e}", err=True)
         raise SystemExit(1)
 
 

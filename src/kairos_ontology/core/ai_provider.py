@@ -30,6 +30,31 @@ from dotenv import dotenv_values, load_dotenv
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Exception hierarchy (DD-159)
+# ---------------------------------------------------------------------------
+
+
+class AIProviderError(EnvironmentError):
+    """Base error for all AI provider configuration / connectivity failures.
+
+    Subclasses :class:`EnvironmentError` so every existing ``except EnvironmentError``
+    and ``pytest.raises(EnvironmentError, match=...)`` keeps passing unchanged.
+    """
+
+
+class NotConfigured(AIProviderError):
+    """No provider is configured at all (missing env vars)."""
+
+
+class Misconfigured(AIProviderError):
+    """A provider is partially configured (e.g. endpoint set but no key)."""
+
+
+class Unreachable(AIProviderError):
+    """The provider endpoint cannot be reached (network / DNS / TLS)."""
+
 # ---------------------------------------------------------------------------
 # .env auto-loading
 # ---------------------------------------------------------------------------
@@ -88,13 +113,21 @@ def _load_dotenv_from_hub():
             _clear_stale_empty_env_vars(env_file)
             load_dotenv(env_file, override=False)
             logger.debug("Loaded .env from %s", env_file)
+            global LOADED_DOTENV_PATH
+            LOADED_DOTENV_PATH = str(env_file)
             return
 
+
+LOADED_DOTENV_PATH: str | None = None
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
 _load_dotenv_from_hub()
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants (continued)
 # ---------------------------------------------------------------------------
 
 GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com"
@@ -107,6 +140,24 @@ ENV_AZURE_ENDPOINT = "AZURE_AI_ENDPOINT"
 ENV_AZURE_KEY = "AZURE_AI_KEY"
 ENV_FOUNDRY_ENDPOINT = "AZURE_FOUNDRY_ENDPOINT"
 ENV_FOUNDRY_API_KEY = "AZURE_FOUNDRY_API_KEY"
+
+#: Every environment variable name this module reads for AI provider configuration.
+#: Used by test isolation to guarantee a clean state (DD-159).
+AI_ENV_VAR_NAMES: frozenset[str] = frozenset(
+    {
+        ENV_PROVIDER,
+        ENV_GITHUB_TOKEN,
+        ENV_AZURE_ENDPOINT,
+        ENV_AZURE_KEY,
+        ENV_FOUNDRY_ENDPOINT,
+        ENV_FOUNDRY_API_KEY,
+    }
+    | {
+        f"KAIROS_AI_{role.upper()}_{suffix}"
+        for role in ("affinity", "alignment")
+        for suffix in ("ENDPOINT", "KEY", "MODEL")
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Per-role endpoint overrides (issue #182)
@@ -193,10 +244,18 @@ def resolve_provider_config(
     # Per-role dedicated endpoint takes precedence when configured.
     role_endpoint = _role_env(role, "ENDPOINT")
     if role_endpoint:
+        role_key = _role_env(role, "KEY")
+        if not role_key:
+            raise Misconfigured(
+                f"KAIROS_AI_{role.upper()}_ENDPOINT is set but KAIROS_AI_{role.upper()}_KEY "
+                f"is missing. Set the key, or use KAIROS_AI_{role.upper()}_KEY=none "
+                f"for a keyless local endpoint (e.g. vLLM/Ollama)."
+            )
+        api_key = "" if role_key.lower() == "none" else role_key
         return AIProviderConfig(
             provider=f"endpoint:{role}",
             endpoint=role_endpoint,
-            api_key=_role_env(role, "KEY"),
+            api_key=api_key,
             model=resolve_role_model(role, model),
         )
 
@@ -217,12 +276,12 @@ def resolve_provider_config(
     ):
         return _resolve_github(effective_model)
     elif explicit_provider:
-        raise EnvironmentError(
+        raise Misconfigured(
             f"Unknown KAIROS_AI_PROVIDER value: '{explicit_provider}'. "
             f"Supported values: 'github', 'azure', 'foundry'."
         )
     else:
-        raise EnvironmentError(
+        raise NotConfigured(
             "No AI provider configured. Set one of:\n"
             f"  - {ENV_GITHUB_TOKEN} (for GitHub Models)\n"
             f"  - {ENV_AZURE_ENDPOINT} + {ENV_AZURE_KEY} (for Azure AI Foundry)\n"
@@ -237,7 +296,7 @@ def _resolve_github(model: str) -> AIProviderConfig:
     """Resolve GitHub Models configuration."""
     token = os.environ.get(ENV_GITHUB_TOKEN)
     if not token:
-        raise EnvironmentError(
+        raise NotConfigured(
             f"{ENV_GITHUB_TOKEN} environment variable is required for GitHub Models provider. "
             "Set it to a GitHub personal access token with Models API access."
         )
@@ -253,7 +312,7 @@ def _resolve_azure(model: str) -> AIProviderConfig:
     """Resolve Azure AI Foundry configuration."""
     endpoint = os.environ.get(ENV_AZURE_ENDPOINT)
     if not endpoint:
-        raise EnvironmentError(
+        raise NotConfigured(
             f"{ENV_AZURE_ENDPOINT} environment variable is required for Azure AI Foundry. "
             "Set it to your Azure AI Foundry endpoint URL."
         )
@@ -280,12 +339,12 @@ def _get_azure_managed_identity_token() -> str:
         token = credential.get_token("https://cognitiveservices.azure.com/.default")
         return token.token
     except ImportError:
-        raise EnvironmentError(
+        raise NotConfigured(
             f"Neither {ENV_AZURE_KEY} is set nor azure-identity is installed. "
             f"Install with: pip install kairos-ontology-toolkit[azure]"
         )
     except Exception as e:
-        raise EnvironmentError(
+        raise Misconfigured(
             f"Azure managed identity authentication failed: {e}. "
             f"Set {ENV_AZURE_KEY} explicitly or check your Azure identity configuration."
         )
@@ -295,7 +354,7 @@ def _resolve_foundry(model: str) -> AIProviderConfig:
     """Resolve Microsoft Foundry configuration using azure-ai-projects SDK."""
     endpoint = os.environ.get(ENV_FOUNDRY_ENDPOINT)
     if not endpoint:
-        raise EnvironmentError(
+        raise NotConfigured(
             f"{ENV_FOUNDRY_ENDPOINT} environment variable is required for Microsoft Foundry. "
             "Set it to your Foundry project endpoint URL.\n"
             "Format: https://<resource>.services.ai.azure.com/api/projects/<project>"
@@ -373,7 +432,7 @@ def _create_foundry_client(config: AIProviderConfig):
     try:
         from azure.ai.projects import AIProjectClient
     except ImportError:
-        raise EnvironmentError(
+        raise NotConfigured(
             "The azure-ai-projects package is required for the Foundry provider. "
             "Install with: pip install kairos-ontology-toolkit[foundry]"
         )
@@ -409,7 +468,7 @@ def _create_foundry_client(config: AIProviderConfig):
             )
             token_credential = _build_token_credential()
             if token_credential is None:
-                raise EnvironmentError(
+                raise NotConfigured(
                     "The Microsoft Foundry SDK requires AAD token authentication, "
                     f"but {ENV_FOUNDRY_API_KEY} (an API key) cannot provide a token "
                     "and azure-identity is not installed.\n"
@@ -421,7 +480,7 @@ def _create_foundry_client(config: AIProviderConfig):
 
     token_credential = _build_token_credential()
     if token_credential is None:
-        raise EnvironmentError(
+        raise NotConfigured(
             f"Neither {ENV_FOUNDRY_API_KEY} is set nor azure-identity is installed. "
             "Install with: pip install kairos-ontology-toolkit[foundry]"
         )

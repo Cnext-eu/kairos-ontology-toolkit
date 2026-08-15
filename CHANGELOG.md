@@ -86,8 +86,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   New findings route into a **separate strict-eligible property**, deliberately not into the existing
   work signal: widening that would have made `--strict` unconvergeable on a hub with legitimately-partial
   records — the same pathology as #405 — and would have listed already-processed documents as needing work.
+  - **`check-ai-config` command and AI provider preflight** (#459, DD-159). A new `kairos-ontology
+    check-ai-config` command reports per-role AI provider status (`ok`/`not_configured`/`misconfigured`/
+    `unreachable`/`unprobed`) with computed remediation, supporting `--format text|json`, `--role`, `--model`,
+    `--probe`, `--strict`, and `--warn-only`. It never prints secret values (env var names only). The
+    `require_ai_provider` raising wrapper is called at the entry of each LLM judgment loop
+    (`propose-alignment`, `analyse-sources`) so a missing/misconfigured provider fails fast with a typed
+    `AIProviderError` instead of silently falling through to a heuristic. `AIProviderError` subclasses
+    `EnvironmentError`, so existing `except EnvironmentError`/`pytest.raises(EnvironmentError, match=...)`
+    sites keep passing unchanged. `require_ai_provider` now returns the resolved provider config, eliminating
+    the second `resolve_provider_config` call.
+  - **`GenerationOutcome` constants moved to leaf module** (#459, DD-159).
+    `OUTCOME_SEMANTIC_SUCCESS`/`OUTCOME_PROVIDER_FAILURE`/`OUTCOME_FALLBACK_ONLY` moved from
+    `propose_alignment.py` to `core/generation_outcome.py` and re-exported. Values unchanged — no artifact
+    change. Adds `OUTCOME_UNRESOLVED_ANSWER` for the "model answered but returned an unresolvable id" case.
 
-### Changed
+  ### Changed
 - **`suggest-shapes` emits `sh:in` enums only from full-table distinct evidence** (#424, DD-076 amendment).
   On a real hub, 82% of 217 generated `sh:in` enums were single-value and several provably wrong
   (`booking_status` → only `"TO_REQUEST"` of 5 real values): a distinctCount computed inside a capped
@@ -314,8 +328,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `copilot-instructions.md` boundary section no longer restates the deny globs inline (it went stale
   the moment they changed) and now states plainly that this is a guardrail, not a sandbox: shell tools
   still reach these files, and non-Claude agents are bound only by convention.
+  - **`analyse-sources` never caches a failure and exits 1 on total provider failure** (#459, DD-159).
+    Previously a failed table was cached with a fabricated `domain: ""` at `confidence: 0.0`, poisoning
+    subsequent runs from cache as if the failure were a real result, and a total provider outage still
+    exited 0. The cache write is now gated on `generation_outcome == SEMANTIC_SUCCESS`; failed tables
+    persist with `domain: ""` + `confidence: null` + `generation_*` keys (emitted only on non-success
+    so happy-path YAML stays byte-identical, `schema_version` stays 2). Staged writes + tally guard:
+    `AffinityTotalFailureError` raised when every attempted table fails, caught in `cli/sources.py`
+    as `⛔` + exit 1. Partial failure still exits 0 with a visible warning.
+  - **`propose-alignment` prefights the AI provider and never silently falls through** (#459, DD-159).
+    The old `except EnvironmentError` swallow at the top of `_propose_alignments` silently degraded to
+    heuristic mode when the provider was misconfigured. Now `require_ai_provider(ROLE_ALIGNMENT, …)`
+    is called before per-table fan-out — a missing/misconfigured provider raises `AIProviderError`
+    (subclass of `EnvironmentError`) with a one-line remediation. The wrong flag name
+    `--allow-fallback-registry` was corrected to `--allow-fallback-output` in error messages, docs,
+    and tests.
+  - **Boolean literal normalization in EntityBinding parser** (#448). `str(node["literal"])` converted
+    YAML `true` → Python `True` → `"True"`, rejected by the normalizer which accepts only XSD canonical
+    lowercase `{"true","false"}`. Now normalizes `bool` → `"true"/"false"` at the parse site. **Breaking:**
+    `{literal: true, datatype: string}` emits `"true"` instead of `"True"`.
+  - **`.import/` is now gitignored** (#453). The toolkit-created convention for raw client evidence was
+    not in `gitignore.template`, so large imported files could be committed accidentally. Defence-in-
+    depth: a `pre-push` hook checks for files over 1 MB.
+  - **Autopilot transparency report: source coverage, conformance risk, and BLOCKED status**
+    (#458). The autopilot transparency report now requires four new metrics: source coverage
+    (bound / total relations, percentage), unbound tables over 1000 rows with a likely canonical
+    target (row counts only — no fabricated "business value" score per DD-159), a conformance-risk
+    list (unbound sources vs already-bound classes), and an explicit **BLOCKED** status when any
+    LLM judgment step was skipped (a run that skipped an LLM step can never report "complete").
+    The "rank by business value" suggestion from the issue was dropped — domain importance is not
+    quantifiable by the toolkit and fabricating a score would violate DD-159.
+  - **Cross-source FK scanner in scaffold-binding** (#457). `scaffold-binding` now scans the
+    hub's existing bindings' identity columns for exact normalized name matches against FK-shaped
+    columns (``*_id`` / ``*_fk`` / ``*_code``) in the table being scaffolded. Each match is reported
+    as a tier-1 candidate (deterministic, zero LLM, zero false positives) in the binding header
+    and `ScaffoldBindingResult.cross_source_fk_matches`. A "Zero-relationships flag"
+    transparency-report bullet was also added: the autopilot report states the total count of
+    `relationships:` blocks across all bindings; zero across N bindings means silver models
+    cannot join — a signal, not a finding.
+  - **Grain materialization audit in `--explain`** (#449, DD-159). `compile --explain` now
+    classifies how each grain column is materialized in the silver output via a new additive
+    `grain_mechanisms` field on `ExplainEntity`. Each grain column is labelled as
+    `direct-field` (a `fields:` entry maps the source column directly), `technical-field`
+    (a DD-139 `technicalFields:` entry carries it), `expression-only` (the source column
+    appears only inside a multi-part expression and is not materialized standalone), or
+    `absent` (no field or technical field references it). The classification is explain-only
+    (no new diagnostics) and is also rendered in the text output as
+    `grain: {column} via {mechanism} → {output}`.
 
-## [5.2.2] — 2026-08-14
+  - **Partial-match sentinels in scaffold-binding** (#450). `scaffold-binding` now emits
+    `<CONFIRM_PROPERTY:…>` sentinel entries for orphan columns (no property match and no
+    technical field) even in partial-match relations — previously sentinels were only emitted
+    when zero properties matched. The sentinel entries are merged into the `fields:` list
+    before YAML serialization (not appended as raw text), keeping the binding structurally
+    valid and making orphans visible at `compile --check` time as `safety.property-unresolved`
+    until a human or `propose-alignment` maps them.
+
+  - **Honest absent-evidence reporting in fit-report** (#451). When no evidence source is
+    found (no binding, no `propose-alignment` output), `fit-report` no longer lists every
+    universe property as "unpopulated" — that reads like a finding ("everything is empty")
+    when the truth is "nothing was evaluated." The `unpopulated` list is now empty and the
+    notes carry the absent-evidence explanation with a remediation path.
+
+  - **Inverse class→candidate-source scan** (#452). New `inverse-scan` command answers the
+    inverse of `fit-report`: given a class, which source tables across all source systems
+    have columns whose names deterministically match the class's properties? Only the
+    deterministic tier (exact column-name equality via the class-name-aware candidate ladder)
+    is evaluated; the output explicitly labels what was NOT evaluated (LLM-assisted semantic
+    matching, fuzzy name similarity, value-sample inference, cross-system relationship
+    discovery) so a short candidate list is never mistaken for a completeness finding.
+
+  ## [5.2.2] — 2026-08-14
 
 ### Added
 - **`field-mapping-report`**: generates an Excel workbook (one worksheet per domain) listing
@@ -1795,7 +1878,7 @@ silently invalidates the evidence they produce.
   unresolved-anchors write and commits them only after the run-wide semantic
   verdict is known, so `AlignmentTotalFailureError`'s "no claim registries were
   written" promise also holds for a domain mixing `provider_failure` with
-  `fallback_only` tables and for an opted-in `--allow-fallback-registry` domain —
+  `fallback_only` tables and for an opted-in `--allow-fallback-output` domain —
   existing files are never touched by a failed run. The caller/CLI-resolved model
   (`--model` > `--high-accuracy` > `KAIROS_AI_ALIGNMENT_MODEL` > default) is now
   authoritative for the whole run: the provider preflight is endpoint/auth
@@ -1864,7 +1947,7 @@ silently invalidates the evidence they produce.
   succeeding tables visible while the failed ones are reported (never cached, never
   silently masqueraded as semantic output). Writing a domain whose tables are all
   `fallback_only` (no reference model to align against) now requires the explicit
-  `--allow-fallback-registry` flag. `check-claims` surfaces incomplete generation
+  `--allow-fallback-output` flag. `check-claims` surfaces incomplete generation
   per domain as a non-blocking `incomplete_generation` warning, distinct from
   structural claim validity. `ai_provider.create_chat_completion()` now handles
   unsupported request parameters with one capability-aware, narrowly-guarded retry

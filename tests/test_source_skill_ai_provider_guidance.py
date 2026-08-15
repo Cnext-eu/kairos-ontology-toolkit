@@ -32,6 +32,9 @@ def test_source_skill_defers_provider_choice_until_analysis(path):
     assert "`analyse-sources`" in text
     assert "never secret values" in text
     assert "preserve deterministic imports when ai analysis is skipped" in text
+    # A5: DD-159 preflight before LLM call
+    assert "check-ai-config --role affinity" in text
+    assert "never auto-degrade" in text
 
 
 @pytest.mark.parametrize(

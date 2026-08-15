@@ -311,6 +311,98 @@ def fit_report_cmd(class_token, ontology, domain, catalog, source, binding_path,
     _render_fit_report_text(result)
 
 
+def _render_inverse_scan_text(result) -> None:
+    click.echo(f"🔎 inverse-scan — {_FIT_REPORT_ADVISORY}")
+    click.echo(f"   Class: {result.class_name} ({result.class_uri})")
+    click.echo(
+        f"   Universe properties: {result.universe_property_count}  |  "
+        f"Tables scanned: {result.tables_scanned}  |  "
+        f"Source systems: {', '.join(result.source_systems_scanned) or '(none)'}"
+    )
+    click.echo("")
+    if not result.candidates:
+        click.echo("   Candidates: none (no exact column-name matches found)")
+    else:
+        click.echo(f"   Candidates ({len(result.candidates)}):")
+        for c in result.candidates:
+            click.echo(
+                f"     • {c.source_system}.{c.source_table}  "
+                f"({len(c.matched_properties)}/{c.total_columns} columns matched)"
+            )
+            for prop in c.matched_properties:
+                click.echo(f"       - {prop}")
+    click.echo("")
+    click.echo("   Notes:")
+    for note in result.notes:
+        click.echo(f"     - {note}")
+
+
+@click.command(name="inverse-scan")
+@click.option(
+    "--class",
+    "class_token",
+    required=True,
+    help="Full class IRI or a 'prefix:Local' qname to find candidate sources for.",
+)
+@click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option(
+    "--format",
+    "out_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text).",
+)
+def inverse_scan_cmd(class_token, ontology, domain, catalog, out_format):
+    """Find candidate source tables for a class via deterministic column-name matching.
+
+    The inverse of fit-report: given a class, scan every source table across every source
+    system under integration/sources/ and report which tables have columns whose names
+    deterministically match the class's datatype or object properties.
+
+    Only the deterministic tier (exact column-name equality) is evaluated. What was NOT
+    evaluated — LLM-assisted semantic matching, fuzzy name similarity, value-sample
+    inference, or cross-system relationship discovery — is explicitly labelled in the
+    output so a short candidate list is never mistaken for a completeness finding.
+
+    \b
+    Examples:
+      kairos-ontology inverse-scan --class acc:TradeParty --domain party
+      kairos-ontology inverse-scan --class acc:TradeParty --domain party --format json
+    """
+    from ..core.fit_report import FitReportError, run_inverse_scan
+    from ..core.hub_utils import find_hub_root
+
+    hub_root = find_hub_root(Path.cwd(), require_model=True)
+    if ontology:
+        path = Path(ontology)
+    elif domain:
+        if hub_root is None:
+            raise click.ClickException("Cannot locate a hub for --domain.")
+        path = hub_root / "model" / "ontologies" / f"{domain}.ttl"
+    else:
+        raise click.UsageError("Provide --ontology or --domain.")
+
+    if hub_root is None:
+        raise click.ClickException("Cannot locate a hub root.")
+
+    try:
+        result = run_inverse_scan(
+            path,
+            class_token,
+            hub_root,
+            catalog_path=Path(catalog) if catalog else None,
+        )
+    except FitReportError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if out_format == "json":
+        click.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return
+    _render_inverse_scan_text(result)
+
+
 def _render_plan_sources_text(result) -> None:
     click.echo(f"📐 plan-sources — {result.class_token} ({result.class_uri})")
     click.echo("   DD-133 §3c: raw multi-source conformance requires identical grain/identity")
@@ -1391,6 +1483,140 @@ def check_inventory_cmd(
         click.echo("\n⚠ Inventory check completed with warnings (not blocking).")
     else:
         click.echo("\n✅ Inventories are present and up to date.")
+
+
+# ---------------------------------------------------------------------------
+# check-ai-config (DD-159)
+# ---------------------------------------------------------------------------
+
+_STATUS_ICONS = {
+    "ok": "✅",
+    "not_configured": "❌",
+    "misconfigured": "❌",
+    "unreachable": "❌",
+    "unprobed": "⚠ ",
+}
+
+
+def _render_ai_config_text(report) -> None:
+    click.echo("AI Provider Configuration Check")
+    click.echo("=" * 40)
+    click.echo("")
+    for role_result in report.roles:
+        icon = _STATUS_ICONS.get(role_result.status, "? ")
+        click.echo(f"  {icon} {role_result.role}: {role_result.status}")
+        if role_result.provider:
+            click.echo(f"     provider: {role_result.provider}")
+        if role_result.model:
+            click.echo(f"     model:    {role_result.model}")
+        if role_result.endpoint:
+            click.echo(f"     endpoint: {role_result.endpoint}")
+        if role_result.error:
+            click.echo(f"     error:    {role_result.error}")
+        if role_result.remediation:
+            click.echo(f"     fix:      {role_result.remediation}")
+        click.echo("")
+    if report.is_blocking:
+        click.echo("❌ AI provider check failed — one or more roles are not usable.")
+    elif report.has_warnings:
+        click.echo("⚠ AI provider check passed (unprobed — run with --probe to verify reachability).")
+    else:
+        click.echo("✅ AI provider check passed.")
+
+
+@click.command(name="check-ai-config")
+@click.option(
+    "--role",
+    type=click.Choice(["affinity", "alignment", "all"]),
+    default="all",
+    help="Which AI role to check (default: all).",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Override the model name used for the check.",
+)
+@click.option(
+    "--probe/--no-probe",
+    "probe",
+    default=True,
+    help="Attempt a lightweight reachability probe against the endpoint (default: on).",
+)
+@click.option(
+    "--timeout",
+    "timeout_s",
+    type=float,
+    default=10.0,
+    help="Probe timeout in seconds (default: 10).",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help="Exit non-zero on warnings (unprobed) as well as errors.",
+)
+@click.option(
+    "--warn-only",
+    is_flag=True,
+    default=False,
+    help="Report status but always exit 0.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text -- human-readable). Use --format json for "
+    "machine-readable output.",
+)
+def check_ai_config_cmd(role, model, probe, timeout_s, strict, warn_only, output_format):
+    """Check AI provider configuration and optional reachability (DD-159).
+
+    Inspects environment-variable configuration for the AI provider(s) used by
+    affinity analysis and alignment proposal. By default probes the endpoint
+    with a lightweight authenticated call. Prints environment variable NAMES
+    only — never values. No api_key appears in any output format.
+
+    Exit 0 when all requested roles are ok (or warn-only).
+    Exit 1 when any role is not_configured / misconfigured / unreachable,
+    or when --strict and any role is unprobed.
+    """
+    from kairos_ontology.core.ai_preflight import (
+        preflight_all_roles,
+        preflight_ai_provider,
+        ROLE_AFFINITY as _AFF,
+        ROLE_ALIGNMENT as _ALN,
+    )
+
+    if role == "all":
+        report = preflight_all_roles(
+            model=model, probe=probe, timeout_s=timeout_s,
+            roles=(_AFF, _ALN),
+        )
+    else:
+        single = preflight_ai_provider(
+            role, model=model, probe=probe, timeout_s=timeout_s,
+        )
+        from kairos_ontology.core.ai_preflight import AIPreflightReport
+        report = AIPreflightReport(roles=(single,))
+
+    if output_format == "json":
+        import json as _json
+        click.echo(_json.dumps(report.to_dict(), indent=2))
+    else:
+        _render_ai_config_text(report)
+
+    if warn_only:
+        return
+
+    exit_code = 0
+    if report.is_blocking:
+        exit_code = 1
+    elif strict and report.has_warnings:
+        exit_code = 1
+
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def _render_domain_coverage_text(report) -> None:

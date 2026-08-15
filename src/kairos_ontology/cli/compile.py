@@ -231,6 +231,11 @@ def compile_cmd(
                         f"  {entity.name}: {entity.source} → {entity.target_class} "
                         f"[grain: {', '.join(entity.grain)}]"
                     )
+                    for gm in entity.grain_mechanisms:
+                        click.echo(
+                            f"    grain: {gm.column} via {gm.mechanism}"
+                            + (f" → {gm.output}" if gm.output else "")
+                        )
                     for rel in entity.relationship_shapes:
                         joins = f" on ({', '.join(rel.join)})" if rel.join else ""
                         temporal = " temporal" if rel.temporal else ""

@@ -37,6 +37,61 @@ sys.modules["kairos_ontology_referencemodels"] = _BLOCK_MOD
 
 
 # ---------------------------------------------------------------------------
+# AI provider env-var isolation (DD-159)
+# ---------------------------------------------------------------------------
+# ``_load_dotenv_from_hub()`` runs at import time (ai_provider.py:94) and walks
+# up 5 parents looking for a .env file. A developer with a .env at the repo
+# root (or running pytest inside a hub checkout) gets a real GITHUB_TOKEN into
+# os.environ before collection — "not configured" tests then fail locally while
+# the code is correct. We delete every name in ``AI_ENV_VAR_NAMES`` before each
+# test so tests see a clean slate.
+import os as _os
+
+try:
+    from kairos_ontology.core.ai_provider import AI_ENV_VAR_NAMES as _AI_ENV_VARS
+except ImportError:  # pragma: no cover — ai_provider must be importable
+    _AI_ENV_VARS = frozenset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_ai_env():
+    """Delete every AI provider env var before each test (DD-159)."""
+    for key in _AI_ENV_VARS:
+        _os.environ.pop(key, None)
+    yield
+    for key in _AI_ENV_VARS:
+        _os.environ.pop(key, None)
+
+
+@pytest.fixture
+def github_provider_env():
+    """Opt-in fixture: set a configured GitHub Models provider for tests that need one."""
+    _os.environ["GITHUB_TOKEN"] = "ghp_TEST_TOKEN_FOR_TESTS_ONLY"
+    yield
+    _os.environ.pop("GITHUB_TOKEN", None)
+
+
+@pytest.fixture(autouse=True)
+def _block_ai_probe(monkeypatch):
+    """Prevent any test from hitting the network via ai_preflight probe.
+
+    Tests that need a live probe must use the ``live_probe`` marker and override
+    this fixture.
+    """
+    try:
+        import kairos_ontology.core.ai_preflight as _ap
+        monkeypatch.setattr(_ap, "_probe_client", _raise_for_probe, raising=False)
+    except ImportError:
+        pass  # ai_preflight not yet created
+
+
+def _raise_for_probe(*a, **kw):
+    raise RuntimeError(
+        "ai_preflight probe blocked by conftest; use the 'live_probe' marker for real network tests"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Guard: detect stale (non-editable) installs early
 # ---------------------------------------------------------------------------
 def _check_editable_install() -> None:

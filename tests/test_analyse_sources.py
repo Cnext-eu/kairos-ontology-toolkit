@@ -510,7 +510,7 @@ class TestSampleEvidence:
         )
         client.chat.completions.create.return_value = response
         monkeypatch.setattr(
-            "kairos_ontology.core.analyse_sources._get_openai_client", lambda: client
+            "kairos_ontology.core.analyse_sources._get_openai_client", lambda model=None: client
         )
         messages: list[str] = []
 
@@ -1164,11 +1164,10 @@ class TestAnalyseTableSingleCall:
     def test_handles_llm_error_gracefully(self):
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = Exception("API error")
-        res = analyse_table_single_call(mock_client, "gpt-5-mini", "tbl", [], self._candidates())
-        # Empty result → fallback to first available fallback id (mdm)
-        assert res["domain"] == "mdm"
-        assert res["confidence"] == 0.0
-        assert res["indicative_columns"] == []
+        # DD-159: analyse_table_single_call no longer swallows LLM errors;
+        # they propagate to _classify which records OUTCOME_PROVIDER_FAILURE.
+        with pytest.raises(Exception, match="API error"):
+            analyse_table_single_call(mock_client, "gpt-5-mini", "tbl", [], self._candidates())
 
     def test_normalized_id_match_for_reference_model_labels(self):
         cands = [
@@ -1462,7 +1461,7 @@ class TestAffinityConcurrencyAndCaching:
         counter: list[int] = []
         client = self._counting_client(counter)
         monkeypatch.setattr(
-            "kairos_ontology.core.analyse_sources._get_openai_client", lambda: client
+            "kairos_ontology.core.analyse_sources._get_openai_client", lambda model=None: client
         )
 
         cache = SidecarCache(tmp_path / ".cache" / "analyse-sources.json")
@@ -1481,7 +1480,7 @@ class TestAffinityConcurrencyAndCaching:
         vocab_file, ref_domains = self._setup(tmp_path)
         monkeypatch.setattr(
             "kairos_ontology.core.analyse_sources._get_openai_client",
-            lambda: self._counting_client([]),
+            lambda model=None: self._counting_client([]),
         )
         serial = analyse_source_system(vocab_file, ref_domains, max_workers=1)
         parallel = analyse_source_system(vocab_file, ref_domains, max_workers=4)
@@ -1496,7 +1495,7 @@ class TestAffinityConcurrencyAndCaching:
         vocab_file, ref_domains = self._setup(tmp_path)
         monkeypatch.setattr(
             "kairos_ontology.core.analyse_sources._get_openai_client",
-            lambda: self._counting_client([]),
+            lambda model=None: self._counting_client([]),
         )
         messages: list[str] = []
 
@@ -1610,7 +1609,11 @@ class TestDomainsOutputFilter:
         seen: list[int] = []
         monkeypatch.setattr(
             "kairos_ontology.core.analyse_sources._get_openai_client",
-            lambda: self._routing_client(seen),
+            lambda model=None: self._routing_client(seen),
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
         )
 
         run_analyse_sources(
@@ -1638,7 +1641,11 @@ class TestDomainsOutputFilter:
         ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
         monkeypatch.setattr(
             "kairos_ontology.core.analyse_sources._get_openai_client",
-            lambda: self._routing_client([]),
+            lambda model=None: self._routing_client([]),
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
         )
 
         # No table classifies as 'booking' → output must be empty, not an error.
@@ -1662,7 +1669,11 @@ class TestDomainsOutputFilter:
         ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
         monkeypatch.setattr(
             "kairos_ontology.core.analyse_sources._get_openai_client",
-            lambda: self._routing_client([]),
+            lambda model=None: self._routing_client([]),
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
         )
 
         run_analyse_sources(
@@ -1704,7 +1715,11 @@ testapp:tblExtra_Code a kairos-bronze:SourceColumn ;
         calls: list[int] = []
         monkeypatch.setattr(
             "kairos_ontology.core.analyse_sources._get_openai_client",
-            lambda: self._routing_client(calls),
+            lambda model=None: self._routing_client(calls),
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
         )
 
         run_analyse_sources(
@@ -1728,3 +1743,316 @@ testapp:tblExtra_Code a kairos-bronze:SourceColumn ;
             "tblExtra",
         }
         assert (out_dir / "archive" / "superseded-source-layouts" / "extra-affinity.yaml").is_file()
+
+
+# ---------------------------------------------------------------------------
+# DD-159: Reliability — total failure guard, cache poisoning, byte-identity
+# ---------------------------------------------------------------------------
+
+from kairos_ontology.core.analyse_sources import AffinityTotalFailureError
+from kairos_ontology.core.generation_outcome import (
+    OUTCOME_SEMANTIC_SUCCESS,
+    OUTCOME_PROVIDER_FAILURE,
+)
+
+
+class TestReliabilityTotalFailure:
+    """DD-159: total provider failure must raise and not write affinity YAML."""
+
+    def _setup_hub(self, tmp_path):
+        ref_dir = tmp_path / "refs"
+        ref_dir.mkdir()
+        _write_logistics_pack(ref_dir)
+        sys_dir = tmp_path / "sources" / "testapp"
+        sys_dir.mkdir(parents=True)
+        (sys_dir / "testapp.vocabulary.ttl").write_text(TWO_TABLE_VOCAB_TTL, encoding="utf-8")
+        return ref_dir, tmp_path / "sources", tmp_path / "out"
+
+    def _failing_client(self):
+        """Mock LLM that always raises an API error."""
+        client = MagicMock()
+        client.chat.completions.create.side_effect = Exception("API error: 503")
+        return client
+
+    def test_total_failure_raises_and_no_yaml_written(self, tmp_path, monkeypatch):
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        out_dir.mkdir()
+        monkeypatch.setattr(
+            "kairos_ontology.core.analyse_sources._get_openai_client",
+            lambda model=None: self._failing_client(),
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
+        )
+        with pytest.raises(AffinityTotalFailureError):
+            run_analyse_sources(
+                sources_dir=sources_dir,
+                ref_models_dir=ref_dir,
+                output_dir=out_dir,
+                accelerator="logistics",
+                shallow=True,
+                max_workers=1,
+                cost_warning=False,
+            )
+        # No affinity file was written.
+        assert not (out_dir / "testapp-affinity.yaml").exists()
+
+    def test_total_failure_preserves_preexisting_yaml(self, tmp_path, monkeypatch):
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        out_dir.mkdir()
+        preexisting = (
+            "schema_version: 2\n"
+            "system: testapp\n"
+            "analysed_at: '2026-01-01T00:00:00Z'\n"
+            "model_used: old-model\n"
+            "tables:\n"
+            "  - table: tblClient\n"
+            "    total_columns: 3\n"
+            "    domain: party\n"
+            "    confidence: 0.9\n"
+            "    likely_entity: Party\n"
+            "    rationale: pre-existing\n"
+            "    indicative_columns: []\n"
+        )
+        affinity_path = out_dir / "testapp-affinity.yaml"
+        affinity_path.write_text(preexisting, encoding="utf-8")
+        monkeypatch.setattr(
+            "kairos_ontology.core.analyse_sources._get_openai_client",
+            lambda model=None: self._failing_client(),
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
+        )
+        with pytest.raises(AffinityTotalFailureError):
+            run_analyse_sources(
+                sources_dir=sources_dir,
+                ref_models_dir=ref_dir,
+                output_dir=out_dir,
+                accelerator="logistics",
+                shallow=True,
+                max_workers=1,
+                cost_warning=False,
+            )
+        # Pre-existing file is byte-identical — not overwritten.
+        assert affinity_path.read_text(encoding="utf-8") == preexisting
+
+
+class TestReliabilityCachePoisoning:
+    """DD-159: a failed table must not be cached and served on re-run."""
+
+    def _setup_hub(self, tmp_path):
+        ref_dir = tmp_path / "refs"
+        ref_dir.mkdir()
+        _write_logistics_pack(ref_dir)
+        sys_dir = tmp_path / "sources" / "testapp"
+        sys_dir.mkdir(parents=True)
+        (sys_dir / "testapp.vocabulary.ttl").write_text(TWO_TABLE_VOCAB_TTL, encoding="utf-8")
+        return ref_dir, tmp_path / "sources", tmp_path / "out"
+
+    def test_failed_table_not_cached(self, tmp_path, monkeypatch):
+        from kairos_ontology.core._cache import SidecarCache
+
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        out_dir.mkdir()
+        cache_path = out_dir / ".cache" / "analyse-sources.json"
+        cache = SidecarCache(cache_path)
+
+        # First run: client always fails.
+        failing_client = MagicMock()
+        failing_client.chat.completions.create.side_effect = Exception("API error")
+        monkeypatch.setattr(
+            "kairos_ontology.core.analyse_sources._get_openai_client",
+            lambda model=None: failing_client,
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
+        )
+        with pytest.raises(AffinityTotalFailureError):
+            run_analyse_sources(
+                sources_dir=sources_dir,
+                ref_models_dir=ref_dir,
+                output_dir=out_dir,
+                accelerator="logistics",
+                shallow=True,
+                max_workers=1,
+                cost_warning=False,
+                force=True,
+            )
+
+        # Second run: working client — must actually call the LLM, not serve
+        # from a poisoned cache.
+        call_count: list[int] = []
+        working_client = MagicMock()
+
+        def _count(**kwargs):
+            call_count.append(1)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = json.dumps(
+                {"domain": "party", "confidence": 0.9, "likely_entity": "party"}
+            )
+            return resp
+
+        working_client.chat.completions.create.side_effect = _count
+        monkeypatch.setattr(
+            "kairos_ontology.core.analyse_sources._get_openai_client",
+            lambda model=None: working_client,
+        )
+        run_analyse_sources(
+            sources_dir=sources_dir,
+            ref_models_dir=ref_dir,
+            output_dir=out_dir,
+            accelerator="logistics",
+            shallow=True,
+            max_workers=1,
+            cost_warning=False,
+            force=True,
+        )
+        # LLM was actually called (not served from poisoned cache).
+        assert len(call_count) > 0
+
+
+class TestReliabilityByteIdentity:
+    """DD-159: happy-path YAML must not contain generation_* keys."""
+
+    def _ok_client(self):
+        """Mock LLM that returns party for all tables."""
+        client = MagicMock()
+
+        def _create(**kwargs):
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = json.dumps(
+                {"domain": "party", "confidence": 0.9, "likely_entity": "party"}
+            )
+            return resp
+
+        client.chat.completions.create.side_effect = _create
+        return client
+
+    def _setup_hub(self, tmp_path):
+        ref_dir = tmp_path / "refs"
+        ref_dir.mkdir()
+        _write_logistics_pack(ref_dir)
+        sys_dir = tmp_path / "sources" / "testapp"
+        sys_dir.mkdir(parents=True)
+        (sys_dir / "testapp.vocabulary.ttl").write_text(TWO_TABLE_VOCAB_TTL, encoding="utf-8")
+        return ref_dir, tmp_path / "sources", tmp_path / "out"
+
+    def test_happy_path_no_generation_keys(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        out_dir.mkdir()
+        monkeypatch.setattr(
+            "kairos_ontology.core.analyse_sources._get_openai_client",
+            lambda model=None: self._ok_client(),
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
+        )
+        run_analyse_sources(
+            sources_dir=sources_dir,
+            ref_models_dir=ref_dir,
+            output_dir=out_dir,
+            accelerator="logistics",
+            shallow=True,
+            max_workers=1,
+            cost_warning=False,
+        )
+        affinity = _yaml.safe_load(
+            (out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8")
+        )
+        for table in affinity["tables"]:
+            assert "generation_outcome" not in table
+            assert "generation_error" not in table
+            assert "generation_provider" not in table
+            assert "generation_model" not in table
+
+
+class TestReliabilityPartialFailure:
+    """DD-159: partial failure exits 0 with warning, failed tables have empty domain."""
+
+    def _setup_hub(self, tmp_path):
+        ref_dir = tmp_path / "refs"
+        ref_dir.mkdir()
+        _write_logistics_pack(ref_dir)
+        sys_dir = tmp_path / "sources" / "testapp"
+        sys_dir.mkdir(parents=True)
+        (sys_dir / "testapp.vocabulary.ttl").write_text(TWO_TABLE_VOCAB_TTL, encoding="utf-8")
+        return ref_dir, tmp_path / "sources", tmp_path / "out"
+
+    def test_partial_failure_writes_file_with_empty_domain(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        ref_dir, sources_dir, out_dir = self._setup_hub(tmp_path)
+        out_dir.mkdir()
+        # One table succeeds, one fails.
+        client = MagicMock()
+
+        def _create(**kwargs):
+            text = " ".join(str(m.get("content", "")) for m in kwargs.get("messages", []))
+            if "tblContract" in text:
+                raise Exception("API error for this table")
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = json.dumps(
+                {"domain": "party", "confidence": 0.9, "likely_entity": "party"}
+            )
+            return resp
+
+        client.chat.completions.create.side_effect = _create
+        monkeypatch.setattr(
+            "kairos_ontology.core.analyse_sources._get_openai_client",
+            lambda model=None: client,
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.core.ai_preflight.require_ai_provider",
+            lambda *a, **kw: None,
+        )
+        run_analyse_sources(
+            sources_dir=sources_dir,
+            ref_models_dir=ref_dir,
+            output_dir=out_dir,
+            accelerator="logistics",
+            shallow=True,
+            max_workers=1,
+            cost_warning=False,
+        )
+        affinity = _yaml.safe_load(
+            (out_dir / "testapp-affinity.yaml").read_text(encoding="utf-8")
+        )
+        tables = {t["table"]: t for t in affinity["tables"]}
+        # tblClient succeeded.
+        assert tables["tblClient"]["domain"] == "party"
+        assert "generation_outcome" not in tables["tblClient"]
+        # tblContract failed.
+        assert tables["tblContract"]["domain"] == ""
+        assert tables["tblContract"]["confidence"] is None
+        assert tables["tblContract"]["generation_outcome"] == OUTCOME_PROVIDER_FAILURE
+
+
+class TestReliabilityTableAssignment:
+    """DD-159: TableAssignment carries generation_* fields."""
+
+    def test_generation_fields_default_to_success(self):
+        ta = TableAssignment(table="t", total_columns=1, domain="party", confidence=0.9)
+        assert ta.generation_outcome == OUTCOME_SEMANTIC_SUCCESS
+        assert ta.generation_error == ""
+        assert ta.generation_provider == ""
+        assert ta.generation_model == ""
+
+    def test_generation_fields_writable(self):
+        ta = TableAssignment(
+            table="t",
+            total_columns=1,
+            domain="",
+            confidence=None,
+            generation_outcome=OUTCOME_PROVIDER_FAILURE,
+        )
+        assert ta.generation_outcome == OUTCOME_PROVIDER_FAILURE
+        assert ta.confidence is None
