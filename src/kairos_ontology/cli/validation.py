@@ -17,6 +17,8 @@ from ..core.conformance_artifact import check_discovery_gate
 from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
 
 from .shared import (
+    _emit,
+    _FORMAT_OPTION,
     _ontology_domain_hints,
     _resolve_catalog,
     resolve_refmodels_dir,
@@ -97,6 +99,108 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir, structural_only):
         click.echo("✓ dbt compile passed")
     else:
         click.echo(f"⚠ dbt compile environment-blocked: {result.compile_message}")
+
+
+def _hub_class_resolver(hub_root: Path, catalog_path, *, on_warning):
+    """Build a ``(class_iri) -> bool`` resolver over every domain ontology's import closure.
+
+    A contracted dbt model's ``target_class`` may name a class owned by any domain (or by an
+    imported accelerator module), so the closure has to be the union across the hub's domain
+    ontologies rather than one domain's. Returns ``None`` when nothing could be loaded at all,
+    which the caller reports as "resolution skipped" -- silently degrading to an empty class
+    set would turn every model into a false ``target-class-unresolved``.
+    """
+    from ..core.hub_utils import is_domain_ontology
+    from ..core.ontology_loader import SemanticProfile, load_ontology
+
+    ontologies_dir = hub_root / "model" / "ontologies"
+    if not ontologies_dir.is_dir():
+        return None
+    paths = sorted(p for p in ontologies_dir.glob("*.ttl") if is_domain_ontology(p))
+    if not paths:
+        return None
+
+    known: set[str] = set()
+    loaded_any = False
+    for path in paths:
+        try:
+            loaded = load_ontology(
+                path,
+                catalog_path=catalog_path,
+                profile=SemanticProfile.KAIROS_DESIGN,
+                degraded=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - one broken domain must not blind the rest
+            on_warning(f"could not load {path.name} for target_class resolution: {exc}")
+            continue
+        loaded_any = True
+        known.update(str(record.uri) for record in loaded.semantic_index.classes)
+    if not loaded_any:
+        return None
+    return lambda iri: iri in known
+
+
+@click.command(name="validate-dbt-contracts")
+@_FORMAT_OPTION
+def validate_dbt_contracts_cmd(output_format):
+    """Validate the hand-authored intermediate dbt layer's ``meta.kairos`` contracts.
+
+    Offline structural lint of ``integration/transforms/dbt/models/`` -- needs no dbt
+    install, no adapter, and no warehouse. **Distinct from `validate-dbt`**, which shells out
+    to real dbt against the *emitted* Silver project under
+    ``ontology-hub-publish/medallion/dbt``; the two validate different trees at different
+    lifecycle stages.
+
+    Run it after authoring an ``int_merged__``/``int_<source>__`` model and its properties
+    YAML, and *before* returning to kairos-design-mapping to bind it (issue #504). Until now
+    a malformed ``meta.kairos`` block was only ever caught once a binding existed to
+    contradict it, and `compile --check` ran for that binding's domain.
+
+    Checks: ``meta.kairos`` completeness, ``grain_key`` names only contracted columns,
+    ``config.contract.enforced: true``, ``target_class`` resolves in the hub's ontology import
+    closure, ``virtual_source_iri`` is unique hub-wide, and no unconfirmed ``<CONFIRM_...>``
+    scaffold sentinels remain. Warns (never blocks) when a ``stg_*`` model declares a
+    ``meta.kairos`` block, when an ``int_*`` model lacks one, or when a contracted model is
+    not selected by any EntityBinding yet.
+    """
+    from ..core.dbt_contract_lint import run_dbt_contract_lint
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+
+    catalog_path = _resolve_catalog(None, hub_root, cwd, resolve_refmodels_dir(cwd, hub_root))
+    resolver = _hub_class_resolver(
+        hub_root,
+        catalog_path,
+        on_warning=lambda message: click.echo(f"⚠ {message}", err=True),
+    )
+    report = run_dbt_contract_lint(hub_root, resolve_target_class=resolver)
+
+    if not report.transforms_present:
+        click.echo("ℹ No hand-authored dbt models found; nothing to validate.", err=True)
+    for note in report.notes:
+        click.echo(f"ℹ {note}", err=True)
+    for finding in report.findings:
+        glyph = "❌" if finding.severity == "error" else "⚠"
+        model = f" [{finding.model}]" if finding.model else ""
+        click.echo(f"{glyph} {finding.path}{model}: {finding.message}", err=True)
+    if report.passed:
+        click.echo(
+            f"✅ {len(report.contracted_models)} contracted dbt model(s) validated "
+            f"({len(report.warnings)} warning(s)).",
+            err=True,
+        )
+    else:
+        click.echo(f"❌ {len(report.errors)} contract error(s).", err=True)
+
+    _emit(report.to_dict(), output_format)
+    if not report.passed:
+        raise click.exceptions.Exit(1)
 
 
 @click.command()

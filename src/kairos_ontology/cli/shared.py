@@ -85,6 +85,10 @@ _SKILL_COVERED_COMMANDS = {
     "suggest-shapes": "kairos-execute-validate",
     "mdm-validate": "kairos-design-mdm",
     "validate-dbt": "kairos-execute-validate",
+    # Not kairos-execute-validate (which owns validate-dbt): this one lints the *authoring*
+    # tree an author is mid-way through writing, and the skill that walks them through
+    # writing it is the one that should be running it (issue #504).
+    "validate-dbt-contracts": "kairos-develop-dbt-transformation",
     "validate-mapping": "kairos-design-mapping",
     "scaffold-mapping": "kairos-design-mapping",
 }

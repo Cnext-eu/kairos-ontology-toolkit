@@ -119,7 +119,23 @@ SQL between the `stg_*` union and the final select.
    `grain_key`, target class, `virtual_source_iri`, and supported adapters. The
    legacy-named IRI identifies the contracted model output only; do not generate a
    separate virtual-source artifact or registry.
-6. Validate with the dbt commands already configured by the project. Fix parse,
+6. Validate the contract you just authored, **before** binding it:
+
+   ```powershell
+   $env:KAIROS_SKILL_CONTEXT = "1"
+   uv run kairos-ontology validate-dbt-contracts --format json
+   ```
+
+   This is offline (no dbt install, no adapter, no warehouse) and checks the whole
+   hand-authored tree at once: `meta.kairos` completeness, `grain_key` against the
+   declared output columns, `config.contract.enforced`, that `target_class` resolves
+   to a real class in the hub's import closure, that `virtual_source_iri` is unique
+   hub-wide, and that no `<CONFIRM_...>` sentinel is left unreplaced. It also warns
+   when a `stg_*` model declares a `meta.kairos` block or an `int_*` model lacks one.
+   Before issue #504 none of this was checkable until a binding existed and
+   `compile --check` ran for its domain — which is one step too late to be useful here.
+
+   Then validate with the dbt commands already configured by the project. Fix parse,
    contract, compile, and focused test failures before handoff.
 7. When the model authored in this pass is an `int_merged__<entity>`
    (survivorship or attribute-level outer-join) model, persist a Decision Log
@@ -128,7 +144,11 @@ SQL between the `stg_*` union and the final select.
    why, and any sample-evidence/row-count reconciliation performed.
 8. Return to **kairos-design-mapping**. Set `source.dbtModel.name`, `sqlPath`, and
    `contractPath`; make binding grain and source key exactly match the contracted
-   `grain_key`.
+   `grain_key`, and make `target.class` resolve to the same IRI as the contract's
+   `meta.kairos.target_class`. All three are compiler-enforced (issue #503):
+   `dbt-source.grain-mismatch`, `dbt-source.identity-mismatch`, and
+   `dbt-source.target-mismatch` respectively — "make them match" is no longer an
+   unchecked manual step.
 9. Run the stateless binding feedback loop:
 
    ```powershell

@@ -134,8 +134,10 @@ default).
 | `dbt-source.missing` | error | DD-133 (default) | |
 | `dbt-source.model-unresolved` | error | DD-133 (default) | |
 | `dbt-source.path-unresolved` | error | DD-133 (default) | |
+| `dbt-source.target-mismatch` | error | DD-133 (default) | #503. The binding's resolved `target.class` URI differs from the contracted model's `meta.kairos.target_class`. Constructed in `dbt_source.py`'s `validate_contract_target_class` (via `_failure`), but **called** from `kernel.py`'s per-binding loop rather than from `resolve_dbt_model_source`: the comparison needs the binding's *resolved* class URI and `dbt_source.py` has no `ResolutionContext`. The code literal lives here so every `dbt-source.*` code stays in one module, matching this catalog's per-module table layout. Skipped (not passed) when `context.klass()` returns `None` — `_binding_safety_diagnostics` has already blocked that binding with `safety.class-unresolved`, so there is no resolved URI to compare against and a second diagnostic would add nothing. |
 | `dbt-source.type-invalid` | error | DD-133 (default) | |
 | `dbt-source.unsafe-path` | error | DD-133 (default) | |
+| `dbt-source.virtual-source-duplicate` | error | DD-133 (default) | #503. Two `EntityBinding`s selecting **this domain** resolve contracted dbt models that declare the same `meta.kairos.virtual_source_iri`. The only `dbt-source.*` code **not** built through `_failure` — it is constructed directly in `kernel.py` (with the same `/source/dbtModel/contractPath` pointer) because it is a cross-binding verdict, not a single-binding resolution failure. Fed by a pre-pass (`_duplicate_virtual_sources`) that resolves every selected dbt-model binding up front, so both participants are named in the message and both are blocked, rather than only whichever binding the loop reaches second. Necessarily **domain-scoped**: a per-domain compile never loads peer domains' bindings, so hub-wide uniqueness is `validate-dbt-contracts`' job and the message says so. |
 
 ## `kernel.py` — scope resolution, safety canonicalization, technical-field/DD-139 checks
 
