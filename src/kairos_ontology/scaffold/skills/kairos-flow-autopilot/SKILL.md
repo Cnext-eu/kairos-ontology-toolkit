@@ -224,6 +224,26 @@ not watching can act on without re-deriving anything:
 
   Written to `ontology-hub-publish/reports/field-mapping-<system>.xlsx` — link each
   one from the report rather than hand-building an equivalent workbook.
+- **Source coverage metric** — bound / total source relations, expressed as a
+  percentage. Include the count of entity bindings authored and the count of source
+  tables/sheets discovered. A reviewer must be able to see at a glance how much of the
+  source estate is covered and how much is not.
+- **Unbound tables over 1000 rows** — list each unbound source table whose row count
+  exceeds 1000, with its `likely_entity` from the affinity report or "no canonical
+  target identified" if affinity did not suggest one. Report row counts only; do not
+  fabricate a "business value" score — domain importance is not quantifiable by the
+  toolkit and inventing one is the same error as heuristic mapping (DD-159).
+- **Conformance-risk list** — unbound source tables whose columns would trigger a
+  conformance group against a class that is already bound by another binding,
+  creating a cross-binding conformance expectation the unbound table will silently
+  violate once bound. List the source table, the canonical class, and the
+  overlapping columns.
+- **BLOCKED status** — if any LLM judgment step was skipped (per the Stage 0
+  pre-flight and DD-159), the report must carry an explicit **BLOCKED** line naming
+  the step, the role, and the remediation. A run that skipped an LLM step can never
+  report "complete" — just as Stage 3 requires an explicit "no material decision,
+  mechanical authoring only" line rather than silence, the transparency report
+  requires an explicit **BLOCKED** line rather than omission.
 
 ## Anti-patterns
 

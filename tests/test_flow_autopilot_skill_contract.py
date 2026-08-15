@@ -46,7 +46,11 @@ AUTOPILOT_ANCHORS = [
     "escalates",
     # Transparency report
     "transparency report",
-]
+        "Source coverage metric",
+        "Unbound tables over 1000 rows",
+        "Conformance-risk list",
+        "**BLOCKED**",
+    ]
 
 
 def _skill(root: Path, name: str) -> str:
