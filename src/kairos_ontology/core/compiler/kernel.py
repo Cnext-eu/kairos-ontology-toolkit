@@ -2131,6 +2131,56 @@ def _binding_safety_diagnostics(
     return tuple(diagnostics)
 
 
+def _unrealized_relationship_diagnostics(
+    binding: EntityBinding,
+) -> tuple[CompileDiagnostic, ...]:
+    """Warn when relationship-purpose technical fields exist but no relationship does (#491).
+
+    ``technicalFields`` with ``purpose: relationship`` is the documented way to carry a
+    foreign-key column into Silver when the join cannot be authored yet (a not-yet-bound
+    cross-domain parent, or the unsupported self-reference shape -- DD-139). Authoring the
+    carrier and never following up with the ``relationships:`` entry is legal and silent,
+    and it produces exactly the failure the CLdN hub shipped: 27 bindings, every FK column
+    materialized, zero joins, every silver model isolated.
+
+    Warning severity, deliberately: the binding is correct and emittable, the FK column is
+    really there, and a hub may legitimately stage carriers before the parent domain is
+    bound. Warnings never fail a compile (``CompileResult.succeeded``), so this reports the
+    gap without blocking a staged rollout.
+
+    This cannot fire when the FK column was authored with a different ``purpose`` (the
+    CLdN ``Qlik-routes`` binding marks every carrier ``purpose: identity``);
+    ``kairos-ontology propose-relationships`` covers that case by matching join keys
+    against other bindings directly.
+    """
+    if binding.relationships:
+        return ()
+    carriers = [
+        technical_field
+        for technical_field in binding.technical_fields
+        if technical_field.purpose == "relationship"
+    ]
+    if not carriers:
+        return ()
+    names = ", ".join(sorted(technical_field.name for technical_field in carriers))
+    return (
+        CompileDiagnostic(
+            code="relationship.unrealized-technical-field",
+            severity=DiagnosticSeverity.WARNING,
+            message=(
+                f"binding '{binding.name}' carries {len(carriers)} technical field(s) with "
+                f"purpose 'relationship' ({names}) but authors no relationships: entry, so "
+                "the foreign key reaches Silver as a raw column with no join, no surrogate "
+                "key, and no orphan window. Run 'kairos-ontology propose-relationships' to "
+                "derive the entry, or keep the carrier deliberately if the parent is not "
+                "bound yet."
+            ),
+            location=SourceLocation(path=binding.source_path, pointer="/relationships"),
+            rule_id="DD-139",
+        ),
+    )
+
+
 def _technical_field_safety_diagnostics(
     binding: EntityBinding, context: ResolutionContext, reserved: set[str]
 ) -> tuple[CompileDiagnostic, ...]:
@@ -2432,7 +2482,12 @@ def _relationship_diagnostics(
                         f"'{binding.target_class}' at itself; a self-referential relationship is "
                         f"not supported yet: the generated join would emit ref('{own_model}') "
                         f"inside the '{own_model}' model (a dbt dependency cycle) and a second "
-                        f"'{own_model}_sk' column colliding with that model's own surrogate key"
+                        f"'{own_model}_sk' column colliding with that model's own surrogate key. "
+                        "Supported alternative: drop this relationships: entry and carry the "
+                        f"foreign key as a technicalFields: entry with purpose 'relationship' "
+                        "(DD-139) — the column reaches Silver, and the hierarchy resolves with a "
+                        "self-join downstream in Gold, where the parent side is a separate model "
+                        "and no cycle exists"
                     ),
                     location=SourceLocation(path=binding.source_path, pointer=pointer),
                     rule_id="DD-133-safety",
@@ -2816,11 +2871,20 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         if binding.name in conformance_blocked:
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
             continue
+        # #491: an authoring advisory, not a safety rule -- emitted outside the blocking
+        # path below so it can never block a binding. ``_binding_safety_diagnostics``
+        # returns blocking diagnostics only; adding a warning to it would silently block
+        # every binding that carries one (see the severity guard below).
+        diagnostics.extend(_unrealized_relationship_diagnostics(binding))
         binding_safety = _binding_safety_diagnostics(binding, context)
         if binding_safety:
             diagnostics.extend(binding_safety)
-            specs.append(EntityBindingSpec(binding=binding, blocked=True))
-            continue
+            # Guard the contract rather than assume it: only an ERROR blocks. Without this
+            # a future non-error diagnostic added to _binding_safety_diagnostics would
+            # block the binding purely by being present.
+            if any(item.severity is DiagnosticSeverity.ERROR for item in binding_safety):
+                specs.append(EntityBindingSpec(binding=binding, blocked=True))
+                continue
         if binding.source.dbt_model is not None:
             try:
                 resolve_dbt_model_source(binding, scope.hub_root)

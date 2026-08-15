@@ -37,8 +37,14 @@ from pathlib import Path
 from .compiler import CompileError, load_entity_binding
 from .compiler.adapter import _expression_columns
 from .compiler.bindings import EntityBinding
+from .domain_coverage import load_source_affinity_tables
 from .propose_alignment import _is_operational_column
 from .silver_sample_audit import SourceColumnSample, load_source_samples
+
+#: Bumped when the machine-readable report contract changes.
+#: v1 (issue #494/#489, DD-160): unbound tables carry DD-156 row evidence, cross-domain
+#: column candidates are reported, and the whole report is JSON-serializable.
+SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -56,10 +62,53 @@ class OrphanColumnFinding:
 
 @dataclass
 class UnboundTableFinding:
-    """One source table with zero EntityBindings referencing it at all."""
+    """One source table with zero EntityBindings referencing it at all.
+
+    Carries DD-156 profiling evidence so a consumer can prioritise by data volume. All
+    three counts are honestly nullable: ``row_count is None`` means the true cardinality is
+    unknown (a capped flatfile read), NOT zero. Without these the autopilot's own
+    "unbound tables over 1000 rows" reporting rule was literally unevaluable (#494).
+    """
 
     table: str
     column_count: int
+    row_count: int | None = None
+    rows_sampled: int | None = None
+    distinct_scope: str | None = None
+
+    def volume_label(self) -> str:
+        """Human-readable row volume that never presents a window size as a table count."""
+        if self.row_count is not None:
+            return str(self.row_count)
+        if self.rows_sampled is not None:
+            return f"{self.rows_sampled}+ (sampled; true count unknown)"
+        return "?"
+
+
+@dataclass
+class CrossDomainColumnFinding:
+    """A bound table whose source data also belongs to a domain nothing binds it to (#489).
+
+    One source relation may be bound by several EntityBindings -- nothing in the schema
+    constrains ``source.relation`` to one binding, ``safety.artifact-collision`` keys on
+    binding *name* and artifact path only, and each binding carries its own
+    grain/identity/load. A wide operational table (the CLdN ``Qargo.orders`` has 123
+    columns) routinely spans booking, party, consignment and equipment concepts, but a hub
+    that authors only the first binding silently drops the rest.
+
+    The evidence is the affinity pass's own ``secondary_domains`` -- the analysis already
+    recorded that a table spans several domains, and nothing ever compared that against
+    what was actually bound. Name-matching the leftover columns was considered and
+    rejected: the measured candidate ladder in ``scaffold_binding`` matches **zero**
+    columns on its exact-equality rung, so a name-based cross-domain scan would report
+    nothing while looking authoritative.
+    """
+
+    table: str
+    bound_domains: tuple[str, ...]
+    candidate_domain: str
+    unmapped_column_count: int
+    likely_entity: str
 
 
 @dataclass
@@ -71,7 +120,50 @@ class ColumnCoverageReport:
     bindings_dir: str
     orphan_columns: list[OrphanColumnFinding] = field(default_factory=list)
     unbound_tables: list[UnboundTableFinding] = field(default_factory=list)
+    cross_domain_columns: list[CrossDomainColumnFinding] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        """JSON payload (#494). ``schema_version`` is bumped on any contract change."""
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "generated_at": self.generated_at,
+            "sources_dir": self.sources_dir,
+            "bindings_dir": self.bindings_dir,
+            "orphan_columns": [
+                {
+                    "table": item.table,
+                    "column": item.column,
+                    "data_type": item.data_type,
+                    "distinct_count": item.distinct_count,
+                    "row_count": item.row_count,
+                    "sample_value": item.sample_value,
+                    "binding_names": list(item.binding_names),
+                }
+                for item in self.orphan_columns
+            ],
+            "unbound_tables": [
+                {
+                    "table": item.table,
+                    "column_count": item.column_count,
+                    "row_count": item.row_count,
+                    "rows_sampled": item.rows_sampled,
+                    "distinct_scope": item.distinct_scope,
+                }
+                for item in self.unbound_tables
+            ],
+            "cross_domain_columns": [
+                {
+                    "table": item.table,
+                    "bound_domains": list(item.bound_domains),
+                    "candidate_domain": item.candidate_domain,
+                    "unmapped_column_count": item.unmapped_column_count,
+                    "likely_entity": item.likely_entity,
+                }
+                for item in self.cross_domain_columns
+            ],
+            "notes": list(self.notes),
+        }
 
 
 def _binding_referenced_columns(binding: EntityBinding) -> set[str]:
@@ -124,12 +216,16 @@ def _table_from_relation(relation: str) -> str:
 
 
 def run_column_coverage_audit(
-    *, sources_dir: Path, bindings_dir: Path
+    *, sources_dir: Path, bindings_dir: Path, analysis_dir: Path | None = None
 ) -> ColumnCoverageReport:
     """Build a column-coverage report across every EntityBinding in *bindings_dir*.
 
     Advisory and best-effort, matching ``audit-silver-samples``: a hub with no bindings
     or source vocabulary yields an empty report rather than raising.
+
+    ``analysis_dir`` points at ``integration/sources/_analysis/`` and enables the
+    cross-domain scan (#489). Omitting it keeps the orphan-column and unbound-table
+    findings unchanged.
     """
     report = ColumnCoverageReport(
         generated_at=datetime.now(timezone.utc).isoformat(),
@@ -143,7 +239,11 @@ def run_column_coverage_audit(
 
     referenced_by_table: dict[str, set[str]] = {}
     binding_names_by_table: dict[str, set[str]] = {}
+    domains_by_table: dict[str, set[str]] = {}
     bound_tables: set[str] = set()
+    affinity_by_table = (
+        load_source_affinity_tables(analysis_dir) if analysis_dir is not None else {}
+    )
 
     for path in sorted(bindings_dir.glob("*.binding.yaml")):
         try:
@@ -162,6 +262,7 @@ def run_column_coverage_audit(
         bound_tables.add(table)
         referenced_by_table.setdefault(table, set()).update(_binding_referenced_columns(binding))
         binding_names_by_table.setdefault(table, set()).add(binding.name)
+        domains_by_table.setdefault(table, set()).add(binding.domain)
 
     source_columns = load_source_samples(sources_dir)
     columns_by_table: dict[str, list[SourceColumnSample]] = {}
@@ -174,18 +275,27 @@ def run_column_coverage_audit(
 
     for table, columns in sorted(columns_by_table.items()):
         if table not in bound_tables:
+            evidence = columns[0] if columns else None
             report.unbound_tables.append(
-                UnboundTableFinding(table=table, column_count=len(columns))
+                UnboundTableFinding(
+                    table=table,
+                    column_count=len(columns),
+                    row_count=evidence.row_count if evidence else None,
+                    rows_sampled=evidence.rows_sampled if evidence else None,
+                    distinct_scope=evidence.distinct_scope if evidence else None,
+                )
             )
             continue
 
         referenced = referenced_by_table.get(table, set())
         binding_names = tuple(sorted(binding_names_by_table.get(table, ())))
+        unmapped: list[SourceColumnSample] = []
         for column in sorted(columns, key=lambda c: c.name):
             if column.name.lower() in referenced:
                 continue
             if _is_operational_column(column.name):
                 continue
+            unmapped.append(column)
             if column.distinct_count is None or column.distinct_count <= 1:
                 continue
             sample_value = column.samples[0] if column.samples else ""
@@ -200,5 +310,21 @@ def run_column_coverage_audit(
                     binding_names=binding_names,
                 )
             )
+        affinity = affinity_by_table.get(table)
+        # A table with nothing left unmapped has no second entity hiding in it, whatever
+        # the affinity pass thought -- reporting it would be pure noise.
+        if affinity and unmapped:
+            bound_domains = domains_by_table.get(table, set())
+            for candidate in affinity.get("secondary", ()):
+                if candidate and candidate not in bound_domains:
+                    report.cross_domain_columns.append(
+                        CrossDomainColumnFinding(
+                            table=table,
+                            bound_domains=tuple(sorted(bound_domains)),
+                            candidate_domain=candidate,
+                            unmapped_column_count=len(unmapped),
+                            likely_entity=str(affinity.get("likely_entity", "")),
+                        )
+                    )
 
     return report

@@ -262,12 +262,17 @@ not watching can act on without re-deriving anything:
   mechanical authoring only" line rather than silence, the transparency report
   requires an explicit **BLOCKED** line rather than omission.
 - **Zero-relationships flag** — if the run authored entity bindings, the report must
-  state the total count of `relationships:` blocks across all bindings. A count of
-  zero across N bindings means the silver models cannot join across domains — this is
-  a signal, not a finding: `kairos-design-mapping` already documents `relationships:`
-  and `externalReference` and the autopilot may have skipped `### 6. Define
-  relationships and checks`. State the count so a reviewer can see whether the step
-  was performed or skipped.
+  state the total count of `relationships:` **entries** across all bindings. Count
+  entries, not blocks: a binding with `relationships: []` still *has* the block, so
+  counting blocks reports N where the honest answer is zero. A count of zero across N
+  bindings means the silver models cannot join across domains — this is a signal, not
+  a finding: `kairos-design-mapping` already documents `relationships:` and
+  `externalReference` and the autopilot may have skipped `### 6. Define relationships
+  and checks`. Run `kairos-ontology propose-relationships` before concluding that no
+  relationship was available to author, and state the count so a reviewer can see
+  whether the step was performed or skipped. Note `compile --check` now also emits
+  `relationship.unrealized-technical-field` (warning) per binding that carries a
+  `purpose: relationship` technical field without a relationship.
 
 ## Anti-patterns
 

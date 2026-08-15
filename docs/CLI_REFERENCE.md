@@ -50,12 +50,12 @@ never graph-authority project targets. `project --target all` excludes them.
 | Category | Commands |
 |---|---|
 | Compile/project | `compile`, `project`, `mdm-validate` |
-| Author bindings | `scaffold-binding`, `scaffold-system` |
+| Author bindings | `scaffold-binding`, `scaffold-system`, `scaffold-staging`, `propose-relationships` |
 | Validate | `validate`, `validate-dbt`, `catalog-test`, `validate-mapping`, `validate-silver-ext`, `suggest-shapes` |
-| Source/discovery | `import-source`, `import-flatfile`, `import-tmdl`, `show-source-schema`, `source-privacy`, `analyse-sources`, `audit-silver-samples`, `audit-column-coverage`, `propose-alignment`, `build-glossary`, `discovery-status`, `discovery-conformance` |
-| Inspect/report | `resolve-ontology`, `show-class-inventory`, `list-class-properties`, `fit-report`, `explain-term`, `coverage-report`, `field-mapping-report`, `generate-inventory`, `check-inventory`, `draft-model-report`, `next`, `design-landscape` |
+| Source/discovery | `import-source`, `import-flatfile`, `import-tmdl`, `extract-schema`, `show-source-schema`, `source-privacy`, `analyse-sources`, `audit-silver-samples`, `audit-column-coverage`, `propose-alignment`, `build-glossary`, `list-patterns`, `discovery-status`, `discovery-conformance` |
+| Inspect/report | `resolve-ontology`, `show-class-inventory`, `list-class-properties`, `fit-report`, `inverse-scan`, `plan-sources`, `explain-term`, `coverage-report`, `field-mapping-report`, `generate-inventory`, `check-inventory`, `domain-coverage`, `draft-model-report`, `next`, `design-landscape`, `guard-scope`, `check-ai-config`, `suggest-type` |
 | Legacy scaffold helpers | `scaffold-mapping`, `scaffold-silver-ext` |
-| Setup/update | `init`, `new-repo`, `migrate`, `init-dataplatform`, `update`, `update-refmodels` |
+| Setup/update | `init`, `new-repo`, `migrate`, `init-dataplatform`, `scaffold-domain`, `update`, `update-refmodels` |
 
 `migrate` changes an older folder layout; it does **not** convert v4 authoring to v5.
 
@@ -96,6 +96,39 @@ kairos-ontology scaffold-binding --list-archetypes
   `owl:imports` is appended -- every other line is left untouched.
 * `--list-unscaffolded --system <system>` is a read-only report of tables under
   `integration/sources/<system>/` with no `EntityBinding` yet (any tier).
+
+## `propose-relationships`
+
+Derives candidate `relationships:` entries for every authored `EntityBinding`
+(issue #493, DD-160). Advisory: nothing is written and it always exits 0.
+
+```
+kairos-ontology propose-relationships [--domain <d>] [--accelerator <name>]
+  [--ref-models-dir <path>] [--no-unresolved] [--format text|json]
+```
+
+The object property is **read, not inferred**. Two deterministic sources feed it:
+
+* the accelerator blueprint's `cross_domain_relationships`, which declares each
+  bridge with an exact `property_uri` plus its domain/range class URIs (until now
+  consumed only by the legacy v2 report template, never by the v5 binding path);
+* the hub's own `owl:ObjectProperty` declarations, resolved through the DD-103
+  canonical loader under the `rdfs` profile, so a relationship inherited from an
+  imported superclass counts too. This is also what makes the command useful on a
+  hub with no accelerator installed.
+
+Join columns are matched by exact normalized name equality between the child
+binding's authored columns and the parent's `identity.sourceKey` -- the same
+high-precision tier-1 rule as `scaffold-binding`'s cross-source FK scanner. A
+cross-domain parent additionally gets a draft `externalReference` block whose
+`key[].column` is the parent's materialized output column and whose `name` is the
+parent's generated dbt model name (derived from the target class, per DD-138).
+
+Nothing is guessed. Anything not derivable is emitted as `<CONFIRM_JOIN_COLUMN>`
+or `<CONFIRM_KEY_TYPE>`. Each proposal reports `endpoint_match`: `uri` (exact
+class-URI equality) or `local-name` (the hub authored its own class in its own
+namespace) -- confirm a `local-name` match really is the same concept before
+accepting it. `--no-unresolved` hides proposals whose join columns are sentinels.
 
 ## `scaffold-system`
 

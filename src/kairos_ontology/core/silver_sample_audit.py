@@ -42,7 +42,16 @@ class SourceColumnSample:
     samples: list[str] = field(default_factory=list)
     distinct_count: int | None = None
     nullable: bool | None = None
+    #: TRUE table cardinality (DD-156). ``None`` means genuinely unknown -- never a
+    #: profiling-window size and never a defaulted 0.
     row_count: int | None = None
+    #: Rows read into the profiling window (DD-156). Present on flatfile-read tables,
+    #: absent on warehouse extraction where profiling is full-table.
+    rows_sampled: int | None = None
+    #: ``"table"`` or ``"sample"`` (DD-156): whether distinct/sample evidence covers the
+    #: full relation. ``None`` on legacy pre-v1.2 evidence, which must be treated as
+    #: untrusted rather than assumed exhaustive.
+    distinct_scope: str | None = None
 
 
 @dataclass
@@ -107,6 +116,8 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
     table_names: dict[str, str] = {}
     table_systems: dict[str, str] = {}
     table_row_counts: dict[str, int] = {}
+    table_rows_sampled: dict[str, int] = {}
+    table_distinct_scope: dict[str, str] = {}
     for tbl_uri in graph.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
         tbl_key = str(tbl_uri)
         table_names[tbl_key] = str(
@@ -127,6 +138,18 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
                 table_row_counts[tbl_key] = int(row_count_lit)
             except (TypeError, ValueError):
                 pass
+        # DD-156: rowsSampled/distinctScope carry the honest "how much did we actually
+        # look at" signal. Without them a capped 1,000-row profiling window is
+        # indistinguishable from a 1,000-row table.
+        rows_sampled_lit = graph.value(tbl_uri, KAIROS_BRONZE.rowsSampled)
+        if rows_sampled_lit is not None:
+            try:
+                table_rows_sampled[tbl_key] = int(rows_sampled_lit)
+            except (TypeError, ValueError):
+                pass
+        distinct_scope_lit = graph.value(tbl_uri, KAIROS_BRONZE.distinctScope)
+        if distinct_scope_lit is not None:
+            table_distinct_scope[tbl_key] = str(distinct_scope_lit)
 
     columns: dict[str, SourceColumnSample] = {}
     for col_uri in graph.subjects(RDF.type, KAIROS_BRONZE.SourceColumn):
@@ -158,6 +181,8 @@ def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:
             distinct_count=distinct_count,
             nullable=nullable,
             row_count=table_row_counts.get(table_key),
+            rows_sampled=table_rows_sampled.get(table_key),
+            distinct_scope=table_distinct_scope.get(table_key),
         )
     return columns
 

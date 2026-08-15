@@ -397,6 +397,25 @@ mode, and both missing/ambiguous parent actions. The target must resolve to
 another materializable binding or a declared external reference with a key
 contract.
 
+**Start from `kairos-ontology propose-relationships`, not from a blank block.**
+It reads the accelerator blueprint's declared `cross_domain_relationships` (the
+object property is *read*, not guessed) plus the hub's own `owl:ObjectProperty`
+declarations, matches join columns against other bindings' `identity.sourceKey`,
+and renders a pasteable entry including the `externalReference` key contract.
+Anything it cannot derive is emitted as an explicit sentinel
+(`<CONFIRM_JOIN_COLUMN>`, `<CONFIRM_KEY_TYPE>`) — confirm every one; a proposal
+is a starting point, never authority. Endpoints matched by `local-name` rather
+than `uri` mean the hub authored its own class instead of binding the
+reference-model one; check it really is the same concept before accepting.
+
+**A relationship-purpose technical field with no relationship is a warning, not
+a plan.** If a binding carries `technicalFields:` entries with
+`purpose: relationship` and `relationships: []`, `compile --check` emits
+`relationship.unrealized-technical-field` (warning, never blocking). That is
+legitimate while the parent domain is unbound — but it means the FK reaches
+Silver as a raw column with no join, no surrogate key and no orphan window, so
+downstream consumers must join by hand. Resolve it or record why you did not.
+
 **Self-referential relationships (same class → same class) are not supported.**
 A `relationships:` entry whose `target` resolves to the binding's own
 `target.class` (e.g. a `party:Party` parent/child company hierarchy modeled as
@@ -411,7 +430,52 @@ interim workaround: keep the foreign-key column materialized as a
 `technicalFields:` entry with `purpose: relationship` (same mechanism already
 used for not-yet-resolvable cross-domain FKs) instead of a `relationships:`
 entry — this carries the raw key column into the silver output without
-authoring the join Kairos cannot yet compile.
+authoring the join Kairos cannot yet compile. Resolve the hierarchy with a
+self-join **downstream in Gold**, where the parent side is a separate model and
+no cycle exists. Note that a "thin alias model" does *not* solve this: an alias
+selecting from the silver model would still be referenced by it
+(`customer__self` → `customer` → `customer__self`), which is the same cycle.
+
+### 6a. One source table, several canonical entities
+
+**Nothing constrains a source relation to a single binding.** A wide operational
+table routinely spans several domains — an `orders` table carries booking,
+party, consignment and equipment concepts at once. Author **one binding per
+canonical entity**, all over the same `source.relation`:
+
+```yaml
+# integration/bindings/Qargo-orders-to-booking.binding.yaml
+metadata: { name: Qargo-orders-to-booking, domain: booking }
+source:   { relation: Qargo.orders }
+target:   { class: booking:Booking }
+grain:    { columns: [order_id] }          # one row per order
+```
+
+```yaml
+# integration/bindings/Qargo-orders-to-party.binding.yaml
+metadata: { name: Qargo-orders-to-party, domain: party }
+source:   { relation: Qargo.orders }        # same relation, different entity
+target:   { class: party:Party }
+grain:    { columns: [customer_company_id] } # one row per customer, NOT per order
+```
+
+Rules that make this safe:
+
+- Each binding carries its **own** grain, identity, load policy and quality. The
+  party binding's grain is the customer key, not the order key — otherwise the
+  party model repeats once per order.
+- `metadata.name` must be unique and the two land in different domains, so
+  `compile <domain>` scopes them separately and no artifact collides.
+- Two bindings for the **same** class in the **same** domain are a different
+  case: they need a `conformance:` block or they fail
+  `conformance.group-required`.
+- `kairos-ontology audit-column-coverage` names bound tables whose affinity
+  analysis assigned them a domain nothing binds them to — that is the prompt to
+  author the second binding.
+
+Do **not** reach for a dbt split model just to separate the entities; that is
+only needed when relational logic (aggregation, joins, grain change) is
+genuinely required.
 
 For cross-domain targets, author `externalReference` explicitly. Its `name` is
 the parent dbt model in the unified medallion project, `domain` is the owning

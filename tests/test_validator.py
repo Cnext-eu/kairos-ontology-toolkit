@@ -711,6 +711,48 @@ class TestPhaseDAuthoringLints:
         assert len(leak_warnings) == 1, result["warnings"]
         assert "SAP" in leak_warnings[0]["message"]
 
+    def test_source_system_name_in_label_warns(self):
+        """#501: labels leaked source-system names silently -- only comments were checked.
+
+        A label is the *more* visible surface: it is what every downstream report, ERD and
+        picker renders.
+        """
+        content = (
+            self._BASE_TTL
+            + """
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "SAP Customer Name" ;
+    rdfs:comment "The name of the customer." .
+"""
+        )
+        result = validate_naming_conventions(content)
+        assert result["passed"] is True, result["errors"]
+        leak = [w for w in result["warnings"] if w["code"] == "source_system_name_in_label"]
+        assert len(leak) == 1, result["warnings"]
+        assert "SAP" in leak[0]["message"]
+        # The comment-scoped code must not fire for a label, so existing consumers
+        # filtering on it keep their exact meaning.
+        assert [w for w in result["warnings"] if w["code"] == "source_system_name_in_comment"] == []
+
+    def test_source_system_name_in_alt_label_warns(self):
+        content = (
+            self._BASE_TTL
+            + """
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Name" ;
+    skos:altLabel "Workday Worker Name" ;
+    rdfs:comment "The name of the customer." .
+"""
+        )
+        result = validate_naming_conventions(content)
+        leak = [w for w in result["warnings"] if w["code"] == "source_system_name_in_label"]
+        assert len(leak) == 1, result["warnings"]
+        assert "Workday" in leak[0]["message"]
+
     def test_no_source_system_name_does_not_warn(self):
         """A comment without source-system names produces no leakage warning."""
         content = (

@@ -377,8 +377,17 @@ def load_affinity_reports(
 
     Returns dict: domain_id → list of table dicts (each with system, table,
     columns count, likely_entity, indicative_columns, domain_uris).
+
+    Tables whose affinity ``domain`` is empty are skipped: alignment picks candidate
+    classes *from* a domain, so there is nothing to align them against. ``analyse_sources``
+    blanks ``domain`` whenever the LLM assignment failed, so the skipped set is exactly the
+    tables no domain claimed. Historically that skip was silent and they vanished from
+    every artifact (issue #492/#500 -- "12 Qlik tables entirely untracked"); they are now
+    counted and warned about here, and enumerated by ``domain-coverage``'s
+    ``unassigned_source_tables`` (DD-160).
     """
     domain_tables: dict[str, list[dict[str, Any]]] = {}
+    unassigned: list[str] = []
 
     for affinity_file in sorted(analysis_dir.glob("*-affinity.yaml")):
         try:
@@ -396,6 +405,7 @@ def load_affinity_reports(
         for tbl in data.get("tables", []):
             domain = tbl.get("domain", "")
             if not domain:
+                unassigned.append(f"{system}.{tbl.get('table', '?')}")
                 continue
             domain_tables.setdefault(domain, []).append(
                 {
@@ -407,6 +417,16 @@ def load_affinity_reports(
                     "domain_uris": tbl.get("domain_uris", []),
                 }
             )
+
+    if unassigned:
+        logger.warning(
+            "%d source table(s) have no affinity domain and are excluded from alignment: "
+            "%s. These have no canonical home — see 'kairos-ontology domain-coverage' "
+            "(unassigned_source_tables) and re-run analyse-sources if the assignment "
+            "merely failed.",
+            len(unassigned),
+            ", ".join(sorted(unassigned)),
+        )
 
     return domain_tables
 

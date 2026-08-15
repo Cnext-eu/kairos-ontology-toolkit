@@ -247,3 +247,86 @@ def test_cli_audit_column_coverage_fail_on_any(tmp_path):
     )
 
     assert result.exit_code == 1
+
+
+_AFFINITY_YAML = textwrap.dedent("""
+    system: app
+    analysed_at: '2026-08-15T00:00:00+00:00'
+    model_used: test
+    schema_version: 2
+    tables:
+      - table: customers
+        total_columns: 11
+        domain: party
+        likely_entity: Customer
+        secondary_domains:
+          - domain: commercial
+      - table: legacy_table
+        total_columns: 2
+        domain: party
+        likely_entity: LegacyThing
+    """).strip()
+
+
+def _write_affinity(hub_root):
+    analysis = hub_root / "integration" / "sources" / "_analysis"
+    analysis.mkdir(parents=True, exist_ok=True)
+    (analysis / "app-affinity.yaml").write_text(_AFFINITY_YAML, encoding="utf-8")
+    return analysis
+
+
+def test_unbound_tables_carry_dd156_row_evidence(tmp_path):
+    """#494: without row counts the 'unbound tables over 1000 rows' rule is unevaluable."""
+    sources_dir, bindings_dir = _write_hub(tmp_path)
+    report = run_column_coverage_audit(sources_dir=sources_dir, bindings_dir=bindings_dir)
+
+    finding = next(f for f in report.unbound_tables if f.table == "legacy_table")
+    assert finding.row_count == 10
+    assert finding.volume_label() == "10"
+
+
+def test_unknown_row_count_never_renders_as_zero(tmp_path):
+    """DD-156: an omitted rowCount means unknown; a capped window is 'N+ (sampled)'."""
+    from kairos_ontology.core.column_coverage_audit import UnboundTableFinding
+
+    assert UnboundTableFinding(table="t", column_count=1).volume_label() == "?"
+    assert (
+        UnboundTableFinding(table="t", column_count=1, rows_sampled=1000).volume_label()
+        == "1000+ (sampled; true count unknown)"
+    )
+
+
+def test_cross_domain_candidate_uses_affinity_secondary_domains(tmp_path):
+    """#489: one relation may carry several bindings; affinity already knew it spans domains."""
+    sources_dir, bindings_dir = _write_hub(tmp_path)
+    analysis = _write_affinity(sources_dir.parent)
+
+    report = run_column_coverage_audit(
+        sources_dir=sources_dir, bindings_dir=bindings_dir, analysis_dir=analysis
+    )
+    findings = {(f.table, f.candidate_domain) for f in report.cross_domain_columns}
+    assert findings == {("customers", "commercial")}
+    finding = report.cross_domain_columns[0]
+    assert finding.bound_domains == ("party",)
+    assert finding.unmapped_column_count > 0
+    assert finding.likely_entity == "Customer"
+
+
+def test_no_cross_domain_finding_without_analysis_dir(tmp_path):
+    sources_dir, bindings_dir = _write_hub(tmp_path)
+    report = run_column_coverage_audit(sources_dir=sources_dir, bindings_dir=bindings_dir)
+    assert report.cross_domain_columns == []
+
+
+def test_report_is_json_serializable(tmp_path):
+    import json
+
+    sources_dir, bindings_dir = _write_hub(tmp_path)
+    analysis = _write_affinity(sources_dir.parent)
+    report = run_column_coverage_audit(
+        sources_dir=sources_dir, bindings_dir=bindings_dir, analysis_dir=analysis
+    )
+    payload = json.loads(json.dumps(report.to_dict()))
+    assert payload["schema_version"] == 1
+    assert payload["unbound_tables"][0]["row_count"] == 10
+    assert payload["cross_domain_columns"][0]["candidate_domain"] == "commercial"
