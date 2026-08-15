@@ -11,7 +11,11 @@ import pytest
 import yaml
 
 from kairos_ontology.core.compiler import CompileError, load_entity_binding
-from kairos_ontology.core.compiler.dbt_source import resolve_dbt_model_source
+from kairos_ontology.core.compiler.dbt_source import (
+    contract_target_class,
+    resolve_dbt_model_source,
+    validate_contract_target_class,
+)
 
 
 def _binding(*, grain: str = "customer_id", identity: str = "customer_id") -> str:
@@ -158,6 +162,21 @@ def test_relation_binding_is_rejected_with_stable_missing_model_code(tmp_path: P
             ),
             "dbt-source.contract-invalid",
         ),
+        # #503: target_class was declared by the contract and written as a sentinel by
+        # scaffold-staging, but never read at compile time -- so neither an absent value
+        # nor an unconfirmed `<CONFIRM_TARGET_CLASS>` was rejected.
+        (
+            lambda model: model["meta"]["kairos"].pop("target_class"),
+            "dbt-source.contract-invalid",
+        ),
+        (
+            lambda model: model["meta"]["kairos"].update(target_class="<CONFIRM_TARGET_CLASS>"),
+            "dbt-source.contract-invalid",
+        ),
+        (
+            lambda model: model["meta"]["kairos"].update(target_class="party:Customer"),
+            "dbt-source.contract-invalid",
+        ),
     ],
 )
 def test_rejects_invalid_selected_output_contract(tmp_path: Path, mutation, code: str) -> None:
@@ -184,6 +203,41 @@ def test_requires_binding_grain_and_identity_to_match_contract(
         _resolve(tmp_path, binding=binding)
 
     assert {item.code for item in excinfo.value.diagnostics} == {code}
+
+
+def test_contract_target_class_is_read_from_the_selected_model(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    assert contract_target_class(binding, hub) == "https://example.com/party#Customer"
+
+
+def test_matching_target_class_is_accepted(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    validate_contract_target_class(binding, hub, "https://example.com/party#Customer")
+
+
+def test_target_class_mismatch_is_rejected_with_stable_location(tmp_path: Path) -> None:
+    """#503: the binding and the contract each declare the target class; nothing compared them.
+
+    A contracted model claiming to produce ``RevenueLine`` while the binding maps its columns
+    onto ``InvoiceLine`` compiled clean and only surfaced as wrong data downstream.
+    """
+    hub = _hub(tmp_path)
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        validate_contract_target_class(binding, hub, "https://example.com/party#Supplier")
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.target-mismatch"
+    assert diagnostic.location.path == "customer.binding.yml"
+    assert diagnostic.location.pointer == "/source/dbtModel/contractPath"
+    # Both sides are named, so the author does not have to open two files to see the drift.
+    assert "https://example.com/party#Supplier" in diagnostic.message
+    assert "https://example.com/party#Customer" in diagnostic.message
 
 
 def test_requires_exact_selected_sql_and_contract_paths(tmp_path: Path) -> None:

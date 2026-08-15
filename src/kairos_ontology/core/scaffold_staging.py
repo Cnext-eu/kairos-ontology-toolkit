@@ -13,6 +13,13 @@ with sentinel placeholders for the judgment a human/agent must confirm (natural 
 priority order, target class, virtual source identity) -- the same
 ``<CONFIRM_...>``-sentinel philosophy ``scaffold-binding`` already uses for grain and
 identity, so ``compile --check`` rejects the merged model's contract until confirmed.
+
+The ``target_class`` half of that claim was false until issue #503: nothing read
+``meta.kairos.target_class`` at compile time, so ``<CONFIRM_TARGET_CLASS>`` passed
+``compile --check`` unnoticed. ``compiler/dbt_source.py`` now requires it to be an absolute
+HTTP(S) IRI and cross-checks it against the binding's resolved target class, and
+``kairos-ontology validate-dbt-contracts`` reports every unreplaced sentinel by name without
+needing a binding to exist at all.
 """
 
 from __future__ import annotations

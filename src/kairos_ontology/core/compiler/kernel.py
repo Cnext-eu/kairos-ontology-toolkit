@@ -73,7 +73,7 @@ from .bindings import (
 )
 from .compile import CompileMode
 from .conformance import ConformancePlan, ConformanceTypeContract, build_conformance_plan
-from .dbt_source import resolve_dbt_model_source
+from .dbt_source import resolve_dbt_model_source, validate_contract_target_class
 from .ir import CanonicalProjectIR, EntityBindingSpec
 from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact
 from .quality import run_safety_kernel
@@ -1828,8 +1828,7 @@ def _explain_grain(binding: EntityBinding) -> tuple[ExplainGrainMechanism, ...]:
         direct_targets = [
             field.property
             for field in binding.fields
-            if isinstance(field.expression, ExprColumn)
-            and field.expression.column == column
+            if isinstance(field.expression, ExprColumn) and field.expression.column == column
         ]
         distinct_direct = list(dict.fromkeys(direct_targets))
         if len(distinct_direct) == 1:
@@ -1853,8 +1852,7 @@ def _explain_grain(binding: EntityBinding) -> tuple[ExplainGrainMechanism, ...]:
         technical_targets = [
             tech.name
             for tech in binding.technical_fields
-            if isinstance(tech.expression, ExprColumn)
-            and tech.expression.column == column
+            if isinstance(tech.expression, ExprColumn) and tech.expression.column == column
         ]
         distinct_technical = list(dict.fromkeys(technical_targets))
         if len(distinct_technical) == 1:
@@ -2179,6 +2177,38 @@ def _unrealized_relationship_diagnostics(
             rule_id="DD-139",
         ),
     )
+
+
+def _duplicate_virtual_sources(
+    bindings: list[EntityBinding], hub_root: str
+) -> dict[str, tuple[str, ...]]:
+    """Map each ``meta.kairos.virtual_source_iri`` claimed twice to the binding names claiming it.
+
+    Issue #503: ``virtual_source_iri`` identifies one contracted dbt model's output. Two
+    contracted models sharing one IRI make the identifier meaningless -- every consumer that
+    keys on it (provenance, the emitted ``system_uri``) silently conflates two different
+    grains. Nothing checked it; only the IRI's *shape* was validated.
+
+    This is a **pre-pass**: it resolves every selected dbt-model binding up front so a
+    duplicate is attributable to both participants, rather than only to whichever binding the
+    per-binding loop happens to reach second. Resolution failures are swallowed here on
+    purpose -- that same binding is resolved again inside the loop, where the failure is
+    reported once with its precise pointer.
+
+    Scope is the **selected domain only**. A per-domain compile cannot see peer domains'
+    bindings, so hub-wide uniqueness is `validate-dbt-contracts`' job; the diagnostic says so.
+    """
+
+    claimants: dict[str, list[str]] = {}
+    for binding in bindings:
+        if binding.source.dbt_model is None:
+            continue
+        try:
+            relation = resolve_dbt_model_source(binding, hub_root)
+        except CompileError:
+            continue
+        claimants.setdefault(relation.uri, []).append(binding.name)
+    return {uri: tuple(sorted(names)) for uri, names in claimants.items() if len(set(names)) > 1}
 
 
 def _technical_field_safety_diagnostics(
@@ -2867,6 +2897,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     )
     diagnostics.extend(conformance_diagnostics)
     selected_by_name = {binding.name: binding for binding in selected_bindings}
+    duplicate_virtual_sources = _duplicate_virtual_sources(selected_bindings, scope.hub_root)
     for binding in selected_bindings:
         if binding.name in conformance_blocked:
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
@@ -2887,9 +2918,41 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 continue
         if binding.source.dbt_model is not None:
             try:
-                resolve_dbt_model_source(binding, scope.hub_root)
+                relation = resolve_dbt_model_source(binding, scope.hub_root)
+                # #503: the binding's target.class and the contract's meta.kairos.target_class
+                # are two independent declarations of one fact. Compared here, not inside
+                # resolve_dbt_model_source, because the comparison needs the *resolved* class
+                # URI and that module has no ResolutionContext. _binding_safety_diagnostics
+                # above has already blocked this binding if the class does not resolve, so
+                # klass() is non-None by the time we get here -- guarded anyway rather than
+                # asserted, so a future reordering degrades to "check skipped" instead of
+                # AttributeError.
+                target = context.klass(binding.target_class)
+                if target is not None:
+                    validate_contract_target_class(binding, scope.hub_root, target.uri)
             except CompileError as exc:
                 diagnostics.extend(exc.diagnostics)
+                specs.append(EntityBindingSpec(binding=binding, blocked=True))
+                continue
+            claimants = duplicate_virtual_sources.get(relation.uri)
+            if claimants is not None:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="dbt-source.virtual-source-duplicate",
+                        message=(
+                            f"virtual_source_iri {relation.uri!r} is claimed by more than one "
+                            f"contracted dbt model in this domain (bindings: "
+                            f"{', '.join(claimants)}). Give each contracted model its own IRI. "
+                            "This compile only sees domain "
+                            f"'{domain}' -- run 'kairos-ontology validate-dbt-contracts' for "
+                            "hub-wide uniqueness."
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path or "<binding>",
+                            pointer="/source/dbtModel/contractPath",
+                        ),
+                    )
+                )
                 specs.append(EntityBindingSpec(binding=binding, blocked=True))
                 continue
         try:

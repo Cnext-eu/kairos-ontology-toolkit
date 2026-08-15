@@ -62,6 +62,7 @@ RETAINED_COMMANDS = {
     "update-refmodels",
     "validate",
     "validate-dbt",
+    "validate-dbt-contracts",
     "validate-mapping",
     "validate-silver-ext",
 }

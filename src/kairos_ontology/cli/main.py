@@ -32,6 +32,7 @@ from .compile import compile_cmd
 from .decisions import decision
 from .validation import (
     validate_dbt_cmd,
+    validate_dbt_contracts_cmd,
     validate,
     mdm_validate,
     catalog_test_cmd,
@@ -257,6 +258,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(compile_cmd)
     group.add_command(decision)
     group.add_command(validate_dbt_cmd)
+    group.add_command(validate_dbt_contracts_cmd)
     group.add_command(validate)
     group.add_command(mdm_validate)
     group.add_command(catalog_test_cmd)

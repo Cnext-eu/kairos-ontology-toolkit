@@ -228,37 +228,135 @@ def _parse_contract(
     )
 
 
-def discover_dbt_contracts(transforms_dir: Path, hub_root: Path) -> tuple[DbtContractModel, ...]:
-    """Discover ordinary SQL/YAML model contracts without registries or persistence."""
+@dataclass(frozen=True)
+class DbtModelStub:
+    """One ``models[]`` entry in a properties document, before contract parsing.
+
+    The full inventory -- including models with **no** ``meta.kairos`` block, which
+    :func:`discover_dbt_contracts` drops. ``validate-dbt-contracts`` needs those: a `stg_*`
+    model that wrongly declares a `meta.kairos` block, and an `int_*` model that wrongly
+    omits one, are both only visible against the whole inventory.
+
+    ``kairos_meta`` is the **raw, unvalidated** block. That matters: a `<CONFIRM_...>`
+    scaffold sentinel is rejected by :func:`_parse_contract` as a malformed IRI long before
+    anything can notice it *is* a sentinel, so the only way to tell an author "you have not
+    filled in the scaffold yet" rather than "your IRI is invalid" is to read it pre-parse.
+    """
+
+    name: str
+    properties_path: Path
+    has_kairos_meta: bool
+    kairos_meta: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class DbtContractIssue:
+    """One problem found while scanning, attributed to a model where one is identifiable."""
+
+    path: Path
+    message: str
+    #: ``None`` for a document-level failure (unparseable YAML, a non-mapping ``models[]``
+    #: entry) -- there is no model name to attribute it to yet.
+    model: str | None = None
+
+
+@dataclass(frozen=True)
+class DbtContractScan:
+    """Everything one pass over ``<transforms>/models`` found, errors included.
+
+    :func:`discover_dbt_contracts` raises on the first bad model, which is right for the
+    bundle path (a half-assembled dbt project is not shippable) but wrong for a lint, where
+    one malformed contract must not hide the other twenty. This carries both.
+    """
+
+    models: tuple[DbtContractModel, ...]
+    inventory: tuple[DbtModelStub, ...]
+    #: Walk failures ordered before parse failures -- the same order
+    #: :func:`discover_dbt_contracts` would have raised them in.
+    errors: tuple[DbtContractIssue, ...]
+
+
+def scan_dbt_contracts(transforms_dir: Path, hub_root: Path) -> DbtContractScan:
+    """Non-raising :func:`discover_dbt_contracts`: collect every model **and** every error.
+
+    A missing/outside-the-hub transforms directory is still raised, not collected -- that is
+    a caller mistake, not a finding about the hub's contracts.
+    """
 
     root = Path(hub_root).resolve()
     transforms = Path(transforms_dir).resolve()
     models_dir = transforms / "models"
     if not transforms.is_relative_to(root) or not models_dir.is_dir():
         raise DbtContractError(f"{transforms}: transforms directory must be inside hub root")
-    documents = [
-        (path, _load_properties(path))
-        for path in sorted([*models_dir.rglob("*.yml"), *models_dir.rglob("*.yaml")])
-    ]
+
+    walk_errors: list[DbtContractIssue] = []
+    parse_errors: list[DbtContractIssue] = []
+    documents: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted([*models_dir.rglob("*.yml"), *models_dir.rglob("*.yaml")]):
+        try:
+            documents.append((path, _load_properties(path)))
+        except DbtContractError as exc:
+            walk_errors.append(DbtContractIssue(path, str(exc)))
+
     selected: list[tuple[dict[str, Any], Path]] = []
+    inventory: list[DbtModelStub] = []
     resources: dict[str, Path] = {}
     for path, document in documents:
         for index, model in enumerate(document.get("models", [])):
             if not isinstance(model, dict):
-                raise _error(path, f"models[{index}] must be a mapping")
-            name = _required_string(model, "name", path, f"models[{index}]")
+                walk_errors.append(
+                    DbtContractIssue(path, str(_error(path, f"models[{index}] must be a mapping")))
+                )
+                continue
+            try:
+                name = _required_string(model, "name", path, f"models[{index}]")
+            except DbtContractError as exc:
+                walk_errors.append(DbtContractIssue(path, str(exc)))
+                continue
             if name in resources:
-                raise _error(path, f"duplicate dbt model resource {name!r}")
+                walk_errors.append(
+                    DbtContractIssue(
+                        path, str(_error(path, f"duplicate dbt model resource {name!r}")), name
+                    )
+                )
+                continue
             resources[name] = path
             meta = model.get("meta")
-            if isinstance(meta, dict) and "kairos" in meta:
+            kairos = meta.get("kairos") if isinstance(meta, dict) else None
+            has_kairos = isinstance(meta, dict) and "kairos" in meta
+            inventory.append(
+                DbtModelStub(name, path, has_kairos, kairos if isinstance(kairos, dict) else None)
+            )
+            if has_kairos:
                 selected.append((model, path))
+
     sql_paths: dict[str, list[Path]] = {}
     for sql_path in models_dir.rglob("*.sql"):
         sql_paths.setdefault(sql_path.stem, []).append(sql_path.resolve())
-    return tuple(
-        sorted(
-            (_parse_contract(model, path, sql_paths) for model, path in selected),
-            key=lambda item: item.name,
-        )
+
+    models: list[DbtContractModel] = []
+    for model, path in selected:
+        try:
+            models.append(_parse_contract(model, path, sql_paths))
+        except DbtContractError as exc:
+            parse_errors.append(DbtContractIssue(path, str(exc), str(model.get("name") or "")))
+
+    return DbtContractScan(
+        models=tuple(sorted(models, key=lambda item: item.name)),
+        inventory=tuple(sorted(inventory, key=lambda item: item.name)),
+        errors=tuple(walk_errors) + tuple(parse_errors),
     )
+
+
+def discover_dbt_contracts(transforms_dir: Path, hub_root: Path) -> tuple[DbtContractModel, ...]:
+    """Discover ordinary SQL/YAML model contracts without registries or persistence.
+
+    Fail-fast wrapper over :func:`scan_dbt_contracts`: any finding at all is raised as the
+    :class:`DbtContractError` it used to be, preserving this function's exact contract for
+    the bundle path. Use ``scan_dbt_contracts`` when you want to report every problem.
+    """
+
+    scan = scan_dbt_contracts(transforms_dir, hub_root)
+    if scan.errors:
+        raise DbtContractError(scan.errors[0].message)
+    return scan.models

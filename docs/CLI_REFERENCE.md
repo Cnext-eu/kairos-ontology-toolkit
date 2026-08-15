@@ -51,7 +51,7 @@ never graph-authority project targets. `project --target all` excludes them.
 |---|---|
 | Compile/project | `compile`, `project`, `mdm-validate` |
 | Author bindings | `scaffold-binding`, `scaffold-system`, `scaffold-staging`, `propose-relationships` |
-| Validate | `validate`, `validate-dbt`, `catalog-test`, `validate-mapping`, `validate-silver-ext`, `suggest-shapes` |
+| Validate | `validate`, `validate-dbt`, `validate-dbt-contracts`, `catalog-test`, `validate-mapping`, `validate-silver-ext`, `suggest-shapes` |
 | Source/discovery | `import-source`, `import-flatfile`, `import-tmdl`, `extract-schema`, `show-source-schema`, `source-privacy`, `analyse-sources`, `audit-silver-samples`, `audit-column-coverage`, `propose-alignment`, `build-glossary`, `list-patterns`, `discovery-status`, `discovery-conformance` |
 | Inspect/report | `resolve-ontology`, `show-class-inventory`, `list-class-properties`, `fit-report`, `inverse-scan`, `plan-sources`, `explain-term`, `coverage-report`, `field-mapping-report`, `generate-inventory`, `check-inventory`, `domain-coverage`, `draft-model-report`, `next`, `design-landscape`, `guard-scope`, `check-ai-config`, `suggest-type` |
 | Legacy scaffold helpers | `scaffold-mapping`, `scaffold-silver-ext` |
@@ -96,6 +96,34 @@ kairos-ontology scaffold-binding --list-archetypes
   `owl:imports` is appended -- every other line is left untouched.
 * `--list-unscaffolded --system <system>` is a read-only report of tables under
   `integration/sources/<system>/` with no `EntityBinding` yet (any tier).
+
+## `validate-dbt-contracts` vs `validate-dbt`
+
+Two different trees, two different lifecycle stages. Neither subsumes the other.
+
+| | `validate-dbt-contracts` | `validate-dbt` |
+|---|---|---|
+| Validates | `integration/transforms/dbt/models/` — the **hand-authored** intermediate layer | `ontology-hub-publish/medallion/dbt` — the **emitted** Silver project |
+| Needs dbt installed | No | Yes (except `--structural-only`) |
+| Needs an adapter | No | Yes (`--platform fabric\|databricks`) |
+| Runs at | Stage 4, while authoring `int_*` models, *before* binding them | Stage 5, after `compile --emit` |
+| Owning skill | `kairos-develop-dbt-transformation` | `kairos-execute-validate` |
+
+```
+kairos-ontology validate-dbt-contracts [--format json|yaml]
+```
+
+Offline lint of every `meta.kairos` block (issue #504). Errors: incomplete `meta.kairos`,
+a `grain_key` naming a column the contract does not declare, missing
+`config.contract.enforced: true`, a `target_class` that does not resolve in the hub's
+ontology import closure, a `virtual_source_iri` claimed by more than one model, and any
+unreplaced `<CONFIRM_...>` scaffold sentinel. Warnings (never blocking): a `stg_*` model
+that declares a `meta.kairos` block, an `int_*` model that lacks one, and a contracted model
+no `EntityBinding` selects yet.
+
+`virtual_source_iri` uniqueness is the authoritative hub-wide check. `compile --check` also
+reports `dbt-source.virtual-source-duplicate`, but only within the domain being compiled —
+it never loads peer domains' bindings.
 
 ## `propose-relationships`
 

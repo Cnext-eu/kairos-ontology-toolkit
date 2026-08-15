@@ -8,6 +8,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`kairos-ontology validate-dbt-contracts`** (#504). The toolkit generates Silver dbt models from the
+  `CompilePlan`, but the *hand-authored* intermediate layer under `integration/transforms/dbt/models/`
+  had no validation of its own: a `meta.kairos` block was only ever checked indirectly, once an
+  `EntityBinding` referenced the model via `source.dbtModel` **and** `compile --check` ran for that
+  binding's domain. The documented authoring flow is "author `stg_*` → author `int_merged__` → author
+  properties YAML → return to the mapping skill → bind", and nothing existed to run between the third
+  and fourth steps — a wrong `grain_key` surfaced only once a binding existed to contradict it,
+  potentially much later. The new command is a **fully offline** lint (no dbt install, no adapter, no
+  warehouse) over that tree: `meta.kairos` completeness, `grain_key` ⊆ declared output columns,
+  `config.contract.enforced: true`, `target_class` resolving in the hub's ontology import closure,
+  hub-wide `virtual_source_iri` uniqueness, and any unreplaced `<CONFIRM_...>` scaffold sentinel
+  (reported by field name, pre-parse — every sentinel is *also* structurally invalid, so a post-parse
+  check would only ever have said "your IRI is malformed"). Warnings that never block: a `stg_*` model
+  declaring a `meta.kairos` block (a stage is internal to one transform, never a bindable virtual
+  source), an `int_*` model lacking one, and a contracted model no binding selects yet.
+  Deliberately a **sibling** of the existing `validate-dbt` rather than a mode on it — that command
+  shells out to real dbt against the *emitted* project under `ontology-hub-publish/medallion/dbt` at
+  Stage 5, and is gated to `kairos-execute-validate`; this one lints the authoring tree at Stage 4 and
+  is gated to `kairos-develop-dbt-transformation`. Reuses `dbt_contracts.py`'s existing contract parser
+  through a new non-raising `scan_dbt_contracts()`; `discover_dbt_contracts()` is now a fail-fast
+  wrapper over it with its exact previous contract, so the bundle path is unchanged.
+
+### Changed
+- **`meta.kairos.target_class` is now required and cross-checked at compile time** (#503).
+  `compiler/dbt_source.py` validated `grain`, `grain_key`, `virtual_source_iri` and
+  `supported_adapters` but never read `target_class` at all — even though the contract declares it,
+  `dbt_contracts.py`'s bundle-time parser requires it, and `scaffold-staging` writes it as a
+  `<CONFIRM_TARGET_CLASS>` sentinel whose module docstring claimed "`compile --check` rejects the
+  merged model's contract until confirmed". That claim was false for this one field: an unconfirmed
+  sentinel sailed straight through. `resolve_dbt_model_source` now requires an absolute HTTP(S)
+  `target_class` (existing `dbt-source.contract-invalid`), and a new `dbt-source.target-mismatch`
+  rejects a contract whose `target_class` disagrees with the binding's *resolved* `target.class` IRI —
+  the case where a model claims to produce `RevenueLine` while the binding maps its columns onto
+  `InvoiceLine`, which previously compiled clean and only surfaced as wrong data. The comparison is
+  invoked from `kernel.py` rather than `dbt_source.py` because it needs a `ResolutionContext`.
+  **Behaviour change:** a hand-authored contract that omits `meta.kairos.target_class` now fails
+  `compile --check`. Add the field (it is already documented as required by the
+  kairos-develop-dbt-transformation skill), or run `validate-dbt-contracts` to find every such model
+  at once.
+- **Two contracted dbt models sharing one `virtual_source_iri` are now rejected** (#503). The IRI
+  identifies one contracted model's output; only its *shape* was validated, so two models could claim
+  the same identity and silently conflate two grains for every consumer keyed on it. A new
+  `dbt-source.virtual-source-duplicate` blocks both participants (a pre-pass resolves every selected
+  dbt-model binding up front, so the collision is not attributed solely to whichever binding the loop
+  reached second). Necessarily **domain-scoped** — a per-domain compile never loads peer domains'
+  bindings — so the message routes the author to `validate-dbt-contracts`, which owns the
+  authoritative hub-wide check.
 - **`domain-coverage --explain <domain>` and `--owns <ClassName>`** (#418, DD-157). The blueprint's
   per-domain `owns`/`does_not_own` boundaries were loaded by the toolkit and shown only inside an LLM
   prompt no design author ever sees — nothing in the design loop surfaced or checked ownership, so a

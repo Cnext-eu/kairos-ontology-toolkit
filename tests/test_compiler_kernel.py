@@ -461,6 +461,7 @@ def test_contracted_dbt_model_compiles_as_virtual_ref_source(tmp_path):
               kairos:
                 grain: one row per customer
                 grain_key: [customer_id]
+                target_class: https://example.test/party#Customer
                 virtual_source_iri: https://example.test/virtual/customer-stage
                 supported_adapters: [fabric]
             columns:
@@ -512,6 +513,7 @@ def _write_contracted_models(hub: Path, names: list[str]) -> None:
             "      kairos:\n"
             "        grain: one row per customer\n"
             "        grain_key: [customer_id]\n"
+            "        target_class: https://example.test/party#Customer\n"
             f"        virtual_source_iri: https://example.test/virtual/{name}\n"
             "        supported_adapters: [fabric]\n"
             "    columns:\n"
@@ -655,6 +657,72 @@ def test_conformance_mixes_relation_and_contracted_dbt_model_sources(tmp_path):
     assert "source('crm', 'customers')" in relation_branch
     assert "'crm' as _source_system" in relation_branch
     assert "models/silver/_dbt__sources.yml" not in artifacts
+
+
+def test_contracted_dbt_model_target_class_mismatch_blocks_the_entity(tmp_path):
+    """#503: binding target.class vs contract meta.kairos.target_class were never compared."""
+    hub = _hub(tmp_path)
+    _write_contracted_models(hub, ["crm_customer_stage"])
+    schema = hub / "integration" / "transforms" / "dbt" / "models" / "schema.yml"
+    schema.write_text(
+        schema.read_text(encoding="utf-8").replace(
+            "target_class: https://example.test/party#Customer",
+            "target_class: https://example.test/party#Supplier",
+        ),
+        encoding="utf-8",
+    )
+    binding_dir = hub / "integration" / "bindings"
+    (binding_dir / "customer.binding.yaml").unlink()
+    (binding_dir / "crm_customer_stage.binding.yaml").write_text(
+        _dbt_binding_text("crm-customer", "crm_customer_stage", ""), encoding="utf-8"
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    assert {item.code for item in result.diagnostics.items} == {"dbt-source.target-mismatch"}
+
+
+def test_two_contracted_models_sharing_one_virtual_source_iri_are_both_blocked(tmp_path):
+    """#503: virtual_source_iri identifies one model's output; nothing enforced uniqueness.
+
+    Both participants must be named and blocked -- attributing the collision only to whichever
+    binding the per-binding loop reached second would make it look like that one binding was
+    at fault.
+    """
+    models = ["crm_customer_stage", "erp_customer_stage"]
+    hub = _dbt_conformance_hub(tmp_path, models, "union-all")
+    schema = hub / "integration" / "transforms" / "dbt" / "models" / "schema.yml"
+    schema.write_text(
+        schema.read_text(encoding="utf-8").replace(
+            "https://example.test/virtual/erp_customer_stage",
+            "https://example.test/virtual/crm_customer_stage",
+        ),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    duplicates = [
+        item
+        for item in result.diagnostics.items
+        if item.code == "dbt-source.virtual-source-duplicate"
+    ]
+    assert len(duplicates) == len(models)
+    for item in duplicates:
+        assert all(f"{model}-customer" in item.message for model in models)
+        # A per-domain compile cannot see peer domains, so it must route the author to the
+        # hub-wide check rather than implying it just proved global uniqueness.
+        assert "validate-dbt-contracts" in item.message
+
+
+def test_distinct_virtual_source_iris_are_not_flagged_as_duplicates(tmp_path):
+    hub = _dbt_conformance_hub(tmp_path, ["crm_customer_stage", "erp_customer_stage"], "union-all")
+
+    result = compile_domain(hub, "party")
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
 
 
 @pytest.mark.parametrize("union_mode", ["union-all", "deduplicate"])
