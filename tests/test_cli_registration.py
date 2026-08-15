@@ -35,6 +35,7 @@ RETAINED_COMMANDS = {
     "import-tmdl",
     "init",
     "init-dataplatform",
+    "inverse-scan",
     "list-class-properties",
     "list-patterns",
     "mdm-validate",

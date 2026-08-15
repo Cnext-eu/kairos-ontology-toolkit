@@ -500,17 +500,24 @@ def run_fit_report(
         if uri in universe_by_uri
     )
     populated_uris = {item.property_uri for item in populated}
-    unpopulated = tuple(
-        UnpopulatedProperty(
-            property_uri=row["property_uri"],
-            name=row["name"],
-            property_type=row["property_type"],
-            origin=row["origin"],
-            distance=row["distance"],
+    # #451: when no evidence source was found, do NOT list every universe property as
+    # "unpopulated" — that reads like a finding ("everything is empty") when the truth is
+    # "nothing was evaluated." Leave the unpopulated list empty; the notes explain absent
+    # evidence and the remediation path.
+    if evidence_kind == "none":
+        unpopulated: tuple[UnpopulatedProperty, ...] = ()
+    else:
+        unpopulated = tuple(
+            UnpopulatedProperty(
+                property_uri=row["property_uri"],
+                name=row["name"],
+                property_type=row["property_type"],
+                origin=row["origin"],
+                distance=row["distance"],
+            )
+            for row in universe
+            if row["property_uri"] not in populated_uris
         )
-        for row in universe
-        if row["property_uri"] not in populated_uris
-    )
 
     return FitReportResult(
         class_uri=class_uri,
@@ -523,5 +530,189 @@ def run_fit_report(
         unpopulated=unpopulated,
         orphan_columns=orphan_columns,
         technical_fields=technical_fields,
+        notes=tuple(notes),
+    )
+
+
+# --------------------------------------------------------------------------------------
+# #452 — inverse class→candidate-source scan (deterministic tier only).
+#
+# Given a canonical class, scan every source table across every source system under
+# ``integration/sources/`` and report which tables have columns whose names deterministically
+# match the class's datatype or object properties. This is the inverse of fit-report's
+# usual direction (source→class): here we start from the class and find candidate sources.
+#
+# Only the deterministic tier (exact column-name equality via the class-name-aware candidate
+# ladder from ``scaffold_binding.match_columns_to_properties``) is evaluated. What was NOT
+# evaluated — LLM-assisted semantic matching, fuzzy/phonetic name similarity, value-sample
+# inference, or cross-system relationship discovery — is explicitly labelled in the result
+# notes so a reader never mistakes a short candidate list for a completeness finding.
+# --------------------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class CandidateSourceMatch:
+    """One source table with at least one column matching a class property."""
+
+    source_system: str
+    source_table: str
+    matched_properties: tuple[str, ...]
+    matched_columns: tuple[str, ...]
+    total_columns: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_system": self.source_system,
+            "source_table": self.source_table,
+            "matched_properties": list(self.matched_properties),
+            "matched_columns": list(self.matched_columns),
+            "total_columns": self.total_columns,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class InverseScanResult:
+    """Deterministic inverse scan: given a class, which source tables look like candidates."""
+
+    class_uri: str
+    class_name: str
+    universe_property_count: int
+    candidates: tuple[CandidateSourceMatch, ...]
+    source_systems_scanned: tuple[str, ...]
+    tables_scanned: int
+    notes: tuple[str, ...] = ()
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "advisory": ADVISORY_NOTICE,
+            "class_uri": self.class_uri,
+            "class_name": self.class_name,
+            "universe_property_count": self.universe_property_count,
+            "candidates": [item.to_dict() for item in self.candidates],
+            "source_systems_scanned": list(self.source_systems_scanned),
+            "tables_scanned": self.tables_scanned,
+            "notes": list(self.notes),
+        }
+
+
+_INVERSE_SCAN_NOT_EVALUATED = (
+    "Not evaluated: LLM-assisted semantic matching, fuzzy/phonetic name similarity, "
+    "value-sample inference, and cross-system relationship discovery. A short candidate "
+    "list is NOT a completeness finding — it means only exact column-name matches were found."
+)
+
+
+def run_inverse_scan(
+    ontology_path: Path,
+    class_token: str,
+    hub_root: Path,
+    *,
+    catalog_path: Path | None = None,
+) -> InverseScanResult:
+    """Scan all source tables for deterministic column-name matches to *class_token*'s properties.
+
+    This is the inverse of :func:`run_fit_report`: instead of "given a source, what is
+    populated," it answers "given a class, which source tables have columns that
+    deterministically match its properties?"
+
+    Only the deterministic tier is evaluated — exact normalized column-name equality via
+    the class-name-aware candidate ladder from
+    :func:`scaffold_binding.match_columns_to_properties`. What was not evaluated is
+    explicitly labelled in the result notes (LLM matching, fuzzy similarity, etc.).
+
+    Args:
+        ontology_path: Path to the domain ontology TTL that declares/imports *class_token*.
+        class_token: A full class IRI or a ``prefix:Local`` qname.
+        hub_root: The hub root directory (containing ``integration/sources/``).
+        catalog_path: Optional explicit XML catalog for import resolution.
+
+    Returns:
+        An :class:`InverseScanResult`. Raises :class:`FitReportError` only when *class_token*
+        cannot be resolved.
+    """
+    from .scaffold_binding import (
+        SourceColumn,
+        list_source_tables,
+        match_columns_to_properties,
+    )
+
+    loaded = load_ontology(
+        ontology_path,
+        catalog_path=catalog_path,
+        profile=SemanticProfile.KAIROS_DESIGN,
+    )
+    class_uri = resolve_token_uri(loaded, ontology_path, class_token)
+    if class_uri is None:
+        raise FitReportError(
+            f"cannot resolve class token {class_token!r}: no declared prefix matches it in "
+            f"{ontology_path}"
+        )
+    index = loaded.semantic_index
+    cls = index.class_by_uri(class_uri)
+    if cls is None:
+        raise FitReportError(f"class does not resolve in the scoped domain closure: {class_uri}")
+
+    universe = index.class_properties(class_uri)
+    universe_property_count = len(universe)
+
+    sources_dir = hub_root / "integration" / "sources"
+    source_systems = sorted(
+        d.name for d in sources_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
+    ) if sources_dir.is_dir() else []
+
+    candidates: list[CandidateSourceMatch] = []
+    tables_scanned = 0
+
+    for system in source_systems:
+        tables = list_source_tables(hub_root, system)
+        for table_name, column_dicts in sorted(tables.items()):
+            tables_scanned += 1
+            columns = tuple(
+                SourceColumn(
+                    name=str(col["name"]),
+                    data_type=str(col.get("data_type") or ""),
+                    nullable=bool(col.get("nullable")),
+                    samples=tuple(col.get("samples") or ()),
+                    distinct_count=col.get("distinct_count"),
+                    is_primary_key=False,
+                )
+                for col in column_dicts
+            )
+            if not columns:
+                continue
+            match = match_columns_to_properties(
+                columns, universe, target_class_uri=class_uri
+            )
+            if match.fields or match.relationship_candidates:
+                matched_props = tuple(sorted(match.fields.keys()))
+                matched_cols = tuple(sorted(match.fields.keys()))
+                if match.relationship_candidates:
+                    matched_props = matched_props + tuple(sorted(match.relationship_candidates.keys()))
+                    matched_cols = matched_cols + tuple(sorted(match.relationship_candidates.keys()))
+                candidates.append(
+                    CandidateSourceMatch(
+                        source_system=system,
+                        source_table=table_name,
+                        matched_properties=matched_props,
+                        matched_columns=matched_cols,
+                        total_columns=len(columns),
+                    )
+                )
+
+    candidates.sort(key=lambda c: (-len(c.matched_properties), c.source_system, c.source_table))
+
+    notes = [
+        f"Scanned {tables_scanned} table(s) across {len(source_systems)} source system(s) "
+        f"using deterministic column-name matching only.",
+        _INVERSE_SCAN_NOT_EVALUATED,
+    ]
+
+    return InverseScanResult(
+        class_uri=class_uri,
+        class_name=cls.name,
+        universe_property_count=universe_property_count,
+        candidates=tuple(candidates),
+        source_systems_scanned=tuple(source_systems),
+        tables_scanned=tables_scanned,
         notes=tuple(notes),
     )

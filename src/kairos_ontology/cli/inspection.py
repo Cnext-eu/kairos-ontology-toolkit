@@ -311,6 +311,98 @@ def fit_report_cmd(class_token, ontology, domain, catalog, source, binding_path,
     _render_fit_report_text(result)
 
 
+def _render_inverse_scan_text(result) -> None:
+    click.echo(f"🔎 inverse-scan — {_FIT_REPORT_ADVISORY}")
+    click.echo(f"   Class: {result.class_name} ({result.class_uri})")
+    click.echo(
+        f"   Universe properties: {result.universe_property_count}  |  "
+        f"Tables scanned: {result.tables_scanned}  |  "
+        f"Source systems: {', '.join(result.source_systems_scanned) or '(none)'}"
+    )
+    click.echo("")
+    if not result.candidates:
+        click.echo("   Candidates: none (no exact column-name matches found)")
+    else:
+        click.echo(f"   Candidates ({len(result.candidates)}):")
+        for c in result.candidates:
+            click.echo(
+                f"     • {c.source_system}.{c.source_table}  "
+                f"({len(c.matched_properties)}/{c.total_columns} columns matched)"
+            )
+            for prop in c.matched_properties:
+                click.echo(f"       - {prop}")
+    click.echo("")
+    click.echo("   Notes:")
+    for note in result.notes:
+        click.echo(f"     - {note}")
+
+
+@click.command(name="inverse-scan")
+@click.option(
+    "--class",
+    "class_token",
+    required=True,
+    help="Full class IRI or a 'prefix:Local' qname to find candidate sources for.",
+)
+@click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
+@click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option(
+    "--format",
+    "out_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text).",
+)
+def inverse_scan_cmd(class_token, ontology, domain, catalog, out_format):
+    """Find candidate source tables for a class via deterministic column-name matching.
+
+    The inverse of fit-report: given a class, scan every source table across every source
+    system under integration/sources/ and report which tables have columns whose names
+    deterministically match the class's datatype or object properties.
+
+    Only the deterministic tier (exact column-name equality) is evaluated. What was NOT
+    evaluated — LLM-assisted semantic matching, fuzzy name similarity, value-sample
+    inference, or cross-system relationship discovery — is explicitly labelled in the
+    output so a short candidate list is never mistaken for a completeness finding.
+
+    \b
+    Examples:
+      kairos-ontology inverse-scan --class acc:TradeParty --domain party
+      kairos-ontology inverse-scan --class acc:TradeParty --domain party --format json
+    """
+    from ..core.fit_report import FitReportError, run_inverse_scan
+    from ..core.hub_utils import find_hub_root
+
+    hub_root = find_hub_root(Path.cwd(), require_model=True)
+    if ontology:
+        path = Path(ontology)
+    elif domain:
+        if hub_root is None:
+            raise click.ClickException("Cannot locate a hub for --domain.")
+        path = hub_root / "model" / "ontologies" / f"{domain}.ttl"
+    else:
+        raise click.UsageError("Provide --ontology or --domain.")
+
+    if hub_root is None:
+        raise click.ClickException("Cannot locate a hub root.")
+
+    try:
+        result = run_inverse_scan(
+            path,
+            class_token,
+            hub_root,
+            catalog_path=Path(catalog) if catalog else None,
+        )
+    except FitReportError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if out_format == "json":
+        click.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return
+    _render_inverse_scan_text(result)
+
+
 def _render_plan_sources_text(result) -> None:
     click.echo(f"📐 plan-sources — {result.class_token} ({result.class_uri})")
     click.echo("   DD-133 §3c: raw multi-source conformance requires identical grain/identity")

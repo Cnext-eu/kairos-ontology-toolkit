@@ -384,6 +384,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     valid and making orphans visible at `compile --check` time as `safety.property-unresolved`
     until a human or `propose-alignment` maps them.
 
+  - **Honest absent-evidence reporting in fit-report** (#451). When no evidence source is
+    found (no binding, no `propose-alignment` output), `fit-report` no longer lists every
+    universe property as "unpopulated" — that reads like a finding ("everything is empty")
+    when the truth is "nothing was evaluated." The `unpopulated` list is now empty and the
+    notes carry the absent-evidence explanation with a remediation path.
+
+  - **Inverse class→candidate-source scan** (#452). New `inverse-scan` command answers the
+    inverse of `fit-report`: given a class, which source tables across all source systems
+    have columns whose names deterministically match the class's properties? Only the
+    deterministic tier (exact column-name equality via the class-name-aware candidate ladder)
+    is evaluated; the output explicitly labels what was NOT evaluated (LLM-assisted semantic
+    matching, fuzzy name similarity, value-sample inference, cross-system relationship
+    discovery) so a short candidate list is never mistaken for a completeness finding.
+
   ## [5.2.2] — 2026-08-14
 
 ### Added

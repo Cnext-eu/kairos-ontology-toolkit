@@ -73,6 +73,7 @@ from .inspection import (
     show_class_inventory_cmd,
     list_class_properties_cmd,
     fit_report_cmd,
+    inverse_scan_cmd,
     plan_sources_cmd,
     explain_term_cmd,
     coverage_report_cmd,
@@ -287,6 +288,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(show_class_inventory_cmd)
     group.add_command(list_class_properties_cmd)
     group.add_command(fit_report_cmd)
+    group.add_command(inverse_scan_cmd)
     group.add_command(plan_sources_cmd)
     group.add_command(explain_term_cmd)
     group.add_command(coverage_report_cmd)

@@ -30,7 +30,7 @@ import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
-from kairos_ontology.core.fit_report import FitReportError, run_fit_report
+from kairos_ontology.core.fit_report import FitReportError, run_fit_report, run_inverse_scan
 
 _ONTOLOGY = textwrap.dedent(
     """
@@ -354,7 +354,10 @@ def test_no_evidence_source_found(tmp_path):
 
     assert result.evidence_kind == "none"
     assert result.populated == ()
-    assert len(result.unpopulated) == 3
+    # #451: when no evidence source was found, unpopulated is empty — listing every universe
+    # property there would read like a finding ("everything is empty") when the truth is
+    # "nothing was evaluated." The notes carry the absent-evidence explanation instead.
+    assert result.unpopulated == ()
     assert result.notes
     assert "no evidence source found" in result.notes[0]
 
@@ -430,10 +433,150 @@ def test_cli_fit_report_text_format_mentions_advisory(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "advisory input to design, not a completeness check" in result.output
-    assert "Unpopulated (3)" in result.output
+    assert "Unpopulated (0)" in result.output
 
 
 def test_cli_fit_report_requires_ontology_or_domain(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(cli, ["fit-report", "--class", "acc:TradeParty"])
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# #452 — inverse class→candidate-source scan (deterministic tier only)
+# ---------------------------------------------------------------------------
+
+_SOURCE_VOCAB_TTL = textwrap.dedent(
+    """
+    @prefix src: <https://example.test/source#> .
+    @prefix kb: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+    src:orgs a kb:SourceTable ; kb:sourceSystem src:crm ;
+      kb:tableName "organisations" ; kb:primaryKeyColumns "trade_party_id" .
+    src:tpid a kb:SourceColumn ; kb:sourceTable src:orgs ;
+      kb:columnName "trade_party_id" ; kb:dataType "varchar(50)" ;
+      kb:nullable "false"^^xsd:boolean .
+    src:pname a kb:SourceColumn ; kb:sourceTable src:orgs ;
+      kb:columnName "party_name" ; kb:dataType "varchar(200)" ;
+      kb:nullable "false"^^xsd:boolean .
+    src:regnum a kb:SourceColumn ; kb:sourceTable src:orgs ;
+      kb:columnName "registration_number" ; kb:dataType "varchar(50)" ;
+      kb:nullable "true"^^xsd:boolean .
+    src:notes a kb:SourceColumn ; kb:sourceTable src:orgs ;
+      kb:columnName "internal_notes" ; kb:dataType "varchar(4000)" ;
+      kb:nullable "true"^^xsd:boolean .
+
+    src:evt a kb:SourceTable ; kb:sourceSystem src:crm ;
+      kb:tableName "events" ; kb:primaryKeyColumns "event_id" .
+    src:evtid a kb:SourceColumn ; kb:sourceTable src:evt ;
+      kb:columnName "event_id" ; kb:dataType "varchar(50)" ;
+      kb:nullable "false"^^xsd:boolean .
+    """
+).strip()
+
+
+def _build_hub_with_sources(tmp_path: Path) -> Path:
+    hub_root = tmp_path / "ontology-hub"
+    (hub_root / "model" / "ontologies").mkdir(parents=True)
+    (hub_root / "integration" / "sources" / "crm").mkdir(parents=True)
+    (hub_root / "kairos.yaml").write_text("name: acmehub\n", encoding="utf-8")
+    (hub_root / "model" / "ontologies" / "party.ttl").write_text(_ONTOLOGY, encoding="utf-8")
+    (hub_root / "integration" / "sources" / "crm" / "crm.vocabulary.ttl").write_text(
+        _SOURCE_VOCAB_TTL, encoding="utf-8"
+    )
+    return hub_root
+
+
+def test_inverse_scan_finds_candidate_tables(tmp_path):
+    hub_root = _build_hub_with_sources(tmp_path)
+    ontology_path = hub_root / "model" / "ontologies" / "party.ttl"
+
+    result = run_inverse_scan(ontology_path, "acc:TradeParty", hub_root)
+
+    assert result.class_uri == _TRADE_PARTY_URI
+    assert result.class_name == "TradeParty"
+    assert result.universe_property_count == 3
+    assert result.tables_scanned == 2
+    assert result.source_systems_scanned == ("crm",)
+
+    # "organisations" matches 3/4 columns; "events" matches 0 → not a candidate.
+    assert len(result.candidates) == 1
+    c = result.candidates[0]
+    assert c.source_system == "crm"
+    assert c.source_table == "organisations"
+    assert len(c.matched_properties) == 3
+    assert c.total_columns == 4
+
+    # Notes must explicitly label what was NOT evaluated.
+    assert any("Not evaluated" in note for note in result.notes)
+
+
+def test_inverse_scan_no_matches_reports_empty(tmp_path):
+    hub_root = _build_hub_with_sources(tmp_path)
+    ontology_path = hub_root / "model" / "ontologies" / "party.ttl"
+
+    result = run_inverse_scan(ontology_path, "party:Organisation", hub_root)
+
+    # party:Organisation inherits 3 props from acc:TradeParty + 1 own (localFlag).
+    assert result.universe_property_count == 4
+    # "organisations" still matches 3 inherited props; "events" matches 0.
+    assert len(result.candidates) == 1
+    assert result.candidates[0].source_table == "organisations"
+
+
+def test_inverse_scan_unresolvable_class_raises(tmp_path):
+    hub_root = _build_hub_with_sources(tmp_path)
+    ontology_path = hub_root / "model" / "ontologies" / "party.ttl"
+
+    with pytest.raises(FitReportError):
+        run_inverse_scan(ontology_path, "acc:NoSuchClass", hub_root)
+
+
+def test_inverse_scan_to_dict_is_json_serializable(tmp_path):
+    hub_root = _build_hub_with_sources(tmp_path)
+    ontology_path = hub_root / "model" / "ontologies" / "party.ttl"
+
+    result = run_inverse_scan(ontology_path, "acc:TradeParty", hub_root)
+    payload = result.to_dict()
+    encoded = json.dumps(payload)
+    decoded = json.loads(encoded)
+
+    assert decoded["class_uri"] == _TRADE_PARTY_URI
+    assert decoded["universe_property_count"] == 3
+    assert len(decoded["candidates"]) == 1
+    assert decoded["candidates"][0]["source_table"] == "organisations"
+    assert "advisory" in decoded and "not a completeness check" in decoded["advisory"]
+
+
+def test_cli_inverse_scan_text_format(tmp_path, monkeypatch):
+    hub_root = _build_hub_with_sources(tmp_path)
+    monkeypatch.chdir(hub_root)
+
+    result = CliRunner().invoke(
+        cli,
+        ["inverse-scan", "--class", "acc:TradeParty", "--domain", "party"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "inverse-scan" in result.output
+    assert "organisations" in result.output
+    assert "Not evaluated" in result.output
+
+
+def test_cli_inverse_scan_json_format(tmp_path, monkeypatch):
+    hub_root = _build_hub_with_sources(tmp_path)
+    monkeypatch.chdir(hub_root)
+
+    result = CliRunner().invoke(
+        cli,
+        ["inverse-scan", "--class", "acc:TradeParty", "--domain", "party", "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["class_uri"] == _TRADE_PARTY_URI
+    assert len(payload["candidates"]) == 1
+    assert payload["candidates"][0]["source_table"] == "organisations"
+    assert any("Not evaluated" in note for note in payload["notes"])
