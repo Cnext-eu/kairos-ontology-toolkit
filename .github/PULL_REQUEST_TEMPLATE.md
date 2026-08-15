@@ -17,5 +17,6 @@ Closes #
 - [ ] Tests pass (`uv run pytest`)
 - [ ] `uv run kairos-ontology validate` passes (if ontology changes)
 - [ ] `uv run kairos-ontology project` regenerated (if ontology changes)
+- [ ] Version bumped in `src/kairos_ontology/__init__.py` (if `src/` changed) or `skip-version` label added
 - [ ] DCO sign-off on all commits (`git commit -s`)
 - [ ] No secrets, credentials, or PII in code

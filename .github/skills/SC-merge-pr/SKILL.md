@@ -21,11 +21,14 @@ script only executes what you've already decided.
 2. Check for uncommitted changes.
 3. Ask if they want to run validation before creating the PR:
    `python -m kairos_ontology validate`
-4. **Release intent (toolkit repo only):** if this change will ship a release,
-   decide the version bump **now** and commit it to the feature branch *before*
-   creating the PR — see [Step 8](#step-8--tag-the-release-version-bump-already-on-the-branch).
+4. **Version bump (toolkit repo only):** the CI `version-check` job fails any
+   PR that changes `src/` but doesn't bump `__version__`. Decide the bump
+   **now** and commit it to the feature branch *before* creating the PR — see
+   [Step 8](#step-8--tag-the-release-version-bump-already-on-the-branch).
    Because `main` is protected, bundling the bump into the feature PR avoids a
    separate bump-only PR and keeps the release tag reachable from `main`.
+   For pre-release work, increment the `rc`/`b`/`a` suffix; for a real release,
+   follow the SemVer bump rules.
 
 ## Workflow
 
