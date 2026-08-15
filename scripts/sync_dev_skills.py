@@ -36,7 +36,7 @@ def get_sync_pairs() -> list[tuple[Path, Path]]:
     if GITHUB_INSTRUCTIONS.exists():
         pairs.append((GITHUB_INSTRUCTIONS, SCAFFOLD_INSTRUCTIONS))
 
-    # All SKILL.md files in .github/skills/
+    # All SKILL.md files and exemplar files (.ttl) in .github/skills/
     if GITHUB_SKILLS.is_dir():
         for skill_dir in sorted(GITHUB_SKILLS.iterdir()):
             if not skill_dir.is_dir():
@@ -45,6 +45,12 @@ def get_sync_pairs() -> list[tuple[Path, Path]]:
             if skill_file.exists():
                 dest = SCAFFOLD_SKILLS / skill_dir.name / "SKILL.md"
                 pairs.append((skill_file, dest))
+            # Exemplar artefacts (TTL, SHACL, etc.) shipped alongside the skill
+            for extra in sorted(skill_dir.glob("*-domain.ttl")) + sorted(
+                skill_dir.glob("*-domain.shacl.ttl")
+            ):
+                dest = SCAFFOLD_SKILLS / skill_dir.name / extra.name
+                pairs.append((extra, dest))
 
     return pairs
 

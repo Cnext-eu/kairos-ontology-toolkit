@@ -386,3 +386,88 @@ class TestDomainCoverageOwns:
         by_module = {m["module_id"]: m for m in owns["matches"]}
         assert by_module["party-mod"]["domains"] == ["party"]
         assert by_module["shared-mod"]["domains"] == ["commercial", "party"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #439 — batch --owns (multi-class lookup, one corpus scan)
+# ---------------------------------------------------------------------------
+
+
+class TestDomainCoverageOwnsBatch:
+    def test_owns_batch_comma_separated_text_output(self, ownership_hub, monkeypatch):
+        result = _invoke(ownership_hub, monkeypatch, ["--owns", "Person,Orphan,LocalThing"])
+        assert result.exit_code == 0
+        # All three class names yield at least one match in the inventory.
+        assert "• Person" in result.output
+        assert "• Orphan" in result.output
+        assert "• LocalThing" in result.output
+        # The batch header mentions the class count.
+        assert "3 class(es)" in result.output
+
+    def test_owns_batch_repeated_flag_text_output(self, ownership_hub, monkeypatch):
+        result = _invoke(
+            ownership_hub, monkeypatch, ["--owns", "Person", "--owns", "Orphan"]
+        )
+        assert result.exit_code == 0
+        assert "• Person" in result.output
+        assert "• Orphan" in result.output
+
+    def test_owns_batch_json_uses_owns_batch_key(self, ownership_hub, monkeypatch):
+        result = _invoke(
+            ownership_hub,
+            monkeypatch,
+            ["--owns", "Person,Orphan", "--json-output"],
+        )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        # Batch key is additive — single-name ``owns`` is NOT present.
+        assert "owns" not in payload
+        batch = payload["owns_batch"]
+        assert batch["inventories_present"] is True
+        assert set(batch["class_names"]) == {"orphan", "person"}
+        matched_names = {m["class_name"] for m in batch["matches"]}
+        assert {"Person", "Orphan"} <= matched_names
+
+    def test_owns_batch_single_name_still_uses_owns_key(self, ownership_hub, monkeypatch):
+        """A single name (one way or another) keeps the original ``owns`` JSON key."""
+        result = _invoke(
+            ownership_hub,
+            monkeypatch,
+            ["--owns", "Person", "--json-output"],
+        )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert "owns" in payload
+        assert "owns_batch" not in payload
+
+    def test_owns_batch_no_matches_text(self, ownership_hub, monkeypatch):
+        result = _invoke(
+            ownership_hub, monkeypatch, ["--owns", "NoSuchA,NoSuchB"]
+        )
+        assert result.exit_code == 0
+        assert "None of the requested classes" in result.output
+
+    def test_owns_batch_without_inventories_advises_generate_inventory(
+        self, hub, monkeypatch
+    ):
+        result = _invoke(hub, monkeypatch, ["--owns", "Person,Orphan"])
+        assert result.exit_code == 0
+        assert "generate-inventory" in result.output
+
+    def test_owns_batch_skips_full_coverage_report(self, ownership_hub, monkeypatch):
+        """When only --owns (no --explain), the text output must not list domain rows."""
+        result = _invoke(ownership_hub, monkeypatch, ["--owns", "Person,Orphan"])
+        assert result.exit_code == 0
+        # Party/commercial/customdomain rows only appear in the full coverage table.
+        assert "in_blueprint" not in result.output
+
+    def test_owns_batch_json_without_inventories(self, hub, monkeypatch):
+        result = _invoke(
+            hub, monkeypatch, ["--owns", "A,B", "--json-output"]
+        )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        batch = payload["owns_batch"]
+        assert batch["inventories_present"] is False
+        assert batch["matches"] == []
+

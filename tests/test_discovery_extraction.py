@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -657,3 +658,149 @@ def test_strict_stays_convergeable_on_partial_only_hub(tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
+
+
+# --------------------------------------------------------------------------- #
+# CLI: discovery-status --format json (issue #437)
+# --------------------------------------------------------------------------- #
+def test_cli_discovery_status_json_happy_path(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_extraction_for(doc, ext, sha=compute_source_hash(doc))
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "discovery-status",
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["report"]["ok"] == ["doc.pdf"]
+    assert payload["has_work"] is False
+    assert payload["has_warnings"] is False
+    assert payload["has_content_warnings"] is False
+    assert payload["blocked"] is False
+    assert str(imp) in payload["import_dir"]
+    assert str(ext) in payload["extraction_dir"]
+
+
+def test_cli_discovery_status_json_reports_unprocessed(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    _make_doc(imp, "new.pdf")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "discovery-status",
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert "new.pdf" in payload["report"]["unprocessed"]
+    assert payload["has_work"] is True
+
+
+def test_cli_discovery_status_json_strict_blocks_on_new(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    _make_doc(imp, "new.pdf")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "discovery-status",
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
+            "--strict",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["blocked"] is True
+    assert "new/changed" in payload["block_reason"]
+
+
+def test_cli_discovery_status_json_strict_does_not_block_when_up_to_date(tmp_path):
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_extraction_for(doc, ext, sha=compute_source_hash(doc))
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "discovery-status",
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
+            "--strict",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["blocked"] is False
+
+
+def test_cli_discovery_status_text_is_default(tmp_path):
+    """--format defaults to text: no --format flag yields human-readable output."""
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_extraction_for(doc, ext, sha=compute_source_hash(doc))
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["discovery-status", "--import-dir", str(imp), "--extraction-dir", str(ext)],
+    )
+    assert result.exit_code == 0
+    # Text output must not be valid JSON.
+    assert "🔎" in result.output
+    assert "up to date" in result.output
+
+
+def test_cli_discovery_status_text_byte_identical_to_before(tmp_path):
+    """The text output path must be byte-identical to today's behavior."""
+    imp = tmp_path / "import"
+    ext = tmp_path / "_extractions"
+    doc = _make_doc(imp, "doc.pdf")
+    _write_extraction_for(doc, ext, sha=compute_source_hash(doc))
+    runner = CliRunner()
+    text_result = runner.invoke(
+        cli,
+        ["discovery-status", "--import-dir", str(imp), "--extraction-dir", str(ext)],
+    )
+    explicit_text_result = runner.invoke(
+        cli,
+        [
+            "discovery-status",
+            "--import-dir",
+            str(imp),
+            "--extraction-dir",
+            str(ext),
+            "--format",
+            "text",
+        ],
+    )
+    assert text_result.output == explicit_text_result.output

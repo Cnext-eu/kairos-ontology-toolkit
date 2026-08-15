@@ -75,6 +75,27 @@ def resolve_ontology_cmd(ontology, catalog, degraded, as_json):
         click.echo(f"  {diagnostic.level.upper()}: {diagnostic.message}")
 
 
+def _compute_class_tokens(loaded, ontology_path: Path, class_uri: str) -> list[str]:
+    """Return bindable class tokens for ``class_uri`` (issue #445).
+
+    Matches what ``compile --check`` prints as "usable class tokens": the full URI,
+    rdflib-built-in qnames, declared ``@prefix`` aliases from the source Turtle
+    closure, and the ``<domain-stem>:<LocalName>`` token.
+    """
+    from ..core.compiler.kernel import _qnames, declared_prefix_aliases
+
+    from rdflib import URIRef
+
+    graph = loaded.graph
+    tokens: set[str] = set()
+    tokens.update(_qnames(graph, URIRef(class_uri)))
+    tokens.update(declared_prefix_aliases(loaded, ontology_path, class_uri))
+    domain_prefix = ontology_path.stem
+    local = class_uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+    tokens.add(f"{domain_prefix}:{local}")
+    return sorted(tokens)
+
+
 @click.command(name="show-class-inventory")
 @click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
 @click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
@@ -106,13 +127,10 @@ def show_class_inventory_cmd(ontology, domain, catalog, profile, max_classes):
         catalog_path=Path(catalog) if catalog else None,
         profile=profile,
     )
-    click.echo(
-        json.dumps(
-            loaded.semantic_index.slice(max_classes=max_classes),
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    data = loaded.semantic_index.slice(max_classes=max_classes)
+    for entry in data["classes"]:
+        entry["tokens"] = _compute_class_tokens(loaded, path, entry["uri"])
+    click.echo(json.dumps(data, indent=2, sort_keys=True))
 
 
 @click.command(name="list-class-properties")
@@ -149,6 +167,7 @@ def list_class_properties_cmd(class_iri, ontology, domain, catalog):
             {
                 "schema_version": 1,
                 "class_uri": class_iri,
+                "tokens": _compute_class_tokens(loaded, path, class_iri),
                 "properties": loaded.semantic_index.class_properties(class_iri),
             },
             indent=2,
@@ -1501,6 +1520,41 @@ def _render_class_ownership_text(owns: dict) -> None:
                 )
 
 
+def _render_class_ownership_batch_text(batch: dict) -> None:
+    """Render the ``--owns A,B,C`` batch reverse-lookup block (issue #439)."""
+    class_names = batch["class_names"]
+    if not batch["inventories_present"]:
+        click.echo(
+            "ℹ No materialized inventories found under referencemodels-unpacked/ — run "
+            "`kairos-ontology generate-inventory` first, then retry the ownership lookup."
+        )
+        return
+    matches = batch["matches"]
+    label = ", ".join(class_names)
+    if not matches:
+        click.echo(
+            f"ℹ None of the requested classes ({label}) were found in any materialized "
+            "inventory (referencemodels-unpacked/*-inventory.yaml)."
+        )
+        return
+    click.echo(f"🔎 Ownership lookup — {len(class_names)} class(es): {label} "
+               f"({len(matches)} match(es)):")
+    for match in matches:
+        click.echo(f"   • {match['class_name']} — {match['class_uri']}")
+        click.echo(f"     asserted by: {match['source_identity'] or '(unknown)'}")
+        if match["module_id"] is None:
+            click.echo("     managed module: (not asserted by a managed reference module)")
+        else:
+            click.echo(f"     managed module: {match['module_id']}")
+            if match["domains"]:
+                click.echo(f"     owning domain(s): {', '.join(match['domains'])}")
+            else:
+                click.echo(
+                    "     owning domain(s): (module is assigned to no domain in the "
+                    "blueprint)"
+                )
+
+
 @click.command(name="domain-coverage")
 @click.option(
     "--ontology-dir",
@@ -1536,16 +1590,18 @@ def _render_class_ownership_text(owns: dict) -> None:
 )
 @click.option(
     "--owns",
-    "owns_class",
-    default=None,
+    "owns_classes",
+    multiple=True,
+    default=(),
     metavar="<ClassName>",
     help="Reverse-lookup which blueprint domain(s) own a class name, via the "
     "materialized referencemodels-unpacked/ inventories (issue #418). "
-    "Case-insensitive; ownership can be plural.",
+    "Case-insensitive; ownership can be plural. Accepts comma-separated names "
+    "(--owns A,B,C) and/or repeated (--owns A --owns B) for batch lookup (issue #439).",
 )
 @click.option("--json-output", "as_json", is_flag=True, default=False)
 def domain_coverage_cmd(
-    ontology_dir, ref_models_dir, bindings_dir, accelerator, explain_domain, owns_class, as_json
+    ontology_dir, ref_models_dir, bindings_dir, accelerator, explain_domain, owns_classes, as_json
 ):
     """Advisory domain-coverage table: blueprint x modeled x bound x _master.ttl import.
 
@@ -1561,7 +1617,10 @@ def domain_coverage_cmd(
     With --explain <domain> and/or --owns <ClassName> (issue #418, DD-157) the text
     output shows only the requested ownership section(s); --json-output always
     includes the full coverage table plus "explain"/"owns" payloads when requested.
-    On a hub without reference models these print an informational notice.
+    --owns accepts comma-separated names and/or repeated flags for batch lookup
+    (issue #439); the single-name case keeps the "owns" JSON key, two or more names
+    use the additive "owns_batch" key. On a hub without reference models these print
+    an informational notice.
 
     Advisory only: always exits 0, even when gaps are found, the domain is unknown,
     or ownership metadata is unavailable. There is no --strict mode (deliberately
@@ -1574,11 +1633,14 @@ def domain_coverage_cmd(
       kairos-ontology domain-coverage --accelerator logistics
       kairos-ontology domain-coverage --explain consignment
       kairos-ontology domain-coverage --owns TransportOrder
+      kairos-ontology domain-coverage --owns TransportOrder,Party,Site
+      kairos-ontology domain-coverage --owns TransportOrder --owns Party
     """
     from ..core.domain_coverage import (
         build_domain_coverage_report,
         load_domain_ownership,
         lookup_class_ownership,
+        lookup_class_ownership_batch,
     )
     from ..core.hub_utils import find_hub_root
     from ..core.reference_modules import resolve_hub_accelerator_detailed
@@ -1619,19 +1681,24 @@ def domain_coverage_cmd(
         raise click.ClickException(str(exc)) from exc
 
     no_accelerator = accelerator_resolution.accelerator is None
-    if no_accelerator and not as_json:
+    owns_only = bool(owns_classes) and explain_domain is None
+    if no_accelerator and not as_json and not owns_only:
         click.echo(
             "ℹ No accelerator pack installed — reporting modeled/bound/imported "
             "status without a blueprint column."
         )
 
-    report = build_domain_coverage_report(
-        ontologies_dir=ont_path,
-        bindings_dir=bind_path,
-        master_path=master_path,
-        ref_models_dir=ref_path,
-        accelerator=accelerator_resolution.accelerator,
-    )
+    # Skip the full coverage-report build when only --owns is passed (issue #439);
+    # the coverage table stays available via --explain or the default bare command.
+    report = None
+    if not owns_only or as_json:
+        report = build_domain_coverage_report(
+            ontologies_dir=ont_path,
+            bindings_dir=bind_path,
+            master_path=master_path,
+            ref_models_dir=ref_path,
+            accelerator=accelerator_resolution.accelerator,
+        )
 
     explain_payload = None
     if explain_domain:
@@ -1656,24 +1723,42 @@ def domain_coverage_cmd(
             )
 
     owns_payload = None
-    if owns_class:
+    owns_batch_payload = None
+    if owns_classes:
+        # Flatten comma-separated values and repeated --owns flags into one set.
+        flat_names: list[str] = []
+        for item in owns_classes:
+            flat_names.extend(part.strip() for part in item.split(",") if part.strip())
+        unique_names = list(dict.fromkeys(flat_names))  # preserve order, deduplicate
+
         if hub_root:
             inventory_dir = hub_root / "referencemodels-unpacked"
         else:
             inventory_dir = ont_path.parent.parent / "referencemodels-unpacked"
-        owns_payload = lookup_class_ownership(
-            class_name=owns_class,
-            inventory_dir=inventory_dir,
-            ref_models_dir=ref_path,
-            accelerator=accelerator_resolution.accelerator,
-        ).to_dict()
+
+        if len(unique_names) == 1:
+            owns_payload = lookup_class_ownership(
+                class_name=unique_names[0],
+                inventory_dir=inventory_dir,
+                ref_models_dir=ref_path,
+                accelerator=accelerator_resolution.accelerator,
+            ).to_dict()
+        else:
+            owns_batch_payload = lookup_class_ownership_batch(
+                class_names=set(unique_names),
+                inventory_dir=inventory_dir,
+                ref_models_dir=ref_path,
+                accelerator=accelerator_resolution.accelerator,
+            ).to_dict()
 
     if as_json:
-        payload = report.to_dict()
+        payload = report.to_dict() if report is not None else {"schema_version": 2}
         if explain_payload is not None:
             payload["explain"] = explain_payload
         if owns_payload is not None:
             payload["owns"] = owns_payload
+        if owns_batch_payload is not None:
+            payload["owns_batch"] = owns_batch_payload
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
@@ -1681,7 +1766,9 @@ def domain_coverage_cmd(
         _render_domain_explain_text(explain_payload)
     if owns_payload is not None:
         _render_class_ownership_text(owns_payload)
-    if explain_payload is not None or owns_payload is not None:
+    if owns_batch_payload is not None:
+        _render_class_ownership_batch_text(owns_batch_payload)
+    if explain_payload is not None or owns_payload is not None or owns_batch_payload is not None:
         # Focused ownership query: the full coverage table stays available without
         # the flags (and always in --json-output). Advisory only — exit 0.
         return

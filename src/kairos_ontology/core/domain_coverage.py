@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import yaml
 
@@ -38,8 +38,9 @@ from .master_ontology import list_active_master_imports
 #: v1: the coverage table (accelerator + domains rows).
 #: v2 (issue #418, DD-157): the CLI JSON envelope gains an optional ``explain`` payload
 #: (``--explain <domain>``: owns/does_not_own/blueprint imports) and an optional ``owns``
-#: payload (``--owns <ClassName>``: inventory-backed reverse ownership lookup). The base
-#: ``domains`` rows are unchanged.
+#: payload (``--owns <ClassName>``: inventory-backed reverse ownership lookup), and an
+#: optional ``owns_batch`` payload (``--owns A,B,C``: multi-class batch lookup, issue
+#: #439). The base ``domains`` rows are unchanged.
 SCHEMA_VERSION = 2
 
 
@@ -209,6 +210,85 @@ class ClassOwnershipLookup:
         }
 
 
+@dataclass(frozen=True)
+class ClassOwnershipBatch:
+    """Result of a multi-class ``--owns A,B,C`` reverse lookup (issue #439).
+
+    Additive to the single-name ``owns`` payload (issue #418); does not redefine
+    ``ClassOwnershipLookup`` or bump ``SCHEMA_VERSION``.
+    """
+
+    class_names: tuple[str, ...]
+    inventories_present: bool
+    rows: tuple[ClassOwnershipRow, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "class_names": list(self.class_names),
+            "inventories_present": self.inventories_present,
+            "matches": [row.to_dict() for row in self.rows],
+        }
+
+
+def _load_inventory_files(inventory_dir: Path) -> list[Path]:
+    """Return sorted inventory YAML files, or ``[]`` when the directory is absent."""
+    return (
+        sorted(Path(inventory_dir).glob("*-inventory.yaml"))
+        if Path(inventory_dir).is_dir()
+        else []
+    )
+
+
+def _load_module_ownership(
+    ref_models_dir: Optional[Path], accelerator: Optional[str]
+) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """Return ``(alias_to_module, domains_by_module)`` from the accelerator blueprint."""
+    from .reference_modules import load_accelerator_module_config
+
+    alias_to_module: dict[str, str] = {}
+    domains_by_module: dict[str, set[str]] = {}
+    if ref_models_dir is not None and Path(ref_models_dir).is_dir():
+        try:
+            config = load_accelerator_module_config(Path(ref_models_dir), accelerator)
+        except Exception:  # defensive: a broken blueprint must not crash an advisory lookup
+            config = None
+        if config is not None:
+            for profile in config.profiles:
+                for alias in (profile.ontology_iri, profile.catalog_uri):
+                    if alias:
+                        alias_to_module.setdefault(alias.rstrip("#/"), profile.id)
+            for activation in config.domains:
+                for module_id in activation.module_ids:
+                    domains_by_module.setdefault(module_id, set()).add(activation.domain)
+    return alias_to_module, domains_by_module
+
+
+def _ownership_row(
+    cls: dict[str, Any],
+    alias_to_module: dict[str, str],
+    domains_by_module: dict[str, set[str]],
+) -> ClassOwnershipRow:
+    name = str(cls.get("name") or "")
+    uri = str(cls.get("uri") or "")
+    provenance = cls.get("provenance")
+    source_identity = (
+        str(provenance.get("source_identity") or "")
+        if isinstance(provenance, dict)
+        else ""
+    )
+    module_id = alias_to_module.get(source_identity.rstrip("#/"))
+    owned_by = (
+        tuple(sorted(domains_by_module.get(module_id, ()))) if module_id else ()
+    )
+    return ClassOwnershipRow(
+        class_name=name,
+        class_uri=uri,
+        source_identity=source_identity,
+        module_id=module_id,
+        domains=owned_by,
+    )
+
+
 def lookup_class_ownership(
     *,
     class_name: str,
@@ -231,33 +311,47 @@ def lookup_class_ownership(
     skipped defensively. Rows are deduplicated on ``(class_uri, source_identity)``
     because every module inventory repeats its whole closure.
     """
-    from .reference_modules import load_accelerator_module_config
-
-    inventory_files = (
-        sorted(Path(inventory_dir).glob("*-inventory.yaml"))
-        if Path(inventory_dir).is_dir()
-        else []
+    batch = lookup_class_ownership_batch(
+        class_names={class_name},
+        inventory_dir=inventory_dir,
+        ref_models_dir=ref_models_dir,
+        accelerator=accelerator,
     )
+    return ClassOwnershipLookup(
+        class_name=class_name,
+        inventories_present=batch.inventories_present,
+        rows=batch.rows,
+    )
+
+
+def lookup_class_ownership_batch(
+    *,
+    class_names: Iterable[str],
+    inventory_dir: Path,
+    ref_models_dir: Optional[Path],
+    accelerator: Optional[str],
+) -> ClassOwnershipBatch:
+    """Reverse-lookup ownership for a **set** of class names in one corpus scan.
+
+    Issue #439 — batch companion to :func:`lookup_class_ownership`. The inventory
+    corpus is scanned exactly once; classes matching any requested name
+    (case-insensitive) are collected. Rows are deduplicated on
+    ``(class_uri, source_identity)`` across the entire batch because every module
+    inventory repeats its whole closure.
+    """
+    wanted = {name.strip().lower() for name in class_names if name and name.strip()}
+    ordered_names = tuple(sorted(wanted))
+
+    inventory_files = _load_inventory_files(inventory_dir)
     if not inventory_files:
-        return ClassOwnershipLookup(class_name=class_name, inventories_present=False, rows=())
+        return ClassOwnershipBatch(
+            class_names=ordered_names, inventories_present=False, rows=()
+        )
 
-    alias_to_module: dict[str, str] = {}
-    domains_by_module: dict[str, set[str]] = {}
-    if ref_models_dir is not None and Path(ref_models_dir).is_dir():
-        try:
-            config = load_accelerator_module_config(Path(ref_models_dir), accelerator)
-        except Exception:  # defensive: a broken blueprint must not crash an advisory lookup
-            config = None
-        if config is not None:
-            for profile in config.profiles:
-                for alias in (profile.ontology_iri, profile.catalog_uri):
-                    if alias:
-                        alias_to_module.setdefault(alias.rstrip("#/"), profile.id)
-            for activation in config.domains:
-                for module_id in activation.module_ids:
-                    domains_by_module.setdefault(module_id, set()).add(activation.domain)
+    alias_to_module, domains_by_module = _load_module_ownership(
+        ref_models_dir, accelerator
+    )
 
-    wanted = class_name.strip().lower()
     seen: set[tuple[str, str]] = set()
     rows: list[ClassOwnershipRow] = []
     for inventory_path in inventory_files:
@@ -271,33 +365,15 @@ def lookup_class_ownership(
             if not isinstance(cls, dict):
                 continue
             name = str(cls.get("name") or "")
-            if name.lower() != wanted:
+            if name.lower() not in wanted:
                 continue
-            uri = str(cls.get("uri") or "")
-            provenance = cls.get("provenance")
-            source_identity = (
-                str(provenance.get("source_identity") or "")
-                if isinstance(provenance, dict)
-                else ""
-            )
-            key = (uri, source_identity)
+            row = _ownership_row(cls, alias_to_module, domains_by_module)
+            key = (row.class_uri, row.source_identity)
             if key in seen:
                 continue
             seen.add(key)
-            module_id = alias_to_module.get(source_identity.rstrip("#/"))
-            owned_by = (
-                tuple(sorted(domains_by_module.get(module_id, ()))) if module_id else ()
-            )
-            rows.append(
-                ClassOwnershipRow(
-                    class_name=name,
-                    class_uri=uri,
-                    source_identity=source_identity,
-                    module_id=module_id,
-                    domains=owned_by,
-                )
-            )
-    rows.sort(key=lambda row: (row.class_uri, row.source_identity))
-    return ClassOwnershipLookup(
-        class_name=class_name, inventories_present=True, rows=tuple(rows)
+            rows.append(row)
+    rows.sort(key=lambda r: (r.class_uri, r.source_identity))
+    return ClassOwnershipBatch(
+        class_names=ordered_names, inventories_present=True, rows=tuple(rows)
     )

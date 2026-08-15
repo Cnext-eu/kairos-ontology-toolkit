@@ -696,8 +696,100 @@ def test_judgments_template_output_refuses_to_clobber_without_overwrite(tmp_path
         ]
     )
     assert res_overwrite.exit_code == 0, res_overwrite.output
-    written = json.loads(destination.read_text(encoding="utf-8"))
+    written = yaml.safe_load(destination.read_text(encoding="utf-8"))
     assert len(written["core_concepts"]) == 4
+
+
+def test_judgments_template_infers_yaml_from_output_suffix(tmp_path, refroot):
+    """No explicit --format: output suffix .yaml yields YAML content (issue #435)."""
+    destination = tmp_path / "t.yaml"
+    res = _run(
+        [
+            "discovery-conformance",
+            "judgments-template",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+            "--output",
+            str(destination),
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    content = destination.read_text(encoding="utf-8")
+    assert "core_concepts:" in content
+    written = yaml.safe_load(content)
+    assert len(written["core_concepts"]) == 4
+
+
+def test_judgments_template_infers_json_from_output_suffix(tmp_path, refroot):
+    """No explicit --format: output suffix .json yields JSON content (issue #435)."""
+    destination = tmp_path / "t.json"
+    res = _run(
+        [
+            "discovery-conformance",
+            "judgments-template",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+            "--output",
+            str(destination),
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    content = destination.read_text(encoding="utf-8")
+    assert content.lstrip().startswith("{")
+    written = json.loads(content)
+    assert len(written["core_concepts"]) == 4
+
+
+def test_judgments_template_explicit_format_mismatch_warns_on_stderr(tmp_path, refroot):
+    """--format json --output t.yaml writes JSON but warns on stderr (issue #435)."""
+    destination = tmp_path / "t.yaml"
+    res = _run(
+        [
+            "discovery-conformance",
+            "judgments-template",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+            "--format",
+            "json",
+            "--output",
+            str(destination),
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    content = destination.read_text(encoding="utf-8")
+    assert content.lstrip().startswith("{")
+    json.loads(content)  # must be valid JSON despite .yaml suffix
+    assert "does not match" in res.stderr
+
+
+def test_judgments_template_explicit_yaml_mismatch_warns_on_stderr(tmp_path, refroot):
+    """--format yaml --output t.json writes YAML but warns on stderr (issue #435)."""
+    destination = tmp_path / "t.json"
+    res = _run(
+        [
+            "discovery-conformance",
+            "judgments-template",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+            "--format",
+            "yaml",
+            "--output",
+            str(destination),
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    content = destination.read_text(encoding="utf-8")
+    assert "core_concepts:" in content
+    yaml.safe_load(content)  # must be valid YAML despite .json suffix
+    assert "does not match" in res.stderr
 
 
 def test_judgments_template_roundtrip_build_succeeds(tmp_path, refroot, monkeypatch):
@@ -747,3 +839,240 @@ def test_judgments_template_roundtrip_build_succeeds(tmp_path, refroot, monkeypa
     artifact = yaml.safe_load(_default_artifact_path(hub).read_text(encoding="utf-8"))
     assert artifact["scorecard"]["total"] == 4
     assert all(c["outcome"] == "conforms" for c in artifact["core_concepts"])
+
+
+# --- discovery-conformance summarize (issue #438) ----------------------------------------
+
+def test_summarize_happy_path_emits_scorecard_and_open_questions(tmp_path, refroot, monkeypatch):
+    """Summarize on a real artifact emits scorecard, average confidence, needs_confirmation
+    count, and open_questions in clean JSON on stdout."""
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    outcomes = _full_test_carrier_outcomes()
+    outcomes[0]["confidence"] = 0.9
+    outcomes[1]["confidence"] = 0.7
+    outcomes[0]["decided_by"] = "user"
+    outcomes[1]["decided_by"] = "user"
+    outcomes[2]["decided_by"] = "user"
+    outcomes[3]["decided_by"] = "user"
+    judgments = _write_judgments(tmp_path / "judgments.yaml", outcomes)
+    build_res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert build_res.exit_code == 0, build_res.output
+
+    res = _run(["discovery-conformance", "summarize"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["scorecard"]["total"] == 4
+    assert payload["scorecard"]["by_outcome"]["conforms"] == 3
+    assert payload["scorecard"]["by_outcome"]["not-applicable"] == 1
+    assert payload["average_confidence"] is not None
+    assert payload["needs_confirmation_count"] == 0
+    assert payload["open_questions"] == []
+    assert payload["unfilled"] == []
+    assert payload["unfilled_count"] == 0
+
+
+def test_summarize_reports_average_confidence_and_needs_confirmation(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    outcomes = _full_test_carrier_outcomes()
+    outcomes[0]["confidence"] = 0.8
+    outcomes[1]["confidence"] = 0.6
+    outcomes[0]["needs_confirmation"] = True
+    outcomes[0]["decided_by"] = "ai"
+    outcomes[1]["decided_by"] = "user"
+    outcomes[2]["decided_by"] = "user"
+    outcomes[3]["decided_by"] = "user"
+    judgments = _write_judgments(tmp_path / "judgments.yaml", outcomes)
+    build_res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+            "--allow-unresolved",
+        ]
+    )
+    assert build_res.exit_code == 0, build_res.output
+
+    res = _run(["discovery-conformance", "summarize"])
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["average_confidence"] is not None
+    assert payload["needs_confirmation_count"] == 1
+    # The AI-decided, needs_confirmation concept must appear in open_questions.
+    assert len(payload["open_questions"]) == 1
+    assert payload["open_questions"][0]["reason"] == "needs_confirmation"
+
+
+def test_summarize_outcome_filter_restricts_scorecard(tmp_path, refroot, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    outcomes = _full_test_carrier_outcomes()
+    for o in outcomes:
+        o["decided_by"] = "user"
+    judgments = _write_judgments(tmp_path / "judgments.yaml", outcomes)
+    build_res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert build_res.exit_code == 0, build_res.output
+
+    res = _run(
+        ["discovery-conformance", "summarize", "--outcome", "conforms"]
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["scorecard"]["total"] == 3
+    assert "not-applicable" not in payload["scorecard"]["by_outcome"]
+
+
+def test_summarize_yaml_format(refroot, tmp_path, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    outcomes = _full_test_carrier_outcomes()
+    for o in outcomes:
+        o["decided_by"] = "user"
+    judgments = _write_judgments(tmp_path / "judgments.yaml", outcomes)
+    build_res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert build_res.exit_code == 0, build_res.output
+
+    res = _run(["discovery-conformance", "summarize", "--format", "yaml"])
+    assert res.exit_code == 0, res.output
+    payload = yaml.safe_load(res.stdout)
+    assert payload["scorecard"]["total"] == 4
+
+
+def test_summarize_judgments_file_tolerates_confirm_outcome_sentinels(tmp_path):
+    """A judgments-file template still carrying <CONFIRM_OUTCOME:...> sentinels must not
+    error — those entries are reported in the 'unfilled' bucket."""
+    template = {
+        "mode": "interactive",
+        "core_concepts": [
+            {
+                "uri": "https://example.org/ont/booking#Booking",
+                "label": "Booking",
+                "tier": "required",
+                "outcome": "<CONFIRM_OUTCOME:conforms|conforms-with-rename|partial|deviates|not-applicable>",
+            },
+            {
+                "uri": "https://example.org/ont/booking#CargoItem",
+                "label": "Cargo Item",
+                "tier": "required",
+                "outcome": "conforms",
+                "confidence": 0.9,
+                "decided_by": "user",
+            },
+        ],
+    }
+    jfile = tmp_path / "judgments.yaml"
+    jfile.write_text(yaml.safe_dump(template, sort_keys=False), encoding="utf-8")
+
+    res = _run(
+        ["discovery-conformance", "summarize", "--judgments-file", str(jfile)]
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["scorecard"]["total"] == 1
+    assert payload["unfilled_count"] == 1
+    assert payload["unfilled"][0]["uri"] == "https://example.org/ont/booking#Booking"
+
+
+def test_summarize_judgments_file_tolerates_missing_outcome(tmp_path):
+    """An entry with no 'outcome' field at all is also unfilled, not an error."""
+    template = {
+        "mode": "interactive",
+        "core_concepts": [
+            {
+                "uri": "https://example.org/ont/booking#Booking",
+                "label": "Booking",
+                "tier": "required",
+            },
+        ],
+    }
+    jfile = tmp_path / "judgments.yaml"
+    jfile.write_text(yaml.safe_dump(template, sort_keys=False), encoding="utf-8")
+
+    res = _run(
+        ["discovery-conformance", "summarize", "--judgments-file", str(jfile)]
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["scorecard"]["total"] == 0
+    assert payload["unfilled_count"] == 1
+
+
+def test_summarize_judgments_file_tolerates_absent_label_and_tier(tmp_path):
+    """Absent label/tier fields must not cause an error."""
+    template = {
+        "mode": "interactive",
+        "core_concepts": [
+            {"uri": "u1", "outcome": "conforms", "confidence": 0.5},
+        ],
+    }
+    jfile = tmp_path / "judgments.yaml"
+    jfile.write_text(yaml.safe_dump(template, sort_keys=False), encoding="utf-8")
+
+    res = _run(
+        ["discovery-conformance", "summarize", "--judgments-file", str(jfile)]
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    assert payload["scorecard"]["total"] == 1
+
+
+def test_summarize_missing_artifact_file_exits_two(tmp_path, monkeypatch):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    res = _run(["discovery-conformance", "summarize"])
+    assert res.exit_code == 2
+    assert "not found" in res.stderr.lower()
+
+
+def test_summarize_malformed_judgments_file_exits_two(tmp_path):
+    jfile = tmp_path / "bad.yaml"
+    jfile.write_text(yaml.safe_dump(["not", "a", "mapping"]), encoding="utf-8")
+    res = _run(
+        ["discovery-conformance", "summarize", "--judgments-file", str(jfile)]
+    )
+    assert res.exit_code == 2
+    assert "mapping" in res.stderr

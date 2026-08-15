@@ -105,3 +105,102 @@ ex:Customer_Id a kb:SourceColumn ;
     assert payload["system"] == "erp"
     assert payload["table_count"] == 1
     assert payload["tables"]["Customer"][0]["name"] == "Id"
+
+
+# ---------------------------------------------------------------------------
+# Issue #445 — bindable tokens in show-class-inventory and list-class-properties
+# ---------------------------------------------------------------------------
+
+ONTOLOGY_WITH_IMPORTS = """\
+@prefix ex: <https://example.org/domain#> .
+@prefix ext: <https://example.org/external#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://example.org/domain> a owl:Ontology ; owl:versionInfo "1.0" .
+ex:Party a owl:Class ; rdfs:label "Party" .
+ex:name a owl:DatatypeProperty ; rdfs:domain ex:Party ; rdfs:label "Name" .
+ex:address a owl:DatatypeProperty ; rdfs:domain ex:Party ; rdfs:label "Address" .
+"""
+
+
+def test_show_class_inventory_exposes_tokens(tmp_path):
+    ontology = tmp_path / "domain.ttl"
+    ontology.write_text(ONTOLOGY_WITH_IMPORTS, encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        ["show-class-inventory", "--ontology", str(ontology)],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    party = payload["classes"][0]
+    assert party["uri"] == "https://example.org/domain#Party"
+    tokens = party["tokens"]
+    # The full URI is always a bindable token.
+    assert "https://example.org/domain#Party" in tokens
+    # The declared @prefix alias ex:Party must be present.
+    assert "ex:Party" in tokens
+    # The domain-stem token domain:Party must be present.
+    assert "domain:Party" in tokens
+
+
+def test_show_class_inventory_tokens_empty_for_no_classes(tmp_path):
+    ontology = tmp_path / "empty.ttl"
+    ontology.write_text(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "<https://example.org/empty> a owl:Ontology ; owl:versionInfo \"1.0\" .\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["show-class-inventory", "--ontology", str(ontology)],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["classes"] == []
+
+
+def test_list_class_properties_exposes_tokens(tmp_path):
+    ontology = tmp_path / "domain.ttl"
+    ontology.write_text(ONTOLOGY_WITH_IMPORTS, encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "list-class-properties",
+            "https://example.org/domain#Party",
+            "--ontology",
+            str(ontology),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["schema_version"] == 1
+    assert payload["class_uri"] == "https://example.org/domain#Party"
+    tokens = payload["tokens"]
+    assert "https://example.org/domain#Party" in tokens
+    assert "ex:Party" in tokens
+    assert "domain:Party" in tokens
+
+
+def test_list_class_properties_tokens_for_unresolvable_class(tmp_path):
+    ontology = tmp_path / "domain.ttl"
+    ontology.write_text(ONTOLOGY, encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "list-class-properties",
+            "https://example.org/domain#NonExistent",
+            "--ontology",
+            str(ontology),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "does not resolve" in result.output
+

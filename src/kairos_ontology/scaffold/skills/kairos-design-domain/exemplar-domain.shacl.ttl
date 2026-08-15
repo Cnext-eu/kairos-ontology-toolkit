@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+#
+# =============================================================================
+# Exemplar SHACL Governance Shape — kairos-design-domain
+# =============================================================================
+#
+# Purpose
+# -------
+# This file is a hand-authored *governance* SHACL shape, not a source-derived
+# constraint. It demonstrates the division of labour:
+#
+#   suggest-shapes writes *advisory* constraints derived from source profiles
+#   to ontology-hub-publish/shapes-draft/ with a DRAFT banner. Review those
+#   before moving any into model/shapes/.
+#
+#   Governance constraints (this file) are hand-authored and live directly in
+#   model/shapes/<domain>.shacl.ttl. They encode business rules that no source
+#   profile can derive: closed code lists, required identifiers, role
+#   cardinality, and severity choice.
+#
+# Neither replaces the other.
+#
+# Hand-authored shapes in model/shapes/ are picked up by:
+#   kairos-ontology validate --shacl
+# The validator globs **/*.shacl.ttl from model/shapes/.
+#
+# What this exemplar demonstrates (#443):
+#   - sh:message on every constraint, so violations are self-explanatory
+#   - Explicit sh:severity, so severity is a conscious choice not a default
+#   - A closed code list (the transport event type must be one of five codes)
+#   - A required identifier (eventConfidence is mandatory on LocalTransportEvent)
+# =============================================================================
+
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix : <https://example.test/ont/events#> .
+@prefix dcsa: <https://referencemodels.kairos-ontology.eu/dcsa/events#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# -----------------------------------------------------------------------------
+# Closed code list: transport event type must be one of the five canonical codes
+# -----------------------------------------------------------------------------
+# This is a governance rule — no source profile can derive it. The source
+# column carries free-text codes; the canonical model closes the vocabulary.
+# -----------------------------------------------------------------------------
+
+:TransportEventTypeShape a sh:NodeShape ;
+    sh:targetClass dcsa:TransportEvent ;
+    sh:property [
+        sh:path dcsa:eventCode ;
+        sh:minCount 1 ;
+        sh:in ( "GATE_IN" "GATE_OUT" "LOAD" "DISCHARGE" "ARRIVAL" ) ;
+        sh:message "Transport event code must be one of GATE_IN, GATE_OUT, LOAD, DISCHARGE, ARRIVAL. Found: {?value}." ;
+        sh:severity sh:Violation ;
+    ] ;
+    sh:property [
+        sh:path dcsa:eventTimestamp ;
+        sh:minCount 1 ;
+        sh:datatype xsd:dateTime ;
+        sh:message "Transport event must have exactly one eventTimestamp of type xsd:dateTime." ;
+        sh:severity sh:Violation ;
+    ] .
+
+# -----------------------------------------------------------------------------
+# Required property: eventConfidence is mandatory on LocalTransportEvent
+# -----------------------------------------------------------------------------
+# Severity is sh:Warning — a missing confidence score degrades analytics but
+# does not invalidate the event record itself.
+# -----------------------------------------------------------------------------
+
+:LocalTransportEventConfidenceShape a sh:NodeShape ;
+    sh:targetClass :LocalTransportEvent ;
+    sh:property [
+        sh:path :eventConfidence ;
+        sh:minCount 1 ;
+        sh:datatype xsd:decimal ;
+        sh:maxInclusive 1.0 ;
+        sh:minInclusive 0.0 ;
+        sh:message "LocalTransportEvent should have eventConfidence (decimal 0.0–1.0). Missing or out-of-range confidence degrades analytics but does not invalidate the event." ;
+        sh:severity sh:Warning ;
+    ] .

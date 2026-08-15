@@ -5,6 +5,7 @@
 import json
 import click
 from pathlib import Path
+from typing import Any
 
 # Importing the design-time MDM package registers the additive ``mdm-profile``
 # projection target with the core projector (registry pattern, MDM-DD-002).
@@ -1481,7 +1482,16 @@ def propose_alignment_cmd(
     default=False,
     help="Report status but always exit 0 (never block).",
 )
-def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text -- human-readable). Use ``--format json`` for "
+    "machine-readable output.   Conformance/BI/archetype status is available in JSON via "
+    "``kairos-ontology next --format json``.",
+)
+def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only, output_format):
     """Report which business-discovery documents are unprocessed or changed (DD-060).
 
     Deterministic, AI-free helper for the ``design-discovery`` skill: scans the raw
@@ -1497,10 +1507,20 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
     the ``processed``/``partial``/``skipped`` status breakdown are always
     reported but never block, even under ``--strict``.
 
+    ``--format`` defaults to ``text`` (human-readable). The CLI has two output families:
+    conformance helpers (``discovery-conformance``) use ``_FORMAT_OPTION`` which defaults
+    to ``json`` — those are machine-first; status/advisory commands like this one are
+    human-first and default to ``text``. Use ``--format json`` for machine consumption of
+    the ``DiscoveryStatusReport`` dataclass, the three booleans (``has_work``,
+    ``has_warnings``, ``has_content_warnings``), and the two resolved paths. Conformance,
+    BI, and archetype status are available in JSON via ``kairos-ontology next --format
+    json`` — this command does not duplicate that.
+
     \\b
     Examples:
       kairos-ontology discovery-status
       kairos-ontology discovery-status --strict
+      kairos-ontology discovery-status --format json
     """
     from ..core.discovery_extraction import check_discovery_docs
     from ..core.hub_utils import find_hub_root
@@ -1521,6 +1541,29 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only):
         ext_path = cwd / "businessdiscovery" / "_extractions"
 
     report = check_discovery_docs(import_dir=imp_path, extraction_dir=ext_path)
+
+    if output_format == "json":
+        import dataclasses
+
+        payload = {
+            "report": dataclasses.asdict(report),
+            "has_work": report.has_work,
+            "has_warnings": report.has_warnings,
+            "has_content_warnings": report.has_content_warnings,
+            "import_dir": str(imp_path),
+            "extraction_dir": str(ext_path),
+        }
+        # Exit codes mirror the text path: --strict + has_work/has_content_warnings -> 1.
+        if strict and not warn_only and (report.has_work or report.has_content_warnings):
+            payload["blocked"] = True
+            payload["block_reason"] = (
+                "new/changed documents" if report.has_work else "placeholder-shaped content"
+            )
+            click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+            raise SystemExit(1)
+        payload["blocked"] = False
+        click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
 
     click.echo("🔎 Checking business-discovery documents")
     click.echo(f"   Import dir:     {imp_path}")
@@ -2097,8 +2140,9 @@ def conformance_build(
 )
 @_REFMODELS_OPTION
 @_FORMAT_OPTION
+@click.pass_context
 def conformance_judgments_template(
-    archetype_id, session_mode, output_path, overwrite, refmodels_root, output_format
+    ctx, archetype_id, session_mode, output_path, overwrite, refmodels_root, output_format
 ):
     """Scaffold a ``build --judgments-file`` template, one entry per archetype concept.
 
@@ -2154,7 +2198,29 @@ def conformance_judgments_template(
         _emit(payload, output_format)
         return
 
-    if output_format == "yaml":
+    effective_format = output_format
+    fmt_source = ctx.get_parameter_source("output_format")
+    if fmt_source == click.core.ParameterSource.DEFAULT:
+        suffix = Path(output_path).suffix.lower()
+        if suffix in (".yaml", ".yml"):
+            effective_format = "yaml"
+        elif suffix == ".json":
+            effective_format = "json"
+    elif output_path:
+        suffix = Path(output_path).suffix.lower()
+        ext_format = None
+        if suffix in (".yaml", ".yml"):
+            ext_format = "yaml"
+        elif suffix == ".json":
+            ext_format = "json"
+        if ext_format is not None and ext_format != effective_format:
+            click.echo(
+                f"⚠️  --format {effective_format} does not match --output suffix "
+                f"'{suffix}'; writing {effective_format}.",
+                err=True,
+            )
+
+    if effective_format == "yaml":
         import yaml
 
         content = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
@@ -2173,6 +2239,154 @@ def conformance_judgments_template(
         f"✓ Wrote judgments-file template ({len(core_concepts)} concept(s)): {destination}",
         err=True,
     )
+
+
+@discovery_conformance.command(name="summarize")
+@click.option(
+    "--file",
+    "artifact_file",
+    type=click.Path(),
+    default=None,
+    help="Conformance artifact (default: <hub>/integration/discovery/"
+    "core-concepts-conformance.yaml).",
+)
+@click.option(
+    "--judgments-file",
+    "judgments_file",
+    type=click.Path(),
+    default=None,
+    help="Optional judgments file whose core_concepts should be scored instead of the "
+    "artifact's own. Tolerates <CONFIRM_OUTCOME:...> sentinels and absent label/tier "
+    "fields — those entries are reported in an 'unfilled' bucket, never treated as errors.",
+)
+@click.option(
+    "--outcome",
+    "outcomes_filter",
+    multiple=True,
+    help="Restrict the scorecard to entries with the given outcome(s). Repeatable, e.g. "
+    "--outcome accepted --outcome rejected.",
+)
+@_FORMAT_OPTION
+def conformance_summarize(artifact_file, judgments_file, outcomes_filter, output_format):
+    """Summarize conformance outcomes: scorecard, average confidence, open questions (DD-090).
+
+    Loads a conformance artifact (or an optional ``--judgments-file``) and emits a
+    machine-readable summary with:
+
+    \\b
+    - ``scorecard``: outcome counts (overall and by tier) from ``compute_scorecard``
+    - ``average_confidence``: mean of per-concept ``confidence`` values (0.0-1.0)
+    - ``needs_confirmation_count``: how many concepts have ``needs_confirmation: true``
+    - ``open_questions``: unresolved AI-decided judgments from ``open_questions``
+    - ``unfilled``: entries still carrying ``<CONFIRM_OUTCOME:...>`` sentinels or no outcome
+
+    When ``--judgments-file`` is passed, the summary is computed on that file's
+    ``core_concepts`` rather than the artifact's own — useful for previewing a
+    template before ``build``. Unfilled entries are bucketed separately; they are
+    first-class information, not an error.
+
+    \\b
+    Examples:
+      kairos-ontology discovery-conformance summarize
+      kairos-ontology discovery-conformance summarize --format yaml
+      kairos-ontology discovery-conformance summarize --judgments-file template.yaml
+    """
+    from ..core.conformance_artifact import (
+        ARTIFACT_RELPATH,
+        ConformanceArtifactError,
+        compute_scorecard,
+        open_questions,
+        read_artifact,
+    )
+    from ..core.hub_utils import find_hub_root, is_scaffold_placeholder_text
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if artifact_file:
+        artifact_path = Path(artifact_file)
+    elif hub_root:
+        artifact_path = hub_root / ARTIFACT_RELPATH
+    else:
+        artifact_path = cwd / ARTIFACT_RELPATH
+
+    if judgments_file:
+        import yaml
+
+        judgments_path = Path(judgments_file)
+        try:
+            judgments = yaml.safe_load(judgments_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            click.echo(f"❌ Could not parse judgments file {judgments_path}: {exc}", err=True)
+            raise SystemExit(2) from exc
+        if not isinstance(judgments, dict):
+            click.echo(
+                f"❌ Judgments file {judgments_path} must contain a mapping.", err=True
+            )
+            raise SystemExit(2)
+        concepts = judgments.get("core_concepts") or []
+        artifact_data = None
+    else:
+        try:
+            artifact_data = read_artifact(artifact_path)
+        except ConformanceArtifactError as exc:
+            click.echo(f"❌ {exc}", err=True)
+            raise SystemExit(2) from exc
+        concepts = artifact_data.get("core_concepts") or []
+
+    concepts = [c for c in concepts if isinstance(c, dict)]
+
+    # Separate unfilled entries from scored outcomes. An entry is "unfilled" when its
+    # outcome is missing, a <CONFIRM_OUTCOME:...> sentinel, or otherwise a placeholder.
+    unfilled: list[dict[str, Any]] = []
+    scored: list[dict[str, Any]] = []
+    for concept in concepts:
+        outcome = concept.get("outcome")
+        if outcome is None or (isinstance(outcome, str) and is_scaffold_placeholder_text(outcome)):
+            unfilled.append(concept)
+        else:
+            scored.append(concept)
+
+    if outcomes_filter:
+        wanted = set(outcomes_filter)
+        filtered = [c for c in scored if c.get("outcome", "unknown") in wanted]
+    else:
+        filtered = scored
+
+    scorecard = compute_scorecard(filtered)
+
+    confidences = [
+        c["confidence"]
+        for c in filtered
+        if isinstance(c.get("confidence"), (int, float))
+    ]
+    average_confidence = sum(confidences) / len(confidences) if confidences else None
+
+    needs_confirmation_count = sum(1 for c in filtered if c.get("needs_confirmation"))
+
+    if artifact_data is not None:
+        questions = open_questions(artifact_data)
+    else:
+        # A judgments file does not have an artifact envelope; reconstruct a minimal one
+        # so open_questions can operate on it (it only reads core_concepts + decided_by).
+        questions = open_questions({"core_concepts": scored})
+
+    payload = {
+        "scorecard": scorecard,
+        "average_confidence": average_confidence,
+        "needs_confirmation_count": needs_confirmation_count,
+        "open_questions": questions,
+        "unfilled": [
+            {
+                "uri": c.get("uri"),
+                "label": c.get("label"),
+                "tier": c.get("tier"),
+                "outcome": c.get("outcome"),
+            }
+            for c in unfilled
+        ],
+        "unfilled_count": len(unfilled),
+    }
+    _emit(payload, output_format)
 
 
 @click.command(name="build-glossary")
