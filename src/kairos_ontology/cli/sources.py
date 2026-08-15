@@ -11,6 +11,7 @@ from pathlib import Path
 # The CLI is the layer that legitimately depends on both core and mdm.
 from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
 
+from ..core.import_flatfile import DEFAULT_MAX_ROWS, DEFAULT_SAMPLE_SIZE
 from .shared import (
     _FORMAT_OPTION,
     _REFMODELS_OPTION,
@@ -462,14 +463,14 @@ def source_privacy_cmd(sources, fix):
 @click.option(
     "--sample-size",
     type=int,
-    default=5,
-    help="Number of sample rows to store per table (default: 5).",
+    default=DEFAULT_SAMPLE_SIZE,
+    help=f"Number of sample rows to store per table (default: {DEFAULT_SAMPLE_SIZE}).",
 )
 @click.option(
     "--max-rows",
     type=int,
-    default=1000,
-    help="Maximum rows to read for type inference (default: 1000).",
+    default=DEFAULT_MAX_ROWS,
+    help=f"Maximum rows to read for type inference (default: {DEFAULT_MAX_ROWS}).",
 )
 @click.option(
     "--exclude-columns",
@@ -1085,9 +1086,11 @@ def audit_column_coverage_cmd(sources, bindings, fail_on):
         click.echo(f"⚠️  {len(report.orphan_columns)} unmapped column(s) with real data:")
         for finding in report.orphan_columns:
             bindings_note = ", ".join(finding.binding_names)
+            # row_count may be absent (#422: capped flatfile reads omit it).
+            row_total = "?" if finding.row_count is None else finding.row_count
             click.echo(
                 f"   {finding.table}.{finding.column} "
-                f"(distinct={finding.distinct_count}/{finding.row_count}, "
+                f"(distinct={finding.distinct_count}/{row_total}, "
                 f"type={finding.data_type}) sample={finding.sample_value!r} "
                 f"[bound by: {bindings_note}]"
             )

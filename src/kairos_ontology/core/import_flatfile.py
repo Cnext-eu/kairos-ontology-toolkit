@@ -152,7 +152,10 @@ def read_csv_table(
             the file's path relative to ``--from`` instead of the bare filename.
 
     Returns:
-        Dict with keys: name, row_count, columns, sample_rows.
+        Dict with keys: name, row_count, rows_sampled, columns, sample_rows.
+        ``row_count`` is the TRUE table cardinality and is ``None`` when the
+        read was capped at ``max_rows`` (the file has more rows than were
+        profiled); ``rows_sampled`` is always the number of rows actually read.
     """
     table_name = table_stem if table_stem is not None else path.stem
 
@@ -171,12 +174,19 @@ def read_csv_table(
 
         headers = list(reader.fieldnames)
         all_rows: list[dict[str, str]] = []
+        # Cap-hit detection (#422): the break can only fire when a row BEYOND
+        # the cap exists — natural loop exhaustion (even at exactly max_rows
+        # rows) means the file was read in full and len(all_rows) is the true
+        # table cardinality.
+        capped = False
         for i, row in enumerate(reader):
             if i >= max_rows:
+                capped = True
                 break
             all_rows.append(row)
 
-    row_count = len(all_rows)
+    rows_sampled = len(all_rows)
+    row_count = None if capped else rows_sampled
 
     # Build column metadata
     columns = []
@@ -187,7 +197,7 @@ def read_csv_table(
             if (row.get(col_name) or "").strip()
         ]
         distinct_values = list(dict.fromkeys(non_empty_values))
-        nullable = len(non_empty_values) < row_count
+        nullable = len(non_empty_values) < rows_sampled
 
         col_dict: dict[str, Any] = {
             "name": col_name,
@@ -207,6 +217,7 @@ def read_csv_table(
     return {
         "name": table_name,
         "row_count": row_count,
+        "rows_sampled": rows_sampled,
         "columns": columns,
         "sample_rows": sample_rows,
     }
@@ -272,17 +283,26 @@ def read_xlsx_tables(
 
         # Read data rows
         all_rows: list[dict[str, str]] = []
+        # Cap-hit detection (#422), per sheet: the break fires only when a row
+        # BEYOND the cap exists; natural exhaustion = full read = true count.
+        # Note: openpyxl can yield "ghost" rows (formatting-only, all-None) past
+        # the real data, so a sheet with exactly max_rows real rows followed by
+        # ghost rows is treated as capped and its row_count conservatively
+        # omitted. That under-claims knowledge but never asserts a false count.
+        capped = False
         for i, row in enumerate(rows_iter):
             if i >= max_rows:
+                capped = True
                 break
             row_dict = {}
             for col_name, val in zip(headers, row):
                 row_dict[col_name] = str(val) if val is not None else ""
             all_rows.append(row_dict)
 
-        row_count = len(all_rows)
-        if row_count == 0:
+        rows_sampled = len(all_rows)
+        if rows_sampled == 0:
             continue
+        row_count = None if capped else rows_sampled
 
         # Build column metadata
         columns = []
@@ -293,7 +313,7 @@ def read_xlsx_tables(
                 if (row.get(col_name) or "").strip()
             ]
             distinct_values = list(dict.fromkeys(non_empty_values))
-            nullable = len(non_empty_values) < row_count
+            nullable = len(non_empty_values) < rows_sampled
 
             col_dict: dict[str, Any] = {
                 "name": col_name,
@@ -313,6 +333,7 @@ def read_xlsx_tables(
             {
                 "name": table_name,
                 "row_count": row_count,
+                "rows_sampled": rows_sampled,
                 "columns": columns,
                 "sample_rows": sample_rows,
             }
@@ -418,7 +439,10 @@ def read_parquet_table(
             the file's path relative to ``--from`` instead of the bare filename.
 
     Returns:
-        Dict with keys: name, row_count, columns, sample_rows.
+        Dict with keys: name, row_count, rows_sampled, columns, sample_rows.
+        ``row_count`` is the TRUE table cardinality (from the Parquet footer
+        metadata, covering all row groups); ``rows_sampled`` is the size of the
+        profiling window actually read (#422).
     """
     try:
         import pyarrow.parquet as pq
@@ -430,6 +454,12 @@ def read_parquet_table(
 
     table_name = table_stem if table_stem is not None else path.stem
     pf = pq.ParquetFile(path)
+
+    # True table cardinality comes from the Parquet footer metadata (#422) —
+    # free to read and covering ALL row groups. (Previously the first batch's
+    # size doubled as row_count, which both conflated window size with
+    # cardinality and undercounted multi-row-group files.)
+    row_count = pf.metadata.num_rows
 
     # Read at most max_rows rows (a single batch) — never the whole file.
     batch = None
@@ -453,12 +483,16 @@ def read_parquet_table(
         ]
         return {
             "name": table_name,
-            "row_count": 0,
+            "row_count": row_count,
+            "rows_sampled": 0,
             "columns": columns,
             "sample_rows": [],
         }
 
-    row_count = batch.num_rows
+    # Size of the profiling window. Everything derived from the read rows
+    # (nullable, distinct/sample slicing) must use this, NOT row_count — the
+    # window may be a strict subset of the table.
+    rows_sampled = batch.num_rows
 
     # Build per-row string dicts for samples (mirrors CSV/XLSX format).
     # Naive timestamp[us] columns pass straight through to_pylist(); tz-aware
@@ -475,7 +509,7 @@ def read_parquet_table(
         raw_values = column_values[col_name]
         non_empty_values = [str(v).strip() for v in raw_values if v is not None and str(v).strip()]
         distinct_values = list(dict.fromkeys(non_empty_values))
-        nullable = len(non_empty_values) < row_count
+        nullable = len(non_empty_values) < rows_sampled
 
         col_dict: dict[str, Any] = {
             "name": col_name,
@@ -491,7 +525,7 @@ def read_parquet_table(
 
     # Sample rows (raw dicts for .samples.yaml), stringified, empties dropped.
     sample_rows = []
-    for r in range(min(sample_size, row_count)):
+    for r in range(min(sample_size, rows_sampled)):
         row = {
             col_name: str(column_values[col_name][r]).strip()
             for col_name in headers
@@ -502,6 +536,7 @@ def read_parquet_table(
     return {
         "name": table_name,
         "row_count": row_count,
+        "rows_sampled": rows_sampled,
         "columns": columns,
         "sample_rows": sample_rows,
     }
@@ -559,7 +594,7 @@ def write_source_dir(
 
     # Write manifest
     manifest = {
-        "version": "1.1",
+        "version": "1.2",
         "system": system_name,
         "platform": platform,
         "extracted_at": datetime.now(timezone.utc).isoformat(),
@@ -578,13 +613,17 @@ def write_source_dir(
         tbl_name = table["name"]
 
         # Schema metadata (without sample_rows — those go in .samples.yaml)
-        table_yaml = {
-            "name": tbl_name,
-            "row_count": table.get("row_count", 0),
-            "columns": [
-                {k: v for k, v in col.items() if k != "samples"} for col in table["columns"]
-            ],
-        }
+        table_yaml: dict[str, Any] = {"name": tbl_name}
+        # v1.2 semantics (#422): row_count is TRUE table cardinality and is
+        # OMITTED when unknown (capped read); rows_sampled is the profiling
+        # window size and is always present for flatfile-read tables.
+        if table.get("row_count") is not None:
+            table_yaml["row_count"] = table["row_count"]
+        if table.get("rows_sampled") is not None:
+            table_yaml["rows_sampled"] = table["rows_sampled"]
+        table_yaml["columns"] = [
+            {k: v for k, v in col.items() if k != "samples"} for col in table["columns"]
+        ]
         with open(output_dir / f"{tbl_name}.yaml", "w", encoding="utf-8") as f:
             yaml.dump(table_yaml, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 

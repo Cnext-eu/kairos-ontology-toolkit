@@ -13,10 +13,22 @@ from rdflib.collection import Collection
 
 from ._samples import example_values, is_pii_column
 from .analyse_sources import KAIROS_BRONZE, parse_source_vocabulary
-from .enrich_vocabulary import FORMAT_PATTERNS
+from .enrich_vocabulary import DEFAULT_ENUM_MIN_ROWS, FORMAT_PATTERNS
 
 SH = Namespace("http://www.w3.org/ns/shacl#")
 DRAFT_SHAPES = Namespace("https://kairos.cnext.eu/shapes/draft#")
+
+# Datatypes that never yield an sh:in enum (#424 / DD-076 amendment):
+# temporal and decimal/float values have unstable lexical forms across systems;
+# boolean sh:in adds nothing over sh:datatype and brittle lexical forms
+# ("1"/"true"/"True") cause false violations. Integer stays eligible —
+# integer status codes are legitimate enums.
+_ENUM_INELIGIBLE_DATATYPES = frozenset({XSD.date, XSD.dateTime, XSD.time, XSD.decimal, XSD.boolean})
+
+# UUID regex source, for matching against `_detected_pattern` output. Load-bearing
+# because SQL Server `uniqueidentifier` maps to xsd:string — without this check a
+# low-cardinality-looking UUID column would be enumerated.
+_UUID_PATTERN = next(pattern for name, pattern in FORMAT_PATTERNS if name == "uuid").pattern
 
 _DATA_TYPE_MAP = {
     "string": XSD.string,
@@ -35,6 +47,7 @@ _DATA_TYPE_MAP = {
     "double": XSD.decimal,
     "bool": XSD.boolean,
     "boolean": XSD.boolean,
+    "bit": XSD.boolean,  # SQL Server / Parquet-mapped boolean (#424)
     "date": XSD.date,
     "datetime": XSD.dateTime,
     "timestamp": XSD.dateTime,
@@ -123,13 +136,22 @@ def _literal_to_int(value: Any) -> int | None:
         return None
 
 
-def _parse_source_vocabulary_with_profile(vocab_path: Path) -> dict[str, list[dict[str, Any]]]:
+def _parse_source_vocabulary_with_profile(
+    vocab_path: Path,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, Any]]]:
+    """Parse a bronze vocabulary into (tables, table_profiles).
+
+    ``table_profiles`` maps table name → the DD-156 table-level evidence
+    (``row_count``/``rows_sampled``/``distinct_scope``); entries are absent
+    or ``None``-valued for legacy vocabularies that predate the contract.
+    """
     tables = parse_source_vocabulary(vocab_path)
     by_name = {
         (table_name, column["name"]): column
         for table_name, columns in tables.items()
         for column in columns
     }
+    table_profiles: dict[str, dict[str, Any]] = {}
 
     graph = Graph()
     graph.parse(vocab_path, format="turtle")
@@ -139,6 +161,12 @@ def _parse_source_vocabulary_with_profile(vocab_path: Path) -> dict[str, list[di
             graph.value(table_uri, KAIROS_BRONZE.tableName)
             or table_uri.split("#")[-1].split("/")[-1]
         )
+        scope_literal = graph.value(table_uri, KAIROS_BRONZE.distinctScope)
+        table_profiles[table_name] = {
+            "row_count": _literal_to_int(graph.value(table_uri, KAIROS_BRONZE.rowCount)),
+            "rows_sampled": _literal_to_int(graph.value(table_uri, KAIROS_BRONZE.rowsSampled)),
+            "distinct_scope": str(scope_literal) if scope_literal is not None else None,
+        }
         column_uris = set(graph.subjects(KAIROS_BRONZE.belongsToTable, table_uri))
         column_uris.update(graph.subjects(KAIROS_BRONZE.sourceTable, table_uri))
 
@@ -159,7 +187,11 @@ def _parse_source_vocabulary_with_profile(vocab_path: Path) -> dict[str, list[di
             if distinct_count is not None:
                 column["distinct_count"] = distinct_count
 
-    return tables
+            format_hint = graph.value(column_uri, KAIROS_BRONZE.formatHint)
+            if format_hint is not None:
+                column["format_hint"] = str(format_hint)
+
+    return tables, table_profiles
 
 
 def _bind_prefixes(graph: Graph) -> None:
@@ -175,15 +207,28 @@ def build_shapes_graph(
     enum_distinct_max: int = 12,
     include_sample_values: bool = True,
     mappings: dict | None = None,
+    table_profiles: dict[str, dict[str, Any]] | None = None,
 ) -> Graph:
-    """Build a draft SHACL graph for source/bronze tables and columns."""
+    """Build a draft SHACL graph for source/bronze tables and columns.
+
+    ``table_profiles`` carries the DD-156 table-level evidence
+    (``row_count``/``rows_sampled``/``distinct_scope`` per table name). The
+    default (``None``) is legacy-tolerant: tables without a profile are
+    treated as scope-unknown, which never yields an ``sh:in`` enum.
+    """
     graph = Graph()
     _bind_prefixes(graph)
 
     # Extension point for DD-076+: mappings may later retarget shapes to domain properties.
     _ = mappings
+    table_profiles = table_profiles or {}
 
     for table_name, columns in sorted(tables.items()):
+        profile = table_profiles.get(table_name) or {}
+        row_count = _literal_to_int(profile.get("row_count"))
+        rows_sampled = _literal_to_int(profile.get("rows_sampled"))
+        distinct_scope = profile.get("distinct_scope")
+        distinct_scope = str(distinct_scope) if distinct_scope is not None else None
         table_fragment = _safe_fragment(table_name)
         node_shape = DRAFT_SHAPES[f"{table_fragment}Shape"]
         graph.add((node_shape, RDF.type, SH.NodeShape))
@@ -242,29 +287,75 @@ def build_shapes_graph(
                     )
                 )
 
-            if (
+            # sh:in gate (#424 / DD-076 amendment): a distinctCount is only
+            # population truth when the table asserts distinctScope="table";
+            # sample-scoped or legacy (scope-absent) evidence yields advisory
+            # comments, never a constraint. Datatype- and UUID-excluded columns
+            # get neither (sh:datatype already carries the signal).
+            format_hint = str(column.get("format_hint") or "").strip().lower()
+            looks_uuid = format_hint == "uuid" or pattern == _UUID_PATTERN
+            enum_candidate = (
                 not pii
+                and datatype not in _ENUM_INELIGIBLE_DATATYPES
+                and not looks_uuid
                 and isinstance(distinct_count, int)
                 and 0 < distinct_count <= enum_distinct_max
-                and len(unique_samples) == distinct_count
-            ):
-                values_node = BNode()
-                Collection(
-                    graph,
-                    values_node,
-                    [_literal_for_value(value, datatype) for value in unique_samples],
-                )
-                graph.add((property_shape, SH["in"], values_node))
-                graph.add(
-                    (
-                        property_shape,
-                        RDFS.comment,
-                        Literal(
-                            f"Enum constraint backed by bronze distinctCount={distinct_count}; "
-                            "review before publishing."
-                        ),
+            )
+            enum_comment: str | None = None
+            if enum_candidate and distinct_scope == "table":
+                if row_count is not None and row_count < DEFAULT_ENUM_MIN_ROWS:
+                    # Floor (H5): applies only when the true cardinality is
+                    # known; an explicit "table" scope without rowCount
+                    # (warehouse-shaped evidence) is trusted as-is.
+                    profiled = rows_sampled if rows_sampled is not None else row_count
+                    enum_comment = (
+                        f"enum not suggested: only {profiled} rows profiled "
+                        f"(< {DEFAULT_ENUM_MIN_ROWS}); re-import with a larger "
+                        "--max-rows or profile the warehouse table."
                     )
+                elif len(unique_samples) == distinct_count:
+                    values_node = BNode()
+                    Collection(
+                        graph,
+                        values_node,
+                        [_literal_for_value(value, datatype) for value in unique_samples],
+                    )
+                    graph.add((property_shape, SH["in"], values_node))
+                    enum_comment = (
+                        f"Enum constraint from full-table distinctCount={distinct_count}; "
+                        f"all {distinct_count} values observed in samples; "
+                        "review before publishing."
+                    )
+            elif enum_candidate and distinct_scope == "sample" and rows_sampled is not None:
+                if distinct_count >= rows_sampled:
+                    enum_comment = (
+                        f"enum not suggested: distinctCount={distinct_count} saturates the "
+                        f"{rows_sampled}-row sample window; evidence cannot distinguish "
+                        "an enum from an open value set."
+                    )
+                elif rows_sampled < DEFAULT_ENUM_MIN_ROWS:
+                    enum_comment = (
+                        f"enum not suggested: only {rows_sampled} rows profiled "
+                        f"(< {DEFAULT_ENUM_MIN_ROWS}); re-import with a larger "
+                        "--max-rows or profile the warehouse table."
+                    )
+                else:
+                    enum_comment = (
+                        f"possible enum: {distinct_count} distinct values in "
+                        f"{rows_sampled} sampled rows; sample-scoped evidence — "
+                        "not verified against full data."
+                    )
+            elif enum_candidate:
+                # Scope absent (legacy vocabulary) or malformed sample scope
+                # without a window size: the distinctCount predates the DD-156
+                # evidence contract and cannot be trusted.
+                enum_comment = (
+                    "possible enum (unverified: profiling predates rows-sampled "
+                    "evidence; regenerate the source vocabulary with import-source)."
                 )
+
+            if enum_comment:
+                graph.add((property_shape, RDFS.comment, Literal(enum_comment)))
             elif (
                 distinct_count is None
                 and unique_samples
@@ -302,12 +393,13 @@ def suggest_shapes(
             "Pass force=True to overwrite."
         )
 
-    tables = _parse_source_vocabulary_with_profile(vocab_path)
+    tables, table_profiles = _parse_source_vocabulary_with_profile(vocab_path)
     graph = build_shapes_graph(
         tables,
         enum_distinct_max=enum_distinct_max,
         include_sample_values=include_sample_values,
         mappings=mappings,
+        table_profiles=table_profiles,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

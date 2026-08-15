@@ -17,7 +17,7 @@
 <https://kairos.cnext.eu/bronze>
     a owl:Ontology ;
     rdfs:label "Kairos Bronze Layer Vocabulary" ;
-    owl:versionInfo "1.0.0" ;
+    owl:versionInfo "1.1.1" ;
     rdfs:comment "Schema vocabulary for describing source system tables and columns in the bronze layer." .
 
 # ---------------------------------------------------------------------------
@@ -104,6 +104,24 @@ kairos-bronze:primaryKeyColumns a owl:DatatypeProperty ;
     rdfs:domain kairos-bronze:SourceTable ;
     rdfs:range xsd:string .
 
+kairos-bronze:rowCount a owl:DatatypeProperty ;
+    rdfs:label "row count" ;
+    rdfs:comment "The true total row count of the source relation." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:integer .
+
+kairos-bronze:rowsSampled a owl:DatatypeProperty ;
+    rdfs:label "rows sampled" ;
+    rdfs:comment "Number of rows read into the profiling window that produced sample/distinct evidence. Absent when profiling ran over the full table (warehouse extraction)." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:integer .
+
+kairos-bronze:distinctScope a owl:DatatypeProperty ;
+    rdfs:label "distinct scope" ;
+    rdfs:comment "Scope of the distinct-count evidence: 'table' (counted over the full relation) or 'sample' (counted within a profiling window). Absent on legacy vocabularies — treat as unknown, never as 'table'." ;
+    rdfs:domain kairos-bronze:SourceTable ;
+    rdfs:range xsd:string .
+
 # ---------------------------------------------------------------------------
 # Source Column properties
 # ---------------------------------------------------------------------------
@@ -156,6 +174,52 @@ kairos-bronze:scale a owl:DatatypeProperty ;
     rdfs:domain kairos-bronze:SourceColumn ;
     rdfs:range xsd:integer .
 
+kairos-bronze:sampleValues a owl:DatatypeProperty ;
+    rdfs:label "sample values" ;
+    rdfs:comment "Pipe-separated (' | ') sample values observed in the source column." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:string .
+
+kairos-bronze:distinctCount a owl:DatatypeProperty ;
+    rdfs:label "distinct count" ;
+    rdfs:comment "Number of distinct values observed in the source column." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:integer .
+
+# ---------------------------------------------------------------------------
+# Enrichment Suggestions
+# ---------------------------------------------------------------------------
+
+kairos-bronze:formatHint a owl:DatatypeProperty ;
+    rdfs:label "format hint" ;
+    rdfs:comment "Detected format pattern in sample values: uuid, email, date, url, phone, numeric_code." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:string .
+
+kairos-bronze:suggestedEnum a owl:DatatypeProperty ;
+    rdfs:label "suggested enum" ;
+    rdfs:comment "Whether the column is a likely enumeration based on distinct-count heuristics. A suggestion, not a modeling decision." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:boolean .
+
+kairos-bronze:enumValues a owl:DatatypeProperty ;
+    rdfs:label "enum values" ;
+    rdfs:comment "Pipe-separated (' | ') candidate enum values observed in samples." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:string .
+
+kairos-bronze:suggestedForeignKey a owl:ObjectProperty ;
+    rdfs:label "suggested foreign key" ;
+    rdfs:comment "Suggested FK target table inferred from column naming or cardinality. A suggestion, not a modeling decision." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range kairos-bronze:SourceTable .
+
+kairos-bronze:fkConfidence a owl:DatatypeProperty ;
+    rdfs:label "fk confidence" ;
+    rdfs:comment "Confidence of the suggested foreign key: high (name match) or medium (cardinality match)." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:string .
+
 # ---------------------------------------------------------------------------
 # JSON Column Support
 # ---------------------------------------------------------------------------
@@ -171,6 +235,17 @@ kairos-bronze:jsonSchema a owl:ObjectProperty ;
     rdfs:comment "Links a JSON-typed raw column to observed structural evidence. It does not authorize extraction." ;
     rdfs:domain kairos-bronze:SourceColumn ;
     rdfs:range kairos-bronze:JsonSchema .
+
+kairos-bronze:jsonClassification a owl:DatatypeProperty ;
+    rdfs:label "json classification" ;
+    rdfs:comment "Detected JSON structure classification: flat, nested, array_object, or polymorphic." ;
+    rdfs:domain kairos-bronze:SourceColumn ;
+    rdfs:range xsd:string .
+
+kairos-bronze:derivedFromJson a owl:ObjectProperty ;
+    rdfs:label "derived from json" ;
+    rdfs:comment "Links a derived column or virtual table to the raw JSON column it was expanded from. Applies to SourceColumn and SourceTable subjects." ;
+    rdfs:range kairos-bronze:SourceColumn .
 
 kairos-bronze:jsonPath a owl:DatatypeProperty ;
     rdfs:label "json path" ;

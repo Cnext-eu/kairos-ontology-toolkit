@@ -74,6 +74,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records — the same pathology as #405 — and would have listed already-processed documents as needing work.
 
 ### Changed
+- **`suggest-shapes` emits `sh:in` enums only from full-table distinct evidence** (#424, DD-076 amendment).
+  On a real hub, 82% of 217 generated `sh:in` enums were single-value and several provably wrong
+  (`booking_status` → only `"TO_REQUEST"` of 5 real values): a distinctCount computed inside a capped
+  profiling window was treated as population truth. `sh:in` now additionally requires the table to assert
+  `kairos-bronze:distinctScope="table"` (the DD-156 evidence contract), a non-temporal/non-decimal/non-boolean/
+  non-UUID datatype (integer status codes stay eligible; UUID is caught via `formatHint` or the sample pattern —
+  SQL Server `uniqueidentifier` maps to `xsd:string`), and — when the true `rowCount` is known — at least
+  100 rows. Sample-scoped evidence yields per-case advisory comments instead (saturated window / window below
+  the 100-row floor / unsaturated "possible enum … not verified against full data"). **Behavior change for
+  existing hubs**: legacy vocabularies (no `distinctScope`) produce a "regenerate the source vocabulary with
+  import-source" advisory instead of enums until re-imported, and capped flatfile imports never produce `sh:in`
+  — the drafts stop emitting exactly the weakly-evidenced enums the old rule fabricated.
+- **`row_count` now means true table cardinality — one meaning per profiling field** (#422, DD-156).
+  It previously meant full-table `COUNT(*)` on the warehouse path but capped-read *window size* on the
+  flatfile path, so consumers thresholding on it treated 1,000-row windows as population truth. Schema YAML
+  v1.2 splits the evidence: `row_count`/`kairos-bronze:rowCount` = true cardinality only, **omitted when
+  unknown** (capped CSV/XLSX reads; the old `0` default is gone); new `rows_sampled`/`kairos-bronze:rowsSampled`
+  = profiling-window size; new `kairos-bronze:distinctScope` (`table`/`sample`, omitted when there is no
+  evidence either way) says whether distinct/sample evidence covers the full relation. Parquet now reports the
+  true count for free from file metadata (also fixing a latent multi-row-group undercount). Legacy v1.0/1.1
+  YAML is normalized on import by platform allowlist: only warehouse-emitted platforms keep `row_count`;
+  flatfile/unknown/missing reinterpret it as `rows_sampled`. Enum suggestions now require exhaustive evidence,
+  and cardinality-based FK matching is knowingly disabled on capped flatfiles (both advisory-only — the old
+  behavior fabricated them from windows). **Migration is regeneration**: re-run `import-flatfile` +
+  `import-source`; the three predicates are merge-managed, so a refreshed import updates them in place in
+  existing vocabulary TTLs. `suggest-shapes` consumes this contract (#424, entry above).
+- **`kairos-bronze.ttl` now declares every predicate `import-source` emits** (chore; groundwork for #422/#424).
+  The importer emitted ten `kairos-bronze:` predicates that the scaffold vocabulary never declared —
+  `rowCount`, `distinctCount`, `sampleValues`, `formatHint`, `suggestedEnum`, `enumValues`,
+  `suggestedForeignKey`, `fkConfidence`, `jsonClassification`, `derivedFromJson` — so their meaning lived only
+  in the emitting code. They are now declared with labels, comments, and domain/range; `rowCount` is pinned as
+  the *true total row count of the source relation*, the meaning the upcoming #422 fix relies on.
+  `owl:versionInfo` bumped to 1.1.0. Alongside, the CLI's `--sample-size`/`--max-rows` default literals in
+  `import-flatfile` and `extract-schema` are now imported from their core modules instead of duplicated
+  (identical values, zero behavior change).
 - **`build-glossary` now excludes `status: skipped` extraction records** and reports how many it excluded.
   It read `extracted_terms` from every record regardless of status, so a skipped record's terms landed in the
   company glossary. This only became a *contradiction* once `status` became load-bearing (above), so it is

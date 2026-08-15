@@ -93,13 +93,37 @@ def detect_enums(
     enum_threshold: int = DEFAULT_ENUM_THRESHOLD,
     min_rows: int = DEFAULT_ENUM_MIN_ROWS,
     enum_ratio: float = DEFAULT_ENUM_RATIO,
+    rows_sampled: int | None = None,
 ) -> list[EnumSuggestion]:
     """Detect columns that are likely enumerations.
 
     Heuristic: distinct_count <= threshold AND row_count >= min_rows
     AND distinct_count / row_count < ratio.
+
+    Eligibility requires EXHAUSTIVE evidence (#422 / DD-156): ``row_count`` is
+    true table cardinality, and when a profiling window was recorded
+    (``rows_sampled``) it must cover the whole table — a windowed
+    distinct_count proves value concentration in the window, not that the
+    enumeration is complete.
     """
-    if not row_count or row_count < min_rows:
+    if not row_count:
+        logger.debug(
+            "Enum detection skipped for table %r: table cardinality unknown "
+            "(row_count absent — e.g. a capped flatfile read)",
+            table_name,
+        )
+        return []
+    if rows_sampled is not None and rows_sampled != row_count:
+        logger.debug(
+            "Enum detection skipped for table %r: profiling window (%d rows) "
+            "did not cover the full table (%d rows) — distinct counts are "
+            "sample-scoped",
+            table_name,
+            rows_sampled,
+            row_count,
+        )
+        return []
+    if row_count < min_rows:
         return []
 
     suggestions = []
@@ -176,6 +200,11 @@ def infer_foreign_keys(tables: list[dict]) -> list[FKSuggestion]:
     for tbl in tables:
         name = tbl.get("name", "")
         if name:
+            # #422: row_count is true cardinality and None on capped flatfile
+            # reads, so `or 0` silently disables cardinality-based FK matching
+            # for those tables. Accepted (DD-156): FK suggestions are
+            # advisory-only, and matching against a window size instead would
+            # manufacture false positives.
             table_index[name] = tbl.get("row_count") or 0
             table_names_lower[name.lower()] = name
 
@@ -280,7 +309,13 @@ def enrich_source_schema(
         columns = tbl.get("columns", [])
 
         # Enum detection
-        enum_suggestions = detect_enums(tbl_name, columns, row_count, enum_threshold=enum_threshold)
+        enum_suggestions = detect_enums(
+            tbl_name,
+            columns,
+            row_count,
+            enum_threshold=enum_threshold,
+            rows_sampled=tbl.get("rows_sampled"),
+        )
         all_enum_suggestions.extend(enum_suggestions)
         enum_cols = {s.column: s for s in enum_suggestions}
 
