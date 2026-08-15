@@ -29,9 +29,13 @@ jobs:
         # Audit the fully resolved lockfile (all groups + optional extras) rather
         # than the loose floors in pyproject.toml, so the exact pinned versions
         # are checked.
+        # kairos-ontology-referencemodels is a GitHub-Release wheel, not on PyPI,
+        # so pip-audit cannot look it up. Exclude it from the audit requirements.
         run: >
           uv export --no-emit-project --all-groups --all-extras
-          --format requirements-txt > requirements-audit.txt
+          --format requirements-txt
+          | grep -v 'kairos-ontology-referencemodels'
+          > requirements-audit.txt
 
       - name: Run pip-audit
         # PYSEC-2026-1845 is a dev/test-only pytest advisory whose fix (9.0.3)
