@@ -51,7 +51,7 @@ def test_next_json_is_clean_on_stdout_with_banner_on_stderr(hub, monkeypatch):
     result = _invoke(hub, monkeypatch, ["--format", "json"])
     assert result.exit_code == 0
     payload = _stdout_json(result)  # would raise if stdout were polluted
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     assert payload["compile_ran"] is True
     assert "DD-137" in result.stderr
     kinds = {action["kind"] for action in payload["actions"]}

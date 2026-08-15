@@ -195,6 +195,7 @@ def build_artifact(
     discovery_doc: str | None = None,
     generated_by: str = "kairos-design-discovery",
     valid_tiers: tuple[str, ...] | None = None,
+    registered_concepts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the conformance artifact mapping.
 
@@ -222,6 +223,15 @@ def build_artifact(
             :func:`~kairos_ontology.core.archetype_loader.load_valid_tiers`. Which tiers are
             seeded never affects validity: :func:`validate_artifact` compares scorecards with
             empty buckets normalised away.
+        registered_concepts: source-discovered concepts the archetype catalog does not contain
+            (issue #505 Layer B), mirrored from the hub's own
+            ``integration/discovery/registered-concepts.yaml``. Written as a **sibling** of
+            ``core_concepts``, never merged into it: :func:`validate_artifact`'s coverage and
+            identity checks require every ``core_concepts`` entry to be a real concept of
+            *archetype*'s catalog, and ``concept_set_hash`` staleness would fire on every
+            registration — registering a concept must not make the archetype look wrong. They
+            are likewise excluded from ``scorecard``, so archetype-conformance percentages stay
+            comparable across hubs.
     """
     if archetype_confirmed_by != "human":
         raise ConformanceArtifactError(
@@ -246,6 +256,7 @@ def build_artifact(
         "discovery_doc": discovery_doc,
         "ref_model_modules": [{"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules],
         "core_concepts": outcomes,
+        "registered_concepts": registered_concepts or [],
         "topology_confirmations": topology_confirmations or [],
         "cardinality_answers": cardinality_answers or [],
         "scorecard": compute_scorecard(outcomes, valid_tiers),
@@ -487,6 +498,37 @@ def validate_artifact(
                 f"core_concepts[{i}] ({display_uri}): 'decided_by' must be one of "
                 f"{sorted(VALID_DECIDED_BY)}, got {decided_by!r}."
             )
+
+    # Issue #505 Layer B: registered concepts validate against their own rules and are
+    # deliberately excluded from every archetype check below (coverage, identity, staleness) and
+    # from the scorecard — they are hub-side additions, not claims about the catalog.
+    registered = artifact.get("registered_concepts")
+    if registered is not None:
+        if not isinstance(registered, list):
+            errors.append("'registered_concepts' must be a list when present.")
+        else:
+            from .registered_concepts import validate_registered
+
+            catalog_uris = (
+                {concept.uri for concept in archetype.core_concepts}
+                if archetype is not None
+                else set()
+            )
+            errors.extend(
+                f"registered_concepts: {message}" for message in validate_registered(registered)
+            )
+            for entry in registered:
+                if isinstance(entry, dict) and entry.get("uri") in catalog_uris:
+                    errors.append(
+                        f"registered_concepts: {entry['uri']} is a core concept of archetype "
+                        f"{archetype.id!r}; it belongs in 'core_concepts' with a discovery "
+                        "judgment, not in a hub-side registration."
+                    )
+                if isinstance(entry, dict) and entry.get("uri") in seen_uris:
+                    errors.append(
+                        f"registered_concepts: {entry['uri']} is also recorded in "
+                        "'core_concepts'; a concept cannot be both judged and registered."
+                    )
 
     scorecard_comparable = all(
         isinstance(c, dict) and isinstance(c.get("outcome"), str) and isinstance(c.get("tier"), str)
@@ -761,6 +803,18 @@ def open_questions(
                     "scope_reason": scope_reason,
                 }
             )
+    # Issue #505 Layer B: an AI-made *registration* adds a concept the blueprint deliberately
+    # did not include -- a strictly larger authority than judging one it did. It is gated by
+    # the same DD-148 rule, through the same list, so `check_discovery_gate` blocks
+    # compile/validate on it with no extra call site.
+    from .registered_concepts import registered_open_questions
+
+    questions.extend(
+        registered_open_questions(
+            [c for c in artifact.get("registered_concepts") or [] if isinstance(c, dict)],
+            domains=domains,
+        )
+    )
     return questions
 
 

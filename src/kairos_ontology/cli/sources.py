@@ -1701,6 +1701,183 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only, output_f
         click.echo("\n✅ All discovery documents are processed and up to date.")
 
 
+@click.command(name="register-concept")
+@click.option("--uri", required=True, help="HTTP(S) concept URI with a local name.")
+@click.option("--label", required=True, help="Human-readable concept label.")
+@click.option("--source-system", required=True, help="Source system the evidence comes from.")
+@click.option(
+    "--source-evidence",
+    "source_evidence",
+    multiple=True,
+    required=True,
+    help="'<table>' or '<table>.<column>' backing this concept. Repeatable.",
+)
+@click.option(
+    "--rationale",
+    required=True,
+    help="Why this concept belongs in scope despite the archetype not listing it.",
+)
+@click.option(
+    "--domain",
+    "likely_domains",
+    multiple=True,
+    help="Domain id(s) this concept informs. Repeatable; omit only for genuinely "
+    "cross-cutting concepts (an empty tag stays in scope for every domain's gate).",
+)
+@click.option(
+    "--decided-by",
+    type=click.Choice(sorted(("user", "ai", "autopilot"))),
+    default="user",
+    show_default=True,
+    help="Who made this registration. An 'ai'/'autopilot' registration without a "
+    "--confidence, or with --needs-confirmation, blocks compile/validate until a human "
+    "confirms it (DD-148).",
+)
+@click.option("--confidence", type=float, default=None, help="Float between 0.0 and 1.0.")
+@click.option(
+    "--needs-confirmation",
+    is_flag=True,
+    default=False,
+    help="Mark this registration as still needing human confirmation.",
+)
+@click.option("--reference", "references", multiple=True, help="Supporting reference. Repeatable.")
+@click.option(
+    "--force", is_flag=True, default=False, help="Replace an existing registration for this URI."
+)
+@click.option(
+    "--archetype",
+    "archetype_id",
+    default=None,
+    help="Archetype to check the URI against (default: the hub artifact's own archetype.id). "
+    "A URI already in that catalog is rejected — it belongs in core_concepts.",
+)
+@_REFMODELS_OPTION
+@_FORMAT_OPTION
+def register_concept_cmd(
+    uri,
+    label,
+    source_system,
+    source_evidence,
+    rationale,
+    likely_domains,
+    decided_by,
+    confidence,
+    needs_confirmation,
+    references,
+    force,
+    archetype_id,
+    refmodels_root,
+    output_format,
+):
+    """Register a source-discovered concept the archetype catalog does not contain (#505).
+
+    The archetype catalog is a shared contract across every hub that uses it, so it is
+    deliberately not the place to record one business's extra concepts. But before this
+    command there was no other place either: discovery only ever iterates the catalog, so a
+    concept that exists in the source data and nowhere in the catalog could not be judged,
+    could not carry a ``likely_domains`` tag, never reached ``design-landscape``, and never
+    became an authored domain. On one real hub roughly ten BI-relevant concepts sat in that
+    hole (planning zones, tariff scales, empty-unit lifecycle, distance/toll matrix).
+
+    Writes ``integration/discovery/registered-concepts.yaml``, which
+    ``discovery-conformance build`` mirrors into the artifact's ``registered_concepts`` list —
+    a **sibling** of ``core_concepts``, never merged into it, so registering a concept never
+    makes the archetype's own coverage/identity/staleness checks fail.
+
+    Registered concepts always carry tier ``optional``: the source data argued them into
+    scope, no blueprint recommended them, and claiming otherwise would misrepresent an
+    obligation nobody made. ``--source-evidence`` and ``--rationale`` are both required —
+    registration is a claim about source data, and an unevidenced or unexplained claim is a
+    guess that the next reader cannot check.
+
+    \b
+    Example:
+      kairos-ontology register-concept \\
+        --uri https://acme.example/ont/logistics#PlanningZone --label "Planning Zone" \\
+        --source-system qlik --source-evidence planning_zones \\
+        --source-evidence zone_assignments --domain logistics \\
+        --rationale "Qlik reports scope capacity by zone; 1000 rows across 2 tables."
+    """
+    from ..core.archetype_loader import ArchetypeError, load_archetype
+    from ..core.conformance_artifact import ARTIFACT_RELPATH, read_artifact
+    from ..core.hub_utils import find_hub_root
+    from ..core.registered_concepts import RegisteredConceptError, register_concept
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+
+    # Resolve the archetype so a URI the catalog already contains is rejected rather than
+    # routed around the coverage checks. Best-effort: a hub with no artifact and no
+    # --archetype simply gets no catalog to check against, which is reported, not fatal.
+    resolved_id = archetype_id
+    if resolved_id is None:
+        artifact_path = hub_root / ARTIFACT_RELPATH
+        if artifact_path.is_file():
+            try:
+                resolved_id = (read_artifact(artifact_path).get("archetype") or {}).get("id")
+            except Exception:  # noqa: BLE001 - advisory lookup only
+                resolved_id = None
+    catalog_uris: set[str] = set()
+    if resolved_id:
+        try:
+            archetype = load_archetype(_resolve_conformance_root(refmodels_root), resolved_id)
+            catalog_uris = {concept.uri for concept in archetype.core_concepts}
+        except (ArchetypeError, SystemExit) as exc:
+            raise click.ClickException(
+                f"Could not resolve archetype {resolved_id!r} to check the URI against: {exc}"
+            ) from exc
+    else:
+        click.echo(
+            "⚠ No archetype resolved (no --archetype and no conformance artifact); the URI was "
+            "not checked against a catalog.",
+            err=True,
+        )
+
+    try:
+        path, entry = register_concept(
+            hub_root,
+            uri=uri,
+            label=label,
+            source_system=source_system,
+            source_evidence=source_evidence,
+            rationale=rationale,
+            likely_domains=likely_domains,
+            decided_by=decided_by,
+            confidence=confidence,
+            needs_confirmation=needs_confirmation,
+            references=references,
+            catalog_uris=catalog_uris,
+            force=force,
+        )
+    except RegisteredConceptError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"✅ Registered {entry.label} ({entry.uri}) → {path}", err=True)
+    if entry.decided_by in ("ai", "autopilot") and (
+        entry.needs_confirmation or entry.confidence is None
+    ):
+        click.echo(
+            "⚠ This registration is AI-made and unresolved; compile/validate will block until "
+            "a human confirms it (DD-148).",
+            err=True,
+        )
+    if not entry.likely_domains:
+        click.echo(
+            "⚠ No --domain tagged: this concept is treated as cross-cutting and stays in scope "
+            "for every domain's discovery gate.",
+            err=True,
+        )
+    click.echo(
+        "ℹ Re-run 'discovery-conformance build' to mirror this into the conformance artifact.",
+        err=True,
+    )
+    _emit({"schema_version": 1, "path": str(path), "concept": entry.to_dict()}, output_format)
+
+
 @click.group(name="discovery-conformance")
 def discovery_conformance():
     """Core Concepts Conformance helpers for the design-discovery skill (DD-090).
@@ -2175,6 +2352,19 @@ def conformance_build(
     refmodels_version = _refmodels_version(root)
     valid_tiers = load_valid_tiers(root)
 
+    # Issue #505 Layer B: mirror the hub's registered concepts into the artifact so every
+    # downstream consumer sees them through the one artifact it already reads. `build` is the
+    # mirror, never the writer -- `register-concept` owns the file.
+    registered: list = []
+    if hub_root is not None:
+        from ..core.registered_concepts import RegisteredConceptError, read_registered
+
+        try:
+            registered = read_registered(hub_root)
+        except RegisteredConceptError as exc:
+            click.echo(f"❌ {exc}", err=True)
+            raise SystemExit(2) from exc
+
     artifact = build_artifact(
         archetype=archetype,
         refmodels_version=refmodels_version,
@@ -2185,7 +2375,13 @@ def conformance_build(
         cardinality_answers=judgments.get("cardinality_answers"),
         discovery_doc=discovery_doc,
         valid_tiers=valid_tiers,
+        registered_concepts=registered,
     )
+    if registered:
+        click.echo(
+            f"ℹ Mirrored {len(registered)} registered concept(s) (#505) into the artifact.",
+            err=True,
+        )
 
     if output_path:
         out_path = Path(output_path)
