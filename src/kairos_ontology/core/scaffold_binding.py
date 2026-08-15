@@ -970,6 +970,7 @@ class ScaffoldBindingResult:
     ontology_stub: OntologyStubOutcome | None = None
     notes: tuple[str, ...] = ()
     dry_run: bool = False
+    needs_field_mapping: bool = False
 
 
 def _build_field_entries(
@@ -989,6 +990,25 @@ def _build_field_entries(
 
 
 DRAFT_SUFFIX = ".draft"
+
+_SENTINEL_FIELD_PREFIX = "<CONFIRM_PROPERTY:"
+
+
+def _build_sentinel_field_entries(
+    columns: tuple[SourceColumn, ...],
+) -> list[dict[str, Any]]:
+    """Build ``fields:`` entries with ``<CONFIRM_PROPERTY:…>`` sentinels for a zero-match relation.
+
+    Each source column gets one entry whose ``property`` is a mechanically detectable
+    placeholder (``<CONFIRM_PROPERTY:<column_name>>``) and whose ``expression`` is the column
+    name.  The binding is schema-valid (``fields:`` is non-empty with at least one entry),
+    but ``compile --check`` will flag every property as ``binding.unknown-property`` until a
+    human (or ``propose-alignment``) replaces the sentinels with real property IRIs.
+    """
+    return [
+        {"property": f"{_SENTINEL_FIELD_PREFIX}{column.name}>", "expression": column.name}
+        for column in columns
+    ]
 
 
 def _commented_fields_block(
@@ -1405,53 +1425,34 @@ def run_scaffold_binding(
     for note in notes:
         header_lines.append(f"# NOTE: {note}")
     binding_text = "\n".join(header_lines) + "\n" + rendered
+    needs_field_mapping = False
     if not field_entries:
-        binding_text += "\n".join(
-            _commented_fields_block(
-                orphan_columns or [c.name for c in columns],
-                target_class_token=target_class_token,
-                prefix=match_result.column_prefix,
-                class_local_name=class_local_name,
-            )
+        # #444: When zero datatype properties match, emit a draft binding with sentinel
+        # placeholders per source column instead of refusing.  Each ``fields:`` entry carries
+        # a ``<CONFIRM_PROPERTY:<column>>`` sentinel that is mechanically detectable via
+        # ``core.hub_utils.is_scaffold_placeholder_text``.  The binding is schema-valid
+        # (``fields:`` is non-empty) but ``compile --check`` will flag every property as
+        # ``binding.unknown-property`` until a human or ``propose-alignment`` replaces them.
+        sentinel_entries = _build_sentinel_field_entries(columns)
+        sentinel_block = yaml.safe_dump(
+            {"fields": sentinel_entries},
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+            width=100,
         )
+        binding_text += "\n# fields: DRAFT -- zero columns matched a datatype property.\n"
+        binding_text += f"# {len(columns)} of {len(columns)} columns need manual property mapping.\n"
+        binding_text += "# Run `kairos-ontology propose-alignment` for LLM-assisted mapping,\n"
+        binding_text += "# or replace each <CONFIRM_PROPERTY:...> sentinel below with a real\n"
+        binding_text += "# property IRI, then re-run `compile --check`.\n"
+        binding_text += sentinel_block
+        needs_field_mapping = True
 
     default_out = hub_root / "integration" / "bindings" / f"{doc['metadata']['name']}.binding.yaml"
     resolved_out = Path(out_path) if out_path is not None else default_out
     if resolved_out.is_file() and not force:
         raise ScaffoldBindingError(f"{resolved_out} already exists; pass --force to overwrite.")
-
-    if not field_entries:
-        # #336: never report success over a binding the next command rejects. `fields:` is
-        # required/non-empty, so there is nothing schema-valid to write here at all -- but bare
-        # refusal would leave the author nothing (8 of the 20 ground-truth CargoWise tables match
-        # zero properties even with the full ladder). The commented skeleton goes to a sibling
-        # `.draft`, which the compiler's `*.binding.yaml` glob never picks up, and the run is
-        # failed through ScaffoldBindingError -> scaffold-system's declined("scaffold-failed").
-        draft_path = Path(str(resolved_out) + DRAFT_SUFFIX)
-        if dry_run:
-            disposition = f"dry-run: a commented draft would have been written to {draft_path}"
-        elif draft_path.is_file() and not force:
-            disposition = f"{draft_path} already exists and was left untouched (pass --force)"
-        else:
-            draft_path.parent.mkdir(parents=True, exist_ok=True)
-            draft_path.write_text(binding_text, encoding="utf-8")
-            disposition = f"a commented draft was written to {draft_path}"
-        candidates_hint = (
-            f" {len(relationship_candidates)} column(s) DID resolve to an object property "
-            "(relationship candidates, listed in the draft's header) -- those need a "
-            "relationships: entry, not a fields: entry."
-            if relationship_candidates
-            else ""
-        )
-        raise ScaffoldBindingError(
-            f"no datatype property on {target_class_token} matched any of the "
-            f"{len(columns)} column(s) of {system}.{table} "
-            f"(0 of {match_result.datatype_property_count} datatype properties; detected column "
-            f"prefix: {match_result.column_prefix or 'none'}). `fields:` is required and must be "
-            f"non-empty, so no binding was written -- {disposition}: complete and uncomment its "
-            f"fields: block, then drop the trailing `{DRAFT_SUFFIX}`. If the vendor prefix was "
-            f"mis-detected, re-run with --column-prefix.{candidates_hint}"
-        )
 
     written = False
     if dry_run:
@@ -1460,6 +1461,12 @@ def run_scaffold_binding(
         resolved_out.parent.mkdir(parents=True, exist_ok=True)
         resolved_out.write_text(binding_text, encoding="utf-8")
         written = True
+    if needs_field_mapping:
+        notes.append(
+            "Draft binding written with sentinel placeholders -- 0 columns matched a "
+            "datatype property. Replace each <CONFIRM_PROPERTY:...> sentinel with a real "
+            "property IRI, or run `kairos-ontology propose-alignment` for LLM-assisted mapping."
+        )
 
     dbt_model_path: Path | None = None
     dbt_model_text: str | None = None
@@ -1506,4 +1513,5 @@ def run_scaffold_binding(
         ontology_stub=stub_outcome,
         notes=tuple(notes),
         dry_run=dry_run,
+        needs_field_mapping=needs_field_mapping,
     )

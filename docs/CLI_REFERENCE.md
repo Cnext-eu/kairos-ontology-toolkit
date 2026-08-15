@@ -3,6 +3,30 @@
 This is the exact retained v5 root command surface. `kairos-ontology --help` is the
 executable authority.
 
+## Machine output contract
+
+Every command that emits a machine-readable payload (JSON or YAML via `--format`)
+follows one contract, enforced by `_emit` in `cli/shared.py`:
+
+* **Diagnostics go to stderr.** Progress messages, warnings, errors, and human-readable
+  hints are written with `click.echo(..., err=True)`.
+* **Payload goes to stdout.** The serialized JSON/YAML is the *only* content on stdout,
+  so `kairos-ontology <cmd> --format json | jq .` works without stripping.
+* **`2>&1` defeats this by design.** Merging stderr into stdout (`2>&1`) interleaves
+  diagnostics with the payload and corrupts it — this is intentional, not a bug. If you
+  need clean machine output, do not redirect stderr into stdout; let diagnostics fall
+  through to the terminal or capture them separately.
+* **Explicit `--format json | jq .` is the canonical way to consume machine output.**
+  Commands without a `--format` option (e.g. `validate`) print human-readable text to
+  stdout unconditionally and are not intended for piping to `jq`.
+
+### `validate --format` is `--report-format`
+
+`validate` is the one exception to be aware of: its `--format` flag is an alias for
+`--report-format` and selects the *report file* format, not the stdout stream format.
+`validate` prints human-readable text to stdout regardless of `--format`. This is by
+design — `validate` is an advisory command, not a machine-output command.
+
 ## Canonical generation
 
 | Command | Purpose |

@@ -982,9 +982,29 @@ def build_managed_import_plan(
             match = _find_term_module(term_uri, context.modules, activated_ids)
             if match is None:
                 if len(matches) > 1:
+                    # When every candidate module's ontology_iri is already a
+                    # required import for this domain (added by the activation
+                    # loop or an earlier term-requirement), the term is
+                    # satisfied by an owl:imports whichever module owns it.
+                    # The ambiguity cannot change the completeness verdict,
+                    # so the error is spurious — downgrade to a warning.
+                    # Two managed modules publishing one IRI is still a real
+                    # upstream defect; the warning keeps it visible.
+                    all_candidate_iris = {
+                        m.ontology_iri.rstrip("#") for m in matches
+                    }
+                    required_iris = {
+                        import_iri
+                        for (import_iri, _owner) in requirement_data
+                    }
+                    severity = (
+                        "warning"
+                        if all_candidate_iris <= required_iris
+                        else "error"
+                    )
                     diagnostics.append(
                         ModuleDiagnostic(
-                            "error",
+                            severity,
                             "term_owner_ambiguous",
                             f"External term {term_uri} is provided by multiple managed "
                             "modules: " + ", ".join(sorted(item.profile.id for item in matches)),

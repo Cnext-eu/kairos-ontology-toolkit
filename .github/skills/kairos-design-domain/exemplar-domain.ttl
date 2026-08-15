@@ -1,0 +1,257 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+#
+# =============================================================================
+# Exemplar Domain Ontology — kairos-design-domain
+# =============================================================================
+#
+# Purpose
+# -------
+# This file is a fully-commented, realistic example of a v5 domain ontology
+# authored by the kairos-design-domain skill. Copy it as a starting point, then
+# replace every class, property, and comment with your domain's content.
+#
+# What this exemplar demonstrates (and why):
+#
+#   1. @prefix : (the empty prefix) bound to the domain namespace as the *only*
+#      self-namespace prefix (#446, #447 part 2).
+#      Named prefixes (e.g. @prefix dcsa:) are for *external* namespaces only.
+#      Declaring @prefix : here causes the compiler to treat this file as the
+#      root ontology; any imported prefix that maps to a different namespace is
+#      then flagged by safety.prefix-ambiguous, not your own declarations.
+#      See kernel.py:_check_prefix_ambiguity — a prefix already present in
+#      root_prefixes is skipped, so declaring @prefix : suppresses the warning.
+#
+#   2. File header block with domain scope, reused reference-model properties,
+#      module precedence, and deliberate exclusions with reasons (#442).
+#
+#   3. Rich rdfs:comment with evidence references and naming/data cautions,
+#      beyond Gate 5's mere presence check (#442).
+#
+#   4. skos:altLabel for business vocabulary — carry business aliases onto
+#      canonical classes so discoverability tooling can find them (#442).
+#
+#   5. Object properties with declared ranges — relationships are first-class
+#      canonical citizens, not an afterthought (#442).
+#
+#   6. One local owl:Class subclass where the hub constrains a reference-model
+#      class — the right time to subclass, and when not to (#442).
+#
+#   7. _foundation.ttl — this hub's optional shared-conventions ontology is
+#      scaffolded but inert by default (opt-in). See the comment on the
+#      owl:imports line below (#447 part 1).
+#
+# Paired SHACL governance shape:
+#   See exemplar-domain.shacl.ttl for a hand-authored governance constraint
+#   with sh:message and explicit severity (#443).
+#
+# =============================================================================
+# Domain scope
+# =============================================================================
+# Domain: events
+# Hub archetype: unit-load-carrier (logistics accelerator)
+#
+# Canonical scope: the events domain owns the canonical vocabulary for
+# transport-event reporting — the *what happened, when, where* — as distinct
+# from the party, equipment, and document domains.
+#
+# =============================================================================
+# Reused reference-model properties
+# =============================================================================
+# This domain imports terms from two managed reference-model modules:
+#   - dcsa/events      (DCSA event vocabulary: TransportEvent, EventLocation)
+#   - dcsa/track-and-trace (DCSA tracking vocabulary: TrackingEvent)
+# Both modules are mandated for the events domain by data-domains.yaml.
+# Where a property already exists in a reference model, *reuse* it via
+# owl:imports rather than re-declaring a copy.
+#
+# Module precedence: dcsa/events and dcsa/track-and-trace both publish the
+# same class IRIs for the core event vocabulary. This is an upstream
+# reference-model defect (see kairos-ontology-referencemodels issue for the
+# dcsa/events overlap). The toolkit downgrades term_owner_ambiguous to a
+# warning when all candidate modules are required imports, so this hub
+# validates cleanly with a warning.
+#
+# =============================================================================
+# Deliberate exclusions
+# =============================================================================
+# Excluded from this slice (with reasons):
+#   - VesselPositionEvent: the vessel domain owns positional telemetry;
+#     including it here would create a grain collision (see pattern library
+#     grain_collisions for the party/equipment boundary).
+#   - DocumentEvent: the document domain owns the document lifecycle;
+#     a DocumentEvent is a fact *about* a document, not a transport event.
+#   - BookingConfirmation: a business process, not a transport event;
+#     belongs in a future booking domain.
+# =============================================================================
+
+@prefix : <https://example.test/ont/events#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcsa: <https://referencemodels.kairos-ontology.eu/dcsa/events#> .
+@prefix dcsa-tnt: <https://referencemodels.kairos-ontology.eu/dcsa/track-and-trace#> .
+
+# -----------------------------------------------------------------------------
+# Ontology declaration
+# -----------------------------------------------------------------------------
+# The ontology IRI MUST match the catalog-v001.xml entry that init --domain
+# registers. Use resolve-ontology <domain> --json-output to read existing IRIs;
+# never invent one.
+# -----------------------------------------------------------------------------
+
+<https://example.test/ont/events> a owl:Ontology ;
+    rdfs:label "Transport Events Domain"@en ;
+    rdfs:comment """Domain ontology for transport-event reporting under the
+    unit-load-carrier archetype. Owns the canonical vocabulary for
+    what-happened-when-where in the transport lifecycle, distinct from party,
+    equipment, and document domains.
+
+    Evidence: DCSA JIT/transparency standard v3.1 (section 4.2);
+    source: carrier TMS export 'event_log' table (PII-safe samples confirmed
+    in kairos-design-discovery).
+
+    Naming caution: 'event' is overloaded across source systems — a
+    'gate-in' in the TMS is a transport event, but a 'login event' in the
+    IAM system is not. This domain covers transport events only.
+    """@en ;
+    owl:versionInfo "0.2.0" ;
+
+    # _foundation.ttl is scaffolded by init but inert by default (opt-in).
+    # Uncomment the import below (and the catalog-v001.xml <uri> entry) to
+    # share base conventions across domains. See #447 part 1.
+    # owl:imports <https://example.test/ont/_foundation> ;
+
+    # Reference-model imports — mandated by data-domains.yaml for the events
+    # domain. Both modules publish overlapping class IRIs; the toolkit emits
+    # a term_owner_ambiguous warning (not an error) because both are required.
+    owl:imports <https://referencemodels.kairos-ontology.eu/dcsa/events> ;
+    owl:imports <https://referencemodels.kairos-ontology.eu/dcsa/track-and-trace> .
+
+# =============================================================================
+# Classes
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# TransportEvent — primary canonical class
+# -----------------------------------------------------------------------------
+# Reuses dcsa:TransportEvent from the reference model (imported above).
+# We do NOT subclass it — the hub merely *uses* this class. A local subclass
+# is only warranted when the hub adds a constraint or property the reference
+# model does not carry (see LocalTransportEvent below).
+# -----------------------------------------------------------------------------
+
+dcsa:TransportEvent a owl:Class ;
+    rdfs:label "Transport Event"@en ;
+    skos:altLabel "Event"@en, "Tracking Event"@en, "Transport Event Log Entry"@en ;
+    rdfs:comment """A discrete occurrence in the transport lifecycle: a gate-in,
+    gate-out, loading, discharge, or arrival event, sourced from the carrier
+    TMS 'event_log' table.
+
+    Evidence: DCSA JIT standard §4.2; source column 'event_type_cd' carries
+    the enumerated codes {GATE_IN, GATE_OUT, LOAD, DISCHARGE, ARRIVAL}.
+
+    Data caution: source 'event_timestamp' is in carrier local time without
+    timezone offset; the binding must normalise to UTC. See EntityBinding
+    expression for the timezone cast.
+    """@en ;
+    rdfs:seeAlso <https://dcsa.org/standards/jit> .
+
+# -----------------------------------------------------------------------------
+# LocalTransportEvent — local subclass
+# -----------------------------------------------------------------------------
+# This is a local owl:Class that constrains a reference-model class. The hub
+# adds the 'eventConfidence' property which dcsa:TransportEvent does not carry.
+# Subclassing is the correct move here because:
+#   - the hub ADDS a property to the reference-model class, and
+#   - grain_collisions does NOT name dcsa:TransportEvent.
+# If grain_collisions named it, subclassing would be forbidden (the
+# do-not-subclass-and-do-not-merge boundary). If the hub merely used the class
+# without adding anything, no subclass would be needed.
+# -----------------------------------------------------------------------------
+
+:LocalTransportEvent a owl:Class ;
+    rdfs:subClassOf dcsa:TransportEvent ;
+    rdfs:label "Local Transport Event"@en ;
+    skos:altLabel "Carrier Event"@en ;
+    rdfs:comment """A TransportEvent enriched with carrier-specific confidence
+    scoring. This subclass exists because the hub adds the eventConfidence
+    property, which the DCSA reference model does not carry. It is NOT a
+    generalisation of all transport events — those use dcsa:TransportEvent
+    directly. See the kairos-design-domain pattern library section on local
+    subclasses for when this is and is not appropriate.
+    """@en .
+
+# -----------------------------------------------------------------------------
+# EventLocation — reused from reference model, no subclass
+# -----------------------------------------------------------------------------
+# The hub uses this class as the range of the hasLocation property below.
+# It does NOT add any properties or constraints, so no local subclass is
+# needed.
+# -----------------------------------------------------------------------------
+
+dcsa:EventLocation a owl:Class ;
+    rdfs:label "Event Location"@en ;
+    skos:altLabel "Location"@en, "Event Place"@en ;
+    rdfs:comment "The geographic or facility location where a transport event occurred."@en .
+
+# =============================================================================
+# Datatype properties
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# eventConfidence — local property on the local subclass
+# -----------------------------------------------------------------------------
+
+:eventConfidence a owl:DatatypeProperty ;
+    rdfs:label "event confidence"@en ;
+    rdfs:comment """Carrier-specific confidence score (0.0–1.0) for the event,
+    derived from the TMS 'event_confidence_pct' column divided by 100.
+    Only present on :LocalTransportEvent, not on the base dcsa:TransportEvent.
+    """@en ;
+    rdfs:domain :LocalTransportEvent ;
+    rdfs:range xsd:decimal .
+
+# -----------------------------------------------------------------------------
+# eventTimestamp — reused from reference model
+# -----------------------------------------------------------------------------
+# Not re-declared — dcsa:eventTimestamp is imported via owl:imports above.
+# The binding maps source 'event_timestamp' to dcsa:eventTimestamp with a
+# timezone normalisation expression. See kairos-design-mapping.
+
+# -----------------------------------------------------------------------------
+# eventCode — reused from reference model
+# -----------------------------------------------------------------------------
+# Not re-declared — dcsa:eventCode is imported via owl:imports above.
+
+# =============================================================================
+# Object properties (relationships)
+# =============================================================================
+# cldn20 declared zero object properties. This exemplar shows that
+# relationships are first-class canonical citizens with declared ranges,
+# not an afterthought. Declare the range even when you are not 100% certain
+# of the target — an omitted range compiles; a wrong range does not.
+# -----------------------------------------------------------------------------
+
+:hasLocation a owl:ObjectProperty ;
+    rdfs:label "has location"@en ;
+    rdfs:comment "The location where a transport event occurred."@en ;
+    rdfs:domain dcsa:TransportEvent ;
+    rdfs:range dcsa:EventLocation .
+
+:involvesEquipment a owl:ObjectProperty ;
+    rdfs:label "involves equipment"@en ;
+    rdfs:comment """The equipment (container, chassis) involved in a transport
+    event. Range is an external class from the equipment domain; declare the
+    IRI even before that domain is authored — see the pattern library's
+    deferred-relationship guidance.
+    """@en ;
+    rdfs:domain dcsa:TransportEvent ;
+    rdfs:range <https://referencemodels.kairos-ontology.eu/dcsa/equipment#Equipment> .
+
+:nextEvent a owl:ObjectProperty ;
+    rdfs:label "next event"@en ;
+    rdfs:comment "The chronologically next transport event in the lifecycle, if any."@en ;
+    rdfs:domain dcsa:TransportEvent ;
+    rdfs:range dcsa:TransportEvent .

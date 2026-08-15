@@ -29,6 +29,7 @@ from kairos_ontology.core.scaffold_binding import (
     propose_grain_columns,
     run_scaffold_binding,
 )
+from kairos_ontology.core.hub_utils import is_scaffold_placeholder_text
 
 _ACCELERATOR_ONTOLOGY_IRI = "https://accelerator.test/party"
 _ACCELERATOR_NAMESPACE = "https://accelerator.test/party#"
@@ -363,11 +364,11 @@ def test_stub_appends_missing_import_preserving_existing_content(tmp_path):
     assert "party:LocalNote a owl:Class" in new_text
 
     # Idempotent: scaffolding a second table into the same domain adds no further import.
-    # crm.events' only column (event_id) matches no datatype property on acc:TradeParty, so #336
-    # now refuses to write the schema-invalid `fields: []` binding this used to emit. The
-    # ontology-stub work still runs before that refusal and must still be idempotent.
-    with pytest.raises(ScaffoldBindingError, match="no datatype property"):
-        _scaffold(hub_root, ref_models_dir, table="events", target_class="acc:TradeParty")
+    # crm.events' only column (event_id) matches no datatype property on acc:TradeParty, so #444
+    # now emits a draft with <CONFIRM_PROPERTY:...> sentinel placeholders instead of refusing.
+    # The ontology-stub work still runs before that and must still be idempotent.
+    second_result = _scaffold(hub_root, ref_models_dir, table="events", target_class="acc:TradeParty")
+    assert second_result.needs_field_mapping is True
     assert party_path.read_text(encoding="utf-8") == new_text
 
 
@@ -902,44 +903,49 @@ def test_column_prefix_override_reaches_the_second_prefix_layer(tmp_path):
     assert "SH_ORG_NKConsignee" not in by_property.values()
 
 
-def test_zero_match_relation_never_reports_success_over_an_invalid_binding(tmp_path):
-    """#336 (f) + item 3. FAILS today: today's code writes `fields: []`, returns written=True,
-    and the CLI prints the success banner over a file `compile --check` then rejects.
+def test_zero_match_relation_writes_draft_with_sentinel_placeholders(tmp_path):
+    """#444: when zero datatype properties match, emit a draft binding with sentinel
+    ``<CONFIRM_PROPERTY:…>`` placeholders per source column instead of refusing.
 
-    The raised ScaffoldBindingError is the type scaffold_system already catches and renders as
-    declined("scaffold-failed"), so this also pins the routed-failure path.
+    The binding is schema-valid (``fields:`` is non-empty) but every property is a
+    placeholder that ``compile --check`` will flag as ``binding.unknown-property``.
+    The result carries ``needs_field_mapping=True`` and the output does not read as
+    a clean scaffold.
     """
     hub_root, ref_models_dir = _build_logistics_hub(tmp_path)
     binding_path = hub_root / "integration" / "bindings" / "erp-ShpAudit-to-logistics.binding.yaml"
 
-    with pytest.raises(ScaffoldBindingError) as excinfo:
-        _scaffold_logistics(hub_root, ref_models_dir, table="ShpAudit")
-    message = str(excinfo.value)
-    assert "no datatype property" in message
-    assert "--column-prefix" in message
+    result = _scaffold_logistics(hub_root, ref_models_dir, table="ShpAudit")
+    assert result.needs_field_mapping is True
+    assert result.written is True
+    assert binding_path.is_file()
 
-    # No `*.binding.yaml` was written, so nothing the compiler globs can be invalid...
-    assert not binding_path.is_file()
-    # ...but the author is not left with an empty directory: a commented, ready-to-uncomment
-    # skeleton lands in a sibling `.draft` that the compiler's glob never picks up.
-    draft_path = Path(str(binding_path) + ".draft")
-    assert draft_path.is_file()
-    draft_text = draft_path.read_text(encoding="utf-8")
-    assert "#fields:" in draft_text
-    assert "#    expression: SA_Whenever" in draft_text
-    # The draft is a parseable YAML document, just one without `fields:`.
-    draft_doc = yaml.safe_load(draft_text)
-    assert "fields" not in draft_doc
-    assert draft_doc["source"]["relation"] == "erp.ShpAudit"
+    binding_text = binding_path.read_text(encoding="utf-8")
+    assert "<CONFIRM_PROPERTY:" in binding_text
+    assert "propose-alignment" in binding_text
+    # The binding has a non-empty ``fields:`` with sentinel entries.
+    doc = yaml.safe_load(binding_text)
+    assert "fields" in doc
+    assert len(doc["fields"]) > 0
+    for entry in doc["fields"]:
+        assert entry["property"].startswith("<CONFIRM_PROPERTY:")
+    # Every sentinel is mechanically detectable as unedited scaffold text.
+    for entry in doc["fields"]:
+        assert is_scaffold_placeholder_text(entry["property"])
 
-    # And the domain still compiles once a real table is scaffolded into it.
+    # The domain still compiles once a real table is scaffolded into it.  Remove the
+    # ShpAudit draft first -- it targets Shipment with sentinel placeholders and would
+    # trigger conformance.group-required alongside the real Shipment binding.
+    binding_path.unlink()
     _scaffold_logistics(hub_root, ref_models_dir)
     compiled = compile_domain(hub_root, "logistics")
     assert compiled.succeeded, {item.code: item.message for item in compiled.diagnostics.items}
 
 
-def test_zero_match_relation_cli_exits_non_zero_without_a_success_banner(tmp_path, monkeypatch):
-    """#336 item 3, CLI surface. FAILS today: exit_code is 0 and the output says 'Scaffolded'."""
+def test_zero_match_relation_cli_reports_draft_not_clean_scaffold(tmp_path, monkeypatch):
+    """#444, CLI surface. The CLI exit code is 0 (a draft was written), but the output
+    explicitly says DRAFT and points at ``propose-alignment``, never reading as a clean scaffold.
+    """
     hub_root, ref_models_dir = _build_logistics_hub(tmp_path)
     monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models_dir))
     monkeypatch.chdir(hub_root)
@@ -959,9 +965,11 @@ def test_zero_match_relation_cli_exits_non_zero_without_a_success_banner(tmp_pat
             "logistics",
         ],
     )
-    assert result.exit_code != 0, result.output
-    assert "Scaffolded" not in result.output
-    assert "no datatype property" in result.output
+    assert result.exit_code == 0, result.output
+    assert "DRAFT" in result.output
+    assert "propose-alignment" in result.output
+    # The success message must not read as a clean scaffold.
+    assert "Scaffolded" in result.output  # the verb is still Scaffolded, but DRAFT warning follows
 
 
 # ---------------------------------------------------------------------------

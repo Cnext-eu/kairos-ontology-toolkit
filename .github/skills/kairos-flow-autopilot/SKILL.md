@@ -133,7 +133,42 @@ made without escalation as mandatory to record, not optional-when-it-feels-mater
   want to spot-check, so the record must contain enough to spot-check it without
   re-deriving it.
 - Every `likely_domains` scoping decision, at the batch level, with rationale.
+- Run `decision new --materiality <material|minor>` for every non-mechanical
+  judgment (the `--materiality` flag is required for `Accepted` records).
 - Run `decision sync-index` at the end of every stage.
+
+### Per-domain exit checklist (Stage 3)
+
+Stage 3 produces ontology domains. Before declaring Stage 3 complete, verify each
+domain in turn:
+
+1. **`validate` clean** — `kairos-ontology validate --all` passes syntax and
+   SHACL with no errors. Warnings are acceptable but must be explained.
+2. **Decision disposition recorded** — for each domain, either a Decision Log
+   record exists for every non-mechanical modeling choice, *or* the transparency
+   report carries an explicit "no material decision, mechanical authoring only"
+   line for that domain. Silence is not acceptable — a reviewer must be able to
+   tell which domains had judgment calls and which did not.
+3. **`decision sync-index` run** — the Decision Log index is current after the
+   last domain's decisions are recorded.
+
+### Upfront domain mapping (Stage 2→3 boundary)
+
+Before authoring any ontology domain, produce a concept→blueprint-domain table
+that maps each business concept from discovery to the domain that will own it.
+This catches overlapping ownership *before* authoring, not after `validate` fails:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology domain-coverage --owns <ConceptA,ConceptB,ConceptC> \
+  --accelerator <accelerator> --json-output
+```
+
+Use the batch `--owns` flag (comma-separated or repeated) to resolve all
+candidate concepts in one call. Cross-reference the results with each domain's
+mandated imports from `data-domains.yaml`. Flag any concept where two or more
+modules claim ownership — that is the `term_owner_ambiguous` shape (#441) and
+must be resolved (or explicitly accepted as a warning) before authoring begins.
 
 ## Verification
 

@@ -219,6 +219,23 @@ def _declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ..
     are bindable only when every declaration points at the same namespace. The empty prefix is
     emitted as ``:Local``.
     """
+    return _compute_declared_prefix_aliases(loaded, root_path, uri)
+
+
+def declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ...]:
+    """Public wrapper of :func:`_declared_prefix_aliases` (issue #445).
+
+    Exposes the compiler's bindable-prefix-alias computation so the inspection CLI
+    can surface "usable class tokens" without triggering a full ``compile --check``.
+    Accepts the same arguments the compiler kernel uses internally: ``loaded`` (an
+    :class:`OntologyLoadResult`), the root ontology ``root_path``, and a class or
+    property ``uri``.
+    """
+    return _compute_declared_prefix_aliases(loaded, root_path, uri)
+
+
+def _compute_declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ...]:
+    """Implementation shared by the private and public aliases (issue #445)."""
     namespace, local = _namespace_local(uri)
     root = str(root_path.resolve())
     root_prefixes: dict[str, str] = {}

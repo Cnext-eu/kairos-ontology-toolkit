@@ -385,28 +385,84 @@ source-feasibility limitations. For each user-facing choice, summarize the
 recommended option and why the other options were not selected, using visuals or
 PII-safe examples when they help the user compare the consequences.
 
+### 6b. Author the TTL
+
+A worked, fully-commented exemplar lives at
+`.github/skills/kairos-design-domain/exemplar-domain.ttl` (with a paired
+`exemplar-domain.shacl.ttl`). Copy its structure; do not copy its content.
+
+Rules the exemplar demonstrates:
+
+- **One self-namespace prefix:** declare `@prefix : <…>` for the domain namespace
+  and use `:` for every local class and property. Named prefixes (`dcsa:`,
+  `party:`) are for **external** namespaces only. This suppresses
+  `safety.prefix-ambiguous`.
+- **File header block:** state the domain scope, reused reference-model
+  properties, module precedence, and deliberate exclusions with reasons.
+- **Rich `rdfs:comment`:** every class and property carries evidence references
+  and naming/data cautions, beyond Gate 5's presence check.
+- **`skos:altLabel`:** add business vocabulary terms that the source uses but
+  the canonical name does not match.
+- **Object properties with ranges:** every object property declares `rdfs:range`
+  pointing at its target class.
+- **Local subclasses:** add a local `owl:Class` subclass only when the hub
+  constrains a reference-model class with an additional property or cardinality.
+  If the hub merely uses the class as-is, do **not** subclass. If
+  `grain_collisions` names the class, **never** subclass or merge — that is an
+  explicit boundary.
+- **`_foundation.ttl`:** is the import-bootstrap scaffolded by `setup-init`;
+  keep it and let `setup-init` manage it. Document its role in the domain TTL
+  header, do not hand-edit or delete it.
+
+**SHACL division of labour (#443):**
+
+- `suggest-shapes` writes **advisory** source-profile constraints to
+  `ontology-hub-publish/shapes-draft/` — outside the validated directory, with a
+  DRAFT banner. These are derived and never hand-authored.
+- Hand-author **governance** constraints in `model/shapes/<domain>.shacl.ttl`:
+  closed code lists, required identifiers, role cardinality. Every constraint
+  carries `sh:message` and an explicit `sh:severity`. The exemplar
+  `exemplar-domain.shacl.ttl` demonstrates the pattern.
+
 ### 7. Persist material decisions
 
 After a modeling choice is accepted, persist it only when it resolved a genuine
 tension or real gap: conflicting source or reference evidence, intentional
 divergence from an industry standard, or a modeling choice with viable rejected
-alternatives. This is a strict materiality threshold.
+alternatives. This is a strict materiality threshold — but it is **mode-conditional**:
+
+- **Interactive mode:** the human witnessed the choice, so the threshold is
+  "was this a genuine tension or real gap?" If yes, log it. If it was a routine
+  confirmation or mechanical choice with no rejected alternative, do not.
+- **Fleet/autopilot mode (DD-088):** nobody witnessed the choice, so the threshold
+  shifts to "could a reviewer auditing this run later tell *why* this path was
+  taken?" Every non-mechanical judgment — even one that felt obvious to the agent
+  — must be recorded, because a reviewer cannot distinguish an omitted mechanical
+  choice from an omitted judgment call after the fact. When in doubt, log it.
 
 Anti-pattern: never log routine confirmations, successful validations, or
-mechanical choices. If it was not a real decision with at least one rejected
-alternative, do not create a record.
+mechanical choices that had no rejected alternative. If it was not a real
+decision with at least one rejected alternative, do not create a record.
 
 For a material decision, run:
 
 ```powershell
-kairos-ontology decision new --title "<concise>" --domain <domain> --source <evidence-resource> ...
+kairos-ontology decision new --title "<concise>" --domain <domain> \
+  --source <evidence-resource> --materiality <material|minor> ...
 ```
 
 Then fill the generated record body with Context/Finding, Decision, an
 `Alternatives rejected` table with at least one row, Consequences, and
 `Why future maintainers need this`. Set a `materiality` tag and `confidence`.
 Move `decision_state` to `Accepted`, with sources, once the decision is
-confirmed.
+confirmed. `decision new` fails fast on `Accepted` without `--materiality`.
+
+After recording a decision (or explicitly deciding none was needed), sync the
+Decision Log index:
+
+```powershell
+kairos-ontology decision sync-index
+```
 
 In interactive mode, propose the decision and its materiality, then confirm with
 the user before writing. In fleet mode, write with `generated.by` set to the

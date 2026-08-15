@@ -219,6 +219,12 @@ def scaffold_binding_cmd(
         f"   Matched {result.matched_property_count} of {result.datatype_property_count} "
         f"datatype properties in the target class ({prefix_note}; override with --column-prefix)"
     )
+    if result.needs_field_mapping:
+        click.echo(
+            "   ⚠ DRAFT: 0 columns matched a datatype property -- every field carries a "
+            "<CONFIRM_PROPERTY:...> sentinel. Run `kairos-ontology propose-alignment` for "
+            "LLM-assisted mapping, or replace the sentinels manually before compiling."
+        )
     if result.relationship_candidates:
         click.echo(
             f"   🔗 Detected relationship candidates -- object properties, never valid under "

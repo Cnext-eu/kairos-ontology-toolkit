@@ -783,3 +783,187 @@ def test_surplus_import_warning_does_not_fail_a_validate_run(tmp_path, capsys):
     assert "surplus" in out.lower() or "extras" in out
     assert "billing" in out
     assert "All validations passed" in out
+
+
+# ---------------------------------------------------------------------------
+# Issue #441: term_owner_ambiguous — when two managed modules publish the same
+# class IRI, the diagnostic severity depends on whether ALL candidate modules
+# are already required imports for the domain.
+# ---------------------------------------------------------------------------
+
+CLONE_IRI = "https://example.org/reference/clone"
+CLONE_NS = CLONE_IRI + "#"
+
+
+def _add_clone_module(ref_models, catalog, *, assigned_domain: str | None = "orders"):
+    """A second managed module that publishes the *same* class IRI as the orders
+    module (``<MODULE_IRI>#Order``), creating a term_owner_ambiguous situation."""
+    module = ref_models / "modules" / "clone.ttl"
+    module.write_text(
+        f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<{CLONE_IRI}> a owl:Ontology ; owl:versionInfo "1.0" .
+<{TERM_NS}Order> a owl:Class .
+""",
+        encoding="utf-8",
+    )
+    config_path = (
+        ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint" / "data-domains.yaml"
+    )
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["module_profiles"].append(
+        {
+            "id": "clone",
+            "ontology_iri": CLONE_IRI,
+            "catalog_uri": CLONE_NS,
+            "version_pin": "1.0",
+            "term_namespaces": [TERM_NS],  # same namespace: duplicate class IRI
+        }
+    )
+    if assigned_domain:
+        data["groups"].append(
+            {
+                "id": "clone-group",
+                "domains": [{"id": assigned_domain, "imports": [{"profile": "clone"}]}],
+            }
+        )
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            "</catalog>",
+            f'  <uri name="{CLONE_NS}" uri="modules/clone.ttl"/>\n'
+            f'  <uri name="{CLONE_IRI}" uri="modules/clone.ttl"/>\n'
+            "</catalog>",
+        ),
+        encoding="utf-8",
+    )
+
+
+def _orders_graph_using_shared_class(*imports: str) -> Graph:
+    """A domain graph that uses the shared class IRI, triggering term-owner
+    resolution."""
+    import_lines = "".join(f"    owl:imports <{iri}> ;\n" for iri in imports)
+    graph = Graph()
+    graph.parse(
+        data=f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix hub: <https://example.org/hub/orders#> .
+<https://example.org/hub/orders> a owl:Ontology ;
+{import_lines}    rdfs:label "Orders" .
+hub:LocalOrder a owl:Class ; rdfs:subClassOf <{TERM_NS}Order> .
+""",
+        format="turtle",
+    )
+    return graph
+
+
+def test_term_owner_ambiguous_downgrades_to_warning_when_all_candidates_required(tmp_path):
+    """When both modules publishing a shared IRI are required imports for the
+    domain (the activation loop adds them), the ambiguity cannot change the
+    completeness verdict → warning, not error (issue #441)."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    # Add a second module that publishes the same class IRI, assigned to the
+    # same domain — both are required imports.
+    _add_clone_module(ref_models, catalog, assigned_domain="orders")
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic", requested_domains=["orders"]
+    )
+    graph = _orders_graph_using_shared_class(MODULE_IRI, CLONE_IRI)
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    ambiguous = [d for d in plan.diagnostics if d.code == "term_owner_ambiguous"]
+    assert len(ambiguous) == 1
+    assert ambiguous[0].level == "warning"
+    assert "orders" in ambiguous[0].message
+    assert "clone" in ambiguous[0].message
+    # Warning-only: does not block.
+    assert all(d.level != "error" for d in plan.diagnostics if d.code == "term_owner_ambiguous")
+
+
+def _add_clone_module_alone(ref_models, catalog):
+    """A second managed module that publishes the *same* class IRI
+    (``<MODULE_IRI>#Order``) as the orders module, assigned only to the
+    ``billing`` domain — creating a term_owner_ambiguous situation."""
+    module = ref_models / "modules" / "clone.ttl"
+    module.write_text(
+        f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<{CLONE_IRI}> a owl:Ontology ; owl:versionInfo "1.0" .
+<{TERM_NS}Order> a owl:Class .
+""",
+        encoding="utf-8",
+    )
+    config_path = (
+        ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint" / "data-domains.yaml"
+    )
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["module_profiles"].append(
+        {
+            "id": "clone",
+            "ontology_iri": CLONE_IRI,
+            "catalog_uri": CLONE_NS,
+            "version_pin": "1.0",
+            "term_namespaces": [TERM_NS],  # same namespace: duplicate class IRI
+        }
+    )
+    # Add an empty-activation "other" domain alongside the existing groups.
+    data["groups"].append(
+        {
+            "id": "ambiguous-group",
+            "domains": [
+                {"id": "billing", "imports": [{"profile": "clone"}]},
+                {"id": "other", "imports": []},
+            ],
+        }
+    )
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            "</catalog>",
+            f'  <uri name="{CLONE_NS}" uri="modules/clone.ttl"/>\n'
+            f'  <uri name="{CLONE_IRI}" uri="modules/clone.ttl"/>\n'
+            "</catalog>",
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_term_owner_ambiguous_remains_error_when_not_all_candidates_required(tmp_path):
+    """When modules publishing a shared IRI are NOT required imports for the
+    domain (neither is activated), the ambiguity is a real problem → error
+    (issue #441)."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _add_clone_module_alone(ref_models, catalog)
+
+    # "other" domain has empty imports; both modules are in scope via
+    # imported_ontology_iris but neither is activated, so neither is a
+    # required import.
+    context = build_reference_module_context(
+        ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+        requested_domains=["other"],
+        imported_ontology_iris=[MODULE_IRI, CLONE_IRI],
+    )
+    graph = Graph()
+    graph.parse(
+        data=f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix hub: <https://example.org/hub/other#> .
+<https://example.org/hub/other> a owl:Ontology ;
+    owl:imports <{MODULE_IRI}> ;
+    owl:imports <{CLONE_IRI}> ;
+    rdfs:label "Other" .
+hub:LocalOrder a owl:Class ; rdfs:subClassOf <{TERM_NS}Order> .
+""",
+        format="turtle",
+    )
+    plan = build_managed_import_plan(domain="other", context=context, ontology_graph=graph)
+
+    ambiguous = [d for d in plan.diagnostics if d.code == "term_owner_ambiguous"]
+    assert len(ambiguous) == 1
+    assert ambiguous[0].level == "error"
