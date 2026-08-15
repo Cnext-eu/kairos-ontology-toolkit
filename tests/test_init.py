@@ -2,7 +2,6 @@
 # Copyright 2026 Cnext.eu
 """Tests for the kairos-ontology init and new-repo CLI commands."""
 
-import shutil
 import subprocess
 from pathlib import Path
 from unittest import mock

@@ -127,12 +127,11 @@ include = [
     "src/kairos_ontology/**/*",
 ]
 
-# Temporary: reference models are installed from the Phase 1 branch until the
-# wheel is published as a GitHub Release asset. Once the first wheel-publishing
-# release is cut, replace this git source with a direct-URL wheel pin and remove
-# this block. See DD-158.
+# Temporary: reference models are installed from main until the first wheel
+# is published as a GitHub Release asset. Once that release is cut, replace
+# this git source with a direct-URL wheel pin and remove this block. See DD-158.
 [tool.uv.sources]
-kairos-ontology-referencemodels = { git = "https://github.com/Cnext-eu/kairos-ontology-referencemodels", branch = "feature/data-package-wheel" }
+kairos-ontology-referencemodels = { git = "https://github.com/Cnext-eu/kairos-ontology-referencemodels", rev = "main" }
 
 [tool.ruff]
 line-length = 100

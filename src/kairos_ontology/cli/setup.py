@@ -35,7 +35,6 @@ from .shared import (
     _detect_hub_context,
     _format_refmodels_fetch_provenance,
     _is_old_layout,
-    _refmodels_whl_url,
     _resolve_scaffold_refmodels_pin,
     _resolve_scaffold_toolkit_pin,
     _slugify,
