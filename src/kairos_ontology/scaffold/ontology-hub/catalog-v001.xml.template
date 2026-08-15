@@ -8,8 +8,10 @@
     kairos-ontology compile <domain> (check mode)
 
   The toolkit auto-discovers this file at ontology-hub/catalog-v001.xml.
-  If you also use FIBO or other reference ontologies, the <nextCatalog>
-  entry below chains to the shared ontology-reference-models catalog.
+  Reference models (FIBO, blueprints, archetypes, patterns) are resolved
+  automatically from the installed kairos-ontology-referencemodels package.
+  Do NOT add a <nextCatalog> entry here — the toolkit overlays the package
+  catalog at runtime via CatalogResolver.with_reference_models().
 -->
 <catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
 
@@ -28,11 +30,5 @@
   <uri name="https://{company_domain}/ont/_foundation"
        uri="model/ontologies/_foundation.ttl"/>
   -->
-
-  <!-- ============================================================
-       Chain to shared reference-models catalog (FIBO, etc.)
-       Remove or comment out if you don't use reference models.
-       ============================================================ -->
-  <nextCatalog catalog="../ontology-reference-models/catalog-v001.xml"/>
 
 </catalog>

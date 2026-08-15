@@ -146,15 +146,25 @@ def resolve_refmodels_root(
 
     Precedence (contract row 2 — env + fallback only; no hub-config key in v1):
 
-    1. *explicit* (e.g. a ``--refmodels-root`` CLI flag),
-    2. the ``KAIROS_REFMODELS_ROOT`` environment variable,
-    3. the existing folder-scan fallback (sibling ``ontology-reference-models/``).
+    1. the installed ``kairos-ontology-referencemodels`` package,
+    2. *explicit* (e.g. a ``--refmodels-root`` CLI flag),
+    3. the ``KAIROS_REFMODELS_ROOT`` environment variable.
 
     Returns the normalized inner root (the directory holding the contract files).
 
     Raises:
         ArchetypeError: if no candidate resolves to a valid reference-models root.
     """
+    # 1. Installed package
+    try:
+        from kairos_ontology_referencemodels import refmodels_root as _pkg_root
+
+        root = _pkg_root()
+        if root.is_dir() and _looks_like_refmodels_root(root):
+            return root
+    except ImportError:
+        pass
+
     cwd = Path(cwd) if cwd is not None else Path.cwd()
 
     if explicit:
@@ -164,23 +174,10 @@ def resolve_refmodels_root(
     if env_value:
         return normalize_refmodels_root(Path(env_value))
 
-    # Fallback: reuse the toolkit's folder-scan resolver (sibling / hub-relative dirs).
-    from ..cli.main import _resolve_ref_models_dir  # local import to avoid a cycle
-
-    scanned = _resolve_ref_models_dir(cwd, hub_root)
-    if scanned is not None and _looks_like_refmodels_root(scanned):
-        return scanned
-    if scanned is not None:
-        # Found an ontology-reference-models/ dir but it lacks the archetype contract.
-        try:
-            return normalize_refmodels_root(scanned)
-        except ArchetypeError:
-            pass
-
     raise ArchetypeError(
-        "Cannot locate a reference-models checkout with the archetype contract "
-        f"('{_ARCHETYPES_SUBDIR.as_posix()}/'). Set the {REFMODELS_ROOT_ENV} environment "
-        "variable to your kairos-ontology-referencemodels checkout (>= v1.11.0)."
+        "Cannot locate the kairos-ontology-referencemodels package. "
+        "Install it with `uv pip install kairos-ontology-referencemodels` "
+        f"or set the {REFMODELS_ROOT_ENV} environment variable to a local checkout."
     )
 
 
@@ -389,7 +386,13 @@ def locate_discovery_doc(refmodels_root: Path, archetype_id: str) -> Path | None
 
 
 def _refmodels_version(refmodels_root: Path) -> str | None:
-    """Read the reference-models repo VERSION (sibling of the inner root), if present."""
+    """Read the reference-models version, preferring installed package metadata."""
+    try:
+        import importlib.metadata
+
+        return importlib.metadata.version("kairos-ontology-referencemodels")
+    except importlib.metadata.PackageNotFoundError:
+        pass
     root = normalize_refmodels_root(refmodels_root)
     for candidate in (root / "VERSION", root.parent / "VERSION"):
         if candidate.is_file():

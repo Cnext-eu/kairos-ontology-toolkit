@@ -248,8 +248,9 @@ def test_project_explicit_accelerator_overrides_hub_configuration(tmp_path, monk
 
 def test_project_infers_single_installed_accelerator(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path)
-    _write_accelerator_packs(tmp_path, "logistics")
+    ref_models = _write_accelerator_packs(tmp_path, "logistics")
     calls = _patch_projections(monkeypatch)
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models))
     monkeypatch.chdir(hub)
 
     result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
@@ -260,8 +261,9 @@ def test_project_infers_single_installed_accelerator(tmp_path, monkeypatch):
 
 def test_project_rejects_unknown_configured_accelerator(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path)
-    _write_accelerator_packs(tmp_path, "logistics")
+    ref_models = _write_accelerator_packs(tmp_path, "logistics")
     _configure_accelerator(tmp_path, "unknown")
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models))
     monkeypatch.chdir(hub)
 
     result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
@@ -273,7 +275,8 @@ def test_project_rejects_unknown_configured_accelerator(tmp_path, monkeypatch):
 
 def test_project_rejects_ambiguous_accelerator_inference(tmp_path, monkeypatch):
     hub = _make_hub(tmp_path)
-    _write_accelerator_packs(tmp_path, "finance", "logistics")
+    ref_models = _write_accelerator_packs(tmp_path, "finance", "logistics")
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models))
     monkeypatch.chdir(hub)
 
     result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])

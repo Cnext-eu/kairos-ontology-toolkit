@@ -14,6 +14,9 @@ def _render_placeholders(content: str) -> str:
     values = {
         "company_name": "Contoso",
         "company_domain": "contoso.example",
+        "refmodels_ref": "v1.19.0",
+        "refmodels_version": "1.19.0",
+        "refmodels_channel": "preview",
     }
     return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: values.get(m[1], "dummy"), content)
 
@@ -31,7 +34,21 @@ def test_scaffold_xml_templates_render_to_wellformed_xml():
         ET.fromstring(rendered)
 
 
-def test_scaffold_xml_template_comments_do_not_contain_double_hyphen():
+def test_catalog_template_has_no_next_catalog():
+    """The catalog template must not contain a <nextCatalog> element (DD-158).
+
+    The reference-models catalog is overlaid at runtime via
+    CatalogResolver.with_reference_models(), not via XML catalog chaining.
+    The comment block may mention <nextCatalog> as guidance, but the element
+    must not be present.
+    """
+    catalog_template = SCAFFOLD_DIR / "ontology-hub" / "catalog-v001.xml.template"
+    rendered = _render_placeholders(catalog_template.read_text(encoding="utf-8"))
+    # Parse the XML and assert no nextCatalog element exists in the tree
+    root = ET.fromstring(rendered)
+    # nextCatalog is not in the default namespace, so search by local-name
+    for child in root:
+        assert child.tag.split("}")[-1] != "nextCatalog"
     catalog_template = SCAFFOLD_DIR / "ontology-hub" / "catalog-v001.xml.template"
     rendered = _render_placeholders(catalog_template.read_text(encoding="utf-8"))
 

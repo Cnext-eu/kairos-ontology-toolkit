@@ -491,7 +491,8 @@ def test_event_stream_grain_hint_embeds_detected_columns(tmp_path):
 
 
 def test_scaffold_binding_cli_end_to_end(tmp_path, monkeypatch):
-    hub_root, _ref_models_dir = _build_hub(tmp_path)
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models_dir))
     monkeypatch.chdir(hub_root)
     result = CliRunner().invoke(
         cli,
@@ -519,7 +520,8 @@ def test_scaffold_binding_cli_end_to_end(tmp_path, monkeypatch):
 
 def test_out_pointing_at_a_directory_is_a_clean_usage_error(tmp_path, monkeypatch):
     """#346: ``--out`` pointing at an existing directory must not crash with a raw traceback."""
-    hub_root, _ref_models_dir = _build_hub(tmp_path)
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models_dir))
     monkeypatch.chdir(hub_root)
     out_dir = hub_root / "integration" / "bindings"
     assert out_dir.is_dir()
@@ -938,7 +940,8 @@ def test_zero_match_relation_never_reports_success_over_an_invalid_binding(tmp_p
 
 def test_zero_match_relation_cli_exits_non_zero_without_a_success_banner(tmp_path, monkeypatch):
     """#336 item 3, CLI surface. FAILS today: exit_code is 0 and the output says 'Scaffolded'."""
-    hub_root, _ = _build_logistics_hub(tmp_path)
+    hub_root, ref_models_dir = _build_logistics_hub(tmp_path)
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models_dir))
     monkeypatch.chdir(hub_root)
     result = CliRunner().invoke(
         cli,

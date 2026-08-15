@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Cross-repo contract tests: our loaders, run against a real reference-models checkout.
+"""Cross-repo contract tests: our loaders, run against real reference models.
 
 Every other test of the loaders in this repo uses synthetic fixtures
 (``tests/archetype_fixtures.py``). Fixtures prove the loaders behave correctly given a
@@ -19,12 +19,13 @@ from the ``kairos-design-domain`` flow and both CIs stayed green.
 The mirror of this file lives in the reference-models repo at
 ``tests/test_toolkit_contract.py``.
 
-Skipping
---------
-Skipped when no reference-models checkout is on the machine, so CI here keeps no
-cross-repo dependency. Set ``KAIROS_REFMODELS_ROOT`` to point at one; otherwise the
-sibling ``../kairos-ontology-referencemodels`` is probed. Local-only: nothing here
-fetches over the network.
+Resolution
+----------
+Reference models are resolved from the installed ``kairos-ontology-referencemodels``
+package first (the default in CI where it's a dev dependency).  Set
+``KAIROS_REFMODELS_ROOT`` to point at a local checkout instead; otherwise the sibling
+``../kairos-ontology-referencemodels`` is probed.  Local-only: nothing here fetches over
+the network.
 """
 
 from __future__ import annotations
@@ -39,22 +40,35 @@ from kairos_ontology.core import archetype_loader, pattern_loader
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: Marker files that identify a reference-models checkout root (mirrors the contract
-#: markers ``archetype_loader`` itself probes for).
-_MARKERS = (
-    Path("ontology-reference-models") / "catalog-v001.xml",
-    Path("ontology-reference-models") / "blueprints" / "archetypes",
-)
-
 
 def _refmodels_root() -> Path | None:
-    """Return a reference-models repo root, or None when none is available."""
+    """Return a reference-models root, preferring the installed package."""
+    # 1. Installed package
+    try:
+        from kairos_ontology_referencemodels import refmodels_root
+
+        root = refmodels_root()
+        if root.is_dir():
+            return root
+    except ImportError:
+        pass
+    # 2. KAIROS_REFMODELS_ROOT env var
     override = os.environ.get("KAIROS_REFMODELS_ROOT")
-    candidates = [Path(override)] if override else []
-    candidates.append(_REPO_ROOT.parent / "kairos-ontology-referencemodels")
-    for candidate in candidates:
-        if all((candidate / marker).exists() for marker in _MARKERS):
+    if override:
+        candidate = Path(override)
+        if candidate.is_dir():
             return candidate
+    # 3. Sibling checkout for local development
+    sibling = _REPO_ROOT.parent / "kairos-ontology-referencemodels"
+    if sibling.is_dir():
+        # Phase 1 moved data inside the package dir; try both layouts
+        inner = sibling / "ontology-reference-models"
+        if inner.is_dir():
+            return inner
+        pkg_inner = sibling / "kairos_ontology_referencemodels" / "ontology-reference-models"
+        if pkg_inner.is_dir():
+            return pkg_inner
+        return sibling
     return None
 
 
@@ -62,17 +76,17 @@ REFMODELS_ROOT = _refmodels_root()
 
 
 def _fail_if_missing_in_ci(root: Path | None, environ: dict[str, str]) -> None:
-    """Raise if CI is running this module without a reference-models checkout.
+    """Raise if CI is running this module without reference models available.
 
     Extracted as a standalone function so it's unit-testable without needing to
     reload this module or fork a subprocess (issue #315).
     """
     if root is None and environ.get("CI"):
         raise RuntimeError(
-            "kairos-ontology-referencemodels checkout not found while running in "
-            "CI (the CI environment variable is set). The pinned checkout step in "
-            ".github/workflows/ci.yml is required for this test module and must "
-            "not be skipped or removed."
+            "kairos-ontology-referencemodels not found while running in "
+            "CI (the CI environment variable is set). The package must be "
+            "installed as a dev dependency (see pyproject.toml) or "
+            "KAIROS_REFMODELS_ROOT must point at a checkout."
         )
 
 
@@ -81,10 +95,20 @@ _fail_if_missing_in_ci(REFMODELS_ROOT, os.environ)
 pytestmark = pytest.mark.skipif(
     REFMODELS_ROOT is None,
     reason=(
-        "no kairos-ontology-referencemodels checkout found — set KAIROS_REFMODELS_ROOT or "
-        "place one at ../kairos-ontology-referencemodels"
+        "no kairos-ontology-referencemodels found — install the package, set "
+        "KAIROS_REFMODELS_ROOT, or place a checkout at ../kairos-ontology-referencemodels"
     ),
 )
+
+
+def _inner_root() -> Path:
+    """Return the ``ontology-reference-models`` data directory.
+
+    When resolved from the installed package, ``REFMODELS_ROOT`` already points there.
+    When resolved from a sibling checkout, the data sits one level down.
+    """
+    inner = REFMODELS_ROOT / "ontology-reference-models"
+    return inner if inner.is_dir() else REFMODELS_ROOT
 
 
 def test_every_published_pattern_loads() -> None:
@@ -169,8 +193,7 @@ def test_every_published_normative_unit_is_classified() -> None:
 
 def _published_tier_enum() -> list[str]:
     schema_path = (
-        REFMODELS_ROOT
-        / "ontology-reference-models"
+        _inner_root()
         / "blueprints"
         / "archetypes"
         / "_schema"
@@ -244,7 +267,7 @@ def test_ontology_tier_prefixes_still_match_the_published_layout() -> None:
         classify_ontology_tier,
     )
 
-    inner = REFMODELS_ROOT / "ontology-reference-models"
+    inner = _inner_root()
     expected = {
         "blueprints/ontology": "blueprint",
         "derived-ontologies": "derived",
@@ -271,7 +294,7 @@ def test_ontology_tier_prefixes_still_match_the_published_layout() -> None:
 
 def test_every_published_archetype_loads() -> None:
     """Published catalogs must survive our schema validation and URI resolution."""
-    archetypes_dir = REFMODELS_ROOT / "ontology-reference-models" / "blueprints" / "archetypes"
+    archetypes_dir = _inner_root() / "blueprints" / "archetypes"
     ids = sorted(
         path.stem for path in archetypes_dir.glob("*.yaml") if not path.name.startswith(".")
     )

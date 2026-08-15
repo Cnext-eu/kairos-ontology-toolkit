@@ -98,6 +98,9 @@ def hub(tmp_path: Path) -> Path:
 
 def _invoke(hub: Path, monkeypatch, args):
     monkeypatch.chdir(hub)
+    ref_dir = hub.parent / "ontology-reference-models"
+    if ref_dir.is_dir():
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_dir))
     return CliRunner().invoke(cli, ["domain-coverage", *args])
 
 

@@ -144,7 +144,22 @@ def _relative_identity(path: Path, identity_root: Path) -> str:
     try:
         return path.resolve().relative_to(identity_root.resolve()).as_posix()
     except ValueError:
-        return path.name
+        pass
+    # Check if the path is inside the reference-models package
+    try:
+        from kairos_ontology_referencemodels import refmodels_root
+
+        pkg_root = refmodels_root()
+        if pkg_root.is_dir():
+            try:
+                return str(Path("ontology-reference-models") / path.resolve().relative_to(pkg_root.resolve())).replace(
+                    "\\", "/"
+                )
+            except ValueError:
+                pass
+    except ImportError:
+        pass
+    return path.name
 
 
 def _closure_hash(manifest: Iterable[ImportManifestEntry]) -> str:
@@ -238,7 +253,7 @@ def load_ontology(
         else root_path.parent
     )
 
-    resolver = CatalogResolver(Path(catalog_path)) if catalog_path is not None else None
+    resolver = CatalogResolver.with_reference_models(Path(catalog_path)) if catalog_path is not None else None
     graph = Graph()
     manifest: list[ImportManifestEntry] = []
     diagnostics: list[OntologyDiagnostic] = []

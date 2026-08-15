@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from .shared import _autodetect_analysis_dir, _resolve_ref_models_dir
+from .shared import _autodetect_analysis_dir, resolve_refmodels_dir
 
 
 def _render_scaffold_system_text(result, *, limit: int) -> None:
@@ -127,7 +127,7 @@ def scaffold_system_cmd(
 
     cwd = Path.cwd()
     ref_models_dir = (
-        Path(ref_models_dir_opt) if ref_models_dir_opt else _resolve_ref_models_dir(cwd, hub_root)
+        Path(ref_models_dir_opt) if ref_models_dir_opt else resolve_refmodels_dir(cwd, hub_root)
     )
     catalog_path = Path(catalog) if catalog else None
     if catalog_path is None:

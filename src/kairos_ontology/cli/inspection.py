@@ -22,7 +22,7 @@ from .shared import (
     _git_ignored_snapshot,
     _git_repo_root,
     _git_status_snapshot,
-    _resolve_ref_models_dir,
+    resolve_refmodels_dir,
     _resolve_semantic_input,
     _warn_if_no_skill_context,
 )
@@ -525,7 +525,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
         ont_path = Path(ontology)
 
     if ref_models is None:
-        ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
+        ref_models_path = resolve_refmodels_dir(cwd, hub_root)
         if ref_models_path is None:
             click.echo(
                 "❌ Cannot find ontology-reference-models/ directory. Use --ref-models to specify.",
@@ -816,7 +816,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
     if ref_models_dir:
         ref_path = Path(ref_models_dir)
     else:
-        ref_path = _resolve_ref_models_dir(cwd, hub_root)
+        ref_path = resolve_refmodels_dir(cwd, hub_root)
 
     if not ont_path and not ref_path:
         click.echo(
@@ -1204,7 +1204,7 @@ def check_inventory_cmd(
     if ref_models_dir:
         ref_path: Path | None = Path(ref_models_dir)
     else:
-        ref_path = _resolve_ref_models_dir(cwd, hub_root)
+        ref_path = resolve_refmodels_dir(cwd, hub_root)
 
     if inventory_dir:
         inv_path = Path(inventory_dir)
@@ -1598,7 +1598,7 @@ def domain_coverage_cmd(
     if ref_models_dir:
         ref_path: Path | None = Path(ref_models_dir)
     else:
-        ref_path = _resolve_ref_models_dir(cwd, hub_root)
+        ref_path = resolve_refmodels_dir(cwd, hub_root)
 
     if bindings_dir:
         bind_path = Path(bindings_dir)
@@ -2049,7 +2049,7 @@ def design_landscape_cmd(accelerator, domain, out_format):
     if hub_root is None:
         raise click.ClickException("Cannot locate a hub (model/ontologies/ not found).")
 
-    ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+    ref_models_dir = resolve_refmodels_dir(cwd, hub_root)
 
     try:
         result = run_design_landscape(

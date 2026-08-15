@@ -5,19 +5,17 @@
 import json
 import os
 import re
-import sys
-import tempfile
-import tomllib
-import click
 import shutil
 import subprocess
+import sys
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
+import click
 from packaging.requirements import InvalidRequirement, Requirement
 
 from .. import __version__ as _toolkit_version
@@ -254,25 +252,29 @@ def _git_head_sha(repo_dir: Path) -> str:
 _REF_MODELS_PATH = "ontology-reference-models"
 
 
-def _resolve_ref_models_dir(cwd: Path, hub_root: Path | None) -> Path | None:
-    """Locate the reference-models directory.
+def resolve_refmodels_dir(cwd: Path, hub_root: Path | None) -> Path | None:
+    """Locate the reference-models directory from an installed package or explicit override.
 
-    Reference models live at the **repository root** in
-    ``ontology-reference-models/`` (a sibling of ``model/``), not under
-    ``model/reference-models/``.  Returns the first existing candidate, or
-    ``None`` if none are found.  The legacy ``model/reference-models/`` location
-    is kept as a last-resort fallback for backward compatibility.
+    Resolution order:
+    1. Installed ``kairos-ontology-referencemodels`` package (via ``importlib.resources``).
+    2. ``KAIROS_REFMODELS_ROOT`` environment variable (air-gap escape hatch).
+
+    The legacy folder-scan fallback is removed — new hubs do not vendor
+    ``ontology-reference-models/`` into the repo.
     """
-    candidates = [
-        cwd / _REF_MODELS_PATH,
-        (hub_root / _REF_MODELS_PATH) if hub_root else None,
-        (hub_root.parent / _REF_MODELS_PATH) if hub_root else None,
-        cwd / "ontology-hub" / _REF_MODELS_PATH,
-        (hub_root / "model" / "reference-models") if hub_root else None,
-    ]
-    for candidate in candidates:
-        if candidate and candidate.is_dir():
-            return candidate
+    # 1. Package resolution
+    try:
+        from kairos_ontology_referencemodels import refmodels_root
+
+        root = refmodels_root()
+        if root.is_dir():
+            return root
+    except ImportError:
+        pass
+    # 2. KAIROS_REFMODELS_ROOT env var
+    env = os.environ.get("KAIROS_REFMODELS_ROOT")
+    if env and Path(env).is_dir():
+        return Path(env)
     return None
 
 
@@ -280,10 +282,10 @@ def _resolve_import_dir(cwd: Path, hub_root: Path | None) -> Path:
     """Locate the business-discovery import directory.
 
     Raw discovery artifacts live at the **repository root** in
-    ``.import/businessdiscovery/`` (a sibling of ``ontology-hub/`` and
-    ``ontology-reference-models/``), not under ``ontology-hub/``.  Like
-    :func:`_resolve_ref_models_dir`, this resolves the dual layout so the command
-    works both from the repo root and from inside ``ontology-hub/`` (DD-064).
+    ``.import/businessdiscovery/`` (a sibling of ``ontology-hub/``),
+    not under ``ontology-hub/``.  Like :func:`resolve_refmodels_dir`, this
+    resolves the dual layout so the command works both from the repo root and
+    from inside ``ontology-hub/`` (DD-064).
 
     Returns the first existing candidate, or ``cwd/.import/businessdiscovery`` as
     a stable fallback when none exist (so the caller's "nothing to process"
@@ -432,6 +434,45 @@ def _whl_url(tag: str) -> str:
     version = _tag_to_version(tag)
     filename = f"kairos_ontology_toolkit-{version}-py3-none-any.whl"
     return f"https://github.com/{_TOOLKIT_REPO}/releases/download/{tag}/{filename}"
+
+
+def _refmodels_whl_url(tag: str) -> str:
+    """Build the GitHub Releases download URL for the referencemodels .whl artifact."""
+    version = _tag_to_version(tag)
+    filename = f"kairos_ontology_referencemodels-{version}-py3-none-any.whl"
+    return f"https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/{tag}/{filename}"
+
+
+_REFMODELS_REPO = "Cnext-eu/kairos-ontology-referencemodels"
+
+# Pin for a freshly scaffolded hub that has not yet published its own release.
+_REFMODELS_FALLBACK_TAG = "v1.19.0"
+
+
+def _resolve_scaffold_refmodels_pin() -> tuple[str, str]:
+    """Return ``(tag, version)`` for the referencemodels wheel URL in scaffold templates.
+
+    Uses ``gh api`` to find the latest release of the referencemodels repo.
+    Falls back to a hardcoded safe default when releases cannot be listed.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"/repos/{_REFMODELS_REPO}/releases", "--jq", ".[0].tag_name"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode == 0 and isinstance(result.stdout, str):
+            tag = result.stdout.strip()
+            if tag:
+                return tag, _tag_to_version(tag)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    print(
+        f"  ⚠ Could not list referencemodels releases; "
+        f"pinning {_REFMODELS_FALLBACK_TAG}, which may need updating."
+    )
+    return _REFMODELS_FALLBACK_TAG, _tag_to_version(_REFMODELS_FALLBACK_TAG)
 
 
 _COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -1018,6 +1059,7 @@ _RETIRED_MANAGED_SCAFFOLD_FILES = {
 # (extra allow rules, hooks, model settings) is never destroyed — it gets an advisory instead.
 _KNOWN_CLAUDE_SETTINGS_HASHES = (
     "08c0b53faf0ea032c4746e460ae85e41e8f7731f999778d730e114e50ce037f5",  # .ttl-only, pre-DD-103 broadening
+    "7be2c70ddda8878e179930ce9dcaf0ac8d12cd09f982170f4d6b85acc515db08",  # .ttl/.rdf/.owl + refmodel deny-list (pre-package-migration)
 )
 
 _RETIRED_SCAFFOLD_DIRECTORIES = (
@@ -1311,7 +1353,7 @@ def _resolve_projection_cli_scope(
             "(or inside ontology-hub/), pass --ontologies for a directory, or pass "
             "--ontology for one file."
         )
-    ref_models_path = Path(ref_models) if ref_models else _resolve_ref_models_dir(cwd, hub_root)
+    ref_models_path = Path(ref_models) if ref_models else resolve_refmodels_dir(cwd, hub_root)
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
     try:
         resolved_accelerator = resolve_hub_accelerator(
@@ -1330,7 +1372,6 @@ _CATALOG_FILENAME = "catalog-v001.xml"
 
 _CATALOG_CANDIDATES = [
     Path("ontology-hub/catalog-v001.xml"),
-    Path("ontology-reference-models/catalog-v001.xml"),
 ]
 
 
@@ -1365,7 +1406,7 @@ def _resolve_catalog(
         candidates.append(hub_root / _CATALOG_FILENAME)
     if ref_models_dir is not None:
         candidates.append(ref_models_dir / _CATALOG_FILENAME)
-    detected_ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+    detected_ref_models_dir = resolve_refmodels_dir(cwd, hub_root)
     if detected_ref_models_dir is not None:
         candidates.append(detected_ref_models_dir / _CATALOG_FILENAME)
     candidates.extend(_CATALOG_CANDIDATES)
@@ -1391,7 +1432,7 @@ def _resolve_semantic_input(
         )
     from ..core.catalog_utils import CatalogResolver
 
-    resolved = CatalogResolver(catalog_path).resolve(value)
+    resolved = CatalogResolver.with_reference_models(catalog_path).resolve(value)
     if resolved is None or not resolved.is_file():
         raise click.ClickException(f"No catalog mapping for ontology IRI: {value}")
     return resolved, catalog_path
@@ -1594,332 +1635,33 @@ def _slugify(name: str) -> str:
     return slug
 
 
-_REFMODELS_REMOTE = "https://github.com/Cnext-eu/kairos-ontology-referencemodels.git"
-
-
-_REFMODELS_REMOTE_DIR = "ontology-reference-models"
-
-
-_REFMODELS_FETCH_PROVENANCE = "FETCH_PROVENANCE.json"
-
-
-def _write_refmodels_fetch_provenance(
-    dest: Path,
-    *,
-    ref: str,
-    commit: str | None,
-    source_repo: str = _REFMODELS_REMOTE,
-    fetched_at: str | None = None,
-) -> Path:
-    """Write truthful reference-model fetch provenance into ``dest``."""
-    timestamp = fetched_at or datetime.now(UTC).replace(microsecond=0).isoformat()
-    payload = {
-        "ref": ref,
-        "commit": commit or None,
-        "fetched_at": timestamp.replace("+00:00", "Z"),
-        "source_repo": source_repo,
-    }
-    path = dest / _REFMODELS_FETCH_PROVENANCE
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return path
-
-
-def _read_refmodels_fetch_provenance(ref_models_dir: Path | None) -> dict[str, str | None] | None:
-    """Read reference-model fetch provenance when present and well-formed."""
-    if ref_models_dir is None:
-        return None
-    path = ref_models_dir / _REFMODELS_FETCH_PROVENANCE
-    if not path.is_file():
-        return None
+def _read_refmodels_provenance() -> dict[str, str | None] | None:
+    """Read reference-model provenance from the installed package metadata."""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        import importlib.metadata
+
+        v = importlib.metadata.version("kairos-ontology-referencemodels")
+        return {"ref": v, "version": v, "source": "pip"}
+    except importlib.metadata.PackageNotFoundError:
         return None
-    if not isinstance(raw, dict):
+    except ImportError:
         return None
-    ref = raw.get("ref")
-    commit = raw.get("commit")
-    fetched_at = raw.get("fetched_at")
-    source_repo = raw.get("source_repo")
-    if not isinstance(ref, str) or (commit is not None and not isinstance(commit, str)):
-        return None
-    if fetched_at is not None and not isinstance(fetched_at, str):
-        return None
-    if source_repo is not None and not isinstance(source_repo, str):
-        return None
-    return {
-        "ref": ref,
-        "commit": commit,
-        "fetched_at": fetched_at,
-        "source_repo": source_repo,
-    }
 
 
 def _format_refmodels_fetch_provenance(ref_models_dir: Path | None) -> str | None:
-    """Return a concise reference-model provenance label for CLI output."""
-    provenance = _read_refmodels_fetch_provenance(ref_models_dir)
-    if provenance is None:
-        return None
-    commit = provenance["commit"]
-    short_commit = commit[:12] if commit else "unknown commit"
-    return f"ref {provenance['ref']} @ {short_commit}"
+    """Return a concise reference-model provenance label for CLI output.
 
-
-def _detect_refmodels_dest() -> Path:
-    """Auto-detect the reference-models destination directory.
-
-    Walks up from CWD looking for a hub structure with ontology-reference-models/.
-    Falls back to ontology-reference-models/ relative to CWD.
+    Reads the installed package version via ``importlib.metadata`` rather than
+    a ``FETCH_PROVENANCE.json`` file.  The *ref_models_dir* parameter is kept
+    for call-site compatibility but no longer read from.
     """
-    cwd = Path.cwd()
-
-    # Check if we're inside an ontology-hub directory structure
-    for parent in [cwd, *cwd.parents]:
-        candidate = parent / "ontology-reference-models"
-        if candidate.exists():
-            return candidate
-        # Also check ontology-hub subdirectory
-        candidate2 = parent / "ontology-hub" / "ontology-reference-models"
-        if candidate2.exists():
-            return candidate2
-
-    # Default: assume we're at hub root
-    default = cwd / "ontology-reference-models"
-    return default
-
-
-def _resolve_latest_refmodels_ref() -> str | None:
-    """Resolve the newest semver tag on the reference-models remote.
-
-    Mirrors :func:`_resolve_channel`'s "pick the highest non-prerelease-aware
-    version" logic, but the reference-models repo isn't on GitHub Releases the
-    toolkit repo uses, so this shells out to ``git ls-remote --tags`` instead of
-    ``gh api``. Returns ``None`` (never raises) when git is unavailable, the
-    remote can't be reached, or no tags exist — callers fall back to ``main``.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--tags", _REFMODELS_REMOTE],
-            capture_output=True,
-            text=True,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-            timeout=15,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-
-    tags: list[str] = []
-    for line in result.stdout.splitlines():
-        if "refs/tags/" not in line:
-            continue
-        tag = line.split("refs/tags/", 1)[1].strip()
-        if tag.endswith("^{}"):
-            tag = tag[: -len("^{}")]
-        if tag:
-            tags.append(tag)
-    if not tags:
-        return None
-
-    from packaging.version import InvalidVersion, Version
-
-    def _parse_version(tag: str) -> Version:
-        try:
-            return Version(_tag_to_version(tag))
-        except InvalidVersion:
-            return Version("0.0.0")
-
-    return sorted(set(tags), key=_parse_version, reverse=True)[0]
-
-
-def _fetch_reference_models(dest: Path, git_ref: str) -> tuple[bool, str | None, str]:
-    """Fetch reference models into *dest* via a sparse shallow clone.
-
-    Never commits, never pushes, and never raises — every failure mode (git
-    missing, clone failure, sparse-checkout failure, missing subtree, a copy
-    that raises ``OSError`` partway through) is caught internally and reported
-    back as ``(False, None, message)`` so callers (``init``, ``new-repo``,
-    ``update-refmodels``) can each decide how loudly to warn.
-
-    The fetched tree is assembled in a temp directory that is a *sibling* of
-    *dest*, validated with :func:`_looks_like_refmodels_root`, and only then
-    swapped into place. This matters on Windows: a ``shutil.copytree`` can fail
-    partway through once the destination prefix passes ~110 characters (the
-    upstream FIBO paths reach ~170), and copying straight into *dest* would
-    leave a partial tree behind that still happens to contain enough files to
-    look valid. Building off to the side means a failed copy never touches
-    *dest* at all — it either keeps its prior (possibly absent) state or gets
-    replaced wholesale by a fully-validated tree.
-
-    Returns:
-        ``(ok, resolved_commit_sha, message)`` — *message* is a human-readable
-        status (on success) or error (on failure) string suitable for a CLI to
-        print or wrap in a ``ClickException``.
-    """
-    from ..core.archetype_loader import (
-        _ARCHETYPES_SUBDIR,
-        _CATALOG_FILENAME,
-        _looks_like_refmodels_root,
-    )
-
-    clone_dir: Path | None = None
-    holder_dir: Path | None = None
-    try:
-        try:
-            subprocess.run(["git", "--version"], capture_output=True, check=True)
-        except FileNotFoundError:
-            return False, None, "git is not installed or not on PATH. Install git and try again."
-
-        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-        clone_dir = Path(tempfile.mkdtemp(prefix="kairos-refmodels-clone-"))
-
-        result = subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--filter=blob:none",
-                "--sparse",
-                "--branch",
-                git_ref,
-                _REFMODELS_REMOTE,
-                str(clone_dir),
-            ],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=300,
-        )
-        if result.returncode != 0:
-            return False, None, f"git clone failed (ref '{git_ref}'):\n{result.stderr.strip()}"
-
-        sparse_result = subprocess.run(
-            ["git", "-C", str(clone_dir), "sparse-checkout", "set", _REFMODELS_REMOTE_DIR],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=300,
-        )
-        if sparse_result.returncode != 0:
-            return False, None, f"git sparse-checkout failed:\n{sparse_result.stderr.strip()}"
-
-        src = clone_dir / _REFMODELS_REMOTE_DIR
-        if not src.exists():
-            return (
-                False,
-                None,
-                f"Expected folder '{_REFMODELS_REMOTE_DIR}' not found in cloned repo. "
-                f"Check that the ref '{git_ref}' contains this folder.",
-            )
-
-        sha_result = subprocess.run(
-            ["git", "-C", str(clone_dir), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=300,
-        )
-        sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
-
-        holder_dir = Path(tempfile.mkdtemp(prefix=f".{dest.name}.fetch-", dir=str(dest.parent)))
-        build_dir = holder_dir / dest.name
-        shutil.copytree(src, build_dir)
-
-        # Upstream keeps VERSION, LICENSE, and NOTICE at the clone root (siblings of
-        # the copied subdir) rather than inside the sparse-checked-out subtree, so
-        # version-drift checks (which read <dest>/VERSION) and licensing/attribution
-        # (LICENSE, and NOTICE naming FIBO and IATA ONE Record's third-party terms)
-        # would otherwise never reach a hub. Copy them in alongside the subtree when
-        # present, each independently guarded so an upstream lacking one cannot
-        # break the fetch.
-        for root_file in ("VERSION", "LICENSE", "NOTICE"):
-            root_src = clone_dir / root_file
-            if root_src.is_file():
-                shutil.copy2(root_src, build_dir / root_file)
-
-        if not _looks_like_refmodels_root(build_dir):
-            return (
-                False,
-                sha,
-                f"Fetched content at ref '{git_ref}' failed validation "
-                f"(missing '{_CATALOG_FILENAME}' or '{_ARCHETYPES_SUBDIR.as_posix()}/')",
-            )
-
-        _write_refmodels_fetch_provenance(build_dir, ref=git_ref, commit=sha)
-
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.move(str(build_dir), str(dest))
-
-        short_sha = sha[:12] if sha else "unknown commit"
-        return True, sha, f"Reference models fetched (ref '{git_ref}' @ {short_sha})"
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, None, f"Reference models fetch failed: {exc}"
-    finally:
-        if clone_dir is not None:
-            shutil.rmtree(clone_dir, ignore_errors=True)
-        if holder_dir is not None:
-            shutil.rmtree(holder_dir, ignore_errors=True)
-
-
-def _run_reference_models_update(repo_dir: Path, version: str | None = None):
-    """Populate ontology-reference-models/ via sparse clone (no submodule), then commit.
-
-    Delegates the fetch itself to :func:`_fetch_reference_models` (which never
-    raises and never touches git state) and is left with only the commit step —
-    scoped to ``ontology-reference-models/`` so this never sweeps in unrelated
-    working-tree changes from the rest of the freshly-scaffolded repo.
-    """
-    git_ref = version or "main"
-    dest = repo_dir / _REF_MODELS_PATH
-
-    print(f"  ▶ Fetching reference models (ref '{git_ref}')…")
-    ok, _sha, message = _fetch_reference_models(dest, git_ref)
-    if not ok:
-        print(f"  ⚠  {message}")
-        print("       Run 'kairos-ontology update-refmodels' manually.")
-        return
+    import importlib.metadata
 
     try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain", "--", _REF_MODELS_PATH],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-        )
-        if result.stdout.strip():
-            subprocess.run(
-                ["git", "add", "--", _REF_MODELS_PATH],
-                cwd=repo_dir,
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                [
-                    "git",
-                    "commit",
-                    "-m",
-                    "chore: populate ontology-reference-models",
-                    "--",
-                    _REF_MODELS_PATH,
-                ],
-                cwd=repo_dir,
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(["git", "push"], cwd=repo_dir, capture_output=True, check=True)
-            print("  ✓ Reference models populated and committed")
-        else:
-            print("  ✓ Reference models already up to date")
-    except subprocess.CalledProcessError as exc:
-        print(
-            "  ⚠  Reference models update failed — run 'kairos-ontology update-refmodels' manually"
-        )
-        if hasattr(exc, "stderr") and exc.stderr:
-            stderr = exc.stderr.decode().strip() if isinstance(exc.stderr, bytes) else exc.stderr
-            print(f"       {stderr}")
+        v = importlib.metadata.version("kairos-ontology-referencemodels")
+        return f"v{v} (pip)"
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 def _configure_branch_protection(repo_dir: Path, full_name: str):

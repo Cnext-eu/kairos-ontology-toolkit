@@ -60,7 +60,7 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
 
 1. `kairos-ontology discovery-conformance list-archetypes --format json` — discover valid
    archetype ids and load the **authoritative outcome-codes enum** from the contract. Never
-   assume or hardcode which codes exist; the enum in the reference-models checkout is the only
+   assume or hardcode which codes exist; the enum in the reference-models package is the only
    source of truth and it may contain fewer or different codes than any cached example.
 2. `kairos-ontology discovery-conformance load --archetype <id> --format json` — the
    authoritative source for `core_concepts` (uri/label/tier) and derived relationship

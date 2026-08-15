@@ -9,6 +9,7 @@ import click
 import hashlib
 import shutil
 import subprocess
+import importlib.metadata
 from pathlib import Path
 
 
@@ -30,8 +31,6 @@ from .shared import (
     _add_toolkit_test_ref_state,
     _copy_managed,
     _dependency_files_transaction,
-    _detect_refmodels_dest,
-    _fetch_reference_models,
     _get_managed_version,
     _lock_and_sync_dependency,
     _managed_dataplatform_map,
@@ -47,6 +46,7 @@ from .shared import (
     _restore_dependency_files,
     _resync_restored_dependency,
     _rewrite_toolkit_dependency_source,
+    _refmodels_whl_url,
     _single_toolkit_dependency_source,
     _stamp_managed,
     _tag_to_version,
@@ -543,47 +543,77 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
 
 @click.command(name="update-refmodels")
 @click.option(
-    "--ref",
-    "git_ref",
+    "--version",
+    "version_tag",
     type=str,
-    default="main",
-    help="Branch, tag, or SHA to fetch (default: main).",
-)
-@click.option(
-    "--dest",
-    "dest_path",
-    type=click.Path(),
     default=None,
-    help="Destination path for reference models (default: auto-detect ontology-reference-models/).",
+    help="Specific version tag to pin (e.g. v1.19.0). Default: latest release.",
 )
-def update_refmodels(git_ref, dest_path):
-    """Fetch reference models from the upstream repository.
+def update_refmodels(version_tag):
+    """Update the reference-models package to the latest (or a specific) release.
 
-    Performs a sparse shallow clone of the kairos-ontology-referencemodels repo,
-    extracts the ontology-reference-models/ subfolder, and replaces the local
-    reference-models directory.
+    Runs ``uv pip install --upgrade kairos-ontology-referencemodels`` in the hub
+    virtualenv, rewrites the pin in ``pyproject.toml`` to match the installed
+    version, and refreshes the lockfile.
 
     \b
     Examples:
         kairos-ontology update-refmodels
-        kairos-ontology update-refmodels --ref v1.2.1
-        kairos-ontology update-refmodels --dest path/to/reference-models
+        kairos-ontology update-refmodels --version v1.19.0
     """
-    dest = Path(dest_path) if dest_path else _detect_refmodels_dest()
+    repo_dir = Path.cwd()
+    pyproject = repo_dir / "pyproject.toml"
 
-    click.echo(f"  ▶ Fetching ref '{git_ref}' from upstream reference models…")
+    # 1. Install (upgrade) the referencemodels package
+    if version_tag:
+        whl_url = _refmodels_whl_url(version_tag)
+        print(f"   Installing kairos-ontology-referencemodels {version_tag} …")
+        install_cmd = ["uv", "pip", "install", whl_url]
+    else:
+        print("   Upgrading kairos-ontology-referencemodels …")
+        install_cmd = ["uv", "pip", "install", "--upgrade", "kairos-ontology-referencemodels"]
 
-    ok, sha, message = _fetch_reference_models(dest, git_ref)
-    if not ok:
-        raise click.ClickException(message)
+    result = subprocess.run(install_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise click.ClickException(f"uv pip install failed:\n{result.stderr.strip()}")
+    print("   ✓ Package installed")
 
-    # Report results
-    click.echo(f"  ✓ Reference models updated: {dest}")
-    click.echo(f"    Ref    : {git_ref}")
-    click.echo(f"    Commit : {sha[:12] if sha else 'unknown'}")
+    # 2. Read installed version
+    try:
+        installed_version = importlib.metadata.version("kairos-ontology-referencemodels")
+    except importlib.metadata.PackageNotFoundError:
+        raise click.ClickException(
+            "kairos-ontology-referencemodels not found after install — check uv environment."
+        )
 
-    # Check for VERSION file
-    version_file = dest / "VERSION"
-    if version_file.exists():
-        version = version_file.read_text().strip()
-        click.echo(f"    Version: {version}")
+    # 3. Determine the release tag for the pin
+    if version_tag:
+        pin_tag = version_tag
+    else:
+        pin_tag = f"v{installed_version}"
+
+    # 4. Rewrite the pin in pyproject.toml
+    if pyproject.is_file():
+        content = pyproject.read_text(encoding="utf-8")
+        whl_url = _refmodels_whl_url(pin_tag)
+        new_content = re.sub(
+            r"kairos-ontology-referencemodels\s*@\s*(?:"
+            r"git\+https://github\.com/Cnext-eu/kairos-ontology-referencemodels\.git@[^\s\"]*"
+            r"|https://github\.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/[^\s\"]*"
+            r")",
+            f"kairos-ontology-referencemodels @ {whl_url}",
+            content,
+        )
+        if new_content != content:
+            pyproject.write_text(new_content, encoding="utf-8")
+            print(f"   ✓ Updated pyproject.toml pin to {pin_tag} (.whl)")
+        else:
+            print(f"   ℹ  pyproject.toml already pinned to {pin_tag}")
+
+    # 5. Lock
+    print("   Syncing lockfile with uv ...")
+    result = subprocess.run(["uv", "lock"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise click.ClickException(f"uv lock failed:\n{result.stderr.strip()}")
+
+    click.echo(f"  ✓ Reference models updated: v{installed_version} (pip)")

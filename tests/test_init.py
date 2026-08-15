@@ -2,7 +2,6 @@
 # Copyright 2026 Cnext.eu
 """Tests for the kairos-ontology init and new-repo CLI commands."""
 
-import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -147,7 +146,7 @@ def test_init_creates_hub_structure(tmp_path):
             assert "dbt-validate-fabric = [" in pyproject
             assert "dbt-validate-databricks = [" in pyproject
 
-            # No submodule calls (reference models are fetched separately)
+            # No submodule calls (reference models are a pip package, not a submodule)
             call_args_list = [call.args[0] for call in mock_run.call_args_list]
             submodule_calls = [c for c in call_args_list if "submodule" in c]
             assert len(submodule_calls) == 0
@@ -162,7 +161,12 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/catalog-v001.xml").is_file()
             cat_content = Path("ontology-hub/catalog-v001.xml").read_text(encoding="utf-8")
             assert "urn:oasis:names:tc:entity:xmlns:xml:catalog" in cat_content
-            assert "nextCatalog" in cat_content
+            # The catalog must NOT contain a <nextCatalog> element (DD-158).
+            # Reference models are resolved from the installed package at runtime.
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(cat_content)
+            for child in root:
+                assert child.tag.split("}")[-1] != "nextCatalog"
             assert "test.com" in cat_content
 
 
@@ -321,40 +325,21 @@ def test_init_refuses_to_nest_inside_existing_hub(tmp_path, monkeypatch):
 def test_init_allowed_at_the_hub_root_itself(tmp_path):
     """Re-running init at an existing hub *root* stays supported (backfill).
 
-    The first run's reference-models fetch actually succeeds here (issue #290),
-    so the second run must find a valid checkout already in place and take the
-    "already present" / skip path rather than attempting a second clone.
+    In package mode (DD-158), there is no clone step — the package is already
+    installed. A second init should simply detect the existing hub and refresh
+    scaffold files without error.
     """
     runner = CliRunner()
-    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run",
-        side_effect=_materializing_git_side_effect(fake_clone_root),
-    ) as mock_run:
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
             first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert first.exit_code == 0, first.output
-            assert Path("ontology-reference-models/catalog-v001.xml").is_file()
-
-            clone_calls_before = [
-                c
-                for c in mock_run.call_args_list
-                if c.args[0][0] == "git" and c.args[0][1] == "clone"
-            ]
 
             # cwd is now a managed root (pyproject.toml carries the toolkit pin).
             second = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert second.exit_code == 0, second.output
             assert "existing Kairos hub was detected" not in second.output
-            assert "already present" in second.output
-
-            clone_calls_after = [
-                c
-                for c in mock_run.call_args_list
-                if c.args[0][0] == "git" and c.args[0][1] == "clone"
-            ]
-            # No second clone attempt — the existing checkout was left alone.
-            assert len(clone_calls_after) == len(clone_calls_before)
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +393,7 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / ".import" / "businessdiscovery").is_dir()
     assert not (repo / "ontology-hub" / ".import").exists()
 
-    # Sparse-clone was called for reference models (no submodule)
+    # No submodule — reference models are a pip package (DD-158)
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
     submodule_calls = [c for c in call_args_list if "submodule" in c and "add" in c]
     assert len(submodule_calls) == 0
@@ -526,7 +511,7 @@ def test_new_repo_creates_git_and_pushes(tmp_path):
     assert ["git", "init", "-b", "main"] in call_args_list
     assert ["git", "add", "."] in call_args_list
     assert ["gh", "--version"] in call_args_list
-    # No submodule — reference models are fetched via sparse clone
+    # No submodule — reference models are a pip package (DD-158)
     submodule_calls = [c for c in call_args_list if "submodule" in c and "add" in c]
     assert len(submodule_calls) == 0
     gh_create_call = [c for c in call_args_list if "gh" in c and "create" in c]
@@ -1061,7 +1046,7 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
 
 
 def test_new_repo_ref_models_version(tmp_path):
-    """new-repo --ref-models-version should checkout that ref in the submodule."""
+    """new-repo --ref-models-version should pin that version in pyproject.toml."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
@@ -1078,26 +1063,10 @@ def test_new_repo_ref_models_version(tmp_path):
         )
     assert result.exit_code == 0, result.output
 
-    call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    # Should have clone with --branch v1.2.0 for reference models
-    clone_calls = [c for c in call_args_list if "clone" in c and "--sparse" in c]
-    assert len(clone_calls) >= 1
-    assert "v1.2.0" in clone_calls[0]
-
-
-def test_init_no_submodule_calls(tmp_path):
-    """init should never call git submodule (reference models are committed directly)."""
-    runner = CliRunner()
-    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(returncode=0)
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-            assert result.exit_code == 0
-
-            # No submodule calls at all
-            call_args_list = [call.args[0] for call in mock_run.call_args_list]
-            submodule_calls = [c for c in call_args_list if "submodule" in c]
-            assert len(submodule_calls) == 0
+    # The pyproject.toml should contain a referencemodels dependency pin
+    repo = tmp_path / "contoso-ontology-hub"
+    pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
+    assert "kairos-ontology-referencemodels" in pyproject
 
 
 def test_new_repo_workflow_no_submodules(tmp_path):
@@ -1456,118 +1425,42 @@ class TestResolveChannel:
 
 
 # ---------------------------------------------------------------------------
-# init: reference-models fetch (issue #290)
+# init: reference-models package mode (DD-158)
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_refmodels_clone(tmp_path, name="fake-refmodels-clone"):
-    """Build a fake upstream clone tree with the archetype-contract markers.
-
-    ``_looks_like_refmodels_root`` (core/archetype_loader.py) requires
-    ``catalog-v001.xml`` + ``blueprints/archetypes/`` inside the copied
-    ``ontology-reference-models/`` subdir; upstream keeps ``VERSION``,
-    ``LICENSE``, and ``NOTICE`` at the clone *root* (siblings of that subdir),
-    which is why they're placed there rather than inside
-    ``ontology-reference-models/`` (issue #413).
-    """
-    clone_root = tmp_path / name
-    refmodels = clone_root / "ontology-reference-models"
-    (refmodels / "blueprints" / "archetypes").mkdir(parents=True)
-    (refmodels / "catalog-v001.xml").write_text("<catalog/>", encoding="utf-8")
-    (clone_root / "VERSION").write_text("2026.08\n", encoding="utf-8")
-    (clone_root / "LICENSE").write_text("Apache License 2.0\n", encoding="utf-8")
-    (clone_root / "NOTICE").write_text(
-        "Includes FIBO (MIT) and IATA ONE Record (MIT) attributions.\n", encoding="utf-8"
-    )
-    return clone_root
-
-
-def _materializing_git_side_effect(fake_clone_root):
-    """A ``subprocess.run`` side_effect that makes ``git clone`` real.
-
-    Under a plain ``MagicMock(returncode=0)``, ``git clone`` "succeeds" without
-    ever creating a single file — ``tempfile.mkdtemp`` is real, but nothing
-    populates it, so the subsequent copy is silently skipped and the fetch
-    fails at the "folder not found" check. That makes a naive "init exits 0"
-    assertion pass vacuously. This side_effect actually copies
-    *fake_clone_root* into whatever directory ``git clone`` is asked to
-    populate, so tests can verify the fetch's real effects (files landing at
-    the destination, provenance written, etc.).
-    """
-
-    def _side_effect(cmd, **kwargs):
-        if cmd[0] == "git" and cmd[1] == "--version":
-            return mock.MagicMock(returncode=0)
-        if cmd[0] == "git" and cmd[1] == "clone":
-            clone_dest = Path(cmd[-1])
-            if clone_dest.exists():
-                shutil.rmtree(clone_dest)
-            shutil.copytree(fake_clone_root, clone_dest)
-            return mock.MagicMock(returncode=0)
-        if cmd[0] == "git" and "sparse-checkout" in cmd:
-            return mock.MagicMock(returncode=0)
-        if cmd[0] == "git" and "rev-parse" in cmd:
-            return mock.MagicMock(returncode=0, stdout="abcdef1234567890\n")
-        if cmd[0] == "git" and "ls-remote" in cmd:
-            return mock.MagicMock(returncode=0, stdout="")
-        return mock.MagicMock(returncode=0)
-
-    return _side_effect
-
-
-def test_init_fetches_reference_models_by_default(tmp_path):
-    """init should populate ontology-reference-models/ at the repo root (#290)."""
+def test_init_does_not_clone_reference_models(tmp_path):
+    """init must never git clone reference models (DD-158 — package mode)."""
     runner = CliRunner()
-    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run",
-        side_effect=_materializing_git_side_effect(fake_clone_root),
-    ):
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
             result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-
             assert result.exit_code == 0, result.output
 
-            dest = Path("ontology-reference-models")
-            assert (dest / "catalog-v001.xml").is_file()
-            assert (dest / "blueprints" / "archetypes").is_dir()
-            assert (dest / "VERSION").read_text(encoding="utf-8").strip() == "2026.08"
-            assert (dest / "LICENSE").read_text(encoding="utf-8").strip() == "Apache License 2.0"
-            assert "FIBO" in (dest / "NOTICE").read_text(encoding="utf-8")
-            provenance = json.loads((dest / "FETCH_PROVENANCE.json").read_text(encoding="utf-8"))
-            assert provenance["ref"] == "main"
-            assert provenance["commit"] == "abcdef1234567890"
-
-
-def test_init_reference_models_fetch_never_writes_git_state(tmp_path):
-    """Regression: init's refmodels fetch must never git add/commit/push (#290).
-
-    ``_run_reference_models_update``'s commit-then-push tail is only safe from
-    ``new-repo`` (a fresh, fully-controlled scaffold with nothing else staged).
-    Calling it from ``init`` would commit and push whatever the caller had
-    pending in a real, possibly dirty, hub — that's exactly why ``init`` uses
-    the extracted ``_fetch_reference_models`` helper instead, which never
-    touches git state.
-    """
-    runner = CliRunner()
-    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run",
-        side_effect=_materializing_git_side_effect(fake_clone_root),
-    ) as mock_run:
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-
-            assert result.exit_code == 0, result.output
-            assert Path("ontology-reference-models/catalog-v001.xml").is_file()
+            assert not Path("ontology-reference-models").exists()
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    assert not any(c[0] == "git" and "add" in c for c in call_args_list)
-    assert not any(c[0] == "git" and "commit" in c for c in call_args_list)
-    assert not any(c[0] == "git" and "push" in c for c in call_args_list)
+    clone_calls = [c for c in call_args_list if c[0] == "git" and "clone" in c]
+    assert len(clone_calls) == 0
 
 
-def test_init_skip_refmodels_flag_skips_fetch(tmp_path):
+def test_init_no_submodule_calls(tmp_path):
+    """init should never call git submodule (reference models are a pip package)."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0
+
+            # No submodule calls at all
+            call_args_list = [call.args[0] for call in mock_run.call_args_list]
+            submodule_calls = [c for c in call_args_list if "submodule" in c]
+            assert len(submodule_calls) == 0
+
+
+def test_init_skip_refmodels_flag_exits_cleanly(tmp_path):
     """--skip-refmodels must not attempt any clone, and must still exit 0."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
@@ -1578,198 +1471,42 @@ def test_init_skip_refmodels_flag_skips_fetch(tmp_path):
             )
             assert result.exit_code == 0, result.output
             assert not Path("ontology-reference-models").exists()
-            assert "update-refmodels" in result.output
 
     call_args_list = [call.args[0] for call in mock_run.call_args_list]
     assert not any(c[0] == "git" and "clone" in c for c in call_args_list)
 
 
-def test_init_clone_failure_warns_and_stays_offline_safe(tmp_path):
-    """A non-zero git clone must warn (naming update-refmodels) but exit 0."""
+def test_init_pyproject_has_refmodels_dependency(tmp_path):
+    """The scaffolded pyproject.toml must list kairos-ontology-referencemodels (DD-158)."""
     runner = CliRunner()
-
-    def side_effect(cmd, **kwargs):
-        if cmd[0] == "git" and cmd[1] == "--version":
-            return mock.MagicMock(returncode=0)
-        if cmd[0] == "git" and cmd[1] == "clone":
-            return mock.MagicMock(returncode=1, stderr="fatal: could not resolve host")
-        return mock.MagicMock(returncode=0)
-
-    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
             result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-
             assert result.exit_code == 0, result.output
-            assert "update-refmodels" in result.output
-            assert not Path("ontology-reference-models").exists()
+
+            pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+            assert "kairos-ontology-referencemodels" in pyproject
 
 
-def test_init_git_missing_stays_offline_safe(tmp_path):
-    """A missing git executable must not crash init; it must exit 0."""
-    runner = CliRunner()
+def test_init_no_inventory_pre_generation(tmp_path):
+    """init must not pre-generate reference-model inventories (DD-158).
 
-    def side_effect(cmd, **kwargs):
-        if cmd[0] == "git" and cmd[1] == "--version":
-            raise FileNotFoundError("git not found")
-        return mock.MagicMock(returncode=0)
-
-    with mock.patch("kairos_ontology.cli.main.subprocess.run", side_effect=side_effect):
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-
-            assert result.exit_code == 0, result.output
-            assert not Path("ontology-reference-models").exists()
-
-
-def test_init_copy_failure_leaves_no_partial_dest(tmp_path):
-    """A shutil.copytree OSError partway through must not leave a partial dest.
-
-    Regression for the Windows MAX_PATH failure mode: copying straight into
-    the destination could fail partway through and leave behind a directory
-    that still passes the "looks like a refmodels root" check.
-    """
-    runner = CliRunner()
-    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
-    real_copytree = shutil.copytree
-
-    def flaky_copytree(src, dst, *args, **kwargs):
-        if Path(src).name == "ontology-reference-models":
-            raise OSError("disk full (simulated)")
-        return real_copytree(src, dst, *args, **kwargs)
-
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run",
-        side_effect=_materializing_git_side_effect(fake_clone_root),
-    ):
-        with mock.patch("shutil.copytree", side_effect=flaky_copytree):
-            with runner.isolated_filesystem(temp_dir=tmp_path):
-                result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-
-                assert result.exit_code == 0, result.output
-                assert not Path("ontology-reference-models").exists()
-
-
-def test_init_force_does_not_clobber_existing_refmodels_checkout(tmp_path):
-    """A pre-existing valid checkout must survive init --force untouched.
-
-    new-repo's docstring and the kairos-setup-init skill both tell users to run
-    `init` inside a new-repo hub that already has reference models fetched at a
-    pinned version. Clobbering that pin — even under --force, which is about
-    scaffold *files*, not the reference-models checkout — would destroy it.
+    Inventories are generated on-demand by compile / check-inventory.
     """
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            dest = Path("ontology-reference-models")
-            (dest / "blueprints" / "archetypes").mkdir(parents=True)
-            (dest / "catalog-v001.xml").write_text("<catalog/>", encoding="utf-8")
-            sentinel = dest / "SENTINEL.txt"
-            sentinel.write_text("do not touch\n", encoding="utf-8")
-            (dest / "FETCH_PROVENANCE.json").write_text(
-                json.dumps(
-                    {
-                        "ref": "v1.0.0",
-                        "commit": "deadbeef",
-                        "fetched_at": "2026-01-01T00:00:00Z",
-                        "source_repo": None,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com", "--force"])
-
-            assert result.exit_code == 0, result.output
-            assert sentinel.is_file()
-            assert sentinel.read_text(encoding="utf-8") == "do not touch\n"
-            assert "already present" in result.output
-
-    call_args_list = [call.args[0] for call in mock_run.call_args_list]
-    assert not any(c[0] == "git" and "clone" in c for c in call_args_list)
-
-
-# ---------------------------------------------------------------------------
-# init: pre-generate reference-model inventories (issue #321)
-# ---------------------------------------------------------------------------
-
-
-_SAMPLE_REF_TTL_WITH_CLASSES = """\
-@prefix owl: <http://www.w3.org/2002/07/owl#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-
-<https://kairos.cnext.eu/ref/party> a owl:Ontology ;
-    rdfs:label "Party" .
-
-<https://kairos.cnext.eu/ref/party#Party> a owl:Class ;
-    rdfs:label "Party" .
-"""
-
-
-def test_init_generates_reference_model_inventories_by_default(tmp_path):
-    """Issue #321: a freshly-init'd hub should already have referencemodels-unpacked/
-    populated for reference-model TTLs with classes, so check-inventory (DD-047,
-    design-domain's Gate 0) passes immediately without a manual generate-inventory run.
-    """
-    runner = CliRunner()
-    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
-    ref_ttl = (
-        fake_clone_root / "ontology-reference-models" / "derived-ontologies" / "bsp" / "party.ttl"
-    )
-    ref_ttl.parent.mkdir(parents=True, exist_ok=True)
-    ref_ttl.write_text(_SAMPLE_REF_TTL_WITH_CLASSES, encoding="utf-8")
-
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run",
-        side_effect=_materializing_git_side_effect(fake_clone_root),
-    ):
-        with runner.isolated_filesystem(temp_dir=tmp_path):
             result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
             assert result.exit_code == 0, result.output
-            assert "Generated 1 reference-model inventory file" in result.output
 
-            inv_dir = Path("ontology-hub/referencemodels-unpacked")
-            inv_files = list(inv_dir.glob("*-inventory.yaml"))
-            assert [f.name for f in inv_files] == ["bsp-party-inventory.yaml"]
-
-            check_result = runner.invoke(cli, ["check-inventory"])
-            assert check_result.exit_code == 0, check_result.output
-            assert "up to date" in check_result.output
-
-
-def test_init_rerun_leaves_inventories_untouched(tmp_path):
-    """Issue #419 / DD-154: a second init over unchanged reference models must not
-    rewrite the inventories (only generated_at would differ) — it reports them as
-    already up to date and the committed file content is byte-identical."""
-    runner = CliRunner()
-    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
-    ref_ttl = (
-        fake_clone_root / "ontology-reference-models" / "derived-ontologies" / "bsp" / "party.ttl"
-    )
-    ref_ttl.parent.mkdir(parents=True, exist_ok=True)
-    ref_ttl.write_text(_SAMPLE_REF_TTL_WITH_CLASSES, encoding="utf-8")
-
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run",
-        side_effect=_materializing_git_side_effect(fake_clone_root),
-    ):
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-            assert first.exit_code == 0, first.output
-            assert "Generated 1 reference-model inventory file" in first.output
-
-            inv_file = Path("ontology-hub/referencemodels-unpacked/bsp-party-inventory.yaml")
-            first_bytes = inv_file.read_bytes()
-
-            second = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-            assert second.exit_code == 0, second.output
-            assert "already up to date" in second.output
-            assert "Generated" not in second.output
-            assert inv_file.read_bytes() == first_bytes
+            assert not Path("ontology-hub/referencemodels-unpacked").exists()
+            assert "Generated" not in result.output
 
 
 def test_init_skip_refmodels_skips_inventory_generation_too(tmp_path):
-    """--skip-refmodels must skip inventory pre-generation cleanly, no crash."""
+    """--skip-refmodels must skip inventory generation cleanly, no crash."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
@@ -1780,33 +1517,6 @@ def test_init_skip_refmodels_skips_inventory_generation_too(tmp_path):
             assert result.exit_code == 0, result.output
             assert not Path("ontology-hub/referencemodels-unpacked").exists()
             assert "Generated" not in result.output
-
-
-def test_init_next_reports_inventory_present_after_generation(tmp_path):
-    """Issue #321: the advisory `next` snapshot should agree inventory_status is PRESENT
-    once init has pre-generated it, matching the hard check-inventory gate.
-    """
-    from kairos_ontology.core.hub_inspection import gather_hub_input_snapshot
-
-    runner = CliRunner()
-    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
-    ref_ttl = (
-        fake_clone_root / "ontology-reference-models" / "derived-ontologies" / "bsp" / "party.ttl"
-    )
-    ref_ttl.parent.mkdir(parents=True, exist_ok=True)
-    ref_ttl.write_text(_SAMPLE_REF_TTL_WITH_CLASSES, encoding="utf-8")
-
-    with mock.patch(
-        "kairos_ontology.cli.main.subprocess.run",
-        side_effect=_materializing_git_side_effect(fake_clone_root),
-    ):
-        with runner.isolated_filesystem(temp_dir=tmp_path):
-            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
-            assert result.exit_code == 0, result.output
-
-            hub = Path("ontology-hub").resolve()
-            snapshot = gather_hub_input_snapshot(hub, run_compile=False)
-            assert snapshot.inventory_status is InputStatus.PRESENT
 
 
 def test_scaffold_glossary_template_parses():

@@ -10,6 +10,7 @@ Provides functions to:
 """
 
 import logging
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -118,12 +119,14 @@ class CatalogResolver:
 
     CATALOG_NS = "{urn:oasis:names:tc:entity:xmlns:xml:catalog}"
 
-    def __init__(self, catalog_path: Path):
+    def __init__(self, catalog_path: Path, extra_catalogs: list[Path] | None = None):
         """
         Initialize resolver with catalog file.
 
         Args:
             catalog_path: Path to catalog-v001.xml file
+            extra_catalogs: Optional list of additional catalog files to overlay
+                (e.g. the reference-models package catalog).
         """
         self.catalog_path = catalog_path
         self.mappings: Dict[str, Path] = {}
@@ -133,13 +136,34 @@ class CatalogResolver:
         self._rewrite_fallback_used: bool = False
         self._visited_catalogs: set[Path] = set()
         self.diagnostics: List[Dict[str, str]] = []
-        self._load_catalog()
-
-    def _load_catalog(self):
-        """Parse XML catalog and build URI → local path mappings."""
         self._load_catalog_file(self.catalog_path)
-        # Sort rewrite rules by descending prefix length (longest-prefix-wins)
+        for extra in extra_catalogs or []:
+            self._load_catalog_file(extra)
+        # Re-sort after loading extra catalogs' rewrite rules
         self._rewrite_rules.sort(key=lambda r: len(r[0]), reverse=True)
+
+    @classmethod
+    def with_reference_models(cls, catalog_path: Path) -> "CatalogResolver":
+        """Create a resolver that overlays the reference-models package catalog.
+
+        Resolution order: installed ``kairos-ontology-referencemodels`` package,
+        then ``KAIROS_REFMODELS_ROOT`` env var (air-gap escape hatch).
+        """
+        extra: list[Path] = []
+        try:
+            from kairos_ontology_referencemodels import refmodels_root
+
+            pkg_catalog = refmodels_root() / "catalog-v001.xml"
+            if pkg_catalog.is_file():
+                extra.append(pkg_catalog)
+        except ImportError:
+            pass
+        env_root = os.environ.get("KAIROS_REFMODELS_ROOT")
+        if env_root:
+            env_catalog = Path(env_root) / "catalog-v001.xml"
+            if env_catalog.is_file() and env_catalog not in extra:
+                extra.append(env_catalog)
+        return cls(catalog_path, extra_catalogs=extra)
 
     def _load_catalog_file(self, path: Path):
         """Parse a single catalog file, following <nextCatalog> references."""

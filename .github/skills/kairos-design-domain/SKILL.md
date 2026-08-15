@@ -82,17 +82,18 @@ If the hub installs more than one accelerator pack and pins none, this aborts wi
 This is the only freshness authority for selected reference inventories. Missing
 or stale in-scope inventories are blocking: **STOP**. Unrelated repository-wide
 failures are non-blocking when the scoped command exits zero. Report the
-installed/current local reference-model version from
-`ontology-reference-models/VERSION`, or `unknown` when absent. Never silently
+installed/current local reference-model version from the installed
+package (reported by `kairos-ontology check-inventory`), or `unknown` when absent. Never silently
 update reference models. Route an approved update through **kairos-toolkit-ops**
 and rerun the same check.
 
 If this gate is blocking, run `kairos-ontology generate-inventory` and commit the
 result — it materializes the missing/stale `referencemodels-unpacked/*.yaml`
 files this gate checks. A hub scaffolded by `kairos-ontology init` (with
-reference models fetched, the default) already has these pre-generated, so a
-freshly-scaffolded hub should not hit this block; a stale inventory after a
-reference-model update still requires rerunning `generate-inventory`.
+reference models installed as a package dependency, the default) generates
+inventories on-demand, so a freshly-scaffolded hub should not hit this block;
+a stale inventory after a reference-model update still requires rerunning
+`generate-inventory`.
 
 ### Gate 1: Source completeness
 

@@ -77,6 +77,9 @@ dev = [
     "ruff>=0.5.0",
     "pytest-ruff>=0.4.0",
     "pytest-asyncio>=0.23,<1.0",
+    # Reference models for cross-repo contract tests (DD-158). Resolved from the
+    # installed package via [tool.uv.sources] below.
+    "kairos-ontology-referencemodels",
 ]
 azure = [
     "azure-identity>=1.15.0,<2.0.0",
@@ -123,6 +126,13 @@ include = [
     "pyproject.toml",
     "src/kairos_ontology/**/*",
 ]
+
+# Temporary: reference models are installed from the Phase 1 branch until the
+# wheel is published as a GitHub Release asset. Once the first wheel-publishing
+# release is cut, replace this git source with a direct-URL wheel pin and remove
+# this block. See DD-158.
+[tool.uv.sources]
+kairos-ontology-referencemodels = { git = "https://github.com/Cnext-eu/kairos-ontology-referencemodels", branch = "feature/data-package-wheel" }
 
 [tool.ruff]
 line-length = 100

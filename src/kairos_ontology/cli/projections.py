@@ -42,8 +42,8 @@ from .shared import (
     type=click.Path(exists=True),
     default=None,
     help="Path to catalog file for resolving imports "
-    "(default: <hub>/catalog-v001.xml or "
-    "ontology-reference-models/catalog-v001.xml)",
+    "(default: <hub>/catalog-v001.xml, "
+    "overlaid with the installed reference-models package catalog)",
 )
 @click.option(
     "--ref-models",
