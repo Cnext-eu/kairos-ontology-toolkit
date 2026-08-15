@@ -45,6 +45,7 @@ import yaml
 
 from .compiler.kernel import _binding_domain, _binding_target_class, _binding_tier
 from .conformance_artifact import ARTIFACT_RELPATH, ConformanceArtifactError, read_artifact
+from .evidence_loaders import scan_concept_mapping_worksheets
 from .fit_report import FitReportError, resolve_token_uri, run_fit_report
 from .ontology_loader import SemanticProfile, load_ontology
 from .reference_modules import build_reference_module_context, resolve_hub_accelerator_detailed
@@ -568,52 +569,40 @@ def run_design_landscape(
             )
 
     # --- 3. BI/report weight (import-tmdl Concept Mapping) -- ADVISORY ONLY ---------------
+    # The worksheet discovery/unfilled count lives in the shared
+    # evidence_loaders.scan_concept_mapping_worksheets helper so this report and
+    # `kairos-ontology next` can never disagree about the count (issue #421).
     bi_weight_by_class: dict[str, list[BiWeightSignal]] = {}
     bi_dir = hub_root / _BI_DISCOVERY_SUBDIR
-    legacy_bi_dir = hub_root / _SOURCES_SUBDIR
-    if bi_dir.is_dir() or legacy_bi_dir.is_dir():
-        mapping_files: list[Path] = []
-        if bi_dir.is_dir():
-            mapping_files.extend(bi_dir.rglob("*-concept-mapping.yaml"))
-        if legacy_bi_dir.is_dir():
-            mapping_files.extend(legacy_bi_dir.rglob("*-concept-mapping.yaml"))
-        mapping_files = sorted(set(mapping_files))
-        unfilled = 0
-        for mapping_path in mapping_files:
-            try:
-                document = yaml.safe_load(mapping_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, yaml.YAMLError) as exc:
-                gaps.append(f"could not read {mapping_path}: {exc}")
+    scan = scan_concept_mapping_worksheets(hub_root)
+    if scan.directories_found:
+        for mapping_path, message in scan.errors:
+            gaps.append(f"could not read {mapping_path}: {message}")
+        for mapping_path, table_dict in scan.tables:
+            match = str(table_dict.get("reference_model_match") or "").strip()
+            tmdl_name = str(table_dict.get("tmdl_name") or "")
+            if not match:
+                # Not a bug: import-tmdl leaves this blank for a human to fill in;
+                # counted once in scan.tables_unfilled.
                 continue
-            if not isinstance(document, dict):
-                continue
-            for table_dict in document.get("tables", ()) or ():
-                if not isinstance(table_dict, dict):
-                    continue
-                match = str(table_dict.get("reference_model_match") or "").strip()
-                tmdl_name = str(table_dict.get("tmdl_name") or "")
-                if not match:
-                    # Not a bug: import-tmdl leaves this blank for a human to fill in.
-                    unfilled += 1
-                    continue
-                resolved_uri = _resolve_universe_token(match, class_record, name_to_uris)
-                if resolved_uri is None:
-                    gaps.append(
-                        f"BI concept-mapping {mapping_path.name}: reference_model_match "
-                        f"{match!r} for table {tmdl_name!r} does not resolve to an activated "
-                        "accelerator class; skipped."
-                    )
-                    continue
-                bi_weight_by_class.setdefault(resolved_uri, []).append(
-                    BiWeightSignal(
-                        concept_mapping_path=str(mapping_path),
-                        tmdl_table=tmdl_name,
-                        reference_model_match=match,
-                    )
+            resolved_uri = _resolve_universe_token(match, class_record, name_to_uris)
+            if resolved_uri is None:
+                gaps.append(
+                    f"BI concept-mapping {mapping_path.name}: reference_model_match "
+                    f"{match!r} for table {tmdl_name!r} does not resolve to an activated "
+                    "accelerator class; skipped."
                 )
-        if unfilled:
+                continue
+            bi_weight_by_class.setdefault(resolved_uri, []).append(
+                BiWeightSignal(
+                    concept_mapping_path=str(mapping_path),
+                    tmdl_table=tmdl_name,
+                    reference_model_match=match,
+                )
+            )
+        if scan.tables_unfilled:
             gaps.append(
-                f"{unfilled} TMDL concept-mapping table(s) have an empty "
+                f"{scan.tables_unfilled} TMDL concept-mapping table(s) have an empty "
                 "reference_model_match (not yet filled in by a modeler); no BI weight "
                 "evidence is available for them. design-landscape never infers this "
                 "itself -- no LLM classification is performed in this pass."

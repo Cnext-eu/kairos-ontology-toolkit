@@ -16,3 +16,7 @@ kairos-ontology decision new
 
 Each record should cite PII-safe evidence, explain why the decision is material, list
 rejected alternatives, and describe the consequences or follow-up validation needed.
+
+Source paths: local `sources[].resource` paths resolve from the hub root (like every
+other hub path citation); on a nested hub, `.import/...` evidence also resolves from
+the repository root.

@@ -855,6 +855,8 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
 
     click.echo("📦 Generating materialized inventories")
     written: list[Path] = []
+    writes = 0
+    unchanged = 0
     failed: list[CommandOutcomeDecline] = []
     skipped: list[CommandOutcomeDecline] = []
     targets: list[CommandOutcomeTarget] = []
@@ -907,7 +909,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
             produced_by[fname] = ttl_file
             yaml_path = out_path / fname
             try:
-                write_inventory(inv, yaml_path)
+                wrote = write_inventory(inv, yaml_path)
             except OSError as e:
                 detail = f"{type(e).__name__}: {e}"
                 # Advisory, not `❌` — same ownership rationale as the parse-failure
@@ -919,11 +921,18 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
                 ref_failed += 1
                 del produced_by[fname]
                 continue
+            # An unchanged file still counts as produced (DD-153/DD-154) — the
+            # artifact exists and is current; only the write was elided.
             written.append(yaml_path)
             ref_produced += 1
             n_classes = len(inv["classes"])
-            n_specs = sum(len(c.get("specializations", [])) for c in inv["classes"])
-            click.echo(f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations")
+            if wrote:
+                writes += 1
+                n_specs = sum(len(c.get("specializations", [])) for c in inv["classes"])
+                click.echo(f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations")
+            else:
+                unchanged += 1
+                click.echo(f"   ⏭ {stem}: up to date ({n_classes} classes)")
 
         targets.append(
             CommandOutcomeTarget(
@@ -986,7 +995,7 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
             stem = ttl_file.stem
             yaml_path = out_path / inventory_filename(ttl_file)
             try:
-                write_inventory(inv, yaml_path)
+                wrote = write_inventory(inv, yaml_path)
             except OSError as e:
                 detail = f"{type(e).__name__}: {e}"
                 # Advisory, not `❌` — same ownership rationale as the reference-model
@@ -997,9 +1006,15 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
                 failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
                 ont_failed += 1
                 continue
+            # Unchanged still counts as produced (DD-153/DD-154).
             written.append(yaml_path)
             ont_produced += 1
-            click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
+            if wrote:
+                writes += 1
+                click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
+            else:
+                unchanged += 1
+                click.echo(f"   ⏭ {stem}: up to date ({len(inv['classes'])} classes)")
 
         targets.append(
             CommandOutcomeTarget(
@@ -1048,7 +1063,12 @@ def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
         skipped=tuple(skipped),
         targets=tuple(targets),
     )
-    summary = f"{len(written)} generated, {len(failed)} failed, {len(skipped)} skipped"
+    # "generated" counts actual writes only (DD-154) — an idempotent rerun says
+    # "0 generated, N unchanged", not "N generated".
+    summary = (
+        f"{writes} generated, {unchanged} unchanged, "
+        f"{len(failed)} failed, {len(skipped)} skipped"
+    )
     if outcome.is_blocking:
         # DD-153 invariant: a ❌ line is printed iff the exit code is non-zero.
         click.echo(f"\n❌ {summary} in {out_path}", err=True)
@@ -1407,6 +1427,80 @@ def _render_domain_coverage_text(report) -> None:
             click.echo(line)
 
 
+def _render_domain_explain_text(explain: dict) -> None:
+    """Render the ``--explain <domain>`` ownership block (issue #418, DD-157).
+
+    Mirrors analyse-sources' OWNS:/DOES NOT OWN: prompt block — the one place these
+    boundaries were previously rendered, but only inside an LLM prompt no author saw.
+    """
+    domain = explain["domain"]
+    if not explain["found"]:
+        if explain["valid_domains"]:
+            click.echo(
+                f"ℹ Unknown domain '{domain}'. Valid blueprint domains: "
+                + ", ".join(explain["valid_domains"])
+            )
+        else:
+            click.echo(
+                "ℹ Domain ownership metadata is unavailable — no accelerator blueprint "
+                "(data-domains.yaml) is resolvable on this hub. Fetch reference models "
+                "or install an accelerator pack first; nothing to explain."
+            )
+        return
+    click.echo(f"🔎 Domain ownership — {domain} ({explain.get('name') or domain})")
+    if explain.get("group"):
+        click.echo(f"   Group: {explain['group']}")
+    click.echo(f"   OWNS: {explain.get('owns') or '(not stated in the blueprint)'}")
+    click.echo(
+        f"   DOES NOT OWN: {explain.get('does_not_own') or '(not stated in the blueprint)'}"
+    )
+    imports = explain.get("imports") or []
+    if imports:
+        click.echo("   Blueprint imports (managed modules):")
+        for imp in imports:
+            label = imp.get("module") or imp.get("profile") or imp.get("module_id") or ""
+            uri = imp.get("uri") or ""
+            if label and uri:
+                click.echo(f"     - {label} — {uri}")
+            else:
+                click.echo(f"     - {label or uri}")
+    else:
+        click.echo("   Blueprint imports (managed modules): (none)")
+
+
+def _render_class_ownership_text(owns: dict) -> None:
+    """Render the ``--owns <ClassName>`` reverse-lookup block (issue #418, DD-157)."""
+    class_name = owns["class_name"]
+    if not owns["inventories_present"]:
+        click.echo(
+            "ℹ No materialized inventories found under referencemodels-unpacked/ — run "
+            "`kairos-ontology generate-inventory` first, then retry the ownership lookup."
+        )
+        return
+    matches = owns["matches"]
+    if not matches:
+        click.echo(
+            f"ℹ Class '{class_name}' was not found in any materialized inventory "
+            "(referencemodels-unpacked/*-inventory.yaml)."
+        )
+        return
+    click.echo(f"🔎 Ownership lookup — class '{class_name}' ({len(matches)} match(es)):")
+    for match in matches:
+        click.echo(f"   • {match['class_name']} — {match['class_uri']}")
+        click.echo(f"     asserted by: {match['source_identity'] or '(unknown)'}")
+        if match["module_id"] is None:
+            click.echo("     managed module: (not asserted by a managed reference module)")
+        else:
+            click.echo(f"     managed module: {match['module_id']}")
+            if match["domains"]:
+                click.echo(f"     owning domain(s): {', '.join(match['domains'])}")
+            else:
+                click.echo(
+                    "     owning domain(s): (module is assigned to no domain in the "
+                    "blueprint)"
+                )
+
+
 @click.command(name="domain-coverage")
 @click.option(
     "--ontology-dir",
@@ -1432,8 +1526,27 @@ def _render_domain_coverage_text(report) -> None:
     help="Accelerator pack whose data-domains.yaml supplies the blueprint domain "
     "list (default: [tool.kairos].accelerator, else inferred).",
 )
+@click.option(
+    "--explain",
+    "explain_domain",
+    default=None,
+    metavar="<domain>",
+    help="Print one blueprint domain's ownership boundaries (owns / does_not_own) and "
+    "its blueprint module imports (issue #418).",
+)
+@click.option(
+    "--owns",
+    "owns_class",
+    default=None,
+    metavar="<ClassName>",
+    help="Reverse-lookup which blueprint domain(s) own a class name, via the "
+    "materialized referencemodels-unpacked/ inventories (issue #418). "
+    "Case-insensitive; ownership can be plural.",
+)
 @click.option("--json-output", "as_json", is_flag=True, default=False)
-def domain_coverage_cmd(ontology_dir, ref_models_dir, bindings_dir, accelerator, as_json):
+def domain_coverage_cmd(
+    ontology_dir, ref_models_dir, bindings_dir, accelerator, explain_domain, owns_class, as_json
+):
     """Advisory domain-coverage table: blueprint x modeled x bound x _master.ttl import.
 
     Reports, per data domain, whether it is listed in the resolved accelerator's
@@ -1445,16 +1558,28 @@ def domain_coverage_cmd(ontology_dir, ref_models_dir, bindings_dir, accelerator,
     covers the UNION of blueprint-listed domains and authored-ontology stems, so a
     custom domain outside any blueprint is flagged rather than silently dropped.
 
-    Advisory only: always exits 0, even when gaps are found. There is no --strict
-    mode (deliberately deferred).
+    With --explain <domain> and/or --owns <ClassName> (issue #418, DD-157) the text
+    output shows only the requested ownership section(s); --json-output always
+    includes the full coverage table plus "explain"/"owns" payloads when requested.
+    On a hub without reference models these print an informational notice.
+
+    Advisory only: always exits 0, even when gaps are found, the domain is unknown,
+    or ownership metadata is unavailable. There is no --strict mode (deliberately
+    deferred).
 
     \b
     Examples:
       kairos-ontology domain-coverage
       kairos-ontology domain-coverage --json-output
       kairos-ontology domain-coverage --accelerator logistics
+      kairos-ontology domain-coverage --explain consignment
+      kairos-ontology domain-coverage --owns TransportOrder
     """
-    from ..core.domain_coverage import build_domain_coverage_report
+    from ..core.domain_coverage import (
+        build_domain_coverage_report,
+        load_domain_ownership,
+        lookup_class_ownership,
+    )
     from ..core.hub_utils import find_hub_root
     from ..core.reference_modules import resolve_hub_accelerator_detailed
 
@@ -1508,8 +1633,57 @@ def domain_coverage_cmd(ontology_dir, ref_models_dir, bindings_dir, accelerator,
         accelerator=accelerator_resolution.accelerator,
     )
 
+    explain_payload = None
+    if explain_domain:
+        ownership = load_domain_ownership(
+            ref_models_dir=ref_path, accelerator=accelerator_resolution.accelerator
+        )
+        entry = ownership.get(explain_domain)
+        explain_payload = {
+            "domain": explain_domain,
+            "found": entry is not None,
+            "valid_domains": sorted(ownership),
+        }
+        if entry is not None:
+            explain_payload.update(
+                {
+                    "name": entry.get("name", explain_domain),
+                    "group": entry.get("group", ""),
+                    "owns": entry.get("owns", ""),
+                    "does_not_own": entry.get("does_not_own", ""),
+                    "imports": entry.get("imports", []),
+                }
+            )
+
+    owns_payload = None
+    if owns_class:
+        if hub_root:
+            inventory_dir = hub_root / "referencemodels-unpacked"
+        else:
+            inventory_dir = ont_path.parent.parent / "referencemodels-unpacked"
+        owns_payload = lookup_class_ownership(
+            class_name=owns_class,
+            inventory_dir=inventory_dir,
+            ref_models_dir=ref_path,
+            accelerator=accelerator_resolution.accelerator,
+        ).to_dict()
+
     if as_json:
-        click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        payload = report.to_dict()
+        if explain_payload is not None:
+            payload["explain"] = explain_payload
+        if owns_payload is not None:
+            payload["owns"] = owns_payload
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    if explain_payload is not None:
+        _render_domain_explain_text(explain_payload)
+    if owns_payload is not None:
+        _render_class_ownership_text(owns_payload)
+    if explain_payload is not None or owns_payload is not None:
+        # Focused ownership query: the full coverage table stays available without
+        # the flags (and always in --json-output). Advisory only — exit 0.
         return
     _render_domain_coverage_text(report)
 
@@ -1692,6 +1866,11 @@ def _render_next_text(proposal, snapshot) -> None:
     click.echo(f"     shapes:         {snapshot.shapes.value}")
     click.echo(f"     emitted dbt:    {snapshot.emitted_dbt_project.value}")
     click.echo(f"     inventory:      {snapshot.inventory_status.value}")
+    if snapshot.bi_concept_mappings.tables_total:
+        click.echo(
+            f"     bi worksheets:  {snapshot.bi_concept_mappings.tables_unfilled}/"
+            f"{snapshot.bi_concept_mappings.tables_total} concept-mapping table(s) unfilled"
+        )
     if not proposal.actions:
         return
     click.echo("")
@@ -1769,6 +1948,10 @@ def next_action_cmd(domains, output_format, no_compile):
                 "shapes": snapshot.shapes.value,
                 "emitted_dbt_project": snapshot.emitted_dbt_project.value,
                 "inventory_status": snapshot.inventory_status.value,
+                "bi_concept_mappings": {
+                    "tables_total": snapshot.bi_concept_mappings.tables_total,
+                    "tables_unfilled": snapshot.bi_concept_mappings.tables_unfilled,
+                },
             },
             "actions": [_next_action_dict(action) for action in proposal.actions],
         }

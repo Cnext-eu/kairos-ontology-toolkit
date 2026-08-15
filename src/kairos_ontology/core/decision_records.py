@@ -35,7 +35,7 @@ from typing import Any
 
 import yaml
 
-from .hub_utils import body_is_unedited_template, find_hub_root
+from .hub_utils import body_is_unedited_template, find_hub_root, resolve_repo_root
 
 # --- OKF bundle conventions -------------------------------------------------
 
@@ -82,6 +82,14 @@ _ID_RE = re.compile(r"^HUB-DD-[A-Za-z0-9][A-Za-z0-9-]*$")
 _ACTOR_RE = re.compile(r"^(?:[\w.-]+/[\w.\-:+]+|human:[\w.-]+|process:[\w.-]+)$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _LOCAL_PATH_PREFIXES = ("./", "../", "/")
+#: Extensions (case-insensitive) that mark a bare citation as a followable local
+#: path: hub text/config formats plus the binary evidence formats staged under
+#: ``.import/`` (#420).
+_LOCAL_PATH_SUFFIXES = (".ttl", ".yaml", ".yml", ".md", ".pdf", ".docx", ".xlsx", ".pptx")
+#: First path segments that (a) mark a citation as local even without a ``./``
+#: prefix and (b) are the *only* segments allowed to fall back to the repo root
+#: on a nested hub — both live at the repo root, as siblings of the hub (#420).
+_REPO_ROOT_FIRST_SEGMENTS = frozenset({".import", "ontology-reference-models"})
 _URI_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 
 
@@ -270,14 +278,53 @@ def _rfc3339_ok(value: Any) -> bool:
 
 
 def _is_local_path(resource: Any) -> bool:
-    """True when a source resource is a followable local path (not URL/scope)."""
+    """True when a source resource is a followable local path (not URL/scope).
+
+    The URI-scheme check runs first and always wins (``https://...`` is never
+    local; note this also skips Windows drive paths like ``C:\\...``). A
+    citation is local when it has an explicit relative/absolute prefix, starts
+    with a repo-root convention segment (``.import/`` evidence — either
+    separator), or carries a known citation extension, case-insensitively
+    (client evidence arrives as ``.PDF``/``.XLSX`` too) (#420).
+    """
     if not isinstance(resource, str) or not resource:
         return False
     if _URI_SCHEME_RE.match(resource):
         return False  # a URL or other scheme
-    return resource.startswith(_LOCAL_PATH_PREFIXES) or resource.endswith(
-        (".ttl", ".yaml", ".yml", ".md")
-    )
+    if resource.startswith(_LOCAL_PATH_PREFIXES):
+        return True
+    first_segment = resource.replace("\\", "/").split("/", 1)[0]
+    if first_segment in _REPO_ROOT_FIRST_SEGMENTS:
+        return True
+    return resource.lower().endswith(_LOCAL_PATH_SUFFIXES)
+
+
+def _source_citation_resolves(resource: str, hub_root: Path) -> bool:
+    """True when a local source citation resolves to an existing file.
+
+    The base is the hub root, matching every other path-citation convention in
+    a hub (issue #349). Backslash separators are normalized first —
+    ``.import\\businessdiscovery\\x.pdf`` citations exist in the wild, and
+    ``hub_root / "a\\b"`` is a single opaque filename on POSIX.
+
+    On a *nested* hub (a hub inside a toolkit-managed repo root, see
+    :func:`resolve_repo_root`) the repo-root siblings ``.import/`` and
+    ``ontology-reference-models/`` can never be reached from the hub root, so
+    citations whose first segment is one of those two conventions — and only
+    those — fall back to the repo root (#420). Any other path never probes the
+    repo root: a rotted hub citation must not be silently satisfied by the
+    repo's own same-named file (e.g. its ``README.md``).
+    """
+    normalized = resource.replace("\\", "/")
+    if (hub_root / normalized).resolve().exists():
+        return True
+    first_segment = normalized.split("/", 1)[0]
+    if first_segment not in _REPO_ROOT_FIRST_SEGMENTS:
+        return False
+    repo_root = resolve_repo_root(hub_root)
+    if repo_root == hub_root.resolve():
+        return False  # standalone/bare hub: the hub root is the only base
+    return (repo_root / normalized).resolve().exists()
 
 
 def _has_rejected_alternative(body: str) -> bool:
@@ -500,12 +547,10 @@ def _validate_record(
                 continue
             resource = entry["resource"]
             if _is_local_path(resource):
-                # Resolved against the hub root, matching every other path
-                # citation convention in a hub — not against decisions_path
-                # (record.path.parent), which would demand an unmotivated
-                # leading '../' for hub-root-relative citations (issue #349).
-                target = (hub_root / resource).resolve()
-                if not target.exists():
+                # Resolved against the hub root (issue #349); on nested hubs,
+                # `.import/` and `ontology-reference-models/` citations also
+                # try the repo root (#420) — see _source_citation_resolves.
+                if not _source_citation_resolves(resource, hub_root):
                     _warn(
                         diags,
                         "unresolved_source",

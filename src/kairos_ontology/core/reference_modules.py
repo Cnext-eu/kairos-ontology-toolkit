@@ -1101,7 +1101,19 @@ def validate_external_term_imports(
     *,
     context: ReferenceModuleContext | None = None,
 ) -> tuple[ModuleDiagnostic, ...]:
-    """Report required imports absent from the root ontology's direct imports."""
+    """Report required imports absent from the root ontology's direct imports.
+
+    Also reports the inverse gap (issue #418, DD-157): an authored direct
+    ``owl:imports`` of a *managed module* that the plan does not require —
+    ``surplus = authored direct imports ∩ managed-module IRIs − plan requirement
+    IRIs``. That is the exact residue Managed Import Completeness cannot see: an
+    author working in the wrong domain typically adds the other domain's module
+    import, which satisfies every completeness check while crossing an ownership
+    boundary. Warning severity only — cross-module term use is a legitimate,
+    requirement-backed reason to import a non-activated module, so this must never
+    block. Managedness is matched against ``context.config.profiles`` (not
+    ``context.modules``) because a scoped context may not have the module resolved.
+    """
     subjects = [
         subject
         for subject in ontology_graph.subjects(RDF.type, OWL.Ontology)
@@ -1136,6 +1148,56 @@ def validate_external_term_imports(
                     term_uri=term,
                     expected_ontology_iri=requirement.expected_ontology_iri,
                     managed_source=requirement.managed_source,
+                )
+            )
+
+    if context is not None:
+        alias_to_profile: dict[str, ReferenceModuleProfile] = {}
+        for profile in context.config.profiles:
+            for alias in (profile.ontology_iri, profile.catalog_uri):
+                if alias:
+                    # rstrip("#/") also covers _legacy_document_iri's hash-namespace form.
+                    alias_to_profile.setdefault(alias.rstrip("#/"), profile)
+        requirement_iris = {req.import_iri.rstrip("#/") for req in plan.requirements}
+        # A module required in any form (domain activation, authored term use,
+        # accepted transitive) is never surplus — match on the requirement's module
+        # ids too, so an alias-form authored import of a required module cannot
+        # false-positive.
+        required_module_ids = {
+            module_id.strip()
+            for req in plan.requirements
+            for module_id in req.managed_source.split(",")
+            if module_id.strip()
+        }
+        domains_by_profile: dict[str, set[str]] = {}
+        for activation in context.config.domains:
+            for module_id in activation.module_ids:
+                domains_by_profile.setdefault(module_id, set()).add(activation.domain)
+        for import_iri in sorted(direct):
+            normalized = import_iri.rstrip("#/")
+            surplus_profile = alias_to_profile.get(normalized)
+            if surplus_profile is None:
+                continue  # not a managed module — out of this diagnostic's scope
+            if normalized in requirement_iris or surplus_profile.id in required_module_ids:
+                continue  # required — activation-, term-use-, or transitively-backed
+            assigned = sorted(domains_by_profile.get(surplus_profile.id, ()))
+            assigned_text = (
+                "the blueprint assigns it to domain(s): " + ", ".join(assigned)
+                if assigned
+                else "the blueprint assigns it to no domain"
+            )
+            diagnostics.append(
+                ModuleDiagnostic(
+                    "warning",
+                    "surplus_managed_import",
+                    f"Authored owl:imports <{import_iri}> targets managed module "
+                    f"{surplus_profile.id!r}, which is not required for domain "
+                    f"{plan.domain!r} ({assigned_text}). If this concept belongs to "
+                    "another domain, model it there instead; if this domain genuinely "
+                    "needs the module, assign it in data-domains.yaml (issue #418, "
+                    "DD-157).",
+                    expected_ontology_iri=surplus_profile.ontology_iri,
+                    managed_source=surplus_profile.id,
                 )
             )
     return tuple(sorted(diagnostics, key=_diagnostic_key))

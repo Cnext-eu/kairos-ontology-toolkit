@@ -1193,7 +1193,21 @@ def run_validation(
     # Semantic import preflight is separate from syntax parsing. It catches
     # externally used governed terms whose required owl:imports edge is absent;
     # the canonical loader cannot discover an import edge that was never authored.
-    if do_shacl or do_consistency:
+    #
+    # Deliberately mode-independent (issue #426, DD-155), like the _master.ttl
+    # check above: this is static rdflib parsing, not SHACL/consistency work, and
+    # gating it on --shacl/--consistency let a domain missing its managed imports
+    # sail through Gate 5's inner-loop `validate --syntax` with four green gates.
+    # The only remaining gate is resolvability: when reference models cannot be
+    # resolved (no ref-models checkout, or no accelerator module config — every
+    # case where `build_reference_module_context` returns None), there is nothing
+    # to check, so the parse pre-pass, the section header, and the per-file loop
+    # are all skipped — a run on a hub without reference models keeps
+    # byte-identical output. Knowingly accepted: on a misconfigured
+    # refmodels-present hub, catalog/module infrastructure errors (e.g.
+    # module_unresolved) now fail `--syntax` runs too.
+    module_context: ReferenceModuleContext | None = None
+    if ref_models_dir is not None and Path(ref_models_dir).is_dir():
         imported_ontology_iris: set[str] = set()
         for ontology_file in ontology_files:
             try:
@@ -1210,14 +1224,10 @@ def run_validation(
             requested_domains=(path.stem for path in ontology_files),
             imported_ontology_iris=imported_ontology_iris,
         )
+    if module_context is not None:
         print("🔗 Managed Import Completeness")
         print("-" * 50)
         for ontology_file in ontology_files:
-            activation = (
-                module_context.config.activation(ontology_file.stem) if module_context else None
-            )
-            if activation is None and module_context is None:
-                continue
             try:
                 diagnostics = validate_managed_imports(
                     ontology_file,

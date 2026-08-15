@@ -133,7 +133,9 @@ class TestYamlOutput:
 
         with open(result_dir / "_manifest.yaml") as f:
             manifest = yaml.safe_load(f)
-        assert manifest["version"] == "1.1"
+        # v1.2 (#422): row_count is true cardinality; warehouse extraction
+        # profiles full-table, so no rows_sampled field is written.
+        assert manifest["version"] == "1.2"
         assert manifest["system"] == "testapp"
         assert manifest["tables"] == ["tblClient", "tblInvoice"]
 

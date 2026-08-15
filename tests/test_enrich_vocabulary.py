@@ -86,6 +86,54 @@ class TestEnumDetection:
         assert len(result) == 1
 
 
+class TestEnumEvidenceScope:
+    """#422 / DD-156: enum suggestions require EXHAUSTIVE evidence — a known
+    table cardinality whose profiling window (if any) covered every row."""
+
+    COLUMNS = [
+        {
+            "name": "status",
+            "data_type": "varchar(20)",
+            "distinct_count": 5,
+            "samples": ["active", "inactive", "pending", "closed", "draft"],
+        },
+    ]
+
+    def test_windowed_profile_not_eligible(self):
+        result = detect_enums("orders", self.COLUMNS, row_count=10000, rows_sampled=1000)
+        assert result == []
+
+    def test_unknown_cardinality_not_eligible(self):
+        result = detect_enums("orders", self.COLUMNS, row_count=None, rows_sampled=1000)
+        assert result == []
+
+    def test_full_read_window_is_eligible(self):
+        result = detect_enums("orders", self.COLUMNS, row_count=10000, rows_sampled=10000)
+        assert len(result) == 1
+        assert result[0].column == "status"
+
+    def test_no_window_recorded_is_eligible(self):
+        """Warehouse profiling records no window — full-table counts (legacy shape)."""
+        result = detect_enums("orders", self.COLUMNS, row_count=10000)
+        assert len(result) == 1
+
+    def test_enrich_passes_rows_sampled_through(self):
+        data = {
+            "version": "1.2",
+            "system": "erp",
+            "tables": [
+                {
+                    "name": "orders",
+                    "row_count": 10000,
+                    "rows_sampled": 1000,
+                    "columns": [dict(self.COLUMNS[0])],
+                },
+            ],
+        }
+        enrich_source_schema(data)
+        assert "suggested_enum" not in data["tables"][0]["columns"][0]
+
+
 class TestFormatDetection:
     """Tests for format pattern detection."""
 

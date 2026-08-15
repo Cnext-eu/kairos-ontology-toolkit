@@ -1737,6 +1737,37 @@ def test_init_generates_reference_model_inventories_by_default(tmp_path):
             assert "up to date" in check_result.output
 
 
+def test_init_rerun_leaves_inventories_untouched(tmp_path):
+    """Issue #419 / DD-154: a second init over unchanged reference models must not
+    rewrite the inventories (only generated_at would differ) — it reports them as
+    already up to date and the committed file content is byte-identical."""
+    runner = CliRunner()
+    fake_clone_root = _make_fake_refmodels_clone(tmp_path)
+    ref_ttl = (
+        fake_clone_root / "ontology-reference-models" / "derived-ontologies" / "bsp" / "party.ttl"
+    )
+    ref_ttl.parent.mkdir(parents=True, exist_ok=True)
+    ref_ttl.write_text(_SAMPLE_REF_TTL_WITH_CLASSES, encoding="utf-8")
+
+    with mock.patch(
+        "kairos_ontology.cli.main.subprocess.run",
+        side_effect=_materializing_git_side_effect(fake_clone_root),
+    ):
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert first.exit_code == 0, first.output
+            assert "Generated 1 reference-model inventory file" in first.output
+
+            inv_file = Path("ontology-hub/referencemodels-unpacked/bsp-party-inventory.yaml")
+            first_bytes = inv_file.read_bytes()
+
+            second = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert second.exit_code == 0, second.output
+            assert "already up to date" in second.output
+            assert "Generated" not in second.output
+            assert inv_file.read_bytes() == first_bytes
+
+
 def test_init_skip_refmodels_skips_inventory_generation_too(tmp_path):
     """--skip-refmodels must skip inventory pre-generation cleanly, no crash."""
     runner = CliRunner()

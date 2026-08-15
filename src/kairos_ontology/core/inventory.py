@@ -455,23 +455,60 @@ def _inventory_view_from_index(
     return {"domain_name": domain_name, "classes": classes}
 
 
-def write_inventory(inventory: dict[str, Any], output_path: Path) -> Path:
-    """Write an inventory dict to a YAML file.
+def _strip_generated_at_lines(text: str) -> str:
+    """Return *text* with newlines normalised and the ``generated_at:`` line removed.
 
-    Creates parent directories if needed.  Returns the written path.
+    Only the column-0 ``generated_at:`` line is stripped — nested keys are always
+    indented in the dumped envelope, so anchoring at line start cannot swallow a
+    class or property field that happens to share the name.  Newlines are
+    normalised so a CRLF checkout (Windows ``core.autocrlf``) compares equal to
+    the LF text yaml.dump produces (DD-154).
     """
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(
+        line for line in normalized.split("\n") if not line.startswith("generated_at:")
+    )
+
+
+def write_inventory(inventory: dict[str, Any], output_path: Path) -> bool:
+    """Write an inventory dict to a YAML file, skipping content-identical rewrites.
+
+    Content-addressed (DD-154): the new YAML text is compared against the existing
+    file's text after newline normalisation and after ignoring the top-level
+    ``generated_at:`` line.  If nothing else changed, the file is left untouched
+    (no write, no mtime change) so idempotent reruns produce zero diff churn.
+
+    Any failure to read or compare the existing file falls through to a plain
+    write — a compare error must never cause a skip.
+
+    Creates parent directories if needed.
+
+    Returns:
+        ``True`` if the file was written, ``False`` if it was already up to date.
+    """
+    new_text = yaml.dump(
+        inventory,
+        default_flow_style=False,
+        sort_keys=False,
+        allow_unicode=True,
+        width=120,
+    )
+
+    if output_path.exists():
+        try:
+            existing_text = output_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            pass  # unreadable/undecodable existing file → rewrite it below
+        else:
+            if _strip_generated_at_lines(existing_text) == _strip_generated_at_lines(new_text):
+                logger.info("Inventory unchanged, skipping write: %s", output_path)
+                return False
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
-        yaml.dump(
-            inventory,
-            f,
-            default_flow_style=False,
-            sort_keys=False,
-            allow_unicode=True,
-            width=120,
-        )
+        f.write(new_text)
     logger.info("Wrote inventory to %s", output_path)
-    return output_path
+    return True
 
 
 def load_inventory(path: Path, *, allow_legacy: bool = False) -> dict[str, Any]:

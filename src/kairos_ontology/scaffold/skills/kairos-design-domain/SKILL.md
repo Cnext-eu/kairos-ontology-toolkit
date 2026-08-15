@@ -47,7 +47,10 @@ Read only the inputs relevant to the requested domain:
    representative samples.
 3. Selected ontology-reference modules and their catalog-resolved import closure.
 4. Existing `model/ontologies/<domain>.ttl`, when amending a domain.
-5. Optional TMDL/PBIP or Gold demand supplied by the user.
+5. `integration/discovery/bi/` — BI demand artifacts written by `import-tmdl`
+   (Engineering Packs and `*-concept-mapping.yaml` worksheets). Reading the ones
+   relevant to the active domain is required when they are present; they remain
+   downstream demand evidence, never business authority.
 
 Keep the four evidence roles distinct:
 
@@ -124,8 +127,11 @@ catch it earlier.
 ### Gate 2: PII-safe, source-grounded evidence
 
 Read relevant source relations and columns before proposing classes or
-properties. If TMDL/PBIP input is present, read its relevant tables, columns, and
-relationships too.
+properties. If `integration/discovery/bi/` contains Engineering Packs or
+concept-mapping worksheets, read the tables, columns, relationships, and
+measures relevant to the active domain. On a first pass read the whole model:
+the worksheet `domain` field is typically unfilled, so relevance cannot be
+pre-filtered by it.
 
 Expose only masked, redacted, aggregated, or synthetic examples to the model.
 Never reveal or persist raw names, emails, addresses, identifiers, free text, or
@@ -150,6 +156,23 @@ One invocation works on one domain and one coherent canonical slice:
 - only directly required reference/value classes and relationships;
 - only source-feasible or explicitly confirmed properties;
 - no speculative neighboring domains or bulk ontology generation.
+
+Before authoring, confirm the active domain actually owns the primary concept.
+This is a confirmation step, not a gate — the blueprint's `owns`/`does_not_own`
+boundaries are free text no validator can enforce, so the check is yours:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology domain-coverage --explain <domain>
+uv run kairos-ontology domain-coverage --owns <ClassName>
+```
+
+`--explain` prints the active domain's OWNS / DOES NOT OWN boundaries and its
+blueprint module imports; `--owns` (run it for the primary entity) reverse-looks
+up which domain(s) own that class name through the materialized inventories. If
+another domain owns the concept, STOP and switch to that domain rather than
+authoring it here. On a hub without reference models both print an
+informational notice and exit 0 — proceed on business context alone.
 
 If the request spans multiple slices, propose an order and complete one slice
 before starting the next.
@@ -200,6 +223,11 @@ and camelCase properties; no term declared as more than one of
 {Class, DatatypeProperty, ObjectProperty}. Do not hand-write rdflib checks for
 any of these — the CLI check is the authority.
 
+`validate --syntax` also reports Managed Import Completeness whenever
+reference models are present: `missing_managed_import` errors are blocking
+(degradable only via `--degraded`), so a domain missing a blueprint-required
+managed `owl:imports` fails this gate rather than surfacing later.
+
 The `REUSABLE — no rdfs:domain by design` marker alone only silences the
 naming check; it does not make the property bindable anywhere. A property
 genuinely meant to be shared across more than one sibling class must ALSO
@@ -249,8 +277,9 @@ scope is chosen.
 ### 2. Complete source pre-flight
 
 Run Gate 1 and wait for the user's source-completeness answer in interactive
-mode. Read all relevant source vocabularies, optional TMDL/PBIP demand, and
-confirmed discovery context. Never infer completeness from filenames alone.
+mode. Read all relevant source vocabularies, any BI demand artifacts under
+`integration/discovery/bi/`, and confirmed discovery context. Never infer
+completeness from filenames alone.
 
 ### 3. Inspect selected industry references
 
@@ -273,6 +302,15 @@ Use relation/column identifiers and types; examples must remain masked. State
 conflicts and missing evidence explicitly. This matrix is an in-conversation
 working scratchpad; material rationale belongs in the hub Decision Log under
 `decisions/` when it meets the materiality threshold below.
+
+Source the **Downstream demand** column from `integration/discovery/bi/`: cite
+the `*-concept-mapping.yaml` worksheet row and Engineering Pack section that
+demand a candidate term. The same worksheet feeds two deterministic consumers,
+`design-landscape` (advisory `bi_weight`, plus a count of unfilled rows) and
+`draft-model-report` — cite it, but never fill its `domain`,
+`reference_model_match`, or `action` fields in this skill: worksheet triage
+belongs to the `import-tmdl` lifecycle in **kairos-design-source**, and this
+skill persists only the accepted ontology patch.
 
 ### 5. Propose the smallest useful slice
 
@@ -398,6 +436,18 @@ fleet mode, record the AI approval with rationale, confidence, and evidence.
 
 Apply only the approved diff. Reread and parse the saved ontology and repeat
 Gate 5.
+
+Then run full-coverage validation, before registration:
+
+```powershell
+uv run kairos-ontology validate --all --domain <domain>
+```
+
+Run this before registering: `init --domain` refuses to register a
+pre-existing domain whose managed imports are incomplete, and this full run
+is strictly stronger than the registration gate's scoped check. Never pass
+`--degraded` interactively — fix the imports instead. Fleet mode may pass it
+only explicitly, with the bypass recorded.
 
 Then register the domain in the hub catalog — **only after the patch is on disk,
 never before**:

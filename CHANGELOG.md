@@ -8,6 +8,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`domain-coverage --explain <domain>` and `--owns <ClassName>`** (#418, DD-157). The blueprint's
+  per-domain `owns`/`does_not_own` boundaries were loaded by the toolkit and shown only inside an LLM
+  prompt no design author ever sees — nothing in the design loop surfaced or checked ownership, so a
+  misplaced class passed every gate. `--explain` prints a domain's OWNS / DOES NOT OWN text and its
+  blueprint module imports; `--owns` reverse-looks-up which domain(s) own a class name through the
+  materialized `referencemodels-unpacked/*-inventory.yaml` files (class → asserting module IRI → managed
+  profile → activating domain list; no closure parsing, case-insensitive, plural ownership listed as
+  such). Both are advisory and always exit 0: a hub without reference models gets a clean informational
+  notice, an unknown domain gets the valid id list, and missing inventories point at `generate-inventory`.
+  The kairos-design-domain skill's Gate 3 gains a confirmation step (not a gate — the boundaries are free
+  text) running both before authoring. domain-coverage JSON `schema_version` 1→2 (optional
+  `explain`/`owns` payloads).
+- **Surplus managed-import warning** (#418, DD-157). Post-DD-155 the *missing*-import case is caught; the
+  undetected residue was the surplus import — an author in the wrong domain adds the other domain's module
+  import and satisfies every completeness check. `validate` (all modes) and the `init --domain` gate now
+  emit a warning-level `surplus_managed_import` diagnostic for an authored direct `owl:imports` of a
+  managed module the import plan does not require (surplus = authored direct imports ∩ managed-module IRIs
+  − plan requirement IRIs), naming the module and the domain(s) the blueprint assigns it to. It never fires
+  on required, cross-module-term-use, accepted-transitive, or init-added imports, and never blocks —
+  warning severity flows through the existing validator/init-gate paths with zero validator edits.
+- **`kairos-ontology next` observes untriaged BI concept-mapping worksheets** (#421, DD-157). On a real
+  hub, `import-tmdl` had generated concept-mapping worksheets whose 24 tables were all still unfilled — two
+  deterministic consumers existed (`design-landscape`'s advisory `bi_weight` and `draft-model-report`), but
+  no skill text and no `next` action routed anyone to them. `next` now reports a hub-level
+  `bi_concept_mappings` observation (total / unfilled `reference_model_match`) and derives an advisory
+  `triage-concept-mapping` action routed to **kairos-design-source** (the import-tmdl lifecycle owner —
+  kairos-design-domain must never fill the worksheet), status `human_decision_required`, exit 0 (DD-137).
+  The unfilled count comes from one shared helper (`evidence_loaders.scan_concept_mapping_worksheets`) also
+  used by `design-landscape`, so the two surfaces cannot diverge. Proposal `schema_version` 3→4.
+- **kairos-design-domain skill routes BI demand evidence** (#421, DD-157). Authoritative input #5 no longer
+  calls TMDL/PBIP "optional … supplied by the user": `integration/discovery/bi/` artifacts are written by
+  `import-tmdl`, and reading the ones relevant to the active domain is required when present. Gate 2 states
+  the concrete conditional (first pass reads the whole model — the worksheet `domain` field is typically
+  unfilled), and step 4 sources the evidence matrix's "Downstream demand" column from the concept-mapping
+  worksheet + Engineering Pack, naming both consumers. BI evidence remains demand, never business authority
+  (DD-147 reaffirmed; the anti-pattern stays).
+- **`source-privacy` now detects geographic coordinates in the persistence path** (#423, closing the
+  deferral recorded in the DD-075 amendment). A column whose name carries a full-word `latitude`/
+  `longitude`/`lng`/`coordinate(s)` token and whose value is a numeric literal with a textual fractional
+  part inside the token's range (latitude [-90, 90]; longitude/lng [-180, 180]; coordinate or mixed tokens
+  the union [-180, 180]) — or a single-column `"lat,lon"` comma pair — is persisted as an opaque
+  `<redacted kind=location …>` token. Detection pairs name with value shape and never touches declared
+  datatypes, so the #302 numeric/timestamp exemptions and the datatype-blind residual gate are unaffected;
+  nested `{"latitude": …}` JSON values are covered. Deliberately still not checked (deferred to the
+  sibling-address follow-on): `lat`/`lon`/`geo`-abbreviated column names (false-positive on
+  latency/geo-score-class columns) and WKT geometries — the clean-result coverage message now states
+  exactly this residual. Display and suggestion paths (`propose-alignment` examples, `suggest-shapes` PII
+  classification) deliberately gain no location awareness. `SAMPLE_PRIVACY_VERSION` bumps to "2" as inert
+  bookkeeping; **existing hubs keep previously persisted coordinates until `source-privacy --fix` is run
+  once**.
 - **`discovery-conformance judgments-template`** (#410). Phase 2.5 of `kairos-design-discovery` forbids
   hand-transcribing or hand-scripting the concept list, then required a `--judgments-file` whose schema had no
   scaffold and incomplete documentation — so every author had to write exactly the serializer the skill
@@ -38,6 +88,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records — the same pathology as #405 — and would have listed already-processed documents as needing work.
 
 ### Changed
+- **`suggest-shapes` emits `sh:in` enums only from full-table distinct evidence** (#424, DD-076 amendment).
+  On a real hub, 82% of 217 generated `sh:in` enums were single-value and several provably wrong
+  (`booking_status` → only `"TO_REQUEST"` of 5 real values): a distinctCount computed inside a capped
+  profiling window was treated as population truth. `sh:in` now additionally requires the table to assert
+  `kairos-bronze:distinctScope="table"` (the DD-156 evidence contract), a non-temporal/non-decimal/non-boolean/
+  non-UUID datatype (integer status codes stay eligible; UUID is caught via `formatHint` or the sample pattern —
+  SQL Server `uniqueidentifier` maps to `xsd:string`), and — when the true `rowCount` is known — at least
+  100 rows. Sample-scoped evidence yields per-case advisory comments instead (saturated window / window below
+  the 100-row floor / unsaturated "possible enum … not verified against full data"). **Behavior change for
+  existing hubs**: legacy vocabularies (no `distinctScope`) produce a "regenerate the source vocabulary with
+  import-source" advisory instead of enums until re-imported, and capped flatfile imports never produce `sh:in`
+  — the drafts stop emitting exactly the weakly-evidenced enums the old rule fabricated.
+- **`row_count` now means true table cardinality — one meaning per profiling field** (#422, DD-156).
+  It previously meant full-table `COUNT(*)` on the warehouse path but capped-read *window size* on the
+  flatfile path, so consumers thresholding on it treated 1,000-row windows as population truth. Schema YAML
+  v1.2 splits the evidence: `row_count`/`kairos-bronze:rowCount` = true cardinality only, **omitted when
+  unknown** (capped CSV/XLSX reads; the old `0` default is gone); new `rows_sampled`/`kairos-bronze:rowsSampled`
+  = profiling-window size; new `kairos-bronze:distinctScope` (`table`/`sample`, omitted when there is no
+  evidence either way) says whether distinct/sample evidence covers the full relation. Parquet now reports the
+  true count for free from file metadata (also fixing a latent multi-row-group undercount). Legacy v1.0/1.1
+  YAML is normalized on import by platform allowlist: only warehouse-emitted platforms keep `row_count`;
+  flatfile/unknown/missing reinterpret it as `rows_sampled`. Enum suggestions now require exhaustive evidence,
+  and cardinality-based FK matching is knowingly disabled on capped flatfiles (both advisory-only — the old
+  behavior fabricated them from windows). **Migration is regeneration**: re-run `import-flatfile` +
+  `import-source`; the three predicates are merge-managed, so a refreshed import updates them in place in
+  existing vocabulary TTLs. `suggest-shapes` consumes this contract (#424, entry above).
+- **`kairos-bronze.ttl` now declares every predicate `import-source` emits** (chore; groundwork for #422/#424).
+  The importer emitted ten `kairos-bronze:` predicates that the scaffold vocabulary never declared —
+  `rowCount`, `distinctCount`, `sampleValues`, `formatHint`, `suggestedEnum`, `enumValues`,
+  `suggestedForeignKey`, `fkConfidence`, `jsonClassification`, `derivedFromJson` — so their meaning lived only
+  in the emitting code. They are now declared with labels, comments, and domain/range; `rowCount` is pinned as
+  the *true total row count of the source relation*, the meaning the upcoming #422 fix relies on.
+  `owl:versionInfo` bumped to 1.1.0. Alongside, the CLI's `--sample-size`/`--max-rows` default literals in
+  `import-flatfile` and `extract-schema` are now imported from their core modules instead of duplicated
+  (identical values, zero behavior change).
 - **`build-glossary` now excludes `status: skipped` extraction records** and reports how many it excluded.
   It read `extracted_terms` from every record regardless of status, so a skipped record's terms landed in the
   company glossary. This only became a *contradiction* once `status` became load-bearing (above), so it is
@@ -45,6 +130,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial coverage is honest coverage.
 
 ### Fixed
+- **Managed Import Completeness now runs in every `validate` mode and gates domain registration** (#426,
+  DD-155). The check was accidentally gated on `--shacl`/`--consistency`, so Gate 5's inner-loop
+  `validate --syntax` never ran it and `init --domain` performed no import check at all — a domain missing a
+  blueprint-required managed `owl:imports` sailed through four green gates and was registered silently
+  unactivated. Three changes: (1) `validate --syntax` now also reports Managed Import Completeness whenever
+  reference models are resolvable (no-refmodels hubs keep byte-identical output; knowingly accepted:
+  catalog/module infrastructure errors now fail `--syntax` on misconfigured refmodels-present hubs);
+  (2) `init --domain` refuses to register a **pre-existing** import-incomplete domain — exit 1 with the
+  diagnostics, before the catalog write and `_master.ttl` sync — and gains a `--degraded` flag mirroring
+  `validate`'s as the only (explicit) bypass; freshly scaffolded starters are never gated. The gate's scoped
+  single-domain check is a lower bound versus `validate --all`, which the kairos-design-domain skill now runs
+  before registration; (3) the skill documents both behaviors in Gate 5 and step 9. **Release note:** hubs
+  whose blueprint dual-assigns a domain (e.g. logistics `equipment` → both `mmt/equipment` and
+  `dcsa/equipment`, referencemodels#64) now need both imports authored before that domain re-registers.
+- **Inventory writes are content-addressed — `init --domain` no longer rewrites all 79 reference-model
+  inventories on every run** (#419, DD-154). The envelope is a pure function of the source TTLs except
+  `generated_at`, so every registration produced a 78-file diff in which only the timestamp changed — and the
+  documented 3-glob `guard-scope --check-since` footprint hard-failed on every registration. `write_inventory`
+  now compares the new YAML text against the existing file (newline-normalised, ignoring the `generated_at:`
+  line) and skips the write when nothing else changed; any compare failure falls through to a plain write.
+  Unchanged files still count as produced (DD-153) — `generate-inventory` reports them as
+  `N generated, M unchanged, …` where "generated" counts actual writes, and an idempotent rerun of `init` or
+  `generate-inventory` produces a zero-file diff. `generated_at` in a committed inventory now means "when the
+  content last changed". **Release note:** run `generate-inventory` once after upgrading, before the next
+  domain registration, so the expected one-time full rewrite (toolkit version bump + the #414 `generated_from`
+  migration) lands outside a registration diff.
+- **Decision Log source citations under `.import/` now resolve; binary evidence is now checked** (#420).
+  `validate` warned "local source path does not resolve" for correct citations: the resolution base was the
+  hub root (deliberate per #349 but documented nowhere), so `.import/` evidence — a repo-root *sibling* of the
+  hub in nested layouts — could never resolve. On a nested hub (one inside a toolkit-managed repo root),
+  citations whose first segment is `.import/` or `ontology-reference-models/` now also try the repo root;
+  no other path does, so a rotted hub citation is never silently satisfied by the repo's own same-named file.
+  Backslash citations (`.import\businessdiscovery\x.pdf`) are normalized before joining, and
+  `.pdf`/`.docx`/`.xlsx`/`.pptx` citations are now recognized as local paths (all extensions
+  case-insensitive) instead of being silently skipped. The base is now documented in `decision new --source`
+  help, the decisions README, and the record template (DD-141 amendment). Accepted consequence: prose
+  citations ending in `.pdf` now warn, same class as the existing `.md` behavior.
 - **`source-privacy` reported an unqualified all-clear that named no patterns** (#415). It printed
   `✅ Source sample artifacts are privacy-safe for supported patterns.` — DD-075 always recorded that detection
   is bounded, but the bound lived in the design doc rather than the output, so a reader could not tell which

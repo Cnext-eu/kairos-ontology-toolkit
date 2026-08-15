@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,78 @@ import yaml
 from rdflib import Graph, URIRef
 
 logger = logging.getLogger(__name__)
+
+#: Where ``import-tmdl`` writes BI demand artifacts (Engineering Packs and
+#: ``*-concept-mapping.yaml`` worksheets).
+BI_DISCOVERY_RELPATH = Path("integration") / "discovery" / "bi"
+
+#: Legacy pre-DD-147 location where older toolkit versions wrote the same artifacts.
+LEGACY_BI_SOURCES_RELPATH = Path("integration") / "sources"
+
+
+@dataclass(frozen=True)
+class ConceptMappingScan:
+    """One deterministic pass over every ``*-concept-mapping.yaml`` worksheet in a hub.
+
+    ``tables`` pairs each table mapping with the worksheet file it came from;
+    ``errors`` records unreadable worksheets as ``(path, message)``.
+    ``tables_unfilled`` is the single authority for the "N concept-mapping tables have
+    an empty reference_model_match" count — ``design-landscape``'s gap message and the
+    ``kairos-ontology next`` observation both consume it, so the two can never diverge
+    (issue #421).
+    """
+
+    tables: tuple[tuple[Path, dict[str, Any]], ...]
+    errors: tuple[tuple[Path, str], ...]
+    tables_total: int
+    tables_unfilled: int
+    directories_found: bool
+
+
+def scan_concept_mapping_worksheets(hub_root: Path) -> ConceptMappingScan:
+    """Scan a hub's TMDL concept-mapping worksheets (current and legacy locations).
+
+    Rglobs BOTH ``integration/discovery/bi/`` (where ``import-tmdl`` writes today) and
+    the legacy ``integration/sources/`` location, exactly like ``design-landscape``
+    always has — the shared count must cover the same file set everywhere.
+    Deliberately defensive: an unreadable worksheet is reported in ``errors`` and
+    skipped, never raised.
+    """
+    bi_dir = hub_root / BI_DISCOVERY_RELPATH
+    legacy_dir = hub_root / LEGACY_BI_SOURCES_RELPATH
+    directories_found = bi_dir.is_dir() or legacy_dir.is_dir()
+
+    mapping_files: list[Path] = []
+    if bi_dir.is_dir():
+        mapping_files.extend(bi_dir.rglob("*-concept-mapping.yaml"))
+    if legacy_dir.is_dir():
+        mapping_files.extend(legacy_dir.rglob("*-concept-mapping.yaml"))
+
+    tables: list[tuple[Path, dict[str, Any]]] = []
+    errors: list[tuple[Path, str]] = []
+    unfilled = 0
+    for mapping_path in sorted(set(mapping_files)):
+        try:
+            document = yaml.safe_load(mapping_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            errors.append((mapping_path, str(exc)))
+            continue
+        if not isinstance(document, dict):
+            continue
+        for table_dict in document.get("tables", ()) or ():
+            if not isinstance(table_dict, dict):
+                continue
+            tables.append((mapping_path, table_dict))
+            if not str(table_dict.get("reference_model_match") or "").strip():
+                # Not a bug: import-tmdl leaves this blank for a human to fill in.
+                unfilled += 1
+    return ConceptMappingScan(
+        tables=tuple(tables),
+        errors=tuple(errors),
+        tables_total=len(tables),
+        tables_unfilled=unfilled,
+        directories_found=directories_found,
+    )
 
 _SKOS_MATCH_PREDICATES = {
     "http://www.w3.org/2004/02/skos/core#exactMatch": "exactMatch",

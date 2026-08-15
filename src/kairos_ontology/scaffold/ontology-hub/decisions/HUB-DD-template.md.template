@@ -16,6 +16,8 @@ generated:
   by: kairos-ontology-toolkit/<version>
   at: <yyyy-mm-ddThh:mm:ssZ>
 sources:
+  # Local resource paths resolve from the hub root; on a nested hub,
+  # .import/... evidence also resolves from the repository root.
   - id: <source-id>
     resource: <source-uri-or-path>
 # Optional:

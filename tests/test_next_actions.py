@@ -10,6 +10,7 @@ from dataclasses import asdict
 from kairos_ontology.core.next_actions import (
     ACTION_SKILLS,
     ActionStatus,
+    BiConceptMappingObservation,
     CompileStatus,
     DiagnosticView,
     DiscoveryConformanceStatus,
@@ -322,7 +323,7 @@ def test_proposal_is_json_serializable_and_stable():
     first = json.dumps(payload, sort_keys=True)
     second = json.dumps(payload, sort_keys=True)
     assert first == second
-    assert '"schema_version": 3' in first
+    assert '"schema_version": 4' in first
 
 
 # ---------------------------------------------------------------------------
@@ -432,3 +433,49 @@ def test_missing_inventory_action_sorts_before_discovery_gate():
 def test_present_inventory_adds_no_action():
     proposal = propose_next_actions(_hub(inventory_status=InputStatus.PRESENT))
     assert "generate-inventory" not in _kinds(proposal)
+
+
+# ---------------------------------------------------------------------------
+# Issue #421 / DD-157 — BI concept-mapping worksheet triage observation
+# ---------------------------------------------------------------------------
+
+
+def test_triage_concept_mapping_maps_to_design_source_skill():
+    # DD-157: worksheet triage belongs to the import-tmdl lifecycle owner
+    # (kairos-design-source), NOT kairos-design-domain, whose charter forbids
+    # filling the worksheet during a design slice.
+    assert ACTION_SKILLS["triage-concept-mapping"] == "kairos-design-source"
+
+
+def test_unfilled_concept_mapping_yields_human_decision_required_action():
+    proposal = propose_next_actions(
+        _hub(
+            bi_concept_mappings=BiConceptMappingObservation(
+                tables_total=24, tables_unfilled=24
+            )
+        )
+    )
+    by_kind = {action.kind: action for action in proposal.actions}
+    action = by_kind["triage-concept-mapping"]
+    assert action.status is ActionStatus.HUMAN_DECISION_REQUIRED
+    assert action.blocking is False  # advisory only (DD-137/DD-147)
+    assert action.skill == "kairos-design-source"
+    assert "24 of 24" in action.rationale
+    # The rationale must name the worksheet path and both deterministic consumers.
+    assert "integration/discovery/bi/" in action.rationale
+    assert "design-landscape" in action.rationale
+    assert "draft-model-report" in action.rationale
+
+
+def test_fully_triaged_concept_mapping_adds_no_action():
+    proposal = propose_next_actions(
+        _hub(bi_concept_mappings=BiConceptMappingObservation(tables_total=5, tables_unfilled=0))
+    )
+    assert "triage-concept-mapping" not in _kinds(proposal)
+
+
+def test_default_no_observation_adds_no_action():
+    # F5.2: existing constructor sites that never observed worksheets must not
+    # start emitting a spurious action.
+    proposal = propose_next_actions(_hub())
+    assert "triage-concept-mapping" not in _kinds(proposal)

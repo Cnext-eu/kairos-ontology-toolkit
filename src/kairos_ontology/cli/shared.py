@@ -27,6 +27,8 @@ from .. import __version__ as _toolkit_version
 # The CLI is the layer that legitimately depends on both core and mdm.
 from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
 
+from ..core.extract_schema import DEFAULT_SAMPLE_SIZE
+
 
 def _ensure_utf8_stdio() -> None:
     """Reconfigure stdout/stderr to UTF-8 on Windows.
@@ -1428,7 +1430,10 @@ def _resolve_semantic_input(
     help="Comma-separated list of tables to introspect (default: all).",
 )
 @click.option(
-    "--sample-size", default=5, type=int, help="Number of sample rows per table (default: 5)."
+    "--sample-size",
+    default=DEFAULT_SAMPLE_SIZE,
+    type=int,
+    help=f"Number of sample rows per table (default: {DEFAULT_SAMPLE_SIZE}).",
 )
 def extract_schema(
     profile_name, target, schema_name, system_name, output, profiles_dir, table_list, sample_size

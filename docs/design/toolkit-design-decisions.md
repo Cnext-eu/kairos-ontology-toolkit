@@ -205,6 +205,10 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-151](#dd-151-structured-logging-foundation--opt-in-opentelemetry-bridge) | Structured logging foundation + opt-in OpenTelemetry bridge | Accepted | 2026-08-14 |
 | [DD-152](#dd-152-reference-models-resolve-from-a-shared-versioned-machine-level-cache-supersedes-dd-036s-location) | Reference Models Resolve From a Shared, Versioned Machine-Level Cache (Supersedes DD-036's Location) | Proposed | 2026-08-14 |
 | [DD-153](#dd-153-command-outcome-and-exit-code-contract) | Command Outcome and Exit-Code Contract | Accepted | 2026-08-14 |
+| [DD-154](#dd-154-content-addressed-inventory-writes-unchanged-counts-as-produced) | Content-addressed inventory writes; unchanged counts as produced | Accepted | 2026-08-15 |
+| [DD-155](#dd-155-managed-import-completeness-is-mode-independent-and-gates-registration) | Managed Import Completeness is mode-independent and gates registration | Accepted | 2026-08-15 |
+| [DD-156](#dd-156-profiling-evidence-semantics-rowcount-rowssampled-distinctscope) | Profiling evidence semantics: row_count, rows_sampled, distinctScope | Accepted | 2026-08-15 |
+| [DD-157](#dd-157-domain-ownership-surfacing-and-demand-evidence-routing) | Domain ownership surfacing and demand-evidence routing | Accepted | 2026-08-15 |
 
 ---
 
@@ -2327,6 +2331,17 @@ the same fields.
 - Flat JSON staging views are row-preserving (no WHERE filter on NULL JSON) so that
   switching to `ref()` never drops rows silently
 
+### Amendment (2026-08-15): schema YAML v1.2 splits cardinality from window (#422, DD-156)
+
+The v1.1 fields above gave `row_count` two meanings — full-table `COUNT(*)` on
+the warehouse extraction path, capped-read window size on the flatfile path.
+Schema YAML **v1.2** splits them: `row_count` = true table cardinality only
+(omitted when unknown), new `rows_sampled` = profiling-window size, and
+`kairos-bronze:rowCount` is emitted only for real cardinality (with new
+`kairos-bronze:rowsSampled` / `kairos-bronze:distinctScope` carrying the window
+evidence). The enum-detection rule in item 5 now additionally requires the
+evidence to be exhaustive (`distinctScope = table`). See DD-156.
+
 ---
 
 ## DD-040: Skill Lifecycle Architecture — Design / Execute Separation
@@ -3059,7 +3074,9 @@ Add native Parquet support to `import-flatfile`:
    data dict shape as `read_csv_table()`. Like CSV/Excel, it reads **only sample
    data** — at most `max_rows` rows via a single
    `ParquetFile.iter_batches(batch_size=max_rows)` batch — and never materialises
-   the full file. `row_count` reflects the rows actually read.
+   the full file. ~~`row_count` reflects the rows actually read.~~ *(Amended
+   2026-08-15, see below: `row_count` is now the true cardinality from the file
+   metadata; the window is recorded as `rows_sampled`.)*
 2. **Direct Arrow→SQL type mapping** (`_arrow_type_to_sql()`): because Parquet
    carries a reliable typed schema, column data types are mapped directly to the
    SQL-like vocabulary (`bigint`/`int`/`decimal`/`date`/`datetime`/`bit`/
@@ -3083,6 +3100,19 @@ Add native Parquet support to `import-flatfile`:
 - Tests in `tests/test_import_flatfile.py` cover the type mapping, the reader
   (nullability, sampling cap, date/timestamp), single-file + mixed-directory
   imports, and the missing-pyarrow `ImportError`.
+
+### Amendment (2026-08-15): `row_count` from file metadata, window as `rows_sampled` (#422, DD-156)
+
+"`row_count` reflects the rows actually read" is struck. It made `row_count`
+mean *window size* on this path while the warehouse path recorded a full-table
+`COUNT(*)` under the same field name — the dual meaning DD-156 removes.
+`read_parquet_table` now takes the true cardinality from
+`ParquetFile.metadata.num_rows` (free — footer metadata, no body read; it also
+fixes a latent undercount where only the **first** batch of a multi-row-group
+file was reported) and records the profiling window separately as
+`rows_sampled`. Everything derived from the read rows (nullability, distinct
+counts, sample slicing) still uses the window size. The reading strategy —
+sample-only, one batch, never the whole file — is unchanged.
 
 ---
 
@@ -4816,6 +4846,44 @@ is not "safe".
 Stating the bound is therefore the honest interim: the guarantee is unchanged, but it is no longer
 overstated at the point of use.
 
+### Second amendment (2026-08-15): the deferred coordinate detector ships (#423)
+
+The interim above ends: the persistence path now detects geographic coordinates by **pairing the column
+name with the value shape**, which is what the three recorded wrong-fix mechanisms all lacked. The detector
+never touches declared datatypes (the #302 exemption stays value-shape; the residual gate receives no
+`column_types`, so a datatype-keyed rule would make the redactor and the gate disagree — the exact failure
+`test_redacted_rows_pass_the_persistence_gate` pins), and it is binary: a matched value is replaced with an
+opaque `<redacted kind=location …>` token, never coarsened.
+
+**Shipped.**
+- **Tokens** (full-word matches via `_name_tokens` only, never substrings): `latitude` → [-90, 90];
+  `longitude`, `lng` → [-180, 180]; `coordinate(s)` or multiple location tokens → the union range
+  [-180, 180], because a generic coordinate column can hold either axis.
+- **Value shape**: a numeric literal whose **string form carries a fractional part**
+  (`_NUMERIC_LITERAL_RE`'s fraction group — not `float.is_integer()`, which would exempt real coordinates
+  like `51.0`) inside the applicable range; or a comma-separated `"lat,lon"` pair whose two parts both
+  satisfy that rule within the union range (a common single-column export format that would otherwise
+  silently escape).
+- **Containment**: the check lives in `detect_sample_pii_kind` (persistence path), between the name-keyword
+  and nested/text checks — name kinds keep priority (`health_latitude` stays `health`) and shaped values in
+  location columns are still caught. It is **not** in `_kind_from_name`, so `is_pii_column` and the
+  display/suggestion paths (`propose_alignment`, `suggest_shapes`) gain no location awareness; tests pin
+  `is_pii_column("latitude")` False. Nested `{"latitude": 51.33}` values are detected because
+  `_kind_from_nested`'s dict branch now routes through `detect_sample_pii_kind`, which also makes the
+  redactor and every residual gate provably share one classifier.
+- `"location"` enters `DETECTED_PII_KINDS` derived from the token table (`_LOCATION_TOKEN_RANGES`), never
+  hand-appended — the same discipline the first amendment established for the coverage report.
+
+**Deferred.**
+- The abbreviations `lat`, `lon`, `geo`: as bare tokens they false-positive on `latency`/`geo_score`-class
+  names once range-filtered values appear beside them; they move to the sibling-address follow-on of #423
+  (which can use row context to disambiguate).
+- WKT geometries (`POINT(4.12 51.33)`) and other structured spatial encodings.
+
+`SAMPLE_PRIVACY_VERSION` bumps "1" → "2" as **inert bookkeeping** — nothing reads it back and no migration
+keys on it; it only records which policy generated an artifact. Existing hubs therefore keep persisted
+coordinates until `source-privacy --fix` is run once.
+
 ---
 
 ## DD-076: `suggest-shapes` — draft SHACL from source profiling
@@ -4866,6 +4934,53 @@ Writing outside the loaded shapes dir is the safety mechanism that makes
   is enforced until a human moves and renames the file.
 - `kairos-bronze:distinctCount` is the reliability signal for enums; absent it,
   the command emits only an advisory "possible enum (unverified)" comment.
+  *(Amended 2026-08-15, see below: distinctCount alone is NOT the signal — it
+  must carry `distinctScope="table"`.)*
+
+### Amendment (2026-08-15): `sh:in` requires full-table distinct evidence (#424, DD-156)
+
+"distinctCount is the reliability signal for enums" is falsified for windowed
+profiling. On a real hub, 82% of 217 generated `sh:in` enums were single-value
+and several were provably wrong (`booking_status` → only `"TO_REQUEST"` of 5
+real values): the flatfile path counted distincts inside an n≤1000 (and
+sample-persisted n=5) window, and `suggest-shapes` treated that as population
+truth. DD-156 gives the graph the evidence to tell the difference; this
+amendment makes `suggest-shapes` read it:
+
+- **distinctCount is trusted for `sh:in` only when the table asserts
+  `kairos-bronze:distinctScope="table"`.** Sample-scoped evidence
+  (`distinctScope="sample"`) and legacy evidence (scope absent — vocabulary
+  predates DD-156) produce **advisory comments only**, never a constraint:
+  - saturated window (`distinctCount >= rowsSampled`): the evidence cannot
+    distinguish an enum from an open value set;
+  - window below the enum floor (`rowsSampled < DEFAULT_ENUM_MIN_ROWS` = 100):
+    re-import with a larger `--max-rows` or profile the warehouse table;
+  - unsaturated ≥100-row window with `distinctCount ≤ --enum-distinct-max`:
+    "possible enum … not verified against full data";
+  - legacy (scope absent, distinctCount present): "regenerate the source
+    vocabulary with import-source".
+- **Temporal (`xsd:date`/`dateTime`/`time`), decimal/float/double, boolean, and
+  UUID columns are never enumerated**, regardless of scope. Boolean `sh:in`
+  adds nothing over `sh:datatype` and brittle lexical forms cause false
+  violations; UUID detection uses `kairos-bronze:formatHint == "uuid"` OR the
+  sample-derived format pattern — load-bearing because SQL Server
+  `uniqueidentifier` maps to `xsd:string`. Integer stays eligible (integer
+  status codes are legitimate enums). These columns get no enum comment either
+  (`sh:datatype` already carries the signal).
+- **Floor rule, precedence pinned:** when the table's true cardinality
+  (`kairos-bronze:rowCount`) is KNOWN, `sh:in` additionally requires
+  `rowCount >= DEFAULT_ENUM_MIN_ROWS` (100, shared with `enrich_vocabulary`).
+  When `rowCount` is absent but `distinctScope="table"` is explicitly asserted
+  (warehouse-shaped evidence), the floor does NOT apply — the scope assertion
+  itself is the trust anchor.
+- Unchanged: PII columns are never enumerated; `sh:in` still requires
+  `0 < distinctCount ≤ --enum-distinct-max` and the ≤5 persisted samples to
+  cover the full distinct set (the values come from the samples).
+
+Consequence for existing hubs: legacy vocabularies produce advisories instead
+of enums until regenerated (`import-flatfile` + `import-source`); capped
+flatfile imports never produce `sh:in`. The suggestions this suppresses are
+exactly the ones the old rule fabricated.
 
 ---
 
@@ -9938,6 +10053,23 @@ Scaffolding the README and template makes the capability discoverable in every n
 - The Decision Log does not revive `.kairos-state`; it is a separate, durable, human-reviewed
   artifact rather than session state.
 
+> **Amendment (2026-08-15, #420):** the resolution base for local `sources[].resource`
+> citations is now documented and slightly widened. The base is the **hub root** — the
+> convention every other hub path citation follows, chosen (over the `decisions/`
+> directory) in issue #349 but stated nowhere until now. On a **nested** hub (a hub
+> inside a toolkit-managed repository root, detected via
+> `hub_utils.resolve_repo_root` = `find_managed_root(hub_root) or hub_root`),
+> citations whose first segment is `.import/` or `ontology-reference-models/` — the
+> two repo-root siblings a hub-root join can never reach — additionally fall back to
+> the **repository root**. No other path ever probes the repo root, so a rotted hub
+> citation cannot be silently satisfied by the repo's own same-named file. Bare/test
+> hubs without a toolkit pin degrade to hub-root-only resolution. `_is_local_path`
+> is widened to recognize `.import/` citations (either separator; backslashes are
+> normalized before joining) and the binary evidence extensions
+> `.pdf`/`.docx`/`.xlsx`/`.pptx`, all extensions matched case-insensitively.
+> Accepted consequence: a prose citation that merely *ends* in `.pdf` now warns as
+> unresolved — the same class of behavior `.md`-suffixed prose already had.
+
 ---
 
 
@@ -11054,5 +11186,356 @@ Two invariants, both testable, and the second was being violated:
   the state rather than a claim of completion.
 - Any new command reporting more than one outcome should return a `CommandOutcome` rather than hand-rolling an
   exit, so the invariants above hold by construction.
+
+---
+
+## DD-154: Content-addressed inventory writes; unchanged counts as produced
+
+**Status:** Accepted
+**Date:** 2026-08-15
+**Affects:** `write_inventory` and every caller — `generate-inventory`, `init` step 9b
+**Implementation:** `src/kairos_ontology/core/inventory.py` (`write_inventory`),
+`cli/inspection.py` (`generate_inventory_cmd`), `cli/setup.py` (init step 9b)
+
+### Context
+
+`init --domain` regenerated all 79 reference-model inventories on every run (#419). The envelope is a pure
+function of the source TTLs — except `generated_at`, which `resolve_generated_at()` defaults to
+`datetime.now()` — so every registration produced a 78-file diff in which *only* the timestamp line changed.
+Two consequences: the prescribed `guard-scope --check-since` gate hard-failed on every registration (the
+documented 3-glob footprint could never hold), and reviewers faced churn diffs carrying zero information.
+`write_inventory` was the single write path and never looked at the existing file.
+
+### Decision
+
+`write_inventory` is content-addressed: it dumps the new envelope to text (same YAML kwargs as before),
+reads the existing file text-mode when present, and compares the two after (a) newline normalisation —
+a CRLF checkout on Windows (`core.autocrlf`) must compare equal to the LF text `yaml.dump` produces —
+and (b) removing the single column-0 `generated_at:` line from both sides (anchored at line start; nested
+keys are always indented, so no data line can be swallowed). Equal → no write, no mtime touch, return
+`False`; different, missing, or **any** read/decode failure → write and return `True`. A compare failure
+must never cause a skip.
+
+Under DD-153, an unchanged file **counts as produced**: the artifact exists and is current, only the write
+was elided. `generate-inventory` keeps unchanged files in the produced set (exit-code semantics untouched),
+prints `⏭ {stem}: up to date` per file, and its summary separates the counters:
+`{writes} generated, {unchanged} unchanged, {failed} failed, {skipped} skipped` — "generated" counts actual
+writes only. `init` step 9b prints its existing "Generated N reference-model inventory file(s)" only when
+N > 0 actual writes occurred, and an "already up to date" line otherwise.
+
+Expected one-time full rewrites remain by design: after a toolkit upgrade that bumps `INVENTORY_VERSION`
+(or otherwise changes envelope content), and after the #414 `generated_from` provenance migration, the next
+run legitimately rewrites every inventory once. Run `generate-inventory` once after upgrading, before the
+next registration, so that rewrite lands outside a registration diff.
+
+### Rejected alternatives
+
+- **Hash-only compare (`source_sha256`/`closure_hash`).** A toolkit version bump or a provenance-path change
+  (`generated_from`, `INVENTORY_VERSION`) alters the envelope without moving `closure_hash` — the stale
+  envelope would be skipped forever. Whole-content-minus-timestamp is the only compare that cannot go stale.
+- **Report unchanged files as skipped (a `REASON_UNCHANGED` decline).** Any skip entry flips
+  `CommandOutcome.has_warnings`, so every idempotent rerun would print `⚠` — a warning for the healthiest
+  possible state. Unchanged is a produced artifact, not a declined one.
+- **Timestamp pinning (`KAIROS_GENERATED_AT`/`SOURCE_DATE_EPOCH` in the workflow).** Pushes the fix onto
+  every caller's environment, and a pinned timestamp makes `generated_at` a lie rather than making the write
+  idempotent.
+
+### Consequences
+
+- Re-running `init --domain` or `generate-inventory` over unchanged sources produces a zero-file diff; the
+  documented 3-glob `guard-scope` footprint for domain registration becomes true.
+- `generated_at` in a committed inventory now means "when the content last changed", not "when the command
+  last ran".
+- mtimes of unchanged inventories no longer advance; nothing in the toolkit uses mtime freshness (DD-047
+  chose content hashes), so this is observable only to external tooling.
+
+---
+
+## DD-155: Managed Import Completeness is mode-independent and gates registration
+
+**Status:** Accepted
+**Date:** 2026-08-15
+**Affects:** `run_validation` (all modes), `init --domain` registration, kairos-design-domain skill
+**Implementation:** `src/kairos_ontology/core/validator.py` (managed-import preflight),
+`cli/validation.py` (`--syntax` help), `cli/setup.py` (`_registration_import_gate`, init `--degraded`),
+`.github/skills/kairos-design-domain/SKILL.md` + scaffold copy
+
+### Context
+
+Issue #426: a domain missing a blueprint-required managed `owl:imports` sailed through four green gates and
+was registered anyway — silently unactivated. Two structural causes: (1) the validator's Managed Import
+Completeness check was gated on `if do_shacl or do_consistency:`, so Gate 5's inner-loop
+`validate --syntax` never ran it — an accidental mode split (the check is static rdflib parsing, no
+pyshacl), while the sibling `_master.ttl` import-sync check (#393) is deliberately unconditional; and
+(2) `init --domain` — the only registration path — performed no import check at all before writing the
+catalog entry and syncing `_master.ttl`.
+
+### Decision
+
+Three coordinated parts:
+
+1. **Validator (mode-independent check).** The managed-import preflight runs in every mode, including
+   `--syntax`, mirroring the unconditional `_master.ttl` check's precedent. The only remaining gate is
+   *resolvability*: when reference models cannot be resolved (no ref-models dir, or no accelerator module
+   config — every case where `build_reference_module_context` returns `None`), the parse pre-pass, the
+   section header, and the per-file loop are all skipped, so a run on a no-refmodels hub produces
+   byte-identical output to before. `--degraded` semantics are unchanged and now also apply to `--syntax`
+   runs. **Knowingly accepted:** catalog/module infrastructure errors (e.g. `module_unresolved`) now fail
+   `--syntax` on misconfigured refmodels-present hubs.
+
+2. **Registration gate.** `init --domain` refuses to register a **pre-existing** domain TTL whose Managed
+   Import Completeness diagnostics contain hard errors, or degradable `missing_managed_import` errors
+   without the new `--degraded` flag — exiting 1 *before* the catalog write and the `_master.ttl` sync, so
+   a refused run changes neither. Rules that bound the gate:
+   - **Pre-existing files only.** A TTL `init` itself just scaffolded (fresh, or overwritten via `--force`)
+     is never gated — the starter template has no `owl:imports`, so gating it would refuse init's own
+     output on every refmodels-present hub. The fresh path gets an advisory pointing at
+     `validate --all --domain <domain>`.
+   - **Resolvability short-circuit.** No refmodels dir (or it fails `_looks_like_refmodels_root`), or no
+     module config → no gate. An *ambiguous* accelerator warns, skips the gate, and points at
+     `validate --all --accelerator <pack>`. Toolkit-owned infrastructure exceptions (context build crash,
+     unreadable TTL) warn and proceed — they must never block a user's registration.
+   - **Lower bound, not a replacement.** The gate builds a scoped single-domain module context, which is a
+     LOWER BOUND versus `validate --all`'s full context: the scoped check can pass where `--all` fails,
+     never the reverse of practical concern. The skill's pre-registration `validate --all --domain
+     <domain>` run therefore remains necessary, not belt-and-braces.
+   - **Fleet mode (DD-088).** The gate blocks identically in fleet mode; an explicit `--degraded` is the
+     only bypass, and fleet invocations must record that bypass.
+   - Accepted wart: `kairos.yaml`'s `default_domain` is written before the gate, so a refused run can still
+     have set it.
+
+3. **Skill.** Gate 5 documents that `validate --syntax` now also reports Managed Import Completeness when
+   reference models are present (`missing_managed_import` blocking, degradable only via `--degraded`), and
+   step 9 inserts a full-coverage `uv run kairos-ontology validate --all --domain <domain>` run before the
+   registration command. Both skill copies stay byte-identical.
+
+### Open sibling dependency
+
+`Cnext-eu/kairos-ontology-referencemodels#64`: the logistics blueprint assigns the `equipment` domain both
+`mmt/equipment` and `dcsa/equipment` with no precedence. The hard gate makes such dual-assigned domains
+require BOTH overlapping imports — on existing hubs this surfaces as one required import edit per
+dual-assigned domain on the first post-upgrade registration (the dogfooding hub's `equipment` domain hits
+this immediately). Tracked there; not a toolkit defect.
+
+### Rejected alternatives
+
+- **Skill-text-only fix.** Prose doesn't gate: the transcript that motivated #426 followed the skill and
+  still registered an unactivated domain. Only a deterministic check closes the gap.
+- **Keeping the check SHACL-gated.** The mode split was accidental, not designed — no DD ever specified it,
+  the check needs no pyshacl, and the in-file precedent (the deliberately unconditional `_master.ttl`
+  check, validator.py's "Deliberately unconditional" comment) already establishes that structural import
+  checks are mode-independent.
+- **Reordering the refmodels fetch before registration** so a fresh `init` could always gate. The fetch is
+  deliberately offline-safe and network-touching; moving it ahead of registration couples registering a
+  domain to network availability and does not help the actual failure mode (pre-existing authored domains
+  on hubs that already have reference models).
+
+### Consequences
+
+- Gate 5's inner-loop `validate --syntax` now catches a missing managed import at authoring time, between
+  edits — the cost is `build_reference_module_context` loading the activated modules' closures once per
+  run on refmodels-present hubs (scoped to requested domains, not all modules).
+- `init --domain` on an import-incomplete pre-existing domain exits 1 with the diagnostics and leaves the
+  catalog and `_master.ttl` untouched; `--degraded` registers with warnings.
+- No-refmodels hubs (including every `--syntax` test fixture) see byte-identical validator output.
+
+---
+
+## DD-156: Profiling evidence semantics: row_count, rows_sampled, distinctScope
+
+**Status:** Accepted
+**Date:** 2026-08-15
+**Affects:** `import-flatfile`, `extract-schema`, `import-source`, vocabulary enrichment; schema YAML v1.2; `kairos-bronze` vocabulary
+**Implementation:** `src/kairos_ontology/core/import_flatfile.py`, `core/extract_schema.py`, `core/import_source.py` (`normalize_profiling_evidence`, `_distinct_scope`, `_sync_managed_profiling_predicates`), `core/enrich_vocabulary.py`, `scaffold/kairos-bronze.ttl`
+
+### Context
+
+`row_count` meant two different things depending on which importer produced it (#422). The
+warehouse path (`extract-schema`) recorded full-table `COUNT(*)` and full-table
+`COUNT(DISTINCT)` — true population facts. The flatfile path (`import-flatfile`) recorded
+the number of rows read into a capped profiling window (default 1,000) under the **same
+field name**, with `distinct_count` counted within that window. Every downstream consumer
+that thresholds on `row_count` or trusts `distinctCount` (enum suggestion, FK cardinality
+matching, and — via #424 — `suggest-shapes` `sh:in` enums) therefore treated window-local
+observations as population truth. The dogfooding hub shipped provably wrong `sh:in` enums
+derived from 5-row samples. As DD-089 already put it for a sibling artifact: **source
+samples are not equivalent to full production data** — the fields must say which one they
+carry.
+
+### Decision
+
+One meaning per field, from schema YAML **v1.2** onward:
+
+| Field (YAML) | Predicate (RDF) | Meaning |
+|---|---|---|
+| `row_count` | `kairos-bronze:rowCount` | TRUE table cardinality, always. **Omitted when unknown** — never a window size, never a defaulted `0`. |
+| `rows_sampled` | `kairos-bronze:rowsSampled` | Rows read into the profiling window. Always present on flatfile-read tables; absent on warehouse extraction (profiling there is full-table). |
+| — | `kairos-bronze:distinctScope` | `"table"` or `"sample"`: whether distinct/sample evidence covers the full relation. RDF-only, derived at emission. |
+
+Producer rules:
+
+- **CSV/XLSX**: cap-hit is detected structurally — the read loop's `break` fires only when a
+  row *beyond* the cap exists, so natural exhaustion (even at exactly `max_rows` rows) is a
+  full read with a true count. Full read → `row_count = rows_sampled`. Capped →
+  `row_count` omitted, `rows_sampled = max_rows`. openpyxl "ghost" rows (formatting-only
+  trailing rows) can make a boundary-sized sheet look capped; the cost is a conservative
+  `row_count` omission, never a false count.
+- **Parquet**: `row_count` from `ParquetFile.metadata.num_rows` — free, true, and covering
+  all row groups (this also fixed a latent undercount where only the first batch of a
+  multi-row-group file was reported). `rows_sampled` = the single batch actually read.
+- **Warehouse (`extract-schema`)**: unchanged semantics (already true cardinality); writes
+  v1.2 and no `rows_sampled`.
+
+**Scope derivation (H2 guard):** `distinctScope = "table"` iff `row_count` is known AND
+(`rows_sampled` is absent OR `rows_sampled == row_count`); `"sample"` otherwise; when BOTH
+fields are absent the predicate is **omitted** — zero evidence must never be asserted as
+`"table"`. Absence therefore reads as legacy/unknown, which consumers must treat as
+untrusted (#424 consumes exactly this contract).
+
+**Legacy normalization (H3 allowlist):** v1.0/1.1 YAML is reinterpreted at a single choke
+point (`normalize_profiling_evidence`, after parse, before enrichment). Trust is decided by
+platform **allowlist** — only the values `extract-schema` actually emits
+(`fabric-warehouse`, `fabric-lakehouse`, `databricks`, `snowflake`, `postgres`) keep
+`row_count`; `flatfile`, `unknown`, or a missing platform mean the legacy `row_count` was a
+window size and it becomes `rows_sampled`. Unknown provenance is never promoted to truth.
+
+**Merge-managed predicates (H1):** `rowCount`/`rowsSampled`/`distinctScope` are
+introspection-owned and replaced on merge (`merge_with_existing`), like
+`dataType`/`nullable`/`sampleValues`. Without this, re-running `import-source` over an
+existing monolithic TTL would keep the legacy window-sized `rowCount` forever while the
+per-table files carried fresh v1.2 semantics — two contradicting claims in one combined
+graph, and the "regenerate to migrate" advisory would be false.
+
+### Accepted advisory losses on capped flatfiles (H4)
+
+- **Enum suggestions**: `detect_enums` now requires exhaustive evidence (`row_count` known
+  and window covering it) before the existing min-rows/threshold/ratio gates run. Capped
+  flatfile tables produce no `suggestedEnum` — a windowed distinct count proves value
+  concentration in the window, not that the enumeration is complete.
+- **FK cardinality matching**: `infer_foreign_keys` treats an unknown `row_count` as 0,
+  which disables cardinality-based (medium-confidence) FK matching for capped flatfile
+  tables. Accepted: the signal is advisory-only, and matching against a window size would
+  manufacture false positives. Name-based (high-confidence) matching is unaffected.
+
+Both losses restore honesty rather than remove capability: the suggestions they suppress
+were exactly the ones the old semantics fabricated.
+
+### Consequences
+
+- Schema YAML v1.2 joins `SUPPORTED_VERSIONS`; flatfile manifests write `version: "1.2"`.
+- Migration is regeneration: re-running `import-flatfile` + `import-source` updates the
+  managed predicates in place (H1). Untouched legacy TTLs keep their old `rowCount` but
+  carry no `distinctScope`, so v1.2-aware consumers treat them as untrusted.
+- `column-coverage-audit` display renders an unknown denominator as `distinct=N/?`.
+- DD-050 and DD-039 amended; DD-076's "distinctCount is the reliability signal" is
+  falsified for windowed evidence and is addressed by #424 (suggest-shapes reads
+  `distinctScope` — see DD-076's 2026-08-15 amendment).
+
+---
+
+## DD-157: Domain ownership surfacing and demand-evidence routing
+
+**Status:** Accepted
+**Date:** 2026-08-15
+**Affects:** `domain-coverage`, `kairos-ontology next`, `validate` (warning path), kairos-design-domain skill
+**Implementation:** `src/kairos_ontology/core/domain_coverage.py` (`--explain`/`--owns` cores),
+`core/next_actions.py` + `core/hub_inspection.py` (`triage-concept-mapping` observation/action),
+`core/evidence_loaders.py` (`scan_concept_mapping_worksheets`, shared with `core/design_landscape.py`),
+`core/reference_modules.py` (`surplus_managed_import` warning), `cli/inspection.py`,
+`.github/skills/kairos-design-domain/SKILL.md` + scaffold copy
+
+### Context
+
+Two dogfooding findings with the same shape — **the toolkit knows, the design loop never asks**:
+
+- **#418 (near-miss):** an author modeled transport-order concepts in the `consignment` domain. The
+  blueprint's `data-domains.yaml` states per domain what it `owns` and `does_not_own`, and
+  `analyse-sources` already loads that text — but only into an LLM prompt no design author ever sees.
+  Nothing in the prescribed kairos-design-domain loop surfaces or checks ownership; a misplaced class
+  passes every gate. Post-DD-155 the *missing*-import case is caught; the undetected residue is the
+  **surplus** import (the author adds the other domain's module import, satisfying completeness while
+  crossing an ownership boundary).
+- **#421:** `import-tmdl` generated Engineering Packs and concept-mapping worksheets for a real hub's BI
+  models; all **24 of 24** worksheet tables still had an empty `reference_model_match`. Two deterministic
+  consumers already exist — `design-landscape` (advisory `bi_weight` + unfilled count) and
+  `draft-model-report` (reads `domain`/`reference_model_match`/`action`) — but no skill text and no `next`
+  action routes anyone to the artifacts, and the design skill's inputs mislabeled them as "optional
+  TMDL/PBIP … supplied by the user" when the toolkit itself writes them to `integration/discovery/bi/`.
+
+Principle from the adversarial round: **routing first, machinery second, no new write obligations for the
+design skill.**
+
+### Decision
+
+1. **Routing text (skill, both copies).** Authoritative input #5 names `integration/discovery/bi/` as
+   toolkit-written BI demand evidence, required reading when present; Gate 2 makes the conditional concrete
+   (read the whole model on a first pass — the worksheet `domain` field is typically unfilled); step 4
+   cites the concept-mapping worksheet + Engineering Pack as the source of the evidence matrix's
+   "Downstream demand" column and names the two deterministic consumers. The skill is explicitly told
+   **never to fill** the worksheet. DD-147's rule is reaffirmed: BI evidence is demand, never business
+   authority; the "Treating TMDL or Gold demand as business authority" anti-pattern stays.
+2. **`next` advisory (`triage-concept-mapping`).** A hub-level observation (total worksheet tables /
+   unfilled `reference_model_match`) computed by ONE shared helper,
+   `evidence_loaders.scan_concept_mapping_worksheets` — which rglobs both `integration/discovery/bi/` and
+   the legacy `integration/sources/` location — consumed by both `design-landscape` (its gap message is
+   unchanged) and `gather_hub_input_snapshot`, so the two counts can never diverge. The derived action is
+   routed to **kairos-design-source** (it owns the import-tmdl lifecycle; kairos-design-domain is forbidden
+   from filling the worksheet), status `human_decision_required`, advisory-only, exit 0 (DD-137). Proposal
+   `SCHEMA_VERSION` 3→4.
+3. **`domain-coverage --explain <domain>`.** Prints the domain's name, OWNS / DOES NOT OWN boundaries, and
+   its blueprint module imports — the data `build_domain_coverage_report` already loaded and discarded. No
+   accelerator blueprint → clean informational notice; unknown domain → the valid id list. Always exit 0
+   (the command's existing contract, also required by the executable-skill test's no-refmodels fixture).
+   domain-coverage `SCHEMA_VERSION` 1→2 (the CLI JSON envelope gains optional `explain`/`owns` payloads).
+4. **`domain-coverage --owns <ClassName>`.** Reverse ownership lookup with **no closure parsing**: the
+   materialized `referencemodels-unpacked/*-inventory.yaml` classes carry `provenance.source_identity`
+   (the asserting module's ontology IRI) → matched to a managed profile via
+   `load_accelerator_module_config` (both `ontology_iri` and `catalog_uri`, hash-namespace legacy forms
+   normalized) → owning domain **list** via the blueprint activations (ownership can be plural).
+   Case-insensitive on the class name; specified outputs: inventories missing → "run generate-inventory
+   first"; class in no managed module, module assigned to no domain, and same-name-in-multiple-modules all
+   say so explicitly. (Deliberately NOT `belongs_to_domains`: it exists only on the parse-all-closures slow
+   path — the DD-044 inventory fast path returns early without it.)
+5. **Gate-3 ownership step (skill).** A confirmation **step, not a gate** — `owns`/`does_not_own` is free
+   text no validator can enforce: before authoring, run `--explain` (and `--owns` for the primary entity)
+   and, if another domain owns the concept, stop and switch domains rather than authoring here.
+6. **Surplus-import warning (deterministic safety net).** Inside
+   `validate_external_term_imports`: **surplus = authored direct `owl:imports` ∩ managed-module IRIs −
+   plan requirement IRIs** (a module required in any form — activation, authored term use, accepted
+   transitive — is additionally excluded by requirement module id, so an alias-form import of a required
+   module can't false-positive). Managedness is matched against `context.config.profiles`, NOT
+   `context.modules` — a scoped (init-gate) context may not have the module resolved. The
+   `surplus_managed_import` diagnostic names the module and the domain(s) the blueprint assigns it to (or
+   "no domain"). Warning severity: it flows through the validator's existing warning path with **zero
+   validator edits**, and the DD-155 registration gate inherits it non-blockingly. It structurally cannot
+   fire on required imports, cross-module term-use imports (those ARE requirements), `_master.ttl`
+   (excluded upstream by `_is_domain_ontology`), or init-added imports (activation set ⊆ requirements).
+
+### Rejected alternatives
+
+- **Fill the worksheet during design (kairos-design-domain).** Violates the skill's
+  persist-only-the-accepted-patch charter and guard-scope footprint; per-model worksheet vs per-domain
+  slice granularity mismatch; and the worksheet's free-text `domain` field is validated against nothing —
+  `draft-model-report`'s `_normalise_domain` slugs it as-is, so filled-during-design values would
+  manufacture phantom report domains (a live mini-#418). If wanted later: a separate triage pass under
+  kairos-design-source with `domain` validated against canonical ids.
+- **Subclass-parent-walk ownership heuristic** (flag a local class whose reference parent lives in a module
+  the domain doesn't activate). False-positives on designed-for cross-module reuse: the DD-070 pool,
+  pattern-library `mode_bindings`, and `STUB (deferred-relationship)` targets. The surplus-import warning
+  is sharper and purely set-algebraic.
+- **Per-domain "BI demand mapped n/m" column on domain-coverage.** Chicken-and-egg: attributing worksheet
+  rows to a domain needs the very `domain` field that is unfilled; a hub-level count in `next` carries the
+  same signal without inventing attribution.
+
+### Consequences
+
+- The design loop now sees ownership at the moment it matters (Gate 3) and gets a deterministic backstop
+  (`surplus_managed_import`) for the one case DD-155 cannot catch; both are advisory/warning-level —
+  nothing new blocks.
+- `kairos-ontology next` surfaces untriaged BI demand and routes it to the skill that owns the lifecycle;
+  consumers of the proposal JSON must accept `schema_version` 4 and the new `bi_concept_mappings` input.
+- Hubs that legitimately import another domain's module without using its terms will see a new warning;
+  the remedy is stated in the message (assign the module in `data-domains.yaml`, or model in the owning
+  domain).
 
 ---

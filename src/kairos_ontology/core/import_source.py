@@ -32,7 +32,20 @@ logger = logging.getLogger(__name__)
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 
 # Supported YAML schema versions
-SUPPORTED_VERSIONS = {"1.0", "1.1"}
+SUPPORTED_VERSIONS = {"1.0", "1.1", "1.2"}
+
+# Platforms whose extractors profile with full-table COUNT(*) — exactly the
+# values extract_schema's platform map emits. For legacy (pre-1.2) YAML these
+# are the only platforms whose row_count can be trusted as true cardinality;
+# anything else (flatfile, unknown, missing) recorded the profiling-window
+# size under that name (DD-156 / #422).
+_WAREHOUSE_PLATFORMS = {
+    "fabric-warehouse",
+    "fabric-lakehouse",
+    "databricks",
+    "snowflake",
+    "postgres",
+}
 
 
 @dataclass
@@ -273,6 +286,47 @@ def _merge_samples_from_file(schema_dir: Path, tbl_name: str, tbl_data: dict) ->
             col["samples"] = col_samples[name][:5]
 
 
+def normalize_profiling_evidence(data: dict) -> dict:
+    """Normalize legacy (v1.0/1.1) profiling fields to v1.2 semantics (#422).
+
+    Before v1.2, ``row_count`` meant true cardinality on the warehouse path
+    (full-table ``COUNT(*)``) but profiling-window size on the flatfile path.
+    v1.2 splits the two: ``row_count`` = true cardinality only (omitted when
+    unknown), ``rows_sampled`` = profiling-window size.
+
+    For legacy data the discriminator is the platform ALLOWLIST: only the
+    platforms extract_schema emits keep ``row_count``; ``flatfile``,
+    ``unknown``, or a missing platform mean the recorded value was a window
+    size, so it is reinterpreted as ``rows_sampled``. Mutates and returns
+    ``data``; idempotent; a no-op for v1.2 input.
+    """
+    if str(data.get("version", "")) not in ("1.0", "1.1"):
+        return data
+    if str(data.get("platform") or "") in _WAREHOUSE_PLATFORMS:
+        return data
+    for tbl in data.get("tables", []):
+        row_count = tbl.pop("row_count", None)
+        if row_count is not None and tbl.get("rows_sampled") is None:
+            tbl["rows_sampled"] = row_count
+    return data
+
+
+def _distinct_scope(row_count: int | None, rows_sampled: int | None) -> str | None:
+    """Derive kairos-bronze:distinctScope from the v1.2 evidence pair (#422).
+
+    "table"  — distinct counts are full-table cardinality (row_count known and
+               the profiling window, if recorded, covered every row).
+    "sample" — distinct counts were observed within a profiling window.
+    None     — no evidence either way (both fields absent): the predicate is
+               OMITTED rather than asserted, so legacy/unknown stays legible.
+    """
+    if row_count is None and rows_sampled is None:
+        return None
+    if row_count is not None and (rows_sampled is None or rows_sampled == row_count):
+        return "table"
+    return "sample"
+
+
 # --------------------------------------------------------------------------- #
 # URI Generation (stable, deterministic)
 # --------------------------------------------------------------------------- #
@@ -380,10 +434,19 @@ def generate_vocabulary_ttl(data: dict) -> str:
         if pk_cols:
             g.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_cols))))
 
-        # Row count (v1.1 enrichment)
+        # Profiling evidence (v1.2, #422): rowCount = true cardinality only;
+        # rowsSampled = profiling-window size; distinctScope derived from both.
         row_count = tbl.get("row_count")
         if row_count is not None:
             g.add((tbl_uri, KAIROS_BRONZE.rowCount, Literal(row_count, datatype=XSD.integer)))
+        rows_sampled = tbl.get("rows_sampled")
+        if rows_sampled is not None:
+            g.add(
+                (tbl_uri, KAIROS_BRONZE.rowsSampled, Literal(rows_sampled, datatype=XSD.integer))
+            )
+        scope = _distinct_scope(row_count, rows_sampled)
+        if scope is not None:
+            g.add((tbl_uri, KAIROS_BRONZE.distinctScope, Literal(scope)))
 
         # Incremental column
         inc_col = tbl.get("incremental_column")
@@ -607,9 +670,16 @@ def _add_table_to_graph(g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef
     if pk_cols:
         g.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_cols))))
 
+    # Profiling evidence (v1.2, #422) — keep in sync with generate_vocabulary_ttl.
     row_count = tbl.get("row_count")
     if row_count is not None:
         g.add((tbl_uri, KAIROS_BRONZE.rowCount, Literal(row_count, datatype=XSD.integer)))
+    rows_sampled = tbl.get("rows_sampled")
+    if rows_sampled is not None:
+        g.add((tbl_uri, KAIROS_BRONZE.rowsSampled, Literal(rows_sampled, datatype=XSD.integer)))
+    scope = _distinct_scope(row_count, rows_sampled)
+    if scope is not None:
+        g.add((tbl_uri, KAIROS_BRONZE.distinctScope, Literal(scope)))
 
     inc_col = tbl.get("incremental_column")
     if inc_col:
@@ -775,6 +845,38 @@ def _sync_managed_sample_predicates(
                         Literal(" | ".join(str(item) for item in enum_values)),
                     )
                 )
+
+
+def _sync_managed_profiling_predicates(
+    graph: Graph,
+    data: dict,
+    base_ns: Namespace,
+) -> None:
+    """Replace profiling-evidence predicates for current tables during merge (#422).
+
+    rowCount/rowsSampled/distinctScope are introspection-owned, like
+    dataType/nullable/sampleValues: a re-import must replace stale values in
+    place, otherwise a monolithic TTL merged over legacy output would keep the
+    old window-sized rowCount forever while the freshly generated per-table
+    files carry v1.2 semantics — contradicting each other in the combined graph.
+    """
+    for table in data.get("tables", []):
+        subject = _table_uri(base_ns, str(table.get("name", "")))
+        graph.remove((subject, KAIROS_BRONZE.rowCount, None))
+        graph.remove((subject, KAIROS_BRONZE.rowsSampled, None))
+        graph.remove((subject, KAIROS_BRONZE.distinctScope, None))
+
+        row_count = table.get("row_count")
+        if row_count is not None:
+            graph.add((subject, KAIROS_BRONZE.rowCount, Literal(row_count, datatype=XSD.integer)))
+        rows_sampled = table.get("rows_sampled")
+        if rows_sampled is not None:
+            graph.add(
+                (subject, KAIROS_BRONZE.rowsSampled, Literal(rows_sampled, datatype=XSD.integer))
+            )
+        scope = _distinct_scope(row_count, rows_sampled)
+        if scope is not None:
+            graph.add((subject, KAIROS_BRONZE.distinctScope, Literal(scope)))
 
 
 def merge_with_existing(data: dict, existing_path: Path) -> tuple[str, ChangeReport]:
@@ -1025,6 +1127,7 @@ def merge_with_existing(data: dict, existing_path: Path) -> tuple[str, ChangeRep
             existing.add((tbl_uri, KAIROS_BRONZE.primaryKeyColumns, Literal(" ".join(pk_names))))
 
     _sync_managed_sample_predicates(existing, data, base_ns)
+    _sync_managed_profiling_predicates(existing, data, base_ns)
     sanitize_vocabulary_graph(existing)
 
     return (
@@ -1069,6 +1172,10 @@ def run_import_source(
 
     if system_name:
         data["system"] = system_name
+
+    # Single choke point (#422): reinterpret legacy row_count before any
+    # consumer (enrichment, TTL generation, merge) sees the data.
+    data = normalize_profiling_evidence(data)
 
     # Run enrichment if enabled and data has samples (v1.1)
     if enrich and _has_enrichable_data(data):

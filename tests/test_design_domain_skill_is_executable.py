@@ -120,6 +120,57 @@ def test_the_skills_registration_command_registers_the_domain(tmp_path):
             assert f"https://{_COMPANY}/ont/{_DOMAIN}" in catalog, catalog
 
 
+def test_the_skills_pre_registration_validate_all_command_runs_clean(tmp_path):
+    """The step-9 `validate --all --domain <domain>` line must execute and pass.
+
+    Regex is `validate --all`, NOT bare `validate` — the extractor takes the first
+    match and a bare pattern would pick Gate 5's `validate --syntax` line. On this
+    no-refmodels fixture hub the run must exit 0: DD-155's resolvability
+    short-circuit skips the Managed Import Completeness section entirely when no
+    reference models are present.
+    """
+    command_line = _extract_command(r"validate --all")
+    runner = CliRunner()
+
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            bootstrap = runner.invoke(
+                cli,
+                ["init", "--company-domain", _COMPANY, "--skip-refmodels"],
+            )
+            assert bootstrap.exit_code == 0, bootstrap.output
+
+            hub = Path("ontology-hub")
+            _write_domain_ttl(hub, _DOMAIN)
+            # `validate` hard-gates on discovery evidence (DD-148); a minimal
+            # authored (non-template) glossary satisfies "discovery ran".
+            (hub / "businessdiscovery" / "glossary.ttl").write_text(
+                """@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+<https://example.test/glossary#order> a skos:Concept ;
+    skos:prefLabel "Order"@en .
+""",
+                encoding="utf-8",
+            )
+            register = runner.invoke(
+                cli,
+                [
+                    "init",
+                    "--domain",
+                    _DOMAIN,
+                    "--company-domain",
+                    _COMPANY,
+                    "--skip-refmodels",
+                ],
+            )
+            assert register.exit_code == 0, register.output
+
+            # Step 9's pre-registration full run, exactly as the skill publishes it.
+            argv = _argv(command_line, {"domain": _DOMAIN})
+            result = runner.invoke(cli, argv)
+            assert result.exit_code == 0, result.output
+
+
 def test_the_skills_guard_scope_allow_globs_match_the_paths_it_permits(tmp_path):
     """The published `--allow` globs must match the repo-root-relative paths git reports.
 
@@ -149,6 +200,37 @@ def test_the_skills_guard_scope_allow_globs_match_the_paths_it_permits(tmp_path)
             "A hub-relative glob does not match repo-root-relative porcelain output "
             "(#329) — use a leading '*'."
         )
+
+
+def test_the_skills_ownership_explain_command_exits_clean(tmp_path):
+    """Gate 3's `domain-coverage --explain <domain>` line must run and exit 0.
+
+    Regex is `domain-coverage --explain` — distinct from every other extraction
+    (`init --domain`, `guard-scope --check-since`, `validate --all`). On this
+    no-refmodels fixture hub the command must take DD-157's clean informational
+    path (no accelerator blueprint → notice + exit 0), exactly what the skill
+    promises: "On a hub without reference models both print an informational
+    notice and exit 0".
+    """
+    command_line = _extract_command(r"domain-coverage --explain")
+    runner = CliRunner()
+
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            bootstrap = runner.invoke(
+                cli,
+                ["init", "--company-domain", _COMPANY, "--skip-refmodels"],
+            )
+            assert bootstrap.exit_code == 0, bootstrap.output
+
+            hub = Path("ontology-hub")
+            _write_domain_ttl(hub, _DOMAIN)
+
+            # Gate 3's ownership confirmation step, exactly as the skill publishes it.
+            argv = _argv(command_line, {"domain": _DOMAIN})
+            result = runner.invoke(cli, argv)
+            assert result.exit_code == 0, result.output
 
 
 def test_both_skill_copies_publish_the_same_commands():
