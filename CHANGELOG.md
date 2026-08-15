@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`source-privacy` now detects geographic coordinates in the persistence path** (#423, closing the
+  deferral recorded in the DD-075 amendment). A column whose name carries a full-word `latitude`/
+  `longitude`/`lng`/`coordinate(s)` token and whose value is a numeric literal with a textual fractional
+  part inside the token's range (latitude [-90, 90]; longitude/lng [-180, 180]; coordinate or mixed tokens
+  the union [-180, 180]) — or a single-column `"lat,lon"` comma pair — is persisted as an opaque
+  `<redacted kind=location …>` token. Detection pairs name with value shape and never touches declared
+  datatypes, so the #302 numeric/timestamp exemptions and the datatype-blind residual gate are unaffected;
+  nested `{"latitude": …}` JSON values are covered. Deliberately still not checked (deferred to the
+  sibling-address follow-on): `lat`/`lon`/`geo`-abbreviated column names (false-positive on
+  latency/geo-score-class columns) and WKT geometries — the clean-result coverage message now states
+  exactly this residual. Display and suggestion paths (`propose-alignment` examples, `suggest-shapes` PII
+  classification) deliberately gain no location awareness. `SAMPLE_PRIVACY_VERSION` bumps to "2" as inert
+  bookkeeping; **existing hubs keep previously persisted coordinates until `source-privacy --fix` is run
+  once**.
 - **`discovery-conformance judgments-template`** (#410). Phase 2.5 of `kairos-design-discovery` forbids
   hand-transcribing or hand-scripting the concept list, then required a `--judgments-file` whose schema had no
   scaffold and incomplete documentation — so every author had to write exactly the serializer the skill

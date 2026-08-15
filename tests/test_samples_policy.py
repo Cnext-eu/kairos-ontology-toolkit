@@ -5,8 +5,10 @@
 import pytest
 
 from kairos_ontology.core._samples import (
+    DETECTED_PII_KINDS,
     PII_KEYWORDS,
     SamplePrivacyError,
+    _kind_from_name,
     _kind_from_text,
     assert_no_unredacted_sample_pii,
     detect_sample_pii_kind,
@@ -408,3 +410,174 @@ class TestExemptionsDoNotWeakenDetection:
         )
         assert is_redaction_token(redacted)
         assert finding is not None and finding.kind == expected_kind
+
+
+class TestLocationDetection:
+    """Geographic coordinates in the persistence path (#423).
+
+    Name+value pairing: a full-word location token in the column name AND a value
+    that is a numeric literal with a TEXTUAL fractional part inside the token's
+    range (or a comma-separated pair of such literals in the union range).
+    """
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("latitude", "51.334217"),
+            ("Latitude", "-89.999999"),
+            ("longitude", "4.123456"),
+            ("lng", "-4.5"),
+            ("coordinate", "121.75"),
+            # "51.0" carries a textual fraction and is a real coordinate: the rule is
+            # the string form's fraction group, never float.is_integer().
+            ("latitude", "51.0"),
+            # float values are str()'d before matching.
+            ("CoordinateLatitude", 51.334217),
+            # Single-column "lat,lon" pair, with and without a space.
+            ("coordinates", "51.33,4.12"),
+            ("coordinates", "51.33, 4.12"),
+        ],
+    )
+    def test_coordinate_column_with_in_range_fraction_is_redacted(self, column, value):
+        redacted, finding = redact_sample_value(
+            value,
+            table="stops",
+            column=column,
+            data_type="decimal(9,6)",
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == "location"
+
+    def test_persisted_token_is_opaque_and_typed(self):
+        redacted, _ = redact_sample_value(
+            "51.334217",
+            table="stops",
+            column="latitude",
+            data_type="decimal(9,6)",
+        )
+        assert redacted == ("<redacted kind=location source=stops.latitude datatype=decimal(9,6)>")
+        assert is_redaction_token(redacted)
+
+    def test_longitude_value_in_coordinates_column_uses_union_range(self):
+        # A "coordinates" column can hold either axis: 91.5 exceeds the latitude
+        # range but is a legitimate longitude, so the union range [-180, 180] applies.
+        redacted, finding = redact_sample_value(
+            "91.5",
+            table="stops",
+            column="coordinates",
+            data_type="varchar(50)",
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == "location"
+
+    def test_nested_dict_latitude_is_redacted(self):
+        redacted, finding = redact_sample_value(
+            {"status": "open", "latitude": 51.33},
+            table="events",
+            column="payload",
+            data_type="json",
+        )
+        assert redacted == ("<redacted kind=location source=events.payload datatype=json>")
+        assert finding is not None and finding.kind == "location"
+
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [
+            ("latitude", "91.5"),  # out of the latitude range [-90, 90]
+            ("latitude", "-90.5"),
+            ("longitude", "180.5"),  # out of [-180, 180]
+            ("latitude", "51"),  # bare integer: no textual fractional part
+            ("latitude", 51),
+            ("latitude", "active"),  # not numeric at all
+            # Full-word tokens only: *lat*/*lon* substrings must never fire.
+            ("relationship", "51.33"),
+            ("platform", "4.12"),
+            ("LatestUpdate", "51.33"),
+            ("long_description", "4.12"),
+            # lat/lon/geo abbreviations are deliberately deferred (#423 follow-on).
+            ("latency_ms", "12.5"),
+            ("geo_score", "0.87"),
+            # A pair needs exactly two fractional in-range parts.
+            ("coordinates", "51.33,4.12,9.81"),
+            ("coordinates", "51.33,4"),
+            ("coordinates", "51.33,jane"),
+        ],
+    )
+    def test_non_coordinate_values_survive(self, column, value):
+        redacted, finding = redact_sample_value(
+            value,
+            table="stops",
+            column=column,
+            data_type="varchar(50)",
+        )
+        assert redacted == value
+        assert finding is None
+
+    def test_name_keyword_kinds_keep_priority_over_location(self):
+        # The location check sits AFTER _kind_from_name: health_latitude stays health.
+        assert detect_sample_pii_kind("health_latitude", "51.33") == "health"
+
+    def test_shaped_value_in_location_column_is_still_caught(self):
+        # ...and BEFORE the nested/text check, which still catches shaped values.
+        assert detect_sample_pii_kind("latitude", "jane@acme.com") == "email"
+
+    def test_location_kind_is_derived_into_detected_kinds(self):
+        assert "location" in DETECTED_PII_KINDS
+
+    def test_redacted_coordinates_pass_the_persistence_gate(self):
+        """The redactor and the datatype-blind gate must never disagree (#423).
+
+        Mirrors ``test_redacted_rows_pass_the_persistence_gate``: the gate receives
+        no ``column_types``, so the location detector must key on name+value only.
+        """
+        rows = [
+            {
+                "latitude": "51.334217",
+                "longitude": "4.123456",
+                "coordinates": "51.33, 4.12",
+                "relationship": "51.33",
+                "platform": "4.12",
+                "LatestUpdate": "51.33",
+                "long_description": "4.12",
+                "quantity": "51",
+            }
+        ]
+        safe_rows, findings = redact_sample_rows(rows, table="stops")
+        assert_no_unredacted_sample_pii(safe_rows, table="stops")
+        assert {finding.column for finding in findings} == {
+            "latitude",
+            "longitude",
+            "coordinates",
+        }
+        assert all(finding.kind == "location" for finding in findings)
+        assert is_redaction_token(safe_rows[0]["latitude"])
+        assert is_redaction_token(safe_rows[0]["longitude"])
+        assert is_redaction_token(safe_rows[0]["coordinates"])
+        assert safe_rows[0]["relationship"] == "51.33"
+        assert safe_rows[0]["platform"] == "4.12"
+        assert safe_rows[0]["LatestUpdate"] == "51.33"
+        assert safe_rows[0]["long_description"] == "4.12"
+        assert safe_rows[0]["quantity"] == "51"
+
+
+class TestLocationContainment:
+    """Location awareness must never reach the display/suggestion paths (#423).
+
+    ``is_pii_column`` feeds ``propose_alignment`` and ``suggest_shapes``; a latitude
+    column must keep raw display examples there while the persistence path redacts.
+    The detector is wired into ``detect_sample_pii_kind`` only — never into
+    ``_kind_from_name``.
+    """
+
+    def test_is_pii_column_stays_false_for_coordinate_columns(self):
+        assert not is_pii_column("latitude")
+        assert not is_pii_column("latitude", sample_values=["51.334217"])
+        assert not is_pii_column("longitude", target_property="longitude")
+        assert not is_pii_column("lng")
+        assert not is_pii_column("coordinates")
+
+    def test_kind_from_name_stays_none_for_coordinate_columns(self):
+        assert _kind_from_name("latitude") is None
+        assert _kind_from_name("longitude") is None
+        assert _kind_from_name("lng") is None
+        assert _kind_from_name("coordinates") is None

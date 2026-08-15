@@ -240,7 +240,7 @@ class TestWriteSourceDir:
         assert samples["sample_privacy"]["policy"] == "redact-detected-pii"
 
         manifest = yaml.safe_load((output / "_manifest.yaml").read_text(encoding="utf-8"))
-        assert manifest["sample_privacy"]["version"] == "1"
+        assert manifest["sample_privacy"]["version"] == "2"
 
     def test_persists_timestamps_and_numbers_but_redacts_text_pii(self, tmp_path):
         """End-to-end through the function the importers call (#302).
