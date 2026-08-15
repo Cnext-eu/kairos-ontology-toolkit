@@ -47,7 +47,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from .archetype_loader import Archetype, VALID_TIERS
-from .hub_utils import is_authored_discovery_ttl
+from .hub_utils import is_authored_discovery_ttl, is_scaffold_placeholder_text
 
 #: Schema version of the conformance artifact itself.
 #: v2 (DD-148) added ``mode``, ``archetype.confirmed_by``, and per-concept
@@ -63,6 +63,18 @@ VALID_MODES = {"interactive", "fleet"}
 
 #: Valid values for the per-concept ``decided_by`` field.
 VALID_DECIDED_BY = {"user", "ai", "autopilot"}
+
+#: The outcome that means "the SME confirmed this does not apply to this business". It is the
+#: only outcome ``design_landscape`` treats as the *opposite* of demand evidence, which is why
+#: recording it against a concept that demonstrably has source data is worth warning about
+#: (issue #507). Note the hyphen: the *tier* ``not_applicable`` (underscore) is a different,
+#: catalog-side thing entirely -- see :func:`validate_artifact`'s docstring.
+OUTCOME_NOT_APPLICABLE = "not-applicable"
+
+#: Tier whose default outcome flips when source data exists (issue #507). ``required`` and
+#: ``recommended`` are deliberately untouched: a required concept is in scope regardless of what
+#: the sources happen to contain, so "we found data" is not new information about it.
+DATA_DRIVEN_TIER = "optional"
 
 
 class ConformanceArtifactError(Exception):
@@ -183,6 +195,7 @@ def build_artifact(
     discovery_doc: str | None = None,
     generated_by: str = "kairos-design-discovery",
     valid_tiers: tuple[str, ...] | None = None,
+    registered_concepts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the conformance artifact mapping.
 
@@ -210,6 +223,15 @@ def build_artifact(
             :func:`~kairos_ontology.core.archetype_loader.load_valid_tiers`. Which tiers are
             seeded never affects validity: :func:`validate_artifact` compares scorecards with
             empty buckets normalised away.
+        registered_concepts: source-discovered concepts the archetype catalog does not contain
+            (issue #505 Layer B), mirrored from the hub's own
+            ``integration/discovery/registered-concepts.yaml``. Written as a **sibling** of
+            ``core_concepts``, never merged into it: :func:`validate_artifact`'s coverage and
+            identity checks require every ``core_concepts`` entry to be a real concept of
+            *archetype*'s catalog, and ``concept_set_hash`` staleness would fire on every
+            registration — registering a concept must not make the archetype look wrong. They
+            are likewise excluded from ``scorecard``, so archetype-conformance percentages stay
+            comparable across hubs.
     """
     if archetype_confirmed_by != "human":
         raise ConformanceArtifactError(
@@ -234,6 +256,7 @@ def build_artifact(
         "discovery_doc": discovery_doc,
         "ref_model_modules": [{"iri": m.iri, "tier": m.tier} for m in archetype.ref_model_modules],
         "core_concepts": outcomes,
+        "registered_concepts": registered_concepts or [],
         "topology_confirmations": topology_confirmations or [],
         "cardinality_answers": cardinality_answers or [],
         "scorecard": compute_scorecard(outcomes, valid_tiers),
@@ -476,6 +499,37 @@ def validate_artifact(
                 f"{sorted(VALID_DECIDED_BY)}, got {decided_by!r}."
             )
 
+    # Issue #505 Layer B: registered concepts validate against their own rules and are
+    # deliberately excluded from every archetype check below (coverage, identity, staleness) and
+    # from the scorecard — they are hub-side additions, not claims about the catalog.
+    registered = artifact.get("registered_concepts")
+    if registered is not None:
+        if not isinstance(registered, list):
+            errors.append("'registered_concepts' must be a list when present.")
+        else:
+            from .registered_concepts import validate_registered
+
+            catalog_uris = (
+                {concept.uri for concept in archetype.core_concepts}
+                if archetype is not None
+                else set()
+            )
+            errors.extend(
+                f"registered_concepts: {message}" for message in validate_registered(registered)
+            )
+            for entry in registered:
+                if isinstance(entry, dict) and entry.get("uri") in catalog_uris:
+                    errors.append(
+                        f"registered_concepts: {entry['uri']} is a core concept of archetype "
+                        f"{archetype.id!r}; it belongs in 'core_concepts' with a discovery "
+                        "judgment, not in a hub-side registration."
+                    )
+                if isinstance(entry, dict) and entry.get("uri") in seen_uris:
+                    errors.append(
+                        f"registered_concepts: {entry['uri']} is also recorded in "
+                        "'core_concepts'; a concept cannot be both judged and registered."
+                    )
+
     scorecard_comparable = all(
         isinstance(c, dict) and isinstance(c.get("outcome"), str) and isinstance(c.get("tier"), str)
         for c in concepts
@@ -537,6 +591,103 @@ def validate_artifact(
                 f"'concept_set_hash' no longer match archetype {archetype.id!r} — rerun "
                 "kairos-design-discovery against the current catalog."
             )
+    return errors
+
+
+def _contradicted_not_applicable(
+    outcomes: list[dict[str, Any]], evidence: dict[str, Any]
+) -> list[tuple[dict[str, Any], Any]]:
+    """Return ``(entry, evidence)`` for every source-contradicted ``not-applicable`` judgment.
+
+    "Contradicted" = tier ``optional``, outcome ``not-applicable``, and
+    :mod:`kairos_ontology.core.conformance_evidence` found real source data for that concept.
+    Deliberately restricted to the ``optional`` tier: for a ``required`` concept the presence
+    of source data is not new information (it is in scope either way), and for ``deviates``/
+    ``partial`` the concept already counts as evidence downstream, so there is nothing to warn
+    about.
+    """
+
+    contradicted: list[tuple[dict[str, Any], Any]] = []
+    for entry in outcomes:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("tier") != DATA_DRIVEN_TIER:
+            continue
+        if entry.get("outcome") != OUTCOME_NOT_APPLICABLE:
+            continue
+        found = evidence.get(entry.get("uri"))
+        if found is not None:
+            contradicted.append((entry, found))
+    return contradicted
+
+
+def advise_artifact(
+    artifact: dict[str, Any], evidence: dict[str, Any] | None
+) -> list[str]:
+    """Return advisory (never blocking) warnings about *artifact*, given source *evidence*.
+
+    Deliberately **separate** from :func:`validate_artifact` rather than folded into it. That
+    function's contract is "list of errors"; every caller treats a non-empty return as a
+    failure, and ``discovery-conformance validate`` exits non-zero on it. Adding an
+    evidence-driven error there would retroactively fail re-validation of every artifact
+    already on disk that recorded a ``not-applicable`` the sources contradict -- the CLdN hub
+    alone has 22 -- turning a review prompt into an unconvergeable gate on work already done.
+
+    ``build`` *does* enforce the rationale requirement, because that is new authoring: see
+    :func:`data_driven_build_errors`.
+    """
+
+    if not evidence:
+        return []
+    concepts = artifact.get("core_concepts")
+    if not isinstance(concepts, list):
+        return []
+    warnings = []
+    for entry, found in _contradicted_not_applicable(concepts, evidence):
+        label = entry.get("label") or entry.get("uri") or "<unknown concept>"
+        warnings.append(
+            f"{label} (tier {DATA_DRIVEN_TIER}) is judged '{OUTCOME_NOT_APPLICABLE}' but "
+            f"{found.describe()}. If the data exists and the concept is optional, model it; "
+            "keep the finding only if the concept is genuinely inapplicable to this business."
+        )
+    return warnings
+
+
+def data_driven_build_errors(
+    outcomes: list[dict[str, Any]], evidence: dict[str, Any] | None
+) -> list[str]:
+    """Errors that block ``discovery-conformance build`` -- new authoring only (issue #507).
+
+    One rule: a source-contradicted ``not-applicable`` must carry a real, written rationale.
+    The SME keeps full authority to record the finding -- ``not-applicable`` is never removed
+    as an option -- but overriding deterministic evidence has to be a deliberate, explained
+    decision rather than the default an interview fell into. A missing, blank, or still-
+    sentinel ``rationale`` is the signal that no such decision was made.
+
+    Enforced at ``build`` (where a judgments file is being authored *now*) and not in
+    :func:`validate_artifact` (which also re-reads artifacts written long ago) -- see
+    :func:`advise_artifact` for why that split matters.
+    """
+
+    if not evidence:
+        return []
+    errors = []
+    for entry, found in _contradicted_not_applicable(outcomes, evidence):
+        rationale = entry.get("rationale")
+        has_rationale = (
+            isinstance(rationale, str)
+            and rationale.strip()
+            and not is_scaffold_placeholder_text(rationale)
+        )
+        if has_rationale:
+            continue
+        label = entry.get("label") or entry.get("uri") or "<unknown concept>"
+        errors.append(
+            f"{label} (tier {DATA_DRIVEN_TIER}) is judged '{OUTCOME_NOT_APPLICABLE}' but "
+            f"{found.describe()}. Either change the outcome to 'conforms' (data exists and the "
+            "concept is optional), or record an explicit 'rationale' saying why the concept "
+            "does not apply despite that data."
+        )
     return errors
 
 
@@ -652,6 +803,18 @@ def open_questions(
                     "scope_reason": scope_reason,
                 }
             )
+    # Issue #505 Layer B: an AI-made *registration* adds a concept the blueprint deliberately
+    # did not include -- a strictly larger authority than judging one it did. It is gated by
+    # the same DD-148 rule, through the same list, so `check_discovery_gate` blocks
+    # compile/validate on it with no extra call site.
+    from .registered_concepts import registered_open_questions
+
+    questions.extend(
+        registered_open_questions(
+            [c for c in artifact.get("registered_concepts") or [] if isinstance(c, dict)],
+            domains=domains,
+        )
+    )
     return questions
 
 

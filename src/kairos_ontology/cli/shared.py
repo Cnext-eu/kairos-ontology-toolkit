@@ -81,6 +81,9 @@ _SKILL_COVERED_COMMANDS = {
     "analyse-sources": "kairos-design-source",
     "draft-model-report": "kairos-design-domain",
     "discovery-conformance": "kairos-design-discovery",
+    # kairos-design-source, not -discovery: a registration is proposed from source analysis
+    # (analyse-sources' unassigned tables), which is that skill's own output (#505 Layer B).
+    "register-concept": "kairos-design-source",
     "init-dataplatform": "kairos-setup-dataplatform",
     "suggest-shapes": "kairos-execute-validate",
     "mdm-validate": "kairos-design-mdm",

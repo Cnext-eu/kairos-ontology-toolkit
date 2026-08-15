@@ -67,6 +67,7 @@ from .sources import (
     propose_alignment_cmd,
     discovery_status_cmd,
     discovery_conformance,
+    register_concept_cmd,
     build_glossary_cmd,
     list_patterns_cmd,
 )
@@ -288,6 +289,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(propose_alignment_cmd)
     group.add_command(discovery_status_cmd)
     group.add_command(discovery_conformance)
+    group.add_command(register_concept_cmd)
     group.add_command(build_glossary_cmd)
     group.add_command(list_patterns_cmd)
     group.add_command(resolve_ontology_cmd)

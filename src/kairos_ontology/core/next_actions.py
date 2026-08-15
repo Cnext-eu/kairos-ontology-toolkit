@@ -35,7 +35,11 @@ from enum import Enum
 #: and ``bind-deferred-domain`` (issue #496/#498, DD-160): affinity analysis and the
 #: binding inventory both existed but were never joined, so a domain holding real source
 #: data with nothing bound was invisible outside a hand-written report.
-SCHEMA_VERSION = 5
+#: v6 adds the registered-concept observation (``registered_concepts_unbound``) and its
+#: ``model-registered-concept`` action routed to kairos-design-domain (issue #505 Layer B,
+#: DD-162): registration records that a source-discovered concept belongs, but nothing routed
+#: anyone to actually model and bind it.
+SCHEMA_VERSION = 6
 
 
 class InputStatus(str, Enum):
@@ -111,6 +115,9 @@ ACTION_SKILLS: dict[str, str] = {
     # actually act on it.
     "model-data-driven-domain": "kairos-design-domain",
     "bind-deferred-domain": "kairos-design-mapping",
+    # #505 Layer B: registration records that a concept belongs and names its source
+    # evidence; authoring the class is still a domain-design decision.
+    "model-registered-concept": "kairos-design-domain",
     "design-domain": "kairos-design-domain",
     "generate-inventory": "kairos-design-domain",
     "author-binding": "kairos-design-mapping",
@@ -237,6 +244,10 @@ class HubInputSnapshot:
     #: Source-affinity vs modeled/bound domain coverage (issue #496/#498, DD-160). The
     #: all-empty default is the no-observation state.
     source_domain_coverage: SourceDomainCoverageObservation = SourceDomainCoverageObservation()
+    #: Registered source-discovered concepts with no EntityBinding yet (#505 Layer B). Zero
+    #: default is the no-observation state, so existing constructor call sites derive no
+    #: action -- same precedent as ``bi_concept_mappings``.
+    registered_concepts_unbound: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,6 +488,21 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 ),
                 command="kairos-ontology domain-coverage",
                 priority=24,
+            )
+        )
+    if snapshot.registered_concepts_unbound:
+        actions.append(
+            _action(
+                "model-registered-concept",
+                ActionStatus.RECOMMENDED,
+                rationale=(
+                    f"{snapshot.registered_concepts_unbound} source-discovered concept(s) are "
+                    "registered (#505) but no EntityBinding targets them. Registration records "
+                    "that the concept belongs and names the source evidence; it does not model "
+                    "or bind it. Author the class in a domain ontology, then bind it."
+                ),
+                command="kairos-ontology design-landscape --format json",
+                priority=26,
             )
         )
     if coverage.deferred:

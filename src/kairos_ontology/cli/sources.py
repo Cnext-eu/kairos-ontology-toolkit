@@ -1701,6 +1701,183 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only, output_f
         click.echo("\n✅ All discovery documents are processed and up to date.")
 
 
+@click.command(name="register-concept")
+@click.option("--uri", required=True, help="HTTP(S) concept URI with a local name.")
+@click.option("--label", required=True, help="Human-readable concept label.")
+@click.option("--source-system", required=True, help="Source system the evidence comes from.")
+@click.option(
+    "--source-evidence",
+    "source_evidence",
+    multiple=True,
+    required=True,
+    help="'<table>' or '<table>.<column>' backing this concept. Repeatable.",
+)
+@click.option(
+    "--rationale",
+    required=True,
+    help="Why this concept belongs in scope despite the archetype not listing it.",
+)
+@click.option(
+    "--domain",
+    "likely_domains",
+    multiple=True,
+    help="Domain id(s) this concept informs. Repeatable; omit only for genuinely "
+    "cross-cutting concepts (an empty tag stays in scope for every domain's gate).",
+)
+@click.option(
+    "--decided-by",
+    type=click.Choice(sorted(("user", "ai", "autopilot"))),
+    default="user",
+    show_default=True,
+    help="Who made this registration. An 'ai'/'autopilot' registration without a "
+    "--confidence, or with --needs-confirmation, blocks compile/validate until a human "
+    "confirms it (DD-148).",
+)
+@click.option("--confidence", type=float, default=None, help="Float between 0.0 and 1.0.")
+@click.option(
+    "--needs-confirmation",
+    is_flag=True,
+    default=False,
+    help="Mark this registration as still needing human confirmation.",
+)
+@click.option("--reference", "references", multiple=True, help="Supporting reference. Repeatable.")
+@click.option(
+    "--force", is_flag=True, default=False, help="Replace an existing registration for this URI."
+)
+@click.option(
+    "--archetype",
+    "archetype_id",
+    default=None,
+    help="Archetype to check the URI against (default: the hub artifact's own archetype.id). "
+    "A URI already in that catalog is rejected — it belongs in core_concepts.",
+)
+@_REFMODELS_OPTION
+@_FORMAT_OPTION
+def register_concept_cmd(
+    uri,
+    label,
+    source_system,
+    source_evidence,
+    rationale,
+    likely_domains,
+    decided_by,
+    confidence,
+    needs_confirmation,
+    references,
+    force,
+    archetype_id,
+    refmodels_root,
+    output_format,
+):
+    """Register a source-discovered concept the archetype catalog does not contain (#505).
+
+    The archetype catalog is a shared contract across every hub that uses it, so it is
+    deliberately not the place to record one business's extra concepts. But before this
+    command there was no other place either: discovery only ever iterates the catalog, so a
+    concept that exists in the source data and nowhere in the catalog could not be judged,
+    could not carry a ``likely_domains`` tag, never reached ``design-landscape``, and never
+    became an authored domain. On one real hub roughly ten BI-relevant concepts sat in that
+    hole (planning zones, tariff scales, empty-unit lifecycle, distance/toll matrix).
+
+    Writes ``integration/discovery/registered-concepts.yaml``, which
+    ``discovery-conformance build`` mirrors into the artifact's ``registered_concepts`` list —
+    a **sibling** of ``core_concepts``, never merged into it, so registering a concept never
+    makes the archetype's own coverage/identity/staleness checks fail.
+
+    Registered concepts always carry tier ``optional``: the source data argued them into
+    scope, no blueprint recommended them, and claiming otherwise would misrepresent an
+    obligation nobody made. ``--source-evidence`` and ``--rationale`` are both required —
+    registration is a claim about source data, and an unevidenced or unexplained claim is a
+    guess that the next reader cannot check.
+
+    \b
+    Example:
+      kairos-ontology register-concept \\
+        --uri https://acme.example/ont/logistics#PlanningZone --label "Planning Zone" \\
+        --source-system qlik --source-evidence planning_zones \\
+        --source-evidence zone_assignments --domain logistics \\
+        --rationale "Qlik reports scope capacity by zone; 1000 rows across 2 tables."
+    """
+    from ..core.archetype_loader import ArchetypeError, load_archetype
+    from ..core.conformance_artifact import ARTIFACT_RELPATH, read_artifact
+    from ..core.hub_utils import find_hub_root
+    from ..core.registered_concepts import RegisteredConceptError, register_concept
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+
+    # Resolve the archetype so a URI the catalog already contains is rejected rather than
+    # routed around the coverage checks. Best-effort: a hub with no artifact and no
+    # --archetype simply gets no catalog to check against, which is reported, not fatal.
+    resolved_id = archetype_id
+    if resolved_id is None:
+        artifact_path = hub_root / ARTIFACT_RELPATH
+        if artifact_path.is_file():
+            try:
+                resolved_id = (read_artifact(artifact_path).get("archetype") or {}).get("id")
+            except Exception:  # noqa: BLE001 - advisory lookup only
+                resolved_id = None
+    catalog_uris: set[str] = set()
+    if resolved_id:
+        try:
+            archetype = load_archetype(_resolve_conformance_root(refmodels_root), resolved_id)
+            catalog_uris = {concept.uri for concept in archetype.core_concepts}
+        except (ArchetypeError, SystemExit) as exc:
+            raise click.ClickException(
+                f"Could not resolve archetype {resolved_id!r} to check the URI against: {exc}"
+            ) from exc
+    else:
+        click.echo(
+            "⚠ No archetype resolved (no --archetype and no conformance artifact); the URI was "
+            "not checked against a catalog.",
+            err=True,
+        )
+
+    try:
+        path, entry = register_concept(
+            hub_root,
+            uri=uri,
+            label=label,
+            source_system=source_system,
+            source_evidence=source_evidence,
+            rationale=rationale,
+            likely_domains=likely_domains,
+            decided_by=decided_by,
+            confidence=confidence,
+            needs_confirmation=needs_confirmation,
+            references=references,
+            catalog_uris=catalog_uris,
+            force=force,
+        )
+    except RegisteredConceptError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"✅ Registered {entry.label} ({entry.uri}) → {path}", err=True)
+    if entry.decided_by in ("ai", "autopilot") and (
+        entry.needs_confirmation or entry.confidence is None
+    ):
+        click.echo(
+            "⚠ This registration is AI-made and unresolved; compile/validate will block until "
+            "a human confirms it (DD-148).",
+            err=True,
+        )
+    if not entry.likely_domains:
+        click.echo(
+            "⚠ No --domain tagged: this concept is treated as cross-cutting and stays in scope "
+            "for every domain's discovery gate.",
+            err=True,
+        )
+    click.echo(
+        "ℹ Re-run 'discovery-conformance build' to mirror this into the conformance artifact.",
+        err=True,
+    )
+    _emit({"schema_version": 1, "path": str(path), "concept": entry.to_dict()}, output_format)
+
+
 @click.group(name="discovery-conformance")
 def discovery_conformance():
     """Core Concepts Conformance helpers for the design-discovery skill (DD-090).
@@ -1949,6 +2126,27 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, domains,
 
     click.echo(f"✅ Conformance artifact valid: {path}", err=True)
 
+    # Issue #507: advisory only here. Unlike `build`, this command also re-reads artifacts
+    # authored long ago, so a source-contradicted 'not-applicable' must prompt a review, not
+    # retroactively fail work already done.
+    if archetype is not None and hub_root is not None:
+        from ..core.conformance_evidence import (
+            archetype_concept_uris,
+            collect_concept_source_evidence,
+            concept_domains_from_outcomes,
+        )
+
+        _echo_data_driven_advisories(
+            artifact,
+            collect_concept_source_evidence(
+                archetype_concept_uris(archetype),
+                hub_root,
+                concept_domains=concept_domains_from_outcomes(
+                    artifact.get("core_concepts") or []
+                ),
+            ),
+        )
+
 
 @discovery_conformance.command(name="build")
 @click.option("--archetype", "archetype_id", required=True, help="Archetype id to build against.")
@@ -2047,10 +2245,16 @@ def conformance_build(
     )
     from ..core.conformance_artifact import (
         build_artifact,
+        data_driven_build_errors,
         derive_missing_identity,
         open_questions,
         validate_artifact,
         write_artifact,
+    )
+    from ..core.conformance_evidence import (
+        archetype_concept_uris,
+        collect_concept_source_evidence,
+        concept_domains_from_outcomes,
     )
     from ..core.hub_utils import find_hub_root
 
@@ -2101,6 +2305,32 @@ def conformance_build(
     # value is left untouched (validate_artifact still catches it below).
     core_concepts = derive_missing_identity(core_concepts, archetype)
 
+    # Issue #507: an optional-tier concept judged 'not-applicable' while the hub's own source
+    # analysis says data exists for it is the failure mode that deferred 20 concepts (and a
+    # 289K-row BI-relevant table) on the CLdN hub. Gate it here, at authoring time, and only
+    # here -- validate_artifact also re-reads artifacts written long ago, where the same rule
+    # would be an unconvergeable gate on work already done (see advise_artifact's docstring).
+    # Derived from likely_domains *after* derive_missing_identity, so tier is populated.
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=False)
+    evidence = {}
+    if hub_root is not None:
+        evidence = collect_concept_source_evidence(
+            archetype_concept_uris(archetype),
+            hub_root,
+            concept_domains=concept_domains_from_outcomes(core_concepts),
+        )
+    contradiction_errors = data_driven_build_errors(core_concepts, evidence)
+    if contradiction_errors:
+        click.echo(
+            f"❌ {len(contradiction_errors)} judgment(s) contradict the hub's own source "
+            "evidence (#507):",
+            err=True,
+        )
+        for message in contradiction_errors:
+            click.echo(f"   • {message}", err=True)
+        raise SystemExit(1)
+
     discovery_doc = judgments.get("discovery_doc")
     if not discovery_doc:
         try:
@@ -2122,6 +2352,19 @@ def conformance_build(
     refmodels_version = _refmodels_version(root)
     valid_tiers = load_valid_tiers(root)
 
+    # Issue #505 Layer B: mirror the hub's registered concepts into the artifact so every
+    # downstream consumer sees them through the one artifact it already reads. `build` is the
+    # mirror, never the writer -- `register-concept` owns the file.
+    registered: list = []
+    if hub_root is not None:
+        from ..core.registered_concepts import RegisteredConceptError, read_registered
+
+        try:
+            registered = read_registered(hub_root)
+        except RegisteredConceptError as exc:
+            click.echo(f"❌ {exc}", err=True)
+            raise SystemExit(2) from exc
+
     artifact = build_artifact(
         archetype=archetype,
         refmodels_version=refmodels_version,
@@ -2132,10 +2375,14 @@ def conformance_build(
         cardinality_answers=judgments.get("cardinality_answers"),
         discovery_doc=discovery_doc,
         valid_tiers=valid_tiers,
+        registered_concepts=registered,
     )
+    if registered:
+        click.echo(
+            f"ℹ Mirrored {len(registered)} registered concept(s) (#505) into the artifact.",
+            err=True,
+        )
 
-    cwd = Path.cwd()
-    hub_root = find_hub_root(cwd, require_model=False)
     if output_path:
         out_path = Path(output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2176,6 +2423,16 @@ def conformance_build(
 
         click.echo(f"✅ Conformance artifact valid: {out_path}", err=True)
 
+    _echo_data_driven_advisories(artifact, evidence)
+
+
+def _echo_data_driven_advisories(artifact, evidence) -> None:
+    """Print issue #507 source-evidence advisories to stderr. Never blocks."""
+    from ..core.conformance_artifact import advise_artifact
+
+    for message in advise_artifact(artifact, evidence):
+        click.echo(f"⚠ {message}", err=True)
+
 
 @discovery_conformance.command(name="judgments-template")
 @click.option(
@@ -2202,11 +2459,25 @@ def conformance_build(
 @click.option(
     "--overwrite", is_flag=True, default=False, help="Explicitly replace an existing file."
 )
+@click.option(
+    "--no-source-evidence",
+    is_flag=True,
+    default=False,
+    help="Do not join the hub's source analysis to the concept list (issue #507). Use when "
+    "running outside a hub, or to get the pre-#507 template verbatim.",
+)
 @_REFMODELS_OPTION
 @_FORMAT_OPTION
 @click.pass_context
 def conformance_judgments_template(
-    ctx, archetype_id, session_mode, output_path, overwrite, refmodels_root, output_format
+    ctx,
+    archetype_id,
+    session_mode,
+    output_path,
+    overwrite,
+    no_source_evidence,
+    refmodels_root,
+    output_format,
 ):
     """Scaffold a ``build --judgments-file`` template, one entry per archetype concept.
 
@@ -2234,9 +2505,22 @@ def conformance_judgments_template(
     ``conforms-with-rename``. Both fields are only valid on their respective outcomes
     — a stray ``rename_to`` on ``conforms`` or a stray ``deviation_reason`` on
     ``conforms`` will fail validation.
+
+    Source evidence (issue #507): when run inside a hub, each concept the hub's own
+    ``propose-alignment``/``analyse-sources`` output has data for gains a read-only
+    ``source_evidence`` block naming the actual tables, and an ``optional``-tier concept
+    with such evidence is pre-filled ``outcome: conforms`` instead of the sentinel — "if
+    data exists and the concept is optional, model it". Required/recommended concepts keep
+    their sentinel (they are in scope regardless of what the sources contain), and the SME
+    can still override any pre-fill. Pass ``--no-source-evidence`` to opt out.
     """
     from ..core.archetype_loader import ArchetypeError, load_archetype, load_outcome_codes
     from ..core.authoring_scaffolds import AuthoringScaffoldError, write_text
+    from ..core.conformance_artifact import DATA_DRIVEN_TIER
+    from ..core.conformance_evidence import (
+        archetype_concept_uris,
+        collect_concept_source_evidence,
+    )
     from ..core.hub_utils import find_hub_root, strip_doubled_hub_segment
 
     root = _resolve_conformance_root(refmodels_root)
@@ -2249,14 +2533,38 @@ def conformance_judgments_template(
     outcome_codes = load_outcome_codes(root)
     outcome_sentinel = f"<CONFIRM_OUTCOME:{'|'.join(outcome_codes)}>"
 
-    core_concepts = [
-        {
+    # Issue #507: join the hub's own source analysis to the concept list. `propose-alignment`
+    # and `analyse-sources` both run at Stage 1, well before this command at Stage 2, so the
+    # evidence is already on disk -- it was simply never surfaced to the interview. Without it
+    # the skill had no deterministic way to know a concept had data behind it, which is how 20
+    # optional-tier concepts (and a 289K-row BI-relevant table) were deferred on the CLdN hub.
+    evidence = {}
+    if not no_source_evidence:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+        if hub_root is not None:
+            # No concept_domains here: likely_domains is exactly what this template asks the
+            # author to decide, so it cannot exist yet. Alignment evidence needs no domain tag
+            # and is the stronger signal anyway.
+            evidence = collect_concept_source_evidence(
+                archetype_concept_uris(archetype), hub_root
+            )
+
+    core_concepts = []
+    for concept in archetype.core_concepts:
+        found = evidence.get(concept.uri)
+        # "If data exists and the concept is optional, model it." Only the optional tier
+        # flips: required/recommended concepts are in scope regardless of what the sources
+        # happen to contain, so pre-filling them would replace a judgment with a tautology.
+        data_driven = found is not None and concept.tier == DATA_DRIVEN_TIER
+        entry = {
             "uri": concept.uri,
             "label": concept.label,
             "tier": concept.tier,
-            "outcome": outcome_sentinel,
+            "outcome": "conforms" if data_driven else outcome_sentinel,
             "confidence": None,
-            "rationale": "<CONFIRM_RATIONALE>",
+            "rationale": (
+                f"Data-driven: {found.describe()}" if data_driven else "<CONFIRM_RATIONALE>"
+            ),
             "references": [],
             "needs_confirmation": False,
             "decided_by": "ai",
@@ -2269,8 +2577,12 @@ def conformance_judgments_template(
             "deviation_reason": None,
             "rename_to": None,
         }
-        for concept in archetype.core_concepts
-    ]
+        if found is not None:
+            # Informational, for every tier -- a required concept's evidence is still worth
+            # showing the interviewer. Dropped by `build` (it is not a judgment field), so
+            # the written artifact's schema is unchanged.
+            entry["source_evidence"] = found.to_dict()
+        core_concepts.append(entry)
     payload = {
         "mode": session_mode,
         "archetype_confirmed_by": f"<CONFIRM_HUMAN_ARCHETYPE:{archetype.id}>",
@@ -2360,6 +2672,9 @@ def conformance_summarize(artifact_file, judgments_file, outcomes_filter, output
 
     \\b
     - ``scorecard``: outcome counts (overall and by tier) from ``compute_scorecard``
+    - ``by_evidence``: how many judgments the hub's own source analysis backs
+      (``data-driven``) versus not (``blueprint``) -- issue #507. Recomputed live from
+      ``integration/sources/_analysis/``; all-zero when run outside a hub.
     - ``average_confidence``: mean of per-concept ``confidence`` values (0.0-1.0)
     - ``needs_confirmation_count``: how many concepts have ``needs_confirmation: true``
     - ``open_questions``: unresolved AI-decided judgments from ``open_questions``
@@ -2455,8 +2770,32 @@ def conformance_summarize(artifact_file, judgments_file, outcomes_filter, output
         # so open_questions can operate on it (it only reads core_concepts + decided_by).
         questions = open_questions({"core_concepts": scored})
 
+    # Issue #507: distinguish a blueprint-matched conforms from a data-driven one -- a concept
+    # the archetype recommended and the sources confirm, versus one the sources argued into
+    # scope. Computed here, live from the hub, and deliberately NOT added to
+    # `compute_scorecard`: `validate_artifact` recomputes that scorecard and compares it for
+    # equality against the one stored in the artifact, and `_scorecard_comparable_form` only
+    # normalises away empty *tier* buckets -- so a new top-level key there would make every
+    # artifact already on disk fail validation. This payload has no such constraint.
+    by_evidence = {"blueprint": 0, "data-driven": 0}
+    if hub_root is not None and filtered:
+        from ..core.conformance_evidence import (
+            collect_concept_source_evidence,
+            concept_domains_from_outcomes,
+        )
+
+        evidence = collect_concept_source_evidence(
+            [c.get("uri") for c in filtered],
+            hub_root,
+            concept_domains=concept_domains_from_outcomes(filtered),
+        )
+        for concept in filtered:
+            bucket = "data-driven" if concept.get("uri") in evidence else "blueprint"
+            by_evidence[bucket] += 1
+
     payload = {
         "scorecard": scorecard,
+        "by_evidence": by_evidence,
         "average_confidence": average_confidence,
         "needs_confirmation_count": needs_confirmation_count,
         "open_questions": questions,

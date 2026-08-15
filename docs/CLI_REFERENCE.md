@@ -52,7 +52,7 @@ never graph-authority project targets. `project --target all` excludes them.
 | Compile/project | `compile`, `project`, `mdm-validate` |
 | Author bindings | `scaffold-binding`, `scaffold-system`, `scaffold-staging`, `propose-relationships` |
 | Validate | `validate`, `validate-dbt`, `validate-dbt-contracts`, `catalog-test`, `validate-mapping`, `validate-silver-ext`, `suggest-shapes` |
-| Source/discovery | `import-source`, `import-flatfile`, `import-tmdl`, `extract-schema`, `show-source-schema`, `source-privacy`, `analyse-sources`, `audit-silver-samples`, `audit-column-coverage`, `propose-alignment`, `build-glossary`, `list-patterns`, `discovery-status`, `discovery-conformance` |
+| Source/discovery | `import-source`, `import-flatfile`, `import-tmdl`, `extract-schema`, `show-source-schema`, `source-privacy`, `analyse-sources`, `audit-silver-samples`, `audit-column-coverage`, `propose-alignment`, `build-glossary`, `list-patterns`, `discovery-status`, `discovery-conformance`, `register-concept` |
 | Inspect/report | `resolve-ontology`, `show-class-inventory`, `list-class-properties`, `fit-report`, `inverse-scan`, `plan-sources`, `explain-term`, `coverage-report`, `field-mapping-report`, `generate-inventory`, `check-inventory`, `domain-coverage`, `draft-model-report`, `next`, `design-landscape`, `guard-scope`, `check-ai-config`, `suggest-type` |
 | Legacy scaffold helpers | `scaffold-mapping`, `scaffold-silver-ext` |
 | Setup/update | `init`, `new-repo`, `migrate`, `init-dataplatform`, `scaffold-domain`, `update`, `update-refmodels` |
@@ -236,6 +236,41 @@ Deterministic aggregation only -- no LLM calls, no raw TTL text reads (DD-103). 
 "0a" minimal cut: a flat, per-class report. It does not attempt domain-clustering/regrouping
 suggestions or an LLM narrative pass.
 
+## `register-concept`
+
+Registers a source-discovered concept the archetype catalog does not contain (issue #505
+Layer B, DD-162).
+
+```
+kairos-ontology register-concept --uri <IRI> --label <label> \
+  --source-system <system> --source-evidence <table[.column]> ... \
+  --rationale <text> [--domain <id> ...] [--decided-by user|ai|autopilot] \
+  [--confidence <0.0-1.0>] [--needs-confirmation] [--reference <text> ...] \
+  [--force] [--archetype <id>] [--refmodels-root <path>] [--format json|yaml]
+```
+
+Discovery only ever iterates the archetype catalog, so a concept that exists in the source data
+and nowhere in the catalog could not be judged, could not carry a `likely_domains` tag, never
+reached `design-landscape`, and never became an authored domain. This command records it
+hub-side, in `integration/discovery/registered-concepts.yaml`, which
+`discovery-conformance build` mirrors into the artifact's `registered_concepts` list.
+
+* That list is a **sibling** of `core_concepts`, never merged into it — `validate_artifact`'s
+  coverage/identity checks require every `core_concepts` entry to be a real catalog concept, and
+  `concept_set_hash` staleness would fire on every registration. Registering a concept must not
+  make the archetype look wrong. A URI in both is an error.
+* A URI already in the archetype catalog is **rejected**: it belongs in `core_concepts` with a
+  real discovery judgment, not routed around the coverage checks.
+* Registered concepts always carry tier `optional`, and are counted separately from the
+  archetype scorecard so conformance percentages stay comparable across hubs.
+* `--source-evidence` and `--rationale` are mandatory.
+* An `ai`/`autopilot` registration without `--confidence`, or with `--needs-confirmation`,
+  blocks `compile`/`validate` until a human confirms it (DD-148) — adding a concept the
+  blueprint deliberately omitted is a larger authority than judging one it included.
+* Surfaced afterwards by `design-landscape` (with `discovery.registered: true`) and by
+  `kairos-ontology next` as `model-registered-concept`. Registration records that the concept
+  belongs; authoring the class is still a domain-design decision.
+
 ## `discovery-conformance`
 
 Subcommands supporting the Core Concepts Conformance phase (Phase 2.5, DD-090) of
@@ -245,8 +280,8 @@ default `json`); `judgments-template` and `build` write files.
 
 ```
 kairos-ontology discovery-conformance judgments-template --archetype <id> \
-  [--mode interactive|fleet] [--output <path>] [--overwrite] [--format json|yaml] \
-  [--refmodels-root <path>]
+  [--mode interactive|fleet] [--output <path>] [--overwrite] [--no-source-evidence] \
+  [--format json|yaml] [--refmodels-root <path>]
 
 kairos-ontology discovery-conformance build --archetype <id> \
   --judgments-file <path> [--output <path>] [--validate/--no-validate] \
@@ -271,6 +306,32 @@ pre-filled with `uri`/`label`/`tier` from the catalog, and an `<CONFIRM_...>` se
 `scaffold-binding`/`scaffold-staging` already use) in every field that still needs a real
 business judgment. Writes to stdout by default; `--output` writes to a file and refuses to
 overwrite an existing one without `--overwrite` (`scaffold-mapping`'s convention).
+
+### Source-evidence-aware judgments (issue #507)
+
+Run from **inside the hub**, `judgments-template` joins the hub's own Stage-1 source analysis
+(`integration/sources/_analysis/*-alignment.yaml`, falling back to `*-affinity.yaml` via a
+concept's `likely_domains`) to the concept list:
+
+* every concept with evidence gains a read-only `source_evidence` block naming the actual
+  `<system>.<table>` values;
+* an **`optional`-tier** concept with evidence is pre-filled `outcome: conforms`, with the
+  evidence written into its `rationale` — *if data exists and the concept is optional, model it*.
+  `required`/`recommended` concepts keep their sentinel: they are in scope regardless of what the
+  sources happen to contain, so pre-filling them would replace a judgment with a tautology.
+
+`--no-source-evidence` opts out (running outside a hub does the same thing implicitly).
+
+`build` then **rejects** an `optional`-tier `not-applicable` that contradicts source evidence
+unless the entry records an explicit, non-sentinel `rationale`. `validate` reports the same
+situation as a stderr warning and never fails — `build` is new authoring, where overriding
+deterministic evidence should be an explained decision, while `validate` also re-reads artifacts
+written long ago, where the same rule would be an unconvergeable gate on work already done.
+
+`summarize` gains `by_evidence` (`blueprint` vs `data-driven`) in its payload. This is
+deliberately *not* part of the artifact's own `scorecard`: `validate_artifact` recomputes that
+scorecard and compares it for equality against the stored one, so a new key there would fail
+every artifact already on disk. No artifact schema change is involved in any of this.
 
 `build` now also makes `label`/`tier` **optional** in `--judgments-file`: when a concept's entry
 omits either, `build` derives it from the resolved archetype's own catalog for that `uri` before

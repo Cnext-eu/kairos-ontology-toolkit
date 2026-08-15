@@ -30,6 +30,7 @@ import json
 import textwrap
 from pathlib import Path
 
+import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
@@ -555,6 +556,56 @@ def test_missing_evidence_inputs_are_reported_as_gaps_not_crashes(tmp_path):
     assert any("propose-alignment" in gap for gap in result.gaps)
     assert any("discovery-conformance" in gap for gap in result.gaps)
     assert any("binding" in gap.lower() for gap in result.gaps)
+
+
+# ---------------------------------------------------------------------------
+# #505 Layer B: registered concepts
+# ---------------------------------------------------------------------------
+
+
+def _add_registered(hub_root: Path, uri: str, label: str) -> None:
+    path = hub_root / "integration" / "discovery" / "core-concepts-conformance.yaml"
+    artifact = yaml.safe_load(path.read_text(encoding="utf-8"))
+    artifact["registered_concepts"] = [
+        {
+            "uri": uri,
+            "label": label,
+            "tier": "optional",
+            "rationale": "Qlik reports scope capacity by zone.",
+            "source_evidence": ["planning_zones"],
+            "likely_domains": ["logistics"],
+            "decided_by": "user",
+        }
+    ]
+    path.write_text(yaml.safe_dump(artifact, sort_keys=False), encoding="utf-8")
+
+
+def test_a_registered_concept_outside_the_accelerator_scope_still_appears(tmp_path):
+    """The whole point: it is registered *because* the catalog/module scope lacks it.
+
+    A synthetic class record is what makes this work — the join skips any URI the activated
+    accelerator modules do not declare, which is every registered concept by construction.
+    """
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    _add_registered(hub_root, "https://acme.example/ont/logistics#PlanningZone", "Planning Zone")
+
+    result = run_design_landscape(hub_root=hub_root, ref_models_dir=ref_models_dir)
+
+    entry = _by_name(result, "Planning Zone")
+    assert entry.discovery is not None
+    assert entry.discovery.registered is True
+    assert entry.discovery.confirmed is True
+    # No binding and no aligned source table yet -- exactly the backlog bucket it belongs in.
+    assert entry.classification == "demanded-but-unbound"
+
+
+def test_a_registration_never_overwrites_a_real_catalog_judgment(tmp_path):
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    _add_registered(hub_root, "https://example.test/accelerator#TradeParty", "Trade Party")
+
+    result = run_design_landscape(hub_root=hub_root, ref_models_dir=ref_models_dir)
+
+    assert _by_name(result, "TradeParty").discovery.registered is False
 
 
 # ---------------------------------------------------------------------------

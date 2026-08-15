@@ -8,6 +8,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`kairos-ontology register-concept`** — hub-side registration of source-discovered concepts
+  (#505 Layer B, DD-162). Of the three mechanisms #505 reported as blocking a domain from being
+  modeled, two did not exist as described: the archetype tier `not_applicable` (Layer A) is not in
+  the published tier enum at all (`VALID_TIERS = ("required", "recommended", "optional")` —
+  ref-models #82 was closed for exactly that reason), and the `not-applicable` *outcome* (Layer C)
+  is issue #507. The third is real and had no answer: **a business concept that exists in the source
+  data but has no entry in the archetype catalog is invisible to the entire system.** Discovery only
+  ever iterates the catalog, so such a concept cannot be judged, cannot carry a `likely_domains` tag,
+  never reaches `design-landscape`, and never becomes an authored domain. On the CLdN hub roughly ten
+  BI-relevant concepts sat in that hole (planning zones, tariff scales, empty-unit lifecycle,
+  distance/toll matrix, order source attribution). DD-160 surfaced the *domain*-level version of this
+  gap; this is the concept-level counterpart.
+  Registrations are written to `integration/discovery/registered-concepts.yaml` and mirrored by
+  `discovery-conformance build` into a **sibling** `registered_concepts` list in the conformance
+  artifact — never merged into `core_concepts`, because `validate_artifact`'s coverage/identity
+  checks require every entry there to be a real catalog concept and `concept_set_hash` staleness
+  would fire on every registration. Registering a concept must not make the archetype look wrong.
+  The reference-models archetype schema is **not** extended: registration is hub-side only, so the
+  catalog stays a stable shared contract and one hub's extra concept never needs a cross-repo
+  release. A URI already in the catalog is rejected — it belongs in `core_concepts` with a real
+  discovery judgment. Registered concepts always carry tier `optional` (the source data argued them
+  in; no blueprint recommended them) and are counted separately from the archetype scorecard so
+  conformance percentages stay comparable across hubs.
+  An `ai`/`autopilot` registration without a confidence, or flagged `needs_confirmation`, blocks
+  `compile`/`validate` through the existing DD-148 gate — inventing a concept the blueprint omitted
+  is a strictly larger authority than judging one it included. `--source-evidence` and `--rationale`
+  are both mandatory. Surfaced downstream by `design-landscape` (via a synthetic class record —
+  required, since the report's join skips any URI the activated accelerator modules do not declare,
+  which is every registered concept by construction) and by `kairos-ontology next` as
+  `model-registered-concept`, routed to kairos-design-domain. `next` proposal `schema_version` 5→6.
+  The conformance artifact gains an optional `registered_concepts` key; absence is indistinguishable
+  from empty, so no artifact already on disk is invalidated.
+- **Discovery judgments are now source-evidence aware** (#507, Layer C of #505). During discovery an
+  `optional`-tier concept with real source data behind it was routinely judged `not-applicable` — the
+  one outcome `design_landscape` treats as the *opposite* of demand evidence. On the CLdN hub that
+  deferred 20 optional-tier concepts, including a 289K-row cost-accounting table BI reports actively
+  used. The rule the skill should follow is simple — **if data exists and the concept is optional,
+  model it** — but nothing deterministic ever told the skill, or the human reviewing it, that data
+  existed for a given concept. DD-160 (#496/#498) already joined source affinity to modeled/bound
+  state, but at *domain* granularity; this is the concept-level half.
+  New `core/conformance_evidence.py` joins two artifacts that already exist and are written at
+  Stage 1, well before discovery at Stage 2 — `propose-alignment`'s per-table `ref_class` (direct,
+  concept-level) and `analyse-sources`' per-table domain assignment (indirect, via a concept's
+  `likely_domains`). No new LLM call, no new artifact, no new lifecycle ordering constraint.
+  Surfaced in four places: `judgments-template` attaches a read-only `source_evidence` block naming
+  the actual tables and pre-fills `outcome: conforms` for `optional`-tier concepts with evidence
+  (required/recommended keep their sentinel — they are in scope regardless of what the sources
+  contain); `build` **rejects** an `optional`-tier `not-applicable` that contradicts source evidence
+  unless an explicit non-sentinel `rationale` is recorded; `validate` warns about the same thing but
+  never fails; and `summarize` gains a `by_evidence` split (`blueprint` vs `data-driven`).
+  The build/validate asymmetry is deliberate: `build` is new authoring, where overriding
+  deterministic evidence should be an explained decision; `validate` also re-reads artifacts written
+  long ago, where the same rule would be an unconvergeable gate on work already done (the CLdN hub
+  alone carries 22 such judgments). **No artifact schema change** — `source_evidence` is
+  template-only and `by_evidence` is recomputed live, deliberately *not* added to
+  `compute_scorecard`, whose output `validate_artifact` compares for equality against the scorecard
+  stored in the artifact (a new key there would fail every artifact already on disk).
+  The `kairos-design-discovery` skill gains the missing rule the misapplication traced back to:
+  `not-applicable` means **structurally incompatible**, never "I could not find a source table" —
+  that is `partial`, which keeps the concept in scope for a later binding pass.
 - **`kairos-ontology validate-dbt-contracts`** (#504). The toolkit generates Silver dbt models from the
   `CompilePlan`, but the *hand-authored* intermediate layer under `integration/transforms/dbt/models/`
   had no validation of its own: a `meta.kairos` block was only ever checked indirectly, once an

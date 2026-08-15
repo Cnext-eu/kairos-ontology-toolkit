@@ -50,7 +50,34 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     `misconfigured`, stop and print the remediation — never auto-degrade to a heuristic or
     plausible-empty result (DD-159). Report provider, authentication mode, and variable names
     only—never secret values. Preserve deterministic imports when AI analysis is skipped.
-12. Hand authoritative source relations to `kairos-design-mapping`, which authors closed
+12. After `analyse-sources`, review the tables it could assign to **no domain at all**
+    (`domain-coverage --format json` → `unassigned_source_tables`, DD-160). Some of these are
+    noise; some are a real business concept the archetype catalog simply does not contain, and
+    those are invisible to everything downstream — discovery only ever iterates the catalog, so
+    such a concept can never be judged, tagged, or modeled. Propose registering each one
+    (DD-162):
+
+    ```powershell
+    kairos-ontology register-concept `
+      --uri <IRI> --label "<Label>" `
+      --source-system <system> --source-evidence <table> [--source-evidence <table.column> ...] `
+      --domain <domain-id> `
+      --rationale "<why this belongs, with row counts / report usage>"
+    ```
+
+    Both `--source-evidence` and `--rationale` are mandatory: registration is a claim about
+    source data, and an unevidenced or unexplained claim is a guess the next reader cannot
+    check. Registered concepts always carry tier `optional` — the source data argued them into
+    scope, no blueprint recommended them. **Propose, never decide**: leave `--decided-by user`
+    for a human-confirmed registration, and mark an AI-proposed one `--decided-by ai` (it then
+    blocks `compile`/`validate` until confirmed, DD-148). A URI already in the archetype
+    catalog is rejected — that concept belongs in `core_concepts` with a real discovery
+    judgment via **kairos-design-discovery**, not here.
+
+    Registration records that a concept belongs and names its evidence. It does **not** model or
+    bind it — authoring the class stays a **kairos-design-domain** decision, surfaced by
+    `kairos-ontology next` as `model-registered-concept`.
+13. Hand authoritative source relations to `kairos-design-mapping`, which authors closed
     `integration/bindings/*.binding.yaml` documents.
 
 Do not author canonical classes here. Do not create execution policy in RDF. Complex relational

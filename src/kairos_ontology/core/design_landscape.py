@@ -40,6 +40,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -67,6 +68,13 @@ CONFIRMED_DISCOVERY_OUTCOMES = frozenset({"conforms", "conforms-with-rename"})
 #: apply to this business. This is itself a real, deliberate interview finding -- it still
 #: surfaces in ``discovery_demand`` -- but it is the *opposite* of demand evidence, so it
 #: must never rescue a class out of ``no-evidence`` the way any other outcome would.
+#:
+#: Issue #507 reported this as the mechanism by which a `not-applicable` concept "is never
+#: modeled". It is not: both classification branches that read ``has_discovery_evidence``
+#: below *also* require ``source_count == 0``, so a `not-applicable` class with source tables
+#: behind it already reaches ``passthrough-candidate``/``demanded-but-unbound`` today. The
+#: real gap #507 closes is upstream, at the point the judgment is made -- see
+#: ``core/conformance_evidence.py``. Nothing here needed to change.
 NON_EVIDENCE_DISCOVERY_OUTCOMES = frozenset({"not-applicable"})
 
 _ANALYSIS_SUBDIR = Path("integration") / "sources" / "_analysis"
@@ -103,6 +111,22 @@ class SourceTableCoverage:
 
 
 @dataclass(frozen=True, slots=True)
+class _RegisteredClassRecord:
+    """Stand-in for a ``ClassRecord`` a registered concept has no accelerator module for.
+
+    ``class_record`` is built from the activated accelerator modules' semantic indexes, and the
+    join below skips any URI absent from it. A registered concept (#505 Layer B) is by
+    definition outside the archetype catalog and usually outside those modules too, so it needs
+    a record of its own or it would never appear. Only ``uri``/``name`` are read for it: it has
+    no owning module, hence no property universe, which the existing ``owner_module is None``
+    path already handles by reporting a universe of zero.
+    """
+
+    uri: str
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class DiscoveryDemand:
     """One class's ``discovery-conformance`` (DD-090) outcome — first-class evidence."""
 
@@ -112,6 +136,10 @@ class DiscoveryDemand:
     artifact_path: str
     rename_to: str | None = None
     deviation_reason: str | None = None
+    #: True when this demand came from a hub-side registration (#505 Layer B) rather than an
+    #: archetype-catalog judgment. Structurally separate, like ``bi_weight``, so a consumer can
+    #: always tell "the blueprint recommended this" from "our source data argued it in".
+    registered: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,6 +149,7 @@ class DiscoveryDemand:
             "artifact_path": self.artifact_path,
             "rename_to": self.rename_to,
             "deviation_reason": self.deviation_reason,
+            "registered": self.registered,
         }
 
 
@@ -241,6 +270,12 @@ class DesignLandscapeResult:
 # --------------------------------------------------------------------------------------
 # Token/class resolution helpers.
 # --------------------------------------------------------------------------------------
+def _local_name(uri: str) -> str:
+    """Trailing fragment/path segment of *uri*, used as a display name of last resort."""
+    parsed = urlsplit(uri)
+    return (parsed.fragment or parsed.path.rstrip("/").rsplit("/", 1)[-1]).strip() or uri
+
+
 def _resolve_universe_token(
     token: str,
     class_record: dict[str, Any],
@@ -489,6 +524,37 @@ def run_design_landscape(
                     artifact_path=str(conformance_path),
                     rename_to=concept.get("rename_to"),
                     deviation_reason=concept.get("deviation_reason"),
+                )
+            # #505 Layer B: a registered concept is a *confirmed* demand -- a human asserted
+            # it belongs, backed by named source evidence, which is at least as strong as a
+            # `conforms` judgment against a blueprint recommendation. Without this the whole
+            # registration would stop at the artifact and never reach the backlog it exists
+            # to feed.
+            #
+            # A synthetic class_record entry is required, not optional: the join below drops
+            # any URI `class_record` does not contain, and a registered concept is by
+            # definition outside the archetype catalog -- usually outside the activated
+            # accelerator modules too, which is precisely why it needed registering. Without
+            # this it would be silently skipped by the very report it exists to appear in.
+            for concept in artifact.get("registered_concepts", []) or []:
+                if not isinstance(concept, dict):
+                    continue
+                uri = str(concept.get("uri") or "").strip()
+                if not uri or uri in demand_by_class:
+                    continue
+                demand_by_class[uri] = DiscoveryDemand(
+                    outcome="conforms",
+                    tier=str(concept.get("tier") or "optional"),
+                    confirmed=True,
+                    artifact_path=str(conformance_path),
+                    registered=True,
+                )
+                class_record.setdefault(
+                    uri,
+                    _RegisteredClassRecord(
+                        uri=uri,
+                        name=str(concept.get("label") or "").strip() or _local_name(uri),
+                    ),
                 )
     else:
         gaps.append(

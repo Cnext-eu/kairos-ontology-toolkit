@@ -75,7 +75,10 @@ writing a one-off Python generator script. Set `KAIROS_SKILL_CONTEXT=1` for thes
    — scaffold the `build --judgments-file` input: one entry per concept from step 2, with
    `uri`/`label`/`tier` already pre-filled from the archetype catalog (do not edit those two —
    `build` derives them from the catalog itself if you delete them instead, issue #410) and
-   every field you must actually decide left as an `<CONFIRM_...>` sentinel. Never
+   every field you must actually decide left as an `<CONFIRM_...>` sentinel. **Run this from
+   inside the hub**, not from an arbitrary directory: that is what lets it join the hub's own
+   source analysis to the concept list and emit the `source_evidence` blocks and data-driven
+   `conforms` pre-fills described in the outcome-code legend below (issue #507). Never
    hand-transcribe the concept list into a new file and never hand-script this file's
    structure — that is exactly the one-off generator the opening section of this phase
    forbids, and it used to be the only way to learn this contract (three requirements were
@@ -134,7 +137,37 @@ version there are five codes:
 - 🟩 `conforms-with-rename` — concept matches under a different local name (record `rename_to`).
 - 🟨 `partial` — concept is partially present; note the gap in the interview log.
 - 🟥 `deviates` — concept is present but diverges (record `deviation_reason`).
-- ⬜ `not-applicable` — concept does not apply to this business.
+- ⬜ `not-applicable` — concept is **structurally incompatible** with this business.
+
+#### `not-applicable` means "cannot apply", never "I did not find it" (issue #507)
+
+This is the single most misapplied code. On a real hub, 22 concepts were marked
+`not-applicable`; only 7 were correct. The rule:
+
+| Situation | Correct outcome |
+|---|---|
+| Concept is structurally incompatible (a `RailConsignmentNote` for a road-only carrier) | ⬜ `not-applicable` |
+| **You could not find a source table for it** | 🟨 `partial` — *never* `not-applicable` |
+| Source data exists and the concept's tier is `optional` | ✅ `conforms` |
+| You are unsure | 🟨 `partial` with `needs_confirmation: true` |
+
+`not-applicable` is the only outcome the toolkit treats as the *opposite* of demand evidence:
+it takes the concept out of scope for good. "I did not find it" is a statement about your
+search, not about the business — record it as `partial` so the concept stays in scope for a
+later binding pass. This is also why a concept's **tier is not a licence to dismiss it**: on
+that same hub, `BorderCrossing` (tier `required`) was marked `not-applicable` with the
+rationale "operates within EU Schengen", for a carrier whose routes are post-Brexit UK–EU
+crossings. A `required` or `recommended` concept marked `not-applicable` needs a rationale
+that would survive the SME reading it out loud.
+
+**If data exists and the concept is optional, model it.** `judgments-template` does this for
+you: run inside the hub and every concept the hub's own `propose-alignment`/`analyse-sources`
+output has data for arrives with a read-only `source_evidence` block naming the actual tables,
+and `optional`-tier concepts with such evidence are pre-filled `outcome: conforms` with the
+evidence in their `rationale`. You may still override any pre-fill — but `build` **rejects** an
+`optional`-tier `not-applicable` that contradicts source evidence unless you record an explicit
+`rationale` saying why the concept does not apply despite that data. Overriding deterministic
+evidence has to be a decision, not a default.
 
 If the loaded enum contains a code not covered above (e.g. a future addition), assign it a
 sensible new emoji in the report rather than forcing it into `partial`/`deviates`; if you cannot
