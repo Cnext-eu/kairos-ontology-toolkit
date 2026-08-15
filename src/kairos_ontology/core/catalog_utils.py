@@ -146,23 +146,23 @@ class CatalogResolver:
     def with_reference_models(cls, catalog_path: Path) -> "CatalogResolver":
         """Create a resolver that overlays the reference-models package catalog.
 
-        Resolution order: installed ``kairos-ontology-referencemodels`` package,
-        then ``KAIROS_REFMODELS_ROOT`` env var (air-gap escape hatch).
+        Resolution order: ``KAIROS_REFMODELS_ROOT`` env var (explicit override),
+        then installed ``kairos-ontology-referencemodels`` package.
         """
         extra: list[Path] = []
+        env_root = os.environ.get("KAIROS_REFMODELS_ROOT")
+        if env_root:
+            env_catalog = Path(env_root) / "catalog-v001.xml"
+            if env_catalog.is_file():
+                extra.append(env_catalog)
         try:
             from kairos_ontology_referencemodels import refmodels_root
 
             pkg_catalog = refmodels_root() / "catalog-v001.xml"
-            if pkg_catalog.is_file():
+            if pkg_catalog.is_file() and pkg_catalog not in extra:
                 extra.append(pkg_catalog)
         except ImportError:
             pass
-        env_root = os.environ.get("KAIROS_REFMODELS_ROOT")
-        if env_root:
-            env_catalog = Path(env_root) / "catalog-v001.xml"
-            if env_catalog.is_file() and env_catalog not in extra:
-                extra.append(env_catalog)
         return cls(catalog_path, extra_catalogs=extra)
 
     def _load_catalog_file(self, path: Path):

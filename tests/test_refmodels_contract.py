@@ -42,8 +42,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _refmodels_root() -> Path | None:
-    """Return a reference-models root, preferring the installed package."""
-    # 1. Installed package
+    """Return a reference-models root, preferring the explicit override."""
+    # 1. KAIROS_REFMODELS_ROOT env var (explicit override)
+    override = os.environ.get("KAIROS_REFMODELS_ROOT")
+    if override:
+        candidate = Path(override)
+        if candidate.is_dir():
+            return candidate
+    # 2. Installed package
     try:
         from kairos_ontology_referencemodels import refmodels_root
 
@@ -52,12 +58,6 @@ def _refmodels_root() -> Path | None:
             return root
     except ImportError:
         pass
-    # 2. KAIROS_REFMODELS_ROOT env var
-    override = os.environ.get("KAIROS_REFMODELS_ROOT")
-    if override:
-        candidate = Path(override)
-        if candidate.is_dir():
-            return candidate
     # 3. Sibling checkout for local development
     sibling = _REPO_ROOT.parent / "kairos-ontology-referencemodels"
     if sibling.is_dir():

@@ -88,19 +88,24 @@ def test_refmodels_pin_targets_a_release_wheel() -> None:
     if match:
         return  # Inline pin — good
 
-    # No inline URL — check [tool.uv.sources] for a git override
+    # No inline URL — check [tool.uv.sources] for a wheel URL or git override
     sources = _uv_sources(data)
     assert _REFMODELS_PACKAGE in sources, (
         f"{_REFMODELS_PACKAGE!r} has no inline wheel URL and no [tool.uv.sources] entry "
         f"— it must be pinned to a specific release."
     )
-    # A git source override is acceptable temporarily (see DD-158)
     source_spec = sources[_REFMODELS_PACKAGE]
     if isinstance(source_spec, dict):
-        # git override — must specify branch or tag
-        assert "git" in source_spec or "path" in source_spec, (
-            f"[tool.uv.sources] for {_REFMODELS_PACKAGE!r} must specify git or path"
-        )
+        # A direct-URL wheel pin is the preferred form (DD-158)
+        if "url" in source_spec:
+            assert _REFMODELS_RELEASE_URL_RE.search(
+                source_spec["url"]
+            ), f"[tool.uv.sources] url for {_REFMODELS_PACKAGE!r} must be a release wheel URL"
+        # A git source override is acceptable temporarily (see DD-158)
+        else:
+            assert "git" in source_spec or "path" in source_spec, (
+                f"[tool.uv.sources] for {_REFMODELS_PACKAGE!r} must specify url, git, or path"
+            )
 
 
 def test_refmodels_pin_is_not_a_floating_branch() -> None:

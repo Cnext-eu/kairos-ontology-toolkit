@@ -146,25 +146,15 @@ def resolve_refmodels_root(
 
     Precedence (contract row 2 — env + fallback only; no hub-config key in v1):
 
-    1. the installed ``kairos-ontology-referencemodels`` package,
-    2. *explicit* (e.g. a ``--refmodels-root`` CLI flag),
-    3. the ``KAIROS_REFMODELS_ROOT`` environment variable.
+    1. *explicit* (e.g. a ``--refmodels-root`` CLI flag),
+    2. the ``KAIROS_REFMODELS_ROOT`` environment variable,
+    3. the installed ``kairos-ontology-referencemodels`` package.
 
     Returns the normalized inner root (the directory holding the contract files).
 
     Raises:
         ArchetypeError: if no candidate resolves to a valid reference-models root.
     """
-    # 1. Installed package
-    try:
-        from kairos_ontology_referencemodels import refmodels_root as _pkg_root
-
-        root = _pkg_root()
-        if root.is_dir() and _looks_like_refmodels_root(root):
-            return root
-    except ImportError:
-        pass
-
     cwd = Path(cwd) if cwd is not None else Path.cwd()
 
     if explicit:
@@ -173,6 +163,16 @@ def resolve_refmodels_root(
     env_value = os.environ.get(REFMODELS_ROOT_ENV)
     if env_value:
         return normalize_refmodels_root(Path(env_value))
+
+    # Installed package
+    try:
+        from kairos_ontology_referencemodels import refmodels_root as _pkg_root
+
+        root = _pkg_root()
+        if root.is_dir() and _looks_like_refmodels_root(root):
+            return root
+    except ImportError:
+        pass
 
     raise ArchetypeError(
         "Cannot locate the kairos-ontology-referencemodels package. "

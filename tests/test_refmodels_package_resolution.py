@@ -65,8 +65,8 @@ class TestResolveRefmodelsDir:
         assert result is not None
         assert result == fake_refmodels_pkg
 
-    def test_env_var_fallback_when_no_package(self, fake_hub, tmp_path):
-        """Without the package, KAIROS_REFMODELS_ROOT env var is used."""
+    def test_env_var_used_when_set(self, fake_hub, fake_refmodels_pkg, tmp_path):
+        """When KAIROS_REFMODELS_ROOT is set, it takes precedence over the package."""
         from kairos_ontology.cli.shared import resolve_refmodels_dir
 
         env_dir = tmp_path / "env_refmodels"
@@ -76,54 +76,41 @@ class TestResolveRefmodelsDir:
         )
 
         with patch.dict(os.environ, {"KAIROS_REFMODELS_ROOT": str(env_dir)}):
-            # Ensure package is not importable
-            original = sys.modules.pop("kairos_ontology_referencemodels", None)
-            try:
-                result = resolve_refmodels_dir(fake_hub, fake_hub)
-                assert result is not None
-                assert result == env_dir
-            finally:
-                if original is not None:
-                    sys.modules["kairos_ontology_referencemodels"] = original
+            result = resolve_refmodels_dir(fake_hub, fake_hub)
+            assert result is not None
+            assert result == env_dir
 
-    def test_env_var_nonexistent_dir_returns_none(self, fake_hub):
-        """If KAIROS_REFMODELS_ROOT points at a non-existent dir, return None."""
+    def test_env_var_nonexistent_dir_falls_through_to_package(self, fake_hub, fake_refmodels_pkg):
+        """If KAIROS_REFMODELS_ROOT points at a non-existent dir, fall through to package."""
         from kairos_ontology.cli.shared import resolve_refmodels_dir
 
         with patch.dict(os.environ, {"KAIROS_REFMODELS_ROOT": "/nonexistent/path"}):
-            original = sys.modules.pop("kairos_ontology_referencemodels", None)
-            try:
-                result = resolve_refmodels_dir(fake_hub, fake_hub)
-                assert result is None
-            finally:
-                if original is not None:
-                    sys.modules["kairos_ontology_referencemodels"] = original
+            result = resolve_refmodels_dir(fake_hub, fake_hub)
+            assert result == fake_refmodels_pkg
 
-    def test_returns_none_when_no_package_and_no_env(self, fake_hub):
-        """Without package or env var, resolve_refmodels_dir returns None."""
+    def test_package_used_when_no_env_var(self, fake_hub, fake_refmodels_pkg):
+        """Without env var but with package installed, resolve_refmodels_dir returns package."""
         from kairos_ontology.cli.shared import resolve_refmodels_dir
 
         env = {k: v for k, v in os.environ.items() if k != "KAIROS_REFMODELS_ROOT"}
-        original = sys.modules.pop("kairos_ontology_referencemodels", None)
-        try:
-            with patch.dict(os.environ, env, clear=True):
-                result = resolve_refmodels_dir(fake_hub, fake_hub)
-                assert result is None
-        finally:
-            if original is not None:
-                sys.modules["kairos_ontology_referencemodels"] = original
+        with patch.dict(os.environ, env, clear=True):
+            result = resolve_refmodels_dir(fake_hub, fake_hub)
+            assert result == fake_refmodels_pkg
 
-    def test_package_takes_precedence_over_env(self, fake_hub, fake_refmodels_pkg, tmp_path):
-        """The installed package takes precedence over KAIROS_REFMODELS_ROOT."""
+    def test_env_var_takes_precedence_over_package(self, fake_hub, fake_refmodels_pkg, tmp_path):
+        """KAIROS_REFMODELS_ROOT takes precedence over the installed package."""
         from kairos_ontology.cli.shared import resolve_refmodels_dir
 
-        env_dir = tmp_path / "should_not_be_used"
-        env_dir.mkdir()
+        env_dir = tmp_path / "env_override"
+        (env_dir / "blueprints" / "archetypes").mkdir(parents=True)
+        (env_dir / "catalog-v001.xml").write_text(
+            "<?xml version='1.0'?>\n<catalog/>\n", encoding="utf-8"
+        )
 
         with patch.dict(os.environ, {"KAIROS_REFMODELS_ROOT": str(env_dir)}):
             result = resolve_refmodels_dir(fake_hub, fake_hub)
-            assert result == fake_refmodels_pkg
-            assert result != env_dir
+            assert result == env_dir
+            assert result != fake_refmodels_pkg
 
 
 class TestCatalogResolverWithReferenceModels:

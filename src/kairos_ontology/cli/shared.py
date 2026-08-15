@@ -253,16 +253,20 @@ _REF_MODELS_PATH = "ontology-reference-models"
 
 
 def resolve_refmodels_dir(cwd: Path, hub_root: Path | None) -> Path | None:
-    """Locate the reference-models directory from an installed package or explicit override.
+    """Locate the reference-models directory from an explicit override or installed package.
 
     Resolution order:
-    1. Installed ``kairos-ontology-referencemodels`` package (via ``importlib.resources``).
-    2. ``KAIROS_REFMODELS_ROOT`` environment variable (air-gap escape hatch).
+    1. ``KAIROS_REFMODELS_ROOT`` environment variable (explicit override / air-gap).
+    2. Installed ``kairos-ontology-referencemodels`` package (via ``importlib.resources``).
 
     The legacy folder-scan fallback is removed — new hubs do not vendor
     ``ontology-reference-models/`` into the repo.
     """
-    # 1. Package resolution
+    # 1. KAIROS_REFMODELS_ROOT env var (explicit override)
+    env = os.environ.get("KAIROS_REFMODELS_ROOT")
+    if env and Path(env).is_dir():
+        return Path(env)
+    # 2. Package resolution
     try:
         from kairos_ontology_referencemodels import refmodels_root
 
@@ -271,10 +275,6 @@ def resolve_refmodels_dir(cwd: Path, hub_root: Path | None) -> Path | None:
             return root
     except ImportError:
         pass
-    # 2. KAIROS_REFMODELS_ROOT env var
-    env = os.environ.get("KAIROS_REFMODELS_ROOT")
-    if env and Path(env).is_dir():
-        return Path(env)
     return None
 
 

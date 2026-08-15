@@ -2,6 +2,8 @@
 # Copyright 2026 Cnext.eu
 """Tests for the generate-inventory CLI command (DD-044)."""
 
+import sys
+
 import yaml
 from click.testing import CliRunner
 
@@ -523,11 +525,16 @@ class TestGenerateInventoryPrune:
 
 class TestResolveRefModelsDir:
     def test_returns_none_when_missing(self, tmp_path, monkeypatch):
-        # Package not installed and no env var → resolve_refmodels_dir returns None.
+        # No env var and package not importable → resolve_refmodels_dir returns None.
         monkeypatch.delenv("KAIROS_REFMODELS_ROOT", raising=False)
-        from kairos_ontology.cli.shared import resolve_refmodels_dir
+        original = sys.modules.pop("kairos_ontology_referencemodels", None)
+        try:
+            from kairos_ontology.cli.shared import resolve_refmodels_dir
 
-        assert resolve_refmodels_dir(tmp_path, tmp_path) is None
+            assert resolve_refmodels_dir(tmp_path, tmp_path) is None
+        finally:
+            if original is not None:
+                sys.modules["kairos_ontology_referencemodels"] = original
 
 
 SAMPLE_BOOKING_TTL = """\
