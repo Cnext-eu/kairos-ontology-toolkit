@@ -182,7 +182,15 @@ def _registration_import_gate(
     help="Explicitly allow incomplete ontology imports for semantic validation; "
     "results are marked import_complete=false.",
 )
-def init(domain, company_domain, force, skip_refmodels, ref_models_version, degraded):
+@click.option(
+    "--channel",
+    "channel",
+    type=click.Choice(["stable", "preview"]),
+    default=None,
+    help="Toolkit release channel to pin: 'stable' (latest GA) or 'preview' (latest rc/beta). "
+    "Defaults to auto-detection from the running toolkit version.",
+)
+def init(domain, company_domain, force, skip_refmodels, ref_models_version, degraded, channel):
     """Initialize a Kairos ontology hub in the current directory.
 
     Creates the standard folder structure, installs Copilot skills, and
@@ -434,7 +442,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
         if pyproject_dst.exists() and not force:
             print("  ⏭  pyproject.toml already exists (use --force to overwrite)")
         else:
-            ref, channel = _resolve_scaffold_toolkit_pin()
+            ref, tk_channel = _resolve_scaffold_toolkit_pin(channel=channel)
             version = _tag_to_version(ref)
             rm_ref, rm_version = _resolve_scaffold_refmodels_pin()
             repo_name = cwd.name
@@ -444,7 +452,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
                 .replace("{description}", repo_name)
                 .replace("{toolkit_ref}", ref)
                 .replace("{toolkit_version}", version)
-                .replace("{toolkit_channel}", channel)
+                .replace("{toolkit_channel}", tk_channel)
                 .replace("{refmodels_ref}", rm_ref)
                 .replace("{refmodels_version}", rm_version)
             )
@@ -878,8 +886,17 @@ def migrate(check, dry_run, hub_path):
     default=False,
     help="Skip configuring branch protection on main (useful if no admin rights).",
 )
+@click.option(
+    "--channel",
+    "channel",
+    type=click.Choice(["stable", "preview"]),
+    default=None,
+    help="Toolkit release channel to pin: 'stable' (latest GA) or 'preview' (latest rc/beta). "
+    "Defaults to auto-detection from the running toolkit version.",
+)
 def new_repo(
-    name, desc, dest, org, is_private, ref_models_version, company_domain, skip_protection
+    name, desc, dest, org, is_private, ref_models_version, company_domain, skip_protection,
+    channel,
 ):
     """Create a new ontology hub GitHub repository.
 
@@ -1124,7 +1141,7 @@ def new_repo(
     pyproject_src = _SCAFFOLD_DIR / "pyproject.toml.template"
     if pyproject_src.is_file():
         # Same pin policy as `init` — never the running (possibly unpublished) version.
-        ref, channel = _resolve_scaffold_toolkit_pin()
+        ref, tk_channel = _resolve_scaffold_toolkit_pin(channel=channel)
         rm_ref, rm_version = _resolve_scaffold_refmodels_pin()
         content = pyproject_src.read_text(encoding="utf-8")
         content = (
@@ -1132,7 +1149,7 @@ def new_repo(
             .replace("{description}", description)
             .replace("{toolkit_version}", _tag_to_version(ref))
             .replace("{toolkit_ref}", ref)
-            .replace("{toolkit_channel}", channel)
+            .replace("{toolkit_channel}", tk_channel)
             .replace("{refmodels_ref}", rm_ref)
             .replace("{refmodels_version}", rm_version)
         )

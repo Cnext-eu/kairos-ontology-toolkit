@@ -357,7 +357,7 @@ def _resolve_channel(channel: str) -> str | None:
         return None
 
 
-def _resolve_scaffold_toolkit_pin() -> tuple[str, str]:
+def _resolve_scaffold_toolkit_pin(channel: str | None = None) -> tuple[str, str]:
     """Return the ``(ref, channel)`` a freshly scaffolded hub must pin.
 
     One policy, shared by ``init`` and ``new-repo`` so the two scaffolders cannot
@@ -381,6 +381,11 @@ def _resolve_scaffold_toolkit_pin() -> tuple[str, str]:
     4. Last resort only: when releases cannot be listed at all (no ``gh``, no
        network) fall back to ``v<running version>`` and say so.  The pin may not
        exist yet; the hub is repairable with ``update --upgrade``.
+
+    When *channel* is explicitly passed (``"stable"`` or ``"preview"``), skip the
+    auto-detection and pin the latest published release on that channel directly.
+    This lets the user choose a channel at scaffold time instead of always
+    following the running toolkit's version.
     """
     from packaging.version import InvalidVersion, Version
 
@@ -391,6 +396,16 @@ def _resolve_scaffold_toolkit_pin() -> tuple[str, str]:
             return Version(_tag_to_version(tag))
         except InvalidVersion:
             return None
+
+    # Explicit channel choice from the user — pin the latest release on it.
+    if channel in ("stable", "preview"):
+        ref = _resolve_channel(channel)
+        if ref is not None:
+            return ref, channel
+        print(
+            f"  ⚠ Could not list toolkit releases for channel '{channel}'. "
+            f"Falling back to auto-detection."
+        )
 
     try:
         running = Version(_toolkit_version)

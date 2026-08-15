@@ -167,6 +167,39 @@ class TestSharedScaffoldPinPolicy:
         assert "may not be published" in out
         assert "update --upgrade" in out
 
+    def test_explicit_stable_channel_pins_latest_stable(self):
+        with (
+            mock.patch(
+                "kairos_ontology.cli.shared._resolve_channel", side_effect=_fake_resolve_channel
+            ),
+            mock.patch("kairos_ontology.cli.shared._toolkit_version", RUNNING),
+        ):
+            assert _resolve_scaffold_toolkit_pin(channel="stable") == (FAKE_STABLE, "stable")
+
+    def test_explicit_preview_channel_pins_latest_preview(self):
+        with (
+            mock.patch(
+                "kairos_ontology.cli.shared._resolve_channel", side_effect=_fake_resolve_channel
+            ),
+            mock.patch("kairos_ontology.cli.shared._toolkit_version", RUNNING),
+        ):
+            assert _resolve_scaffold_toolkit_pin(channel="preview") == (FAKE_PREVIEW, "preview")
+
+    def test_explicit_channel_falls_back_to_auto_detection_when_unreachable(self, capsys):
+        with (
+            mock.patch(
+                "kairos_ontology.cli.shared._resolve_channel",
+                side_effect=lambda c: None,
+            ),
+            mock.patch("kairos_ontology.cli.shared._toolkit_version", RUNNING),
+        ):
+            ref, ch = _resolve_scaffold_toolkit_pin(channel="stable")
+            # Falls through to last-resort since both channels return None
+            assert ref == f"v{RUNNING}"
+            assert ch == "stable"
+        out = capsys.readouterr().out
+        assert "may not be published" in out
+
 
 def _pin_of(pyproject: Path) -> str:
     urls = _TOOLKIT_RELEASE_URL_RE.findall(pyproject.read_text(encoding="utf-8"))
@@ -221,6 +254,44 @@ class TestScaffoldedHubPinAgreesWithItsChannel:
         assert 'channel = "preview"' in content
         # The running (unpublished) development version must never become the pin.
         assert RUNNING not in content
+
+    def test_new_repo_explicit_stable_channel_pins_stable(self, tmp_path):
+        with (
+            mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run,
+            mock.patch(
+                "kairos_ontology.cli.shared._resolve_channel", side_effect=_fake_resolve_channel
+            ),
+            mock.patch("kairos_ontology.cli.shared._toolkit_version", RUNNING),
+        ):
+            mock_run.return_value = mock.MagicMock(returncode=0)
+            result = CliRunner().invoke(
+                cli, ["new-repo", "acme", "--path", str(tmp_path), "--channel", "stable"]
+            )
+        assert result.exit_code == 0, result.output
+
+        pyproject = tmp_path / "acme-ontology-hub" / "pyproject.toml"
+        assert _pin_of(pyproject) == FAKE_STABLE
+        content = pyproject.read_text(encoding="utf-8")
+        assert 'channel = "stable"' in content
+
+    def test_new_repo_explicit_preview_channel_pins_preview(self, tmp_path):
+        with (
+            mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run,
+            mock.patch(
+                "kairos_ontology.cli.shared._resolve_channel", side_effect=_fake_resolve_channel
+            ),
+            mock.patch("kairos_ontology.cli.shared._toolkit_version", RUNNING),
+        ):
+            mock_run.return_value = mock.MagicMock(returncode=0)
+            result = CliRunner().invoke(
+                cli, ["new-repo", "acme", "--path", str(tmp_path), "--channel", "preview"]
+            )
+        assert result.exit_code == 0, result.output
+
+        pyproject = tmp_path / "acme-ontology-hub" / "pyproject.toml"
+        assert _pin_of(pyproject) == FAKE_PREVIEW
+        content = pyproject.read_text(encoding="utf-8")
+        assert 'channel = "preview"' in content
 
 
 @pytest.mark.parametrize("extra", USER_FACING_EXTRAS)
