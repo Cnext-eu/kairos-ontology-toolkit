@@ -49,12 +49,11 @@ from .analyse_sources import (
 )
 from .ai_provider import (
     ROLE_ALIGNMENT,
-    AIProviderConfig,
     create_chat_completion,
     get_ai_client,
-    resolve_provider_config,
     sanitize_provider_error,
 )
+from .ai_preflight import require_ai_provider
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import compute_entry_hash, open_cache
 from ._samples import example_values as _render_example_values
@@ -108,7 +107,7 @@ class AlignmentTotalFailureError(RuntimeError):
 
     "Attempted" excludes tables skipped via the per-domain freshness cache and
     ``fallback_only`` tables (no reference model to align against — a separate,
-    opt-in concern gated by ``--allow-fallback-registry``). When raised, **no**
+    opt-in concern gated by ``--allow-fallback-output``). When raised, **no**
     registry was written by the run at all: every write is staged and committed
     only after the run-wide semantic verdict is known, so a mixed domain (some
     tables ``provider_failure``, some ``fallback_only``) and an opted-in
@@ -2673,7 +2672,10 @@ def _propose_alignments(
 
     # Preflight (alignment-reliability): resolve the provider/endpoint/auth for
     # this role *before* any cost/fan-out, so a bad provider config surfaces
-    # immediately instead of mid-run on the first table.
+    # immediately instead of mid-run on the first table.  An unconfigured or
+    # misconfigured provider raises ``AIProviderError`` (subclass of
+    # ``EnvironmentError``) here — it must never silently fall through to a
+    # heuristic or plausible-empty output (DD-159).
     #
     # Model precedence: the *caller-resolved* ``model`` is authoritative and is
     # never re-derived here. The CLI already applies the full precedence chain
@@ -2685,22 +2687,15 @@ def _propose_alignments(
     #
     # ``get_ai_client`` (mocked directly in unit tests) performs the same
     # provider resolution internally and remains the source of truth for
-    # constructing the client; if the standalone preflight resolution itself
-    # cannot run (e.g. a test double patches ``get_ai_client`` without
-    # configuring real provider env vars), fall through silently —
-    # ``get_ai_client`` still raises the same error in a real environment, so no
-    # real misconfiguration is masked.
-    try:
-        provider_config = resolve_provider_config(model, role=ROLE_ALIGNMENT)
-        if provider_config.model != model:
-            report(
-                f"  ℹ Per-role model override '{provider_config.model}' not "
-                f"applied — the caller-resolved model '{model}' is "
-                "authoritative.",
-                level="verbose",
-            )
-    except EnvironmentError:
-        provider_config = AIProviderConfig(provider="unknown", endpoint="", api_key="", model=model)
+    # constructing the client.
+    provider_config = require_ai_provider(ROLE_ALIGNMENT, model=model, probe=False)
+    if provider_config.model != model:
+        report(
+            f"  ℹ Per-role model override '{provider_config.model}' not "
+            f"applied — the caller-resolved model '{model}' is "
+            "authoritative.",
+            level="verbose",
+        )
     client = get_ai_client(model, role=ROLE_ALIGNMENT)
     report(f"  🔌 Provider: {provider_config.provider} — effective model: {model}")
 
@@ -3455,7 +3450,7 @@ def _propose_alignments(
                 report(
                     f"     ⛔ Skipped writing {domain_id}: no reference model "
                     f"resolved for any of its {domain_total} table(s) "
-                    "(fallback-only, incomplete). Pass --allow-fallback-registry "
+                    "(fallback-only, incomplete). Pass --allow-fallback-output "
                     "to write it anyway."
                 )
             else:
@@ -3482,7 +3477,7 @@ def _propose_alignments(
     # so raising here guarantees the on-disk state is exactly what it was before
     # the run (including for a domain that mixes provider_failure and
     # fallback_only tables, and for a fallback-only domain opted in via
-    # --allow-fallback-registry).
+    # --allow-fallback-output).
     if run_attempted and not run_semantic_success:
         raise AlignmentTotalFailureError(
             f"Semantic alignment failed for all {run_attempted} attempted "

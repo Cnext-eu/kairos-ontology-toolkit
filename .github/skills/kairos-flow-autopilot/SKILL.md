@@ -66,6 +66,17 @@ human, or recorded as an explicit instruction if already given):
 | 5 | Silver dbt emitted (`compile --emit`), `validate-dbt`/`audit-silver-samples` run against real samples | `kairos-execute-project` |
 | 6 | Pattern-conformance / Gold / MDM projections, if in scope | `kairos-design-gold`, `kairos-design-mdm` |
 
+### Stage 0 pre-flight: AI provider
+
+Before any stage that invokes an LLM judgment step (Stages 1, 3, and 4), the
+autopilot must run `kairos-ontology check-ai-config` and confirm every role the
+run will exercise is `ok` (or at minimum `unprobed` — probe is optional but
+config must be present).  If any role is `not_configured` or `misconfigured`,
+**STOP**: do not proceed to the first LLM stage, do not substitute a heuristic,
+and do not auto-degrade.  Print the remediation and escalate to the contact
+(DD-159).  A run that skipped or could not complete an LLM judgment step must
+carry **BLOCKED** in its transparency report — it may never report "complete".
+
 Each stage completes with its own gate genuinely green (`validate`, `compile --check`,
 etc. — not merely attempted) before the next stage starts. A stage that cannot be
 made to pass within the guardrails below stops the run at that boundary and escalates
@@ -97,6 +108,12 @@ raises where the escalation goes:
 - **A stage's exit gate won't go green** within a reasonable number of iterations —
   escalate with the diagnostic history, don't silently keep retrying or, worse,
   weaken the gate to force a pass.
+- **STOP on a missing or misconfigured AI provider (DD-159).** An LLM judgment
+  step must never auto-degrade to a heuristic or plausible-empty output. If
+  `check-ai-config` reports `not_configured` or `misconfigured` for a role the
+  run needs, stop at the stage boundary, print the remediation, and escalate. A
+  run that skipped an LLM step must carry **BLOCKED** in its transparency
+  report — it may never report "complete".
 
 A run that never escalates is not necessarily a good run — for any real client hub,
 zero escalations across all declared stages is itself worth a second look.

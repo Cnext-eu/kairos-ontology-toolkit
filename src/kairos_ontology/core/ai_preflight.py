@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kairos_ontology.core.ai_provider import (
+    AIProviderConfig,
     AIProviderError,
+    DEFAULT_MODEL,
     NotConfigured,
     Misconfigured,
     Unreachable,
@@ -170,8 +172,6 @@ def preflight_ai_provider(
     Never raises for config reasons — returns a status instead.
     Only :func:`require_ai_provider` raises.
     """
-    from kairos_ontology.core.ai_provider import DEFAULT_MODEL
-
     effective_model = model or DEFAULT_MODEL
     try:
         config = resolve_provider_config(effective_model, role=role)
@@ -248,10 +248,12 @@ def require_ai_provider(
     *,
     model: str | None = None,
     probe: bool = False,
-) -> None:
-    """Raise :class:`AIProviderError` if the role is not usable; no-op if it is.
+) -> AIProviderConfig:
+    """Raise :class:`AIProviderError` if the role is not usable; return config if it is.
 
     The one-line raising wrapper commands call before entering a judgment loop.
+    Returns the resolved provider config so callers don't need a separate
+    ``resolve_provider_config`` call (which would hit the env a second time).
     """
     result = preflight_ai_provider(role, model=model, probe=probe)
     if result.is_blocking:
@@ -264,6 +266,7 @@ def require_ai_provider(
         elif result.status == STATUS_UNREACHABLE:
             raise Unreachable(msg)
         raise AIProviderError(msg)
+    return resolve_provider_config(model or DEFAULT_MODEL, role=role)
 
 
 def _safe_endpoint(endpoint: str) -> str:

@@ -86,8 +86,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   New findings route into a **separate strict-eligible property**, deliberately not into the existing
   work signal: widening that would have made `--strict` unconvergeable on a hub with legitimately-partial
   records — the same pathology as #405 — and would have listed already-processed documents as needing work.
+  - **`check-ai-config` command and AI provider preflight** (#459, DD-159). A new `kairos-ontology
+    check-ai-config` command reports per-role AI provider status (`ok`/`not_configured`/`misconfigured`/
+    `unreachable`/`unprobed`) with computed remediation, supporting `--format text|json`, `--role`, `--model`,
+    `--probe`, `--strict`, and `--warn-only`. It never prints secret values (env var names only). The
+    `require_ai_provider` raising wrapper is called at the entry of each LLM judgment loop
+    (`propose-alignment`, `analyse-sources`) so a missing/misconfigured provider fails fast with a typed
+    `AIProviderError` instead of silently falling through to a heuristic. `AIProviderError` subclasses
+    `EnvironmentError`, so existing `except EnvironmentError`/`pytest.raises(EnvironmentError, match=...)`
+    sites keep passing unchanged. `require_ai_provider` now returns the resolved provider config, eliminating
+    the second `resolve_provider_config` call.
+  - **`GenerationOutcome` constants moved to leaf module** (#459, DD-159).
+    `OUTCOME_SEMANTIC_SUCCESS`/`OUTCOME_PROVIDER_FAILURE`/`OUTCOME_FALLBACK_ONLY` moved from
+    `propose_alignment.py` to `core/generation_outcome.py` and re-exported. Values unchanged — no artifact
+    change. Adds `OUTCOME_UNRESOLVED_ANSWER` for the "model answered but returned an unresolvable id" case.
 
-### Changed
+  ### Changed
 - **`suggest-shapes` emits `sh:in` enums only from full-table distinct evidence** (#424, DD-076 amendment).
   On a real hub, 82% of 217 generated `sh:in` enums were single-value and several provably wrong
   (`booking_status` → only `"TO_REQUEST"` of 5 real values): a distinctCount computed inside a capped
@@ -314,8 +328,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `copilot-instructions.md` boundary section no longer restates the deny globs inline (it went stale
   the moment they changed) and now states plainly that this is a guardrail, not a sandbox: shell tools
   still reach these files, and non-Claude agents are bound only by convention.
+  - **`analyse-sources` never caches a failure and exits 1 on total provider failure** (#459, DD-159).
+    Previously a failed table was cached with a fabricated `domain: ""` at `confidence: 0.0`, poisoning
+    subsequent runs from cache as if the failure were a real result, and a total provider outage still
+    exited 0. The cache write is now gated on `generation_outcome == SEMANTIC_SUCCESS`; failed tables
+    persist with `domain: ""` + `confidence: null` + `generation_*` keys (emitted only on non-success
+    so happy-path YAML stays byte-identical, `schema_version` stays 2). Staged writes + tally guard:
+    `AffinityTotalFailureError` raised when every attempted table fails, caught in `cli/sources.py`
+    as `⛔` + exit 1. Partial failure still exits 0 with a visible warning.
+  - **`propose-alignment` prefights the AI provider and never silently falls through** (#459, DD-159).
+    The old `except EnvironmentError` swallow at the top of `_propose_alignments` silently degraded to
+    heuristic mode when the provider was misconfigured. Now `require_ai_provider(ROLE_ALIGNMENT, …)`
+    is called before per-table fan-out — a missing/misconfigured provider raises `AIProviderError`
+    (subclass of `EnvironmentError`) with a one-line remediation. The wrong flag name
+    `--allow-fallback-registry` was corrected to `--allow-fallback-output` in error messages, docs,
+    and tests.
+  - **Boolean literal normalization in EntityBinding parser** (#448). `str(node["literal"])` converted
+    YAML `true` → Python `True` → `"True"`, rejected by the normalizer which accepts only XSD canonical
+    lowercase `{"true","false"}`. Now normalizes `bool` → `"true"/"false"` at the parse site. **Breaking:**
+    `{literal: true, datatype: string}` emits `"true"` instead of `"True"`.
+  - **`.import/` is now gitignored** (#453). The toolkit-created convention for raw client evidence was
+    not in `gitignore.template`, so large imported files could be committed accidentally. Defence-in-
+    depth: a `pre-push` hook checks for files over 1 MB.
 
-## [5.2.2] — 2026-08-14
+  ## [5.2.2] — 2026-08-14
 
 ### Added
 - **`field-mapping-report`**: generates an Excel workbook (one worksheet per domain) listing
@@ -1795,7 +1831,7 @@ silently invalidates the evidence they produce.
   unresolved-anchors write and commits them only after the run-wide semantic
   verdict is known, so `AlignmentTotalFailureError`'s "no claim registries were
   written" promise also holds for a domain mixing `provider_failure` with
-  `fallback_only` tables and for an opted-in `--allow-fallback-registry` domain —
+  `fallback_only` tables and for an opted-in `--allow-fallback-output` domain —
   existing files are never touched by a failed run. The caller/CLI-resolved model
   (`--model` > `--high-accuracy` > `KAIROS_AI_ALIGNMENT_MODEL` > default) is now
   authoritative for the whole run: the provider preflight is endpoint/auth
@@ -1864,7 +1900,7 @@ silently invalidates the evidence they produce.
   succeeding tables visible while the failed ones are reported (never cached, never
   silently masqueraded as semantic output). Writing a domain whose tables are all
   `fallback_only` (no reference model to align against) now requires the explicit
-  `--allow-fallback-registry` flag. `check-claims` surfaces incomplete generation
+  `--allow-fallback-output` flag. `check-claims` surfaces incomplete generation
   per domain as a non-blocking `incomplete_generation` warning, distinct from
   structural claim validity. `ai_provider.create_chat_completion()` now handles
   unsupported request parameters with one capability-aware, narrowly-guarded retry

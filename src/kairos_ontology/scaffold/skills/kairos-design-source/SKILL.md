@@ -45,9 +45,11 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     relation — it informs ontology and Gold design only. Fold each imported or skipped BI input into
     the same report from step 9.
 11. When semantic source analysis is requested, select and disclose the AI provider immediately
-    before the call, obtain invocation-scoped consent, and run `analyse-sources`. Report provider,
-    authentication mode, and variable names only—never secret values. Preserve deterministic
-    imports when AI analysis is skipped.
+    before the call, obtain invocation-scoped consent, and run `analyse-sources`. First run
+    `kairos-ontology check-ai-config --role affinity`; if the role is `not_configured` or
+    `misconfigured`, stop and print the remediation — never auto-degrade to a heuristic or
+    plausible-empty result (DD-159). Report provider, authentication mode, and variable names
+    only—never secret values. Preserve deterministic imports when AI analysis is skipped.
 12. Hand authoritative source relations to `kairos-design-mapping`, which authors closed
     `integration/bindings/*.binding.yaml` documents.
 

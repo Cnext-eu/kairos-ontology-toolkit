@@ -63,6 +63,9 @@ MAPPING_ANCHORS = [
     "PII-safe",
     "authoritative YAML output contract",
     "persist only accepted binding",
+    # A5: Gate 0 AI provider preflight (DD-159)
+    "Gate 0: AI provider preflight",
+    "check-ai-config --role alignment",
 ]
 
 LEGACY_ACTIVE_PATHS = [

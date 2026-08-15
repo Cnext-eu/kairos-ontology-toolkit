@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -1099,6 +1100,7 @@ class TestRunProposeAlignment:
 
         with (
             mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=[
@@ -1182,6 +1184,7 @@ class TestRunProposeAlignment:
         client = self._mock_client(responses)
         with (
             mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=[
@@ -1282,6 +1285,7 @@ class TestRunProposeAlignment:
 
         with (
             mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=ref_classes,
@@ -1352,6 +1356,7 @@ class TestAlignmentConcurrencyAndCaching:
     def _run(self, client, analysis_dir, sources_dir, output_dir, **kw):
         with (
             mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=self.REF_CLASSES,
@@ -1505,6 +1510,7 @@ class TestAlignmentReliability:
                 "kairos_ontology.core.propose_alignment.get_ai_client",
                 return_value=self._success_client(),
             ),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=self.REF_CLASSES,
@@ -1602,6 +1608,7 @@ class TestUriAnchorContractIntegration:
         client = self._model_prefers_trade_terms_client()
         with (
             mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=self.REF_CLASSES,
@@ -1637,6 +1644,7 @@ class TestUriAnchorContractIntegration:
         client = self._model_prefers_trade_terms_client()
         with (
             mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=self.REF_CLASSES,
@@ -1656,7 +1664,7 @@ class TestUriAnchorContractIntegration:
 
 class TestProposeAlignmentCLIReliability:
     """Alignment-reliability wiring through the `propose-alignment` CLI command:
-    --allow-fallback-registry passthrough and AlignmentTotalFailureError → exit 1."""
+    --allow-fallback-output passthrough and AlignmentTotalFailureError → exit 1."""
 
     def _cli_setup(self, tmp_path):
         analysis = tmp_path / "_analysis"
@@ -1741,7 +1749,7 @@ class TestTotalFailureNoWriteGuarantee:
     known, so the promise also holds for the two cases a per-domain gate cannot
     catch on its own: a domain that mixes ``provider_failure`` with
     ``fallback_only`` tables (neither group covers the whole domain), and a
-    fallback-only domain explicitly opted in via ``--allow-fallback-registry``.
+    fallback-only domain explicitly opted in via ``--allow-fallback-output``.
     """
 
     REF_CLASSES = [
@@ -1889,6 +1897,7 @@ class TestTotalFailureNoWriteGuarantee:
                 "kairos_ontology.core.propose_alignment.get_ai_client",
                 return_value=client,
             ),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=self.REF_CLASSES,
@@ -1953,6 +1962,7 @@ class TestModelPrecedence:
                 "kairos_ontology.core.propose_alignment.get_ai_client",
                 return_value=self._recording_client(seen),
             ),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=self.REF_CLASSES,
@@ -2544,6 +2554,7 @@ class TestRunProposeAlignmentCrossModule:
                 "kairos_ontology.core.propose_alignment.get_ai_client",
                 return_value=self._client(calls),
             ),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 side_effect=self._inventory_side_effect,
@@ -2571,6 +2582,7 @@ class TestRunProposeAlignmentCrossModule:
                 "kairos_ontology.core.propose_alignment.get_ai_client",
                 return_value=self._client(calls),
             ),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 side_effect=self._inventory_side_effect,
@@ -2801,6 +2813,7 @@ class TestSampleEvidenceIntegration:
         client = TestRunProposeAlignment()._mock_client(self._responses())
         with (
             mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
             mock.patch(
                 "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
                 return_value=[
@@ -3351,3 +3364,36 @@ class TestClusterObjectPropertyCandidates:
 
     def test_empty_input_returns_empty(self):
         assert _cluster_object_property_candidates([], domain="logistics") == []
+
+
+# ---------------------------------------------------------------------------
+# A5: Guard test — the wrong flag name must appear nowhere in the codebase.
+# ---------------------------------------------------------------------------
+
+
+def test_allow_fallback_registry_appears_nowhere():
+    """The old --allow-fallback-registry flag was renamed to --allow-fallback-output.
+
+    The wrong name must never reappear in source code, CLI definitions, or skill
+    instructions.  Documentation and this test legitimately reference the old name.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "git",
+            "grep",
+            "-rn",
+            "allow-fallback-registry",
+            "--",
+            "src/",
+            ".github/skills/",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    # git grep returns 1 when no matches found
+    assert result.returncode == 1, (
+        f"--allow-fallback-registry found in source/skills:\n{result.stdout}"
+    )

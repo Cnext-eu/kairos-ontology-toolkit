@@ -26,6 +26,10 @@ AUTOPILOT_ANCHORS = [
     # Stage ladder
     "validate",
     "compile --check",
+    # Stage 0 AI provider preflight
+    "check-ai-config",
+    "Stage 0 pre-flight: AI provider",
+    "**STOP**",
     # Decision Log as primary deliverable
     "Decision Log",
     "decision sync-index",

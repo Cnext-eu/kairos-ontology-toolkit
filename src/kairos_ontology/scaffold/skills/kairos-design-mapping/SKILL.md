@@ -104,6 +104,15 @@ Work on one source system, one domain, and one entity binding at a time.
 
 ## Hard gates
 
+### Gate 0: AI provider preflight
+
+Before entering the LLM judgment loop for a binding, run
+`kairos-ontology check-ai-config --role alignment`.  If the role is
+`not_configured` or `misconfigured`, stop and print the remediation — do not
+substitute a heuristic, do not auto-degrade, do not produce a plausible-empty
+binding (DD-159).  This gate does not block a deterministic-only pass (a user
+who is not invoking the LLM yet), but it must be green before any LLM step.
+
 ### Gate 1: Complete, PII-safe evidence
 
 Before proposing a binding:
