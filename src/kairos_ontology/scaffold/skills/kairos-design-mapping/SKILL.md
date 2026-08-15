@@ -10,6 +10,11 @@ description: >
 
 # V5 Entity Binding Design
 
+> **SHACL governance:** SHACL governance shapes are authored during domain design
+> (kairos-design-domain) in `model/shapes/<domain>.shacl.ttl`, not during binding
+> authoring. EntityBinding quality is enforced by the compiler's conformance
+> checks, not by SHACL. Do not add SHACL shapes as part of a binding.
+
 Use this skill after a bounded canonical ontology slice is accepted. Author
 `integration/bindings/<source>-to-<domain>.binding.yaml` as the single
 source-to-canonical execution authority.

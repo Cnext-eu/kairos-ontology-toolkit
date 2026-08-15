@@ -91,7 +91,6 @@ print("\n" + "=" * 60)
 print("📂 Generated File Structure (Domain-Separated)")
 print("=" * 60)
 
-import os
 
 def print_tree(directory, prefix="", is_last=True):
     """Print directory tree structure"""

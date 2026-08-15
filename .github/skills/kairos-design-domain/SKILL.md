@@ -423,6 +423,7 @@ Rules the exemplar demonstrates:
   closed code lists, required identifiers, role cardinality. Every constraint
   carries `sh:message` and an explicit `sh:severity`. The exemplar
   `exemplar-domain.shacl.ttl` demonstrates the pattern.
+- **Mapping stage:** EntityBinding authoring (kairos-design-mapping) does **not** author SHACL shapes — binding quality is enforced by the compiler's conformance checks, not by governance SHACL. Author all governance constraints here in domain design.
 
 ### 7. Persist material decisions
 

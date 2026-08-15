@@ -204,3 +204,239 @@ def test_list_class_properties_tokens_for_unresolvable_class(tmp_path):
     assert result.exit_code != 0
     assert "does not resolve" in result.output
 
+
+# ---------------------------------------------------------------------------
+# Issue #484 — --datatypes-only filter for list-class-properties
+# ---------------------------------------------------------------------------
+
+ONTOLOGY_MIXED_PROPERTIES = """\
+@prefix ex: <https://example.org/domain#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+<https://example.org/domain> a owl:Ontology ; owl:versionInfo "1.0" .
+ex:Party a owl:Class ; rdfs:label "Party" .
+ex:name a owl:DatatypeProperty ; rdfs:domain ex:Party ; rdfs:range xsd:string ; rdfs:label "Name" .
+ex:age a owl:DatatypeProperty ; rdfs:domain ex:Party ; rdfs:range xsd:integer ; rdfs:label "Age" .
+ex:knows a owl:ObjectProperty ; rdfs:domain ex:Party ; rdfs:range ex:Party ; rdfs:label "Knows" .
+"""
+
+
+def test_list_class_properties_datatypes_only_filters_to_datatype_properties(tmp_path):
+    ontology = tmp_path / "domain.ttl"
+    ontology.write_text(ONTOLOGY_MIXED_PROPERTIES, encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "list-class-properties",
+            "https://example.org/domain#Party",
+            "--ontology",
+            str(ontology),
+            "--datatypes-only",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    prop_types = [p["property_type"] for p in payload["properties"]]
+    assert prop_types == ["datatype", "datatype"]
+    names = [p["name"] for p in payload["properties"]]
+    assert "knows" not in names
+    assert "name" in names
+    assert "age" in names
+
+
+def test_list_class_properties_without_flag_shows_all_properties(tmp_path):
+    ontology = tmp_path / "domain.ttl"
+    ontology.write_text(ONTOLOGY_MIXED_PROPERTIES, encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "list-class-properties",
+            "https://example.org/domain#Party",
+            "--ontology",
+            str(ontology),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    prop_types = sorted(p["property_type"] for p in payload["properties"])
+    assert prop_types == ["datatype", "datatype", "object"]
+    names = [p["name"] for p in payload["properties"]]
+    assert "name" in names
+    assert "age" in names
+    assert "knows" in names
+
+
+# ---------------------------------------------------------------------------
+# Issue #480 — --all flag for show-class-inventory
+# ---------------------------------------------------------------------------
+
+ALL_DOMAIN_FINANCIAL = """\
+@prefix fin: <https://example.org/financial#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+<https://example.org/financial> a owl:Ontology ; owl:versionInfo "1.0" .
+fin:Account a owl:Class ; rdfs:label "Account" .
+fin:balance a owl:DatatypeProperty ; rdfs:domain fin:Account ; rdfs:range xsd:decimal ; rdfs:label "Balance" .
+fin:hasHolder a owl:ObjectProperty ; rdfs:domain fin:Account ; rdfs:range fin:Party ; rdfs:label "Has Holder" .
+fin:Party a owl:Class ; rdfs:label "Party" .
+"""
+
+ALL_DOMAIN_PARTY = """\
+@prefix party: <https://example.org/party#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+<https://example.org/party> a owl:Ontology ; owl:versionInfo "1.0" .
+party:Person a owl:Class ; rdfs:label "Person" .
+party:name a owl:DatatypeProperty ; rdfs:domain party:Person ; rdfs:range xsd:string ; rdfs:label "Name" .
+"""
+
+ALL_DOMAIN_EMPTY_CLASSES = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://example.org/propsOnly> a owl:Ontology ; owl:versionInfo "1.0" .
+ex:lonely a owl:DatatypeProperty ; rdfs:label "Lonely" .
+"""
+
+ONTOLOGY_NO_DATATYPE_PROPERTIES = """\
+@prefix rel: <https://example.org/relations#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://example.org/relations> a owl:Ontology ; owl:versionInfo "1.0" .
+rel:Node a owl:Class ; rdfs:label "Node" .
+rel:linkedTo a owl:ObjectProperty ; rdfs:domain rel:Node ; rdfs:range rel:Node ; rdfs:label "Linked To" .
+"""
+
+
+def _make_all_hub(hub_root):
+    """Create a hub with two domain ontologies under model/ontologies/."""
+    ont_dir = hub_root / "model" / "ontologies"
+    ont_dir.mkdir(parents=True)
+    (ont_dir / "financial.ttl").write_text(ALL_DOMAIN_FINANCIAL, encoding="utf-8")
+    (ont_dir / "party.ttl").write_text(ALL_DOMAIN_PARTY, encoding="utf-8")
+    # Non-domain files that must be excluded by is_domain_ontology_stem.
+    (ont_dir / "_master.ttl").write_text(
+        '@prefix owl: <http://www.w3.org/2002/07/owl#> .\n'
+        '<https://example.org/master> a owl:Ontology ; owl:versionInfo "1.0" .\n',
+        encoding="utf-8",
+    )
+    (hub_root / "model" / "shapes").mkdir(parents=True, exist_ok=True)
+    return hub_root
+
+
+def test_show_class_inventory_all_iterates_all_domains(tmp_path, monkeypatch):
+    """--all iterates every domain ontology and produces a combined summary."""
+    hub = tmp_path / "ontology-hub"
+    _make_all_hub(hub)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["show-class-inventory", "--all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["schema_version"] == 1
+    domain_names = [d["domain"] for d in payload["domains"]]
+    assert domain_names == ["financial", "party"]
+
+    fin = next(d for d in payload["domains"] if d["domain"] == "financial")
+    assert fin["class_count"] == 2
+    account = next(c for c in fin["classes"] if c["class_uri"] == "https://example.org/financial#Account")
+    assert account["label"] == "Account"
+    assert account["datatype_property_count"] == 1
+    assert account["object_property_count"] == 1
+    assert account["shacl_shape_status"] == "absent"
+
+    party = next(d for d in payload["domains"] if d["domain"] == "party")
+    person = party["classes"][0]
+    assert person["class_uri"] == "https://example.org/party#Person"
+    assert person["datatype_property_count"] == 1
+    assert person["object_property_count"] == 0
+
+
+def test_show_class_inventory_all_zero_datatype_count(tmp_path, monkeypatch):
+    """Classes with zero datatype properties show datatype_property_count: 0."""
+    hub = tmp_path / "ontology-hub"
+    ont_dir = hub / "model" / "ontologies"
+    ont_dir.mkdir(parents=True)
+    (ont_dir / "relations.ttl").write_text(ONTOLOGY_NO_DATATYPE_PROPERTIES, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["show-class-inventory", "--all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload["domains"]) == 1
+    domain = payload["domains"][0]
+    assert domain["domain"] == "relations"
+    cls = domain["classes"][0]
+    assert cls["class_uri"] == "https://example.org/relations#Node"
+    assert cls["datatype_property_count"] == 0
+    assert cls["object_property_count"] == 1
+
+
+def test_show_class_inventory_all_without_hub_raises(tmp_path, monkeypatch):
+    """--all outside of a hub directory raises an error."""
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["show-class-inventory", "--all"],
+    )
+
+    assert result.exit_code != 0
+    assert "Cannot locate a hub" in result.output
+
+
+def test_show_class_inventory_all_with_max_classes(tmp_path, monkeypatch):
+    """--all with --max-classes limits each domain to the given count."""
+    hub = tmp_path / "ontology-hub"
+    _make_all_hub(hub)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["show-class-inventory", "--all", "--max-classes", "1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    for domain in payload["domains"]:
+        assert domain["class_count"] == 1
+
+
+def test_show_class_inventory_all_shacl_present(tmp_path, monkeypatch):
+    """--all reports shacl_shape_status 'present' when a SHACL file exists."""
+    hub = tmp_path / "ontology-hub"
+    _make_all_hub(hub)
+    # Create a SHACL shape file for the financial domain.
+    (hub / "model" / "shapes" / "financial.shacl.ttl").write_text(
+        '@prefix sh: <http://www.w3.org/ns/shacl#> .\n', encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["show-class-inventory", "--all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    fin = next(d for d in payload["domains"] if d["domain"] == "financial")
+    account = next(c for c in fin["classes"] if c["class_uri"] == "https://example.org/financial#Account")
+    assert account["shacl_shape_status"] == "present"
+    party = next(d for d in payload["domains"] if d["domain"] == "party")
+    person = party["classes"][0]
+    assert person["shacl_shape_status"] == "absent"
+

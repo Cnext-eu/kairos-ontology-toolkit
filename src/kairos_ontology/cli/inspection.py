@@ -96,9 +96,78 @@ def _compute_class_tokens(loaded, ontology_path: Path, class_uri: str) -> list[s
     return sorted(tokens)
 
 
+def _show_all_domain_inventory(catalog, profile, max_classes):
+    """Iterate all domain ontologies and emit a combined class inventory (issue #480)."""
+    from ..core.hub_utils import find_hub_root, is_domain_ontology_stem
+    from ..core.ontology_loader import load_ontology
+
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    if hub is None:
+        raise click.ClickException("Cannot locate a hub for --all.")
+    ontologies_dir = hub / "model" / "ontologies"
+    if not ontologies_dir.is_dir():
+        raise click.ClickException("Cannot locate model/ontologies/ in the hub.")
+
+    domain_paths = sorted(
+        path
+        for path in ontologies_dir.glob("*.ttl")
+        if is_domain_ontology_stem(path.stem)
+    )
+
+    catalog_path = Path(catalog) if catalog else None
+    shapes_dir = hub / "model" / "shapes"
+
+    domain_sections: list[dict] = []
+    for ttl_path in domain_paths:
+        domain_name = ttl_path.stem
+        loaded = load_ontology(
+            ttl_path,
+            catalog_path=catalog_path,
+            profile=profile,
+        )
+        slice_data = loaded.semantic_index.slice(max_classes=max_classes)
+        class_entries: list[dict] = []
+        for cls_record in slice_data["classes"]:
+            class_uri = cls_record["uri"]
+            props = loaded.semantic_index.class_properties(class_uri)
+            datatype_count = sum(
+                1 for p in props if p.get("property_type") == "datatype"
+            )
+            object_count = sum(
+                1 for p in props if p.get("property_type") == "object"
+            )
+            shacl_path = shapes_dir / f"{domain_name}.shacl.ttl"
+            class_entries.append(
+                {
+                    "class_uri": class_uri,
+                    "label": cls_record.get("label") or "",
+                    "tokens": _compute_class_tokens(loaded, ttl_path, class_uri),
+                    "datatype_property_count": datatype_count,
+                    "object_property_count": object_count,
+                    "shacl_shape_status": "present"
+                    if shacl_path.is_file()
+                    else "absent",
+                }
+            )
+        domain_sections.append(
+            {
+                "domain": domain_name,
+                "class_count": len(class_entries),
+                "classes": class_entries,
+            }
+        )
+
+    payload = {
+        "schema_version": 1,
+        "domains": domain_sections,
+    }
+    click.echo(json.dumps(payload, indent=2, sort_keys=True))
+
+
 @click.command(name="show-class-inventory")
 @click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
 @click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
+@click.option("--all", "all_domains", is_flag=True, help="Iterate all domain ontologies.")
 @click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
 @click.option(
     "--profile",
@@ -106,10 +175,14 @@ def _compute_class_tokens(loaded, ontology_path: Path, class_uri: str) -> list[s
     default="kairos-design",
 )
 @click.option("--max-classes", type=click.IntRange(min=1), default=None)
-def show_class_inventory_cmd(ontology, domain, catalog, profile, max_classes):
+def show_class_inventory_cmd(ontology, domain, all_domains, catalog, profile, max_classes):
     """Print a versioned semantic-index class slice as JSON."""
     from ..core.hub_utils import find_hub_root
     from ..core.ontology_loader import load_ontology
+
+    if all_domains:
+        _show_all_domain_inventory(catalog, profile, max_classes)
+        return
 
     if ontology:
         path = Path(ontology)
@@ -121,7 +194,7 @@ def show_class_inventory_cmd(ontology, domain, catalog, profile, max_classes):
         if not path.is_file():
             raise click.ClickException(f"Domain ontology not found: {path}")
     else:
-        raise click.UsageError("Provide --ontology or --domain.")
+        raise click.UsageError("Provide --ontology, --domain, or --all.")
     loaded = load_ontology(
         path,
         catalog_path=Path(catalog) if catalog else None,
@@ -138,7 +211,12 @@ def show_class_inventory_cmd(ontology, domain, catalog, profile, max_classes):
 @click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
 @click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
 @click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
-def list_class_properties_cmd(class_iri, ontology, domain, catalog):
+@click.option(
+    "--datatypes-only",
+    is_flag=True,
+    help="Show only datatype properties (filter out object properties).",
+)
+def list_class_properties_cmd(class_iri, ontology, domain, catalog, datatypes_only):
     """List direct and inherited class properties, including effective ranges."""
     from ..core.hub_utils import find_hub_root
     from ..core.ontology_loader import load_ontology
@@ -162,13 +240,16 @@ def list_class_properties_cmd(class_iri, ontology, domain, catalog):
         raise click.ClickException(
             f"Class does not resolve in the scoped domain closure: {class_iri}"
         )
+    properties = loaded.semantic_index.class_properties(class_iri)
+    if datatypes_only:
+        properties = [p for p in properties if p.get("property_type") == "datatype"]
     click.echo(
         json.dumps(
             {
                 "schema_version": 1,
                 "class_uri": class_iri,
                 "tokens": _compute_class_tokens(loaded, path, class_iri),
-                "properties": loaded.semantic_index.class_properties(class_iri),
+                "properties": properties,
             },
             indent=2,
             sort_keys=True,
@@ -428,6 +509,8 @@ def _render_plan_sources_text(result) -> None:
                     f"precedence={fact.source_precedence} conflict={fact.conflict} "
                     f"union={fact.union_mode}"
                 )
+            for warning in fact.warnings:
+                click.echo(f"       ⚠ {warning}")
     if result.candidate is not None:
         candidate = result.candidate
         click.echo("")
@@ -443,6 +526,10 @@ def _render_plan_sources_text(result) -> None:
             click.echo("     ✗ identity type-kinds do NOT match — raw conformance would fail")
         for note in candidate.notes:
             click.echo(f"     - {note}")
+    if result.warnings:
+        click.echo("")
+        for warning in result.warnings:
+            click.echo(f"   ⚠ {warning}")
 
 
 @click.command(name="plan-sources")
@@ -2689,3 +2776,33 @@ def guard_scope_cmd(
     except OSError:
         pass
     click.echo("✓ guard-scope passed — no unexpected file changes.")
+
+
+@click.command(name="suggest-type")
+@click.argument("source_type")
+def suggest_type_cmd(source_type):
+    """Suggest the canonical type for a SQL/source column type.
+
+    Maps common SQL types (varchar, int, datetime, decimal, etc.) to
+    Kairos canonical type kinds. Useful when authoring technicalFields
+    in EntityBindings.
+    """
+    from ..core.projections.dbt.policy_normalize import _source_type
+
+    spec = _source_type(source_type)
+    if spec is None:
+        raise click.ClickException(
+            f"Unrecognized source type: {source_type!r}. "
+            "Supported: bigint, binary, bit, bool, boolean, char, date, datetime, "
+            "datetime2, decimal, double, float, image, int, integer, json, money, "
+            "nchar, ntext, numeric, nvarchar, real, smallint, string, text, time, "
+            "timestamp, tinyint, uniqueidentifier, varbinary, varchar, variant, xml"
+        )
+    result = {"source_type": source_type, "canonical_kind": spec.kind.value}
+    if spec.precision is not None:
+        result["precision"] = spec.precision
+    if spec.scale is not None:
+        result["scale"] = spec.scale
+    if spec.length is not None:
+        result["length"] = spec.length
+    click.echo(json.dumps(result, indent=2, sort_keys=True))

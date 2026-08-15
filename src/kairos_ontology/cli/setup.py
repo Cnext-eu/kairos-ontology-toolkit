@@ -2082,7 +2082,7 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
         except Exception as e:
             print(f"❌ AI provider is not available: {e}")
             raise click.ClickException(
-                f"AI provider is not configured or not reachable.\n"
+                "AI provider is not configured or not reachable.\n"
                 "Run 'kairos-ontology check-ai-config' to verify configuration, "
                 "or re-run without --ai for a bare starter template."
             )

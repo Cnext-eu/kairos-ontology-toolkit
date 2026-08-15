@@ -13,7 +13,7 @@ bindings and source vocabularies) -- never a new conformance rule.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .compiler.bindings import EntityBinding, load_entity_binding
@@ -52,6 +52,7 @@ class BindingConformanceFact:
     source_precedence: int | None
     conflict: str | None
     union_mode: str | None
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,7 @@ class PlanSourcesResult:
     class_uri: str
     bindings: tuple[BindingConformanceFact, ...]
     candidate: CandidateSourceFact | None
+    warnings: tuple[str, ...] = ()
 
 
 def _kind(data_type: str) -> str | None:
@@ -129,6 +131,52 @@ def _find_bindings_for_class(
     return matches
 
 
+def _detect_natural_key_mismatches(
+    facts: list[BindingConformanceFact],
+) -> dict[str, list[str]]:
+    """Return ``{binding_name: [warning, ...]}`` for natural-key column-name mismatches.
+
+    Two bindings in the same conformance group that target the same class with
+    *different* natural-key column name sets (ordering ignored) cannot satisfy a
+    raw multi-source conformance contract — each source has a different natural
+    identity column, so the rows cannot be unioned on the same key.
+    """
+    warnings: dict[str, list[str]] = {}
+
+    groups: dict[str, list[BindingConformanceFact]] = {}
+    for fact in facts:
+        if fact.conformance_group is None:
+            continue
+        groups.setdefault(fact.conformance_group, []).append(fact)
+
+    for group, group_facts in groups.items():
+        if len(group_facts) < 2:
+            continue
+        distinct_key_sets: list[tuple[str, set[str]]] = [
+            (fact.name, {col.name for col in fact.identity}) for fact in group_facts
+        ]
+        unique_name_sets = frozenset(frozenset(col_set) for _, col_set in distinct_key_sets)
+        if len(unique_name_sets) < 2:
+            continue
+        for name_a, cols_a in distinct_key_sets:
+            for name_b, cols_b in distinct_key_sets:
+                if name_a >= name_b:
+                    continue
+                if cols_a == cols_b:
+                    continue
+                msg = (
+                    f"natural key column names differ across bindings in "
+                    f"conformance group '{group}': binding '{name_a}' has keys "
+                    f"{sorted(cols_a)}, binding '{name_b}' has keys {sorted(cols_b)}; "
+                    "raw conformance is infeasible when sources have different natural "
+                    "key columns — route to int_merged__<entity> dbt pattern "
+                    "(kairos-develop-dbt-transformation)"
+                )
+                warnings.setdefault(name_a, []).append(msg)
+                warnings.setdefault(name_b, []).append(msg)
+    return warnings
+
+
 def run_plan_sources(
     ontology_path: Path,
     class_token: str,
@@ -154,6 +202,17 @@ def run_plan_sources(
     if class_uri is None:
         raise PlanSourcesError(
             f"could not resolve --class {class_token!r} against {ontology_path}"
+        )
+
+    warnings: list[str] = []
+    class_props = loaded.semantic_index.class_properties(class_uri)
+    datatype_count = sum(1 for p in class_props if p.get("property_type") == "datatype")
+    if datatype_count == 0:
+        warnings.append(
+            f"target class {class_uri} has zero datatype properties — "
+            "bindings cannot map fields without datatype properties; "
+            "enrich the ontology class before authoring bindings "
+            "(kairos-design-domain)"
         )
 
     binding_paths: list[Path] = []
@@ -182,6 +241,13 @@ def run_plan_sources(
                 union_mode=conformance.union.mode if conformance else None,
             )
         )
+
+    nk_warnings = _detect_natural_key_mismatches(facts)
+    if nk_warnings:
+        facts = [
+            replace(fact, warnings=tuple(nk_warnings.get(fact.name, ())))
+            for fact in facts
+        ]
 
     candidate: CandidateSourceFact | None = None
     if source is not None:
@@ -255,4 +321,5 @@ def run_plan_sources(
         class_uri=class_uri,
         bindings=tuple(facts),
         candidate=candidate,
+        warnings=tuple(warnings),
     )

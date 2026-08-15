@@ -163,7 +163,6 @@ class TestEndpointWithoutKey:
             function before patching and call it directly, monkeypatching the factory
             it imports.
             """
-            import kairos_ontology.core.ai_preflight as ap
             from kairos_ontology.core.ai_provider import AIProviderConfig
             import kairos_ontology.core.ai_provider as aip
 
