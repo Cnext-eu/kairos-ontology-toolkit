@@ -843,13 +843,6 @@ def test_judgments_template_roundtrip_build_succeeds(tmp_path, refroot, monkeypa
 
 # --- discovery-conformance summarize (issue #438) ----------------------------------------
 
-import dataclasses as _dataclasses
-
-from kairos_ontology.core.conformance_artifact import (
-    compute_scorecard as _compute_scorecard,
-)
-
-
 def test_summarize_happy_path_emits_scorecard_and_open_questions(tmp_path, refroot, monkeypatch):
     """Summarize on a real artifact emits scorecard, average confidence, needs_confirmation
     count, and open_questions in clean JSON on stdout."""

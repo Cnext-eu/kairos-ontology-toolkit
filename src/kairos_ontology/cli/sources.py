@@ -5,6 +5,7 @@
 import json
 import click
 from pathlib import Path
+from typing import Any
 
 # Importing the design-time MDM package registers the additive ``mdm-profile``
 # projection target with the core projector (registry pattern, MDM-DD-002).
