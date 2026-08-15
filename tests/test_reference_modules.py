@@ -501,3 +501,94 @@ groups:
         # ...but the human-facing message prose must be readable instead.
         assert legacy_iri in diagnostic.message
         assert "legacy-imo-party" not in diagnostic.message
+
+
+# ---------------------------------------------------------------------------
+# Issue #426 (DD-155): Managed Import Completeness is mode-independent.
+# ---------------------------------------------------------------------------
+
+_SYNTAX_CLEAN_ORDERS_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://example.org/hub/orders> a owl:Ontology ;
+    rdfs:label "Orders"@en ;
+    rdfs:comment "Orders domain missing its required managed import."@en ;
+    owl:versionInfo "0.1.0" .
+"""
+
+
+def _syntax_only_hub(tmp_path):
+    """An ontologies dir whose one domain is naming-clean but import-incomplete."""
+    ontologies_dir = tmp_path / "ontologies"
+    ontologies_dir.mkdir()
+    (ontologies_dir / "orders.ttl").write_text(_SYNTAX_CLEAN_ORDERS_TTL, encoding="utf-8")
+    return ontologies_dir
+
+
+def test_missing_managed_import_fails_a_syntax_only_run(tmp_path, capsys):
+    """`validate --syntax` must run the managed-import check when reference models
+    resolve — the accidental `--shacl`/`--consistency` gate let Gate 5's inner-loop
+    command register four green gates on an unactivated domain (#426)."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    ontologies_dir = _syntax_only_hub(tmp_path)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=tmp_path / "shapes",  # intentionally does not exist
+            catalog_path=catalog,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            ref_models_dir=ref_models,
+            accelerator="generic",
+        )
+
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "Managed Import Completeness" in out
+    assert "missing/invalid import(s)" in out
+
+
+def test_degraded_syntax_only_run_accepts_missing_managed_import(tmp_path, capsys):
+    """`--degraded` semantics are unchanged and now also apply to --syntax runs."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    ontologies_dir = _syntax_only_hub(tmp_path)
+
+    run_validation(
+        ontologies_path=ontologies_dir,
+        shapes_path=tmp_path / "shapes",
+        catalog_path=catalog,
+        do_syntax=True,
+        do_shacl=False,
+        do_consistency=False,
+        ref_models_dir=ref_models,
+        accelerator="generic",
+        degraded=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "degraded mode accepted" in out
+    assert "All validations passed" in out
+
+
+def test_syntax_only_run_without_reference_models_prints_no_imports_section(tmp_path, capsys):
+    """Resolvability short-circuit: with no reference models (None, or a missing
+    directory) the pre-pass, the section header, and the loop are all skipped, so
+    a no-refmodels --syntax run keeps byte-identical output."""
+    ontologies_dir = _syntax_only_hub(tmp_path)
+
+    for ref_models_dir in (None, tmp_path / "does-not-exist"):
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=tmp_path / "shapes",
+            catalog_path=None,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            ref_models_dir=ref_models_dir,
+        )
+        out = capsys.readouterr().out
+        assert "Managed Import Completeness" not in out
+        assert "All validations passed" in out

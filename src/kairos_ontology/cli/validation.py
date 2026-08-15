@@ -141,7 +141,12 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir, structural_only):
     help="Data domain to resolve the accelerator against (parity with compile). "
     "When omitted, domains are inferred from the ontology file stems.",
 )
-@click.option("--syntax", is_flag=True, help="Validate syntax only")
+@click.option(
+    "--syntax",
+    is_flag=True,
+    help="Validate syntax and naming; also verifies managed import completeness "
+    "whenever reference models are present (DD-155).",
+)
 @click.option("--shacl", is_flag=True, help="Validate SHACL only")
 @click.option("--consistency", is_flag=True, help="Validate consistency only")
 @click.option(

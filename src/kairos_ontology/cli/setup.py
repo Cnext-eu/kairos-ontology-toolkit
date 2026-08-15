@@ -45,6 +45,108 @@ from .shared import (
 )
 
 
+def _registration_import_gate(
+    *,
+    domain: str,
+    ontology_path: Path,
+    hub: Path,
+    refmodels_root: Path,
+    catalog_path: Path | None,
+    degraded: bool,
+) -> None:
+    """Refuse to register a pre-existing, import-incomplete domain (issue #426, DD-155).
+
+    Raises ``SystemExit(1)`` — before the catalog write and the ``_master.ttl``
+    sync — when the domain's Managed Import Completeness diagnostics contain
+    hard errors, or degradable ``missing_managed_import`` errors without
+    ``--degraded``.
+
+    Scope caveat (DD-155): this builds a *single-domain* module context, which is
+    a LOWER BOUND on what ``validate --all`` checks — the scoped context can pass
+    where the full run fails (never the reverse of practical concern), so the
+    skill's pre-registration ``validate --all --domain <domain>`` run remains
+    necessary, not belt-and-braces.
+
+    Failure ownership: toolkit-owned infrastructure exceptions (context build
+    crash, unreadable TTL) warn and proceed — they must never block a user's
+    registration. An *ambiguous* accelerator also warns and skips the gate,
+    pointing at ``validate --all --accelerator <pack>``. DD-088 fleet mode: the
+    gate blocks identically in fleet mode; an explicit ``--degraded`` is the
+    only bypass.
+    """
+    from rdflib import Graph
+    from rdflib.namespace import OWL
+
+    from ..core.reference_modules import (
+        build_reference_module_context,
+        resolve_hub_accelerator_detailed,
+    )
+    from ..core.validator import validate_managed_imports
+
+    try:
+        resolution = resolve_hub_accelerator_detailed(
+            explicit=None,
+            hub_root=hub,
+            ref_models_dir=refmodels_root,
+            domain_hint=[domain],
+        )
+    except ValueError as exc:
+        print(
+            f"  ⚠ Managed-import registration gate skipped — {exc}\n"
+            "      Check import completeness with "
+            f"`kairos-ontology validate --all --accelerator <pack> --domain {domain}`."
+        )
+        return
+
+    try:
+        graph = Graph()
+        graph.parse(ontology_path)
+        imported_iris = {str(item) for item in graph.objects(predicate=OWL.imports)}
+        module_context = build_reference_module_context(
+            refmodels_root,
+            catalog_path=catalog_path,
+            accelerator=resolution.accelerator,
+            requested_domains=[domain],
+            imported_ontology_iris=imported_iris,
+        )
+        if module_context is None:
+            return  # no accelerator module config resolvable — nothing to gate on
+        diagnostics = validate_managed_imports(
+            ontology_path, domain=domain, module_context=module_context
+        )
+    except Exception as exc:  # noqa: BLE001 — toolkit-owned failures must not block
+        print(
+            f"  ⚠ Managed-import registration gate skipped for {domain} "
+            f"({type(exc).__name__}: {exc}); run "
+            f"`kairos-ontology validate --all --domain {domain}` to check imports."
+        )
+        return
+
+    # Mirror run_validation's Managed Import Completeness semantics (DD-155):
+    # hard errors always block; missing_managed_import blocks unless --degraded.
+    errors = [item for item in diagnostics if item.level == "error"]
+    warnings = [item for item in diagnostics if item.level != "error"]
+    hard_errors = [item for item in errors if item.code != "missing_managed_import"]
+    degradable_errors = [item for item in errors if item.code == "missing_managed_import"]
+    for item in warnings:
+        print(f"  ⚠ {item.message}")
+    if hard_errors or (degradable_errors and not degraded):
+        for item in errors:
+            print(f"  ❌ {item.message}")
+        print(
+            f"  ❌ {domain} failed the managed-import completeness check above — "
+            "registration refused — fix the imports or rerun with --degraded."
+        )
+        raise SystemExit(1)
+    if degradable_errors:
+        for item in degradable_errors:
+            print(f"  ⚠ {item.message}")
+        print(
+            f"  ⚠ --degraded accepted {len(degradable_errors)} missing managed "
+            f"import(s) for {domain}; registration proceeds."
+        )
+
+
 @click.command()
 @click.option(
     "--domain",
@@ -75,7 +177,14 @@ from .shared import (
     default=None,
     help="Git ref (tag/branch) for reference models (default: latest tag, falling back to main).",
 )
-def init(domain, company_domain, force, skip_refmodels, ref_models_version):
+@click.option(
+    "--degraded",
+    is_flag=True,
+    default=False,
+    help="Explicitly allow incomplete ontology imports for semantic validation; "
+    "results are marked import_complete=false.",
+)
+def init(domain, company_domain, force, skip_refmodels, ref_models_version, degraded):
     """Initialize a Kairos ontology hub in the current directory.
 
     Creates the standard folder structure, installs Copilot skills, and
@@ -411,12 +520,20 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
         print("  ✓ Created ontology-hub/kairos.yaml")
 
     # 8. Scaffold a starter domain ontology
+    from ..core.archetype_loader import _looks_like_refmodels_root
+
+    refmodels_dest = cwd / _REF_MODELS_PATH
     if domain:
         template_src = (
             _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "starter.ttl.template"
         )
         ontology_dst = hub / "model" / "ontologies" / f"{domain}.ttl"
-        if ontology_dst.exists() and not force:
+        # A pre-existing (and kept) TTL is authored content that must pass the
+        # managed-import registration gate below (issue #426, DD-155); a TTL this
+        # run scaffolds (fresh, or overwritten via --force) is the toolkit's own
+        # starter with no owl:imports and is never gated.
+        ontology_preexisted = ontology_dst.exists() and not force
+        if ontology_preexisted:
             print(
                 f"  ⏭  ontology-hub/model/ontologies/{domain}.ttl already exists "
                 "(use --force to overwrite)"
@@ -433,6 +550,29 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
             ontology_dst.write_text(content, encoding="utf-8")
             print(f"  ✓ Created ontology-hub/model/ontologies/{domain}.ttl")
         if ontology_dst.exists() and catalog_dst.exists():
+            # Managed-import registration gate (issue #426, DD-155): refuse to
+            # register a PRE-EXISTING, import-incomplete domain — before the
+            # catalog write and the _master.ttl sync below, so a refused run
+            # leaves both untouched. Freshly scaffolded starters are never gated
+            # (they carry no owl:imports by design); they get an advisory instead.
+            refmodels_available = refmodels_dest.is_dir() and _looks_like_refmodels_root(
+                refmodels_dest
+            )
+            if ontology_preexisted and refmodels_available:
+                _registration_import_gate(
+                    domain=domain,
+                    ontology_path=ontology_dst,
+                    hub=hub,
+                    refmodels_root=refmodels_dest,
+                    catalog_path=catalog_dst if catalog_dst.is_file() else None,
+                    degraded=degraded,
+                )
+            elif refmodels_available:
+                print(
+                    f"  ℹ Freshly scaffolded {domain}.ttl registered without the "
+                    "managed-import gate (the starter template has no owl:imports yet). "
+                    f"After authoring, run `kairos-ontology validate --all --domain {domain}`."
+                )
             ontology_iri = sync_domain_catalog_entry(
                 catalog_dst,
                 ontology_dst,
@@ -480,9 +620,6 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version):
     # An existing checkout (e.g. the pinned one `new-repo` already fetched) is
     # never touched either, even with --force: --force is about overwriting
     # scaffold *files*, not about clobbering a reference-models pin.
-    from ..core.archetype_loader import _looks_like_refmodels_root
-
-    refmodels_dest = cwd / _REF_MODELS_PATH
     if skip_refmodels:
         print(
             "  ⏭  Skipped reference models "

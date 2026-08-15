@@ -45,6 +45,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial coverage is honest coverage.
 
 ### Fixed
+- **Managed Import Completeness now runs in every `validate` mode and gates domain registration** (#426,
+  DD-155). The check was accidentally gated on `--shacl`/`--consistency`, so Gate 5's inner-loop
+  `validate --syntax` never ran it and `init --domain` performed no import check at all — a domain missing a
+  blueprint-required managed `owl:imports` sailed through four green gates and was registered silently
+  unactivated. Three changes: (1) `validate --syntax` now also reports Managed Import Completeness whenever
+  reference models are resolvable (no-refmodels hubs keep byte-identical output; knowingly accepted:
+  catalog/module infrastructure errors now fail `--syntax` on misconfigured refmodels-present hubs);
+  (2) `init --domain` refuses to register a **pre-existing** import-incomplete domain — exit 1 with the
+  diagnostics, before the catalog write and `_master.ttl` sync — and gains a `--degraded` flag mirroring
+  `validate`'s as the only (explicit) bypass; freshly scaffolded starters are never gated. The gate's scoped
+  single-domain check is a lower bound versus `validate --all`, which the kairos-design-domain skill now runs
+  before registration; (3) the skill documents both behaviors in Gate 5 and step 9. **Release note:** hubs
+  whose blueprint dual-assigns a domain (e.g. logistics `equipment` → both `mmt/equipment` and
+  `dcsa/equipment`, referencemodels#64) now need both imports authored before that domain re-registers.
 - **Inventory writes are content-addressed — `init --domain` no longer rewrites all 79 reference-model
   inventories on every run** (#419, DD-154). The envelope is a pure function of the source TTLs except
   `generated_at`, so every registration produced a 78-file diff in which only the timestamp changed — and the

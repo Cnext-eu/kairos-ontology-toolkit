@@ -200,6 +200,11 @@ and camelCase properties; no term declared as more than one of
 {Class, DatatypeProperty, ObjectProperty}. Do not hand-write rdflib checks for
 any of these — the CLI check is the authority.
 
+`validate --syntax` also reports Managed Import Completeness whenever
+reference models are present: `missing_managed_import` errors are blocking
+(degradable only via `--degraded`), so a domain missing a blueprint-required
+managed `owl:imports` fails this gate rather than surfacing later.
+
 The `REUSABLE — no rdfs:domain by design` marker alone only silences the
 naming check; it does not make the property bindable anywhere. A property
 genuinely meant to be shared across more than one sibling class must ALSO
@@ -398,6 +403,18 @@ fleet mode, record the AI approval with rationale, confidence, and evidence.
 
 Apply only the approved diff. Reread and parse the saved ontology and repeat
 Gate 5.
+
+Then run full-coverage validation, before registration:
+
+```powershell
+uv run kairos-ontology validate --all --domain <domain>
+```
+
+Run this before registering: `init --domain` refuses to register a
+pre-existing domain whose managed imports are incomplete, and this full run
+is strictly stronger than the registration gate's scoped check. Never pass
+`--degraded` interactively — fix the imports instead. Fleet mode may pass it
+only explicitly, with the bypass recorded.
 
 Then register the domain in the hub catalog — **only after the patch is on disk,
 never before**:
