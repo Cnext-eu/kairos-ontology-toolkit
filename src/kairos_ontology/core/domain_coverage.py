@@ -28,12 +28,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
+
 from .analyse_sources import load_data_domains
 from .catalog_utils import _declared_ontology_iri
 from .hub_inspection import _binding_domains, _ontology_domains
 from .master_ontology import list_active_master_imports
 
-SCHEMA_VERSION = 1
+#: v1: the coverage table (accelerator + domains rows).
+#: v2 (issue #418, DD-157): the CLI JSON envelope gains an optional ``explain`` payload
+#: (``--explain <domain>``: owns/does_not_own/blueprint imports) and an optional ``owns``
+#: payload (``--owns <ClassName>``: inventory-backed reverse ownership lookup). The base
+#: ``domains`` rows are unchanged.
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -138,3 +145,159 @@ def build_domain_coverage_report(
         )
 
     return DomainCoverageReport(accelerator=accelerator, rows=tuple(rows))
+
+
+# --------------------------------------------------------------------------------------
+# Domain ownership surfacing (issue #418, DD-157)
+# --------------------------------------------------------------------------------------
+
+
+def load_domain_ownership(
+    *,
+    ref_models_dir: Optional[Path],
+    accelerator: Optional[str],
+) -> dict[str, dict[str, Any]]:
+    """Return the blueprint's per-domain ownership metadata, or ``{}`` when unavailable.
+
+    Thin guard around :func:`load_data_domains` for the ``--explain`` surface: a hub
+    with no accelerator pack (or no resolvable ``data-domains.yaml``) yields an empty
+    mapping so the CLI can print a clean informational message and exit 0.
+    """
+    if not accelerator or ref_models_dir is None or not Path(ref_models_dir).is_dir():
+        return {}
+    return load_data_domains(Path(ref_models_dir), accelerator=accelerator)
+
+
+@dataclass(frozen=True)
+class ClassOwnershipRow:
+    """One (class, asserting module) pair found in the materialized inventories.
+
+    ``module_id`` is ``None`` when the asserting ontology is not a managed
+    reference-module profile (e.g. a hub-authored class); ``domains`` is empty when
+    the module is managed but no blueprint domain activates it.
+    """
+
+    class_name: str
+    class_uri: str
+    source_identity: str
+    module_id: Optional[str]
+    domains: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "class_name": self.class_name,
+            "class_uri": self.class_uri,
+            "source_identity": self.source_identity,
+            "module_id": self.module_id,
+            "domains": list(self.domains),
+        }
+
+
+@dataclass(frozen=True)
+class ClassOwnershipLookup:
+    """Result of the ``--owns <ClassName>`` reverse lookup (issue #418, DD-157)."""
+
+    class_name: str
+    inventories_present: bool
+    rows: tuple[ClassOwnershipRow, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "class_name": self.class_name,
+            "inventories_present": self.inventories_present,
+            "matches": [row.to_dict() for row in self.rows],
+        }
+
+
+def lookup_class_ownership(
+    *,
+    class_name: str,
+    inventory_dir: Path,
+    ref_models_dir: Optional[Path],
+    accelerator: Optional[str],
+) -> ClassOwnershipLookup:
+    """Reverse-lookup which blueprint domain(s) own a class name (issue #418, DD-157).
+
+    Deliberately cheap — no closure parsing: reads the already-materialized
+    ``referencemodels-unpacked/*-inventory.yaml`` files, whose classes each carry
+    ``provenance.source_identity`` (the asserting module's ontology IRI), maps that IRI
+    to a managed module profile via
+    :func:`~kairos_ontology.core.reference_modules.load_accelerator_module_config`
+    (matching both ``ontology_iri`` and ``catalog_uri``, hash-namespace legacy forms
+    included), then to the owning domain(s) via the blueprint's data-domain activations.
+    Ownership can be plural — a module assigned to several domains yields all of them.
+
+    Matching on the class *name* is case-insensitive. Unreadable inventories are
+    skipped defensively. Rows are deduplicated on ``(class_uri, source_identity)``
+    because every module inventory repeats its whole closure.
+    """
+    from .reference_modules import load_accelerator_module_config
+
+    inventory_files = (
+        sorted(Path(inventory_dir).glob("*-inventory.yaml"))
+        if Path(inventory_dir).is_dir()
+        else []
+    )
+    if not inventory_files:
+        return ClassOwnershipLookup(class_name=class_name, inventories_present=False, rows=())
+
+    alias_to_module: dict[str, str] = {}
+    domains_by_module: dict[str, set[str]] = {}
+    if ref_models_dir is not None and Path(ref_models_dir).is_dir():
+        try:
+            config = load_accelerator_module_config(Path(ref_models_dir), accelerator)
+        except Exception:  # defensive: a broken blueprint must not crash an advisory lookup
+            config = None
+        if config is not None:
+            for profile in config.profiles:
+                for alias in (profile.ontology_iri, profile.catalog_uri):
+                    if alias:
+                        alias_to_module.setdefault(alias.rstrip("#/"), profile.id)
+            for activation in config.domains:
+                for module_id in activation.module_ids:
+                    domains_by_module.setdefault(module_id, set()).add(activation.domain)
+
+    wanted = class_name.strip().lower()
+    seen: set[tuple[str, str]] = set()
+    rows: list[ClassOwnershipRow] = []
+    for inventory_path in inventory_files:
+        try:
+            data = yaml.safe_load(inventory_path.read_text(encoding="utf-8"))
+        except Exception:  # defensive: check-inventory owns inventory health reporting
+            continue
+        if not isinstance(data, dict):
+            continue
+        for cls in data.get("classes", ()) or ():
+            if not isinstance(cls, dict):
+                continue
+            name = str(cls.get("name") or "")
+            if name.lower() != wanted:
+                continue
+            uri = str(cls.get("uri") or "")
+            provenance = cls.get("provenance")
+            source_identity = (
+                str(provenance.get("source_identity") or "")
+                if isinstance(provenance, dict)
+                else ""
+            )
+            key = (uri, source_identity)
+            if key in seen:
+                continue
+            seen.add(key)
+            module_id = alias_to_module.get(source_identity.rstrip("#/"))
+            owned_by = (
+                tuple(sorted(domains_by_module.get(module_id, ()))) if module_id else ()
+            )
+            rows.append(
+                ClassOwnershipRow(
+                    class_name=name,
+                    class_uri=uri,
+                    source_identity=source_identity,
+                    module_id=module_id,
+                    domains=owned_by,
+                )
+            )
+    rows.sort(key=lambda row: (row.class_uri, row.source_identity))
+    return ClassOwnershipLookup(
+        class_name=class_name, inventories_present=True, rows=tuple(rows)
+    )

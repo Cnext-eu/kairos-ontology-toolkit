@@ -172,7 +172,7 @@ class TestDomainCoverageCLI:
         result = _invoke(hub, monkeypatch, ["--json-output"])
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 2  # v2: optional explain/owns payloads (DD-157)
         assert payload["accelerator"] == "logistics"
         domains = {entry["domain"]: entry for entry in payload["domains"]}
         assert domains["party"] == {
@@ -213,3 +213,173 @@ class TestDomainCoverageCLI:
         result = _invoke(hub, monkeypatch, [])
         assert result.exit_code != 0
         assert "ambiguous" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Issue #418 / DD-157 — domain ownership surfacing
+# ---------------------------------------------------------------------------
+
+_OWNERSHIP_DATA_DOMAINS_YAML = """\
+schema_version: "2.0"
+module_profiles:
+  - id: party-mod
+    ontology_iri: https://ref.test/ont/party
+    catalog_uri: "https://ref.test/ont/party#"
+    version_pin: "1.0"
+  - id: shared-mod
+    ontology_iri: https://ref.test/ont/shared
+    version_pin: "1.0"
+  - id: orphan-mod
+    ontology_iri: https://ref.test/ont/orphan
+    version_pin: "1.0"
+groups:
+  - id: party-commercial
+    name: "Party & Commercial"
+    domains:
+      - id: party
+        name: "Party, Role & Organisation"
+        owns: "Legal entities, customers, suppliers."
+        does_not_own: "Contracts, bookings, invoices."
+        imports:
+          - profile: party-mod
+          - profile: shared-mod
+      - id: commercial
+        name: "Customer, Contract & Commercial Agreement"
+        owns: "Commercial relationships, service agreements."
+        does_not_own: "Surcharge calculation, invoice posting."
+        imports:
+          - profile: shared-mod
+"""
+
+
+def _inventory_yaml(classes: list[tuple[str, str, str]]) -> str:
+    lines = ["version: 4", "domain_name: Test", "classes:"]
+    for name, uri, source_identity in classes:
+        lines += [
+            f"  - uri: {uri}",
+            f"    name: {name}",
+            f"    label: {name}",
+            "    comment: ''",
+            "    provenance:",
+            f"      source_identity: {source_identity}",
+            "      import_depth: 0",
+            "      asserted: true",
+            "    properties: []",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+@pytest.fixture()
+def ownership_hub(hub: Path) -> Path:
+    """The base hub plus a typed-profile blueprint and materialized inventories."""
+    dd_path = (
+        hub.parent
+        / "ontology-reference-models"
+        / "accelerator-packs"
+        / "logistics"
+        / "client-hub-blueprint"
+        / "data-domains.yaml"
+    )
+    dd_path.write_text(_OWNERSHIP_DATA_DOMAINS_YAML, encoding="utf-8")
+
+    inv_dir = hub / "referencemodels-unpacked"
+    inv_dir.mkdir()
+    (inv_dir / "party-inventory.yaml").write_text(
+        _inventory_yaml(
+            [
+                ("Person", "https://ref.test/ont/party#Person", "https://ref.test/ont/party"),
+                # Same class name asserted by a second managed module (multi-row case).
+                ("Person", "https://ref.test/ont/shared#Person", "https://ref.test/ont/shared"),
+                # Asserted by a managed module that no blueprint domain activates.
+                ("Orphan", "https://ref.test/ont/orphan#Orphan", "https://ref.test/ont/orphan"),
+                # Asserted by an ontology that is no managed module at all.
+                ("LocalThing", "https://acme.test/ont/party#LocalThing", "https://acme.test/ont/party"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return hub
+
+
+class TestDomainCoverageExplain:
+    def test_explain_prints_owns_and_does_not_own_and_imports(self, ownership_hub, monkeypatch):
+        result = _invoke(ownership_hub, monkeypatch, ["--explain", "party"])
+        assert result.exit_code == 0
+        assert "OWNS: Legal entities, customers, suppliers." in result.output
+        assert "DOES NOT OWN: Contracts, bookings, invoices." in result.output
+        assert "party-mod" in result.output
+        assert "shared-mod" in result.output
+
+    def test_explain_unknown_domain_lists_valid_ids_and_exits_zero(
+        self, ownership_hub, monkeypatch
+    ):
+        result = _invoke(ownership_hub, monkeypatch, ["--explain", "nonsense"])
+        assert result.exit_code == 0
+        assert "Unknown domain 'nonsense'" in result.output
+        assert "commercial" in result.output
+        assert "party" in result.output
+
+    def test_explain_without_accelerator_is_clean_informational_exit_zero(
+        self, hub, monkeypatch
+    ):
+        import shutil
+
+        shutil.rmtree(hub.parent / "ontology-reference-models" / "accelerator-packs")
+        result = _invoke(hub, monkeypatch, ["--explain", "party"])
+        assert result.exit_code == 0
+        assert "ownership metadata is unavailable" in result.output
+
+    def test_explain_json_payload_included(self, ownership_hub, monkeypatch):
+        result = _invoke(ownership_hub, monkeypatch, ["--explain", "party", "--json-output"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["schema_version"] == 2
+        assert payload["domains"]  # base coverage table still present
+        explain = payload["explain"]
+        assert explain["found"] is True
+        assert explain["owns"] == "Legal entities, customers, suppliers."
+        assert explain["does_not_own"] == "Contracts, bookings, invoices."
+        assert {imp["profile"] for imp in explain["imports"]} == {"party-mod", "shared-mod"}
+
+
+class TestDomainCoverageOwns:
+    def test_owns_lists_owning_domains_case_insensitively(self, ownership_hub, monkeypatch):
+        result = _invoke(ownership_hub, monkeypatch, ["--owns", "person"])
+        assert result.exit_code == 0
+        # Two managed modules assert a Person class — both rows must be listed.
+        assert result.output.count("• Person") == 2
+        assert "party-mod" in result.output
+        assert "shared-mod" in result.output
+        # shared-mod is activated by two domains — ownership is plural.
+        assert "commercial, party" in result.output
+
+    def test_owns_module_assigned_to_no_domain_says_so(self, ownership_hub, monkeypatch):
+        result = _invoke(ownership_hub, monkeypatch, ["--owns", "Orphan"])
+        assert result.exit_code == 0
+        assert "orphan-mod" in result.output
+        assert "assigned to no domain" in result.output
+
+    def test_owns_class_outside_managed_modules_says_so(self, ownership_hub, monkeypatch):
+        result = _invoke(ownership_hub, monkeypatch, ["--owns", "LocalThing"])
+        assert result.exit_code == 0
+        assert "not asserted by a managed reference module" in result.output
+
+    def test_owns_class_found_nowhere_says_so(self, ownership_hub, monkeypatch):
+        result = _invoke(ownership_hub, monkeypatch, ["--owns", "DoesNotExist"])
+        assert result.exit_code == 0
+        assert "not found in any materialized inventory" in result.output
+
+    def test_owns_without_inventories_advises_generate_inventory(self, hub, monkeypatch):
+        result = _invoke(hub, monkeypatch, ["--owns", "Person"])
+        assert result.exit_code == 0
+        assert "generate-inventory" in result.output
+
+    def test_owns_json_payload_included(self, ownership_hub, monkeypatch):
+        result = _invoke(ownership_hub, monkeypatch, ["--owns", "Person", "--json-output"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        owns = payload["owns"]
+        assert owns["inventories_present"] is True
+        by_module = {m["module_id"]: m for m in owns["matches"]}
+        assert by_module["party-mod"]["domains"] == ["party"]
+        assert by_module["shared-mod"]["domains"] == ["commercial", "party"]

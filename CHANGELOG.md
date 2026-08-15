@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`domain-coverage --explain <domain>` and `--owns <ClassName>`** (#418, DD-157). The blueprint's
+  per-domain `owns`/`does_not_own` boundaries were loaded by the toolkit and shown only inside an LLM
+  prompt no design author ever sees — nothing in the design loop surfaced or checked ownership, so a
+  misplaced class passed every gate. `--explain` prints a domain's OWNS / DOES NOT OWN text and its
+  blueprint module imports; `--owns` reverse-looks-up which domain(s) own a class name through the
+  materialized `referencemodels-unpacked/*-inventory.yaml` files (class → asserting module IRI → managed
+  profile → activating domain list; no closure parsing, case-insensitive, plural ownership listed as
+  such). Both are advisory and always exit 0: a hub without reference models gets a clean informational
+  notice, an unknown domain gets the valid id list, and missing inventories point at `generate-inventory`.
+  The kairos-design-domain skill's Gate 3 gains a confirmation step (not a gate — the boundaries are free
+  text) running both before authoring. domain-coverage JSON `schema_version` 1→2 (optional
+  `explain`/`owns` payloads).
+- **Surplus managed-import warning** (#418, DD-157). Post-DD-155 the *missing*-import case is caught; the
+  undetected residue was the surplus import — an author in the wrong domain adds the other domain's module
+  import and satisfies every completeness check. `validate` (all modes) and the `init --domain` gate now
+  emit a warning-level `surplus_managed_import` diagnostic for an authored direct `owl:imports` of a
+  managed module the import plan does not require (surplus = authored direct imports ∩ managed-module IRIs
+  − plan requirement IRIs), naming the module and the domain(s) the blueprint assigns it to. It never fires
+  on required, cross-module-term-use, accepted-transitive, or init-added imports, and never blocks —
+  warning severity flows through the existing validator/init-gate paths with zero validator edits.
+- **`kairos-ontology next` observes untriaged BI concept-mapping worksheets** (#421, DD-157). On a real
+  hub, `import-tmdl` had generated concept-mapping worksheets whose 24 tables were all still unfilled — two
+  deterministic consumers existed (`design-landscape`'s advisory `bi_weight` and `draft-model-report`), but
+  no skill text and no `next` action routed anyone to them. `next` now reports a hub-level
+  `bi_concept_mappings` observation (total / unfilled `reference_model_match`) and derives an advisory
+  `triage-concept-mapping` action routed to **kairos-design-source** (the import-tmdl lifecycle owner —
+  kairos-design-domain must never fill the worksheet), status `human_decision_required`, exit 0 (DD-137).
+  The unfilled count comes from one shared helper (`evidence_loaders.scan_concept_mapping_worksheets`) also
+  used by `design-landscape`, so the two surfaces cannot diverge. Proposal `schema_version` 3→4.
+- **kairos-design-domain skill routes BI demand evidence** (#421, DD-157). Authoritative input #5 no longer
+  calls TMDL/PBIP "optional … supplied by the user": `integration/discovery/bi/` artifacts are written by
+  `import-tmdl`, and reading the ones relevant to the active domain is required when present. Gate 2 states
+  the concrete conditional (first pass reads the whole model — the worksheet `domain` field is typically
+  unfilled), and step 4 sources the evidence matrix's "Downstream demand" column from the concept-mapping
+  worksheet + Engineering Pack, naming both consumers. BI evidence remains demand, never business authority
+  (DD-147 reaffirmed; the anti-pattern stays).
 - **`discovery-conformance judgments-template`** (#410). Phase 2.5 of `kairos-design-discovery` forbids
   hand-transcribing or hand-scripting the concept list, then required a `--judgments-file` whose schema had no
   scaffold and incomplete documentation — so every author had to write exactly the serializer the skill

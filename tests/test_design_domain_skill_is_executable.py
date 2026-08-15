@@ -202,6 +202,37 @@ def test_the_skills_guard_scope_allow_globs_match_the_paths_it_permits(tmp_path)
         )
 
 
+def test_the_skills_ownership_explain_command_exits_clean(tmp_path):
+    """Gate 3's `domain-coverage --explain <domain>` line must run and exit 0.
+
+    Regex is `domain-coverage --explain` — distinct from every other extraction
+    (`init --domain`, `guard-scope --check-since`, `validate --all`). On this
+    no-refmodels fixture hub the command must take DD-157's clean informational
+    path (no accelerator blueprint → notice + exit 0), exactly what the skill
+    promises: "On a hub without reference models both print an informational
+    notice and exit 0".
+    """
+    command_line = _extract_command(r"domain-coverage --explain")
+    runner = CliRunner()
+
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            bootstrap = runner.invoke(
+                cli,
+                ["init", "--company-domain", _COMPANY, "--skip-refmodels"],
+            )
+            assert bootstrap.exit_code == 0, bootstrap.output
+
+            hub = Path("ontology-hub")
+            _write_domain_ttl(hub, _DOMAIN)
+
+            # Gate 3's ownership confirmation step, exactly as the skill publishes it.
+            argv = _argv(command_line, {"domain": _DOMAIN})
+            result = runner.invoke(cli, argv)
+            assert result.exit_code == 0, result.output
+
+
 def test_both_skill_copies_publish_the_same_commands():
     """The scaffold copy ships to hubs; drift would mean users read different advice."""
     scaffold = (

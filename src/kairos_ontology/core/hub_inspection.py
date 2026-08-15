@@ -33,6 +33,7 @@ from .conformance_artifact import (
 )
 from .hub_utils import is_authored_discovery_ttl, is_domain_ontology_stem
 from .next_actions import (
+    BiConceptMappingObservation,
     CompileStatus,
     DiagnosticView,
     DiscoveryConformanceStatus,
@@ -160,6 +161,25 @@ def _source_sample_status(sources_dir: Path) -> SourceSampleObservation:
         status = SourceSampleStatus.PARTIAL
     return SourceSampleObservation(
         status=status, tables_with_samples=with_samples, tables_total=total
+    )
+
+
+def _bi_concept_mapping_status(root: Path) -> BiConceptMappingObservation:
+    """Observe import-tmdl concept-mapping worksheet triage state (issue #421, DD-157).
+
+    Delegates to the shared ``evidence_loaders.scan_concept_mapping_worksheets`` helper
+    (the same count ``design-landscape`` reports) so the two surfaces can never diverge.
+    Wrapped defensively — a malformed worksheet tree must never crash
+    ``kairos-ontology next``; failure degrades to the no-observation default.
+    """
+    from .evidence_loaders import scan_concept_mapping_worksheets
+
+    try:
+        scan = scan_concept_mapping_worksheets(root)
+    except Exception:
+        return BiConceptMappingObservation()
+    return BiConceptMappingObservation(
+        tables_total=scan.tables_total, tables_unfilled=scan.tables_unfilled
     )
 
 
@@ -430,4 +450,5 @@ def gather_hub_input_snapshot(
         discovery_conformance=_discovery_conformance_status(root),
         source_samples=source_samples,
         inventory_status=_inventory_status(root, domains),
+        bi_concept_mappings=_bi_concept_mapping_status(root),
     )

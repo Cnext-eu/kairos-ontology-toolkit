@@ -247,3 +247,96 @@ def test_ambiguous_accelerator_warns_and_skips_the_gate(tmp_path):
             assert "gate skipped" in result.output
             assert "--accelerator <pack>" in result.output
             assert f"{DOMAIN}.ttl" in _catalog_text()
+
+
+EXTRAS_IRI = "https://example.org/reference/extras"
+EXTRAS_NS = EXTRAS_IRI + "#"
+
+
+def _install_extras_module(ref_models: Path) -> None:
+    """A second resolvable managed module assigned to a different domain (billing)."""
+    (ref_models / "modules" / "extras.ttl").write_text(
+        f"""\
+@prefix ex2: <{EXTRAS_NS}> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<{EXTRAS_IRI}> a owl:Ontology ; owl:versionInfo "1.0" .
+ex2:Widget a owl:Class .
+""",
+        encoding="utf-8",
+    )
+    blueprint = ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint"
+    (blueprint / "data-domains.yaml").write_text(
+        f"""\
+schema_version: "2.0"
+module_profiles:
+  - id: orders
+    ontology_iri: {MODULE_IRI}
+    catalog_uri: {TERM_NS}
+    version_pin: 2.1.0
+    term_namespaces: [{TERM_NS}]
+  - id: extras
+    ontology_iri: {EXTRAS_IRI}
+    catalog_uri: "{EXTRAS_NS}"
+    version_pin: "1.0"
+    term_namespaces: ["{EXTRAS_NS}"]
+groups:
+  - id: operations
+    domains:
+      - id: {DOMAIN}
+        imports:
+          - profile: orders
+  - id: extras-group
+    domains:
+      - id: billing
+        imports:
+          - profile: extras
+""",
+        encoding="utf-8",
+    )
+    catalog = ref_models / "catalog-v001.xml"
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            "</catalog>",
+            f'  <uri name="{EXTRAS_NS}" uri="modules/extras.ttl"/>\n'
+            f'  <uri name="{EXTRAS_IRI}" uri="modules/extras.ttl"/>\n'
+            "</catalog>",
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_surplus_managed_import_warns_but_never_blocks_registration(tmp_path):
+    """#418 (DD-157): a pre-existing domain importing another domain's managed
+    module (surplus — the plan never required it) gets a warning-level diagnostic
+    that the gate inherits non-blockingly: registration proceeds, exit 0."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+            _bootstrap_hub(runner)
+            ref_models = _install_refmodels(Path(td))
+            _install_extras_module(ref_models)
+            # Required import present + a surplus import of billing's module.
+            Path("ontology-hub/model/ontologies", f"{DOMAIN}.ttl").write_text(
+                f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<{DOMAIN_IRI}> a owl:Ontology ;
+    owl:imports <{MODULE_IRI}> ;
+    owl:imports <{EXTRAS_IRI}> ;
+    rdfs:label "Orders"@en ;
+    rdfs:comment "Pre-existing domain with a surplus managed import."@en ;
+    owl:versionInfo "0.1.0" .
+""",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(cli, _INIT_REGISTER)
+
+            assert result.exit_code == 0, result.output
+            assert "registration refused" not in result.output
+            assert "surplus" in result.output.lower()
+            assert "billing" in result.output
+            assert f"{DOMAIN}.ttl" in _catalog_text()
+            assert DOMAIN_IRI in _master_text()

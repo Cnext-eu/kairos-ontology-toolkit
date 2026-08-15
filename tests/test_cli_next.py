@@ -51,7 +51,7 @@ def test_next_json_is_clean_on_stdout_with_banner_on_stderr(hub, monkeypatch):
     result = _invoke(hub, monkeypatch, ["--format", "json"])
     assert result.exit_code == 0
     payload = _stdout_json(result)  # would raise if stdout were polluted
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["compile_ran"] is True
     assert "DD-137" in result.stderr
     kinds = {action["kind"] for action in payload["actions"]}
@@ -567,3 +567,48 @@ def test_next_without_domain_filter_reports_unscoped_inventory_status(
     assert payload["inputs"]["inventory_status"] == "missing"
     action = next(a for a in payload["actions"] if a["kind"] == "generate-inventory")
     assert action["blocking"] is True
+
+
+def test_next_reports_unfilled_concept_mapping_worksheets(hub, monkeypatch):
+    """#421/DD-157: import-tmdl demand evidence must be routed, not silently ignored."""
+    bi_dir = hub / "integration" / "discovery" / "bi"
+    bi_dir.mkdir(parents=True)
+    (bi_dir / "sales-concept-mapping.yaml").write_text(
+        "schema_version: '1'\n"
+        "model_name: Sales\n"
+        "tables:\n"
+        "  - tmdl_name: FactSales\n"
+        "    domain: ''\n"
+        "    reference_model_match: ''\n"
+        "    action: ''\n"
+        "  - tmdl_name: DimCustomer\n"
+        "    domain: ''\n"
+        "    reference_model_match: 'Party'\n"
+        "    action: 'use'\n",
+        encoding="utf-8",
+    )
+
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    assert result.exit_code == 0  # advisory only, never an exit-code change (DD-137)
+    payload = _stdout_json(result)
+    assert payload["inputs"]["bi_concept_mappings"] == {
+        "tables_total": 2,
+        "tables_unfilled": 1,
+    }
+    actions = {action["kind"]: action for action in payload["actions"]}
+    triage = actions["triage-concept-mapping"]
+    assert triage["skill"] == "kairos-design-source"
+    assert triage["status"] == "human_decision_required"
+    assert triage["blocking"] is False
+    assert "1 of 2" in triage["rationale"]
+
+
+def test_next_without_worksheets_reports_zero_counts_and_no_triage_action(hub, monkeypatch):
+    result = _invoke(hub, monkeypatch, ["--format", "json"])
+    assert result.exit_code == 0
+    payload = _stdout_json(result)
+    assert payload["inputs"]["bi_concept_mappings"] == {
+        "tables_total": 0,
+        "tables_unfilled": 0,
+    }
+    assert "triage-concept-mapping" not in {a["kind"] for a in payload["actions"]}

@@ -26,7 +26,11 @@ from enum import Enum
 #: ``discovery_conformance``/``discovery_gate_satisfied`` fields mirrored into the rendered
 #: ``discovery:`` status line and JSON payload (issue #310), and the DD-047 materialized
 #: reference-inventory freshness gate (``inventory_status``, issue #321).
-SCHEMA_VERSION = 3
+#: v4 adds the BI concept-mapping worksheet observation (``bi_concept_mappings`` /
+#: ``BiConceptMappingObservation``) and the ``triage-concept-mapping`` action routed to
+#: kairos-design-source (issue #421, DD-157): import-tmdl's demand evidence was generated
+#: and then never routed to anyone.
+SCHEMA_VERSION = 4
 
 
 class InputStatus(str, Enum):
@@ -92,6 +96,10 @@ ACTION_SKILLS: dict[str, str] = {
     "design-discovery": "kairos-design-discovery",
     "resolve-discovery-open-questions": "kairos-design-discovery",
     "design-source": "kairos-design-source",
+    # #421/DD-157: worksheet triage belongs to the import-tmdl lifecycle owner
+    # (kairos-design-source), NOT to kairos-design-domain, whose charter forbids
+    # filling the worksheet during a design slice.
+    "triage-concept-mapping": "kairos-design-source",
     "design-domain": "kairos-design-domain",
     "generate-inventory": "kairos-design-domain",
     "author-binding": "kairos-design-mapping",
@@ -148,6 +156,23 @@ class SourceSampleObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class BiConceptMappingObservation:
+    """Observed triage state of import-tmdl's concept-mapping worksheets (issue #421).
+
+    ``tables_total`` counts every table entry across ``*-concept-mapping.yaml``
+    worksheets (current ``integration/discovery/bi/`` and the legacy
+    ``integration/sources/`` location); ``tables_unfilled`` is the subset whose
+    ``reference_model_match`` is still empty — demand evidence a human never triaged.
+    The zero-valued default is the no-observation state, so existing constructor call
+    sites never start reporting a spurious action (same precedent as
+    ``inventory_status``).
+    """
+
+    tables_total: int = 0
+    tables_unfilled: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class HubInputSnapshot:
     """Defensible, in-memory observations of a hub's authored inputs."""
 
@@ -175,6 +200,9 @@ class HubInputSnapshot:
     #: so existing constructor call sites (tests, callers that never observed this) do not
     #: silently start reporting a spurious blocking gate.
     inventory_status: InputStatus = InputStatus.PRESENT
+    #: BI concept-mapping worksheet triage state (issue #421, DD-157). The zero default
+    #: is the no-observation state — no action is derived from it.
+    bi_concept_mappings: BiConceptMappingObservation = BiConceptMappingObservation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,6 +399,26 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 ),
                 command="kairos-ontology (invoke kairos-design-source)",
                 priority=22,
+            )
+        )
+    if snapshot.bi_concept_mappings.tables_unfilled > 0:
+        observation = snapshot.bi_concept_mappings
+        actions.append(
+            _action(
+                "triage-concept-mapping",
+                ActionStatus.HUMAN_DECISION_REQUIRED,
+                rationale=(
+                    f"{observation.tables_unfilled} of {observation.tables_total} BI "
+                    "concept-mapping table(s) under "
+                    "integration/discovery/bi/*-concept-mapping.yaml have an empty "
+                    "reference_model_match — import-tmdl generated demand evidence a "
+                    "human never triaged. Filled rows feed two deterministic consumers: "
+                    "design-landscape (advisory bi_weight) and draft-model-report. "
+                    "Triage belongs to the import-tmdl lifecycle (kairos-design-source); "
+                    "it stays demand evidence, never business authority (DD-147)."
+                ),
+                command="kairos-ontology (invoke kairos-design-source)",
+                priority=23,
             )
         )
     if not snapshot.domains:

@@ -592,3 +592,194 @@ def test_syntax_only_run_without_reference_models_prints_no_imports_section(tmp_
         out = capsys.readouterr().out
         assert "Managed Import Completeness" not in out
         assert "All validations passed" in out
+
+# ---------------------------------------------------------------------------
+# Issue #418 (DD-157): surplus-managed-import warning.
+# surplus = authored direct imports ∩ managed-module IRIs − plan requirement IRIs
+# ---------------------------------------------------------------------------
+
+EXTRAS_IRI = "https://example.org/reference/extras"
+EXTRAS_NS = EXTRAS_IRI + "#"
+
+
+def _add_extras_module(ref_models, catalog, *, assigned_domain: str | None = "billing"):
+    """A second, fully resolvable managed module, assigned to *assigned_domain*
+    (or to no domain at all when ``None``)."""
+    module = ref_models / "modules" / "extras.ttl"
+    module.write_text(
+        f"""\
+@prefix ex2: <{EXTRAS_NS}> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<{EXTRAS_IRI}> a owl:Ontology ; owl:versionInfo "1.0" .
+ex2:Widget a owl:Class .
+""",
+        encoding="utf-8",
+    )
+    config_path = (
+        ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint" / "data-domains.yaml"
+    )
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["module_profiles"].append(
+        {
+            "id": "extras",
+            "ontology_iri": EXTRAS_IRI,
+            "catalog_uri": EXTRAS_NS,
+            "version_pin": "1.0",
+            "term_namespaces": [EXTRAS_NS],
+        }
+    )
+    if assigned_domain:
+        data["groups"].append(
+            {
+                "id": "extras-group",
+                "domains": [{"id": assigned_domain, "imports": [{"profile": "extras"}]}],
+            }
+        )
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    catalog.write_text(
+        catalog.read_text(encoding="utf-8").replace(
+            "</catalog>",
+            f'  <uri name="{EXTRAS_NS}" uri="modules/extras.ttl"/>\n'
+            f'  <uri name="{EXTRAS_IRI}" uri="modules/extras.ttl"/>\n'
+            "</catalog>",
+        ),
+        encoding="utf-8",
+    )
+
+
+def _orders_graph_with_imports(*imports: str, use_extras_term: bool = False) -> Graph:
+    import_lines = "".join(f"    owl:imports <{iri}> ;\n" for iri in imports)
+    term_line = (
+        f"hub:LocalWidget a owl:Class ; rdfs:subClassOf <{EXTRAS_NS}Widget> .\n"
+        if use_extras_term
+        else ""
+    )
+    graph = Graph()
+    graph.parse(
+        data=f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix hub: <https://example.org/hub/orders#> .
+<https://example.org/hub/orders> a owl:Ontology ;
+{import_lines}    rdfs:label "Orders" .
+{term_line}""",
+        format="turtle",
+    )
+    return graph
+
+
+def test_surplus_import_of_another_domains_module_is_a_warning_naming_the_owner(tmp_path):
+    """`orders` authors an import of the `extras` module, which the blueprint
+    assigns only to `billing` and which the plan does not require — a warning
+    that names the module and its owning domain(s). The scoped context does NOT
+    resolve `extras` (managedness must match against config.profiles, not
+    context.modules — the init gate's scoped context has the same shape)."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _add_extras_module(ref_models, catalog, assigned_domain="billing")
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic", requested_domains=["orders"]
+    )
+    assert context.module("extras") is None  # scoped context: not resolved, still managed
+    graph = _orders_graph_with_imports(MODULE_IRI, EXTRAS_IRI)
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    surplus = [d for d in plan.diagnostics if d.code == "surplus_managed_import"]
+    assert len(surplus) == 1
+    assert surplus[0].level == "warning"
+    assert surplus[0].managed_source == "extras"
+    assert "billing" in surplus[0].message
+    # The required (activation-backed, present) import never appears as surplus.
+    assert all(d.managed_source != "orders" for d in surplus)
+    # No missing-import errors either: the required import is authored.
+    assert [d for d in plan.diagnostics if d.code == "missing_managed_import"] == []
+    # Warning-severity only: nothing blocks.
+    assert plan.blocking_diagnostics == ()
+
+
+def test_surplus_import_of_module_assigned_to_no_domain_says_so(tmp_path):
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _add_extras_module(ref_models, catalog, assigned_domain=None)
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic", requested_domains=["orders"]
+    )
+    graph = _orders_graph_with_imports(MODULE_IRI, EXTRAS_IRI)
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    surplus = [d for d in plan.diagnostics if d.code == "surplus_managed_import"]
+    assert len(surplus) == 1
+    assert "assigns it to no domain" in surplus[0].message
+
+
+def test_cross_module_term_use_import_is_a_requirement_not_surplus(tmp_path):
+    """A non-activated module whose term the domain genuinely uses becomes a plan
+    requirement (authored-local-dependency) — its import must never warn."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _add_extras_module(ref_models, catalog, assigned_domain="billing")
+
+    # Mirror the validator/init-gate context: authored imports select modules too.
+    context = build_reference_module_context(
+        ref_models,
+        catalog_path=catalog,
+        accelerator="generic",
+        requested_domains=["orders"],
+        imported_ontology_iris=[EXTRAS_IRI],
+    )
+    assert context.module("extras") is not None
+    graph = _orders_graph_with_imports(MODULE_IRI, EXTRAS_IRI, use_extras_term=True)
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    assert [d for d in plan.diagnostics if d.code == "surplus_managed_import"] == []
+    assert [d for d in plan.diagnostics if d.code == "missing_managed_import"] == []
+
+
+def test_required_activation_imports_alone_never_warn(tmp_path):
+    """Baseline: only required imports authored → zero surplus diagnostics."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+
+    context = build_reference_module_context(ref_models, catalog_path=catalog, accelerator="generic")
+    graph = _orders_graph_with_imports(MODULE_IRI)
+    plan = build_managed_import_plan(domain="orders", context=context, ontology_graph=graph)
+
+    assert [d for d in plan.diagnostics if d.code == "surplus_managed_import"] == []
+
+
+def test_surplus_import_warning_does_not_fail_a_validate_run(tmp_path, capsys):
+    """The warning flows through the validator's existing warning path and never
+    flips the exit: `validate --syntax` prints it and still passes."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    _add_extras_module(ref_models, catalog, assigned_domain="billing")
+
+    ontologies_dir = tmp_path / "ontologies"
+    ontologies_dir.mkdir()
+    (ontologies_dir / "orders.ttl").write_text(
+        f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://example.org/hub/orders> a owl:Ontology ;
+    owl:imports <{MODULE_IRI}> ;
+    owl:imports <{EXTRAS_IRI}> ;
+    rdfs:label "Orders"@en ;
+    rdfs:comment "Orders domain with one required and one surplus managed import."@en ;
+    owl:versionInfo "0.1.0" .
+""",
+        encoding="utf-8",
+    )
+
+    run_validation(
+        ontologies_path=ontologies_dir,
+        shapes_path=tmp_path / "shapes",  # intentionally does not exist
+        catalog_path=catalog,
+        do_syntax=True,
+        do_shacl=False,
+        do_consistency=False,
+        ref_models_dir=ref_models,
+        accelerator="generic",
+    )
+
+    out = capsys.readouterr().out
+    assert "surplus" in out.lower() or "extras" in out
+    assert "billing" in out
+    assert "All validations passed" in out
