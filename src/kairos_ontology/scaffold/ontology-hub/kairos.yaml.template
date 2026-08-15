@@ -1,3 +1,10 @@
 version: 5
 name: {repo_name}
 adapter: fabric
+# Optional: declare which hub modes are served. When absent or empty, ALL modes
+# are served (backward compatible). Mode-specific managed imports whose
+# activation mode is not in this list are skipped during validation and
+# import-plan building. Example values: interactive, autopilot, dataplatform.
+# modes_served:
+#   - interactive
+#   - dataplatform

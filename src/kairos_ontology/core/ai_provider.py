@@ -396,6 +396,15 @@ def get_ai_client(model: str = DEFAULT_MODEL, *, role: str | None = None):
         _endpoint_for_log(config.endpoint),
     )
 
+    return _create_client_from_config(config)
+
+
+def _create_client_from_config(config: AIProviderConfig):
+    """Create an OpenAI-compatible client from an already-resolved config.
+
+    Shared between :func:`get_ai_client` (normal operation) and the preflight
+    probe (issue #463) so the Foundry SDK path is identical in both.
+    """
     if config.provider == "foundry":
         return _create_foundry_client(config)
 

@@ -44,8 +44,16 @@ AUTOPILOT_ANCHORS = [
     # Guardrails
     "DD-088",
     "escalates",
-    # Transparency report
-    "transparency report",
+        # Archetype stop-condition (#465)
+        "Archetype selection is a blocking stop-condition",
+        # Per-domain validate-then-register (#475 item 3)
+        "Per-domain validate-then-register",
+        # suggest-shapes step (#475 item 4)
+        "suggest-shapes",
+        # Governance SHACL (#475 item 5)
+        "Governance SHACL",
+        # Transparency report
+        "transparency report",
         "Source coverage metric",
         "Unbound tables over 1000 rows",
         "Conformance-risk list",

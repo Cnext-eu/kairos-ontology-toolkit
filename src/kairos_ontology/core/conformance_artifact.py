@@ -62,7 +62,7 @@ ARTIFACT_RELPATH = Path("integration/discovery/core-concepts-conformance.yaml")
 VALID_MODES = {"interactive", "fleet"}
 
 #: Valid values for the per-concept ``decided_by`` field.
-VALID_DECIDED_BY = {"user", "ai"}
+VALID_DECIDED_BY = {"user", "ai", "autopilot"}
 
 
 class ConformanceArtifactError(Exception):
@@ -603,12 +603,14 @@ def open_questions(
     let that self-declaration disable the entire check (issue #307). ``mode`` remains
     useful for provenance/reporting, just never as the condition here.
 
-    A concept is unresolved when it is explicitly ``decided_by: "ai"`` and either
-    ``needs_confirmation`` is true or ``confidence`` was never recorded. This applies in
-    every mode — fleet and interactive alike — because the kairos-design-discovery skill
-    marks every concept's ``decided_by`` explicitly (``"user"`` or ``"ai"``) regardless of
-    session mode; a concept that omits ``decided_by`` altogether predates that bookkeeping
-    (or was never AI-touched) and is not treated as AI-decided here.
+    A concept is unresolved when it is explicitly ``decided_by: "ai"`` or
+    ``decided_by: "autopilot"`` (treated identically — autopilot is an AI-decided
+    concept, issue #472) and either ``needs_confirmation`` is true or ``confidence``
+    was never recorded. This applies in every mode — fleet and interactive alike —
+    because the kairos-design-discovery skill marks every concept's ``decided_by``
+    explicitly (``"user"``, ``"ai"``, or ``"autopilot"``) regardless of session mode;
+    a concept that omits ``decided_by`` altogether predates that bookkeeping (or was
+    never AI-touched) and is not treated as AI-decided here.
 
     Args:
         artifact: the parsed conformance artifact.
@@ -620,7 +622,7 @@ def open_questions(
     for concept in artifact.get("core_concepts") or []:
         if not isinstance(concept, dict):
             continue
-        if concept.get("decided_by") != "ai":
+        if concept.get("decided_by") not in ("ai", "autopilot"):
             continue
         if not _concept_in_scope(concept, domains):
             continue

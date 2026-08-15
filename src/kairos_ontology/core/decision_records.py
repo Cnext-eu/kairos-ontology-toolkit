@@ -314,17 +314,41 @@ def _source_citation_resolves(resource: str, hub_root: Path) -> bool:
     those — fall back to the repo root (#420). Any other path never probes the
     repo root: a rotted hub citation must not be silently satisfied by the
     repo's own same-named file (e.g. its ``README.md``).
+
+    A citation whose first segment is the hub directory name (e.g.
+    ``ontology-hub/integration/...``) is treated as repo-root-relative and
+    resolved from the repo root — this mirrors the path-doubling fix in
+    ``sources.py`` (issue #466).
     """
+    from .hub_utils import HUB_DIRNAME
+
     normalized = resource.replace("\\", "/")
     if (hub_root / normalized).resolve().exists():
         return True
     first_segment = normalized.split("/", 1)[0]
-    if first_segment not in _REPO_ROOT_FIRST_SEGMENTS:
-        return False
-    repo_root = resolve_repo_root(hub_root)
-    if repo_root == hub_root.resolve():
-        return False  # standalone/bare hub: the hub root is the only base
-    return (repo_root / normalized).resolve().exists()
+
+    # Repo-root-relative citations (.import/, ontology-reference-models/)
+    if first_segment in _REPO_ROOT_FIRST_SEGMENTS:
+        repo_root = resolve_repo_root(hub_root)
+        if repo_root == hub_root.resolve():
+            return False  # standalone/bare hub: the hub root is the only base
+        return (repo_root / normalized).resolve().exists()
+
+    # Repo-root-relative citation prefixed with the hub dir name (#466):
+    # the user typed what they see on disk (ontology-hub/integration/...)
+    # from the repo root — the hub-root-relative form omits that segment.
+    if first_segment == HUB_DIRNAME:
+        repo_root = resolve_repo_root(hub_root)
+        if repo_root == hub_root.resolve():
+            return False  # standalone hub: no repo root to try
+        remainder = normalized.split("/", 1)[1] if "/" in normalized else ""
+        if remainder and (repo_root / normalized).resolve().exists():
+            return True
+        # Also try stripping the hub-dir prefix (the canonical hub-relative form)
+        if remainder and (hub_root / remainder).resolve().exists():
+            return True
+
+    return False
 
 
 def _has_rejected_alternative(body: str) -> bool:
@@ -554,9 +578,10 @@ def _validate_record(
                     _warn(
                         diags,
                         "unresolved_source",
-                        f"local source path does not resolve: {resource}",
-                        rel,
-                    )
+                                    f"local source path does not resolve: {resource} "
+                                    f"(base: {hub_root})",
+                                    rel,
+                                )
 
     # --- rejected alternative (required for Accepted) ---------------------
     if state == "Accepted" and not _has_rejected_alternative(record.body):

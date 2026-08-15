@@ -51,6 +51,7 @@ RETAINED_COMMANDS = {
     "scaffold-system",
     "scaffold-mapping",
     "scaffold-silver-ext",
+    "scaffold-domain",
     "show-class-inventory",
     "show-source-schema",
     "source-privacy",

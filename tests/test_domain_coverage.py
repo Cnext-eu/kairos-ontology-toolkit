@@ -471,3 +471,41 @@ class TestDomainCoverageOwnsBatch:
         assert batch["inventories_present"] is False
         assert batch["matches"] == []
 
+
+# ---------------------------------------------------------------------------
+# Issue #467 — stderr notice when accelerator is configured but its
+# data-domains.yaml is missing (distinct from "no accelerator installed").
+# ---------------------------------------------------------------------------
+
+
+class TestDomainCoverageAcceleratorDataDomainsMissing:
+    """When an accelerator is configured but its data-domains.yaml is unreachable,
+    a stderr notice must be emitted so the empty blueprint column is diagnosable."""
+
+    def test_stderr_notice_when_ref_models_missing(self, hub, monkeypatch):
+        """Configure accelerator in pyproject.toml but don't install ref-models;
+        expect the stderr notice (#467)."""
+        import tomllib
+
+        # Write pyproject.toml with accelerator config.
+        (hub / "pyproject.toml").write_text(
+            "[tool.kairos]\naccelerator = 'logistics'\n",
+            encoding="utf-8",
+        )
+        # Remove the ref-models directory entirely.
+        import shutil
+
+        shutil.rmtree(hub.parent / "ontology-reference-models")
+
+        result = _invoke(hub, monkeypatch, [])
+        assert result.exit_code == 0
+        assert "data-domains.yaml" in result.output or "reference-models directory" in result.output
+        assert "logistics" in result.output
+
+    def test_no_notice_when_data_domains_present(self, hub, monkeypatch):
+        """When data-domains.yaml exists, no missing-file notice should appear (#467)."""
+        result = _invoke(hub, monkeypatch, [])
+        assert result.exit_code == 0
+        assert "data-domains.yaml was not found" not in result.output
+        assert "no reference-models directory" not in result.output
+

@@ -578,6 +578,43 @@ class TestDefaultModel:
         assert DEFAULT_MODEL == "gpt-5.4-mini"
 
 
+class TestCreateClientFromConfig:
+    """_create_client_from_config dispatches by provider (issue #463 refactor)."""
+
+    def test_dispatches_non_foundry_to_openai(self):
+        from kairos_ontology.core.ai_provider import _create_client_from_config, AIProviderConfig
+
+        config = AIProviderConfig(
+            provider="github",
+            endpoint="https://models.github.ai",
+            api_key="gho_test",
+            model="gpt-5.4-mini",
+        )
+        client = _create_client_from_config(config)
+        assert client is not None
+
+    def test_dispatches_foundry_to_foundry_factory(self):
+        from kairos_ontology.core.ai_provider import _create_client_from_config, AIProviderConfig
+
+        mock_openai = MagicMock()
+        mock_project = MagicMock()
+        mock_project.get_openai_client.return_value = mock_openai
+        mock_projects = MagicMock()
+        mock_projects.AIProjectClient.return_value = mock_project
+
+        config = AIProviderConfig(
+            provider="foundry",
+            endpoint="https://my.ai.azure.com/api/projects/proj",
+            api_key="",
+            model="gpt-5.4-mini",
+        )
+
+        with patch.dict("sys.modules", {"azure.ai.projects": mock_projects}):
+            with patch.dict("os.environ", {"AZURE_FOUNDRY_API_KEY": ""}):
+                client = _create_client_from_config(config)
+        assert client is mock_openai
+
+
 class TestSanitizeProviderError:
     """Alignment-reliability: redacted, length-capped, safe-to-persist errors."""
 

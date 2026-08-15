@@ -270,6 +270,39 @@ def _configured_adapter(root: Path) -> str:
     return str(adapter) if adapter in ("fabric", "databricks") else ""
 
 
+def configured_modes_served(root: Path) -> list[str] | None:
+    """Return the ``modes_served`` list from kairos.yaml, or ``None`` when absent.
+
+    Backward compatible: when the field is absent or empty, ``None`` is returned
+    (meaning "all modes served"). Duplicates are stripped and values are stripped
+    of surrounding whitespace.
+    """
+    import yaml
+
+    try:
+        config = yaml.safe_load((root / "kairos.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    raw = config.get("modes_served")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    modes = [str(item).strip() for item in raw if item is not None and str(item).strip()]
+    if not modes:
+        return None
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    result: list[str] = []
+    for mode in modes:
+        if mode not in seen:
+            seen.add(mode)
+            result.append(mode)
+    return result
+
+
 def _ontology_domains(ontologies_dir: Path) -> tuple[set[str], set[str]]:
     """Return (domain stems, unreadable stems) from ``model/ontologies``."""
     domains: set[str] = set()

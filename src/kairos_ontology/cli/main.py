@@ -52,6 +52,7 @@ from .setup import (
     migrate,
     new_repo,
     init_dataplatform,
+    scaffold_domain,
 )
 from .sources import (
     import_tmdl,
@@ -270,6 +271,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(migrate)
     group.add_command(new_repo)
     group.add_command(init_dataplatform)
+    group.add_command(scaffold_domain)
     group.add_command(import_tmdl)
     group.add_command(show_source_schema_cmd)
     group.add_command(extract_schema)

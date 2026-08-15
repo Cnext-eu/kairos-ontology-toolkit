@@ -967,3 +967,146 @@ hub:LocalOrder a owl:Class ; rdfs:subClassOf <{TERM_NS}Order> .
     ambiguous = [d for d in plan.diagnostics if d.code == "term_owner_ambiguous"]
     assert len(ambiguous) == 1
     assert ambiguous[0].level == "error"
+
+
+# ---------------------------------------------------------------------------
+# Issue #471 (E7-modes-served): mode-specific import filtering via modes_served.
+# ---------------------------------------------------------------------------
+
+def _write_mode_aware_reference_pack(tmp_path):
+    """A reference pack with two domains: ``orders`` (no mode) and
+    ``orders-interactive`` (mode=interactive). Both have the same module. This
+    lets us test that build_managed_import_plan respects modes_served."""
+    ref_models, catalog = _write_reference_pack(tmp_path)
+    config_path = (
+        ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint" / "data-domains.yaml"
+    )
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    # Add a second domain with mode: interactive
+    data["groups"].append(
+        {
+            "id": "interactive-group",
+            "domains": [
+                {"id": "orders-interactive", "mode": "interactive",
+                 "imports": [{"profile": "orders"}]},
+            ],
+        }
+    )
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return ref_models, catalog
+
+
+def test_modes_served_none_includes_all_imports(tmp_path):
+    """Backward compatibility: modes_served=None includes all imports."""
+    ref_models, catalog = _write_mode_aware_reference_pack(tmp_path)
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic"
+    )
+    graph = _bare_ontology_graph("https://example.org/hub/orders-interactive")
+    plan = build_managed_import_plan(
+        domain="orders-interactive",
+        context=context,
+        ontology_graph=graph,
+        modes_served=None,
+    )
+
+    # The activation is included; the import is required but missing (bare graph).
+    assert len(plan.requirements) == 1
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+
+
+def test_modes_served_with_matching_mode_includes_import(tmp_path):
+    """modes_served=["interactive"] includes an activation whose mode is interactive."""
+    ref_models, catalog = _write_mode_aware_reference_pack(tmp_path)
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic"
+    )
+    graph = _bare_ontology_graph("https://example.org/hub/orders-interactive")
+    plan = build_managed_import_plan(
+        domain="orders-interactive",
+        context=context,
+        ontology_graph=graph,
+        modes_served=["interactive"],
+    )
+
+    assert "orders" in plan.requirements[0].managed_source
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+
+
+def test_modes_served_without_matching_mode_skips_import(tmp_path):
+    """modes_served=["dataplatform"] skips an activation whose mode is interactive."""
+    ref_models, catalog = _write_mode_aware_reference_pack(tmp_path)
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic"
+    )
+    graph = _bare_ontology_graph("https://example.org/hub/orders-interactive")
+    plan = build_managed_import_plan(
+        domain="orders-interactive",
+        context=context,
+        ontology_graph=graph,
+        modes_served=["dataplatform"],
+    )
+
+    assert plan.requirements == ()
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing == []
+
+
+def test_modes_served_does_not_affect_modeless_activation(tmp_path):
+    """A domain activation with no mode is always included regardless of modes_served."""
+    ref_models, catalog = _write_mode_aware_reference_pack(tmp_path)
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic"
+    )
+    graph = _bare_ontology_graph("https://example.org/hub/orders")
+    plan = build_managed_import_plan(
+        domain="orders",
+        context=context,
+        ontology_graph=graph,
+        modes_served=["dataplatform"],
+    )
+
+    # "orders" has no mode, so it's included even with modes_served=["dataplatform"]
+    assert len(plan.requirements) == 1
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+
+
+def test_modes_served_empty_list_includes_all_imports(tmp_path):
+    """An empty modes_served list means "no filter" (backward compatible)."""
+    ref_models, catalog = _write_mode_aware_reference_pack(tmp_path)
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic"
+    )
+    graph = _bare_ontology_graph("https://example.org/hub/orders-interactive")
+    plan = build_managed_import_plan(
+        domain="orders-interactive",
+        context=context,
+        ontology_graph=graph,
+        modes_served=[],
+    )
+
+    assert len(plan.requirements) == 1
+    missing = [d for d in plan.diagnostics if d.code == "missing_managed_import"]
+    assert missing
+
+
+def test_modes_served_parsed_from_data_domains_yaml(tmp_path):
+    """The mode field in data-domains.yaml is loaded onto DataDomainActivation."""
+    ref_models, _catalog = _write_mode_aware_reference_pack(tmp_path)
+
+    config = load_accelerator_module_config(ref_models, "generic")
+    activation = config.activation("orders-interactive")
+    assert activation is not None
+    assert activation.mode == "interactive"
+    # The modeless activation has no mode
+    modeless = config.activation("orders")
+    assert modeless is not None
+    assert modeless.mode is None

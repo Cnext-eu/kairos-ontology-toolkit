@@ -134,6 +134,7 @@ class DataDomainActivation:
     domain: str
     module_ids: tuple[str, ...]
     module_tier_overrides: dict[str, str] = field(default_factory=dict)
+    mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -502,6 +503,7 @@ def load_accelerator_module_config(
 
     domain_modules: dict[str, set[str]] = {}
     domain_tier_overrides: dict[str, dict[str, str]] = {}
+    domain_modes: dict[str, str | None] = {}
     for group in data.get("groups", []) or []:
         for domain in group.get("domains", []) or []:
             domain_id = str(domain.get("id") or "").strip()
@@ -551,12 +553,16 @@ def load_accelerator_module_config(
                     )
                     domain_tier_overrides.setdefault(domain_id, {})[profile_id] = tier_value
             domain_modules.setdefault(domain_id, set()).update(module_ids)
+            raw_mode = domain.get("mode")
+            if raw_mode is not None and str(raw_mode).strip():
+                domain_modes[domain_id] = str(raw_mode).strip()
 
     activations = [
         DataDomainActivation(
             domain=domain,
             module_ids=tuple(sorted(module_ids)),
             module_tier_overrides=dict(domain_tier_overrides.get(domain, {})),
+            mode=domain_modes.get(domain),
         )
         for domain, module_ids in sorted(domain_modules.items())
     ]
@@ -874,6 +880,7 @@ def build_managed_import_plan(
     authored_ontology_graph: Graph | None = None,
     projected_uris: Iterable[str] | None = None,
     local_ontology_iri: str | None = None,
+    modes_served: list[str] | None = None,
 ) -> ManagedImportPlan:
     """Build managed imports from configured activation and authored ontology use."""
     if local_ontology_iri is None and ontology_graph is not None:
@@ -888,6 +895,19 @@ def build_managed_import_plan(
     diagnostics = list(context.diagnostics if context else ())
     activation = context.config.activation(domain) if context else None
     activated_ids = set(activation.module_ids if activation else ())
+    modes_active = (
+        modes_served is None
+        or not modes_served
+        or activation is None
+        or activation.mode is None
+        or activation.mode in modes_served
+    )
+    if not modes_active:
+        # Skip mode-specific imports whose declared mode is not in modes_served.
+        # Authored term usage (mode-independent) is still evaluated below — it
+        # never depends on activation.
+        activation = None
+        activated_ids = set()
     requirement_data: dict[tuple[str, str], dict[str, Any]] = {}
     dependency_graph = (
         authored_ontology_graph if authored_ontology_graph is not None else ontology_graph
