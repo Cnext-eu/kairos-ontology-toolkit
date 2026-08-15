@@ -225,6 +225,20 @@ def find_managed_root(cwd: Path | None = None) -> Path | None:
     return None
 
 
+def resolve_repo_root(hub_root: Path) -> Path:
+    """Return the repository root that owns *hub_root*.
+
+    The repo root is the nearest ancestor of *hub_root* (including *hub_root*
+    itself) that carries the toolkit pin or managed ``.github/`` files — see
+    :func:`find_managed_root`. Bare/test hubs (a hub directory with no managed
+    ancestor) degrade to the hub root itself, so
+    ``resolve_repo_root(hub) == hub.resolve()`` means "standalone hub: the hub
+    root is the only resolution base". The result is always resolved; compare
+    against ``hub_root.resolve()``, not the raw *hub_root*.
+    """
+    return find_managed_root(hub_root) or hub_root.resolve()
+
+
 def find_hub_root(
     cwd: Path | None = None,
     *,

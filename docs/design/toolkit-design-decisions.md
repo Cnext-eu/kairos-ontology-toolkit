@@ -10015,6 +10015,23 @@ Scaffolding the README and template makes the capability discoverable in every n
 - The Decision Log does not revive `.kairos-state`; it is a separate, durable, human-reviewed
   artifact rather than session state.
 
+> **Amendment (2026-08-15, #420):** the resolution base for local `sources[].resource`
+> citations is now documented and slightly widened. The base is the **hub root** — the
+> convention every other hub path citation follows, chosen (over the `decisions/`
+> directory) in issue #349 but stated nowhere until now. On a **nested** hub (a hub
+> inside a toolkit-managed repository root, detected via
+> `hub_utils.resolve_repo_root` = `find_managed_root(hub_root) or hub_root`),
+> citations whose first segment is `.import/` or `ontology-reference-models/` — the
+> two repo-root siblings a hub-root join can never reach — additionally fall back to
+> the **repository root**. No other path ever probes the repo root, so a rotted hub
+> citation cannot be silently satisfied by the repo's own same-named file. Bare/test
+> hubs without a toolkit pin degrade to hub-root-only resolution. `_is_local_path`
+> is widened to recognize `.import/` citations (either separator; backslashes are
+> normalized before joining) and the binary evidence extensions
+> `.pdf`/`.docx`/`.xlsx`/`.pptx`, all extensions matched case-insensitively.
+> Accepted consequence: a prose citation that merely *ends* in `.pdf` now warns as
+> unresolved — the same class of behavior `.md`-suffixed prose already had.
+
 ---
 
 

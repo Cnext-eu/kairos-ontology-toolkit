@@ -142,6 +142,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   content last changed". **Release note:** run `generate-inventory` once after upgrading, before the next
   domain registration, so the expected one-time full rewrite (toolkit version bump + the #414 `generated_from`
   migration) lands outside a registration diff.
+- **Decision Log source citations under `.import/` now resolve; binary evidence is now checked** (#420).
+  `validate` warned "local source path does not resolve" for correct citations: the resolution base was the
+  hub root (deliberate per #349 but documented nowhere), so `.import/` evidence — a repo-root *sibling* of the
+  hub in nested layouts — could never resolve. On a nested hub (one inside a toolkit-managed repo root),
+  citations whose first segment is `.import/` or `ontology-reference-models/` now also try the repo root;
+  no other path does, so a rotted hub citation is never silently satisfied by the repo's own same-named file.
+  Backslash citations (`.import\businessdiscovery\x.pdf`) are normalized before joining, and
+  `.pdf`/`.docx`/`.xlsx`/`.pptx` citations are now recognized as local paths (all extensions
+  case-insensitive) instead of being silently skipped. The base is now documented in `decision new --source`
+  help, the decisions README, and the record template (DD-141 amendment). Accepted consequence: prose
+  citations ending in `.pdf` now warn, same class as the existing `.md` behavior.
 - **`source-privacy` reported an unqualified all-clear that named no patterns** (#415). It printed
   `✅ Source sample artifacts are privacy-safe for supported patterns.` — DD-075 always recorded that detection
   is bounded, but the bound lived in the design doc rather than the output, so a reader could not tell which
