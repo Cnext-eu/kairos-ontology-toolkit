@@ -357,6 +357,26 @@ def test_time_literal_requires_portable_lexical_form(lexical: str):
         _normalize(_typed_literal(lexical, "time", str(XSD.time)))
 
 
+def test_boolean_literal_accepts_lowercase_true():
+    """Lowercase ``true`` is the XSD canonical lexical form for boolean."""
+    from kairos_ontology.core.projections.dbt.mapping_specs import LiteralExpression
+
+    fact = _typed_literal("true", "boolean", str(XSD.boolean))
+    result = _normalize(fact)
+    assert isinstance(result, LiteralExpression)
+    assert result.lexical == "true"
+
+
+def test_boolean_literal_accepts_lowercase_false():
+    """Lowercase ``false`` is the XSD canonical lexical form for boolean."""
+    from kairos_ontology.core.projections.dbt.mapping_specs import LiteralExpression
+
+    fact = _typed_literal("false", "boolean", str(XSD.boolean))
+    result = _normalize(fact)
+    assert isinstance(result, LiteralExpression)
+    assert result.lexical == "false"
+
+
 @pytest.mark.parametrize(
     ("adapter", "argument_count", "expected"),
     [

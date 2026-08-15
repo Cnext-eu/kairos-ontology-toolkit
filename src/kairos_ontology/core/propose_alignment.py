@@ -95,19 +95,12 @@ HIGH_ACCURACY_MODEL = "gpt-5.4"
 
 # ---------------------------------------------------------------------------
 # Alignment-reliability — typed per-table generation outcomes
-# ---------------------------------------------------------------------------
-#: A real LLM call was made and returned a structured (possibly empty/no-match)
-#: result. The only outcome ``propose-alignment`` persists to the Claim
-#: Registry (see :mod:`kairos_ontology.core.claim_registry`).
-OUTCOME_SEMANTIC_SUCCESS = "semantic_success"
-#: The LLM call itself failed (network, auth, rate-limit exhaustion, malformed
-#: response, ...). The table has no real semantic content; it must never be
-#: written or reported as if the model had genuinely returned "no match".
-OUTCOME_PROVIDER_FAILURE = "provider_failure"
-#: No LLM call was even attempted because there was no reference-model class to
-#: align against (e.g. the domain's reference model did not resolve). Every
-#: column for the table falls back to a passthrough/custom disposition.
-OUTCOME_FALLBACK_ONLY = "fallback_only"
+from kairos_ontology.core.generation_outcome import (
+    OUTCOME_FALLBACK_ONLY,
+    OUTCOME_PROVIDER_FAILURE,
+    OUTCOME_SEMANTIC_SUCCESS,
+    OUTCOME_UNRESOLVED_ANSWER,
+)
 
 
 class AlignmentTotalFailureError(RuntimeError):

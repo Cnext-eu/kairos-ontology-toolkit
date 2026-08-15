@@ -646,3 +646,44 @@ def test_literal_requires_datatype() -> None:
     with pytest.raises(CompileError) as excinfo:
         load_entity_binding(bad, path="bad.yaml")
     assert "expression.literal-datatype" in _codes(excinfo.value)
+
+
+def test_boolean_literal_true_normalizes_to_lowercase() -> None:
+    """YAML ``true`` must produce ``lexical == "true"`` not ``"True"``."""
+    doc = VALID.replace(
+        "    expression:\n      fn: upper\n      args: [{ column: full_name }]",
+        "    expression:\n      literal: true\n      datatype: boolean",
+    )
+    binding = load_entity_binding(doc, path="bool.yaml")
+    expr = binding.fields[1].expression
+    assert isinstance(expr, ExprLiteral)
+    assert expr.lexical == "true"
+    assert expr.datatype == "boolean"
+
+
+def test_boolean_literal_false_normalizes_to_lowercase() -> None:
+    """YAML ``false`` must produce ``lexical == "false"`` not ``"False"``."""
+    doc = VALID.replace(
+        "    expression:\n      fn: upper\n      args: [{ column: full_name }]",
+        "    expression:\n      literal: false\n      datatype: boolean",
+    )
+    binding = load_entity_binding(doc, path="bool.yaml")
+    expr = binding.fields[1].expression
+    assert isinstance(expr, ExprLiteral)
+    assert expr.lexical == "false"
+
+
+def test_boolean_literal_true_with_string_datatype_emits_lowercase() -> None:
+    """``{literal: true, datatype: string}`` emits ``"true"`` not ``"True"``.
+
+    The parser has no access to the canonical type vocabulary, so the normalization
+    is unconditional — lowercase is the XSD canonical lexical form.
+    """
+    doc = VALID.replace(
+        "    expression:\n      fn: upper\n      args: [{ column: full_name }]",
+        "    expression:\n      literal: true\n      datatype: string",
+    )
+    binding = load_entity_binding(doc, path="bool.yaml")
+    expr = binding.fields[1].expression
+    assert isinstance(expr, ExprLiteral)
+    assert expr.lexical == "true"

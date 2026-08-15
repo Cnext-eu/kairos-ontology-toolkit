@@ -24,6 +24,9 @@ ontology-hub-publish/**
 .idea/
 *.swp
 
+# Raw client evidence (toolkit-created convention)
+.import/
+
 # OS
 .DS_Store
 Thumbs.db

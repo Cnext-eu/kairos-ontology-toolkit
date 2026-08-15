@@ -47,3 +47,17 @@ def test_scaffold_gitignore_ignores_output_but_preserves_gitkeep(tmp_path: Path)
         assert ignored.returncode == 0, ignored.stderr
         assert "ontology-hub-publish/**" in ignored.stdout
         assert preserved.returncode == 1
+
+
+def test_scaffold_gitignore_ignores_import_directory(tmp_path: Path) -> None:
+    """Raw client evidence in ``.import/`` must be gitignored (#453)."""
+    template = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "gitignore.template"
+    (tmp_path / ".gitignore").write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "init"], check=True, capture_output=True)
+
+    evidence = tmp_path / ".import" / "seed_sources.csv"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("col_a,col_b\n1,2\n", encoding="utf-8")
+
+    ignored = _check_ignore(tmp_path, ".import/seed_sources.csv")
+    assert ignored.returncode == 0, ignored.stderr
