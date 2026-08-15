@@ -100,12 +100,11 @@ raises where the escalation goes:
   multi-source merge-vs-single-source decision made during Stage 2 or 3 rather than
   Stage 4 — escalates on the same grounds, since DD-088's conditions describe the
   kind of decision, not the specific stage it happens to occur in.
-- **Archetype selection is a blocking stop-condition.** The autopilot must present
-  the selected archetype and wait for explicit human confirmation before generating
-  the conformance template (`discovery-conformance judgments-template`). Archetype
-  choice determines the entire conformance expectation surface; an autopilot that
-  picks one silently and proceeds is making a policy call it has no authority to
-  make without escalation.
+- **Archetype selection always stops for human confirmation (DD-149).** Stage 2 must
+  present every candidate returned by `discovery-conformance list-archetypes`, then
+  wait for the escalation contact to name one. Never replace the judgments template's
+  `<CONFIRM_HUMAN_ARCHETYPE:...>` sentinel before that reply. The build command has no
+  default and hard-fails before writing if explicit human confirmation is absent.
 - **A real toolkit blocker with no known workaround.** Report it plainly (this may
   still warrant a toolkit issue — file it, per `kairos-toolkit-dogfood`'s findings
   discipline, but do not open a fix-implementation side-quest inside an autopilot

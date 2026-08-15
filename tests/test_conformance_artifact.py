@@ -11,7 +11,7 @@ from kairos_ontology.core.archetype_loader import load_archetype, load_outcome_c
 from kairos_ontology.core.conformance_artifact import (
     ARTIFACT_RELPATH,
     ConformanceArtifactError,
-    build_artifact,
+    build_artifact as _build_artifact,
     check_discovery_gate,
     compute_scorecard,
     has_unresolved_fleet_items,
@@ -21,6 +21,12 @@ from kairos_ontology.core.conformance_artifact import (
     validate_artifact,
     write_artifact,
 )
+
+
+def build_artifact(**kwargs):
+    """Build a test artifact with explicit human archetype confirmation."""
+    kwargs.setdefault("archetype_confirmed_by", "human")
+    return _build_artifact(**kwargs)
 
 
 @pytest.fixture()
@@ -147,15 +153,24 @@ def test_validate_rejects_invalid_mode(refroot, archetype):
 
 
 def test_validate_requires_human_confirmed_archetype(refroot, archetype):
-    art = build_artifact(
-        archetype=archetype,
-        refmodels_version="1.11.0",
-        outcomes=_outcomes(),
-        mode="interactive",
-        archetype_confirmed_by="ai",
-    )
-    errors = validate_artifact(art, load_outcome_codes(refroot))
-    assert any("archetype.confirmed_by" in e for e in errors)
+    with pytest.raises(ConformanceArtifactError, match="explicit human confirmation"):
+        build_artifact(
+            archetype=archetype,
+            refmodels_version="1.11.0",
+            outcomes=_outcomes(),
+            mode="interactive",
+            archetype_confirmed_by="ai",
+        )
+
+
+def test_build_requires_explicit_human_archetype_confirmation(archetype):
+    with pytest.raises(ConformanceArtifactError, match="never defaulted"):
+        _build_artifact(
+            archetype=archetype,
+            refmodels_version="1.11.0",
+            outcomes=_outcomes(),
+            mode="interactive",
+        )
 
 
 def test_validate_rejects_absolute_posix_discovery_doc(refroot, archetype):

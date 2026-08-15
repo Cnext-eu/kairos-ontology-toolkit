@@ -44,8 +44,8 @@ AUTOPILOT_ANCHORS = [
     # Guardrails
     "DD-088",
     "escalates",
-        # Archetype stop-condition (#465)
-        "Archetype selection is a blocking stop-condition",
+        # Archetype stop-condition (#465, DD-149)
+        "Archetype selection always stops for human confirmation",
         # Per-domain validate-then-register (#475 item 3)
         "Per-domain validate-then-register",
         # suggest-shapes step (#475 item 4)

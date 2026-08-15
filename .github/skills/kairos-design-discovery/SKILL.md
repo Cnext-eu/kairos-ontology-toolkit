@@ -50,7 +50,10 @@ require an explicit human reply naming the archetype id, recorded in the intervi
 auto-select or AI-approve this choice, even in fleet mode. Only proceed to step 2 (`load
 --archetype <id>`) once the human has confirmed. Record `archetype.confirmed_by: "human"` in the
 artifact (step 4) — `kairos-ontology compile`/`validate` and `discovery-conformance validate`
-reject artifacts missing this.
+reject artifacts missing this. The judgments template deliberately emits
+`archetype_confirmed_by: <CONFIRM_HUMAN_ARCHETYPE:...>`; replace that sentinel with `human` only
+after the reply. `discovery-conformance build` has no confirmation default and exits before writing
+when this explicit evidence is absent or has any other value.
 
 ### Use the toolkit CLI — never hand-transcribe or hand-script
 

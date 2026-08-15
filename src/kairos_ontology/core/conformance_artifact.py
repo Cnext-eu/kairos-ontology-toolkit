@@ -177,7 +177,7 @@ def build_artifact(
     refmodels_version: str | None,
     outcomes: list[dict[str, Any]],
     mode: str,
-    archetype_confirmed_by: str = "human",
+    archetype_confirmed_by: str | None = None,
     topology_confirmations: list[dict[str, Any]] | None = None,
     cardinality_answers: list[dict[str, Any]] | None = None,
     discovery_doc: str | None = None,
@@ -200,9 +200,8 @@ def build_artifact(
         mode: ``"interactive"`` or ``"fleet"`` (DD-088) — the session mode this
             conformance run was produced under. Durable, since the session itself
             isn't persisted; ``open_questions()`` only inspects fleet-mode artifacts.
-        archetype_confirmed_by: who confirmed the archetype id (DD-149). Archetype
-            selection is never fleet-eligible, so this is always ``"human"`` in
-            practice; callers must not stamp anything else.
+        archetype_confirmed_by: who confirmed the archetype id (DD-149). Callers must
+            explicitly pass ``"human"``; omission is never interpreted as confirmation.
         topology_confirmations: yes/no confirmation entries for derived relationship edges.
         cardinality_answers: answers to the genuinely-undeclared cardinality questions.
         discovery_doc: relative path/name of the paired discovery markdown, if any.
@@ -212,6 +211,12 @@ def build_artifact(
             seeded never affects validity: :func:`validate_artifact` compares scorecards with
             empty buckets normalised away.
     """
+    if archetype_confirmed_by != "human":
+        raise ConformanceArtifactError(
+            "Archetype selection requires explicit human confirmation (DD-149); "
+            "archetype_confirmed_by must be 'human' and is never defaulted."
+        )
+
     return {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "generated_by": generated_by,
