@@ -10809,17 +10809,21 @@ before proceeding to `discovery-conformance load`. This choice is added to DD-08
 decisions fleet mode may never make on its own, alongside ambiguity, low confidence,
 policy-sensitive choices, destructive/irreversible actions, and PII risk.
 
-`build_artifact()` gains an `archetype_confirmed_by` parameter (default `"human"`), stamped as
-`archetype.confirmed_by` in the artifact; `validate_artifact()` rejects any artifact where this
-is not literally `"human"`.
+`build_artifact()` requires an explicit `archetype_confirmed_by="human"` value, stamped as
+`archetype.confirmed_by` in the artifact; omission and every other value fail before an artifact
+is built. The supported CLI mirrors that requirement in the judgments file. Its generated
+template contains a blocking `<CONFIRM_HUMAN_ARCHETYPE:...>` sentinel, and
+`discovery-conformance build` exits before writing until the field is explicitly changed to
+`human`.
 
 ### Consequences
 
 - Archetype selection now has the same paper trail as fleet-mode concept judgments (DD-148):
   a machine-checkable field, not just skill-prompt discipline.
-- Enforcement is otherwise prompt-level, consistent with this codebase's other Gates 1-4 (none of
-  which are code-enforced beyond their recorded artifacts) — `archetype.confirmed_by` is the one
-  concrete trace, not a CLI-level token that could verify who actually typed a flag.
+- Enforcement is code-level for the evidence available to the toolkit: neither the builder nor
+  CLI infers confirmation, and the scaffold remains mechanically incomplete until the explicit
+  marker is authored. The toolkit cannot independently verify who typed a value in a YAML file;
+  the interview log remains the auditable record of the human reply.
 - Pairs with DD-148 (discovery-before-design hard gates), closing both gaps surfaced by the same
   client-hub review.
 

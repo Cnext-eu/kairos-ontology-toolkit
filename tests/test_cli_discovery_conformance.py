@@ -17,7 +17,10 @@ from click.testing import CliRunner
 from archetype_fixtures import build_refmodels_root
 from kairos_ontology.core.archetype_loader import load_archetype
 from kairos_ontology.cli.main import cli
-from kairos_ontology.core.conformance_artifact import build_artifact, write_artifact
+from kairos_ontology.core.conformance_artifact import (
+    build_artifact as _build_artifact,
+    write_artifact,
+)
 from kairos_ontology.core.hub_utils import is_scaffold_placeholder_text
 
 
@@ -34,6 +37,12 @@ def _skill_context(monkeypatch):
 
 def _run(args):
     return CliRunner().invoke(cli, args)
+
+
+def build_artifact(**kwargs):
+    """Build a test artifact with explicit human archetype confirmation."""
+    kwargs.setdefault("archetype_confirmed_by", "human")
+    return _build_artifact(**kwargs)
 
 
 def test_list_archetypes_emits_clean_json(refroot):
@@ -262,9 +271,16 @@ def test_validate_invalid_artifact_exits_one(tmp_path, refroot):
 # --- discovery-conformance build (issue #311) ---------------------------------------------
 
 
-def _write_judgments(path, outcomes, *, mode="interactive"):
+def _write_judgments(path, outcomes, *, mode="interactive", confirmed_by="human"):
     path.write_text(
-        yaml.safe_dump({"mode": mode, "core_concepts": outcomes}, sort_keys=False),
+        yaml.safe_dump(
+            {
+                "mode": mode,
+                "archetype_confirmed_by": confirmed_by,
+                "core_concepts": outcomes,
+            },
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
     return path
@@ -304,12 +320,50 @@ def test_build_happy_path_writes_valid_artifact(tmp_path, refroot, monkeypatch):
     assert "valid" in res.stderr
 
 
+@pytest.mark.parametrize("confirmed_by", [None, "ai"])
+def test_build_rejects_missing_or_ai_archetype_confirmation(
+    tmp_path, refroot, monkeypatch, confirmed_by
+):
+    hub = tmp_path / "hub"
+    hub.mkdir(parents=True)
+    monkeypatch.chdir(hub)
+    payload = {
+        "mode": "fleet",
+        "core_concepts": _full_test_carrier_outcomes(),
+    }
+    if confirmed_by is not None:
+        payload["archetype_confirmed_by"] = confirmed_by
+    judgments = tmp_path / "judgments.yaml"
+    judgments.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    res = _run(
+        [
+            "discovery-conformance",
+            "build",
+            "--archetype",
+            "test-carrier",
+            "--judgments-file",
+            str(judgments),
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+
+    assert res.exit_code == 2
+    assert "archetype_confirmed_by: human" in res.stderr
+    assert "never inferred or defaulted" in res.stderr
+    assert not _default_artifact_path(hub).exists()
+
+
 def test_build_malformed_judgments_missing_core_concepts_exits_two(tmp_path, refroot, monkeypatch):
     hub = tmp_path / "hub"
     hub.mkdir(parents=True)
     monkeypatch.chdir(hub)
     judgments = tmp_path / "judgments.yaml"
-    judgments.write_text(yaml.safe_dump({"mode": "interactive"}), encoding="utf-8")
+    judgments.write_text(
+        yaml.safe_dump({"mode": "interactive", "archetype_confirmed_by": "human"}),
+        encoding="utf-8",
+    )
 
     res = _run(
         [
@@ -655,6 +709,8 @@ def test_judgments_template_unfilled_fields_are_scaffold_placeholders(refroot):
     )
     assert res.exit_code == 0, res.output
     payload = json.loads(res.stdout)
+    assert payload["archetype_confirmed_by"] == "<CONFIRM_HUMAN_ARCHETYPE:test-carrier>"
+    assert is_scaffold_placeholder_text(payload["archetype_confirmed_by"])
     assert len(payload["core_concepts"]) == 4
     for concept in payload["core_concepts"]:
         assert is_scaffold_placeholder_text(concept["outcome"])
@@ -835,6 +891,7 @@ def test_judgments_template_roundtrip_build_succeeds(tmp_path, refroot, monkeypa
     assert template_res.exit_code == 0, template_res.output
     template = yaml.safe_load(template_res.stdout)
     assert len(template["core_concepts"]) == 4
+    template["archetype_confirmed_by"] = "human"
 
     for concept in template["core_concepts"]:
         concept["outcome"] = "conforms"

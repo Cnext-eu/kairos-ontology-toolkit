@@ -1957,8 +1957,9 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, domains,
     "judgments_file",
     required=True,
     type=click.Path(exists=True, dir_okay=False),
-    help="YAML or JSON file with mode, core_concepts outcomes, and optional "
-    "topology_confirmations/cardinality_answers. Scaffold one with "
+    help="YAML or JSON file with mode, explicit archetype_confirmed_by: human, "
+    "core_concepts outcomes, and optional topology_confirmations/cardinality_answers. "
+    "Scaffold one with "
     "`discovery-conformance judgments-template --archetype <id>` rather than "
     "hand-writing it. Per core_concepts entry: 'uri' and 'outcome' (one of the codes "
     "from `list-archetypes`' outcome_codes, e.g. conforms/conforms-with-rename/partial/"
@@ -2011,8 +2012,8 @@ def conformance_build(
 
     This is the CLI equivalent of calling ``build_artifact()``/``write_artifact()`` directly
     (issue #311): the judgments file's shape mirrors ``build_artifact()``'s own parameters
-    (``mode``, ``core_concepts`` outcome dicts, optional ``topology_confirmations`` /
-    ``cardinality_answers`` / ``discovery_doc`` / ``archetype_confirmed_by``) rather than
+    (``mode``, explicit ``archetype_confirmed_by``, ``core_concepts`` outcome dicts, optional
+    ``topology_confirmations`` / ``cardinality_answers`` / ``discovery_doc``) rather than
     inventing a new envelope, so a human or the kairos-design-discovery skill only ever
     has to write plain YAML/JSON, never a one-off Python script. Use
     ``discovery-conformance judgments-template --archetype <id>`` to scaffold that file
@@ -2070,7 +2071,17 @@ def conformance_build(
     if not isinstance(judgments, dict):
         click.echo(
             f"❌ Judgments file {judgments_path} must contain a mapping with at least "
-            "'mode' and 'core_concepts' keys.",
+            "'mode', 'archetype_confirmed_by', and 'core_concepts' keys.",
+            err=True,
+        )
+        raise SystemExit(2)
+
+    archetype_confirmed_by = judgments.get("archetype_confirmed_by")
+    if archetype_confirmed_by != "human":
+        click.echo(
+            "❌ Judgments file must explicitly contain 'archetype_confirmed_by: human' "
+            f"for archetype {archetype_id!r} (DD-149). Archetype selection is never "
+            "fleet-eligible and confirmation is never inferred or defaulted.",
             err=True,
         )
         raise SystemExit(2)
@@ -2116,7 +2127,7 @@ def conformance_build(
         refmodels_version=refmodels_version,
         outcomes=core_concepts,
         mode=judgments.get("mode"),
-        archetype_confirmed_by=judgments.get("archetype_confirmed_by", "human"),
+        archetype_confirmed_by=archetype_confirmed_by,
         topology_confirmations=judgments.get("topology_confirmations"),
         cardinality_answers=judgments.get("cardinality_answers"),
         discovery_doc=discovery_doc,
@@ -2201,7 +2212,7 @@ def conformance_judgments_template(
 
     Phase 2.5 of ``kairos-design-discovery`` forbids hand-transcribing or hand-scripting the
     concept list (DD-090); before this command, the only way to learn the judgments-file
-    contract was a failed ``build`` — three separate requirements (``label`` required,
+    contract was a failed ``build`` — separate requirements (``label`` required,
     ``label`` must exactly equal the catalog label, ``confidence`` is a float 0.0-1.0, not
     ``high``/``medium``/``low``) were each discoverable only that way (issue #410). This
     projects ``load``'s own ``core_concepts`` (``uri``/``label``/``tier``, straight from the
@@ -2260,7 +2271,11 @@ def conformance_judgments_template(
         }
         for concept in archetype.core_concepts
     ]
-    payload = {"mode": session_mode, "core_concepts": core_concepts}
+    payload = {
+        "mode": session_mode,
+        "archetype_confirmed_by": f"<CONFIRM_HUMAN_ARCHETYPE:{archetype.id}>",
+        "core_concepts": core_concepts,
+    }
 
     if output_path is None:
         _emit(payload, output_format)
