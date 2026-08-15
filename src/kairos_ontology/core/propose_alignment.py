@@ -94,11 +94,10 @@ HIGH_ACCURACY_MODEL = "gpt-5.4"
 
 # ---------------------------------------------------------------------------
 # Alignment-reliability — typed per-table generation outcomes
-from kairos_ontology.core.generation_outcome import (
+from kairos_ontology.core.generation_outcome import (  # noqa: E402
     OUTCOME_FALLBACK_ONLY,
     OUTCOME_PROVIDER_FAILURE,
     OUTCOME_SEMANTIC_SUCCESS,
-    OUTCOME_UNRESOLVED_ANSWER,
 )
 
 

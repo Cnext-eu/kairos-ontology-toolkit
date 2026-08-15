@@ -27,7 +27,6 @@ from ._cache import SidecarCache, compute_entry_hash, open_cache
 from .source_catalog import build_source_catalog
 from .ai_provider import ROLE_AFFINITY, sanitize_provider_error
 from .generation_outcome import (
-    OUTCOME_FALLBACK_ONLY,
     OUTCOME_PROVIDER_FAILURE,
     OUTCOME_SEMANTIC_SUCCESS,
     OUTCOME_UNRESOLVED_ANSWER,

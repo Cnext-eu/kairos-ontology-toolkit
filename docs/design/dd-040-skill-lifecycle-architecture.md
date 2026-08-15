@@ -58,9 +58,8 @@ Reorganize all skills into **lifecycle groups** with a strict separation between
 │ Toolkit │  kairos-toolkit-dev       (modify the toolkit)            │
 │ (internal) kairos-toolkit-ops       (release, upgrade, versioning)  │
 ├─────────┼───────────────────────────────────────────────────────────┤
-│ Workflow│  SC-feature-branch        (create branch)                 │
-│ (git)   │  SC-merge-pr              (PR + merge)                    │
-│         │  SC-document              (Outline wiki)                  │
+│ Workflow│  SC-merge-pr              (PR + merge rules)              │
+│ (git)   │  SC-document              (Outline wiki)                  │
 └─────────┴───────────────────────────────────────────────────────────┘
 ```
 
@@ -115,8 +114,8 @@ load in routing tables and cross-references.
 | `kairos-ontology-dataplatform` | `kairos-package-dataplatform` | Rename |
 | `kairos-ontology-toolkit-dev` | `kairos-toolkit-dev` | Rename |
 | `kairos-ontology-toolkit-ops` | `kairos-toolkit-ops` | Rename |
-| `SC-feature-branch` | `SC-feature-branch` | Keep (workflow, not ontology) |
-| `SC-merge-pr` | `SC-merge-pr` | Keep |
+| `SC-feature-branch` | — | Removed (standard git, no domain value) |
+| `SC-merge-pr` | `SC-merge-pr` | Keep (version bump, closing keywords, tagging rules) |
 | `SC-document` | `SC-document` | Keep |
 
 **Net result:** 19 skills → 19 skills (no merge/split). Cleaner names, clear lifecycle.

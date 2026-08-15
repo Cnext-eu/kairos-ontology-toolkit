@@ -1356,7 +1356,6 @@ def run_scaffold_binding(
     # Cross-source FK scanner (issue #457, tier 1 — deterministic, no LLM).
     binding_name = f"{system}-{table}-to-{resolved_domain}"
     fk_matches = scan_cross_source_fks(hub_root, columns, exclude_name=binding_name)
-    fk_match_columns = frozenset(m.local_column for m in fk_matches)
     if fk_matches:
         summary = ", ".join(
             f"{m.local_column} -> {m.target_binding_name}.{m.foreign_identity_column}"

@@ -144,8 +144,33 @@ Never commit to `main` directly — always branch + PR.
 - [ ] Tests pass (`uv run pytest` for fast, `uv run pytest -m ""` for full)
 - [ ] `python -m kairos_ontology validate` passes (if ontology changes)
 - [ ] `python -m kairos_ontology project` regenerated (if ontology changes)
+- [ ] Version bumped in `src/kairos_ontology/__init__.py` (required when `src/` changed) or `skip-version` label added
 - [ ] DCO sign-off on all commits
 - [ ] No secrets, credentials, or PII in code
+
+### Version bump and CI version-check
+
+The CI **version-check** job fails any PR that changes files under `src/` but
+doesn't bump `__version__` in `src/kairos_ontology/__init__.py`. Pre-release
+versions (containing `rc`, `b`, or `a` suffixes) don't need a CHANGELOG entry;
+stable releases must have a `## [X.Y.Z]` section in `CHANGELOG.md`.
+
+| Bump type | When |
+|-----------|------|
+| `rc` suffix increment | Pre-release development (e.g. `5.2.3rc7` → `5.2.3rc8`) |
+| `patch` | Bug fixes, small skill/doc changes |
+| `minor` | New features, new projections, new CLI commands |
+| `major` | Breaking API changes |
+
+If the PR is docs-only or doesn't touch `src/`, add the `skip-version` label
+instead.
+
+### Issue closing keywords
+
+GitHub only auto-closes issues when the PR **body** (or a commit message)
+contains a closing keyword: `Closes #N`, `Fixes #N`, or `Resolves #N`. A plain
+`#N` reference does **not** auto-close. One keyword per issue —
+`Closes #1, #2` does **not** close #2.
 
 ### Testing a pre-release
 

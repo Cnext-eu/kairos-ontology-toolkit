@@ -9,7 +9,6 @@ from kairos_ontology.core.ai_preflight import (
     preflight_all_roles,
     require_ai_provider,
     AIRolePreflight,
-    AIPreflightReport,
     STATUS_OK,
     STATUS_NOT_CONFIGURED,
     STATUS_MISCONFIGURED,
@@ -19,9 +18,7 @@ from kairos_ontology.core.ai_preflight import (
 from kairos_ontology.core.ai_provider import (
     ROLE_AFFINITY,
     ROLE_ALIGNMENT,
-    AIProviderError,
     NotConfigured,
-    Misconfigured,
     Unreachable,
 )
 

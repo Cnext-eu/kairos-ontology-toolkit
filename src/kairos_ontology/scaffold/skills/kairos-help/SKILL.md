@@ -52,7 +52,6 @@ keeps all downstream systems consistent with it, automatically.
 | `kairos-package-dataplatform` | Consume artifacts downstream | "Wire the billing dbt package into our platform repo." |
 | `kairos-toolkit-dev` | Develop the toolkit itself | "Add a new CLI flag to the compile command." |
 | `kairos-toolkit-ops` | Release/update managed files | "Bump the toolkit version and sync scaffold files." |
-| `SC-feature-branch` | Start a feature branch | "Create a feature branch for the invoice binding work." |
 | `SC-merge-pr` | Open/merge a PR | "Open a PR to merge this feature branch." |
 | `SC-document` | Manage Outline wiki docs | "Update the wiki page for our ontology conventions." |
 

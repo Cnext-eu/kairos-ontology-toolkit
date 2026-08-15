@@ -4,7 +4,6 @@
 
 import json
 
-import pytest
 from click.testing import CliRunner
 
 from kairos_ontology.cli.inspection import check_ai_config_cmd
