@@ -384,13 +384,63 @@ RULE_REGISTRY: dict[tuple[str, str, str], RuleVerdict] = {
             "core/semantic_index.py: reads OWL.equivalentClass when indexing class equivalence",
         ),
     ),
-    ("qualified-role-assignment", "grain_collision", "#0"): _judgement(
-        "prose stating that four reference models each define a role-bearing party parent; "
-        "identifying which hub class is 'the durable identity' is the judgement.",
+    # grain_collisions for qualified-role-assignment now key by the `against` IRI
+    # (5 role-bearing party parents + 2 DCSA location role classes).
+    (
+        "qualified-role-assignment",
+        "grain_collision",
+        "https://www.kairosflow.ai/ont/bsp/party#TradeParty",
+    ): _judgement(
+        "a role-bearing party parent with a trade (buy-ship-pay) context; not the durable "
+        "identity. Identifying which hub class is 'the durable identity' is the judgement.",
     ),
-    ("qualified-role-assignment", "grain_collision", "#1"): _judgement(
-        "prose stating that DCSA specialises Location by shipment role; whether a hub's "
-        "location classes materialise roles as places is a modelling judgement.",
+    (
+        "qualified-role-assignment",
+        "grain_collision",
+        "https://www.kairosflow.ai/ont/mmt/party#TransportParty",
+    ): _judgement(
+        "a role-bearing party parent with a transport-operations context; not the durable "
+        "identity. Identifying which hub class is 'the durable identity' is the judgement.",
+    ),
+    (
+        "qualified-role-assignment",
+        "grain_collision",
+        "https://www.kairosflow.ai/ont/dcsa/party#ShippingParty",
+    ): _judgement(
+        "a role-bearing party parent with a container-shipping context; not the durable "
+        "identity. Identifying which hub class is 'the durable identity' is the judgement.",
+    ),
+    (
+        "qualified-role-assignment",
+        "grain_collision",
+        "https://www.kairosflow.ai/ont/imo/party#MaritimeParty",
+    ): _judgement(
+        "a role-bearing party parent with a maritime/regulatory context; not the durable "
+        "identity. Identifying which hub class is 'the durable identity' is the judgement.",
+    ),
+    (
+        "qualified-role-assignment",
+        "grain_collision",
+        "https://www.kairosflow.ai/ont/tic/party#TerminalParty",
+    ): _judgement(
+        "a role-bearing party parent with a terminal-operations context; not the durable "
+        "identity. Identifying which hub class is 'the durable identity' is the judgement.",
+    ),
+    (
+        "qualified-role-assignment",
+        "grain_collision",
+        "https://www.kairosflow.ai/ont/dcsa/locations#PortOfLoading",
+    ): _judgement(
+        "DCSA specialises Location by shipment role; whether a hub's location classes "
+        "materialise roles as places is a modelling judgement.",
+    ),
+    (
+        "qualified-role-assignment",
+        "grain_collision",
+        "https://www.kairosflow.ai/ont/dcsa/locations#PortOfDischarge",
+    ): _judgement(
+        "DCSA specialises Location by shipment role; whether a hub's location classes "
+        "materialise roles as places is a modelling judgement.",
     ),
     # ----------------------------------------------------------------------- temporal-quartet
     ("temporal-quartet", "naming_convention", "requested"): _judgement(
