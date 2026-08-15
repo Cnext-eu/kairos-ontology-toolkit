@@ -46,9 +46,12 @@ def get_sync_pairs() -> list[tuple[Path, Path]]:
                 dest = SCAFFOLD_SKILLS / skill_dir.name / "SKILL.md"
                 pairs.append((skill_file, dest))
             # Exemplar artefacts (TTL, SHACL, etc.) shipped alongside the skill
-            for extra in sorted(skill_dir.glob("*-domain.ttl")) + sorted(
-                skill_dir.glob("*-domain.shacl.ttl")
-            ):
+            extra_globs = [
+                *skill_dir.glob("*-domain.ttl"),
+                *skill_dir.glob("*-domain.shacl.ttl"),
+                *skill_dir.glob("exemplar-binding.yaml"),
+            ]
+            for extra in sorted(extra_globs):
                 dest = SCAFFOLD_SKILLS / skill_dir.name / extra.name
                 pairs.append((extra, dest))
 

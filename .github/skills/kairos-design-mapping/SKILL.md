@@ -301,6 +301,11 @@ and capabilities and requires deterministic bounded expressions.
 Raw SQL and technical-cleanup functions such as `cast`, `trim`, `replace`, and
 `json-*` are not binding expressions.
 
+Null policy is compiler-inferred from expression structure and target range; it
+must not be authored at field level. The `null` literal and kind-specific
+operators (`is-null`, `coalesce`, `nullif`) are the only null-control levers.
+Do not add a `nullPolicy` key to a `fields:` entry.
+
 ## Binding loop
 
 ### 1. Select one entity scope
@@ -332,6 +337,14 @@ Keep these concepts separate:
 
 Do not infer identity solely from a column name. Require evidence for uniqueness
 and nullability, and add focused `not-null`/`unique` checks when supported.
+
+`technicalFields:` with `purpose: identity` materializes a source column into
+Silver output for identity use without asserting an ontology property. Use it
+when a key column must reach Silver but has no canonical property (e.g. a
+composite key component, or a surrogate FK). Do not double-map: a column that
+appears in both `fields:` (as a `property:`) and `technicalFields:` raises
+`identity.ambiguous-key-mapping` at compile time. See `exemplar-binding.yaml`
+for a worked example with a composite grain and `purpose: identity`.
 
 ### 4. Propose fields in bounded batches
 

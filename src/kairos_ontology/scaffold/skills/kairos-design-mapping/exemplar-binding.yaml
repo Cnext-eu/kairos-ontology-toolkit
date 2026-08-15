@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+# Worked exemplar for kairos-design-mapping. Demonstrates: composite grain,
+# technicalFields with purpose: identity, a case expression with boolean
+# literals, and a cross-domain externalReference relationship.
+# Not intended to compile against a real hub — it is a teaching artefact.
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: erp-order-line-to-commercialsales
+  domain: commercial
+source:
+  relation: erp.order_lines
+target:
+  class: commercial:SalesLine
+grain:
+  columns: [order_id, line_number]
+identity:
+  strategy: source-natural
+  sourceKey: [order_id, line_number]
+load:
+  mode: full-refresh
+fields:
+  - property: commercial:orderId
+    expression: order_id
+  - property: commercial:lineNumber
+    expression: line_number
+  - property: commercial:quantity
+    expression: qty
+  - property: commercial:unitPrice
+    expression: unit_price
+  # Boolean literal in a case expression. YAML true/false normalises to the
+  # XSD canonical lexical form "true"/"false", not Python "True"/"False".
+  - property: commercial:isCancelled
+    expression:
+      case:
+        - when: { op: equal, args: [{ column: status }, { literal: "CANCELLED" }] }
+          then: { literal: true, datatype: boolean }
+      else: { literal: false, datatype: boolean }
+  - property: commercial:netAmount
+    expression:
+      op: multiply
+      args:
+        - { column: qty }
+        - { column: unit_price }
+  # Foreign-key column mapped as a scalar field (DD-107-source-ownership):
+  # the join-local column must ALSO appear in fields: or technicalFields:.
+  - property: commercial:customerRef
+    expression: customer_id
+technicalFields:
+  - name: customer_key
+    expression: customer_id
+    type: string
+    nullable: false
+    purpose: identity
+relationships:
+  - property: commercial:placedBy
+    target: party:Customer
+    externalReference:
+      name: customer
+      domain: party
+      key:
+        - column: customer_id
+          type: string
+    join: [{ local: customer_id, foreign: customer_id }]
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: error
+    ambiguousParent: error
+quality:
+  - kind: not-null
+    columns: [order_id, line_number]
+  - kind: unique
+    columns: [order_id, line_number]
