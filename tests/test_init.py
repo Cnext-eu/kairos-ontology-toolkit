@@ -385,7 +385,8 @@ def test_new_repo_creates_full_structure(tmp_path):
     _assert_v5_hub_contract(repo / "ontology-hub")
     assert (repo / "ontology-hub" / "integration" / "transforms" / "dbt" / "README.md").is_file()
     config = (repo / "ontology-hub" / "kairos.yaml").read_text(encoding="utf-8")
-    assert config == "version: 5\nname: contoso-ontology-hub\nadapter: fabric\n"
+    assert config.startswith("version: 5\nname: contoso-ontology-hub\nadapter: fabric\n")
+    assert "modes_served" in config  # documented as a commented template field
 
     # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root
     assert (repo / "ontology-hub" / "businessdiscovery").is_dir()

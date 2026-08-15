@@ -2166,10 +2166,18 @@ def conformance_judgments_template(
     ``label``/``tier`` are pre-filled from the catalog and should not be edited; ``build``
     also derives them itself when a concept's entry omits them (issue #410), so they may be
     deleted from an entry instead of copied by hand.
+
+    Per-outcome conditional fields (issue #461): the template pre-stubs
+    ``deviation_reason`` and ``rename_to`` as null so they are discoverable before
+    ``build`` fails. Set ``deviation_reason`` to a non-empty string when ``outcome``
+    is ``deviates``. Set ``rename_to`` to a non-empty string when ``outcome`` is
+    ``conforms-with-rename``. Both fields are only valid on their respective outcomes
+    — a stray ``rename_to`` on ``conforms`` or a stray ``deviation_reason`` on
+    ``conforms`` will fail validation.
     """
     from ..core.archetype_loader import ArchetypeError, load_archetype, load_outcome_codes
     from ..core.authoring_scaffolds import AuthoringScaffoldError, write_text
-    from ..core.hub_utils import find_hub_root
+    from ..core.hub_utils import find_hub_root, strip_doubled_hub_segment
 
     root = _resolve_conformance_root(refmodels_root)
     try:
@@ -2193,6 +2201,13 @@ def conformance_judgments_template(
             "needs_confirmation": False,
             "decided_by": "ai",
             "likely_domains": [],
+            # Pre-stub the per-outcome conditional fields (issue #461) so authors
+            # discover them before `build` fails: set deviation_reason when outcome is
+            # "deviates"; set rename_to when outcome is "conforms-with-rename". Both
+            # are null here — present-but-null makes the field discoverable without
+            # triggering the "present-but-wrong" validation in build/validate.
+            "deviation_reason": None,
+            "rename_to": None,
         }
         for concept in archetype.core_concepts
     ]
@@ -2234,6 +2249,8 @@ def conformance_judgments_template(
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
     out = Path(output_path)
+    if hub_root and not out.is_absolute():
+        out = strip_doubled_hub_segment(out, hub_root)
     destination = out if out.is_absolute() else ((hub_root / out) if hub_root else out)
     try:
         write_text(destination, content, overwrite=overwrite)

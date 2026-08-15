@@ -253,3 +253,78 @@ def test_decision_list_prints_created_ids(tmp_path, monkeypatch):
     assert "HUB-DD-20260101-one" in result.output
     assert "HUB-DD-20260101-two" in result.output
     assert validate_decision_bundle(hub / "decisions").errors == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #466 — citation path resolution: hub-dir-prefixed repo-root-relative
+# citations must resolve, and unresolved citations must include the base in the
+# warning message.
+# ---------------------------------------------------------------------------
+
+
+def _make_managed_repo(root: Path) -> Path:
+    """Create a hub inside a repo root with a managed marker so
+    ``resolve_repo_root`` returns the repo root, not the hub itself."""
+    (root / ".github").mkdir(parents=True)
+    (root / ".github" / "copilot-instructions.md").write_text(
+        "<!-- kairos-ontology-toolkit:managed -->", encoding="utf-8"
+    )
+    return _make_hub(root)
+
+
+def test_decision_citation_hub_dir_prefixed_resolves_from_repo_root(tmp_path, monkeypatch):
+    """A source citation like 'ontology-hub/integration/sources/x.pdf' must resolve
+    when the file exists at hub_root/integration/sources/x.pdf (#466)."""
+    hub = _make_managed_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    # Create a source file inside the hub.
+    source_file = hub / "integration" / "sources" / "x.pdf"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("dummy", encoding="utf-8")
+
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        [
+            "decision", "new",
+            "--id", "HUB-DD-20260101-cite",
+            "--title", "Cite",
+            "--source", "ontology-hub/integration/sources/x.pdf",
+        ],
+    )
+    decisions_path = hub / "decisions"
+    records = _decision_records(decisions_path)
+    assert len(records) == 1
+
+    bundle = validate_decision_bundle(decisions_path)
+    # No unresolved_source warning for the hub-dir-prefixed citation.
+    assert not any(d.code == "unresolved_source" for d in bundle.diagnostics)
+
+
+def test_decision_unresolved_citation_warning_includes_base(tmp_path, monkeypatch):
+    """When a local citation does not resolve, the warning must include the base
+    path so the user can diagnose the issue (#466)."""
+    hub = _make_managed_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    runner = CliRunner()
+    runner.invoke(
+        cli,
+        [
+            "decision", "new",
+            "--id", "HUB-DD-20260101-bad",
+            "--title", "Bad Cite",
+            "--source", "integration/sources/nonexistent.pdf",
+        ],
+    )
+    decisions_path = hub / "decisions"
+    records = _decision_records(decisions_path)
+    assert len(records) == 1
+
+    bundle = validate_decision_bundle(decisions_path)
+    unresolved = [d for d in bundle.diagnostics if d.code == "unresolved_source"]
+    assert len(unresolved) == 1
+    # The warning must include the base path.
+    assert "base:" in unresolved[0].message
+    assert "ontology-hub" in unresolved[0].message

@@ -601,7 +601,168 @@ class TestNamingConventions:
         assert payload["naming"]["failed"] == 1
 
 
-class TestObjectPropertyDeferredRange:
+class TestPhaseDAuthoringLints:
+    """Phase D: authoring-quality warning lints (issues #474, #475 items 1–2).
+
+    Three new warning-level checks added to ``validate_naming_conversations``:
+    altLabel whitespace, ``#`` inside triple-quoted strings, and source-system
+    name leakage in ``rdfs:comment``.
+    """
+
+    _BASE_TTL = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    owl:versionInfo "1.0" .
+
+:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A customer entity" .
+"""
+
+    # ── D1: skos:altLabel whitespace (#475 item 2) ─────────────────────────
+
+    def test_alt_label_whitespace_warns(self):
+        """A skos:altLabel with leading/trailing whitespace produces a warning."""
+        content = (
+            self._BASE_TTL
+            + """
+:Customer skos:altLabel "  Spaced Customer  " .
+"""
+        )
+        result = validate_naming_conventions(content)
+        assert result["passed"] is True, result["errors"]
+        ws_warnings = [w for w in result["warnings"] if w["code"] == "alt_label_whitespace"]
+        assert len(ws_warnings) == 1, result["warnings"]
+        assert ws_warnings[0]["level"] == "warning"
+        assert "Spaced Customer" in ws_warnings[0]["message"]
+
+    def test_alt_label_no_whitespace_does_not_warn(self):
+        """A clean skos:altLabel produces no whitespace warning."""
+        content = (
+            self._BASE_TTL
+            + """
+:Customer skos:altLabel "Clean Customer" .
+"""
+        )
+        result = validate_naming_conventions(content)
+        ws_warnings = [w for w in result["warnings"] if w["code"] == "alt_label_whitespace"]
+        assert ws_warnings == [], result["warnings"]
+
+    # ── D2: # inside triple-quoted strings (#475 item 1) ───────────────────
+
+    def test_hash_inside_triple_quoted_warns(self):
+        """A line starting with # inside a triple-quoted string produces a warning."""
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    rdfs:comment \"\"\"A customer entity.
+# This looks like a comment but is part of the string.\"\"\" ;
+    owl:versionInfo "1.0" .
+"""
+        result = validate_naming_conventions(content)
+        assert result["passed"] is True, result["errors"]
+        hash_warnings = [w for w in result["warnings"] if w["code"] == "hash_inside_triple_quoted_string"]
+        assert len(hash_warnings) == 1, result["warnings"]
+        assert hash_warnings[0]["level"] == "warning"
+
+    def test_no_hash_in_triple_quoted_does_not_warn(self):
+        """A triple-quoted string without # lines produces no hash warning."""
+        content = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix : <http://kairos.example/ontology/> .
+
+:CustomerOntology a owl:Ontology ;
+    rdfs:label "Customer Ontology" ;
+    rdfs:comment \"\"\"A customer entity. No hash lines here.\"\"\" ;
+    owl:versionInfo "1.0" .
+"""
+        result = validate_naming_conventions(content)
+        hash_warnings = [w for w in result["warnings"] if w["code"] == "hash_inside_triple_quoted_string"]
+        assert hash_warnings == [], result["warnings"]
+
+    # ── D3: Source-system name leakage (#474) ──────────────────────────────
+
+    def test_source_system_name_in_comment_warns(self):
+        """A known source-system name in rdfs:comment produces a warning."""
+        content = (
+            self._BASE_TTL
+            + """
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Name" ;
+    rdfs:comment "The customer name from SAP." .
+"""
+        )
+        result = validate_naming_conventions(content)
+        assert result["passed"] is True, result["errors"]
+        leak_warnings = [w for w in result["warnings"] if w["code"] == "source_system_name_in_comment"]
+        assert len(leak_warnings) == 1, result["warnings"]
+        assert "SAP" in leak_warnings[0]["message"]
+
+    def test_no_source_system_name_does_not_warn(self):
+        """A comment without source-system names produces no leakage warning."""
+        content = (
+            self._BASE_TTL
+            + """
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Name" ;
+    rdfs:comment "The name of the customer." .
+"""
+        )
+        result = validate_naming_conventions(content)
+        leak_warnings = [w for w in result["warnings"] if w["code"] == "source_system_name_in_comment"]
+        assert leak_warnings == [], result["warnings"]
+
+    def test_source_system_names_configurable(self):
+        """Custom source_system_names parameter is used instead of defaults."""
+        content = (
+            self._BASE_TTL
+            + """
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Name" ;
+    rdfs:comment "Name from MyCustomERP." .
+"""
+        )
+        # Default names won't match "MyCustomERP"; custom list will.
+        result_default = validate_naming_conventions(content)
+        assert [w for w in result_default["warnings"] if w["code"] == "source_system_name_in_comment"] == []
+
+        result_custom = validate_naming_conventions(content, source_system_names=("MyCustomERP",))
+        leak = [w for w in result_custom["warnings"] if w["code"] == "source_system_name_in_comment"]
+        assert len(leak) == 1, result_custom["warnings"]
+        assert "MyCustomERP" in leak[0]["message"]
+
+    def test_source_system_names_empty_tuple_disables(self):
+        """An empty tuple disables the check entirely."""
+        content = (
+            self._BASE_TTL
+            + """
+:customerName a owl:DatatypeProperty ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "Customer Name" ;
+    rdfs:comment "The customer name from SAP." .
+"""
+        )
+        result = validate_naming_conventions(content, source_system_names=())
+        leak = [w for w in result["warnings"] if w["code"] == "source_system_name_in_comment"]
+        assert leak == [], result["warnings"]
     """DD-133 §7: an object property may defer its ``rdfs:range``.
 
     ``compile`` supports a ``relationships:`` entry whose object property declares no
@@ -1916,3 +2077,202 @@ class TestMasterImportSyncWarning:
         markdown = markdown_report_path.read_text(encoding="utf-8")
         assert "Imports warnings" in markdown
         assert "does not import" in markdown
+
+
+# ---------------------------------------------------------------------------
+# Issue #471 (E7-modes-served): modes_served filtering through run_validation
+# ---------------------------------------------------------------------------
+
+def test_validate_managed_imports_with_modes_served_skips_mode_specific(tmp_path):
+    """validate_managed_imports honors modes_served and skips mode-specific
+    imports whose mode is not served."""
+    from kairos_ontology.core.reference_modules import (
+        build_reference_module_context,
+        load_accelerator_module_config,
+    )
+    from kairos_ontology.core.validator import validate_managed_imports
+
+    ref_models = tmp_path / "reference-models"
+    blueprint = ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint"
+    blueprint.mkdir(parents=True)
+
+    config_path = blueprint / "data-domains.yaml"
+    module_iri = "https://example.org/reference/orders"
+    term_ns = module_iri + "#"
+
+    (ref_models / "modules").mkdir()
+    (ref_models / "modules" / "orders.ttl").write_text(
+        f"""\
+@prefix ex: <{term_ns}> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<{module_iri}> a owl:Ontology ; owl:versionInfo "2.1.0" .
+ex:Order a owl:Class .
+ex:SpecialOrder a owl:Class ; rdfs:subClassOf ex:Order .
+""",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        f"""\
+schema_version: "2.0"
+module_profiles:
+  - id: orders
+    ontology_iri: {module_iri}
+    catalog_uri: {term_ns}
+    version_pin: 2.1.0
+    term_namespaces: [{term_ns}]
+    root_classes: [{term_ns}Order]
+groups:
+  - id: operations
+    domains:
+      - id: orders
+        mode: interactive
+        imports:
+          - profile: orders
+""",
+        encoding="utf-8",
+    )
+    catalog = ref_models / "catalog-v001.xml"
+    catalog.write_text(
+        f"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="{term_ns}" uri="modules/orders.ttl"/>
+  <uri name="{module_iri}" uri="modules/orders.ttl"/>
+</catalog>
+""",
+        encoding="utf-8",
+    )
+
+    context = build_reference_module_context(
+        ref_models, catalog_path=catalog, accelerator="generic"
+    )
+
+    ontologies_dir = tmp_path / "ontologies"
+    ontologies_dir.mkdir()
+    ontology_file = ontologies_dir / "orders.ttl"
+    ontology_file.write_text(
+        f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://example.org/hub/orders> a owl:Ontology ;
+    rdfs:label "Orders"@en .
+""",
+        encoding="utf-8",
+    )
+
+    # modes_served=None (default): import IS required and missing → error
+    diagnostics_all = validate_managed_imports(
+        ontology_file, module_context=context, modes_served=None
+    )
+    missing_all = [d for d in diagnostics_all if d.code == "missing_managed_import"]
+    assert missing_all
+
+    # modes_served=["dataplatform"]: import is skipped → no missing_managed_import
+    diagnostics_filtered = validate_managed_imports(
+        ontology_file, module_context=context, modes_served=["dataplatform"]
+    )
+    missing_filtered = [d for d in diagnostics_filtered if d.code == "missing_managed_import"]
+    assert missing_filtered == []
+
+    # modes_served=["interactive"]: import IS included → missing_managed_import present
+    diagnostics_match = validate_managed_imports(
+        ontology_file, module_context=context, modes_served=["interactive"]
+    )
+    missing_match = [d for d in diagnostics_match if d.code == "missing_managed_import"]
+    assert missing_match
+
+
+def test_run_validation_modes_served_filters_mode_specific(tmp_path):
+    """run_validation with modes_served skips mode-specific managed imports."""
+    from kairos_ontology.core.reference_modules import build_reference_module_context
+
+    ref_models = tmp_path / "reference-models"
+    blueprint = ref_models / "accelerator-packs" / "generic" / "client-hub-blueprint"
+    blueprint.mkdir(parents=True)
+
+    config_path = blueprint / "data-domains.yaml"
+    module_iri = "https://example.org/reference/orders"
+    term_ns = module_iri + "#"
+
+    (ref_models / "modules").mkdir()
+    (ref_models / "modules" / "orders.ttl").write_text(
+        f"""\
+@prefix ex: <{term_ns}> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+<{module_iri}> a owl:Ontology ; owl:versionInfo "2.1.0" .
+ex:Order a owl:Class .
+""",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        f"""\
+module_profiles:
+  - id: orders
+    ontology_iri: {module_iri}
+    catalog_uri: {term_ns}
+    version_pin: 2.1.0
+    term_namespaces: [{term_ns}]
+    root_classes: [{term_ns}Order]
+groups:
+  - id: operations
+    domains:
+      - id: orders
+        mode: interactive
+        imports:
+          - profile: orders
+""",
+        encoding="utf-8",
+    )
+    catalog = ref_models / "catalog-v001.xml"
+    catalog.write_text(
+        f"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="{term_ns}" uri="modules/orders.ttl"/>
+  <uri name="{module_iri}" uri="modules/orders.ttl"/>
+</catalog>
+""",
+        encoding="utf-8",
+    )
+
+    ontologies_dir = tmp_path / "ontologies"
+    ontologies_dir.mkdir()
+    (ontologies_dir / "orders.ttl").write_text(
+        f"""\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://example.org/hub/orders> a owl:Ontology ;
+    rdfs:label "Orders"@en ;
+    rdfs:comment "Orders domain."@en ;
+    owl:versionInfo "0.1.0" .
+""",
+        encoding="utf-8",
+    )
+
+    # Without modes_served: the import is required and missing → validation fails
+    with pytest.raises(SystemExit):
+        run_validation(
+            ontologies_path=ontologies_dir,
+            shapes_path=tmp_path / "shapes",
+            catalog_path=catalog,
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            ref_models_dir=ref_models,
+            accelerator="generic",
+            modes_served=None,
+        )
+
+    # With modes_served=["dataplatform"]: the import is skipped → validation passes
+    run_validation(
+        ontologies_path=ontologies_dir,
+        shapes_path=tmp_path / "shapes",
+        catalog_path=catalog,
+        do_syntax=True,
+        do_shacl=False,
+        do_consistency=False,
+        ref_models_dir=ref_models,
+        accelerator="generic",
+        modes_served=["dataplatform"],
+    )

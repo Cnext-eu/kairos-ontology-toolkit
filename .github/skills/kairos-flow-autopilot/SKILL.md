@@ -100,6 +100,12 @@ raises where the escalation goes:
   multi-source merge-vs-single-source decision made during Stage 2 or 3 rather than
   Stage 4 — escalates on the same grounds, since DD-088's conditions describe the
   kind of decision, not the specific stage it happens to occur in.
+- **Archetype selection is a blocking stop-condition.** The autopilot must present
+  the selected archetype and wait for explicit human confirmation before generating
+  the conformance template (`discovery-conformance judgments-template`). Archetype
+  choice determines the entire conformance expectation surface; an autopilot that
+  picks one silently and proceeds is making a policy call it has no authority to
+  make without escalation.
 - **A real toolkit blocker with no known workaround.** Report it plainly (this may
   still warrant a toolkit issue — file it, per `kairos-toolkit-dogfood`'s findings
   discipline, but do not open a fix-implementation side-quest inside an autopilot
@@ -168,6 +174,17 @@ domain in turn:
    tell which domains had judgment calls and which did not.
 3. **`decision sync-index` run** — the Decision Log index is current after the
    last domain's decisions are recorded.
+4. **Per-domain validate-then-register** — author and validate one domain at a
+   time. Do not batch-generate all domain TTLs in a single pass; each domain must
+   pass `validate` individually before the next is authored. This catches naming,
+   SHACL, and import errors early instead of debugging a multi-domain failure.
+5. **`suggest-shapes` run** — run `kairos-ontology suggest-shapes` for each
+   domain and review the advisory shapes. Promote any that protect a material
+   code list, required identifier, or role cardinality into `model/shapes/`.
+6. **Governance SHACL** — verify at least one governance SHACL shape file exists
+   per domain with material code lists: closed code lists (`sh:in`), required
+   identifiers (`sh:minCount`), and role cardinality constraints. A domain with
+   no governance shapes is a domain whose constraints cannot be enforced downstream.
 
 ### Upfront domain mapping (Stage 2→3 boundary)
 

@@ -663,6 +663,28 @@ def test_judgments_template_unfilled_fields_are_scaffold_placeholders(refroot):
         assert not is_scaffold_placeholder_text(concept["tier"])
 
 
+def test_judgments_template_prestubs_conditional_fields_as_null(refroot):
+    """Issue #461: the template must pre-stub ``deviation_reason`` and ``rename_to``
+    as null so authors discover them before ``build`` fails on a missing required field."""
+    res = _run(
+        [
+            "discovery-conformance",
+            "judgments-template",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+        ]
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.stdout)
+    for concept in payload["core_concepts"]:
+        assert "deviation_reason" in concept
+        assert concept["deviation_reason"] is None
+        assert "rename_to" in concept
+        assert concept["rename_to"] is None
+
+
 def test_judgments_template_output_refuses_to_clobber_without_overwrite(tmp_path, refroot):
     destination = tmp_path / "judgments.yaml"
     destination.write_text("pre-existing content\n", encoding="utf-8")
@@ -1076,3 +1098,48 @@ def test_summarize_malformed_judgments_file_exits_two(tmp_path):
     )
     assert res.exit_code == 2
     assert "mapping" in res.stderr
+
+
+# ---------------------------------------------------------------------------
+# Issue #462 — judgments-template --output path doubling when run from repo root.
+# When the user types `--output ontology-hub/integration/discovery/x.yaml` from
+# the repo root, the code joins with hub_root, producing ...
+# /ontology-hub/ontology-hub/integration/... — the fix strips the doubled segment.
+# ---------------------------------------------------------------------------
+
+
+def test_judgments_template_output_strips_doubled_hub_segment(tmp_path, monkeypatch, refroot):
+    """Running from repo root with a hub-dir-prefixed --output must not double (#462)."""
+    repo_root = tmp_path / "cldn21-ontology-hub"
+    hub = repo_root / "ontology-hub"
+    (hub / "model" / "ontologies").mkdir(parents=True)
+    monkeypatch.chdir(repo_root)
+
+    output_arg = "ontology-hub/integration/discovery/conformance-judgments.yaml"
+    res = _run(
+        [
+            "discovery-conformance",
+            "judgments-template",
+            "--archetype",
+            "test-carrier",
+            "--refmodels-root",
+            str(refroot),
+            "--format",
+            "yaml",
+            "--output",
+            output_arg,
+        ]
+    )
+    assert res.exit_code == 0, res.output
+
+    # The file must land at hub / integration / discovery / conformance-judgments.yaml
+    # NOT at hub / ontology-hub / integration / discovery / conformance-judgments.yaml
+    expected = hub / "integration" / "discovery" / "conformance-judgments.yaml"
+    doubled = hub / "ontology-hub" / "integration" / "discovery" / "conformance-judgments.yaml"
+
+    assert expected.is_file(), f"Expected output at {expected}, not found"
+    assert not doubled.exists(), f"Path doubled: {doubled} should not exist"
+
+    # Content must be valid YAML
+    content = expected.read_text(encoding="utf-8")
+    yaml.safe_load(content)

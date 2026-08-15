@@ -205,6 +205,7 @@ def validate(
 ):
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan, DDD overlays)."""
     from ..core.hub_utils import find_hub_root, publish_root
+    from ..core.hub_inspection import configured_modes_served
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
@@ -348,6 +349,7 @@ def validate(
         markdown_report_path=markdown_report_path,
         decisions_path=decisions_path,
         gdpr_warnings=gdpr_warning_count,
+        modes_served=configured_modes_served(effective_hub_root),
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through

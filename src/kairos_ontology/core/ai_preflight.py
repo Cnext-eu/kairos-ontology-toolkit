@@ -140,17 +140,15 @@ class AIPreflightReport:
 def _probe_client(config, *, timeout_s: float = 10.0) -> None:
     """Attempt a lightweight reachability probe against the provider endpoint.
 
-    Imported lazily so tests can monkey-patch this function to raise (or no-op).
+    Routes through :func:`_create_client_from_config` so the Foundry provider
+    uses the same SDK path as normal operation (issue #463). Imported lazily so
+    tests can monkey-patch this function to raise (or no-op).
     Raises :class:`Unreachable` on any failure.
     """
     try:
-        from openai import OpenAI
+        from kairos_ontology.core.ai_provider import _create_client_from_config
 
-        client = OpenAI(
-            base_url=config.endpoint,
-            api_key=config.api_key or "none",
-            timeout=timeout_s,
-        )
+        client = _create_client_from_config(config)
         # models.list() is the cheapest authenticated call.
         client.models.list()
     except Exception as exc:

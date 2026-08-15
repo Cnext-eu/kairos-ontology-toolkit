@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any, Optional
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
+
+# SKOS namespace (rdflib does not ship a built-in SKOS namespace constant).
+SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
 from pyshacl import validate as shacl_validate
 import json
 
@@ -593,9 +596,131 @@ def _local_name(term_uri: str) -> str:
     return term_uri.rsplit("/", 1)[-1]
 
 
+# ── Phase D authoring-quality lints (issues #474, #475) ──────────────────────
+
+# Default source-system name patterns to look for in rdfs:comment strings. These are
+# common source-system identifiers that should not leak into canonical ontology
+# comments. Configurable via the ``source_system_names`` parameter on
+# :func:`validate_naming_conventions`.
+_DEFAULT_SOURCE_SYSTEM_NAMES: tuple[str, ...] = (
+    "SAP",
+    "Salesforce",
+    "Dynamics",
+    "Oracle",
+    "Workday",
+    "ServiceNow",
+    "NetSuite",
+    "coupa",
+    "JDE",
+    "E1",
+    "Baan",
+    "Sage",
+)
+
+# Regex for triple-quoted strings in Turtle (``"""..."""``). Non-greedy dot-all so each
+# block is one match. We then scan inside for lines starting with ``#``.
+_TRIPLE_QUOTED_RE = re.compile(r'"""(.*?)"""', re.DOTALL)
+# A line that starts with ``#`` (optional leading whitespace) inside a triple-quoted
+# string is likely a comment line that Turtle will include verbatim in the literal
+# value, which is almost never what the author intended.
+_HASH_LINE_RE = re.compile(r"^\s*#", re.MULTILINE)
+
+
+def _check_alt_label_whitespace(
+    graph: Graph,
+    warnings: list["NamingDiagnostic"],
+) -> None:
+    """Issue #475 item 2: warn when an ``skos:altLabel`` has leading/trailing space."""
+    for subj, obj in graph.subject_objects(SKOS.altLabel):
+        if not isinstance(obj, str):
+            continue
+        label = str(obj)
+        if label != label.strip():
+            warnings.append(
+                NamingDiagnostic(
+                    level="warning",
+                    code="alt_label_whitespace",
+                    message=(
+                        f"skos:altLabel '{label}' for {subj} has leading or trailing "
+                        "whitespace. Strip it so the label does not silently break "
+                        "string-equality or SKOS exact-match checks."
+                    ),
+                    term_uri=str(subj),
+                )
+            )
+
+
+def _check_hash_in_triple_quoted(
+    ontology_content: str,
+    warnings: list["NamingDiagnostic"],
+) -> None:
+    """Issue #475 item 1: warn when a line starting with ``#`` appears inside a
+    triple-quoted string literal (``\"\"\"...\"\"\"``).
+
+    Turtle treats everything inside a triple-quoted literal as part of the string
+    value, so a line that *looks* like a comment is actually included in the
+    ``rdfs:comment``/``rdfs:label`` text the consumer receives.
+    """
+    for match in _TRIPLE_QUOTED_RE.finditer(ontology_content):
+        block = match.group(1)
+        if _HASH_LINE_RE.search(block):
+            snippet = block.strip().split("\n")[0][:80]
+            warnings.append(
+                NamingDiagnostic(
+                    level="warning",
+                    code="hash_inside_triple_quoted_string",
+                    message=(
+                        "A line starting with '#' appears inside a triple-quoted string "
+                        f"literal (\"\"\"...\"\"\"). Turtle includes it verbatim in the "
+                        f"string value, not as a comment: '{snippet}...'. Move the "
+                        "comment outside the string or remove it."
+                    ),
+                )
+            )
+
+
+def _check_source_system_names_in_comments(
+    graph: Graph,
+    warnings: list["NamingDiagnostic"],
+    source_system_names: tuple[str, ...] | None,
+) -> None:
+    """Issue #474: warn when a known source-system name appears in an ``rdfs:comment``
+    in the canonical ontology.
+
+    Source-system names belong in the source TTL and the EntityBinding, not in
+    canonical ``rdfs:comment`` strings (design-domain SKILL.md §5: 'Keep source
+    representation details out of the canonical model').
+    """
+    names = source_system_names if source_system_names is not None else _DEFAULT_SOURCE_SYSTEM_NAMES
+    if not names:
+        return
+    # Case-insensitive whole-word matching for each name.
+    name_patterns = [re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE) for name in names]
+    for subj, obj in graph.subject_objects(RDFS.comment):
+        if not isinstance(obj, str):
+            continue
+        comment_text = str(obj)
+        found = sorted({names[i] for i, p in enumerate(name_patterns) if p.search(comment_text)})
+        if found:
+            warnings.append(
+                NamingDiagnostic(
+                    level="warning",
+                    code="source_system_name_in_comment",
+                    message=(
+                        f"rdfs:comment for {subj} contains source-system name(s): "
+                        f"{', '.join(found)}. Keep source representation details out of "
+                        "the canonical model (design-domain SKILL.md §5). Reference the "
+                        "source system in the EntityBinding or source TTL instead."
+                    ),
+                    term_uri=str(subj),
+                )
+            )
+
+
 def validate_naming_conventions(
     ontology_content: str,
     temporal_quartet_synonym_rule: dict | None = None,
+    source_system_names: tuple[str, ...] | None = None,
 ) -> dict:
     """Check ontology naming and annotation conventions for one domain file.
 
@@ -646,6 +771,17 @@ def validate_naming_conventions(
         contains a whole banned synonym token (warning) — see
         :func:`_check_temporal_quartet_synonyms`. ``None`` (the default)
         skips this check entirely; it is never on by default.
+
+    - (issue #475 item 2) ``skos:altLabel`` with leading/trailing whitespace
+      (warning);
+    - (issue #475 item 1) a line starting with ``#`` inside a triple-quoted
+      string literal (warning) — Turtle includes it verbatim in the string
+      value, not as a comment;
+    - (issue #474) a known source-system name pattern in an ``rdfs:comment``
+      (warning) — source-system names belong in source TTL / EntityBindings,
+      not canonical comments.  The pattern list defaults to
+      :data:`_DEFAULT_SOURCE_SYSTEM_NAMES` and can be overridden via the
+      ``source_system_names`` parameter (pass an empty tuple to disable).
 
     Not checked here (requires judgment, stays in the design skill's prose):
     whether a class is an accidental reference-model specialization, and
@@ -849,6 +985,11 @@ def validate_naming_conventions(
             graph, datatype_property_uris, temporal_quartet_synonym_rule, warnings
         )
 
+    # Phase D authoring-quality lints (issues #474, #475).
+    _check_alt_label_whitespace(graph, warnings)
+    _check_hash_in_triple_quoted(ontology_content, warnings)
+    _check_source_system_names_in_comments(graph, warnings, source_system_names)
+
     return {
         "passed": len(errors) == 0,
         "errors": [e.to_dict() for e in errors],
@@ -861,6 +1002,7 @@ def validate_managed_imports(
     *,
     domain: str | None = None,
     module_context: ReferenceModuleContext | None = None,
+    modes_served: list[str] | None = None,
 ) -> list[ModuleDiagnostic]:
     """Validate configured and authored managed imports."""
     graph = Graph()
@@ -873,6 +1015,7 @@ def validate_managed_imports(
         domain=resolved_domain,
         context=module_context,
         ontology_graph=graph,
+        modes_served=modes_served,
     )
     return list(plan.diagnostics)
 
@@ -1079,6 +1222,7 @@ def run_validation(
     markdown_report_path: Optional[Path] = None,
     decisions_path: Optional[Path] = None,
     gdpr_warnings: int = 0,
+    modes_served: Optional[list[str]] = None,
 ):
     """Run validation pipeline.
 
@@ -1233,6 +1377,7 @@ def run_validation(
                     ontology_file,
                     domain=ontology_file.stem,
                     module_context=module_context,
+                    modes_served=modes_served,
                 )
             except Exception as exc:  # noqa: BLE001
                 results["imports"]["failed"] += 1

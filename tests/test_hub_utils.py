@@ -12,6 +12,8 @@ from kairos_ontology.core.hub_utils import (
     placeholder_fields,
     publish_root,
     resolve_hub_output_dir,
+    strip_doubled_hub_segment,
+    HUB_DIRNAME,
 )
 
 
@@ -27,6 +29,48 @@ class TestPublishRoot:
         """The publish folder name is literal, not derived from the hub folder."""
         hub = Path("/repo/custom-hub-name")
         assert publish_root(hub).name == "ontology-hub-publish"
+
+
+class TestStripDoubledHubSegment:
+    """Tests for strip_doubled_hub_segment() — prevents path doubling (#462, #466)."""
+
+    def test_strips_leading_hub_dirname(self, tmp_path):
+        """A repo-root-relative path starting with 'ontology-hub/' gets the prefix stripped."""
+        result = strip_doubled_hub_segment(
+            Path("ontology-hub/integration/discovery/foo.yaml"), tmp_path
+        )
+        assert result == Path("integration/discovery/foo.yaml")
+
+    def test_strips_leading_hub_dirname_from_string(self, tmp_path):
+        result = strip_doubled_hub_segment(
+            "ontology-hub/integration/discovery/foo.yaml", tmp_path
+        )
+        assert result == Path("integration/discovery/foo.yaml")
+
+    def test_no_strip_when_first_segment_is_not_hub_dirname(self, tmp_path):
+        """A hub-root-relative path (no 'ontology-hub' prefix) is returned as-is."""
+        result = strip_doubled_hub_segment(
+            Path("integration/discovery/foo.yaml"), tmp_path
+        )
+        assert result == Path("integration/discovery/foo.yaml")
+
+    def test_no_strip_for_unrelated_first_segment(self, tmp_path):
+        result = strip_doubled_hub_segment(
+            Path("ontology-reference-models/foo.ttl"), tmp_path
+        )
+        assert result == Path("ontology-reference-models/foo.ttl")
+
+    def test_single_segment_path_unchanged(self, tmp_path):
+        result = strip_doubled_hub_segment(Path("foo.yaml"), tmp_path)
+        assert result == Path("foo.yaml")
+
+    def test_absolute_path_unchanged(self, tmp_path):
+        """Absolute paths should never be modified."""
+        result = strip_doubled_hub_segment(Path("/abs/path/foo.yaml"), tmp_path)
+        assert result == Path("/abs/path/foo.yaml")
+
+    def test_hub_dirname_constant_is_ontology_hub(self):
+        assert HUB_DIRNAME == "ontology-hub"
 
 
 class TestFindHubRoot:

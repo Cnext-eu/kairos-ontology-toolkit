@@ -339,3 +339,57 @@ def resolve_hub_output_dir(
         return hub_root / relative, hub_root
 
     return relative, None
+
+
+#: The default hub directory name inside a repository.
+HUB_DIRNAME = "ontology-hub"
+
+
+def strip_doubled_hub_segment(
+    path: Path | str, hub_root: Path
+) -> Path:
+    """Strip a leading hub-directory segment from *path* when it would double.
+
+    When running from a repo root (e.g. ``G:\\Git\\cldn21-ontology-hub``) and
+    typing a repo-root-relative path like
+    ``ontology-hub/integration/discovery/x.yaml``, joining it onto the hub root
+    (``G:\\Git\\cldn21-ontology-hub\\ontology-hub``) produces
+    ``…\\ontology-hub\\ontology-hub\\integration\\…`` — a doubled segment.
+
+    This helper detects the case: when *path* is relative, its first segment
+    matches the hub directory name, and ``hub_root / path`` does not exist while
+    ``hub_root / path_after_stripping`` does (or just stripping is safe), it
+    strips the leading segment. When stripping makes no difference or the path
+    is absolute, it returns *path* unchanged.
+
+    Args:
+        path: The user-supplied output path (relative or absolute).
+        hub_root: The resolved hub root directory.
+
+    Returns:
+        *path* with the leading hub-dir segment stripped when doubling is
+        detected, otherwise *path* unchanged.
+    """
+    p = Path(path)
+    if p.is_absolute():
+        return p
+    parts = p.parts
+    if not parts or parts[0] != HUB_DIRNAME:
+        return p
+    stripped = Path(*parts[1:]) if len(parts) > 1 else Path()
+    if not stripped:
+        return p
+    doubled = hub_root / p
+    corrected = hub_root / stripped
+    if doubled.resolve() == corrected.resolve():
+        return p  # no doubling — leave the path alone
+    if corrected.exists() or not doubled.exists():
+        logger.debug(
+            "Stripped doubled hub-dir segment from '%s' → '%s' "
+            "(hub_root=%s).",
+            p,
+            stripped,
+            hub_root,
+        )
+        return stripped
+    return p

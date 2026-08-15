@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 from ..core._provenance import provenance_comment
+from ..core.analyse_sources import load_data_domains
 from ..core.catalog_utils import sync_domain_catalog_entry
 from ..core.decision_records import build_index_markdown
 from ..core.hub_utils import publish_root
@@ -51,6 +52,7 @@ def _registration_import_gate(
     refmodels_root: Path,
     catalog_path: Path | None,
     degraded: bool,
+    modes_served: list[str] | None = None,
 ) -> None:
     """Refuse to register a pre-existing, import-incomplete domain (issue #426, DD-155).
 
@@ -110,7 +112,10 @@ def _registration_import_gate(
         if module_context is None:
             return  # no accelerator module config resolvable — nothing to gate on
         diagnostics = validate_managed_imports(
-            ontology_path, domain=domain, module_context=module_context
+            ontology_path,
+            domain=domain,
+            module_context=module_context,
+            modes_served=modes_served,
         )
     except Exception as exc:  # noqa: BLE001 — toolkit-owned failures must not block
         print(
@@ -570,6 +575,8 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
                 and _looks_like_refmodels_root(refmodels_dest)
             )
             if ontology_preexisted and refmodels_available:
+                from ..core.hub_inspection import configured_modes_served
+
                 _registration_import_gate(
                     domain=domain,
                     ontology_path=ontology_dst,
@@ -577,6 +584,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
                     refmodels_root=refmodels_dest,
                     catalog_path=catalog_dst if catalog_dst.is_file() else None,
                     degraded=degraded,
+                    modes_served=configured_modes_served(hub),
                 )
             elif refmodels_available:
                 print(
@@ -1623,3 +1631,528 @@ def init_dataplatform(name, dest, platform, org_override):
     click.echo(
         "   # Configure Fabric secrets and run .github/workflows/deploy-powerbi-semantic-model.yml"
     )
+
+
+# ---------------------------------------------------------------------------
+# scaffold-domain  (issue #469, todo E5-scaffold-domain)
+# ---------------------------------------------------------------------------
+
+_DOMAIN_NAME_PATTERN = re.compile(r"https://([^/]+)/ont/")
+
+
+def _extract_company_domain(hub: Path) -> str | None:
+    """Extract the ``company_domain`` from an existing hub's ontology files.
+
+    Scans ``_master.ttl`` then every other ``.ttl`` under ``model/ontologies/``
+    for the ``https://<company_domain>/ont/`` pattern. Falls back to
+    ``catalog-v001.xml`` if no ontology file yields a match.
+
+    Returns ``None`` when no company domain can be recovered.
+    """
+    ont_dir = hub / "model" / "ontologies"
+
+    # 1. Try _master.ttl first (always present in a well-formed hub).
+    master = ont_dir / "_master.ttl"
+    candidates: list[Path] = []
+    if master.is_file():
+        candidates.append(master)
+
+    # 2. Then every remaining .ttl in the ontologies directory.
+    if ont_dir.is_dir():
+        for ttl in sorted(ont_dir.glob("*.ttl")):
+            if ttl not in candidates:
+                candidates.append(ttl)
+
+    for ttl in candidates:
+        try:
+            text = ttl.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        m = _DOMAIN_NAME_PATTERN.search(text)
+        if m:
+            return m.group(1)
+
+    # 3. Fall back to the XML catalog.
+    catalog = hub / "catalog-v001.xml"
+    if catalog.is_file():
+        try:
+            text = catalog.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        m = _DOMAIN_NAME_PATTERN.search(text)
+        if m:
+            return m.group(1)
+
+    return None
+
+
+def _build_domain_ttl(
+    *,
+    domain: str,
+    label: str,
+    company_domain: str,
+    imports: list[dict[str, str]],
+) -> str:
+    """Generate starter TTL content for a domain ontology (text template, not rdflib).
+
+    Mirrors the ``starter.ttl.template`` convention but injects mandated
+    ``owl:imports`` lines from the accelerator blueprint when available.
+    """
+    lines: list[str] = [
+        f"@prefix : <https://{company_domain}/ont/{domain}#> .",
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .",
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+        "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .",
+        "",
+        f"<https://{company_domain}/ont/{domain}> a owl:Ontology ;",
+        f'    rdfs:label "{label}"@en ;',
+        f'    rdfs:comment "Ontology for the {label} domain"@en ;',
+        '    owl:versionInfo "0.1.0" .',
+    ]
+
+    if imports:
+        iri_to_uri = {}
+        for imp in imports:
+            uri = imp.get("uri")
+            if not uri:
+                continue
+            iri_to_uri[uri] = uri
+
+        if iri_to_uri:
+            lines.append("")
+            lines.append(
+                "## -- Mandated imports from accelerator blueprint data-domains.yaml."
+            )
+            lines.append("## -- Add matching catalog-v001.xml <uri> entries for offline resolution.")
+            ontology_iri = f"<https://{company_domain}/ont/{domain}>"
+            for iri in iri_to_uri:
+                lines.append(f"{ontology_iri} owl:imports <{iri}> .")
+
+    lines.append("")
+    lines.append("## -- Domain classes below.")
+    lines.append("## -- To share base conventions, import the foundation ontology:")
+    lines.append(f"##   owl:imports <https://{company_domain}/ont/_foundation> ;")
+    lines.append("## -- (add a matching catalog-v001.xml <uri> entry so it resolves offline).")
+
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# --ai flag helpers (issue #470, todo E6-ai-flag)
+# ---------------------------------------------------------------------------
+
+
+def _gather_ai_context(hub: Path, domain_slug: str) -> str:
+    """Gather conformance evidence and source-vocabulary context as prompt text.
+
+    Reads the conformance artifact from ``integration/discovery/`` and every source
+    system vocabulary TTL under ``integration/sources/``. Returns a compact human-
+    readable string suitable for inclusion in an LLM prompt. Missing directories or
+    files are gracefully omitted — the caller always produces a valid prompt.
+    """
+    parts: list[str] = []
+
+    # 1. Conformance evidence.
+    conformance_path = hub / "integration" / "discovery" / "core-concepts-conformance.yaml"
+    if conformance_path.is_file():
+        try:
+            from kairos_ontology.core.conformance_artifact import read_artifact
+
+            artifact = read_artifact(conformance_path)
+            concepts = artifact.get("concepts", [])
+            if isinstance(concepts, list) and concepts:
+                lines: list[str] = ["## Confirmed core concepts (from discovery conformance):"]
+                for concept in concepts:
+                    if not isinstance(concept, dict):
+                        continue
+                    likely_domains = concept.get("likely_domains") or []
+                    if likely_domains and domain_slug not in {d.lower() for d in likely_domains if isinstance(d, str)}:
+                        continue
+                    name = concept.get("name") or concept.get("term") or "(unnamed)"
+                    predicate = concept.get("predicate", "")
+                    outcome = concept.get("outcome", "")
+                    rationale = concept.get("rationale", "")
+                    line = f"- {name}"
+                    if predicate:
+                        line += f" ({predicate})"
+                    if outcome:
+                        line += f" — outcome: {outcome}"
+                    if rationale:
+                        line += f" — {rationale}"
+                    lines.append(line)
+                if len(lines) > 1:
+                    parts.append("\n".join(lines))
+        except Exception:
+            pass
+
+    # 2. Source schemas.
+    sources_dir = hub / "integration" / "sources"
+    if sources_dir.is_dir():
+        vocab_files = sorted(sources_dir.rglob("*.vocabulary.ttl"))
+        if vocab_files:
+            schema_parts: list[str] = ["## Source system schemas (from integration/sources/):"]
+            for vf in vocab_files[:10]:
+                try:
+                    text = vf.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                rel = vf.relative_to(hub)
+                # Extract a compact table/column summary from the raw TTL.
+                schema_parts.append(f"### {rel}")
+                # Include the raw TTL but truncated to keep the prompt bounded.
+                snippet = text[:2000]
+                schema_parts.append(f"```turtle\n{snippet}\n```")
+            if len(schema_parts) > 1:
+                parts.append("\n".join(schema_parts))
+
+    return "\n\n".join(parts) if parts else ""
+
+
+def _build_ai_domain_prompt(
+    *,
+    domain: str,
+    label: str,
+    company_domain: str,
+    imports: list[dict[str, str]],
+    context: str,
+) -> str:
+    """Build the prompt sent to the AI provider for domain TTL generation."""
+    import_uris = [imp.get("uri", "") for imp in imports if imp.get("uri")]
+
+    prompt_lines = [
+        f"Generate a complete OWL/Turtle domain ontology for the '{domain}' domain ({label}).",
+        "",
+        "## Ontology conventions (MUST follow):",
+        "- Every ontology declares owl:Ontology, rdfs:label, and owl:versionInfo.",
+        "- Use HTTP(S) namespaces. Classes are PascalCase; properties are camelCase.",
+        "- Every class has a label and comment. Every property has domain, range, and label.",
+        f"- Use the prefix ': <https://{company_domain}/ont/{domain}#> .'",
+        f"- The ontology IRI must be <https://{company_domain}/ont/{domain}>.",
+        "",
+        "## Required prefixes:",
+        f"@prefix : <https://{company_domain}/ont/{domain}#> .",
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .",
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+        "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .",
+        "",
+    ]
+    if import_uris:
+        prompt_lines.append("## Mandated owl:imports (include these IRIs):")
+        for iri in import_uris:
+            prompt_lines.append(f"  <{iri}>")
+        prompt_lines.append("")
+
+    prompt_lines.append("## Instructions:")
+    prompt_lines.append("Generate OWL/Turtle ONLY — no markdown fences, no commentary.")
+    prompt_lines.append("Start with @prefix lines, then the owl:Ontology declaration.")
+    prompt_lines.append("Include at least 2-3 class stubs and 3-5 property stubs derived from")
+    prompt_lines.append("the conformance evidence and source schemas below.")
+    prompt_lines.append("")
+
+    if context:
+        prompt_lines.append(context)
+    else:
+        prompt_lines.append("## Context: No conformance evidence or source schemas found.")
+        prompt_lines.append(f"Generate reasonable class and property stubs for the '{label}' domain.")
+
+    return "\n".join(prompt_lines)
+
+
+def _generate_domain_ttl_with_ai(
+    *,
+    domain: str,
+    label: str,
+    company_domain: str,
+    imports: list[dict[str, str]],
+    hub: Path,
+) -> str | None:
+    """Call the AI provider to generate domain TTL content.
+
+    Returns the generated TTL text (without provenance comment), or ``None`` when
+    the AI call fails or the generated content is not valid Turtle. The caller is
+    responsible for prepending the provenance comment and writing the file.
+    """
+    from kairos_ontology.core.ai_preflight import require_ai_provider
+    from kairos_ontology.core.ai_provider import get_ai_client
+    from kairos_ontology.core._concurrency import call_with_backoff
+
+    # Fail fast if AI is not configured — re-raise so the command can decide.
+    provider_config = require_ai_provider(None, probe=False)
+    model_name = provider_config.model
+
+    context = _gather_ai_context(hub, domain)
+    prompt = _build_ai_domain_prompt(
+        domain=domain,
+        label=label,
+        company_domain=company_domain,
+        imports=imports,
+        context=context,
+    )
+
+    client = get_ai_client()
+
+    try:
+        response = call_with_backoff(
+            lambda: client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert ontologist. You generate valid OWL/Turtle "
+                            "domain ontologies following best practices: classes with labels "
+                            "and comments, properties with domain, range, and labels. You "
+                            "respond with raw Turtle text only — no markdown fences, no JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+            )
+        )
+        raw_content = response.choices[0].message.content
+    except Exception as e:
+        print(f"  ⚠ AI provider call failed: {e}")
+        return None
+
+    if not raw_content or not raw_content.strip():
+        print("  ⚠ AI provider returned empty content.")
+        return None
+
+    # Strip markdown fences if present.
+    text = raw_content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines)
+
+    # Validate that it parses as Turtle.
+    try:
+        from rdflib import Graph
+
+        g = Graph()
+        g.parse(data=text, format="turtle")
+    except Exception as e:
+        print(f"  ⚠ AI-generated TTL failed Turtle parsing: {e}")
+        return None
+
+    return text
+
+
+@click.command(name="scaffold-domain")
+@click.option(
+    "--domain",
+    "domain",
+    required=True,
+    type=str,
+    help='Domain name (e.g. "customer" — becomes the .ttl file stem).',
+)
+@click.option(
+    "--from-blueprint",
+    "accelerator",
+    default=None,
+    type=str,
+    help="Read mandated imports from data-domains.yaml in the named accelerator pack. "
+    "When omitted, a bare starter with no imports is generated.",
+)
+@click.option(
+    "--label",
+    "label",
+    default=None,
+    type=str,
+    help='Human-readable domain label (default: title-cased domain name).',
+)
+@click.option("--force", is_flag=True, help="Overwrite existing .ttl file.")
+@click.option(
+    "--refmodels-root",
+    "refmodels_root",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Override reference-models root (default: auto-detected from installed package).",
+)
+@click.option(
+    "--ai",
+    "use_ai",
+    is_flag=True,
+    default=False,
+    help="Use the configured AI provider to generate domain class/property stubs "
+    "from conformance evidence and source schemas.",
+)
+def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
+    """Scaffold a new domain ontology in an existing hub (issue #469)."""
+    # 1. Detect hub root from CWD (same logic as _detect_hub_context).
+    cwd = Path.cwd()
+    hub: Path | None = None
+    for candidate in [cwd / "ontology-hub", cwd]:
+        if (candidate / "model" / "ontologies").is_dir():
+            hub = candidate
+            break
+
+    if hub is None:
+        raise click.ClickException(
+            "Could not detect an ontology-hub in the current directory.\n"
+            "Run this command from the root of a hub repository (containing "
+            "ontology-hub/model/ontologies/)."
+        )
+
+    # 2. Extract company_domain from existing hub files.
+    company_domain = _extract_company_domain(hub)
+    if not company_domain:
+        raise click.ClickException(
+            "Could not determine the company domain from existing hub files.\n"
+            "Ensure ontology-hub/model/ontologies/_master.ttl or catalog-v001.xml "
+            "contains a 'https://<company_domain>/ont/' URI."
+        )
+
+    # 3. Slugify the domain name for the file stem.
+    domain_slug = re.sub(r"[^a-z0-9-]", "-", domain.lower().strip()).strip("-")
+    if not domain_slug:
+        raise click.ClickException(
+            f"Invalid domain name: {domain!r} — must contain at least one "
+            "alphanumeric character."
+        )
+
+    # 4. Determine the label.
+    resolved_label = label if label else domain_slug.replace("-", " ").replace("_", " ").title()
+
+    ont_dir = hub / "model" / "ontologies"
+    ontology_dst = ont_dir / f"{domain_slug}.ttl"
+
+    # 5. Refuse to overwrite an existing file without --force.
+    if ontology_dst.exists() and not force:
+        raise click.ClickException(
+            f"ontology-hub/model/ontologies/{domain_slug}.ttl already exists.\n"
+            "Use --force to overwrite."
+        )
+
+    print("🚀 Scaffolding domain ontology")
+    print(f"   Hub:           {hub}")
+    print(f"   Domain:        {domain_slug}")
+    print(f"   Company domain: {company_domain}")
+    if accelerator:
+        print(f"   Accelerator:   {accelerator}")
+    print()
+
+    # 6. Resolve mandated imports from the blueprint if --from-blueprint is given.
+    imports: list[dict[str, str]] = []
+    if accelerator:
+        if refmodels_root is not None:
+            refmodels_dir: Path | None = Path(refmodels_root)
+        else:
+            refmodels_dir = resolve_refmodels_dir(cwd, hub)
+        if refmodels_dir is None or not refmodels_dir.is_dir():
+            raise click.ClickException(
+                f"Could not resolve reference-models directory for accelerator "
+                f"'{accelerator}'.\n"
+                "Pass --refmodels-root <path> pointing at a directory containing "
+                "accelerator-packs/<name>/client-hub-blueprint/data-domains.yaml."
+            )
+        data_domains = load_data_domains(refmodels_dir, accelerator)
+        if not data_domains:
+            raise click.ClickException(
+                f"No data-domains.yaml found for accelerator '{accelerator}' "
+                f"under {refmodels_dir}."
+            )
+        if domain_slug not in data_domains:
+            available = ", ".join(sorted(data_domains.keys())) or "(none)"
+            raise click.ClickException(
+                f"Domain '{domain_slug}' not found in data-domains.yaml for "
+                f"accelerator '{accelerator}'.\n"
+                f"Available domains: {available}"
+            )
+        imports = data_domains[domain_slug].get("imports", [])
+        if imports:
+            print(f"  ✓ Loaded {len(imports)} mandated import(s) from blueprint")
+
+    # 7. Generate the TTL content.
+    content: str
+    if use_ai:
+        print("🤖 Generating domain content via AI provider …")
+        try:
+            ai_content = _generate_domain_ttl_with_ai(
+                domain=domain_slug,
+                label=resolved_label,
+                company_domain=company_domain,
+                imports=imports,
+                hub=hub,
+            )
+        except Exception as e:
+            print(f"❌ AI provider is not available: {e}")
+            raise click.ClickException(
+                f"AI provider is not configured or not reachable.\n"
+                "Run 'kairos-ontology check-ai-config' to verify configuration, "
+                "or re-run without --ai for a bare starter template."
+            )
+        if ai_content is not None:
+            content = ai_content
+            print("  ✓ AI-generated domain content validated as valid Turtle.")
+        else:
+            print("  ⚠ Falling back to bare starter template.")
+            content = _build_domain_ttl(
+                domain=domain_slug,
+                label=resolved_label,
+                company_domain=company_domain,
+                imports=imports,
+            )
+    else:
+        content = _build_domain_ttl(
+            domain=domain_slug,
+            label=resolved_label,
+            company_domain=company_domain,
+            imports=imports,
+        )
+    content = provenance_comment("scaffold-domain", editable=True) + "\n" + content
+    ontology_dst.write_text(content, encoding="utf-8")
+    print(f"  ✓ Created ontology-hub/model/ontologies/{domain_slug}.ttl")
+
+    # 8. Register in catalog-v001.xml.
+    catalog_dst = hub / "catalog-v001.xml"
+    if catalog_dst.is_file():
+        ontology_iri = sync_domain_catalog_entry(
+            catalog_dst,
+            ontology_dst,
+            company_domain=company_domain,
+        )
+        print(f"  ✓ Registered {ontology_iri} in ontology-hub/catalog-v001.xml")
+    else:
+        ontology_iri = f"https://{company_domain.rstrip('/')}/ont/{domain_slug}"
+        print(
+            "  ⚠ ontology-hub/catalog-v001.xml not found; skipping catalog registration."
+        )
+
+    # 9. Sync owl:imports into _master.ttl.
+    master_dst = hub / "model" / "ontologies" / "_master.ttl"
+    if master_dst.exists():
+        try:
+            inserted = sync_master_ontology_import(master_dst, ontology_iri)
+        except MasterOntologySyncError as exc:
+            print(
+                f"  ⚠ Could not sync _master.ttl automatically: {exc}\n"
+                f'      Add "owl:imports <{ontology_iri}>" to '
+                "ontology-hub/model/ontologies/_master.ttl manually."
+            )
+        else:
+            if inserted:
+                print(
+                    f"  ✓ Synced owl:imports <{ontology_iri}> into "
+                    "ontology-hub/model/ontologies/_master.ttl"
+                )
+            else:
+                print(
+                    f"  ⏭  ontology-hub/model/ontologies/_master.ttl already imports "
+                    f"{ontology_iri}"
+                )
+    else:
+        print(
+            "  ⚠ ontology-hub/model/ontologies/_master.ttl not found; "
+            "skipping owl:imports sync."
+        )
+
+    print(f"\n✅ Domain '{domain_slug}' scaffolded!")
+    print("\nNext steps:")
+    print(f"  1. Edit ontology-hub/model/ontologies/{domain_slug}.ttl to define classes and properties")
+    print("  2. Run: kairos-ontology validate")
+    print("  3. Run: kairos-ontology compile <domain> --check")

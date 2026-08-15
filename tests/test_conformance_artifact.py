@@ -276,6 +276,61 @@ def test_open_questions_ignores_user_decided_entries():
 
 
 # ---------------------------------------------------------------------------
+# Issue #472: "autopilot" is a valid decided_by value and must be treated as
+# AI-decided by the DD-148 gate so it does NOT silently bypass review.
+# ---------------------------------------------------------------------------
+
+
+def test_open_questions_treats_autopilot_as_ai_decided():
+    """An autopilot-decided concept with needs_confirmation must produce open questions (#472)."""
+    art = {
+        "mode": "fleet",
+        "core_concepts": [
+            {
+                "uri": "u1",
+                "label": "One",
+                "decided_by": "autopilot",
+                "needs_confirmation": True,
+                "confidence": 0.8,
+            },
+        ],
+    }
+    questions = open_questions(art)
+    assert len(questions) == 1
+    assert questions[0]["reason"] == "needs_confirmation"
+
+
+def test_open_questions_autopilot_missing_confidence_flags():
+    """An autopilot-decided concept without confidence must produce open questions (#472)."""
+    art = {
+        "mode": "fleet",
+        "core_concepts": [
+            {"uri": "u1", "label": "One", "decided_by": "autopilot"},
+        ],
+    }
+    questions = open_questions(art)
+    assert len(questions) == 1
+    assert questions[0]["reason"] == "missing confidence"
+
+
+def test_open_questions_autopilot_confirmed_no_questions():
+    """A fully-confirmed autopilot concept should produce no open questions (#472)."""
+    art = {
+        "mode": "fleet",
+        "core_concepts": [
+            {
+                "uri": "u1",
+                "label": "One",
+                "decided_by": "autopilot",
+                "confidence": 0.95,
+                "needs_confirmation": False,
+            },
+        ],
+    }
+    assert open_questions(art) == []
+
+
+# ---------------------------------------------------------------------------
 # Issue #307: the DD-148 gate must be keyed on per-concept evidence, never on the
 # self-declared, unverifiable 'mode' field. A concept with decided_by: ai and an
 # unresolved judgment must be caught regardless of whether the artifact claims

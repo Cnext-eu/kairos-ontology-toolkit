@@ -1825,7 +1825,14 @@ def _render_class_ownership_batch_text(batch: dict) -> None:
     "Case-insensitive; ownership can be plural. Accepts comma-separated names "
     "(--owns A,B,C) and/or repeated (--owns A --owns B) for batch lookup (issue #439).",
 )
-@click.option("--json-output", "as_json", is_flag=True, default=False)
+@click.option(
+    "--json-output",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Emit a JSON object with schema_version, accelerator, and a 'domains' array "
+    "(one row per domain). The key is 'domains' not 'coverage_table'.",
+)
 def domain_coverage_cmd(
     ontology_dir, ref_models_dir, bindings_dir, accelerator, explain_domain, owns_classes, as_json
 ):
@@ -1913,6 +1920,33 @@ def domain_coverage_cmd(
             "ℹ No accelerator pack installed — reporting modeled/bound/imported "
             "status without a blueprint column."
         )
+
+    # Distinguish "accelerator resolved but its data-domains.yaml is missing"
+    # from "no domains authored yet" (issue #467).
+    _accelerator_data_domains_missing = False
+    if accelerator_resolution.accelerator and ref_path and Path(ref_path).is_dir():
+        dd_glob = (
+            Path(ref_path)
+            / f"accelerator-packs/{accelerator_resolution.accelerator}/client-hub-blueprint/data-domains.yaml"
+        )
+        if not dd_glob.is_file():
+            _accelerator_data_domains_missing = True
+            if not as_json and not owns_only:
+                click.echo(
+                    f"⚠ Accelerator '{accelerator_resolution.accelerator}' is configured but "
+                    f"its data-domains.yaml was not found at {dd_glob}. "
+                    "The blueprint column will be empty — check reference-models installation.",
+                    err=True,
+                )
+    elif accelerator_resolution.accelerator and (not ref_path or not Path(ref_path).is_dir()):
+        _accelerator_data_domains_missing = True
+        if not as_json and not owns_only:
+            click.echo(
+                f"⚠ Accelerator '{accelerator_resolution.accelerator}' is configured but "
+                "no reference-models directory was found. "
+                "The blueprint column will be empty — install reference models or pass --ref-models-dir.",
+                err=True,
+            )
 
     # Skip the full coverage-report build when only --owns is passed (issue #439);
     # the coverage table stays available via --explain or the default bare command.
