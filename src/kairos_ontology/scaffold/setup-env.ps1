@@ -1,9 +1,10 @@
 # Setup script for Kairos ontology hub development environment.
-# Uses uv to create an isolated .venv and install the toolkit + dev dependencies.
+# Uses uv to sync the project environment and install the toolkit + dev dependencies.
+# uv manages the underlying .venv; users do not need to activate it.
 #
 # Usage:
-#   .\setup-env.ps1            # Create/sync the virtual environment
-#   .\setup-env.ps1 -Force     # Recreate from scratch (deletes existing .venv)
+#   .\setup-env.ps1            # Create/sync the uv-managed environment
+#   .\setup-env.ps1 -Force     # Recreate uv's environment from scratch
 #
 # Requires: uv (https://docs.astral.sh/uv/)
 #   Install: irm https://astral.sh/uv/install.ps1 | iex
@@ -51,6 +52,3 @@ Write-Host "Toolkit location: $toolkitPath" -ForegroundColor Green
 Write-Host ""
 Write-Host "Environment ready. Run commands with:" -ForegroundColor Cyan
 Write-Host "  uv run kairos-ontology <command>" -ForegroundColor White
-Write-Host ""
-Write-Host "Or activate the venv manually:" -ForegroundColor Cyan
-Write-Host "  .\.venv\Scripts\Activate.ps1" -ForegroundColor White

@@ -41,7 +41,7 @@ def _ensure_utf8_stdio() -> None:
 
 
 def _warn_if_outside_venv() -> None:
-    """Emit a warning if running outside the project's .venv.
+    """Emit a warning if running outside the uv-managed project environment.
 
     Detects when the user invokes ``python -m kairos_ontology`` using a system
     Python while a local ``.venv`` exists (created by ``uv``).  This avoids
@@ -56,9 +56,9 @@ def _warn_if_outside_venv() -> None:
         return  # no local venv found — probably intentional
 
     click.echo(
-        "⚠️  Running outside the project .venv — you may be using a different\n"
+        "⚠️  Running outside the uv-managed project environment — you may be using a different\n"
         "   toolkit version than the one pinned in this hub.\n"
-        "   Fix: activate the venv or use `uv run kairos-ontology`.\n",
+        "   Run `uv run kairos-ontology`; no manual activation is needed.\n",
         err=True,
     )
 

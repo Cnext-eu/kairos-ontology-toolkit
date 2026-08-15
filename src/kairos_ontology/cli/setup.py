@@ -1076,17 +1076,17 @@ def new_repo(
     # update-referencemodels.ps1 is no longer installed; reference models are
     # populated by the `kairos-ontology update-refmodels` command instead.
 
-    # setup-env.ps1 (venv bootstrap)
+    # setup-env.ps1 (uv environment bootstrap)
     setup_env_src = _SCAFFOLD_DIR / "setup-env.ps1"
     if setup_env_src.is_file():
         shutil.copy2(setup_env_src, repo_dir / "setup-env.ps1")
-        print("  ✓ setup-env.ps1 (venv bootstrap)")
+        print("  ✓ setup-env.ps1 (uv environment bootstrap)")
 
     # setup-env.sh (bash equivalent for Linux/CI)
     setup_env_sh_src = _SCAFFOLD_DIR / "setup-env.sh"
     if setup_env_sh_src.is_file():
         shutil.copy2(setup_env_sh_src, repo_dir / "setup-env.sh")
-        print("  ✓ setup-env.sh (venv bootstrap - bash)")
+        print("  ✓ setup-env.sh (uv environment bootstrap - bash)")
 
     # package.json (Mermaid CLI for SVG rendering)
     pkg_src = _SCAFFOLD_DIR / "ontology-hub" / "package.json.template"
