@@ -156,7 +156,7 @@ def build_concept_graph(
         )
         return graph, loaded, diagnostics, module_tiers
 
-    resolver = CatalogResolver(catalog_path)
+    resolver = CatalogResolver.with_reference_models(catalog_path)
     for module in archetype.ref_model_modules:
         local = resolver.resolve(module.iri)
         if local is None or not Path(local).is_file():

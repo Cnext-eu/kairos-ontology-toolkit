@@ -94,6 +94,12 @@ groups:
     return ref_models
 
 
+def _set_refmodels_env(ref_models: Path, monkeypatch):
+    """Set KAIROS_REFMODELS_ROOT so resolve_refmodels_dir finds the test checkout."""
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models))
+    monkeypatch.setenv("KAIROS_SKILL_CONTEXT", "1")
+
+
 def _install_second_pack_owning_orders(ref_models: Path) -> None:
     """A second accelerator pack that also owns `orders` → genuine ambiguity."""
     blueprint = ref_models / "accelerator-packs" / "other" / "client-hub-blueprint"
@@ -136,14 +142,15 @@ def _master_text() -> str:
     return Path("ontology-hub/model/ontologies/_master.ttl").read_text(encoding="utf-8")
 
 
-def test_refuses_preexisting_import_incomplete_domain(tmp_path):
+def test_refuses_preexisting_import_incomplete_domain(tmp_path, monkeypatch):
     """(a) Missing required managed import → exit 1, catalog and _master untouched."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path) as td:
             _bootstrap_hub(runner)
-            _install_refmodels(Path(td))
+            ref_models = _install_refmodels(Path(td))
+            _set_refmodels_env(ref_models, monkeypatch)
             _write_domain_ttl(imports_module=False)
 
             result = runner.invoke(cli, _INIT_REGISTER)
@@ -155,14 +162,15 @@ def test_refuses_preexisting_import_incomplete_domain(tmp_path):
             assert DOMAIN_IRI not in _master_text()
 
 
-def test_degraded_registers_import_incomplete_domain_with_warning(tmp_path):
+def test_degraded_registers_import_incomplete_domain_with_warning(tmp_path, monkeypatch):
     """(b) --degraded is the explicit bypass: warnings, registration proceeds."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path) as td:
             _bootstrap_hub(runner)
-            _install_refmodels(Path(td))
+            ref_models = _install_refmodels(Path(td))
+            _set_refmodels_env(ref_models, monkeypatch)
             _write_domain_ttl(imports_module=False)
 
             result = runner.invoke(cli, _INIT_REGISTER + ["--degraded"])
@@ -175,14 +183,15 @@ def test_degraded_registers_import_incomplete_domain_with_warning(tmp_path):
             assert DOMAIN_IRI in _master_text()
 
 
-def test_registers_preexisting_domain_with_complete_imports(tmp_path):
+def test_registers_preexisting_domain_with_complete_imports(tmp_path, monkeypatch):
     """A pre-existing domain that authored its required import passes the gate."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path) as td:
             _bootstrap_hub(runner)
-            _install_refmodels(Path(td))
+            ref_models = _install_refmodels(Path(td))
+            _set_refmodels_env(ref_models, monkeypatch)
             _write_domain_ttl(imports_module=True)
 
             result = runner.invoke(cli, _INIT_REGISTER)
@@ -192,7 +201,7 @@ def test_registers_preexisting_domain_with_complete_imports(tmp_path):
             assert f"{DOMAIN}.ttl" in _catalog_text()
 
 
-def test_fresh_scaffold_is_never_gated(tmp_path):
+def test_fresh_scaffold_is_never_gated(tmp_path, monkeypatch):
     """(c) A TTL init itself scaffolds registers ungated — advisory only.
 
     The starter template has no owl:imports; gating it would refuse init's own
@@ -203,7 +212,8 @@ def test_fresh_scaffold_is_never_gated(tmp_path):
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path) as td:
             _bootstrap_hub(runner)
-            _install_refmodels(Path(td))
+            ref_models = _install_refmodels(Path(td))
+            _set_refmodels_env(ref_models, monkeypatch)
             # Deliberately NOT writing the domain TTL: init scaffolds the starter.
 
             result = runner.invoke(cli, _INIT_REGISTER)
@@ -214,12 +224,13 @@ def test_fresh_scaffold_is_never_gated(tmp_path):
             assert f"{DOMAIN}.ttl" in _catalog_text()
 
 
-def test_skip_refmodels_without_refmodels_present_is_ungated(tmp_path):
+def test_skip_refmodels_without_refmodels_present_is_ungated(tmp_path, monkeypatch):
     """(d) No reference models on disk → no gate, no crash (vacuous pass)."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
         with runner.isolated_filesystem(temp_dir=tmp_path):
+            monkeypatch.delenv("KAIROS_REFMODELS_ROOT", raising=False)
             _bootstrap_hub(runner)
             _write_domain_ttl(imports_module=False)
 
@@ -230,7 +241,7 @@ def test_skip_refmodels_without_refmodels_present_is_ungated(tmp_path):
             assert f"{DOMAIN}.ttl" in _catalog_text()
 
 
-def test_ambiguous_accelerator_warns_and_skips_the_gate(tmp_path):
+def test_ambiguous_accelerator_warns_and_skips_the_gate(tmp_path, monkeypatch):
     """(e) Two packs own the domain → the gate must not guess: warn + register."""
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
@@ -238,6 +249,7 @@ def test_ambiguous_accelerator_warns_and_skips_the_gate(tmp_path):
         with runner.isolated_filesystem(temp_dir=tmp_path) as td:
             _bootstrap_hub(runner)
             ref_models = _install_refmodels(Path(td))
+            _set_refmodels_env(ref_models, monkeypatch)
             _install_second_pack_owning_orders(ref_models)
             _write_domain_ttl(imports_module=False)
 
@@ -305,7 +317,7 @@ groups:
     )
 
 
-def test_surplus_managed_import_warns_but_never_blocks_registration(tmp_path):
+def test_surplus_managed_import_warns_but_never_blocks_registration(tmp_path, monkeypatch):
     """#418 (DD-157): a pre-existing domain importing another domain's managed
     module (surplus — the plan never required it) gets a warning-level diagnostic
     that the gate inherits non-blockingly: registration proceeds, exit 0."""
@@ -315,6 +327,7 @@ def test_surplus_managed_import_warns_but_never_blocks_registration(tmp_path):
         with runner.isolated_filesystem(temp_dir=tmp_path) as td:
             _bootstrap_hub(runner)
             ref_models = _install_refmodels(Path(td))
+            _set_refmodels_env(ref_models, monkeypatch)
             _install_extras_module(ref_models)
             # Required import present + a surplus import of billing's module.
             Path("ontology-hub/model/ontologies", f"{DOMAIN}.ttl").write_text(

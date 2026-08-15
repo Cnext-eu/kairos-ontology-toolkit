@@ -584,7 +584,7 @@ def resolve_reference_modules(
     unscoped maintenance operations.  A supplied scope resolves only profiles
     activated by those domains or identified by claimed terms/authored imports.
     """
-    resolver = CatalogResolver(Path(catalog_path)) if catalog_path else None
+    resolver = CatalogResolver.with_reference_models(Path(catalog_path)) if catalog_path else None
     modules: list[ResolvedReferenceModule] = []
     diagnostics: list[ModuleDiagnostic] = []
     selected_ids = resolve_reference_module_ids(

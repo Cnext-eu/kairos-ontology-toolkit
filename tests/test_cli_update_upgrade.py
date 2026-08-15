@@ -39,7 +39,9 @@ def _make_scaffolded_hub_pyproject(tmp_path: Path, version: str = "v3.8.0") -> P
         .replace("{description}", "test-hub")
         .replace("{toolkit_ref}", version)
         .replace("{toolkit_version}", version.lstrip("v"))
-        .replace("{toolkit_channel}", "preview"),
+        .replace("{toolkit_channel}", "preview")
+        .replace("{refmodels_ref}", "v0.1.0")
+        .replace("{refmodels_version}", "0.1.0"),
         encoding="utf-8",
     )
     return pyproject
@@ -457,8 +459,9 @@ class TestUpdateUpgradeSingleUrlHub:
                 text = Path("pyproject.toml").read_text(encoding="utf-8")
 
         assert result.exit_code == 0, result.output
-        assert text.count("py3-none-any.whl") == 1
+        assert text.count("py3-none-any.whl") == 2
         assert text.count("3.9.0rc2-py3-none-any.whl") == 1
+        assert text.count("0.1.0-py3-none-any.whl") == 1
         assert '"kairos-ontology-toolkit[flatfile]"' in text
 
 

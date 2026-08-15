@@ -238,46 +238,57 @@ class TestScopedInventoryWording:
         (dd_dir / "data-domains.yaml").write_text(_INVENTORY_DATA_DOMAINS_YAML, encoding="utf-8")
         (tmp_path / "catalog-v001.xml").write_text(_INVENTORY_CATALOG_XML, encoding="utf-8")
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        return ref_dir
 
     def test_matched_accelerator_profile_not_none_matched(self, tmp_path, monkeypatch):
-        self._build_hub(tmp_path)
+        ref_dir = self._build_hub(tmp_path)
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
 
-        gen = runner.invoke(cli, ["generate-inventory"])
+        gen = runner.invoke(
+            cli, ["generate-inventory", "--ref-models-dir", str(ref_dir)]
+        )
         assert gen.exit_code == 0, gen.output
 
-        result = runner.invoke(cli, ["check-inventory", "--domains", "party"])
+        result = runner.invoke(
+            cli, ["check-inventory", "--domains", "party", "--ref-models-dir", str(ref_dir)]
+        )
         assert result.exit_code == 0, result.output
         assert "(none matched)" not in result.output
         assert "matched accelerator profile" in result.output
 
     def test_no_profile_found_not_none_matched(self, tmp_path, monkeypatch):
-        self._build_hub(tmp_path)
+        ref_dir = self._build_hub(tmp_path)
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
 
-        gen = runner.invoke(cli, ["generate-inventory"])
+        gen = runner.invoke(
+            cli, ["generate-inventory", "--ref-models-dir", str(ref_dir)]
+        )
         assert gen.exit_code == 0, gen.output
 
-        result = runner.invoke(cli, ["check-inventory", "--domains", "unregistered-domain"])
+        result = runner.invoke(
+            cli,
+            ["check-inventory", "--domains", "unregistered-domain", "--ref-models-dir", str(ref_dir)],
+        )
         assert result.exit_code == 0, result.output
         assert "(none matched)" not in result.output
         assert "no reference-model profile" in result.output
 
     def test_accelerator_diagnostics_include_resolved_path(self, tmp_path, monkeypatch):
-        self._build_hub(tmp_path)
+        ref_dir = self._build_hub(tmp_path)
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
-        runner.invoke(cli, ["generate-inventory"])
+        runner.invoke(cli, ["generate-inventory", "--ref-models-dir", str(ref_dir)])
 
-        result = runner.invoke(cli, ["check-inventory", "--domains", "party"])
+        result = runner.invoke(
+            cli, ["check-inventory", "--domains", "party", "--ref-models-dir", str(ref_dir)]
+        )
         assert result.exit_code == 0, result.output
         assert "Accelerator:  logistics" in result.output
         assert (
             str(
-                tmp_path
-                / "ontology-reference-models"
+                ref_dir
                 / "accelerator-packs"
                 / "logistics"
                 / "client-hub-blueprint"
@@ -341,6 +352,7 @@ class TestCrossCommandResolverParity:
         self, tmp_path, monkeypatch
     ):
         hub = self._build_hub(tmp_path)
+        ref_dir = hub.parent / "ontology-reference-models"
         validate_calls: dict[str, dict] = {}
         project_calls: dict[str, dict] = {}
         monkeypatch.setattr(
@@ -356,11 +368,15 @@ class TestCrossCommandResolverParity:
         )
         monkeypatch.chdir(hub)
 
-        validate_result = CliRunner().invoke(cli, ["validate", "--syntax"])
+        validate_result = CliRunner().invoke(
+            cli, ["validate", "--syntax", "--ref-models", str(ref_dir)]
+        )
         assert validate_result.exit_code == 0, validate_result.output
         assert validate_calls["validation"]["accelerator"] == "logistics"
 
-        project_result = CliRunner().invoke(cli, ["project", "--target", "neo4j"])
+        project_result = CliRunner().invoke(
+            cli, ["project", "--target", "neo4j", "--ref-models", str(ref_dir)]
+        )
         assert project_result.exit_code == 0, project_result.output
         assert project_calls["projection"]["accelerator"] == "logistics"
 
@@ -368,6 +384,7 @@ class TestCrossCommandResolverParity:
         """``validate --domain`` resolves the accelerator by domain ownership even when
         the ontology file stem is not itself an owned domain (parity with compile)."""
         hub = self._build_hub(tmp_path)
+        ref_dir = hub.parent / "ontology-reference-models"
         # Rename the ontology so its stem owns no domain: bare inference is ambiguous.
         ont = hub / "model" / "ontologies"
         (ont / "booking.ttl").rename(ont / "misc.ttl")
@@ -380,23 +397,30 @@ class TestCrossCommandResolverParity:
         monkeypatch.setattr(validation_commands, "run_gdpr_validation", lambda **kw: None)
         monkeypatch.chdir(hub)
 
-        ambiguous = CliRunner().invoke(cli, ["validate", "--syntax"])
+        ambiguous = CliRunner().invoke(
+            cli, ["validate", "--syntax", "--ref-models", str(ref_dir)]
+        )
         assert ambiguous.exit_code != 0
         assert "ambiguous" in ambiguous.output.lower()
 
-        scoped = CliRunner().invoke(cli, ["validate", "--syntax", "--domain", "booking"])
+        scoped = CliRunner().invoke(
+            cli, ["validate", "--syntax", "--domain", "booking", "--ref-models", str(ref_dir)]
+        )
         assert scoped.exit_code == 0, scoped.output
         assert validate_calls["validation"]["accelerator"] == "logistics"
 
     def test_check_inventory_infers_same_accelerator(self, tmp_path, monkeypatch):
         hub = self._build_hub(tmp_path)
+        ref_dir = hub.parent / "ontology-reference-models"
         (hub.parent / "catalog-v001.xml").write_text(
             '<?xml version="1.0"?><catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"/>',
             encoding="utf-8",
         )
         monkeypatch.chdir(hub)
         runner = CliRunner()
-        runner.invoke(cli, ["generate-inventory"])
+        runner.invoke(cli, ["generate-inventory", "--ref-models-dir", str(ref_dir)])
 
-        result = runner.invoke(cli, ["check-inventory", "--domains", "booking"])
+        result = runner.invoke(
+            cli, ["check-inventory", "--domains", "booking", "--ref-models-dir", str(ref_dir)]
+        )
         assert "Accelerator:  logistics" in result.output

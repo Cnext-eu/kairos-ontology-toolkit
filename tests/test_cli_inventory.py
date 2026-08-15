@@ -2,6 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Tests for the generate-inventory CLI command (DD-044)."""
 
+
 import yaml
 from click.testing import CliRunner
 
@@ -162,14 +163,15 @@ class TestGenerateInventoryCLI:
         assert result.exit_code != 0
 
     def test_autodetects_repo_root_refmodels(self, tmp_path, monkeypatch):
-        # Reference models live at the REPO ROOT (ontology-reference-models/),
-        # not under model/reference-models/. Auto-detect must find them.
+        # Reference models resolved via KAIROS_REFMODELS_ROOT (package or env-var,
+        # not folder-scan auto-detection since DD-158).
         ref_dir = tmp_path / "ontology-reference-models"
         ref_dir.mkdir(parents=True)
         (ref_dir / "party.ttl").write_text(SAMPLE_REF_TTL, encoding="utf-8")
         # model/ontologies/ marks the hub root for find_hub_root(require_model=True)
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
 
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_dir))
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
         result = runner.invoke(cli, ["generate-inventory"])
@@ -185,6 +187,7 @@ class TestCheckInventoryCLI:
         (ref_dir / "party.ttl").write_text(SAMPLE_REF_TTL, encoding="utf-8")
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
 
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_dir))
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
 
@@ -225,6 +228,7 @@ class TestInventoryCollisionRegression:
             ttl.write_text(self._ref_ttl(model, cls), encoding="utf-8")
 
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_root))
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
 
@@ -259,6 +263,7 @@ class TestInventoryCollisionRegression:
             encoding="utf-8",
         )
 
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_root))
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
         generated = runner.invoke(cli, ["generate-inventory"])
@@ -286,6 +291,7 @@ class TestInventoryCollisionRegression:
         archived.write_text(self._ref_ttl("BSP", "ArchivedTradeParty"), encoding="utf-8")
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
 
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_root))
         monkeypatch.chdir(tmp_path)
         result = CliRunner().invoke(cli, ["generate-inventory"])
 
@@ -333,6 +339,7 @@ class TestGenerateInventoryExcludesPatternTemplates:
             template.write_text(self._TEMPLATE_TTL, encoding="utf-8")
 
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_root))
         monkeypatch.chdir(tmp_path)
 
         result = CliRunner().invoke(cli, ["generate-inventory"])
@@ -381,6 +388,7 @@ class TestGenerateInventoryExitCodeInvariant:
         (ref_dir / "party.ttl").write_text(SAMPLE_REF_TTL, encoding="utf-8")
         (ref_dir / "broken.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_dir))
         monkeypatch.chdir(tmp_path)
 
         result = CliRunner().invoke(cli, ["generate-inventory"])
@@ -402,6 +410,7 @@ class TestGenerateInventoryExitCodeInvariant:
         ref_dir.mkdir(parents=True)
         (ref_dir / "broken.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_dir))
         monkeypatch.chdir(tmp_path)
 
         result = CliRunner().invoke(cli, ["generate-inventory"])
@@ -423,6 +432,7 @@ class TestGenerateInventoryExitCodeInvariant:
                 TestInventoryCollisionRegression()._ref_ttl("BSP", cls), encoding="utf-8"
             )
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_root))
         monkeypatch.chdir(tmp_path)
 
         result = CliRunner().invoke(cli, ["generate-inventory"])
@@ -447,6 +457,7 @@ class TestGenerateInventoryPrune:
         ttl = ref_dir / "party.ttl"
         ttl.write_text(SAMPLE_REF_TTL, encoding="utf-8")
         (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_dir))
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
 
@@ -512,10 +523,14 @@ class TestGenerateInventoryPrune:
 
 
 class TestResolveRefModelsDir:
-    def test_returns_none_when_missing(self, tmp_path):
-        from kairos_ontology.cli.main import _resolve_ref_models_dir
+    def test_returns_none_when_missing(self, tmp_path, monkeypatch):
+        # No env var and package not importable → resolve_refmodels_dir returns None.
+        # conftest.py already blocks the installed package via a sentinel in
+        # sys.modules, so resolve_refmodels_dir falls through to None.
+        monkeypatch.delenv("KAIROS_REFMODELS_ROOT", raising=False)
+        from kairos_ontology.cli.shared import resolve_refmodels_dir
 
-        assert _resolve_ref_models_dir(tmp_path, tmp_path) is None
+        assert resolve_refmodels_dir(tmp_path, tmp_path) is None
 
 
 SAMPLE_BOOKING_TTL = """\
@@ -644,6 +659,8 @@ class TestCheckInventoryDomainScope:
 
     def test_domains_scopes_blocking(self, tmp_path, monkeypatch):
         self._build_hub(tmp_path)
+        ref_dir = tmp_path / "ontology-reference-models"
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_dir))
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
 
@@ -670,6 +687,8 @@ class TestCheckInventoryDomainScope:
         """Without --verbose/--explain-scope, out-of-scope missing inventories are
         collapsed to a one-line non-blocking summary instead of a wall of ❌ lines."""
         self._build_hub(tmp_path)
+        ref_dir = tmp_path / "ontology-reference-models"
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_dir))
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
 

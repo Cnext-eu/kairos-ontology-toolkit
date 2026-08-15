@@ -751,7 +751,7 @@ def resolve_domain_inventory_keys(
     if not data_domains:
         return keys_by_domain, unresolved_by_domain
 
-    resolver = CatalogResolver(catalog_path) if catalog_path else None
+    resolver = CatalogResolver.with_reference_models(catalog_path) if catalog_path else None
     lower_filter = [d.lower() for d in domains]
 
     for domain_id, meta in data_domains.items():

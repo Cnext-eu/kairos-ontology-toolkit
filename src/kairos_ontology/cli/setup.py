@@ -25,7 +25,6 @@ from .shared import (
     _DATAPLATFORM_SKILLS,
     _MIGRATE_DIR_MAP,
     _MIGRATE_OUTPUT_MAP,
-    _REF_MODELS_PATH,
     _SCAFFOLD_DIR,
     _V5_HUB_DIRECTORIES,
     _V5_OUTPUT_DIRECTORIES,
@@ -34,14 +33,13 @@ from .shared import (
     _copy_managed,
     _create_github_repo,
     _detect_hub_context,
-    _fetch_reference_models,
     _format_refmodels_fetch_provenance,
     _is_old_layout,
-    _resolve_latest_refmodels_ref,
+    _resolve_scaffold_refmodels_pin,
     _resolve_scaffold_toolkit_pin,
-    _run_reference_models_update,
     _slugify,
     _tag_to_version,
+    resolve_refmodels_dir,
 )
 
 
@@ -168,14 +166,14 @@ def _registration_import_gate(
     "skip_refmodels",
     is_flag=True,
     default=False,
-    help="Skip fetching ontology-reference-models/ (fetch it later with update-refmodels).",
+    help="Skip adding the kairos-ontology-referencemodels dependency (install it later).",
 )
 @click.option(
     "--ref-models-version",
     "ref_models_version",
     type=str,
     default=None,
-    help="Git ref (tag/branch) for reference models (default: latest tag, falling back to main).",
+    help="Specific version of kairos-ontology-referencemodels to pin (e.g. v1.19.0).",
 )
 @click.option(
     "--degraded",
@@ -438,6 +436,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
         else:
             ref, channel = _resolve_scaffold_toolkit_pin()
             version = _tag_to_version(ref)
+            rm_ref, rm_version = _resolve_scaffold_refmodels_pin()
             repo_name = cwd.name
             content = pyproject_src.read_text(encoding="utf-8")
             content = (
@@ -446,6 +445,8 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
                 .replace("{toolkit_ref}", ref)
                 .replace("{toolkit_version}", version)
                 .replace("{toolkit_channel}", channel)
+                .replace("{refmodels_ref}", rm_ref)
+                .replace("{refmodels_version}", rm_version)
             )
             pyproject_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created pyproject.toml")
@@ -522,7 +523,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
     # 8. Scaffold a starter domain ontology
     from ..core.archetype_loader import _looks_like_refmodels_root
 
-    refmodels_dest = cwd / _REF_MODELS_PATH
+    refmodels_dest = resolve_refmodels_dir(cwd, hub)
     if domain:
         template_src = (
             _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "starter.ttl.template"
@@ -555,8 +556,10 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
             # catalog write and the _master.ttl sync below, so a refused run
             # leaves both untouched. Freshly scaffolded starters are never gated
             # (they carry no owl:imports by design); they get an advisory instead.
-            refmodels_available = refmodels_dest.is_dir() and _looks_like_refmodels_root(
-                refmodels_dest
+            refmodels_available = (
+                refmodels_dest is not None
+                and refmodels_dest.is_dir()
+                and _looks_like_refmodels_root(refmodels_dest)
             )
             if ontology_preexisted and refmodels_available:
                 _registration_import_gate(
@@ -611,93 +614,25 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
                     "skipping owl:imports sync."
                 )
 
-    # 9. Fetch ontology-reference-models/ at the repo root (issue #290).
+    # 9. Reference models are now resolved from an installed Python package.
     #
-    # This is deliberately offline-safe and never touches git: `init` runs inside
-    # a hub that may already have staged, uncommitted work, and `new_repo`'s own
-    # reference-models fetch (_run_reference_models_update) commits + pushes —
-    # doing that here would sweep up and push whatever the caller had pending.
-    # An existing checkout (e.g. the pinned one `new-repo` already fetched) is
-    # never touched either, even with --force: --force is about overwriting
-    # scaffold *files*, not about clobbering a reference-models pin.
+    # `uv sync` (step 10) installs the kairos-ontology-referencemodels package
+    # listed in the scaffolded pyproject.toml dependencies. No sparse clone,
+    # no committed copy, and no init-time inventory pre-generation —
+    # inventories are generated on-demand by `compile` / `check-inventory`.
     if skip_refmodels:
         print(
-            "  ⏭  Skipped reference models "
-            "(run `kairos-ontology update-refmodels` to fetch them later)"
-        )
-    elif refmodels_dest.exists() and _looks_like_refmodels_root(refmodels_dest):
-        provenance = _format_refmodels_fetch_provenance(refmodels_dest)
-        suffix = f" ({provenance})" if provenance else ""
-        print(
-            f"  ✓ Reference models already present{suffix}; "
-            "run `kairos-ontology update-refmodels` to refresh"
+            "  ⏭  Skipped reference models package "
+            "(install manually: `uv pip install kairos-ontology-referencemodels`)"
         )
     else:
-        git_ref = ref_models_version or _resolve_latest_refmodels_ref() or "main"
-        print("  ▶ Fetching reference models (~17 MB / 561 files)…")
-        ok, _sha, message = _fetch_reference_models(refmodels_dest, git_ref)
-        if ok:
-            print(f"  ✓ {message}")
+        provenance = _format_refmodels_fetch_provenance(None)
+        if provenance:
+            print(f"  ✓ Reference models package available: {provenance}")
         else:
-            print(f"  ⚠  {message}")
-            print("       Run 'kairos-ontology update-refmodels' manually.")
-
-    # 9b. Pre-generate materialized reference-model inventories (issue #321).
-    #
-    # `init` fetches ontology-reference-models/ above but, until now, never populated
-    # referencemodels-unpacked/ — so a hub freshly scaffolded by `init` (which also
-    # fetches reference models by default) failed `check-inventory`'s DD-047 gate on
-    # schema names alone, before a designer ever touched anything. Generate what's
-    # possible here; each source TTL's failure only reduces coverage, never aborts
-    # `init` (matching `generate-inventory`'s own per-file try/except style).
-    if (
-        not skip_refmodels
-        and refmodels_dest.is_dir()
-        and _looks_like_refmodels_root(refmodels_dest)
-    ):
-        from ..core.inventory import (
-            generate_inventory,
-            inventory_filename,
-            iter_reference_inventory_sources,
-            write_inventory,
-        )
-
-        inventories_written = 0
-        inventories_unchanged = 0
-        for ttl_file in iter_reference_inventory_sources(refmodels_dest):
-            try:
-                inv = generate_inventory(
-                    ttl_file,
-                    catalog_path=catalog_dst if catalog_dst.is_file() else None,
-                    relative_to=refmodels_dest,
-                )
-                if not inv["classes"]:
-                    continue
-                yaml_path = (
-                    hub
-                    / "referencemodels-unpacked"
-                    / inventory_filename(ttl_file, ref_models_dir=refmodels_dest)
-                )
-                if write_inventory(inv, yaml_path):
-                    inventories_written += 1
-                else:
-                    inventories_unchanged += 1
-            except Exception as exc:
-                # Coverage-reducing, never init-aborting — but say which file, so a
-                # per-file error is not silently swallowed (issue #419 hardening).
-                print(f"  ⚠  Skipped inventory for {ttl_file.stem}: {type(exc).__name__}: {exc}")
-                continue
-        if inventories_written:
             print(
-                f"  ✓ Generated {inventories_written} reference-model inventory file(s) "
-                "in ontology-hub/referencemodels-unpacked/"
-            )
-        elif inventories_unchanged:
-            # Content-addressed writes (DD-154): the idempotent rerun path. This
-            # line must not contain the word "Generated" (pinned by test_init.py).
-            print(
-                f"  ✓ {inventories_unchanged} reference-model inventory file(s) "
-                "already up to date in ontology-hub/referencemodels-unpacked/"
+                "  ℹ  Reference models package will be installed by `uv sync` "
+                "(run `kairos-ontology update-refmodels` to upgrade later)"
             )
 
     if hub_already_existed:
@@ -927,7 +862,7 @@ def migrate(check, dry_run, hub_path):
     "ref_models_version",
     type=str,
     default=None,
-    help="Git ref (tag/branch) for reference models (default: latest).",
+    help="Specific version of kairos-ontology-referencemodels to pin (e.g. v1.19.0).",
 )
 @click.option(
     "--company-domain",
@@ -1190,6 +1125,7 @@ def new_repo(
     if pyproject_src.is_file():
         # Same pin policy as `init` — never the running (possibly unpublished) version.
         ref, channel = _resolve_scaffold_toolkit_pin()
+        rm_ref, rm_version = _resolve_scaffold_refmodels_pin()
         content = pyproject_src.read_text(encoding="utf-8")
         content = (
             content.replace("{repo_name}", repo_slug)
@@ -1197,6 +1133,8 @@ def new_repo(
             .replace("{toolkit_version}", _tag_to_version(ref))
             .replace("{toolkit_ref}", ref)
             .replace("{toolkit_channel}", channel)
+            .replace("{refmodels_ref}", rm_ref)
+            .replace("{refmodels_version}", rm_version)
         )
         (repo_dir / "pyproject.toml").write_text(content, encoding="utf-8")
         print("  ✓ pyproject.toml")
@@ -1275,8 +1213,10 @@ def new_repo(
     # --- GitHub repo creation ------------------------------------------------
     _create_github_repo(repo_dir, repo_slug, org, description, is_private)
 
-    # --- Populate reference models -------------------------------------------
-    _run_reference_models_update(repo_dir, ref_models_version)
+    # --- Reference models are installed via pyproject.toml + uv sync ----------
+    # No separate fetch step — the scaffolded pyproject.toml already pins
+    # kairos-ontology-referencemodels, and `uv sync` (run by the user after
+    # new-repo) installs it.
 
     # --- Configure branch protection on main ---------------------------------
     if not skip_protection:

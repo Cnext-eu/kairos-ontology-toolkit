@@ -125,7 +125,7 @@ def _real_catalog_from_template(
     This mirrors exactly what `init` does when it copies
     ``catalog-v001.xml.template`` -> ``ontology-hub/catalog-v001.xml``, so tests
     exercise the real template shape (prolog comment, marker comment, commented
-    example, nextCatalog) rather than a hand-built fixture.
+    example) rather than a hand-built fixture.
     """
     with open(_SCAFFOLD_CATALOG_TEMPLATE, "r", encoding="utf-8", newline="") as fh:
         content = fh.read()
@@ -163,7 +163,7 @@ def test_sync_against_real_template_preserves_everything_but_the_new_entry(tmp_p
     comment, blank lines, XML declaration style, and trailing newline
     completely untouched, and land the new <uri> between the "Domain
     ontologies" marker comment and the commented-out example — not after the
-    "Chain to shared reference-models catalog" comment (the old bug).
+    shared foundation block (the old bug).
     """
     eol = _template_eol()
     catalog = _real_catalog_from_template(tmp_path)
@@ -181,6 +181,9 @@ def test_sync_against_real_template_preserves_everything_but_the_new_entry(tmp_p
     # XML declaration untouched: double quotes, uppercase encoding.
     assert new_content.startswith(f'<?xml version="1.0" encoding="UTF-8"?>{eol}')
     assert "encoding='utf-8'" not in new_content
+    # Reference-models <nextCatalog> chain is gone (DD-158: package-based resolution).
+    # The prolog comment mentions <nextCatalog> descriptively, so check for the element form.
+    assert "<nextCatalog catalog=" not in new_content
     # Trailing newline preserved.
     assert new_content.endswith(f"</catalog>{eol}")
     # The template's own line-ending convention preserved throughout (never
@@ -194,13 +197,11 @@ def test_sync_against_real_template_preserves_everything_but_the_new_entry(tmp_p
     marker_end = new_content.index("add one <uri> per domain")
     marker_close = new_content.index("-->", marker_end)
     example_start = new_content.index('<uri name="https://contoso.example/ont/customer"')
-    chain_comment_pos = new_content.index("Chain to shared reference-models catalog")
     new_uri_pos = new_content.index('<uri name="https://contoso.example/ont/party"')
 
     # New entry lands between the marker comment and the commented-out example —
-    # NOT after "Chain to shared reference-models catalog" (the old bug).
+    # NOT after the shared foundation block (the old bug).
     assert marker_close < new_uri_pos < example_start
-    assert new_uri_pos < chain_comment_pos
 
 
 def test_sync_idempotent_against_real_template_marker_comment(tmp_path):
@@ -224,7 +225,7 @@ def test_sync_idempotent_against_real_template_marker_comment(tmp_path):
 
 def test_sync_multi_domain_both_entries_placed_correctly(tmp_path):
     """Registering two different domains must place both entries correctly,
-    leaving the prolog, commented example, and nextCatalog untouched.
+    leaving the prolog and commented example untouched.
     """
     catalog = _real_catalog_from_template(tmp_path)
     party = tmp_path / "model" / "ontologies" / "party.ttl"
@@ -239,26 +240,23 @@ def test_sync_multi_domain_both_entries_placed_correctly(tmp_path):
     marker_end = content.index("add one <uri> per domain")
     marker_close = content.index("-->", marker_end)
     example_start = content.index('<uri name="https://contoso.example/ont/customer"')
-    chain_comment_pos = content.index("Chain to shared reference-models catalog")
-    # NOTE: the prolog's own prose mentions "<nextCatalog>" descriptively, so
-    # search for the live element's opening attribute, not just the tag name.
-    next_catalog_pos = content.index("<nextCatalog catalog=")
 
     party_pos = content.index('<uri name="https://contoso.example/ont/party"')
     sales_pos = content.index('<uri name="https://contoso.example/ont/sales"')
 
     for pos in (party_pos, sales_pos):
         assert marker_close < pos < example_start
-        assert pos < chain_comment_pos < next_catalog_pos
 
-    # Prolog / commented example / nextCatalog untouched.
+    # Prolog / commented example untouched.
     assert "Local catalog for Contoso domain ontologies." in content
     eol = _template_eol()
     assert (
         f'<uri name="https://contoso.example/ont/customer"{eol}'
         '       uri="model/ontologies/customer.ttl"/>' in content
     )
-    assert "<nextCatalog" in content
+    # Reference-models <nextCatalog> chain is gone (DD-158: package-based resolution).
+    # The prolog comment mentions <nextCatalog> descriptively, so check for the element form.
+    assert "<nextCatalog catalog=" not in content
 
 
 def test_sync_raises_on_namespace_prefixed_catalog_dialect(tmp_path):

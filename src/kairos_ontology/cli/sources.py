@@ -18,7 +18,7 @@ from .shared import (
     _emit,
     _resolve_conformance_root,
     _resolve_import_dir,
-    _resolve_ref_models_dir,
+    resolve_refmodels_dir,
 )
 
 
@@ -800,7 +800,7 @@ def analyse_sources_cmd(
         sources_path = Path(sources)
 
     if ref_models is None:
-        ref_models_path = _resolve_ref_models_dir(cwd, hub_root)
+        ref_models_path = resolve_refmodels_dir(cwd, hub_root)
         if ref_models_path is None:
             click.echo(
                 "❌ Cannot find ontology-reference-models/ directory. Use --ref-models to specify.",
@@ -1348,7 +1348,7 @@ def propose_alignment_cmd(
     # DD-070: resolve the reference-models dir + validate cross-module prerequisites.
     ref_models_dir = None
     if cross_module:
-        ref_models_dir = _resolve_ref_models_dir(cwd, hub_root)
+        ref_models_dir = resolve_refmodels_dir(cwd, hub_root)
         if not accelerator:
             click.echo(
                 "❌ --cross-module requires --accelerator <name> (the accelerator "

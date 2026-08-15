@@ -46,7 +46,6 @@ _SCAFFOLD_SETTINGS = (
 _GUARDED_PATHS = (
     "ontology-hub/model/ontologies",
     "ontology-hub/model/shapes",
-    "ontology-reference-models",
 )
 
 # Ontology/SHACL serializations, and only these — not the JSON Schemas consumed by
@@ -97,9 +96,8 @@ def test_deny_list_contains_exactly_the_expected_rules():
 
 def test_no_rule_denies_json_or_xml():
     # 19 JSON Schemas are consumed by core/archetype_loader.py and
-    # core/binding_archetypes.py, and ontology-reference-models/catalog-v001.xml
-    # must remain readable — neither is an ontology serialization, and both must
-    # stay off the deny list.
+    # core/binding_archetypes.py. Neither is an ontology serialization, and both
+    # must stay off the deny list.
     deny = _load_settings()["permissions"]["deny"]
     for rule in deny:
         assert ".json" not in rule, f"Unexpected .json in deny rule: {rule}"

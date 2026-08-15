@@ -479,7 +479,8 @@ def test_result_to_dict_round_trips_json(tmp_path):
 
 
 def test_cli_design_landscape_json_format(tmp_path, monkeypatch):
-    hub_root, _ = _build_hub(tmp_path)
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models_dir))
     monkeypatch.chdir(hub_root)
 
     result = CliRunner().invoke(cli, ["design-landscape", "--format", "json"])
@@ -492,7 +493,8 @@ def test_cli_design_landscape_json_format(tmp_path, monkeypatch):
 
 
 def test_cli_design_landscape_text_format_mentions_advisory(tmp_path, monkeypatch):
-    hub_root, _ = _build_hub(tmp_path)
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models_dir))
     monkeypatch.chdir(hub_root)
 
     result = CliRunner().invoke(cli, ["design-landscape"])

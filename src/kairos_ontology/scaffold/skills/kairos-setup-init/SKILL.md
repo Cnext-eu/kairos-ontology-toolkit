@@ -16,7 +16,8 @@ V5 hubs are created fresh; older authoring layouts are not upgraded automaticall
    kairos-ontology new-repo <name> --company-domain <domain>
    ```
 
-4. Run `uv sync` in the created repository.
+4. Run `uv sync` in the created repository. This installs both the toolkit
+   and the reference-models package as Python dependencies.
 5. Add a domain with `kairos-ontology init --company-domain <domain> --domain <name>`.
 6. Confirm the scaffold contains `model/ontologies/`, `model/shapes/`,
    `integration/discovery/`, `integration/sources/`, `integration/bindings/`,

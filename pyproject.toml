@@ -77,6 +77,9 @@ dev = [
     "ruff>=0.5.0",
     "pytest-ruff>=0.4.0",
     "pytest-asyncio>=0.23,<1.0",
+    # Reference models for cross-repo contract tests (DD-158). Resolved from the
+    # installed package via [tool.uv.sources] below.
+    "kairos-ontology-referencemodels",
 ]
 azure = [
     "azure-identity>=1.15.0,<2.0.0",
@@ -123,6 +126,11 @@ include = [
     "pyproject.toml",
     "src/kairos_ontology/**/*",
 ]
+
+# Reference models resolved from the published GitHub Release wheel (DD-158).
+# Update with `kairos-ontology update-refmodels` after a new release is cut.
+[tool.uv.sources]
+kairos-ontology-referencemodels = { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.20.0/kairos_ontology_referencemodels-1.20.0-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100

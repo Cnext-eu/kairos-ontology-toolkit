@@ -19,7 +19,7 @@ from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target regist
 from .shared import (
     _ontology_domain_hints,
     _resolve_catalog,
-    _resolve_ref_models_dir,
+    resolve_refmodels_dir,
 )
 
 
@@ -247,7 +247,7 @@ def validate(
     else:
         shapes_path = cwd / "ontology-hub" / "model" / "shapes"
 
-    ref_models_path = Path(ref_models) if ref_models else _resolve_ref_models_dir(cwd, hub_root)
+    ref_models_path = Path(ref_models) if ref_models else resolve_refmodels_dir(cwd, hub_root)
     catalog_path = _resolve_catalog(catalog, hub_root, cwd, ref_models_path)
     from ..core.reference_modules import resolve_hub_accelerator_detailed
 
@@ -535,7 +535,7 @@ def validate_silver_ext_cmd(domain, catalog, shapes_override):
         catalog,
         hub_root=hub,
         cwd=cwd,
-        ref_models_dir=_resolve_ref_models_dir(cwd, hub),
+        ref_models_dir=resolve_refmodels_dir(cwd, hub),
     )
     if shapes_override is not None:
         shapes_path: Path = shapes_override

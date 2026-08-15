@@ -1,14 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for the update-refmodels CLI command."""
+"""Tests for the update-refmodels CLI command (package mode, DD-158).
 
-from pathlib import Path
+The command runs ``uv pip install --upgrade kairos-ontology-referencemodels``, reads
+the installed version via ``importlib.metadata``, rewrites the pin in ``pyproject.toml``,
+and runs ``uv lock``.
+"""
+
+from __future__ import annotations
+
 from unittest.mock import patch, MagicMock
 
 import pytest
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
+
+_REFMODELS_PIN_V118 = (
+    '"kairos-ontology-referencemodels @ '
+    "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/"
+    'v1.18.0/kairos_ontology_referencemodels-1.18.0-py3-none-any.whl"'
+)
 
 
 @pytest.fixture
@@ -17,171 +29,139 @@ def runner():
 
 
 @pytest.fixture
-def hub_structure(tmp_path):
-    """Create a minimal hub directory structure."""
-    ref_dir = tmp_path / "model" / "reference-models"
-    ref_dir.mkdir(parents=True)
-    (ref_dir / "old-file.ttl").write_text("# old content")
+def hub_with_pyproject(tmp_path):
+    """Create a minimal hub dir with a pyproject.toml containing a refmodels pin."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f"dependencies = [\n    {_REFMODELS_PIN_V118},\n]\n",
+        encoding="utf-8",
+    )
     return tmp_path
 
 
-class TestUpdateRefmodels:
-    """Tests for kairos-ontology update-refmodels command."""
-
+class TestUpdateRefmodelsHelp:
     def test_help_text(self, runner):
-        """Command should have descriptive help."""
         result = runner.invoke(cli, ["update-refmodels", "--help"])
         assert result.exit_code == 0
-        assert "reference models" in result.output.lower()
-        assert "--ref" in result.output
-        assert "--dest" in result.output
+        assert "reference-models" in result.output.lower()
+        assert "--version" in result.output
 
-    def test_git_not_found(self, runner, hub_structure):
-        """Should fail gracefully when git is not installed."""
-        with patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
-            mock_run.side_effect = FileNotFoundError("git not found")
-            result = runner.invoke(
-                cli,
-                ["update-refmodels", "--dest", str(hub_structure / "model" / "reference-models")],
-            )
-            assert result.exit_code != 0
-            assert "git is not installed" in result.output
 
-    def test_clone_failure(self, runner, hub_structure):
-        """Should report error when git clone fails."""
-        dest = str(hub_structure / "model" / "reference-models")
+class TestUpdateRefmodelsUpgrade:
+    """Default (no --version): uv pip install --upgrade + pin rewrite + uv lock."""
 
-        def mock_run_side_effect(cmd, **kwargs):
-            if cmd[0] == "git" and cmd[1] == "--version":
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and cmd[1] == "clone":
-                return MagicMock(returncode=1, stderr="fatal: remote not found")
-            return MagicMock(returncode=0)
+    def test_successful_upgrade(self, runner, hub_with_pyproject, monkeypatch):
+        """Happy path: install succeeds, pin rewritten, lock called."""
+        monkeypatch.chdir(hub_with_pyproject)
+        with (
+            patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
+            patch("kairos_ontology.cli.operations.importlib.metadata") as mock_meta,
+        ):
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+            ]
+            mock_meta.version.return_value = "1.20.0"
 
-        with patch("kairos_ontology.cli.main.subprocess.run", side_effect=mock_run_side_effect):
-            result = runner.invoke(cli, ["update-refmodels", "--ref", "v99.99.99", "--dest", dest])
-            assert result.exit_code != 0
-            assert "clone failed" in result.output
+            result = runner.invoke(cli, ["update-refmodels"])
 
-    def test_successful_update(self, runner, hub_structure, tmp_path):
-        """Should successfully update reference models on happy path."""
-        dest = hub_structure / "model" / "reference-models"
-
-        # Create a fake temp directory that simulates what git would produce
-        fake_clone_dir = tmp_path / "fake-clone"
-        fake_refmodels = fake_clone_dir / "ontology-reference-models"
-        fake_refmodels.mkdir(parents=True)
-        (fake_refmodels / "party.ttl").write_text("# Party reference model")
-        (fake_refmodels / "VERSION").write_text("1.2.0\n")
-        (fake_refmodels / "catalog-v001.xml").write_text("<catalog/>")
-        (fake_refmodels / "blueprints" / "archetypes").mkdir(parents=True)
-        # Upstream also keeps LICENSE/NOTICE at the clone *root* (a sibling of
-        # ontology-reference-models/, outside the sparse-checked-out subtree) —
-        # regression coverage for issue #413.
-        (fake_clone_dir / "LICENSE").write_text("Apache License 2.0\n")
-        (fake_clone_dir / "NOTICE").write_text("Includes FIBO and IATA ONE Record (MIT).\n")
-
-        call_count = {"n": 0}
-
-        def mock_run_side_effect(cmd, **kwargs):
-            call_count["n"] += 1
-            if cmd[0] == "git" and cmd[1] == "--version":
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and cmd[1] == "clone":
-                # Simulate the clone by copying our fake content into the target
-                clone_dest = Path(cmd[-1])
-                import shutil
-
-                if clone_dest.exists():
-                    shutil.rmtree(clone_dest)
-                shutil.copytree(fake_clone_dir, clone_dest)
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and "sparse-checkout" in cmd:
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and "rev-parse" in cmd:
-                return MagicMock(returncode=0, stdout="abc123def456\n")
-            return MagicMock(returncode=0)
-
-        with patch("kairos_ontology.cli.main.subprocess.run", side_effect=mock_run_side_effect):
-            result = runner.invoke(cli, ["update-refmodels", "--dest", str(dest)])
-
-        assert result.exit_code == 0, f"Failed with: {result.output}"
+        assert result.exit_code == 0, f"Failed: {result.output}"
         assert "Reference models updated" in result.output
-        assert "abc123def456" in result.output
-        assert "1.2.0" in result.output
-        # Old content should be replaced
-        assert not (dest / "old-file.ttl").exists()
-        # New content should be present
-        assert (dest / "party.ttl").exists()
-        # Root LICENSE/NOTICE reach the hub alongside VERSION (issue #413).
-        assert (dest / "LICENSE").read_text().strip() == "Apache License 2.0"
-        assert "FIBO" in (dest / "NOTICE").read_text()
+        assert "1.20.0" in result.output
 
-    def test_missing_remote_folder(self, runner, hub_structure, tmp_path):
-        """Should fail when the expected folder is not in the cloned repo."""
-        dest = hub_structure / "model" / "reference-models"
+        # Verify uv pip install --upgrade was called
+        install_args = mock_run.call_args_list[0].args[0]
+        assert "pip" in install_args
+        assert "install" in install_args
+        assert "--upgrade" in install_args
+        assert "kairos-ontology-referencemodels" in install_args
 
-        # Clone dir exists but without the expected subfolder
-        fake_clone_dir = tmp_path / "fake-clone-empty"
-        fake_clone_dir.mkdir(parents=True)
-        (fake_clone_dir / "some-other-folder").mkdir()
+        # Verify uv lock was called
+        assert mock_run.call_args_list[1].args[0] == ["uv", "lock"]
 
-        def mock_run_side_effect(cmd, **kwargs):
-            if cmd[0] == "git" and cmd[1] == "--version":
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and cmd[1] == "clone":
-                clone_dest = Path(cmd[-1])
-                import shutil
+        # Verify pyproject.toml pin was rewritten
+        content = (hub_with_pyproject / "pyproject.toml").read_text(encoding="utf-8")
+        assert "v1.20.0" in content
+        assert "v1.18.0" not in content
 
-                if clone_dest.exists():
-                    shutil.rmtree(clone_dest)
-                shutil.copytree(fake_clone_dir, clone_dest)
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and "sparse-checkout" in cmd:
-                return MagicMock(returncode=0)
-            return MagicMock(returncode=0)
+    def test_install_failure_raises(self, runner, hub_with_pyproject, monkeypatch):
+        """uv pip install failure should raise a ClickException."""
+        monkeypatch.chdir(hub_with_pyproject)
+        with (
+            patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
+            patch("kairos_ontology.cli.operations.importlib.metadata"),
+        ):
+            mock_run.return_value = MagicMock(
+                returncode=1, stdout="", stderr="ERROR: package not found"
+            )
 
-        with patch("kairos_ontology.cli.main.subprocess.run", side_effect=mock_run_side_effect):
-            result = runner.invoke(cli, ["update-refmodels", "--dest", str(dest)])
+            result = runner.invoke(cli, ["update-refmodels"])
+            assert result.exit_code != 0
+            assert "uv pip install failed" in result.output
 
-        assert result.exit_code != 0
-        assert "not found in cloned repo" in result.output
+    def test_lock_failure_raises(self, runner, hub_with_pyproject, monkeypatch):
+        """uv lock failure should raise a ClickException."""
+        monkeypatch.chdir(hub_with_pyproject)
+        with (
+            patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
+            patch("kairos_ontology.cli.operations.importlib.metadata") as mock_meta,
+        ):
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="lock conflict"),
+            ]
+            mock_meta.version.return_value = "1.20.0"
 
-    def test_default_ref_is_main(self, runner, hub_structure, tmp_path):
-        """Default ref should be 'main'."""
-        dest = hub_structure / "model" / "reference-models"
+            result = runner.invoke(cli, ["update-refmodels"])
+            assert result.exit_code != 0
+            assert "uv lock failed" in result.output
 
-        fake_clone_dir = tmp_path / "fake-clone2"
-        fake_refmodels = fake_clone_dir / "ontology-reference-models"
-        fake_refmodels.mkdir(parents=True)
-        (fake_refmodels / "test.ttl").write_text("# test")
-        (fake_refmodels / "catalog-v001.xml").write_text("<catalog/>")
-        (fake_refmodels / "blueprints" / "archetypes").mkdir(parents=True)
+    def test_package_not_found_after_install(self, runner, hub_with_pyproject, monkeypatch):
+        """importlib.metadata.PackageNotFoundError after install should raise."""
+        import importlib.metadata as md
+        monkeypatch.chdir(hub_with_pyproject)
+        with (
+            patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
+            patch("kairos_ontology.cli.operations.importlib.metadata") as mock_meta,
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            mock_meta.version.side_effect = md.PackageNotFoundError(
+                "kairos-ontology-referencemodels"
+            )
+            mock_meta.PackageNotFoundError = md.PackageNotFoundError
 
-        captured_cmds = []
+            result = runner.invoke(cli, ["update-refmodels"])
+            assert result.exit_code != 0
+            assert "not found after install" in result.output
 
-        def mock_run_side_effect(cmd, **kwargs):
-            captured_cmds.append(cmd)
-            if cmd[0] == "git" and cmd[1] == "--version":
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and cmd[1] == "clone":
-                clone_dest = Path(cmd[-1])
-                import shutil
 
-                if clone_dest.exists():
-                    shutil.rmtree(clone_dest)
-                shutil.copytree(fake_clone_dir, clone_dest)
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and "sparse-checkout" in cmd:
-                return MagicMock(returncode=0)
-            if cmd[0] == "git" and "rev-parse" in cmd:
-                return MagicMock(returncode=0, stdout="deadbeef\n")
-            return MagicMock(returncode=0)
+class TestUpdateRefmodelsVersion:
+    """--version <tag>: install specific wheel URL + pin rewrite + lock."""
 
-        with patch("kairos_ontology.cli.main.subprocess.run", side_effect=mock_run_side_effect):
-            result = runner.invoke(cli, ["update-refmodels", "--dest", str(dest)])
+    def test_specific_version(self, runner, hub_with_pyproject, monkeypatch):
+        """--version v1.20.0 installs the specific wheel URL."""
+        monkeypatch.chdir(hub_with_pyproject)
+        with (
+            patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
+            patch("kairos_ontology.cli.operations.importlib.metadata") as mock_meta,
+        ):
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+            ]
+            mock_meta.version.return_value = "1.20.0"
 
-        assert result.exit_code == 0
-        # Find the clone command and verify --branch main is used
-        clone_cmd = [c for c in captured_cmds if "clone" in c]
-        assert any("main" in str(c) for c in clone_cmd)
+            result = runner.invoke(cli, ["update-refmodels", "--version", "v1.20.0"])
+
+        assert result.exit_code == 0, f"Failed: {result.output}"
+
+        # Verify install used the wheel URL, not --upgrade
+        install_args = mock_run.call_args_list[0].args[0]
+        assert "pip" in install_args
+        assert "install" in install_args
+        assert any("v1.20.0" in str(a) for a in install_args)
+
+        # Verify pyproject.toml pin rewritten to v1.20.0
+        content = (hub_with_pyproject / "pyproject.toml").read_text(encoding="utf-8")
+        assert "v1.20.0" in content
+        assert "v1.18.0" not in content

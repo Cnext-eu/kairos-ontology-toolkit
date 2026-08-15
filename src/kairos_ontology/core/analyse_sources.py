@@ -856,7 +856,7 @@ def resolve_domain_class_summaries(
     try:
         from kairos_ontology.core.catalog_utils import CatalogResolver
 
-        resolver = CatalogResolver(Path(catalog_path))
+        resolver = CatalogResolver.with_reference_models(Path(catalog_path))
     except Exception as e:
         logger.warning("Catalog load failed (%s); skipping semantic grounding", e)
         return

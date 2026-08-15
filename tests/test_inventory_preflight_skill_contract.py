@@ -42,6 +42,7 @@ def test_domain_gate_is_blocking_before_design(root):
 def test_ops_owns_explicit_reference_model_updates(root):
     text = (root / "kairos-toolkit-ops" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "update-refmodels --git-ref <ref>" in text
+    assert "update-refmodels" in text
+    assert "--version" in text
     assert "Updating reference models is explicit" in text
     assert "inspect ontology closure and compiler diagnostics" in text

@@ -38,7 +38,7 @@ def _check_catalog_structure(catalog_path: Path) -> bool:
         found, or the catalog could not be parsed.
     """
     try:
-        resolver = CatalogResolver(catalog_path)
+        resolver = CatalogResolver.with_reference_models(catalog_path)
     except (ET.ParseError, OSError) as exc:
         print(f"❌ Catalog is not parseable: {exc}")
         return False

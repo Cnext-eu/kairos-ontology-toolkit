@@ -16,7 +16,8 @@ generated diffs.
   channel, update the dependency pin, lock, sync, and refresh managed files.
 - `kairos-ontology update --test-ref <ref>`: transactionally test a toolkit Git ref.
 - `kairos-ontology update --restore`: restore the dependency captured by `--test-ref`.
-- `kairos-ontology update-refmodels --git-ref <ref>`: update the committed reference-model set.
+- `kairos-ontology update-refmodels`: update the reference-models package to the latest
+  pinned release (or `--version <ver>` for a specific version).
 
 After an update, inspect `git diff`, run managed/scaffold tests, and compile representative v5
 bindings. Updating reference models is explicit: inspect ontology closure and compiler diagnostics
