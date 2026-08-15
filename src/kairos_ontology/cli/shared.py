@@ -446,7 +446,7 @@ def _refmodels_whl_url(tag: str) -> str:
 _REFMODELS_REPO = "Cnext-eu/kairos-ontology-referencemodels"
 
 # Pin for a freshly scaffolded hub that has not yet published its own release.
-_REFMODELS_FALLBACK_TAG = "v1.19.0"
+_REFMODELS_FALLBACK_TAG = "v1.20.0"
 
 
 def _resolve_scaffold_refmodels_pin() -> tuple[str, str]:

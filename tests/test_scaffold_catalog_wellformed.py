@@ -14,8 +14,8 @@ def _render_placeholders(content: str) -> str:
     values = {
         "company_name": "Contoso",
         "company_domain": "contoso.example",
-        "refmodels_ref": "v1.19.0",
-        "refmodels_version": "1.19.0",
+        "refmodels_ref": "v1.20.0",
+        "refmodels_version": "1.20.0",
         "refmodels_channel": "preview",
     }
     return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: values.get(m[1], "dummy"), content)

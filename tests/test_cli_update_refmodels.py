@@ -61,13 +61,13 @@ class TestUpdateRefmodelsUpgrade:
                 MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
             ]
-            mock_meta.version.return_value = "1.19.0"
+            mock_meta.version.return_value = "1.20.0"
 
             result = runner.invoke(cli, ["update-refmodels"])
 
         assert result.exit_code == 0, f"Failed: {result.output}"
         assert "Reference models updated" in result.output
-        assert "1.19.0" in result.output
+        assert "1.20.0" in result.output
 
         # Verify uv pip install --upgrade was called
         install_args = mock_run.call_args_list[0].args[0]
@@ -81,7 +81,7 @@ class TestUpdateRefmodelsUpgrade:
 
         # Verify pyproject.toml pin was rewritten
         content = (hub_with_pyproject / "pyproject.toml").read_text(encoding="utf-8")
-        assert "v1.19.0" in content
+        assert "v1.20.0" in content
         assert "v1.18.0" not in content
 
     def test_install_failure_raises(self, runner, hub_with_pyproject, monkeypatch):
@@ -110,7 +110,7 @@ class TestUpdateRefmodelsUpgrade:
                 MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(returncode=1, stdout="", stderr="lock conflict"),
             ]
-            mock_meta.version.return_value = "1.19.0"
+            mock_meta.version.return_value = "1.20.0"
 
             result = runner.invoke(cli, ["update-refmodels"])
             assert result.exit_code != 0

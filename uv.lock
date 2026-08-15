@@ -649,6 +649,25 @@ wheels = [
 ]
 
 [[package]]
+name = "kairos-ontology-referencemodels"
+version = "1.20.0"
+source = { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.20.0/kairos_ontology_referencemodels-1.20.0-py3-none-any.whl" }
+wheels = [
+    { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.20.0/kairos_ontology_referencemodels-1.20.0-py3-none-any.whl", hash = "sha256:4f6aa3d7358ceb4dbf4199b795d583918163e8427901ec3b4f9ce14df9a5f60c" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "kairos-ontology-toolkit", marker = "extra == 'dev'", url = "https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/v5.2.3rc1/kairos_ontology_toolkit-5.2.3rc1-py3-none-any.whl" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-randomly", marker = "extra == 'dev'", specifier = ">=3.16" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "rdflib", marker = "extra == 'dev'", specifier = ">=7.4" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "kairos-ontology-toolkit"
 source = { editable = "." }
 dependencies = [
@@ -691,6 +710,7 @@ azure = [
     { name = "azure-identity" },
 ]
 dev = [
+    { name = "kairos-ontology-referencemodels" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -741,6 +761,7 @@ provides-extras = ["azure", "flatfile", "foundry", "otel", "parquet"]
 [package.metadata.requires-dev]
 azure = [{ name = "azure-identity", specifier = ">=1.15.0,<2.0.0" }]
 dev = [
+    { name = "kairos-ontology-referencemodels", url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.20.0/kairos_ontology_referencemodels-1.20.0-py3-none-any.whl" },
     { name = "pytest", specifier = ">=8.0.0,<9.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.23,<1.0" },
     { name = "pytest-cov", specifier = ">=4.1.0" },

@@ -52,9 +52,9 @@ def test_read_refmodels_provenance_returns_none_when_not_installed():
 
 def test_format_refmodels_provenance_returns_label():
     """_format_refmodels_fetch_provenance returns 'v<version> (pip)' label."""
-    with patch("importlib.metadata.version", return_value="1.19.0"):
+    with patch("importlib.metadata.version", return_value="1.20.0"):
         label = _format_refmodels_fetch_provenance(Path("/nonexistent"))
-    assert label == "v1.19.0 (pip)"
+        assert label == "v1.20.0 (pip)"
 
 
 def test_format_refmodels_provenance_returns_none_when_not_installed():
@@ -74,7 +74,7 @@ def test_check_inventory_surfaces_refmodels_provenance(tmp_path):
     inventory.mkdir()
     (refmodels / "VERSION").write_text("2026.07\n", encoding="utf-8")
 
-    with patch("importlib.metadata.version", return_value="1.19.0"):
+    with patch("importlib.metadata.version", return_value="1.20.0"):
         result = CliRunner().invoke(
             cli,
             [
@@ -88,7 +88,7 @@ def test_check_inventory_surfaces_refmodels_provenance(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "Reference models VERSION: 2026.07" in result.output
-    assert "Reference models provenance: v1.19.0 (pip)" in result.output
+    assert "Reference models provenance: v1.20.0 (pip)" in result.output
 
 
 def test_check_inventory_reports_present_refmodels_version(tmp_path):

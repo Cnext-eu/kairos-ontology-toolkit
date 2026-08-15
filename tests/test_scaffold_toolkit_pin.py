@@ -63,8 +63,8 @@ def _render(ref: str = REF, channel: str = "stable") -> str:
         .replace("{toolkit_ref}", ref)
         .replace("{toolkit_version}", _tag_to_version(ref))
         .replace("{toolkit_channel}", channel)
-        .replace("{refmodels_ref}", "v1.19.0")
-        .replace("{refmodels_version}", "1.19.0")
+        .replace("{refmodels_ref}", "v1.20.0")
+        .replace("{refmodels_version}", "1.20.0")
     )
 
 

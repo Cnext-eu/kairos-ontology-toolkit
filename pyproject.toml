@@ -127,11 +127,10 @@ include = [
     "src/kairos_ontology/**/*",
 ]
 
-# Temporary: reference models are installed from main until the first wheel
-# is published as a GitHub Release asset. Once that release is cut, replace
-# this git source with a direct-URL wheel pin and remove this block. See DD-158.
+# Reference models resolved from the published GitHub Release wheel (DD-158).
+# Update with `kairos-ontology update-refmodels` after a new release is cut.
 [tool.uv.sources]
-kairos-ontology-referencemodels = { git = "https://github.com/Cnext-eu/kairos-ontology-referencemodels", rev = "main" }
+kairos-ontology-referencemodels = { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.20.0/kairos_ontology_referencemodels-1.20.0-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100
