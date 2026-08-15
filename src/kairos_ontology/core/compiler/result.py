@@ -190,6 +190,25 @@ class ExplainTechnicalField:
 
 
 @dataclass(frozen=True, slots=True)
+class ExplainGrainMechanism:
+    """How one grain column is materialized in the silver output (DD-159 additive audit).
+
+    Mechanism is one of:
+    - ``direct-field`` — a ``fields:`` entry maps the source column directly to a scalar
+      ontology property (``ExprColumn``).
+    - ``technical-field`` — a ``technicalFields:`` entry carries the source column as a
+      non-ontology technical output (DD-139).
+    - ``expression-only`` — the source column appears only inside a multi-part expression;
+      it is not materialized as a standalone column and can't serve as a grain/identity key.
+    - ``absent`` — no ``fields:`` or ``technicalFields:`` entry references the source column.
+    """
+
+    column: str
+    mechanism: str
+    output: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExplainEntity:
     """Resolved, deterministic explanation of one entity binding."""
 
@@ -208,6 +227,7 @@ class ExplainEntity:
     emitted_tests: tuple[str, ...] = ()
     data_quality: tuple[ExplainDataQuality, ...] = ()
     technical_fields: tuple[ExplainTechnicalField, ...] = ()
+    grain_mechanisms: tuple[ExplainGrainMechanism, ...] = ()
     blocked: bool = False
 
 

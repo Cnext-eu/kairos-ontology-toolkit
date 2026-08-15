@@ -366,6 +366,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     transparency-report bullet was also added: the autopilot report states the total count of
     `relationships:` blocks across all bindings; zero across N bindings means silver models
     cannot join — a signal, not a finding.
+  - **Grain materialization audit in `--explain`** (#449, DD-159). `compile --explain` now
+    classifies how each grain column is materialized in the silver output via a new additive
+    `grain_mechanisms` field on `ExplainEntity`. Each grain column is labelled as
+    `direct-field` (a `fields:` entry maps the source column directly), `technical-field`
+    (a DD-139 `technicalFields:` entry carries it), `expression-only` (the source column
+    appears only inside a multi-part expression and is not materialized standalone), or
+    `absent` (no field or technical field references it). The classification is explain-only
+    (no new diagnostics) and is also rendered in the text output as
+    `grain: {column} via {mechanism} → {output}`.
 
   ## [5.2.2] — 2026-08-14
 
