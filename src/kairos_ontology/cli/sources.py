@@ -11,6 +11,7 @@ from pathlib import Path
 # The CLI is the layer that legitimately depends on both core and mdm.
 from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
 
+from ..core.import_flatfile import DEFAULT_MAX_ROWS, DEFAULT_SAMPLE_SIZE
 from .shared import (
     _FORMAT_OPTION,
     _REFMODELS_OPTION,
@@ -462,14 +463,14 @@ def source_privacy_cmd(sources, fix):
 @click.option(
     "--sample-size",
     type=int,
-    default=5,
-    help="Number of sample rows to store per table (default: 5).",
+    default=DEFAULT_SAMPLE_SIZE,
+    help=f"Number of sample rows to store per table (default: {DEFAULT_SAMPLE_SIZE}).",
 )
 @click.option(
     "--max-rows",
     type=int,
-    default=1000,
-    help="Maximum rows to read for type inference (default: 1000).",
+    default=DEFAULT_MAX_ROWS,
+    help=f"Maximum rows to read for type inference (default: {DEFAULT_MAX_ROWS}).",
 )
 @click.option(
     "--exclude-columns",

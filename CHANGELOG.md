@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records — the same pathology as #405 — and would have listed already-processed documents as needing work.
 
 ### Changed
+- **`kairos-bronze.ttl` now declares every predicate `import-source` emits** (chore; groundwork for #422/#424).
+  The importer emitted ten `kairos-bronze:` predicates that the scaffold vocabulary never declared —
+  `rowCount`, `distinctCount`, `sampleValues`, `formatHint`, `suggestedEnum`, `enumValues`,
+  `suggestedForeignKey`, `fkConfidence`, `jsonClassification`, `derivedFromJson` — so their meaning lived only
+  in the emitting code. They are now declared with labels, comments, and domain/range; `rowCount` is pinned as
+  the *true total row count of the source relation*, the meaning the upcoming #422 fix relies on.
+  `owl:versionInfo` bumped to 1.1.0. Alongside, the CLI's `--sample-size`/`--max-rows` default literals in
+  `import-flatfile` and `extract-schema` are now imported from their core modules instead of duplicated
+  (identical values, zero behavior change).
 - **`build-glossary` now excludes `status: skipped` extraction records** and reports how many it excluded.
   It read `extracted_terms` from every record regardless of status, so a skipped record's terms landed in the
   company glossary. This only became a *contradiction* once `status` became load-bearing (above), so it is
