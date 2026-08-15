@@ -386,18 +386,22 @@ def locate_discovery_doc(refmodels_root: Path, archetype_id: str) -> Path | None
 
 
 def _refmodels_version(refmodels_root: Path) -> str | None:
-    """Read the reference-models version, preferring installed package metadata."""
+    """Read the reference-models version from the resolved root, falling back to package metadata.
+
+    Prefer the ``VERSION`` file under the explicitly-passed *refmodels_root* (which may
+    be a test fixture or a ``KAIROS_REFMODELS_ROOT`` checkout) so callers that build a
+    fixture with a specific version see that version, not the installed package's.
+    """
+    root = normalize_refmodels_root(refmodels_root)
+    for candidate in (root / "VERSION", root.parent / "VERSION"):
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8").strip()
     try:
         import importlib.metadata
 
         return importlib.metadata.version("kairos-ontology-referencemodels")
     except importlib.metadata.PackageNotFoundError:
-        pass
-    root = normalize_refmodels_root(refmodels_root)
-    for candidate in (root / "VERSION", root.parent / "VERSION"):
-        if candidate.is_file():
-            return candidate.read_text(encoding="utf-8").strip()
-    return None
+        return None
 
 
 #: Subdirectories under a normalized reference-models root that hold per-module version pins,

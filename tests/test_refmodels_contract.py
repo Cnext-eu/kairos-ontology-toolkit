@@ -32,11 +32,16 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
 from kairos_ontology.core import archetype_loader, pattern_loader
+
+# Unblock the installed referencemodels package — conftest.py blocks it by
+# default for test isolation, but this file *needs* the real package.
+sys.modules.pop("kairos_ontology_referencemodels", None)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,6 +78,20 @@ def _refmodels_root() -> Path | None:
 
 
 REFMODELS_ROOT = _refmodels_root()
+
+# Re-block the installed package so other test files that rely on conftest's
+# isolation sentinel still see the "no package" state.  Importing the real
+# module above bypassed the sentinel — restore it now.
+import types as _types  # noqa: E402
+
+
+def _raise_import_error(*a, **kw):
+    raise ImportError("blocked after REFMODELS_ROOT resolved")
+
+
+_block = _types.ModuleType("kairos_ontology_referencemodels")
+_block.refmodels_root = _raise_import_error  # type: ignore[attr-defined]
+sys.modules["kairos_ontology_referencemodels"] = _block
 
 
 def _fail_if_missing_in_ci(root: Path | None, environ: dict[str, str]) -> None:

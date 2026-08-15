@@ -7,10 +7,33 @@ import pytest
 from pathlib import Path
 import tempfile
 import shutil
+import types
 
 # Make sibling helper modules (e.g. archetype_fixtures.py) importable by name even
 # though `tests` is a package.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# ---------------------------------------------------------------------------
+# Block the installed referencemodels package during tests.
+# ---------------------------------------------------------------------------
+# On CI, ``uv sync --all-groups`` installs ``kairos-ontology-referencemodels``
+# as a dev dependency.  Tests that build synthetic fixtures and expect no
+# reference-models resolution (the majority) would silently resolve the real
+# package instead — causing hangs, false passes, or mysterious failures.
+#
+# We block the package at import time by inserting a sentinel that raises
+# ``ImportError`` on attribute access.  Tests that **want** the real package
+# (``test_refmodels_contract.py``, ``test_refmodels_package_resolution.py``)
+# clear the sentinel at module level before computing their refmodels root.
+_BLOCK_MOD = types.ModuleType("kairos_ontology_referencemodels")
+
+
+def _raise_import_error(*a, **kw):
+    raise ImportError("blocked by conftest for test isolation")
+
+
+_BLOCK_MOD.refmodels_root = _raise_import_error  # type: ignore[attr-defined]
+sys.modules["kairos_ontology_referencemodels"] = _BLOCK_MOD
 
 
 # ---------------------------------------------------------------------------
