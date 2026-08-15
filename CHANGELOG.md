@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Discovery judgments are now source-evidence aware** (#507, Layer C of #505). During discovery an
+  `optional`-tier concept with real source data behind it was routinely judged `not-applicable` — the
+  one outcome `design_landscape` treats as the *opposite* of demand evidence. On the CLdN hub that
+  deferred 20 optional-tier concepts, including a 289K-row cost-accounting table BI reports actively
+  used. The rule the skill should follow is simple — **if data exists and the concept is optional,
+  model it** — but nothing deterministic ever told the skill, or the human reviewing it, that data
+  existed for a given concept. DD-160 (#496/#498) already joined source affinity to modeled/bound
+  state, but at *domain* granularity; this is the concept-level half.
+  New `core/conformance_evidence.py` joins two artifacts that already exist and are written at
+  Stage 1, well before discovery at Stage 2 — `propose-alignment`'s per-table `ref_class` (direct,
+  concept-level) and `analyse-sources`' per-table domain assignment (indirect, via a concept's
+  `likely_domains`). No new LLM call, no new artifact, no new lifecycle ordering constraint.
+  Surfaced in four places: `judgments-template` attaches a read-only `source_evidence` block naming
+  the actual tables and pre-fills `outcome: conforms` for `optional`-tier concepts with evidence
+  (required/recommended keep their sentinel — they are in scope regardless of what the sources
+  contain); `build` **rejects** an `optional`-tier `not-applicable` that contradicts source evidence
+  unless an explicit non-sentinel `rationale` is recorded; `validate` warns about the same thing but
+  never fails; and `summarize` gains a `by_evidence` split (`blueprint` vs `data-driven`).
+  The build/validate asymmetry is deliberate: `build` is new authoring, where overriding
+  deterministic evidence should be an explained decision; `validate` also re-reads artifacts written
+  long ago, where the same rule would be an unconvergeable gate on work already done (the CLdN hub
+  alone carries 22 such judgments). **No artifact schema change** — `source_evidence` is
+  template-only and `by_evidence` is recomputed live, deliberately *not* added to
+  `compute_scorecard`, whose output `validate_artifact` compares for equality against the scorecard
+  stored in the artifact (a new key there would fail every artifact already on disk).
+  The `kairos-design-discovery` skill gains the missing rule the misapplication traced back to:
+  `not-applicable` means **structurally incompatible**, never "I could not find a source table" —
+  that is `partial`, which keeps the concept in scope for a later binding pass.
 - **`domain-coverage --explain <domain>` and `--owns <ClassName>`** (#418, DD-157). The blueprint's
   per-domain `owns`/`does_not_own` boundaries were loaded by the toolkit and shown only inside an LLM
   prompt no design author ever sees — nothing in the design loop surfaced or checked ownership, so a

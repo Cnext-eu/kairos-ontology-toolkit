@@ -47,7 +47,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from .archetype_loader import Archetype, VALID_TIERS
-from .hub_utils import is_authored_discovery_ttl
+from .hub_utils import is_authored_discovery_ttl, is_scaffold_placeholder_text
 
 #: Schema version of the conformance artifact itself.
 #: v2 (DD-148) added ``mode``, ``archetype.confirmed_by``, and per-concept
@@ -63,6 +63,18 @@ VALID_MODES = {"interactive", "fleet"}
 
 #: Valid values for the per-concept ``decided_by`` field.
 VALID_DECIDED_BY = {"user", "ai", "autopilot"}
+
+#: The outcome that means "the SME confirmed this does not apply to this business". It is the
+#: only outcome ``design_landscape`` treats as the *opposite* of demand evidence, which is why
+#: recording it against a concept that demonstrably has source data is worth warning about
+#: (issue #507). Note the hyphen: the *tier* ``not_applicable`` (underscore) is a different,
+#: catalog-side thing entirely -- see :func:`validate_artifact`'s docstring.
+OUTCOME_NOT_APPLICABLE = "not-applicable"
+
+#: Tier whose default outcome flips when source data exists (issue #507). ``required`` and
+#: ``recommended`` are deliberately untouched: a required concept is in scope regardless of what
+#: the sources happen to contain, so "we found data" is not new information about it.
+DATA_DRIVEN_TIER = "optional"
 
 
 class ConformanceArtifactError(Exception):
@@ -537,6 +549,103 @@ def validate_artifact(
                 f"'concept_set_hash' no longer match archetype {archetype.id!r} — rerun "
                 "kairos-design-discovery against the current catalog."
             )
+    return errors
+
+
+def _contradicted_not_applicable(
+    outcomes: list[dict[str, Any]], evidence: dict[str, Any]
+) -> list[tuple[dict[str, Any], Any]]:
+    """Return ``(entry, evidence)`` for every source-contradicted ``not-applicable`` judgment.
+
+    "Contradicted" = tier ``optional``, outcome ``not-applicable``, and
+    :mod:`kairos_ontology.core.conformance_evidence` found real source data for that concept.
+    Deliberately restricted to the ``optional`` tier: for a ``required`` concept the presence
+    of source data is not new information (it is in scope either way), and for ``deviates``/
+    ``partial`` the concept already counts as evidence downstream, so there is nothing to warn
+    about.
+    """
+
+    contradicted: list[tuple[dict[str, Any], Any]] = []
+    for entry in outcomes:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("tier") != DATA_DRIVEN_TIER:
+            continue
+        if entry.get("outcome") != OUTCOME_NOT_APPLICABLE:
+            continue
+        found = evidence.get(entry.get("uri"))
+        if found is not None:
+            contradicted.append((entry, found))
+    return contradicted
+
+
+def advise_artifact(
+    artifact: dict[str, Any], evidence: dict[str, Any] | None
+) -> list[str]:
+    """Return advisory (never blocking) warnings about *artifact*, given source *evidence*.
+
+    Deliberately **separate** from :func:`validate_artifact` rather than folded into it. That
+    function's contract is "list of errors"; every caller treats a non-empty return as a
+    failure, and ``discovery-conformance validate`` exits non-zero on it. Adding an
+    evidence-driven error there would retroactively fail re-validation of every artifact
+    already on disk that recorded a ``not-applicable`` the sources contradict -- the CLdN hub
+    alone has 22 -- turning a review prompt into an unconvergeable gate on work already done.
+
+    ``build`` *does* enforce the rationale requirement, because that is new authoring: see
+    :func:`data_driven_build_errors`.
+    """
+
+    if not evidence:
+        return []
+    concepts = artifact.get("core_concepts")
+    if not isinstance(concepts, list):
+        return []
+    warnings = []
+    for entry, found in _contradicted_not_applicable(concepts, evidence):
+        label = entry.get("label") or entry.get("uri") or "<unknown concept>"
+        warnings.append(
+            f"{label} (tier {DATA_DRIVEN_TIER}) is judged '{OUTCOME_NOT_APPLICABLE}' but "
+            f"{found.describe()}. If the data exists and the concept is optional, model it; "
+            "keep the finding only if the concept is genuinely inapplicable to this business."
+        )
+    return warnings
+
+
+def data_driven_build_errors(
+    outcomes: list[dict[str, Any]], evidence: dict[str, Any] | None
+) -> list[str]:
+    """Errors that block ``discovery-conformance build`` -- new authoring only (issue #507).
+
+    One rule: a source-contradicted ``not-applicable`` must carry a real, written rationale.
+    The SME keeps full authority to record the finding -- ``not-applicable`` is never removed
+    as an option -- but overriding deterministic evidence has to be a deliberate, explained
+    decision rather than the default an interview fell into. A missing, blank, or still-
+    sentinel ``rationale`` is the signal that no such decision was made.
+
+    Enforced at ``build`` (where a judgments file is being authored *now*) and not in
+    :func:`validate_artifact` (which also re-reads artifacts written long ago) -- see
+    :func:`advise_artifact` for why that split matters.
+    """
+
+    if not evidence:
+        return []
+    errors = []
+    for entry, found in _contradicted_not_applicable(outcomes, evidence):
+        rationale = entry.get("rationale")
+        has_rationale = (
+            isinstance(rationale, str)
+            and rationale.strip()
+            and not is_scaffold_placeholder_text(rationale)
+        )
+        if has_rationale:
+            continue
+        label = entry.get("label") or entry.get("uri") or "<unknown concept>"
+        errors.append(
+            f"{label} (tier {DATA_DRIVEN_TIER}) is judged '{OUTCOME_NOT_APPLICABLE}' but "
+            f"{found.describe()}. Either change the outcome to 'conforms' (data exists and the "
+            "concept is optional), or record an explicit 'rationale' saying why the concept "
+            "does not apply despite that data."
+        )
     return errors
 
 

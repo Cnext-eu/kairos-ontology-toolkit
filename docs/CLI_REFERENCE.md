@@ -217,8 +217,8 @@ default `json`); `judgments-template` and `build` write files.
 
 ```
 kairos-ontology discovery-conformance judgments-template --archetype <id> \
-  [--mode interactive|fleet] [--output <path>] [--overwrite] [--format json|yaml] \
-  [--refmodels-root <path>]
+  [--mode interactive|fleet] [--output <path>] [--overwrite] [--no-source-evidence] \
+  [--format json|yaml] [--refmodels-root <path>]
 
 kairos-ontology discovery-conformance build --archetype <id> \
   --judgments-file <path> [--output <path>] [--validate/--no-validate] \
@@ -243,6 +243,32 @@ pre-filled with `uri`/`label`/`tier` from the catalog, and an `<CONFIRM_...>` se
 `scaffold-binding`/`scaffold-staging` already use) in every field that still needs a real
 business judgment. Writes to stdout by default; `--output` writes to a file and refuses to
 overwrite an existing one without `--overwrite` (`scaffold-mapping`'s convention).
+
+### Source-evidence-aware judgments (issue #507)
+
+Run from **inside the hub**, `judgments-template` joins the hub's own Stage-1 source analysis
+(`integration/sources/_analysis/*-alignment.yaml`, falling back to `*-affinity.yaml` via a
+concept's `likely_domains`) to the concept list:
+
+* every concept with evidence gains a read-only `source_evidence` block naming the actual
+  `<system>.<table>` values;
+* an **`optional`-tier** concept with evidence is pre-filled `outcome: conforms`, with the
+  evidence written into its `rationale` — *if data exists and the concept is optional, model it*.
+  `required`/`recommended` concepts keep their sentinel: they are in scope regardless of what the
+  sources happen to contain, so pre-filling them would replace a judgment with a tautology.
+
+`--no-source-evidence` opts out (running outside a hub does the same thing implicitly).
+
+`build` then **rejects** an `optional`-tier `not-applicable` that contradicts source evidence
+unless the entry records an explicit, non-sentinel `rationale`. `validate` reports the same
+situation as a stderr warning and never fails — `build` is new authoring, where overriding
+deterministic evidence should be an explained decision, while `validate` also re-reads artifacts
+written long ago, where the same rule would be an unconvergeable gate on work already done.
+
+`summarize` gains `by_evidence` (`blueprint` vs `data-driven`) in its payload. This is
+deliberately *not* part of the artifact's own `scorecard`: `validate_artifact` recomputes that
+scorecard and compares it for equality against the stored one, so a new key there would fail
+every artifact already on disk. No artifact schema change is involved in any of this.
 
 `build` now also makes `label`/`tier` **optional** in `--judgments-file`: when a concept's entry
 omits either, `build` derives it from the resolved archetype's own catalog for that `uri` before

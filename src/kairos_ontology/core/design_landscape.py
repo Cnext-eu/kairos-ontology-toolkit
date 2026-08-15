@@ -67,6 +67,13 @@ CONFIRMED_DISCOVERY_OUTCOMES = frozenset({"conforms", "conforms-with-rename"})
 #: apply to this business. This is itself a real, deliberate interview finding -- it still
 #: surfaces in ``discovery_demand`` -- but it is the *opposite* of demand evidence, so it
 #: must never rescue a class out of ``no-evidence`` the way any other outcome would.
+#:
+#: Issue #507 reported this as the mechanism by which a `not-applicable` concept "is never
+#: modeled". It is not: both classification branches that read ``has_discovery_evidence``
+#: below *also* require ``source_count == 0``, so a `not-applicable` class with source tables
+#: behind it already reaches ``passthrough-candidate``/``demanded-but-unbound`` today. The
+#: real gap #507 closes is upstream, at the point the judgment is made -- see
+#: ``core/conformance_evidence.py``. Nothing here needed to change.
 NON_EVIDENCE_DISCOVERY_OUTCOMES = frozenset({"not-applicable"})
 
 _ANALYSIS_SUBDIR = Path("integration") / "sources" / "_analysis"
