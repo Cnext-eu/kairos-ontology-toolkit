@@ -244,6 +244,13 @@ not watching can act on without re-deriving anything:
   report "complete" — just as Stage 3 requires an explicit "no material decision,
   mechanical authoring only" line rather than silence, the transparency report
   requires an explicit **BLOCKED** line rather than omission.
+- **Zero-relationships flag** — if the run authored entity bindings, the report must
+  state the total count of `relationships:` blocks across all bindings. A count of
+  zero across N bindings means the silver models cannot join across domains — this is
+  a signal, not a finding: `kairos-design-mapping` already documents `relationships:`
+  and `externalReference` and the autopilot may have skipped `### 6. Define
+  relationships and checks`. State the count so a reviewer can see whether the step
+  was performed or skipped.
 
 ## Anti-patterns
 

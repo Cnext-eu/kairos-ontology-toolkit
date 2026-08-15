@@ -50,6 +50,7 @@ AUTOPILOT_ANCHORS = [
         "Unbound tables over 1000 rows",
         "Conformance-risk list",
         "**BLOCKED**",
+        "Zero-relationships flag",
     ]
 
 

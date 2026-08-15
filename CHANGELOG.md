@@ -350,6 +350,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`.import/` is now gitignored** (#453). The toolkit-created convention for raw client evidence was
     not in `gitignore.template`, so large imported files could be committed accidentally. Defence-in-
     depth: a `pre-push` hook checks for files over 1 MB.
+  - **Autopilot transparency report: source coverage, conformance risk, and BLOCKED status**
+    (#458). The autopilot transparency report now requires four new metrics: source coverage
+    (bound / total relations, percentage), unbound tables over 1000 rows with a likely canonical
+    target (row counts only — no fabricated "business value" score per DD-159), a conformance-risk
+    list (unbound sources vs already-bound classes), and an explicit **BLOCKED** status when any
+    LLM judgment step was skipped (a run that skipped an LLM step can never report "complete").
+    The "rank by business value" suggestion from the issue was dropped — domain importance is not
+    quantifiable by the toolkit and fabricating a score would violate DD-159.
+  - **Cross-source FK scanner in scaffold-binding** (#457). `scaffold-binding` now scans the
+    hub's existing bindings' identity columns for exact normalized name matches against FK-shaped
+    columns (``*_id`` / ``*_fk`` / ``*_code``) in the table being scaffolded. Each match is reported
+    as a tier-1 candidate (deterministic, zero LLM, zero false positives) in the binding header
+    and `ScaffoldBindingResult.cross_source_fk_matches`. A "Zero-relationships flag"
+    transparency-report bullet was also added: the autopilot report states the total count of
+    `relationships:` blocks across all bindings; zero across N bindings means silver models
+    cannot join — a signal, not a finding.
 
   ## [5.2.2] — 2026-08-14
 

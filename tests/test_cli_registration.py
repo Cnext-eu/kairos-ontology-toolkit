@@ -14,6 +14,7 @@ RETAINED_COMMANDS = {
     "audit-column-coverage",
     "build-glossary",
     "catalog-test",
+    "check-ai-config",
     "check-inventory",
     "compile",
     "coverage-report",

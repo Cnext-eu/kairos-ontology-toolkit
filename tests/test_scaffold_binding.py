@@ -28,6 +28,7 @@ from kairos_ontology.core.scaffold_binding import (
     match_columns_to_properties,
     propose_grain_columns,
     run_scaffold_binding,
+    scan_cross_source_fks,
 )
 from kairos_ontology.core.hub_utils import is_scaffold_placeholder_text
 
@@ -1022,3 +1023,100 @@ def test_annotation_properties_are_in_neither_bucket():
     )
     assert matched.fields == {}
     assert matched.relationship_candidates == {}
+
+
+# ---------------------------------------------------------------------------
+# Cross-source FK scanner (issue #457).
+# ---------------------------------------------------------------------------
+def test_scan_cross_source_fks_returns_empty_when_no_bindings(tmp_path):
+    """No existing bindings → no FK matches."""
+    hub_root, _ = _build_hub(tmp_path)
+    columns = (_col("trade_party_id"), _col("event_id"))
+    assert scan_cross_source_fks(hub_root, columns) == ()
+
+
+def test_scan_cross_source_fks_matches_fk_shaped_column_to_identity_column(tmp_path):
+    """An FK-shaped column whose normalized name matches an existing binding's identity
+    sourceKey is reported as a cross-source FK candidate."""
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+
+    # Scaffold the organisations table first — its identity sourceKey is "trade_party_id".
+    _scaffold(hub_root, ref_models_dir)
+
+    # Now scan a different table that has a column with the exact same name.
+    columns = (_col("trade_party_id"), _col("event_id"))
+    matches = scan_cross_source_fks(hub_root, columns)
+    assert len(matches) == 1
+    m = matches[0]
+    assert m.local_column == "trade_party_id"
+    assert m.foreign_identity_column == "trade_party_id"
+    assert m.target_class == _TRADE_PARTY_IRI
+    assert m.target_domain == "party"
+
+
+def test_scan_cross_source_fks_excludes_self_binding(tmp_path):
+    """Re-scanning a table that already has a binding should not match against itself."""
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    result = _scaffold(hub_root, ref_models_dir)
+    binding_name = result.binding_path.stem.removesuffix(".binding")
+
+    # Scan the same table's columns (including its own PK "trade_party_id").
+    columns = (_col("trade_party_id"), _col("party_name"))
+    matches = scan_cross_source_fks(hub_root, columns, exclude_name=binding_name)
+    # trade_party_id is the PK and is FK-shaped (_id suffix), but the self-binding is excluded.
+    assert all(m.target_binding_name != binding_name for m in matches)
+    # Non-FK-shaped column "party_name" never matches.
+    assert all(m.local_column != "party_name" for m in matches)
+
+
+def test_scan_cross_source_fks_ignores_non_fk_shaped_columns(tmp_path):
+    """A column without an _id/_fk/_code suffix is never a FK candidate, even if its name
+    matches an identity column."""
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    _scaffold(hub_root, ref_models_dir)
+
+    columns = (_col("trade_party"),)  # no _id suffix
+    matches = scan_cross_source_fks(hub_root, columns)
+    assert matches == ()
+
+
+def test_scan_cross_source_fks_reports_in_scaffold_result_and_notes(tmp_path):
+    """run_scaffold_binding surfaces cross-source FK matches in the result and notes."""
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+
+    # Scaffold organisations first (identity sourceKey = trade_party_id).
+    _scaffold(hub_root, ref_models_dir)
+
+    # Scaffold events — it has "event_id" as PK but no FK-shaped column matching trade_party_id.
+    # We need a table with an FK to trade_party_id to see a match.  Add a column to the vocabulary.
+    extra_col_ttl = textwrap.dedent(
+        """
+        src:ord a kb:SourceTable ; kb:sourceTable src:crm ; kb:sourceSystem src:crm ;
+          kb:tableName "orders" ; kb:primaryKeyColumns "order_id" .
+        src:ordid a kb:SourceColumn ; kb:sourceTable src:ord ;
+          kb:columnName "order_id" ; kb:dataType "varchar(50)" ;
+          kb:nullable "false"^^xsd:boolean .
+        src:ordtpid a kb:SourceColumn ; kb:sourceTable src:ord ;
+          kb:columnName "trade_party_id" ; kb:dataType "varchar(50)" ;
+          kb:nullable "true"^^xsd:boolean .
+        """
+    ).strip()
+    with (hub_root / "integration" / "sources" / "crm" / "crm.vocabulary.ttl").open(
+        "a", encoding="utf-8"
+    ) as f:
+        f.write("\n" + extra_col_ttl + "\n")
+
+    result = run_scaffold_binding(
+        hub_root=hub_root,
+        system="crm",
+        table="orders",
+        archetype_id="passthrough",
+        target_class=_TRADE_PARTY_IRI,
+        domain="party",
+        ref_models_dir=ref_models_dir,
+        catalog_path=hub_root / "catalog-v001.xml",
+    )
+    assert result.cross_source_fk_matches
+    assert any(m.local_column == "trade_party_id" for m in result.cross_source_fk_matches)
+    assert any("cross-source FK scan" in note for note in result.notes)
+    assert "Cross-source FK candidates" in result.binding_text
