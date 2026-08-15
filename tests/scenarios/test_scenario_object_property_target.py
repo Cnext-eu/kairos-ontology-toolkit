@@ -121,6 +121,9 @@ class TestObjectPropertyTargetScenario:
         client = _mock_client(_RESPONSE)
         with (
             mock.patch(
+                "kairos_ontology.core.propose_alignment.require_ai_provider",
+            ),
+            mock.patch(
                 "kairos_ontology.core.propose_alignment.get_ai_client",
                 return_value=client,
             ),

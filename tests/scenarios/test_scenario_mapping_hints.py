@@ -142,6 +142,9 @@ def _affinity_dir(tmp_path):
 def _run(tmp_path, include_mapping_hints):
     with (
         mock.patch(
+            "kairos_ontology.core.propose_alignment.require_ai_provider",
+        ),
+        mock.patch(
             "kairos_ontology.core.propose_alignment.get_ai_client", return_value=_mock_client()
         ),
         mock.patch(

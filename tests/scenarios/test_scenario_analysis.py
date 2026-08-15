@@ -175,8 +175,9 @@ class TestAnalyseSourcesScenario:
         assert first.confidence > 0
         assert first.likely_entity == "Party"
 
+    @patch("kairos_ontology.core.ai_preflight.require_ai_provider")
     @patch("kairos_ontology.core.analyse_sources._get_openai_client")
-    def test_run_analyse_all_sources(self, mock_get_client, tmp_path):
+    def test_run_analyse_all_sources(self, mock_get_client, mock_preflight, tmp_path):
         """Run analysis across all acme-hub sources."""
         mock_client = MagicMock()
         response = MagicMock()
