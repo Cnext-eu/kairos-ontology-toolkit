@@ -16,7 +16,17 @@ This module reports, per data domain, the union of:
   - whether it has at least one EntityBinding
     (via :func:`kairos_ontology.core.hub_inspection._binding_domains`),
   - whether its declared ontology IRI is a live ``owl:imports`` in ``_master.ttl``
-    (via :func:`kairos_ontology.core.master_ontology.list_active_master_imports`).
+    (via :func:`kairos_ontology.core.master_ontology.list_active_master_imports`),
+  - how many discovered **source tables** have affinity to the domain, read from the
+    persisted ``integration/sources/_analysis/*-affinity.yaml`` reports (DD-160).
+
+The source-affinity column (issue #496/#498, DD-160) is what turns this table from
+"what did we author?" into "what did we author *versus what the source data needs*?".
+A domain the blueprint deferred, that nevertheless has source tables assigned to it, is
+real business data with nowhere to land -- the deterministic signal that the domain should
+be modeled/bound rather than deferred. Before DD-160 the affinity analysis and the binding
+inventory both existed but were never joined, so the gap was invisible to everything except
+a hand-written report.
 
 This is advisory only: it never fails a hub, and there is no ``--strict`` mode
 (deliberately deferred -- see issue #393 suggestion #5, also deferred).
@@ -41,18 +51,52 @@ from .master_ontology import list_active_master_imports
 #: payload (``--owns <ClassName>``: inventory-backed reverse ownership lookup), and an
 #: optional ``owns_batch`` payload (``--owns A,B,C``: multi-class batch lookup, issue
 #: #439). The base ``domains`` rows are unchanged.
-SCHEMA_VERSION = 2
+#: v3 (issue #496/#498, DD-160): each ``domains`` row gains ``source_tables``,
+#: ``source_tables_secondary`` and ``status``; the envelope
+#: gains a top-level ``unassigned_source_tables`` array (tables the affinity pass could
+#: not assign to any domain -- previously dropped on the floor entirely).
+SCHEMA_VERSION = 3
+
+#: ``DomainCoverageRow.status`` values. Deterministic verdicts derived from the join of
+#: source affinity x authored ontology x authored bindings.
+STATUS_BOUND = "bound"
+STATUS_DEFERRED = "deferred"
+STATUS_NOT_MODELED = "not-modeled"
+STATUS_NO_ELIGIBLE_SOURCES = "no-eligible-sources"
+
+#: Human-readable meaning of each status, reused by the CLI renderer and by
+#: ``kairos-ontology next`` so the two can never drift.
+STATUS_DESCRIPTIONS: dict[str, str] = {
+    STATUS_BOUND: "has at least one EntityBinding",
+    STATUS_DEFERRED: (
+        "source tables are assigned to this domain but nothing is bound -- real data "
+        "with nowhere to land; model/bind it rather than deferring it"
+    ),
+    STATUS_NOT_MODELED: (
+        "source tables are assigned to this domain but no domain ontology TTL exists -- "
+        "candidate domain to add"
+    ),
+    STATUS_NO_ELIGIBLE_SOURCES: "no source table is assigned to this domain",
+}
 
 
 @dataclass(frozen=True)
 class DomainCoverageRow:
-    """One domain's coverage across blueprint, authoring, binding, and import."""
+    """One domain's coverage across blueprint, authoring, binding, import, and sources."""
 
     domain: str
     in_blueprint: Optional[bool]  # None => "n/a" (no accelerator pack installed at all)
     modeled: bool
     bound: bool
     imported: bool
+    #: Source tables whose *primary* affinity domain is this one. ``None`` when no
+    #: affinity reports were available at all (distinct from a real zero).
+    source_tables: Optional[int] = None
+    #: Source tables listing this domain under ``secondary_domains``.
+    source_tables_secondary: Optional[int] = None
+    #: One of the ``STATUS_*`` constants, or ``None`` when no affinity evidence exists
+    #: (a verdict without source evidence would be a guess).
+    status: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -61,6 +105,34 @@ class DomainCoverageRow:
             "modeled": self.modeled,
             "bound": self.bound,
             "imported": self.imported,
+            "source_tables": self.source_tables,
+            "source_tables_secondary": self.source_tables_secondary,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class UnassignedSourceTable:
+    """A discovered source table the affinity pass could not assign to any domain.
+
+    Before DD-160 these were dropped silently: ``analyse_sources`` blanks ``domain``
+    whenever the LLM assignment fails, and every downstream consumer skipped rows with an
+    empty domain, so the table appeared in no artifact at all. Surfacing them is the whole
+    point -- an unassigned table is the strongest "the ontology has no home for this"
+    signal the toolkit can produce without another model call.
+    """
+
+    system: str
+    table: str
+    total_columns: int
+    likely_entity: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "system": self.system,
+            "table": self.table,
+            "total_columns": self.total_columns,
+            "likely_entity": self.likely_entity,
         }
 
 
@@ -70,17 +142,144 @@ class DomainCoverageReport:
 
     accelerator: Optional[str]
     rows: tuple[DomainCoverageRow, ...]
+    unassigned_source_tables: tuple[UnassignedSourceTable, ...] = ()
+    #: False when no ``*-affinity.yaml`` was found, so consumers can say "run
+    #: analyse-sources first" instead of reporting a misleading zero.
+    has_affinity_evidence: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "accelerator": self.accelerator,
             "domains": [row.to_dict() for row in self.rows],
+            "has_affinity_evidence": self.has_affinity_evidence,
+            "unassigned_source_tables": [t.to_dict() for t in self.unassigned_source_tables],
         }
 
 
 def _normalize_iri(iri: str) -> str:
     return iri.rstrip("/")
+
+
+@dataclass(frozen=True)
+class SourceAffinityEvidence:
+    """Per-domain source-table counts plus the tables no domain claimed."""
+
+    found_reports: bool
+    primary: dict[str, int]
+    secondary: dict[str, int]
+    unassigned: tuple[UnassignedSourceTable, ...]
+
+
+def load_source_affinity(analysis_dir: Optional[Path]) -> SourceAffinityEvidence:
+    """Count source tables per domain from persisted ``*-affinity.yaml`` reports.
+
+    Deliberately a *separate* reader from
+    :func:`kairos_ontology.core.propose_alignment.load_affinity_reports`: that one groups
+    tables for alignment and must skip unassigned rows (there is no domain to pick
+    candidate classes from), whereas this one exists precisely to keep them. Reading the
+    persisted artifact means this stays deterministic and offline -- the LLM ran once, at
+    ``analyse-sources`` time.
+
+    Unreadable or wrong-schema files are skipped with a debug log rather than raising:
+    ``domain-coverage`` is advisory and must never fail a hub.
+    """
+    primary: dict[str, int] = {}
+    secondary: dict[str, int] = {}
+    unassigned: list[UnassignedSourceTable] = []
+    found = False
+
+    if analysis_dir is None or not Path(analysis_dir).is_dir():
+        return SourceAffinityEvidence(False, primary, secondary, ())
+
+    for affinity_file in sorted(Path(analysis_dir).glob("*-affinity.yaml")):
+        try:
+            with open(affinity_file, encoding="utf-8") as handle:
+                data = yaml.safe_load(handle)
+        except Exception:  # defensive: a corrupt report must not break the table
+            continue
+        if not isinstance(data, dict) or data.get("schema_version") != 2:
+            continue
+
+        found = True
+        system = data.get("system") or affinity_file.stem.replace("-affinity", "")
+        for table in data.get("tables") or []:
+            if not isinstance(table, dict):
+                continue
+            domain = (table.get("domain") or "").strip()
+            if not domain:
+                unassigned.append(
+                    UnassignedSourceTable(
+                        system=str(system),
+                        table=str(table.get("table", "")),
+                        total_columns=int(table.get("total_columns") or 0),
+                        likely_entity=str(table.get("likely_entity") or ""),
+                    )
+                )
+                continue
+            primary[domain] = primary.get(domain, 0) + 1
+            for extra in table.get("secondary_domains") or []:
+                if not isinstance(extra, dict):
+                    continue
+                extra_domain = (extra.get("domain") or "").strip()
+                if extra_domain:
+                    secondary[extra_domain] = secondary.get(extra_domain, 0) + 1
+
+    unassigned.sort(key=lambda t: (t.system, t.table))
+    return SourceAffinityEvidence(found, primary, secondary, tuple(unassigned))
+
+
+def load_source_affinity_tables(analysis_dir: Optional[Path]) -> dict[str, dict[str, Any]]:
+    """Return ``{table name: {primary, secondary, likely_entity, system}}`` from affinity.
+
+    The per-table view of :func:`load_source_affinity`, kept separate because consumers
+    want either the per-domain counts or the per-table detail, never both.
+    """
+    tables: dict[str, dict[str, Any]] = {}
+    if analysis_dir is None or not Path(analysis_dir).is_dir():
+        return tables
+    for affinity_file in sorted(Path(analysis_dir).glob("*-affinity.yaml")):
+        try:
+            with open(affinity_file, encoding="utf-8") as handle:
+                data = yaml.safe_load(handle)
+        except Exception:
+            continue
+        if not isinstance(data, dict) or data.get("schema_version") != 2:
+            continue
+        system = data.get("system") or affinity_file.stem.replace("-affinity", "")
+        for table in data.get("tables") or []:
+            if not isinstance(table, dict) or not table.get("table"):
+                continue
+            secondary = tuple(
+                (entry.get("domain") or "").strip()
+                for entry in (table.get("secondary_domains") or [])
+                if isinstance(entry, dict) and (entry.get("domain") or "").strip()
+            )
+            tables[str(table["table"])] = {
+                "system": str(system),
+                "primary": (table.get("domain") or "").strip(),
+                "secondary": secondary,
+                "likely_entity": str(table.get("likely_entity") or ""),
+            }
+    return tables
+
+
+def _classify(*, bound: bool, modeled: bool, source_tables: int) -> str:
+    """Derive one domain's status from the affinity x ontology x binding join.
+
+    Deliberately does NOT try to say whether a modeled domain's classes are *bindable*
+    (i.e. carry datatype properties). Answering that needs the DD-103 semantic index per
+    domain, which this always-exit-0 advisory table must not pull in, and
+    ``plan-sources`` already warns about a zero-datatype target class at the moment the
+    author actually picks one (#484).
+    """
+    if bound:
+        return STATUS_BOUND
+    if source_tables == 0:
+        return STATUS_NO_ELIGIBLE_SOURCES
+    if not modeled:
+        return STATUS_NOT_MODELED
+    return STATUS_DEFERRED
 
 
 def build_domain_coverage_report(
@@ -90,6 +289,7 @@ def build_domain_coverage_report(
     master_path: Path,
     ref_models_dir: Optional[Path],
     accelerator: Optional[str],
+    analysis_dir: Optional[Path] = None,
 ) -> DomainCoverageReport:
     """Build the domain-coverage report for one hub.
 
@@ -97,6 +297,10 @@ def build_domain_coverage_report(
     accelerator pack is installed at all) -- resolution/ambiguity handling is the
     CLI layer's responsibility (mirroring ``check-inventory``'s precedent), not
     this function's.
+
+    ``analysis_dir`` points at ``integration/sources/_analysis/`` (DD-160). When it is
+    ``None`` or holds no affinity reports, the source columns stay ``None`` and no status
+    is derived -- an absent report is reported as absent, never as "zero source tables".
     """
     blueprint_domains: dict[str, dict[str, Any]] = {}
     if accelerator and ref_models_dir is not None and Path(ref_models_dir).is_dir():
@@ -117,7 +321,13 @@ def build_domain_coverage_report(
         except Exception:  # defensive: a malformed _master.ttl must never crash this report
             active_master_imports = set()
 
-    all_domains = sorted(set(blueprint_domains) | modeled_domains | bound_domains)
+    affinity = load_source_affinity(analysis_dir)
+
+    # A domain that only source affinity knows about is still a real domain -- it is
+    # precisely the "candidate domain to add" case, so it must widen the row set.
+    all_domains = sorted(
+        set(blueprint_domains) | modeled_domains | bound_domains | set(affinity.primary)
+    )
 
     rows: list[DomainCoverageRow] = []
     for name in all_domains:
@@ -135,6 +345,14 @@ def build_domain_coverage_report(
             if declared_iri:
                 imported = _normalize_iri(declared_iri) in active_master_imports
 
+        source_tables = affinity.primary.get(name, 0) if affinity.found_reports else None
+        secondary_tables = affinity.secondary.get(name, 0) if affinity.found_reports else None
+        status = (
+            _classify(bound=bound, modeled=modeled, source_tables=source_tables or 0)
+            if affinity.found_reports
+            else None
+        )
+
         rows.append(
             DomainCoverageRow(
                 domain=name,
@@ -142,10 +360,18 @@ def build_domain_coverage_report(
                 modeled=modeled,
                 bound=bound,
                 imported=imported,
+                source_tables=source_tables,
+                source_tables_secondary=secondary_tables,
+                status=status,
             )
         )
 
-    return DomainCoverageReport(accelerator=accelerator, rows=tuple(rows))
+    return DomainCoverageReport(
+        accelerator=accelerator,
+        rows=tuple(rows),
+        unassigned_source_tables=affinity.unassigned,
+        has_affinity_evidence=affinity.found_reports,
+    )
 
 
 # --------------------------------------------------------------------------------------

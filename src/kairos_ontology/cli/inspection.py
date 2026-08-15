@@ -418,6 +418,122 @@ def _render_inverse_scan_text(result) -> None:
         click.echo(f"     - {note}")
 
 
+@click.command(name="propose-relationships")
+@click.option("--domain", default=None, help="Only propose for bindings in this domain.")
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack whose blueprint supplies cross_domain_relationships "
+    "(default: [tool.kairos].accelerator, else inferred).",
+)
+@click.option(
+    "--ref-models-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to ontology-reference-models/ (default: auto-detect).",
+)
+@click.option(
+    "--unresolved/--no-unresolved",
+    default=True,
+    help="Include proposals whose join columns could not be matched (default: include).",
+)
+@click.option(
+    "--format",
+    "out_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text).",
+)
+def propose_relationships_cmd(domain, accelerator, ref_models_dir, unresolved, out_format):
+    """Propose relationships: entries for authored bindings (issue #493, DD-160).
+
+    Authoring a relationship by hand means finding the target binding, naming the object
+    property, deriving join keys, and hand-writing an externalReference key contract. This
+    command derives all four deterministically, with no LLM call.
+
+    The object property is READ, not guessed: the accelerator blueprint's
+    cross_domain_relationships declares each bridge with an exact property_uri and its
+    domain/range class URIs. Hub-authored owl:ObjectProperty declarations with named
+    rdfs:domain and rdfs:range supply the same signal, so hubs without an accelerator still
+    get proposals. Join columns are matched by exact normalized name equality between the
+    child binding's authored columns and the parent's identity.sourceKey -- the same
+    high-precision tier-1 rule as scaffold-binding's cross-source FK scanner. Anything not
+    derivable is emitted as an explicit sentinel, never a plausible guess.
+
+    Advisory only: nothing is written and it always exits 0. Paste the rendered YAML into
+    the child binding and confirm each entry.
+
+    \b
+    Examples:
+      kairos-ontology propose-relationships
+      kairos-ontology propose-relationships --domain consignment
+      kairos-ontology propose-relationships --format json
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.propose_relationships import build_relationship_proposals
+    from ..core.reference_modules import resolve_hub_accelerator_detailed
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd, require_model=True)
+    if hub_root is None:
+        raise click.ClickException("Cannot locate a hub (model/ontologies/ not found).")
+
+    ref_path = Path(ref_models_dir) if ref_models_dir else resolve_refmodels_dir(cwd, hub_root)
+    try:
+        resolution = resolve_hub_accelerator_detailed(
+            explicit=accelerator, hub_root=hub_root, ref_models_dir=ref_path
+        )
+        resolved_accelerator = resolution.accelerator
+    except ValueError:
+        resolved_accelerator = accelerator
+
+    report = build_relationship_proposals(
+        hub_root=hub_root,
+        ref_models_dir=ref_path,
+        accelerator=resolved_accelerator,
+        domain=domain,
+    )
+    proposals = [p for p in report.proposals if unresolved or p.join_resolved]
+
+    if out_format == "json":
+        payload = report.to_dict()
+        payload["proposals"] = [p.to_dict() for p in proposals]
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    click.echo(f"   Bindings scanned: {report.bindings_scanned}")
+    click.echo(f"   Bindings with zero relationships: {len(report.bindings_without_relationships)}")
+    click.echo(
+        f"   Blueprint bridges: {report.blueprint_bridges} declared, "
+        f"{report.bridges_with_both_endpoints_bound} with both endpoints bound"
+    )
+    click.echo("")
+    if not proposals:
+        click.echo("   No relationship proposals.")
+        for note in report.notes:
+            click.echo(f"   ℹ {note}")
+        return
+
+    for proposal in proposals:
+        marker = "" if proposal.join_resolved else "  [join columns UNRESOLVED]"
+        click.echo(f"   {proposal.child_binding} → {proposal.parent_binding}{marker}")
+        click.echo(
+            f"     evidence: {proposal.evidence} ({proposal.evidence_id}); "
+            f"endpoints matched by {proposal.endpoint_match}; "
+            f"{proposal.child_domain} → {proposal.parent_domain}"
+        )
+        for line in proposal.to_yaml().splitlines():
+            click.echo(f"     {line}")
+        click.echo("")
+
+    for note in report.notes:
+        click.echo(f"   ℹ {note}")
+    click.echo(
+        "   Advisory: nothing was written. Paste entries into the child binding's "
+        "relationships: block and confirm each one."
+    )
+
+
 @click.command(name="inverse-scan")
 @click.option(
     "--class",
@@ -1718,7 +1834,18 @@ def _render_domain_coverage_text(report) -> None:
             return "n/a"
         return "yes" if value else "no"
 
-    header = ("Domain", "In Blueprint", "Modeled", "EntityBinding", "_master.ttl import")
+    def _count(value) -> str:
+        return "?" if value is None else str(value)
+
+    header = (
+        "Domain",
+        "In Blueprint",
+        "Modeled",
+        "EntityBinding",
+        "_master.ttl import",
+        "Source tables",
+        "Status",
+    )
     rows = [
         (
             row.domain,
@@ -1726,6 +1853,8 @@ def _render_domain_coverage_text(report) -> None:
             _cell(row.modeled),
             _cell(row.bound),
             _cell(row.imported),
+            _count(row.source_tables),
+            row.status or "n/a",
         )
         for row in report.rows
     ]
@@ -1757,6 +1886,44 @@ def _render_domain_coverage_text(report) -> None:
         click.echo("   Gaps (advisory — does not fail this command):")
         for line in gap_lines:
             click.echo(line)
+
+    _render_source_affinity_section(report)
+
+
+def _render_source_affinity_section(report) -> None:
+    """Render the DD-160 source-affinity verdicts under the coverage table."""
+    from ..core.domain_coverage import (
+        STATUS_DEFERRED,
+        STATUS_DESCRIPTIONS,
+        STATUS_NOT_MODELED,
+    )
+
+    if not report.has_affinity_evidence:
+        click.echo("")
+        click.echo(
+            "   ℹ No source-affinity reports found under integration/sources/_analysis/ — "
+            "run 'kairos-ontology analyse-sources' to populate the Source tables column."
+        )
+        return
+
+    for status in (STATUS_NOT_MODELED, STATUS_DEFERRED):
+        affected = [row for row in report.rows if row.status == status]
+        if not affected:
+            continue
+        click.echo("")
+        click.echo(f"   {status} — {STATUS_DESCRIPTIONS[status]}:")
+        for row in affected:
+            click.echo(f"   - {row.domain}: {row.source_tables} source table(s)")
+
+    if report.unassigned_source_tables:
+        click.echo("")
+        click.echo(
+            f"   Source tables assigned to no domain ({len(report.unassigned_source_tables)}) — "
+            "no canonical home; candidates for ontology enrichment:"
+        )
+        for table in report.unassigned_source_tables:
+            entity = f" (looks like: {table.likely_entity})" if table.likely_entity else ""
+            click.echo(f"   - {table.system}.{table.table}{entity}")
 
 
 def _render_domain_explain_text(explain: dict) -> None:
@@ -2045,6 +2212,7 @@ def domain_coverage_cmd(
             master_path=master_path,
             ref_models_dir=ref_path,
             accelerator=accelerator_resolution.accelerator,
+            analysis_dir=_autodetect_analysis_dir(cwd, hub_root),
         )
 
     explain_payload = None

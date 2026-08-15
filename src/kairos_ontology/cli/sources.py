@@ -1046,12 +1046,26 @@ def audit_silver_samples_cmd(sources, mappings, bindings, dbt_output, output, fa
     help="Path to integration/bindings/ directory of v5 EntityBindings (default: auto-detect).",
 )
 @click.option(
+    "--analysis",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/_analysis/ for the cross-domain scan "
+    "(default: auto-detect).",
+)
+@click.option(
     "--fail-on",
     type=click.Choice(["none", "any"]),
     default="none",
     help="Exit non-zero when any orphan column or unbound table is found (default: none).",
 )
-def audit_column_coverage_cmd(sources, bindings, fail_on):
+@click.option(
+    "--format",
+    "out_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format (default: text).",
+)
+def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
     """Advisory gate: source columns with real data that no binding references (issue #353).
 
     For every bound source table, flags a column with real, populated sample variation
@@ -1065,6 +1079,12 @@ def audit_column_coverage_cmd(sources, bindings, fail_on):
     recomputed fresh each run (v5 is stateless, DD-133), not persisted. Advisory by default:
     a flagged column is a candidate for authoring, not proof that it should be mapped --
     check the binding's own documented exclusions first.
+
+    Unbound tables carry DD-156 row evidence so they can be prioritised by volume; an
+    unknown true count prints as '?' and a capped profiling window as 'N+ (sampled)',
+    never as a plain row count. The cross-domain section (#489) names bound tables whose
+    affinity analysis assigned them a secondary domain nothing binds them to -- one source
+    relation may carry several EntityBindings, each with its own grain and target domain.
     """
     from ..core.hub_utils import find_hub_root
     from ..core.column_coverage_audit import run_column_coverage_audit
@@ -1075,18 +1095,47 @@ def audit_column_coverage_cmd(sources, bindings, fail_on):
 
     sources_path = Path(sources) if sources else base / "integration" / "sources"
     bindings_path = Path(bindings) if bindings else base / "integration" / "bindings"
+    analysis_path = Path(analysis) if analysis else base / "integration" / "sources" / "_analysis"
 
-    click.echo("🔎 Running column-coverage audit")
-    click.echo(f"   Sources:  {sources_path}")
-    click.echo(f"   Bindings: {bindings_path}")
-    click.echo()
+    if out_format == "text":
+        click.echo("🔎 Running column-coverage audit")
+        click.echo(f"   Sources:  {sources_path}")
+        click.echo(f"   Bindings: {bindings_path}")
+        click.echo()
 
-    report = run_column_coverage_audit(sources_dir=sources_path, bindings_dir=bindings_path)
+    report = run_column_coverage_audit(
+        sources_dir=sources_path,
+        bindings_dir=bindings_path,
+        analysis_dir=analysis_path if analysis_path.is_dir() else None,
+    )
+
+    if out_format == "json":
+        click.echo(json.dumps(report.to_dict(), indent=2))
+        if fail_on == "any" and (report.orphan_columns or report.unbound_tables):
+            raise SystemExit(1)
+        return
 
     if report.unbound_tables:
         click.echo(f"⚠️  {len(report.unbound_tables)} source table(s) with zero bindings:")
         for finding in report.unbound_tables:
-            click.echo(f"   {finding.table} ({finding.column_count} columns)")
+            click.echo(
+                f"   {finding.table} ({finding.column_count} columns, "
+                f"rows={finding.volume_label()})"
+            )
+        click.echo()
+
+    if report.cross_domain_columns:
+        click.echo(
+            f"⚠️  {len(report.cross_domain_columns)} bound table(s) also assigned to a "
+            "domain nothing binds them to — candidates for an additional EntityBinding:"
+        )
+        for finding in report.cross_domain_columns:
+            bound_note = ", ".join(finding.bound_domains) or "(none)"
+            entity = f", looks like: {finding.likely_entity}" if finding.likely_entity else ""
+            click.echo(
+                f"   {finding.table} [bound to: {bound_note}] → {finding.candidate_domain} "
+                f"({finding.unmapped_column_count} unmapped column(s){entity})"
+            )
         click.echo()
 
     if report.orphan_columns:

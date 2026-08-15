@@ -37,6 +37,7 @@ from kairos_ontology.core.compiler import (
     load_entity_binding,
 )
 from kairos_ontology.core.compiler.bindings import ExprColumn
+from kairos_ontology.core.compiler.result import DiagnosticSeverity
 
 _NS = "https://acme.example/ontology/party#"
 _IRI = "https://acme.example/ontology/party"
@@ -929,3 +930,110 @@ def test_external_reference_in_the_bindings_own_domain_is_rejected(tmp_path: Pat
     assert "relationship.external-reference-same-domain" in codes, [
         item.render() for item in result.diagnostics.items
     ]
+
+
+def _carry_country_code_without_a_relationship(hub: Path, *, purpose: str) -> None:
+    """Rewrite the customer binding to carry the FK column but author no relationship.
+
+    This is the CLdN shape: the join column survives into Silver as a technical field
+    while the ``relationships:`` entry that would turn it into an actual join is missing.
+    """
+    binding_path = _customer_binding_path(hub)
+    text = binding_path.read_text(encoding="utf-8")
+    text = text.replace(
+        "  - property: party:country_code\n    expression: country_code\n", ""
+    )
+    start = text.index("relationships:")
+    end = text.index("quality:")
+    text = text[:start] + text[end:]
+    # The referential quality check must go with it: it is required to match exactly one
+    # authored relationship join, so leaving it behind would fail for an unrelated reason.
+    text = text.replace("  - kind: referential\n    columns: [country_code]\n", "")
+    text += textwrap.dedent(f"""\
+        technicalFields:
+          - name: country_fk
+            expression: country_code
+            type: string
+            nullable: true
+            purpose: {purpose}
+        """)
+    binding_path.write_text(text, encoding="utf-8")
+
+
+def test_self_reference_message_names_the_supported_alternative(tmp_path: Path) -> None:
+    """#490: the guard is correct, but a bare rejection leaves the author with no route.
+
+    The message must name the DD-139 ``technicalFields``/``purpose: relationship`` carrier
+    and the downstream self-join, because the issue's own proposed fix (an alias model)
+    would still cycle: ``customer__self`` -> ``customer`` -> ``customer__self``.
+    """
+    hub = _hub(tmp_path)
+    ontology = hub / "model" / "ontologies" / "party.ttl"
+    ontology.write_text(
+        ontology.read_text(encoding="utf-8") + "\nparty:parent_customer a owl:ObjectProperty ;\n"
+        "  rdfs:domain party:Customer ; rdfs:range party:Customer .\n",
+        encoding="utf-8",
+    )
+    binding_path = _customer_binding_path(hub)
+    binding_path.write_text(
+        binding_path.read_text(encoding="utf-8").replace(
+            "relationships:\n",
+            textwrap.dedent("""\
+                relationships:
+                  - property: party:parent_customer
+                    target: party:Customer
+                    join:
+                      - local: customer_id
+                        foreign: customer_id
+                    cardinality: many-to-one
+                    mode: non-temporal
+                    missingParent: error
+                    ambiguousParent: error
+                """),
+        ),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+    message = next(
+        item.message
+        for item in result.diagnostics.items
+        if item.code == "relationship.self-reference-unsupported"
+    )
+    assert "technicalFields" in message
+    assert "purpose 'relationship'" in message
+    assert "Gold" in message
+
+
+def test_unrealized_relationship_carrier_warns_without_blocking(tmp_path: Path) -> None:
+    """#491: a relationship-purpose carrier with no relationships: entry is silent today.
+
+    This is the exact shape the CLdN hub shipped 27 times over. It must WARN (the FK
+    really is materialized and staging carriers ahead of an unbound parent is legitimate)
+    and must never block -- warnings do not affect ``CompileResult.succeeded``.
+    """
+    hub = _hub(tmp_path)
+    _carry_country_code_without_a_relationship(hub, purpose="relationship")
+
+    result = compile_domain(hub, "party")
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    warning = next(
+        item
+        for item in result.diagnostics.items
+        if item.code == "relationship.unrealized-technical-field"
+    )
+    assert warning.severity is DiagnosticSeverity.WARNING
+    assert "country_fk" in warning.message
+    assert "propose-relationships" in warning.message
+
+
+def test_no_unrealized_warning_when_purpose_is_not_relationship(tmp_path: Path) -> None:
+    """Documented blind spot: an FK carried as ``purpose: identity`` cannot be detected."""
+    hub = _hub(tmp_path)
+    _carry_country_code_without_a_relationship(hub, purpose="identity")
+
+    result = compile_domain(hub, "party")
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    codes = {item.code for item in result.diagnostics.items}
+    assert "relationship.unrealized-technical-field" not in codes

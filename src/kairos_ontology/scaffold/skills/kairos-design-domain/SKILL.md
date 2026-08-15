@@ -101,7 +101,30 @@ Run this gate on every modeling pass, including the first:
 
 1. list imported and analysed sources under `integration/sources/`;
 2. identify which sources appear relevant to the requested domain;
-3. ask whether additional or newer sources must be imported first.
+3. ask whether additional or newer sources must be imported first;
+4. run `kairos-ontology domain-coverage` and read the **Source tables** column
+   and per-domain **Status** (DD-160).
+
+Step 4 is the source→ontology gap check. It joins the persisted affinity
+analysis against the authored ontologies and bindings, and answers the question
+this stage otherwise never asks — *does the ontology have a home for the source
+data we actually hold?* Act on each status:
+
+- **`not-modeled`** — source tables are assigned to a domain with no ontology.
+  This is real business data with no canonical home. Modeling it is a human
+  decision (the blueprint deliberately scopes which domains exist, DD-149/DD-150),
+  so raise it rather than silently deferring; a blueprint that defers a domain the
+  business demonstrably reports on is a reference-model issue worth filing.
+- **`deferred`** — modeled but nothing bound; hand off to **kairos-design-mapping**.
+- **`no-eligible-sources`** — genuinely empty, and the only status that justifies
+  leaving a domain unmodeled without comment.
+- **Unassigned source tables** — listed separately; the affinity pass could place
+  them in no domain at all, the strongest "the ontology has no home for this"
+  signal available without another model call.
+
+Absent affinity reports print an explicit notice, not a zero — run
+`kairos-ontology analyse-sources` first. Do not read a missing report as "no
+source data exists".
 
 If no relevant source vocabulary exists, or the user says more evidence is
 needed, stop and invoke **kairos-design-source**. Return here only after the
@@ -386,6 +409,14 @@ recommended option and why the other options were not selected, using visuals or
 PII-safe examples when they help the user compare the consequences.
 
 ### 6b. Author the TTL
+
+For a brand-new domain, start from the generator rather than a blank file:
+`kairos-ontology scaffold-domain --domain <d> --from-blueprint <accelerator>`
+writes the prefixes, the `owl:Ontology` header and the blueprint-mandated
+`owl:imports`, then registers the catalog entry and syncs `_master.ttl`. Without
+`--from-blueprint` it emits a bare starter with no imports. It never overwrites an
+existing file (use `--force` deliberately). Author the classes and properties by
+hand afterwards — the scaffold gives you the frame, not the model.
 
 A worked, fully-commented exemplar lives at
 `.github/skills/kairos-design-domain/exemplar-domain.ttl` (with a paired

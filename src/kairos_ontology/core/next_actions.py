@@ -30,7 +30,12 @@ from enum import Enum
 #: ``BiConceptMappingObservation``) and the ``triage-concept-mapping`` action routed to
 #: kairos-design-source (issue #421, DD-157): import-tmdl's demand evidence was generated
 #: and then never routed to anyone.
-SCHEMA_VERSION = 4
+#: v5 adds the source-affinity domain-coverage observation (``source_domain_coverage`` /
+#: ``SourceDomainCoverageObservation``) and its two actions ``model-data-driven-domain``
+#: and ``bind-deferred-domain`` (issue #496/#498, DD-160): affinity analysis and the
+#: binding inventory both existed but were never joined, so a domain holding real source
+#: data with nothing bound was invisible outside a hand-written report.
+SCHEMA_VERSION = 5
 
 
 class InputStatus(str, Enum):
@@ -100,6 +105,12 @@ ACTION_SKILLS: dict[str, str] = {
     # (kairos-design-source), NOT to kairos-design-domain, whose charter forbids
     # filling the worksheet during a design slice.
     "triage-concept-mapping": "kairos-design-source",
+    # #496/#498, DD-160: a domain with source data but no ontology is a modeling
+    # decision (design-domain); one that is modeled but unbound is a binding decision
+    # (design-mapping). Splitting them keeps each action routed to the skill that can
+    # actually act on it.
+    "model-data-driven-domain": "kairos-design-domain",
+    "bind-deferred-domain": "kairos-design-mapping",
     "design-domain": "kairos-design-domain",
     "generate-inventory": "kairos-design-domain",
     "author-binding": "kairos-design-mapping",
@@ -173,6 +184,26 @@ class BiConceptMappingObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceDomainCoverageObservation:
+    """Domains holding real source data that the hub has not modeled or bound (DD-160).
+
+    Derived from the join of the persisted ``*-affinity.yaml`` source assignments against
+    the authored ontologies and bindings. ``not_modeled`` are candidate domains to add;
+    ``deferred`` and ``blocked`` are modeled domains whose source data has nowhere to
+    land yet. ``unassigned_tables`` counts source tables the affinity pass could assign to
+    no domain at all -- the strongest "the ontology has no home for this" signal.
+
+    All-empty is the no-observation default (no affinity reports were found), so existing
+    constructor call sites never start reporting a spurious action -- same precedent as
+    ``inventory_status`` and ``bi_concept_mappings``.
+    """
+
+    not_modeled: tuple[str, ...] = ()
+    deferred: tuple[str, ...] = ()
+    unassigned_tables: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class HubInputSnapshot:
     """Defensible, in-memory observations of a hub's authored inputs."""
 
@@ -203,6 +234,9 @@ class HubInputSnapshot:
     #: BI concept-mapping worksheet triage state (issue #421, DD-157). The zero default
     #: is the no-observation state — no action is derived from it.
     bi_concept_mappings: BiConceptMappingObservation = BiConceptMappingObservation()
+    #: Source-affinity vs modeled/bound domain coverage (issue #496/#498, DD-160). The
+    #: all-empty default is the no-observation state.
+    source_domain_coverage: SourceDomainCoverageObservation = SourceDomainCoverageObservation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,6 +453,45 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 ),
                 command="kairos-ontology (invoke kairos-design-source)",
                 priority=23,
+            )
+        )
+    coverage = snapshot.source_domain_coverage
+    if coverage.not_modeled:
+        actions.append(
+            _action(
+                "model-data-driven-domain",
+                ActionStatus.HUMAN_DECISION_REQUIRED,
+                rationale=(
+                    f"{len(coverage.not_modeled)} domain(s) have source tables assigned by "
+                    "analyse-sources but no ontology under model/ontologies/: "
+                    f"{', '.join(coverage.not_modeled)}"
+                    + (
+                        f"; plus {coverage.unassigned_tables} source table(s) assigned to no "
+                        "domain at all"
+                        if coverage.unassigned_tables
+                        else ""
+                    )
+                    + ". This is real source data with no canonical home. Modeling it is a "
+                    "human decision — the blueprint deliberately scopes which domains exist "
+                    "(DD-149/DD-150), so adding one is a design call, not an automatic step."
+                ),
+                command="kairos-ontology domain-coverage",
+                priority=24,
+            )
+        )
+    if coverage.deferred:
+        affected = list(coverage.deferred)
+        actions.append(
+            _action(
+                "bind-deferred-domain",
+                ActionStatus.RECOMMENDED,
+                rationale=(
+                    f"{len(affected)} modeled domain(s) have source tables assigned but no "
+                    f"EntityBinding: {', '.join(affected)}. Silver models cannot carry data "
+                    "for a domain nothing binds."
+                ),
+                command="kairos-ontology domain-coverage",
+                priority=25,
             )
         )
     if not snapshot.domains:

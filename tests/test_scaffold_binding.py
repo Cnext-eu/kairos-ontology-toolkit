@@ -20,6 +20,7 @@ from click.testing import CliRunner
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.binding_archetypes import list_binding_archetypes
 from kairos_ontology.core.compiler import compile_domain
+from kairos_ontology.core.compiler.result import DiagnosticSeverity
 from kairos_ontology.core.scaffold_binding import (
     ScaffoldBindingError,
     SourceColumn,
@@ -38,14 +39,22 @@ def _assert_compiles_except_sentinels(hub_root: Path, domain: str) -> None:
 
     #450: partial-match bindings now carry sentinel entries for orphan columns which are
     intentionally unresolved — ``compile --check`` flags them until a human maps them.
+
+    Advisory warnings are excluded deliberately: this asserts nothing *blocks* the
+    compile. ``scaffold-binding`` writes detected relationship candidates as
+    ``technicalFields`` with ``purpose: relationship`` and no ``relationships:`` entry, so
+    a freshly scaffolded binding legitimately raises the #491
+    ``relationship.unrealized-technical-field`` warning — that is the scaffolder's own
+    "a human must follow up here" signal restated at compile time, not a regression.
     """
     compiled = compile_domain(hub_root, domain)
+    errors = [item for item in compiled.diagnostics.items if item.severity is DiagnosticSeverity.ERROR]
     sentinel_diags = [
-        item for item in compiled.diagnostics.items
+        item for item in errors
         if "CONFIRM_PROPERTY" in item.message
     ]
     non_sentinel_diags = [
-        item for item in compiled.diagnostics.items
+        item for item in errors
         if "CONFIRM_PROPERTY" not in item.message
     ]
     assert not non_sentinel_diags, {
@@ -308,16 +317,20 @@ def test_passthrough_compiles_unedited(tmp_path):
     # The orphan sentinel (<CONFIRM_PROPERTY:internal_notes>) is intentionally unresolved
     # so that `compile --check` flags it until a human maps the property (#450).
     compiled = compile_domain(hub_root, "party")
+    compiled_errors = [
+        item for item in compiled.diagnostics.items if item.severity is DiagnosticSeverity.ERROR
+    ]
     sentinel_diag = {
-        item.code for item in compiled.diagnostics.items
+        item.code for item in compiled_errors
         if "CONFIRM_PROPERTY:internal_notes" in item.message
     }
     assert sentinel_diag, {
-        item.code: item.message for item in compiled.diagnostics.items
+        item.code: item.message for item in compiled_errors
     }
-    # All non-sentinel properties compile cleanly.
+    # All non-sentinel properties compile cleanly (warnings are advisory -- see
+    # _assert_compiles_except_sentinels for why the #491 warning is expected here).
     non_sentinel_diags = {
-        item.code for item in compiled.diagnostics.items
+        item.code for item in compiled_errors
         if "CONFIRM_PROPERTY" not in item.message
     }
     assert not non_sentinel_diags, non_sentinel_diags

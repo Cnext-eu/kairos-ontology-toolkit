@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
 from pyshacl import validate as shacl_validate
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
@@ -675,42 +676,94 @@ def _check_hash_in_triple_quoted(
             )
 
 
+def load_hub_source_system_names(ontologies_path: Path) -> tuple[str, ...] | None:
+    """Read ``validation.source_system_names`` from the hub's ``kairos.yaml`` (#501).
+
+    Returns ``None`` when the key is absent, so the caller falls back to
+    :data:`_DEFAULT_SOURCE_SYSTEM_NAMES`. An explicitly empty list returns ``()``, which
+    disables the check -- that distinction is the point of returning ``None`` rather than
+    an empty tuple for "not configured".
+
+    The default vendor list cannot know a hub's real source systems (the CLdN hub's are
+    Qargo and Qlik, neither of which any generic list would carry), so without this the
+    check quietly passes on exactly the names that matter most.
+    """
+    try:
+        hub_root = Path(ontologies_path).resolve().parent.parent
+        config_path = hub_root / "kairos.yaml"
+        if not config_path.is_file():
+            return None
+        with open(config_path, encoding="utf-8") as handle:
+            config = yaml.safe_load(handle)
+        if not isinstance(config, dict):
+            return None
+        validation = config.get("validation")
+        if not isinstance(validation, dict) or "source_system_names" not in validation:
+            return None
+        names = validation.get("source_system_names")
+        if names is None:
+            return ()
+        if not isinstance(names, list):
+            return None
+        return tuple(str(name) for name in names if str(name).strip())
+    except Exception:  # defensive: a malformed kairos.yaml must not break validate
+        return None
+
+
 def _check_source_system_names_in_comments(
     graph: Graph,
     warnings: list["NamingDiagnostic"],
     source_system_names: tuple[str, ...] | None,
 ) -> None:
-    """Issue #474: warn when a known source-system name appears in an ``rdfs:comment``
-    in the canonical ontology.
+    """Warn when a known source-system name appears in canonical ontology annotations.
 
-    Source-system names belong in the source TTL and the EntityBinding, not in
-    canonical ``rdfs:comment`` strings (design-domain SKILL.md §5: 'Keep source
-    representation details out of the canonical model').
+    Issue #474 covered ``rdfs:comment``; #501 extends the same rule to ``rdfs:label`` and
+    ``skos:altLabel``, which the original check missed entirely even though a label is the
+    surface every downstream report and ERD renders.
+
+    Source-system names belong in the source TTL and the EntityBinding, not in the
+    canonical model (design-domain SKILL.md §5: 'Keep source representation details out of
+    the canonical model').
+
+    The default list is a starting point, not an authority -- it ships with the common
+    ERP/CRM vendors and knows nothing about a given hub's actual systems. Hubs extend it
+    via ``validation.source_system_names`` in ``kairos.yaml``; passing an empty tuple
+    disables the check.
     """
     names = source_system_names if source_system_names is not None else _DEFAULT_SOURCE_SYSTEM_NAMES
     if not names:
         return
     # Case-insensitive whole-word matching for each name.
     name_patterns = [re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE) for name in names]
-    for subj, obj in graph.subject_objects(RDFS.comment):
-        if not isinstance(obj, str):
-            continue
-        comment_text = str(obj)
-        found = sorted({names[i] for i, p in enumerate(name_patterns) if p.search(comment_text)})
-        if found:
-            warnings.append(
-                NamingDiagnostic(
-                    level="warning",
-                    code="source_system_name_in_comment",
-                    message=(
-                        f"rdfs:comment for {subj} contains source-system name(s): "
-                        f"{', '.join(found)}. Keep source representation details out of "
-                        "the canonical model (design-domain SKILL.md §5). Reference the "
-                        "source system in the EntityBinding or source TTL instead."
-                    ),
-                    term_uri=str(subj),
+
+    def _scan(predicate, code: str, label: str) -> None:
+        for subj, obj in graph.subject_objects(predicate):
+            if not isinstance(obj, str):
+                continue
+            text = str(obj)
+            found = sorted({names[i] for i, p in enumerate(name_patterns) if p.search(text)})
+            if found:
+                warnings.append(
+                    NamingDiagnostic(
+                        level="warning",
+                        code=code,
+                        message=(
+                            f"{label} for {subj} contains source-system name(s): "
+                            f"{', '.join(found)}. Keep source representation details out of "
+                            "the canonical model (design-domain SKILL.md §5). Reference the "
+                            "source system in the EntityBinding or source TTL instead."
+                        ),
+                        term_uri=str(subj),
+                    )
                 )
-            )
+
+    _scan(RDFS.comment, "source_system_name_in_comment", "rdfs:comment")
+    # #501: labels leak source-system names just as readily as comments do, and a label is
+    # the *more* visible surface -- it is what every downstream report, ERD and picker
+    # renders. Kept as a separate code so an existing consumer filtering on
+    # ``source_system_name_in_comment`` does not silently start matching labels too.
+    _scan(RDFS.label, "source_system_name_in_label", "rdfs:label")
+    _scan(SKOS.altLabel, "source_system_name_in_label", "skos:altLabel")
 
 
 def validate_naming_conventions(
@@ -1467,6 +1520,8 @@ def run_validation(
         # checkout resolvable) skips the temporal-quartet synonym-ban check entirely,
         # it is never required for validate to run.
         temporal_quartet_synonym_rule = _load_temporal_quartet_synonym_rule(ref_models_dir)
+        # #501: let the hub name its own source systems; None keeps the vendor defaults.
+        hub_source_system_names = load_hub_source_system_names(ontologies_path)
         for ontology_file in ontology_files:
             try:
                 g = Graph()
@@ -1482,6 +1537,7 @@ def run_validation(
             naming_result = validate_naming_conventions(
                 ontology_file.read_text(encoding="utf-8"),
                 temporal_quartet_synonym_rule=temporal_quartet_synonym_rule,
+                source_system_names=hub_source_system_names,
             )
             if naming_result["errors"]:
                 results["naming"]["failed"] += 1

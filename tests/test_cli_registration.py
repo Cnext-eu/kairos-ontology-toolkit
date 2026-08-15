@@ -45,6 +45,7 @@ RETAINED_COMMANDS = {
     "plan-sources",
     "project",
     "propose-alignment",
+    "propose-relationships",
     "resolve-ontology",
     "scaffold-binding",
     "scaffold-staging",

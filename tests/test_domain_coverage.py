@@ -175,7 +175,7 @@ class TestDomainCoverageCLI:
         result = _invoke(hub, monkeypatch, ["--json-output"])
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert payload["schema_version"] == 2  # v2: optional explain/owns payloads (DD-157)
+        assert payload["schema_version"] == 3  # v3: source-affinity columns + status (DD-160)
         assert payload["accelerator"] == "logistics"
         domains = {entry["domain"]: entry for entry in payload["domains"]}
         assert domains["party"] == {
@@ -184,6 +184,12 @@ class TestDomainCoverageCLI:
             "modeled": True,
             "bound": True,
             "imported": True,
+            # DD-160: this fixture has no *-affinity.yaml, so the source columns are
+            # None ("not observed"), never 0 -- an absent report must not read as
+            # "no source tables exist for this domain".
+            "source_tables": None,
+            "source_tables_secondary": None,
+            "status": None,
         }
         assert domains["customdomain"]["in_blueprint"] is False
 
@@ -336,7 +342,7 @@ class TestDomainCoverageExplain:
         result = _invoke(ownership_hub, monkeypatch, ["--explain", "party", "--json-output"])
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert payload["schema_version"] == 2
+        assert payload["schema_version"] == 3
         assert payload["domains"]  # base coverage table still present
         explain = payload["explain"]
         assert explain["found"] is True
@@ -508,3 +514,106 @@ class TestDomainCoverageAcceleratorDataDomainsMissing:
         assert "data-domains.yaml was not found" not in result.output
         assert "no reference-models directory" not in result.output
 
+
+
+_AFFINITY_YAML = """\
+system: Qlik
+analysed_at: '2026-08-15T00:00:00+00:00'
+model_used: test
+schema_version: 2
+tables:
+  - table: party_master
+    total_columns: 5
+    domain: party
+    likely_entity: Party
+  - table: agreements
+    total_columns: 7
+    domain: commercial
+    likely_entity: Agreement
+    secondary_domains:
+      - domain: party
+  - table: planning_zones
+    total_columns: 9
+    domain: routeplanning
+    likely_entity: PlanningZone
+  - table: mystery_export
+    total_columns: 3
+    domain: ''
+    likely_entity: ''
+"""
+
+
+def _write_affinity(hub: Path) -> Path:
+    analysis = hub / "integration" / "sources" / "_analysis"
+    analysis.mkdir(parents=True, exist_ok=True)
+    (analysis / "Qlik-affinity.yaml").write_text(_AFFINITY_YAML, encoding="utf-8")
+    return analysis
+
+
+class TestSourceAffinityCoverage:
+    """DD-160: join persisted source affinity against modeled/bound domains (#496/#498)."""
+
+    def _rows(self, hub: Path):
+        report = build_domain_coverage_report(
+            ontologies_dir=hub / "model" / "ontologies",
+            bindings_dir=hub / "integration" / "bindings",
+            master_path=hub / "model" / "ontologies" / "_master.ttl",
+            ref_models_dir=hub.parent / "ontology-reference-models",
+            accelerator="logistics",
+            analysis_dir=_write_affinity(hub),
+        )
+        return report, {row.domain: row for row in report.rows}
+
+    def test_absent_affinity_reports_none_not_zero(self, hub):
+        """An absent report must never read as 'no source tables exist' (#495 lesson)."""
+        report = build_domain_coverage_report(
+            ontologies_dir=hub / "model" / "ontologies",
+            bindings_dir=hub / "integration" / "bindings",
+            master_path=hub / "model" / "ontologies" / "_master.ttl",
+            ref_models_dir=hub.parent / "ontology-reference-models",
+            accelerator="logistics",
+            analysis_dir=None,
+        )
+        assert report.has_affinity_evidence is False
+        for row in report.rows:
+            assert row.source_tables is None
+            assert row.status is None
+
+    def test_bound_domain_reports_bound(self, hub):
+        _report, rows = self._rows(hub)
+        assert rows["party"].source_tables == 1
+        assert rows["party"].status == "bound"
+
+    def test_secondary_domain_counted_separately(self, hub):
+        _report, rows = self._rows(hub)
+        # 'agreements' lists party as a secondary domain; that must not inflate the
+        # primary count, which drives the deferred/not-modeled verdicts.
+        assert rows["party"].source_tables == 1
+        assert rows["party"].source_tables_secondary == 1
+
+    def test_domain_known_only_to_affinity_is_added_as_not_modeled(self, hub):
+        """The 'candidate domain to add' signal: source data, no ontology, no binding."""
+        _report, rows = self._rows(hub)
+        assert "routeplanning" in rows
+        assert rows["routeplanning"].modeled is False
+        assert rows["routeplanning"].source_tables == 1
+        assert rows["routeplanning"].status == "not-modeled"
+
+    def test_domain_with_no_source_tables_is_not_deferred(self, hub):
+        """A domain nothing points at is genuinely empty, not withheld data."""
+        _report, rows = self._rows(hub)
+        assert rows["customdomain"].source_tables == 0
+        assert rows["customdomain"].status == "no-eligible-sources"
+
+    def test_unassigned_tables_are_surfaced_not_dropped(self, hub):
+        """#492/#500: tables the affinity pass could not place used to vanish entirely."""
+        report, _rows = self._rows(hub)
+        assert [t.table for t in report.unassigned_source_tables] == ["mystery_export"]
+
+    def test_cli_renders_status_sections(self, hub, monkeypatch):
+        _write_affinity(hub)
+        result = _invoke(hub, monkeypatch, [])
+        assert result.exit_code == 0
+        assert "not-modeled" in result.output
+        assert "routeplanning" in result.output
+        assert "mystery_export" in result.output

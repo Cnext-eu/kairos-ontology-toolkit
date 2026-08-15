@@ -40,6 +40,7 @@ from .next_actions import (
     DomainSnapshot,
     HubInputSnapshot,
     InputStatus,
+    SourceDomainCoverageObservation,
     SourceSampleObservation,
     SourceSampleStatus,
 )
@@ -180,6 +181,62 @@ def _bi_concept_mapping_status(root: Path) -> BiConceptMappingObservation:
         return BiConceptMappingObservation()
     return BiConceptMappingObservation(
         tables_total=scan.tables_total, tables_unfilled=scan.tables_unfilled
+    )
+
+
+def _source_domain_coverage_status(root: Path) -> SourceDomainCoverageObservation:
+    """Observe source-affinity vs modeled/bound domain coverage (issue #496/#498, DD-160).
+
+    Reuses ``build_domain_coverage_report`` so ``next`` and ``domain-coverage`` can never
+    disagree about which domains hold unbound source data. Accelerator resolution is
+    deliberately best-effort here: the statuses this observation reads
+    (``not-modeled``/``deferred``) are derived from affinity x ontology x bindings and
+    never from the blueprint column, so a hub with no accelerator installed still gets
+    the signal.
+
+    Wrapped defensively — a malformed affinity report or ontology must never crash
+    ``kairos-ontology next``; failure degrades to the no-observation default.
+    """
+    from .domain_coverage import (
+        STATUS_DEFERRED,
+        STATUS_NOT_MODELED,
+        build_domain_coverage_report,
+    )
+
+    try:
+        accelerator: str | None = None
+        ref_models_dir = None
+        try:
+            from .reference_modules import resolve_hub_accelerator_detailed
+
+            resolution = resolve_hub_accelerator_detailed(
+                explicit=None, hub_root=root, ref_models_dir=None
+            )
+            accelerator = resolution.accelerator
+        except Exception:
+            accelerator = None
+
+        report = build_domain_coverage_report(
+            ontologies_dir=root / "model" / "ontologies",
+            bindings_dir=root / "integration" / "bindings",
+            master_path=root / "model" / "ontologies" / "_master.ttl",
+            ref_models_dir=ref_models_dir,
+            accelerator=accelerator,
+            analysis_dir=root / "integration" / "sources" / "_analysis",
+        )
+    except Exception:
+        return SourceDomainCoverageObservation()
+
+    if not report.has_affinity_evidence:
+        return SourceDomainCoverageObservation()
+
+    def _domains(status: str) -> tuple[str, ...]:
+        return tuple(row.domain for row in report.rows if row.status == status)
+
+    return SourceDomainCoverageObservation(
+        not_modeled=_domains(STATUS_NOT_MODELED),
+        deferred=_domains(STATUS_DEFERRED),
+        unassigned_tables=len(report.unassigned_source_tables),
     )
 
 
@@ -484,4 +541,5 @@ def gather_hub_input_snapshot(
         source_samples=source_samples,
         inventory_status=_inventory_status(root, domains),
         bi_concept_mappings=_bi_concept_mapping_status(root),
+        source_domain_coverage=_source_domain_coverage_status(root),
     )
