@@ -24,14 +24,14 @@ def test_no_warning_when_no_local_venv(capsys, tmp_path, monkeypatch):
 
 
 def test_warning_when_outside_venv(capsys, tmp_path, monkeypatch):
-    """Warning emitted when .venv exists but we're not inside it."""
+    """Warning points users to uv when .venv exists but we're not inside it."""
     (tmp_path / ".venv").mkdir()
     monkeypatch.chdir(tmp_path)
     with patch.object(sys, "prefix", "/usr"), patch.object(sys, "base_prefix", "/usr"):
         _warn_if_outside_venv()
     err = capsys.readouterr().err
-    assert "Running outside the project .venv" in err
-    assert "uv run" in err
+    assert "Running outside the uv-managed project environment" in err
+    assert "Run `uv run kairos-ontology`; no manual activation is needed." in err
 
 
 def test_warning_when_venv_in_parent(capsys, tmp_path, monkeypatch):
@@ -43,4 +43,4 @@ def test_warning_when_venv_in_parent(capsys, tmp_path, monkeypatch):
     with patch.object(sys, "prefix", "/usr"), patch.object(sys, "base_prefix", "/usr"):
         _warn_if_outside_venv()
     err = capsys.readouterr().err
-    assert "Running outside the project .venv" in err
+    assert "Running outside the uv-managed project environment" in err
