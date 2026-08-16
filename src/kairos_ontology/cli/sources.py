@@ -2893,7 +2893,15 @@ def source_disposition_set_cmd(
 
 
 @source_disposition_group.command(name="list")
-@_FORMAT_OPTION
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json", "yaml"]),
+    default="text",
+    show_default=True,
+    help="Text is the default here: this surface exists for a human deciding what to "
+    "do with each table.",
+)
 def source_disposition_list_cmd(output_format: str) -> None:
     """Show every source table's decision state, and what is still undecided."""
     from ..core.hub_utils import find_hub_root
