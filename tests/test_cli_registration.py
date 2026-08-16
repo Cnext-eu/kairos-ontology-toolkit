@@ -59,6 +59,7 @@ RETAINED_COMMANDS = {
     "show-source-schema",
     "source-privacy",
     "suggest-shapes",
+    "suggest-anchor",
     "suggest-type",
     "update",
     "update-refmodels",

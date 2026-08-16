@@ -91,6 +91,7 @@ from .inspection import (
     design_landscape_cmd,
     guard_scope_cmd,
     check_ai_config_cmd,
+    suggest_anchor_cmd,
     suggest_type_cmd,
 )
 from .operations import (
@@ -312,6 +313,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(design_landscape_cmd)
     group.add_command(guard_scope_cmd)
     group.add_command(check_ai_config_cmd)
+    group.add_command(suggest_anchor_cmd)
     group.add_command(suggest_type_cmd)
     group.add_command(update)
     group.add_command(update_refmodels)

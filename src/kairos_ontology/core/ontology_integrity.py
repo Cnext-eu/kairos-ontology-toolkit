@@ -840,38 +840,14 @@ def _module_terms_from_inventories(inventory_dir: Optional[Path]) -> dict[str, d
     Returns ``{}`` when inventories are absent — the shadowing check then silently
     reports nothing rather than guessing.
     """
+    from .class_anchoring import read_reference_terms
+
     terms: dict[str, dict[str, set[str]]] = {}
-    if inventory_dir is None or not Path(inventory_dir).is_dir():
-        return terms
-    import yaml
-
-    for path in sorted(Path(inventory_dir).glob("*.yaml")):
-        try:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except Exception:  # defensive: a broken inventory must not fail the audit
-            continue
-        if not isinstance(payload, dict):
-            continue
-
-        def _record(uri: str, bucket: str) -> None:
-            if not uri.startswith("http"):
-                return
-            module = _namespace_of(uri).rstrip("#/")
-            terms.setdefault(module, {"classes": set(), "properties": set()})
-            terms[module][bucket].add(_local_name(uri))
-
-        # Inventories carry a flat ``classes:`` list; each class nests the properties
-        # asserted on it (there is no top-level ``properties:`` key), and ``inherited``
-        # entries repeat a parent's property, so they are skipped to keep each term
-        # attributed to the module that actually declares it.
-        for entry in payload.get("classes") or []:
-            if not isinstance(entry, dict):
-                continue
-            _record(str(entry.get("uri") or ""), "classes")
-            for prop in entry.get("properties") or []:
-                if not isinstance(prop, dict) or prop.get("inherited"):
-                    continue
-                _record(str(prop.get("uri") or ""), "properties")
+    for term in read_reference_terms(inventory_dir):
+        module = term.module.rstrip("#/")
+        bucket = "classes" if term.kind == "class" else "properties"
+        terms.setdefault(module, {"classes": set(), "properties": set()})
+        terms[module][bucket].add(term.name)
     return terms
 
 

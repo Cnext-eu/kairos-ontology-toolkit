@@ -2946,6 +2946,125 @@ def guard_scope_cmd(
     click.echo("✓ guard-scope passed — no unexpected file changes.")
 
 
+def _archetype_tiers(hub) -> dict:
+    """Map reference-model class URI -> archetype tier for the hub's selected archetype.
+
+    Best-effort. Returns ``{}`` when the hub has no conformance artifact, no archetype,
+    or no resolvable reference models -- anchor ranking then falls back to name evidence
+    alone, which is weaker but never wrong.
+    """
+    if hub is None:
+        return {}
+    try:
+        from ..core.archetype_loader import load_archetype
+        from ..core.conformance_artifact import ARTIFACT_RELPATH, read_artifact
+
+        artifact_path = hub / ARTIFACT_RELPATH
+        if not artifact_path.is_file():
+            return {}
+        archetype_id = (read_artifact(artifact_path).get("archetype") or {}).get("id")
+        if not archetype_id:
+            return {}
+        refmodels = resolve_refmodels_dir(Path.cwd(), hub)
+        if refmodels is None:
+            return {}
+        archetype = load_archetype(refmodels, archetype_id)
+    except Exception:  # noqa: BLE001 - advisory ranking input only
+        return {}
+    return {concept.uri: concept.tier for concept in archetype.core_concepts}
+
+
+@click.command(name="suggest-anchor")
+@click.argument("domain")
+@click.option(
+    "--ontology-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--inventory-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to referencemodels-unpacked/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help="Include terms with no candidate, so the gap is visible rather than omitted.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    show_default=True,
+)
+def suggest_anchor_cmd(domain, ontology_dir, inventory_dir, show_all, output_format):
+    """Suggest reference-model anchors for DOMAIN's unanchored classes and properties.
+
+    Reads the inventories for the modules DOMAIN already imports and ranks candidates by
+    name evidence, printing the exact rdfs:subClassOf / rdfs:subPropertyOf line for a
+    confident match. Advisory and read-only: it never edits the ontology, and it
+    withholds the Turtle for a weak match rather than dressing a guess up as an answer.
+
+    
+    Example:
+      kairos-ontology suggest-anchor party
+      kairos-ontology suggest-anchor financial --format json
+    """
+    from ..core.class_anchoring import suggest_anchors
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=False)
+    onto_dir = (
+        Path(ontology_dir)
+        if ontology_dir
+        else (hub / "model" / "ontologies" if hub else Path("model/ontologies"))
+    )
+    inv_dir = (
+        Path(inventory_dir)
+        if inventory_dir
+        else (hub / "referencemodels-unpacked" if hub else None)
+    )
+
+    report = suggest_anchors(
+        ontologies_dir=onto_dir,
+        domain=domain,
+        inventory_dir=inv_dir,
+        archetype_tiers=_archetype_tiers(hub),
+    )
+
+    if output_format == "json":
+        click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return
+
+    click.echo(
+        f"⚓ Anchor suggestions — {domain}: {report.already_anchored} anchored, "
+        f"{report.unanchored} unanchored, {len(report.confident)} confident candidate(s) "
+        f"from {len(report.modules_read)} imported module(s)"
+    )
+    for suggestion in report.suggestions:
+        if not suggestion.candidates and not show_all:
+            continue
+        marker = "✓" if suggestion.confident else "?"
+        click.echo(f"   {marker} {suggestion.local_name} ({suggestion.kind})")
+        click.echo(f"       {suggestion.turtle_line()}")
+        for candidate in suggestion.candidates:
+            click.echo(
+                f"       - {candidate.name} <{candidate.uri}> "
+                f"[{candidate.score:.2f}] {candidate.reason}"
+            )
+            if candidate.caution:
+                click.echo(f"         ⚠ {candidate.caution}")
+    for notice in report.notices:
+        click.echo(f"   ℹ {notice}")
+    if not report.suggestions:
+        click.echo("   ✓ every local term is already anchored")
+
+
 @click.command(name="suggest-type")
 @click.argument("source_type")
 def suggest_type_cmd(source_type):
