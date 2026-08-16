@@ -506,3 +506,93 @@ def test_scaffold_domain_ai_without_config_errors(tmp_path):
 
         # No file should have been written.
         assert not Path("ontology-hub/model/ontologies/customer.ttl").exists()
+
+
+def _make_refmodels_with_boundary(root: Path, accelerator: str = "logistics") -> Path:
+    """Reference models whose blueprint declares ownership boundaries and a bridge."""
+    ref = root / "ontology-reference-models"
+    bp_dir = ref / "accelerator-packs" / accelerator / "client-hub-blueprint"
+    bp_dir.mkdir(parents=True, exist_ok=True)
+    (bp_dir / "data-domains.yaml").write_text(
+        """\
+schema_version: "2.0"
+groups:
+  - id: operations
+    domains:
+      - id: party
+        name: Party
+        owns: "Legal entities, customers, suppliers, contacts, and roles."
+        does_not_own: "Contracts, bookings, invoices, or operational events."
+        imports: []
+cross_domain_relationships:
+  - id: party-to-booking
+    source_domain: party
+    target_domain: booking
+    property_uri: "https://example.org/ont#participatesInBooking"
+    description: "Links a Party to the Booking it participates in."
+""",
+        encoding="utf-8",
+    )
+    return ref
+
+
+def test_scaffold_domain_writes_blueprint_boundary_into_the_header(tmp_path, monkeypatch):
+    """DD-163: the boundary must land in the artifact the author actually edits.
+
+    Previously only ``imports[].uri`` was copied, so the domain file never stated what
+    it owns -- and a full run produced eight domains declaring ``Booking``.
+    """
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        _make_minimal_hub(Path("."))
+        ref = _make_refmodels_with_boundary(Path("."))
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref))
+
+        result = runner.invoke(
+            cli, ["scaffold-domain", "--domain", "party", "--from-blueprint", "logistics"]
+        )
+        assert result.exit_code == 0, result.output
+
+        content = Path("ontology-hub/model/ontologies/party.ttl").read_text(encoding="utf-8")
+        assert "OWNS (accelerator blueprint):" in content
+        assert "Legal entities, customers, suppliers" in content
+        # Heading text is parsed by core/ontology_integrity.py.
+        assert "Deliberate exclusions (with reasons):" in content
+        assert "Contracts, bookings, invoices" in content
+        # The declared bridge is named so "reference it, don't re-mint it" has a target.
+        assert "participatesInBooking" in content
+        assert "booking" in content
+
+
+def test_scaffolded_header_is_readable_by_the_integrity_checker(tmp_path, monkeypatch):
+    """The scaffold and the validator must agree on the header contract."""
+    from kairos_ontology.core.ontology_integrity import audit_ontology_integrity
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        _make_minimal_hub(Path("."))
+        ref = _make_refmodels_with_boundary(Path("."))
+        monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref))
+        runner.invoke(
+            cli, ["scaffold-domain", "--domain", "party", "--from-blueprint", "logistics"]
+        )
+
+        ontologies = Path("ontology-hub/model/ontologies")
+        clean = audit_ontology_integrity(ontologies_dir=ontologies, data_domains={})
+        assert clean.is_blocking is False, "a freshly scaffolded domain must validate"
+
+        path = ontologies / "party.ttl"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + '\n:Booking a owl:Class ;\n    rdfs:label "Booking"@en ;\n'
+            '    rdfs:comment "A booking."@en .\n',
+            encoding="utf-8",
+        )
+        blocked = audit_ontology_integrity(
+            ontologies_dir=ontologies,
+            data_domains={"party": {"does_not_own": "Contracts, bookings, invoices."}},
+        )
+        assert blocked.is_blocking
+        assert any(
+            d.code == "integrity.class-outside-blueprint-boundary" for d in blocked.errors
+        )

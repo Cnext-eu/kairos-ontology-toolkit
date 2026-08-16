@@ -328,3 +328,37 @@ def test_blocking_codes_are_exactly_the_error_level_checks(tmp_path: Path) -> No
     )
     assert {d.code for d in report.errors} <= BLOCKING_CODES
     assert all(d.code not in BLOCKING_CODES for d in report.warnings)
+
+
+def test_scaffold_placeholder_bullet_flags_nothing(tmp_path: Path) -> None:
+    """The seeded '- <Concept>: owned by the <other> domain' example must be inert.
+
+    scaffold-domain writes it so an author extends the block in the enforceable form;
+    it must never itself exclude anything.
+    """
+    header = (
+        "# Deliberate exclusions (with reasons):\n"
+        "#   Blueprint DOES NOT OWN: Contracts, bookings, invoices.\n"
+        "#   Record each concept you leave out as its own bullet, in this\n"
+        "#   form, so 'kairos-ontology validate' can enforce it:\n"
+        "#     - <Concept>: owned by the <other> domain; <why>\n"
+        "#\n"
+    )
+    _write_domain(tmp_path, "party", classes=("Party", "Booking"), header=header)
+    assert check_declared_exclusions(scan_hub_ontologies(tmp_path)) == []
+
+
+def test_author_filled_bullet_under_scaffold_header_is_enforced(tmp_path: Path) -> None:
+    """Filling the seeded form in makes the exclusion enforceable, which is the point."""
+    header = (
+        "# Deliberate exclusions (with reasons):\n"
+        "#   Blueprint DOES NOT OWN: Contracts, bookings, invoices.\n"
+        "#     - Bookings: owned by the booking domain; party only participates\n"
+        "#\n"
+    )
+    _write_domain(tmp_path, "party", classes=("Party", "Booking"), header=header)
+    flagged = {
+        d.term_uri.rsplit("#", 1)[1]
+        for d in check_declared_exclusions(scan_hub_ontologies(tmp_path))
+    }
+    assert flagged == {"Booking"}

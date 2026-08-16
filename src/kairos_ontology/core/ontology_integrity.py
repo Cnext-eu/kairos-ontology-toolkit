@@ -260,10 +260,13 @@ def extract_header_exclusions(text: str) -> str:
         if comment is None:
             break
         body = comment.group(1).strip()
-        # A following "Provenance:"/"====" header line ends the block.
-        if body.startswith("=") or re.match(r"^[A-Z][A-Za-z ]+:$", body):
-            break
-        if re.match(r"^[A-Z][A-Za-z ]+:", body) and not body.startswith("-"):
+        # Only a divider (or the end of the comment header) closes the block. An earlier
+        # heuristic also broke on any "Word Words:" line, which silently truncated the
+        # block at scaffold-domain's own "Blueprint DOES NOT OWN:" line -- before the
+        # bullets underneath it were ever read. Over-capturing trailing header prose is
+        # harmless: parse_excluded_subjects only acts on bullets that name an owning
+        # domain, and ignores everything else.
+        if body.startswith("="):
             break
         lines.append(body)
     return "\n".join(lines)
