@@ -28,6 +28,11 @@ ALLOWED_DIRECT_PARSE_SITES = {
         "catalog_utils) and a pre-write Turtle-validity check only, never full "
         "semantic loading -- the file is edited textually, not reserialized"
     ),
+    "ontology_integrity.py": (
+        "hub-wide structural integrity checks over unresolved single-file declarations; "
+        "resolving the import closure would erase the locally-declared vs imported "
+        "distinction the checks are built on"
+    ),
     "ontology_loader.py": "canonical domain/reference ontology loader",
     "ontology_scope.py": "hub ontology declarations only",
     "ontology_ops.py": "explicit single-file CRUD and syntax API",

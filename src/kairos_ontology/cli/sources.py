@@ -2813,6 +2813,113 @@ def conformance_summarize(artifact_file, judgments_file, outcomes_filter, output
     _emit(payload, output_format)
 
 
+def _DISPOSITION_CHOICES() -> tuple[str, ...]:
+    """Return the closed disposition set, kept as the single source of truth in core."""
+    from ..core.source_disposition import DISPOSITIONS
+
+    return tuple(DISPOSITIONS)
+
+
+@click.group(name="source-disposition")
+def source_disposition_group() -> None:
+    """Record what the hub decided to do with each source table (DD-164).
+
+    A blueprint deliberately scopes which domains exist, so some source tables will have
+    no canonical home. That is expected; disposing of them *silently* is not. Without a
+    recorded outcome the same table can be dropped as "no canonical entity" in one domain
+    and force-fitted as a local class in another — which is exactly what a real run did.
+    """
+
+
+@source_disposition_group.command(name="set")
+@click.option("--system", required=True, help="Source system the table belongs to.")
+@click.option("--table", required=True, help="Physical table name (source.relation's suffix).")
+@click.option(
+    "--disposition",
+    required=True,
+    type=click.Choice(sorted(_DISPOSITION_CHOICES())),
+    help="What the hub decided to do with this table.",
+)
+@click.option("--rationale", default="", help="Why. Required for a non-obvious disposition.")
+@click.option(
+    "--decided-by",
+    type=click.Choice(sorted(("user", "ai", "autopilot"))),
+    default="user",
+    show_default=True,
+    help="Who made this call, so a reviewer can weight it.",
+)
+@click.option(
+    "--evidence",
+    multiple=True,
+    help="Supporting evidence locator (row counts, a report, a column list). Repeatable.",
+)
+def source_disposition_set_cmd(
+    system: str,
+    table: str,
+    disposition: str,
+    rationale: str,
+    decided_by: str,
+    evidence: tuple[str, ...],
+) -> None:
+    """Record one table's disposition in the hub ledger.
+
+    \b
+    Example:
+      kairos-ontology source-disposition set --system qargo --table comments \\
+        --disposition not-business-data \\
+        --rationale "Generic notes table; no claim-specific columns (3,149 rows)."
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_disposition import record_disposition
+
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+    try:
+        path = record_disposition(
+            hub_root=hub_root,
+            system=system,
+            table=table,
+            disposition=disposition,
+            rationale=rationale,
+            decided_by=decided_by,
+            evidence=evidence,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"✓ {system}.{table} recorded as '{disposition}' in {path}")
+
+
+@source_disposition_group.command(name="list")
+@_FORMAT_OPTION
+def source_disposition_list_cmd(output_format: str) -> None:
+    """Show every source table's decision state, and what is still undecided."""
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_disposition import audit_source_dispositions
+
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+    report = audit_source_dispositions(hub_root=hub_root)
+    if output_format in {"json", "yaml"}:
+        _emit(report.to_dict(), output_format)
+        return
+    click.echo(
+        f"🗂  Source-table dispositions — {report.coverage():.0%} decided "
+        f"({report.tables_bound} bound, {report.tables_disposed} disposed, "
+        f"{report.tables_undecided} undecided of {report.tables_total})"
+    )
+    for item in report.diagnostics:
+        marker = "✗" if item.level == "error" else "⚠"
+        click.echo(f"   {marker} {item.message}")
+    for notice in report.notices:
+        click.echo(f"   ℹ {notice}")
+
+
 @click.command(name="build-glossary")
 @click.option(
     "--extraction-dir",

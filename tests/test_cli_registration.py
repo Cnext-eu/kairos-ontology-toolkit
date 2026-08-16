@@ -23,6 +23,7 @@ RETAINED_COMMANDS = {
     "discovery-conformance",
     "discovery-status",
     "register-concept",
+    "source-disposition",
     "domain-coverage",
     "draft-model-report",
     "explain-term",

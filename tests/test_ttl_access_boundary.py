@@ -74,6 +74,13 @@ _KNOWN_VIOLATIONS: dict[str, str] = {
     "source_privacy.py": "parses source-vocabulary TTL directly to evaluate privacy/PII flags",
     "suggest_shapes.py": "parses vocabulary TTL directly to suggest SHACL shapes",
     "validator.py": "parses ontology/shapes/extension/mapping TTL directly for SHACL/syntax validation",
+    "ontology_integrity.py": (
+        "requires the deliberately UNRESOLVED single-file view: its checks exist to tell a "
+        "locally-declared class from an imported one (cross-domain duplication, "
+        "reference-model shadowing, unused imports). load_ontology() merges the import "
+        "closure, which erases exactly that distinction — the canonical loader is the wrong "
+        "tool here, not merely un-migrated debt. Same category as ontology_scope.py"
+    ),
 }
 
 _EXEMPT_MODULES = _CANONICAL_LOADERS | frozenset(_KNOWN_VIOLATIONS)

@@ -214,6 +214,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-160](#dd-160-source-affinity-domain-coverage-and-relationship-proposal) | Source-affinity domain coverage and relationship proposal | Accepted | 2026-08-15 |
 | [DD-161](#dd-161-multiple-bindings-per-source-relation-multi-target-bindings-rejected) | Multiple bindings per source relation; multi-target bindings rejected | Accepted | 2026-08-15 |
 | [DD-162](#dd-162-hub-side-registration-of-source-discovered-concepts) | Hub-side registration of source-discovered concepts | Accepted | 2026-08-15 |
+| [DD-163](#dd-163-hub-wide-ontology-integrity-is-enforced-not-advised) | Hub-wide ontology integrity is enforced, not advised | Accepted | 2026-08-16 |
+| [DD-164](#dd-164-every-source-table-needs-a-recorded-disposition) | Every source table needs a recorded disposition | Accepted | 2026-08-16 |
 
 ---
 
@@ -12004,3 +12006,138 @@ incomparable across hubs, which is the number the scorecard exists to provide.
   registration is proposed from `analyse-sources`' own unassigned-table output.
 
 ---
+
+## DD-163: Hub-wide ontology integrity is enforced, not advised
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `validate`, kairos-design-domain Gate 3, kairos-design-mapping
+**Implementation:** `core/ontology_integrity.py`, wired into `core/validator.py:run_validation`
+
+### Context
+
+Every ontology check the toolkit had was single-file by construction.
+`validate_naming_conventions` parses one `.ttl` with no import resolution — deliberately, and
+its docstring says so — and `validate_managed_imports` compares one domain's declared imports
+against the blueprint. Neither can observe a relationship *between* two domain files.
+
+A 21-domain autopilot run exposed the consequence. Of 132 locally declared classes, 34 were
+re-mints of the same eight concepts across domains: `Consignment` and `Booking` in eight domains
+each, `Document` and `Company` in seven, `Contact` and `Comment` in four. Each domain has its own
+namespace, so these are unrelated OWL entities that merely share a name, with no
+`owl:equivalentClass` between them. `validate` passed the hub cleanly. The defect surfaced two
+stages later as a dbt parse failure — the projector derives a model filename from the class local
+name, so `party#Company` and `mdm#Company` both emitted `company.sql`.
+
+Nine of those files stated the violation in their own headers. `party.ttl` lists under
+`Deliberate exclusions`: *"Party bookings: owned by the booking domain"*, then declares
+`:Booking`. The accelerator blueprint agrees — `party.does_not_own` reads *"Contracts, bookings,
+invoices, operational events, or terminal moves."* That prose was already a contract field
+(`analyse_sources` feeds it to the source-affinity classifier, so its wording is behavioural),
+but nothing read it after classification. kairos-design-domain Gate 3 conceded the point in
+writing: *"the blueprint's owns/does_not_own boundaries are free text no validator can enforce."*
+
+The affinity analysis was not the cause. Every leaked concept had been assigned to exactly one
+domain, and the correct one — `Booking` to booking, `Comment` to claims. The evidence entering
+design was clean; the design stage did not honour it.
+
+### Decision
+
+Add a hub-wide integrity pass to `validate`, blocking by default and degradable with
+`--degraded`. Three checks are errors:
+
+- `integrity.class-redeclared-across-domains` — purely mechanical, no interpretation, and
+  already a build failure downstream;
+- `integrity.class-violates-declared-exclusion` — the file's own header contradicts the file;
+- `integrity.class-outside-blueprint-boundary` — the blueprint's `does_not_own` names the concept.
+
+Four more are advisory: reference-model shadowing (class and property), unused `owl:imports`,
+and collapsed address value objects.
+
+**Precision is chosen over recall.** A false positive on a blocking check teaches an operator to
+pass `--degraded`, which would cost more than the check earns. So each blocking check reads
+either a machine-readable fact or the hub's own written-down intent. Notably, a bullet naming
+*this* domain as owner ("Contact details: owned by the party domain") is a clarification, not an
+exclusion, and must not flag `:Contact`; and the domain's own name inside a subject phrase
+("Party bookings") must flag `Booking` without flagging `Party`. Both are regression-tested.
+
+Fuzzy inference — "does this class feel like it belongs here" — is deliberately absent. Anchoring
+ratios are reported as scores rather than enforced, because a hub legitimately declares local
+classes the reference model does not carry.
+
+### Alternatives rejected
+
+| Alternative | Why not |
+|---|---|
+| Ship as warnings first | `kairos-flow-autopilot` states "warnings are acceptable but must be explained". A warning would have been explained and ignored in exactly the run that produced this. |
+| Put the rule in the skill | Skills are prose an agent may skip under context pressure, and this rule was *already* in prose — in the exemplar, in Gate 3, and in nine file headers — and was violated anyway. |
+| Enforce via SHACL | Cross-file identity comparison across namespaces is not what SHACL shapes are for, and the hub's shapes are hand-authored governance, not toolkit-owned. |
+| Reuse `load_ontology()` | It merges the import closure, erasing the locally-declared vs imported distinction every check depends on. Registered in both TTL-boundary tests with that reasoning. |
+
+### Consequences
+
+Existing non-conforming hubs fail `validate` until fixed or run with `--degraded`. That is the
+intent: the CLdN hub moves from passing to 63 blocking errors, all of which were already real.
+
+
+## DD-164: Every source table needs a recorded disposition
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `validate`, kairos-design-domain Gate 1, kairos-design-mapping
+**Implementation:** `core/source_disposition.py`, `source-disposition` CLI, wired into
+`core/validator.py:run_validation`
+
+### Context
+
+A blueprint deliberately scopes which domains exist (DD-149/DD-150), so a hub will always hold
+source tables no blueprint domain claims. `domain-coverage` already reports this — `not-modeled`,
+`deferred`, unassigned tables — but reports it advisorily and always exits 0, so nothing obliges
+anyone to answer.
+
+Unanswered, the question resolves itself two ways, both unrecorded. The table is dropped ("no
+canonical entity"), or it is force-fitted by minting a local class in whatever domain was in
+scope. A real run did both to the same table: `comments` (3,149 rows) was skipped in `claims` as
+having no canonical home, while a local `Comment` class appeared in commercial, customs, mdm and
+roro, and a `hasCommentCategory` property was hung off a leaked `Document` class in party. The
+run's transparency report then asserted *"All unbound tables are metadata, schema-lookup, or
+workflow tables with no canonical entity target"* — while `qargo.stops` (72,633 rows),
+`qargo.shipments` (32,491) and `qargo.resource_allocations` (30,492) sat unbound and unmentioned.
+The hand-built `.dap-dbt` project models all three as first-class entities, so they are plainly
+business data.
+
+`register-concept` (DD-162) already existed as the sanctioned route for "our source data argued
+this concept in". It was referenced by one skill, once, and the run produced
+`registered_concepts: []`.
+
+### Decision
+
+Make the outcome an artifact. Every source table above `DEFAULT_ROW_THRESHOLD` (100) rows must be
+either bound by an EntityBinding or carry an explicit disposition in
+`integration/sources/_analysis/table-dispositions.yaml`. An unbound, undisposed table fails
+`validate`; smaller ones warn.
+
+The disposition set is closed: `bound`, `registered-extension`, `deferred`, `not-business-data`,
+`blueprint-gap`. The last three require a written rationale, because a reviewer cannot otherwise
+distinguish a considered skip from an overlooked table.
+
+This does not force data into the ontology. `not-business-data` remains a good answer — it simply
+has to be an answer, attributed and reasoned, rather than the absence of one. `blueprint-gap`
+exists so a genuine accelerator shortfall is filed upstream instead of absorbed hub-side, and the
+undecided-table remediation names `register-concept` explicitly so the sanctioned path is the
+visible one.
+
+### Alternatives rejected
+
+| Alternative | Why not |
+|---|---|
+| Add a `--strict` flag to `domain-coverage` | Deferred once already (issue #393). An opt-in flag is not run by the pipeline that needs it, and the gap is in `validate`, which stage exits already call. |
+| A hub-local extension domain | Solves where a concept lives, not whether anyone decided. Still available later as a disposition value. |
+| One record per table | The ledger's value is that a reviewer sees every skipped table in one place and can judge the shape of what the hub declined to model. |
+| Threshold on row count alone | A table with no recorded `rowCount` is reported as unknown and still requires a decision: not knowing its size is not evidence that it is empty. |
+
+### Consequences
+
+The CLdN hub reports 56% decision coverage — 42 bound, 0 disposed, 33 undecided of 75 — and 22
+blocking errors. Closing them is a human pass over tables that were, until now, invisible.
+
