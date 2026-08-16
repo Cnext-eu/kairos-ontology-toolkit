@@ -800,3 +800,61 @@ class TestFoundryOpenAIBaseUrl:
         assert "projects" not in foundry_openai_base_url(
             "https://res.services.ai.azure.com/api/projects/kairos-ontology"
         )
+
+
+class TestResolveReasoningEffort:
+    """DD-176: effort is a per-role knob, resolved the same way as the seed."""
+
+    def test_per_role_defaults(self):
+        from kairos_ontology.core.ai_provider import resolve_reasoning_effort
+
+        assert resolve_reasoning_effort("affinity") == "low"
+        assert resolve_reasoning_effort("alignment") == "medium"
+        assert resolve_reasoning_effort("judgment") == "medium"
+
+    def test_unknown_role_leaves_it_to_the_model(self):
+        from kairos_ontology.core.ai_provider import resolve_reasoning_effort
+
+        assert resolve_reasoning_effort("something-else") is None
+
+    def test_role_override_beats_global(self):
+        from kairos_ontology.core.ai_provider import resolve_reasoning_effort
+
+        with patch.dict(
+            os.environ,
+            {
+                "KAIROS_AI_REASONING_EFFORT": "high",
+                "KAIROS_AI_ALIGNMENT_REASONING_EFFORT": "low",
+            },
+        ):
+            assert resolve_reasoning_effort("alignment") == "low"
+            assert resolve_reasoning_effort("affinity") == "high"
+
+    @pytest.mark.parametrize("value", ["off", "default", "none", ""])
+    def test_can_be_disabled(self, value):
+        from kairos_ontology.core.ai_provider import resolve_reasoning_effort
+
+        with patch.dict(os.environ, {"KAIROS_AI_ALIGNMENT_REASONING_EFFORT": value}):
+            assert resolve_reasoning_effort("alignment") is None
+
+    def test_unknown_tier_raises(self):
+        """A typo must fail loudly, not silently revert to the model default."""
+        from kairos_ontology.core.ai_provider import resolve_reasoning_effort
+
+        with patch.dict(os.environ, {"KAIROS_AI_ALIGNMENT_REASONING_EFFORT": "lowish"}):
+            with pytest.raises(ValueError, match="not a reasoning effort"):
+                resolve_reasoning_effort("alignment")
+
+    def test_none_valued_kwargs_are_not_sent(self):
+        """A disabled knob must be absent from the request, not sent as null."""
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = MagicMock()
+        client.chat.completions.create.return_value = "ok"
+        create_chat_completion(
+            client, model="m", messages=[], seed=None, reasoning_effort=None, temperature=0.1
+        )
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "seed" not in kwargs
+        assert "reasoning_effort" not in kwargs
+        assert kwargs["temperature"] == 0.1

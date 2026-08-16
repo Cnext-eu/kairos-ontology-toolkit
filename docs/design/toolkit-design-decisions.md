@@ -219,6 +219,13 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-165](#dd-165-anchoring-is-suggested-deterministically-never-invented) | Anchoring is suggested deterministically, never invented | Accepted | 2026-08-16 |
 | [DD-166](#dd-166-sample-values-are-evidence-and-are-gated-before-they-leave-the-hub) | Sample values are evidence, and are gated before they leave the hub | Accepted | 2026-08-16 |
 | [DD-167](#dd-167-conformance-judgment-is-offloaded-retrieval-grounded-and-code-gated) | Conformance judgment is offloaded, retrieval-grounded, and code-gated | Accepted | 2026-08-16 |
+| [DD-168](#dd-168-alignment-coverage-is-reported-with-a-reason-code-per-unmapped-column) | Alignment coverage is reported with a reason code per unmapped column | Accepted | 2026-08-16 |
+| [DD-169](#dd-169-the-alignment-gap-is-a-hard-stop-before-entity-binding) | The alignment gap is a hard stop before entity binding | Accepted | 2026-08-16 |
+| [DD-170](#dd-170-a-model-proposed-hub-local-property-is-validated-not-trusted) | A model-proposed hub-local property is validated, not trusted | Accepted | 2026-08-16 |
+| [DD-171](#dd-171-the-business-glossary-is-a-preflight-input-to-alignment) | The business glossary is a preflight input to alignment | Accepted | 2026-08-16 |
+| [DD-172](#dd-172-namespace-constants-are-pinned-by-test-after-domainincludes-never-matched) | Namespace constants are pinned by test, after `domainIncludes` never matched | Accepted | 2026-08-16 |
+| [DD-173](#dd-173-reference-models-resolve-live-there-is-no-inventory) | Reference models resolve live; there is no inventory | Accepted | 2026-08-16 |
+| [DD-174](#dd-174-llm-pipeline-stages-are-seeded-and-capability-degradation-is-centralised) | LLM pipeline stages are seeded, and capability degradation is centralised | Accepted | 2026-08-16 |
 
 ---
 

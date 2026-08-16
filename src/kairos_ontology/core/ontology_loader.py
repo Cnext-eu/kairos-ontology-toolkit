@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 
-from rdflib import Graph, OWL, RDF, URIRef
+from rdflib import Graph, Literal, OWL, RDF, URIRef
 
 from .catalog_utils import CatalogResolver, _get_rdf_format
 
@@ -138,6 +138,36 @@ def _ontology_metadata(graph: Graph) -> tuple[str | None, str | None]:
     if version is None:
         version = graph.value(ontology, OWL.versionIRI)
     return str(ontology), str(version) if version is not None else None
+
+
+def stable_value(graph, subject, predicate):
+    """Return one object for ``(subject, predicate)``, chosen reproducibly (DD-175).
+
+    ``Graph.value()`` returns an *arbitrary* object when a term carries more than
+    one: it takes whatever graph iteration yields first, and that order differs
+    between processes. Reference-model classes routinely carry several
+    ``rdfs:comment`` triples — a local definition plus one pulled in through the
+    import closure — so the same class described itself differently on each run.
+    That text reaches the alignment prompt verbatim, which made the *prompt*
+    unstable; no sampling seed can make an answer reproducible when the question
+    changes. Measured on the live catalog: 46 of 2,706 resolved terms changed
+    their comment between two consecutive runs.
+
+    Preference order: an ``en`` literal, then any other language-tagged or plain
+    literal, ties broken on the lexical value. This is a tie-break, not a merge —
+    where several definitions genuinely apply, one is chosen, always the same one.
+    """
+    objects = list(graph.objects(subject, predicate))
+    if not objects:
+        return None
+    if len(objects) == 1:
+        return objects[0]
+
+    def rank(obj):
+        lang = getattr(obj, "language", None) if isinstance(obj, Literal) else None
+        return (0 if lang == "en" else 1, str(lang or ""), str(obj))
+
+    return min(objects, key=rank)
 
 
 def _relative_identity(path: Path, identity_root: Path) -> str:

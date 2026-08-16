@@ -549,6 +549,7 @@ def judge_concepts(
         create_chat_completion,
         get_ai_client,
         resolve_ai_seed,
+        resolve_reasoning_effort,
         resolve_role_model,
     )
 
@@ -601,6 +602,7 @@ def judge_concepts(
                     },
                 ],
                 seed=resolve_ai_seed(ROLE_JUDGMENT),
+                reasoning_effort=resolve_reasoning_effort(ROLE_JUDGMENT),
                 response_format={"type": "json_object"},
             )
             report.calls_made += 1

@@ -152,11 +152,12 @@ AI_ENV_VAR_NAMES: frozenset[str] = frozenset(
         ENV_FOUNDRY_ENDPOINT,
         ENV_FOUNDRY_API_KEY,
         "KAIROS_AI_SEED",
+        "KAIROS_AI_REASONING_EFFORT",
     }
     | {
         f"KAIROS_AI_{role.upper()}_{suffix}"
         for role in ("affinity", "alignment", "judgment")
-        for suffix in ("ENDPOINT", "KEY", "MODEL", "SEED")
+        for suffix in ("ENDPOINT", "KEY", "MODEL", "SEED", "REASONING_EFFORT")
     }
 )
 
@@ -244,6 +245,60 @@ def resolve_ai_seed(role: str | None = None) -> int | None:
                 f"or 'off' to disable seeding."
             ) from None
     return DEFAULT_AI_SEED
+
+
+#: Reasoning-effort tiers the provider accepts, cheapest first.
+REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+
+#: Default reasoning effort per role (DD-176).
+#:
+#: Affinity is a one-of-N pick over a short candidate list, made once per source
+#: table — the highest-volume call in the pipeline and the one least helped by
+#: extended reasoning. Alignment and judgment are closed-vocabulary reasoning
+#: over a large candidate set, where a wrong answer is silently wrong, so they
+#: get the middle tier rather than the cheapest.
+#:
+#: These are defaults, not findings: effort trades latency against recall, and
+#: recall is the weak axis here (a quarter of source columns map). Change them
+#: from measurement, not from intuition.
+DEFAULT_REASONING_EFFORT: dict[str, str] = {
+    ROLE_AFFINITY: "low",
+    ROLE_ALIGNMENT: "medium",
+    ROLE_JUDGMENT: "medium",
+}
+
+
+def resolve_reasoning_effort(role: str | None = None) -> str | None:
+    """Return the reasoning effort for ``role``, or ``None`` to leave it to the model.
+
+    Resolution order: ``KAIROS_AI_{ROLE}_REASONING_EFFORT`` →
+    ``KAIROS_AI_REASONING_EFFORT`` → the per-role default. ``off`` (or ``default``)
+    sends no ``reasoning_effort`` at all, which is also what a non-reasoning model
+    needs — though that case is handled anyway, since such a model rejects the
+    parameter by name and ``create_chat_completion`` drops it.
+
+    An unrecognised tier raises rather than being passed through, so a typo fails
+    at the first call instead of silently reverting to the model's own default.
+    """
+    for name in (
+        f"KAIROS_AI_{role.upper()}_REASONING_EFFORT" if role else "",
+        "KAIROS_AI_REASONING_EFFORT",
+    ):
+        if not name:
+            continue
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        value = raw.strip().lower()
+        if not value or value in {"off", "none", "default"}:
+            return None
+        if value not in REASONING_EFFORTS:
+            raise ValueError(
+                f"{name}={raw.strip()!r} is not a reasoning effort. "
+                f"Use one of {', '.join(REASONING_EFFORTS)}, or 'off'."
+            )
+        return value
+    return DEFAULT_REASONING_EFFORT.get(role or "", None)
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +711,11 @@ def create_chat_completion(
     that makes one call per source table pays the discovery round-trip once
     instead of once per table.
     """
+    # ``None`` means "not configured" for the optional tuning parameters
+    # (``seed``, ``reasoning_effort``): the caller resolves them unconditionally
+    # and a disabled one must be absent from the request, not sent as null.
+    request_kwargs = {k: v for k, v in request_kwargs.items() if v is not None}
+
     known_unsupported = _UNSUPPORTED_PARAMS_BY_MODEL.get(model, frozenset())
     if known_unsupported:
         request_kwargs = {k: v for k, v in request_kwargs.items() if k not in known_unsupported}

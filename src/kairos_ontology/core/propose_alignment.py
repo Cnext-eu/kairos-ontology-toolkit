@@ -53,6 +53,7 @@ from .ai_provider import (
     create_chat_completion,
     get_ai_client,
     resolve_ai_seed,
+    resolve_reasoning_effort,
     sanitize_provider_error,
 )
 from .ai_preflight import require_ai_provider
@@ -574,6 +575,17 @@ def load_affinity_reports(
 # ---------------------------------------------------------------------------
 
 
+def _sorted_terms(terms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order reference-model terms reproducibly (DD-175).
+
+    Sorted on ``(name, uri)``: the name is what the prompt renders and what a
+    human reads in a diff, and the URI breaks the tie between same-named terms
+    from different modules. Both are stable across processes, which the parsed
+    graph order is not.
+    """
+    return sorted(terms, key=lambda t: (str(t.get("name") or ""), str(t.get("uri") or "")))
+
+
 def extract_ref_model_inventory(
     domain_uris: list[str],
     catalog_path: Path | None,
@@ -632,29 +644,37 @@ def extract_ref_model_inventory(
             include_specializations=True,
             catalog_path=catalog_path,
         )
-        for cls in ref.get("classes", []):
+        for cls in _sorted_terms(ref.get("classes", [])):
             cls_name = cls.get("name", "")
             dedup_key = str(cls.get("uri") or f"{uri}#{cls_name}")
             if dedup_key in seen_classes:
                 continue
             seen_classes.add(dedup_key)
 
-            # Enrich properties with full metadata from the parsed graph
+            # Enrich properties with full metadata from the parsed graph.
+            #
+            # DD-175: sorted, because the source order is rdflib graph-iteration
+            # order and therefore differs between processes. That order reaches
+            # the LLM prompt verbatim, so an unsorted list means every run sends
+            # a *different* prompt and no seed can make the answer reproducible.
+            # Own and inherited stay in separate groups (the distinction is real
+            # and the prompt relies on it); each group is ordered within itself.
             props = []
-            for p in cls.get("properties", []) + cls.get("inherited_properties", []):
-                props.append(
-                    {
-                        "uri": p.get("uri", ""),
-                        "name": p.get("name", ""),
-                        "label": p.get("label", ""),
-                        "range": p.get("range", ""),
-                        "comment": "",
-                        # Carried through so the prompt can mark an object property
-                        # (DD-172); this rebuild previously dropped it, leaving every
-                        # property indistinguishable from a literal one.
-                        "type": p.get("type", ""),
-                    }
-                )
+            for group in ("properties", "inherited_properties"):
+                for p in _sorted_terms(cls.get(group, [])):
+                    props.append(
+                        {
+                            "uri": p.get("uri", ""),
+                            "name": p.get("name", ""),
+                            "label": p.get("label", ""),
+                            "range": p.get("range", ""),
+                            "comment": "",
+                            # Carried through so the prompt can mark an object property
+                            # (DD-172); this rebuild previously dropped it, leaving every
+                            # property indistinguishable from a literal one.
+                            "type": p.get("type", ""),
+                        }
+                    )
 
             cls_dict: dict[str, Any] = {
                 "uri": cls.get("uri", ""),
@@ -1452,6 +1472,7 @@ def _align_table_once(
                 ],
                 temperature=0.1,
                 seed=resolve_ai_seed(ROLE_ALIGNMENT),
+                reasoning_effort=resolve_reasoning_effort(ROLE_ALIGNMENT),
                 response_format={"type": "json_object"},
             )
         )

@@ -23,12 +23,14 @@ import yaml
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
+from .ontology_loader import stable_value
 from ._cache import SidecarCache, compute_entry_hash, open_cache
 from .source_catalog import build_source_catalog
 from .ai_provider import (
     ROLE_AFFINITY,
     create_chat_completion,
     resolve_ai_seed,
+    resolve_reasoning_effort,
     sanitize_provider_error,
 )
 from .generation_outcome import (
@@ -324,7 +326,7 @@ def parse_reference_model(
     # Get ontology metadata
     resolved_name = domain_name or (ttl_path.stem if ttl_path else "unknown")
     for ont in g.subjects(RDF.type, OWL.Ontology):
-        label = g.value(ont, RDFS.label)
+        label = stable_value(g, ont, RDFS.label)
         if label:
             resolved_name = str(label)
         break
@@ -336,8 +338,8 @@ def parse_reference_model(
         if not isinstance(cls_uri, URIRef):
             continue
         cls_name = cls_uri.split("#")[-1].split("/")[-1]
-        cls_label = str(g.value(cls_uri, RDFS.label) or cls_name)
-        cls_comment = str(g.value(cls_uri, RDFS.comment) or "")
+        cls_label = str(stable_value(g, cls_uri, RDFS.label) or cls_name)
+        cls_comment = str(stable_value(g, cls_uri, RDFS.comment) or "")
 
         # Find properties with this class as domain.
         #
@@ -353,9 +355,9 @@ def parse_reference_model(
         properties: list[dict[str, str]] = []
         for prop_uri in sorted(_domain_properties_for(g, cls_uri), key=str):
             prop_name = prop_uri.split("#")[-1].split("/")[-1]
-            prop_label = str(g.value(prop_uri, RDFS.label) or prop_name)
+            prop_label = str(stable_value(g, prop_uri, RDFS.label) or prop_name)
             prop_range = ""
-            range_val = g.value(prop_uri, RDFS.range)
+            range_val = stable_value(g, prop_uri, RDFS.range)
             if range_val:
                 prop_range = range_val.split("#")[-1].split("/")[-1]
             properties.append(
@@ -401,7 +403,7 @@ def _reference_summary_from_index(
 ) -> dict[str, Any]:
     """Render the established reference summary shape from the semantic index."""
     for ontology in graph.subjects(RDF.type, OWL.Ontology):
-        label = graph.value(ontology, RDFS.label)
+        label = stable_value(graph, ontology, RDFS.label)
         if label:
             domain_name = str(label)
             break
@@ -502,9 +504,9 @@ def find_specializations(
             child_props: list[dict[str, str]] = []
             for prop_uri in graph.subjects(RDFS.domain, child):
                 prop_name = str(prop_uri).split("#")[-1].split("/")[-1]
-                prop_label = str(graph.value(prop_uri, RDFS.label) or prop_name)
+                prop_label = str(stable_value(graph, prop_uri, RDFS.label) or prop_name)
                 prop_range = ""
-                range_val = graph.value(prop_uri, RDFS.range)
+                range_val = stable_value(graph, prop_uri, RDFS.range)
                 if range_val:
                     prop_range = str(range_val).split("#")[-1].split("/")[-1]
                 prop_type = "datatype"
@@ -862,8 +864,8 @@ def _resolve_module_classes(
             if not isinstance(cls_uri, URIRef):
                 continue
             name = cls_uri.split("#")[-1].split("/")[-1]
-            label = str(g.value(cls_uri, RDFS.label) or name)
-            comment = str(g.value(cls_uri, RDFS.comment) or "")
+            label = str(stable_value(g, cls_uri, RDFS.label) or name)
+            comment = str(stable_value(g, cls_uri, RDFS.comment) or "")
             classes.append({"name": name, "label": label, "comment": comment})
     except Exception as e:  # pragma: no cover - parse error path
         logger.debug("Module parse failed for %s: %s", path, e)
@@ -1170,6 +1172,7 @@ def analyse_table_single_call(
             ],
             temperature=0.1,
             seed=resolve_ai_seed(ROLE_AFFINITY),
+            reasoning_effort=resolve_reasoning_effort(ROLE_AFFINITY),
             response_format={"type": "json_object"},
         )
     )
