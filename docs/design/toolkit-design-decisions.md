@@ -226,6 +226,9 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-172](#dd-172-namespace-constants-are-pinned-by-test-after-domainincludes-never-matched) | Namespace constants are pinned by test, after `domainIncludes` never matched | Accepted | 2026-08-16 |
 | [DD-173](#dd-173-reference-models-resolve-live-there-is-no-inventory) | Reference models resolve live; there is no inventory | Accepted | 2026-08-16 |
 | [DD-174](#dd-174-llm-pipeline-stages-are-seeded-and-capability-degradation-is-centralised) | LLM pipeline stages are seeded, and capability degradation is centralised | Accepted | 2026-08-16 |
+| [DD-175](#dd-175-the-prompt-is-reproducible-because-a-seed-cannot-stabilise-a-moving-question) | The prompt is reproducible, because a seed cannot stabilise a moving question | Accepted | 2026-08-16 |
+| [DD-176](#dd-176-reasoning-effort-is-a-per-role-knob-defaulted-from-the-shape-of-the-work) | Reasoning effort is a per-role knob, defaulted from the shape of the work | Accepted | 2026-08-16 |
+| [DD-177](#dd-177-the-alignment-answer-is-shape-constrained-so-a-column-cannot-be-skipped) | The alignment answer is shape-constrained, so a column cannot be skipped | Accepted | 2026-08-16 |
 
 ---
 
@@ -12527,3 +12530,157 @@ changed prompt, model or provider backend. This provider returns no `system_fing
 so a backend change is undetectable from the response — which is why the seed is recorded
 next to the model in artifact provenance rather than assumed. A source-level guard fails
 any new stage that forgets either the seed or the wrapper.
+
+## DD-175: The prompt is reproducible, because a seed cannot stabilise a moving question
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `analyse-sources`, every reference-model consumer
+**Implementation:** `core/ontology_loader.py` (`stable_value`), `core/semantic_index.py`, `core/analyse_sources.py`, `core/ontology_ops.py`, `core/propose_alignment.py` (`_sorted_terms`)
+
+### Context
+
+Seeding every LLM stage (DD-174) moved party-domain stability from 62% to 77%, not to
+100%. The residual was ours, not the provider's: the prompt was different on every run.
+
+Two independent causes, both invisible in review because both look like ordinary code:
+
+`Graph.value()` returns an *arbitrary* object when a term carries more than one. It takes
+whatever graph iteration yields first, and that order differs between processes.
+Reference-model classes routinely carry several `rdfs:comment` triples — a local
+definition plus one pulled in through the import closure — so the same class described
+itself differently each run. Measured on the live catalog: 46 of 2,706 resolved terms
+changed their comment between two consecutive runs. `ontology_ops._first_literal` was the
+same defect wearing a different name; there is no "first" when iteration order is
+undefined.
+
+Separately, `parse_source_vocabulary` collected a table's columns into a `set` of
+`URIRef` and iterated it. `URIRef` hashes as a string, so iteration order is randomised
+per process. All five party-domain table prompts differed between two processes, and 70
+of 352 prompt lines differed for `companies` alone.
+
+### Decision
+
+`stable_value` lands in `ontology_loader` — the DD-103 canonical loader — and is used by
+`semantic_index`, `analyse_sources` and `ontology_ops`, so every consumer stabilises from
+one definition. It prefers an `en` literal, then breaks ties lexically. This is a
+tie-break, not a merge: where several definitions genuinely apply, one is chosen, always
+the same one.
+
+Reference-model classes and properties are ordered by `_sorted_terms` on `(name, uri)`,
+keeping own and inherited properties in separate groups because the prompt relies on that
+distinction. Source tables and columns are sorted by URI; the bronze vocabulary records no
+column ordinal, so that is the available deterministic order.
+
+Restriction reads (`owl:onProperty`, `owl:onClass`) keep `Graph.value`: those are
+functional by OWL semantics, so an arbitrary pick is the only pick.
+
+### Consequences
+
+`read_reference_terms` now hashes identically across four consecutive processes (2,706
+terms), and all five party table prompts hash identically across three. Stability rose to
+80%.
+
+The remaining gap is provider-side and not ours to close: on the real 23 KB alignment
+prompt a fixed seed yields three distinct completions from both `gpt-5.5` and
+`gpt-5.6-terra`, where the same seed on a short prompt is byte-identical. That is what
+motivated DD-177. A stable prompt is still the precondition — it is what makes a stable
+answer mean anything.
+
+## DD-176: Reasoning effort is a per-role knob, defaulted from the shape of the work
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `analyse-sources`, `discovery-conformance judge`
+**Implementation:** `core/ai_provider.py` (`resolve_reasoning_effort`, `DEFAULT_REASONING_EFFORT`)
+
+### Context
+
+The reasoning-tier models accept a `reasoning_effort` parameter, and the pipeline's three
+LLM stages do genuinely different work. Affinity is a one-of-N pick over a short candidate
+list, made once per source table — the highest-volume call and the one least helped by
+extended reasoning. Alignment and judgment are closed-vocabulary reasoning over a large
+candidate set, where a wrong answer is silently wrong.
+
+### Decision
+
+`resolve_reasoning_effort` resolves exactly like the seed (DD-174):
+`KAIROS_AI_{ROLE}_REASONING_EFFORT`, then `KAIROS_AI_REASONING_EFFORT`, then a per-role
+default of `low` for affinity and `medium` for alignment and judgment. `off` sends no
+`reasoning_effort` at all. An unrecognised tier raises rather than being passed through,
+so a typo fails at the first call instead of silently reverting to the model's default.
+
+`create_chat_completion` drops `None`-valued kwargs, so a disabled knob is absent from the
+request rather than sent as null.
+
+### Consequences
+
+These are defaults, not findings. Effort trades latency against recall, and recall is the
+weak axis here — roughly a quarter of source columns map. They should be changed from
+measurement, not intuition.
+
+One measurement already argues against reaching for the cheap tier: `gpt-5.6-terra` at
+`low` scored 63% stability and 21.7 columns mapped on the party domain, against 80% and 23
+for `gpt-5.5` at its default. Speed was the only axis on which the cheaper configuration
+won.
+
+## DD-177: The alignment answer is shape-constrained, so a column cannot be skipped
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`
+**Implementation:** `core/propose_alignment.py` (`build_alignment_response_schema`, `normalize_schema_response`), `core/ai_provider.py` (`param_fallbacks`)
+
+### Context
+
+Alignment asked for `{"type": "json_object"}`, which guarantees parseable JSON
+and nothing else. Under it the model may simply leave a column out of its answer,
+and measurement showed that is exactly what it did — inconsistently.
+
+Three identical runs of the party domain mapped 24, 22 and 23 columns with **zero**
+disagreement about what the shared columns meant. The instability was never in the
+model's judgement; it was in which columns the model bothered to answer for.
+
+The earlier variance work took stability from 62% to 80% — a fixed seed (DD-174),
+then a reproducible prompt (DD-175) — but could not close it. Seeding turns out not
+to survive a real prompt: on the 23 KB alignment prompt, one seed produced three
+distinct completions from both `gpt-5.5` and `gpt-5.6-terra`, where the same seed on
+a short prompt is byte-identical. Provider-side determinism is simply not on offer at
+this size, so the remaining lever is the shape of the answer.
+
+### Decision
+
+`column_alignments` is a JSON-schema **object keyed by source column name**, with every
+key in `required` and `additionalProperties` false — not an array. Omitting a column
+then violates the schema, so the model must return a verdict for each one; a
+duplicated or invented column name is impossible for the same reason. `null` remains
+a legal `ref_property`, because forcing a *verdict* must not become forcing a
+*mapping* — that would be a worse failure than silence.
+
+`ref_property` and `ref_class` are enum-constrained to terms drawn from the same
+inventory the prompt renders, so the enum and the prose cannot disagree and a
+hallucinated property is unrepresentable rather than caught afterwards (DD-170).
+
+Provider limits, measured by bisection against the live endpoint: at most 1,000 enum
+values *in total across one schema*, and `$defs`/`$ref` is required because inlining
+the verdict per column exceeds a separate total-size limit at realistic widths. "In
+total" is the trap — the class enum is emitted twice and every nullable enum carries
+its own `null` — so the property enum takes what remains of a shared budget rather
+than a fixed cap. An enum that does not fit is dropped and reported in the returned
+notes, never silently.
+
+`create_chat_completion` gains `param_fallbacks`: a model rejecting the strict schema
+falls back to plain JSON mode instead of losing the constraint entirely.
+
+### Consequences
+
+Party-domain stability went from 80% to **100%** — three parallel runs produced
+byte-identical output. Recall improved at the same time, from a drifting 22-24 columns
+to a steady 25: forcing a verdict per column recovers the ones the model used to drop.
+This is the fix the seed could not be; the seed and the stable prompt remain necessary,
+because a stable *question* is what makes a stable answer meaningful.
+
+The response shape changes only how the answer is obtained. `normalize_schema_response`
+converts the object back to the historical list of per-column dicts, so every consumer
+downstream is untouched, and a list response — the JSON-mode fallback path — passes
+through unchanged.

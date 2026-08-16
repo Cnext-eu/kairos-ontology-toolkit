@@ -693,6 +693,7 @@ def create_chat_completion(
     *,
     model: str,
     messages: list[dict[str, Any]],
+    param_fallbacks: dict[str, Any] | None = None,
     **request_kwargs: Any,
 ):
     """Create a chat completion, capability-aware for per-model parameter support.
@@ -710,27 +711,48 @@ def create_chat_completion(
     A model's rejection is remembered for the rest of the process, so a stage
     that makes one call per source table pays the discovery round-trip once
     instead of once per table.
+
+    ``param_fallbacks`` maps a parameter name to a weaker value to substitute
+    when the model rejects it, instead of dropping it outright. A strict
+    ``response_format`` schema falls back to plain JSON mode this way: a model
+    that cannot honour the schema should still be asked for JSON, rather than
+    silently losing the constraint the caller already had.
     """
     # ``None`` means "not configured" for the optional tuning parameters
     # (``seed``, ``reasoning_effort``): the caller resolves them unconditionally
     # and a disabled one must be absent from the request, not sent as null.
     request_kwargs = {k: v for k, v in request_kwargs.items() if v is not None}
+    fallbacks = param_fallbacks or {}
 
     known_unsupported = _UNSUPPORTED_PARAMS_BY_MODEL.get(model, frozenset())
     if known_unsupported:
-        request_kwargs = {k: v for k, v in request_kwargs.items() if k not in known_unsupported}
+        request_kwargs = {
+            k: (fallbacks[k] if k in fallbacks else v)
+            for k, v in request_kwargs.items()
+            if k not in known_unsupported or k in fallbacks
+        }
     try:
         return client.chat.completions.create(model=model, messages=messages, **request_kwargs)
     except Exception as exc:  # noqa: BLE001 — inspected below, re-raised if not a match
         param = _unsupported_request_param(str(exc))
         if not param or param not in request_kwargs:
             raise
-        logger.info(
-            "Model %s rejected request parameter '%s'; retrying once without it "
-            "(and omitting it for the rest of this run).",
-            model,
-            param,
-        )
         _UNSUPPORTED_PARAMS_BY_MODEL.setdefault(model, set()).add(param)
-        retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
+        if param in fallbacks:
+            logger.info(
+                "Model %s rejected request parameter '%s'; retrying with the weaker "
+                "fallback value (for the rest of this run).",
+                model,
+                param,
+            )
+            retry_kwargs = dict(request_kwargs)
+            retry_kwargs[param] = fallbacks[param]
+        else:
+            logger.info(
+                "Model %s rejected request parameter '%s'; retrying once without it "
+                "(and omitting it for the rest of this run).",
+                model,
+                param,
+            )
+            retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
         return client.chat.completions.create(model=model, messages=messages, **retry_kwargs)

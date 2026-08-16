@@ -1277,6 +1277,161 @@ Respond with JSON only:
 }}"""
 
 
+#: Provider ceiling on enum values *in total across one schema* (DD-177).
+#:
+#: Measured against the live endpoint by bisection: 999 accepted, 1,000
+#: rejected with "Expected at most 1000 enum values in total within a single
+#: schema". "In total" is the trap — the class enum is emitted twice (once for
+#: the table's own class, once inside the reusable column verdict), the
+#: alignment kinds cost four, and every nullable enum carries its own ``null``.
+#: A fixed per-enum cap therefore overshoots; the property budget is whatever
+#: is left once the rest of the schema is paid for.
+TOTAL_SCHEMA_ENUM_BUDGET = 999
+
+#: Headroom kept below the provider limit, so a schema close to the ceiling is
+#: not rejected outright by a future change in how the provider counts.
+SCHEMA_ENUM_SAFETY_MARGIN = 20
+
+#: The four alignment kinds a column verdict may carry.
+ALIGNMENT_KINDS = ("exact", "semantic", "partial", "custom")
+
+
+def build_alignment_response_schema(
+    column_names: list[str],
+    class_names: list[str],
+    property_names: list[str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Build a strict response schema for one table's alignment (DD-177).
+
+    Returns ``(response_format, notes)``, where *notes* records any constraint
+    that had to be relaxed — a dropped enum is reported, never silent.
+
+    The point is the *shape*, not validation. Under plain JSON mode the model
+    may simply omit a column it has no opinion about, and measurement shows
+    which columns it omits drifts between runs: three identical runs of the
+    party domain mapped 24, 22 and 23 columns with **zero** disagreement about
+    what the shared columns meant. The instability was entirely in what the
+    model chose to answer for.
+
+    So ``column_alignments`` is an object keyed by column name with every key
+    ``required`` and ``additionalProperties`` false, rather than an array.
+    Omitting a column then violates the schema: the model must return a verdict
+    for each one, even if that verdict is "no reference property fits". It also
+    rules out a duplicated or invented column name for free.
+
+    Enums pin ``ref_property`` and ``ref_class`` to terms that actually exist,
+    which makes a hallucinated property unrepresentable rather than caught
+    afterwards by ``normalize_local_proposal`` (DD-170). Classes are budgeted
+    first because they are the smaller vocabulary and anchor the table; the
+    property enum takes what remains of
+    :data:`TOTAL_SCHEMA_ENUM_BUDGET`. An enum that does not fit is dropped and
+    the field falls back to a free string — reported in *notes*, never silent,
+    and the downstream validation still runs, so this weakens the constraint
+    rather than the correctness of the result.
+    """
+    notes: list[str] = []
+    budget = TOTAL_SCHEMA_ENUM_BUDGET - SCHEMA_ENUM_SAFETY_MARGIN - len(ALIGNMENT_KINDS)
+
+    def enum_field(values: list[str], label: str, *, copies: int = 1) -> dict[str, Any]:
+        """A nullable string, enum-constrained while the shared budget allows.
+
+        *copies* is how many times this enum appears in the finished schema:
+        the provider counts every occurrence, and ``$ref`` does not help because
+        the limit is on values emitted, not on distinct definitions.
+        """
+        nonlocal budget
+        unique = sorted({v for v in values if v})
+        if not unique:
+            return {"type": ["string", "null"]}
+        cost = (len(unique) + 1) * copies  # +1 for the null each enum carries
+        if cost > budget:
+            notes.append(
+                f"{label} enum dropped: {len(unique)} values cost {cost} against "
+                f"{budget} remaining of the provider's "
+                f"{TOTAL_SCHEMA_ENUM_BUDGET}-value schema budget; the model may "
+                f"name a term that does not exist."
+            )
+            return {"type": ["string", "null"]}
+        budget -= cost
+        return {"type": ["string", "null"], "enum": [*unique, None]}
+
+    # Classes are emitted twice (table anchor + column verdict), so they are
+    # costed once at double and the same field object is reused for both.
+    class_field = enum_field(class_names, "ref_class", copies=2)
+
+    verdict = {
+        "type": "object",
+        "properties": {
+            "ref_class": dict(class_field),
+            "ref_property": enum_field(property_names, "ref_property"),
+            "alignment": {"type": "string", "enum": list(ALIGNMENT_KINDS)},
+            "confidence": {"type": "number"},
+            "note": {"type": ["string", "null"]},
+            "proposed_local_property": {"type": ["string", "null"]},
+            "rationale": {"type": "string"},
+        },
+        # strict mode requires every property to be listed as required; an
+        # optional field is expressed as nullable, not as an absent key.
+        "required": [
+            "ref_class",
+            "ref_property",
+            "alignment",
+            "confidence",
+            "note",
+            "proposed_local_property",
+            "rationale",
+        ],
+        "additionalProperties": False,
+    }
+
+    columns = list(dict.fromkeys(column_names))
+    schema = {
+        # $defs/$ref keeps one copy of the verdict shape. Inlining it per column
+        # blows the provider's total-schema-size limit at realistic table widths.
+        "$defs": {"ColumnVerdict": verdict},
+        "type": "object",
+        "properties": {
+            "ref_class": dict(class_field),
+            "ref_class_confidence": {"type": "number"},
+            "column_alignments": {
+                "type": "object",
+                "properties": {c: {"$ref": "#/$defs/ColumnVerdict"} for c in columns},
+                "required": columns,
+                "additionalProperties": False,
+            },
+        },
+        "required": ["ref_class", "ref_class_confidence", "column_alignments"],
+        "additionalProperties": False,
+    }
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "column_alignment", "strict": True, "schema": schema},
+    }
+    return response_format, notes
+
+
+def normalize_schema_response(result: dict[str, Any]) -> dict[str, Any]:
+    """Convert an object-keyed ``column_alignments`` back to the list shape (DD-177).
+
+    The strict schema keys verdicts by column name so omission is impossible;
+    every consumer downstream expects the historical list of dicts each carrying
+    its own ``column``. Converting here keeps that contract, so the schema is a
+    change to how the answer is *obtained*, not to how it is read.
+
+    A response already in list form passes through untouched, which is what
+    happens when the model rejected the schema and fell back to JSON mode.
+    """
+    alignments = result.get("column_alignments")
+    if not isinstance(alignments, dict):
+        return result
+    converted = [
+        {"column": name, **verdict}
+        for name, verdict in alignments.items()
+        if isinstance(verdict, dict)
+    ]
+    return {**result, "column_alignments": converted}
+
+
 def _count_non_custom_alignments(result: dict[str, Any]) -> int:
     """Count mapped (non-custom) column alignments in an alignment result."""
     alignments = result.get("column_alignments", [])
@@ -1452,6 +1607,22 @@ def _align_table_once(
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
     valid_classes = {c["name"] for c in table_classes}
 
+    # DD-177: constrain the answer's shape, not just its syntax. Property and
+    # class names are drawn from the same inventory the prompt renders, so the
+    # enum and the prose cannot disagree.
+    response_format, schema_notes = build_alignment_response_schema(
+        [str(c.get("name", "")) for c in columns if c.get("name")],
+        [str(c.get("name", "")) for c in ref_classes if c.get("name")],
+        [
+            str(p.get("name", ""))
+            for c in ref_classes
+            for p in (c.get("properties") or [])
+            if p.get("name")
+        ],
+    )
+    for note in schema_notes:
+        logger.info("Alignment schema for %s: %s", table_name, note)
+
     generation_outcome = OUTCOME_SEMANTIC_SUCCESS
     generation_error: str | None = None
     try:
@@ -1473,10 +1644,13 @@ def _align_table_once(
                 temperature=0.1,
                 seed=resolve_ai_seed(ROLE_ALIGNMENT),
                 reasoning_effort=resolve_reasoning_effort(ROLE_ALIGNMENT),
-                response_format={"type": "json_object"},
+                response_format=response_format,
+                # A model that cannot honour the schema must still be asked for
+                # JSON, rather than losing the constraint we already had.
+                param_fallbacks={"response_format": {"type": "json_object"}},
             )
         )
-        result = json.loads(response.choices[0].message.content)
+        result = normalize_schema_response(json.loads(response.choices[0].message.content))
     except Exception as e:
         logger.warning("LLM alignment failed for table %s: %s", table_name, e)
         result = {}
