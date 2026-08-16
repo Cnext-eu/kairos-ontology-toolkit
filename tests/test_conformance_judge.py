@@ -318,8 +318,11 @@ def test_output_never_confirms_the_archetype() -> None:
         {"judgments": [{"uri": URI, "outcome": "partial", "confidence": 0.9}]}
     )
     report = judge_concepts(
-        catalog=[dict(CATALOG)], evidence={}, archetype_id="unit-load-carrier",
-        client=client, model="m",
+        catalog=[dict(CATALOG)],
+        evidence={},
+        archetype_id="unit-load-carrier",
+        client=client,
+        model="m",
     )
 
     document = report.to_judgments_document()
@@ -342,14 +345,34 @@ class TestGroupedReview:
 
     def _concepts(self):
         return [
-            {"label": "A", "outcome": "partial", "confidence": 0.2,
-             "needs_confirmation": True, "likely_domains": ["financial"]},
-            {"label": "B", "outcome": "partial", "confidence": 0.6,
-             "needs_confirmation": True, "likely_domains": ["financial"]},
-            {"label": "C", "outcome": "conforms", "confidence": 0.9,
-             "needs_confirmation": False, "likely_domains": ["financial"]},
-            {"label": "D", "outcome": "deviates", "confidence": 0.4,
-             "needs_confirmation": True, "likely_domains": []},
+            {
+                "label": "A",
+                "outcome": "partial",
+                "confidence": 0.2,
+                "needs_confirmation": True,
+                "likely_domains": ["financial"],
+            },
+            {
+                "label": "B",
+                "outcome": "partial",
+                "confidence": 0.6,
+                "needs_confirmation": True,
+                "likely_domains": ["financial"],
+            },
+            {
+                "label": "C",
+                "outcome": "conforms",
+                "confidence": 0.9,
+                "needs_confirmation": False,
+                "likely_domains": ["financial"],
+            },
+            {
+                "label": "D",
+                "outcome": "deviates",
+                "confidence": 0.4,
+                "needs_confirmation": True,
+                "likely_domains": [],
+            },
         ]
 
     def test_only_unresolved_judgments_are_grouped(self):

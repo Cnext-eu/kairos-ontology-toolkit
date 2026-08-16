@@ -224,7 +224,6 @@ class TestProbeFallsBackFromModelListing:
     def test_404_on_listing_falls_back_to_inference_and_passes(self):
         from unittest.mock import MagicMock, patch
 
-        from kairos_ontology.core import ai_preflight
 
         class NotFoundError(Exception):
             status_code = 404

@@ -120,8 +120,7 @@ class AnchorSuggestion:
             # Qualify by module: the same term name legitimately occurs in several
             # modules ("currency" in three), and a bare repeated name reads as a bug.
             names = ", ".join(
-                f"{c.name} [{c.module.rstrip('#/').rsplit('/', 1)[-1]}]"
-                for c in self.candidates
+                f"{c.name} [{c.module.rstrip('#/').rsplit('/', 1)[-1]}]" for c in self.candidates
             )
             return f"# {self.local_name}: review candidates ({names}) — choose deliberately"
         return f"{self.predicate} <{self.candidates[0].uri}> ;"
@@ -297,9 +296,7 @@ def score_anchor(local_name: str, candidate: ReferenceTerm) -> tuple[float, str]
         return 0.8, f"'{local_name}' is a qualified form of '{candidate.name}'"
 
     label_parts = _split_camel(candidate.label.replace(" ", "")) if candidate.label else []
-    if label_parts and [_singular(p) for p in label_parts] == [
-        _singular(p) for p in local_parts
-    ]:
+    if label_parts and [_singular(p) for p in label_parts] == [_singular(p) for p in local_parts]:
         return 0.85, f"matches the reference label '{candidate.label}'"
 
     # Nothing weaker scores. A shared head noun alone ("...Code", "...Name", "...Number")
@@ -374,9 +371,7 @@ def rank_candidates(
                 module=term.module,
                 score=score + boost,
                 reason=reason,
-                caution=(
-                    _GRAIN_COLLISION_NOTE if term.uri in _GRAIN_COLLISION_URIS else ""
-                ),
+                caution=(_GRAIN_COLLISION_NOTE if term.uri in _GRAIN_COLLISION_URIS else ""),
             )
         )
     # Ordering is by evidence only. An earlier version sorted flagged grain collisions

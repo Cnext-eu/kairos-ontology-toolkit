@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -45,9 +45,7 @@ DISPOSITIONS: dict[str, str] = {
         "Real business data outside the archetype catalog, registered as an in-scope "
         "concept with source evidence via 'kairos-ontology register-concept'."
     ),
-    "deferred": (
-        "In scope and modelled later; carries a reason and stays visible as a known gap."
-    ),
+    "deferred": ("In scope and modelled later; carries a reason and stays visible as a known gap."),
     "not-business-data": (
         "Metadata, schema-lookup, workflow, or scratch table with no canonical meaning."
     ),
@@ -290,7 +288,7 @@ def audit_source_dispositions(
                     "Record the outcome with 'kairos-ontology source-disposition set "
                     f"--system {system} --table {table} --disposition <"
                     + "|".join(sorted(DISPOSITIONS))
-                    + "> --rationale \"...\"'. If it holds real business data the blueprint "
+                    + '> --rationale "..."\'. If it holds real business data the blueprint '
                     "has no home for, prefer 'registered-extension' (and run "
                     "'kairos-ontology register-concept') or 'blueprint-gap' over dropping it."
                 ),
@@ -350,9 +348,7 @@ def record_disposition(
         item
         for item in payload.get("tables") or []
         if not (
-            isinstance(item, dict)
-            and item.get("system") == system
-            and item.get("table") == table
+            isinstance(item, dict) and item.get("system") == system and item.get("table") == table
         )
     ]
     rows.append(entry)
@@ -360,7 +356,5 @@ def record_disposition(
         rows, key=lambda item: (str(item.get("system")), str(item.get("table")))
     )
 
-    path.write_text(
-        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8"
-    )
+    path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return path

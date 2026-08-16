@@ -386,9 +386,7 @@ def scan_domain_ontology(path: Path, domain: str) -> Optional[DomainOntology]:
     object_properties = _locals(OWL.ObjectProperty)
     datatype_properties = _locals(OWL.DatatypeProperty)
 
-    imports = tuple(
-        sorted({str(obj).rstrip("#/") for obj in graph.objects(None, OWL.imports)})
-    )
+    imports = tuple(sorted({str(obj).rstrip("#/") for obj in graph.objects(None, OWL.imports)}))
 
     anchored_classes = {
         _local_name(str(subject))
@@ -606,7 +604,7 @@ def check_blueprint_boundaries(
                         code="integrity.class-outside-blueprint-boundary",
                         message=(
                             f"Class '{name}' is declared in domain '{domain}', whose blueprint "
-                            f"DOES NOT OWN boundary reads: \"{excluded.strip()}\""
+                            f'DOES NOT OWN boundary reads: "{excluded.strip()}"'
                         ),
                         domain=domain,
                         term_uri=uri,

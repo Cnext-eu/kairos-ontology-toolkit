@@ -255,14 +255,10 @@ def test_already_anchored_terms_are_counted_not_resuggested(tmp_path: Path) -> N
 
 
 def test_missing_domain_and_missing_inventories_report_notices(tmp_path: Path) -> None:
-    absent = suggest_anchors(
-        ontologies_dir=tmp_path, domain="nope", inventory_dir=tmp_path
-    )
+    absent = suggest_anchors(ontologies_dir=tmp_path, domain="nope", inventory_dir=tmp_path)
     assert absent.notices and not absent.suggestions
 
     onto = tmp_path / "ontologies"
     _write_domain(onto, body="", imports=(BSP,))
-    no_inv = suggest_anchors(
-        ontologies_dir=onto, domain="party", inventory_dir=tmp_path / "nope"
-    )
+    no_inv = suggest_anchors(ontologies_dir=onto, domain="party", inventory_dir=tmp_path / "nope")
     assert any("generate-inventory" in n for n in no_inv.notices)

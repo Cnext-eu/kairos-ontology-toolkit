@@ -194,7 +194,10 @@ def test_domain_name_in_subject_phrase_does_not_flag_the_domain_class(tmp_path: 
     )
     _write_domain(tmp_path, "party", classes=("Party", "Booking"), header=header)
 
-    flagged = {d.term_uri.rsplit("#", 1)[1] for d in check_declared_exclusions(scan_hub_ontologies(tmp_path))}
+    flagged = {
+        d.term_uri.rsplit("#", 1)[1]
+        for d in check_declared_exclusions(scan_hub_ontologies(tmp_path))
+    }
     assert flagged == {"Booking"}
 
 

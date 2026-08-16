@@ -457,9 +457,7 @@ def bi_demand_terms(hub_root: Path) -> set[str]:
     return terms
 
 
-def concepts_named_by_affinity(
-    concept_uris: Iterable[str], analysis_dir: Path
-) -> set[str]:
+def concepts_named_by_affinity(concept_uris: Iterable[str], analysis_dir: Path) -> set[str]:
     """Return concept URIs a source table is actually *identified as*.
 
     The affinity pass records a ``likely_entity`` per table — "this table is a Booking",
@@ -585,7 +583,10 @@ def judge_concepts(
                 model=resolved_model,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": build_batch_prompt(prompt_concepts, business_context)},
+                    {
+                        "role": "user",
+                        "content": build_batch_prompt(prompt_concepts, business_context),
+                    },
                 ],
                 response_format={"type": "json_object"},
             )
@@ -634,6 +635,7 @@ def write_judgments(report: JudgeReport, path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
 
 # ---------------------------------------------------------------------------
 # Grouped review (AP-022)

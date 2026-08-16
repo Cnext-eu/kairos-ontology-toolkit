@@ -25,9 +25,7 @@ _VOCAB_HEADER = """\
 """
 
 
-def _write_source_table(
-    hub: Path, system: str, table: str, row_count: int | None = 1000
-) -> None:
+def _write_source_table(hub: Path, system: str, table: str, row_count: int | None = 1000) -> None:
     directory = hub / "integration" / "sources" / system
     directory.mkdir(parents=True, exist_ok=True)
     body = _VOCAB_HEADER.format(system=system)
@@ -76,16 +74,12 @@ def test_toolkit_managed_directories_are_not_source_systems(tmp_path: Path) -> N
     analysis = tmp_path / "integration" / "sources" / "_analysis"
     analysis.mkdir(parents=True, exist_ok=True)
     (analysis / "noise.ttl").write_text("not a vocabulary", encoding="utf-8")
-    assert set(load_source_tables(tmp_path / "integration" / "sources")) == {
-        ("qargo", "companies")
-    }
+    assert set(load_source_tables(tmp_path / "integration" / "sources")) == {("qargo", "companies")}
 
 
 def test_load_bound_relations_reads_source_relation(tmp_path: Path) -> None:
     _write_binding(tmp_path, "qargo", "companies")
-    assert load_bound_relations(tmp_path / "integration" / "bindings") == {
-        ("qargo", "companies")
-    }
+    assert load_bound_relations(tmp_path / "integration" / "bindings") == {("qargo", "companies")}
 
 
 def test_bound_table_needs_no_disposition(tmp_path: Path) -> None:
@@ -147,9 +141,7 @@ def test_disposition_requiring_a_reason_is_rejected_without_one(tmp_path: Path) 
 
 def test_unknown_disposition_value_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Unknown disposition"):
-        record_disposition(
-            hub_root=tmp_path, system="qargo", table="x", disposition="ignore-it"
-        )
+        record_disposition(hub_root=tmp_path, system="qargo", table="x", disposition="ignore-it")
 
 
 def test_hand_edited_unknown_disposition_is_flagged_not_trusted(tmp_path: Path) -> None:
