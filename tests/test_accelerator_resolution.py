@@ -228,74 +228,6 @@ groups:
 """
 
 
-class TestScopedInventoryWording:
-    def _build_hub(self, tmp_path):
-        ref_dir = tmp_path / "ontology-reference-models"
-        ref_dir.mkdir(parents=True)
-        (ref_dir / "party.ttl").write_text(_INVENTORY_REF_TTL, encoding="utf-8")
-        dd_dir = ref_dir / "accelerator-packs" / "logistics" / "client-hub-blueprint"
-        dd_dir.mkdir(parents=True)
-        (dd_dir / "data-domains.yaml").write_text(_INVENTORY_DATA_DOMAINS_YAML, encoding="utf-8")
-        (tmp_path / "catalog-v001.xml").write_text(_INVENTORY_CATALOG_XML, encoding="utf-8")
-        (tmp_path / "model" / "ontologies").mkdir(parents=True)
-        return ref_dir
-
-    def test_matched_accelerator_profile_not_none_matched(self, tmp_path, monkeypatch):
-        ref_dir = self._build_hub(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-
-        gen = runner.invoke(
-            cli, ["generate-inventory", "--ref-models-dir", str(ref_dir)]
-        )
-        assert gen.exit_code == 0, gen.output
-
-        result = runner.invoke(
-            cli, ["check-inventory", "--domains", "party", "--ref-models-dir", str(ref_dir)]
-        )
-        assert result.exit_code == 0, result.output
-        assert "(none matched)" not in result.output
-        assert "matched accelerator profile" in result.output
-
-    def test_no_profile_found_not_none_matched(self, tmp_path, monkeypatch):
-        ref_dir = self._build_hub(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-
-        gen = runner.invoke(
-            cli, ["generate-inventory", "--ref-models-dir", str(ref_dir)]
-        )
-        assert gen.exit_code == 0, gen.output
-
-        result = runner.invoke(
-            cli,
-            ["check-inventory", "--domains", "unregistered-domain", "--ref-models-dir", str(ref_dir)],
-        )
-        assert result.exit_code == 0, result.output
-        assert "(none matched)" not in result.output
-        assert "no reference-model profile" in result.output
-
-    def test_accelerator_diagnostics_include_resolved_path(self, tmp_path, monkeypatch):
-        ref_dir = self._build_hub(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-        runner.invoke(cli, ["generate-inventory", "--ref-models-dir", str(ref_dir)])
-
-        result = runner.invoke(
-            cli, ["check-inventory", "--domains", "party", "--ref-models-dir", str(ref_dir)]
-        )
-        assert result.exit_code == 0, result.output
-        assert "Accelerator:  logistics" in result.output
-        assert (
-            str(
-                ref_dir
-                / "accelerator-packs"
-                / "logistics"
-                / "client-hub-blueprint"
-                / "data-domains.yaml"
-            )
-            in result.output
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -409,18 +341,3 @@ class TestCrossCommandResolverParity:
         assert scoped.exit_code == 0, scoped.output
         assert validate_calls["validation"]["accelerator"] == "logistics"
 
-    def test_check_inventory_infers_same_accelerator(self, tmp_path, monkeypatch):
-        hub = self._build_hub(tmp_path)
-        ref_dir = hub.parent / "ontology-reference-models"
-        (hub.parent / "catalog-v001.xml").write_text(
-            '<?xml version="1.0"?><catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"/>',
-            encoding="utf-8",
-        )
-        monkeypatch.chdir(hub)
-        runner = CliRunner()
-        runner.invoke(cli, ["generate-inventory", "--ref-models-dir", str(ref_dir)])
-
-        result = runner.invoke(
-            cli, ["check-inventory", "--domains", "booking", "--ref-models-dir", str(ref_dir)]
-        )
-        assert "Accelerator:  logistics" in result.output

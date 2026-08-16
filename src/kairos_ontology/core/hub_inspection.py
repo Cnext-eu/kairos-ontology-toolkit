@@ -14,7 +14,6 @@ observations — never "complete".
 
 from __future__ import annotations
 
-from collections.abc import Collection
 from pathlib import Path
 
 import yaml
@@ -277,79 +276,6 @@ def _registered_concepts_unbound(root: Path) -> int:
     return sum(1 for entry in registered if str(entry.get("uri") or "") not in targeted)
 
 
-def _inventory_status(root: Path, domains: Collection[str] | None = None) -> InputStatus:
-    """Observe DD-047 materialized reference-inventory freshness (issue #321).
-
-    Mirrors ``check-inventory``'s own gate (``core/inventory.py::check_inventories``) as a
-    defensible presence observation for ``next``: a hub whose ontology/reference-model TTLs
-    have classes but no matching ``referencemodels-unpacked/*-inventory.yaml`` (or a stale
-    one) reports MISSING, which design-domain's Gate 0 blocks on. Wrapped defensively —
-    this must never crash ``kairos-ontology next``.
-
-    When *domains* is given (``next``'s ``--domain`` filter), the repository-wide report is
-    scoped to those domains' inventory keys the same way ``check-inventory --domains`` does
-    (issue #386) — an unrelated accelerator pack's missing/stale inventory must not block a
-    domain it has nothing to do with. When *domains* is falsy, this preserves the prior
-    unscoped behavior verbatim, since there is no single active domain to scope to.
-    """
-    from .inventory import check_inventories
-
-    ontology_dir = root / "model" / "ontologies"
-    ref_models_dir = None
-    for candidate in (
-        root / "ontology-reference-models",
-        root.parent / "ontology-reference-models",
-    ):
-        if candidate.is_dir():
-            ref_models_dir = candidate
-            break
-    catalog_path = root / "catalog-v001.xml"
-    catalog_path = catalog_path if catalog_path.is_file() else None
-
-    try:
-        report = check_inventories(
-            ontology_dir=ontology_dir if ontology_dir.is_dir() else None,
-            ref_models_dir=ref_models_dir,
-            inventory_dir=root / "referencemodels-unpacked",
-            catalog_path=catalog_path,
-        )
-    except Exception:
-        return InputStatus.UNREADABLE
-
-    if not domains:
-        if report.is_blocking:
-            return InputStatus.MISSING
-        return InputStatus.PRESENT
-
-    domain_list = list(domains)
-    try:
-        from .inventory import resolve_domain_inventory_keys, scope_inventory_report
-        from .reference_modules import resolve_hub_accelerator_detailed
-
-        accelerator_resolution = resolve_hub_accelerator_detailed(
-            explicit=None,
-            hub_root=root,
-            ref_models_dir=ref_models_dir,
-            domain_hint=domain_list,
-        )
-        keys_by_domain, _unresolved_by_domain = resolve_domain_inventory_keys(
-            domain_list,
-            ref_models_dir=ref_models_dir,
-            catalog_path=catalog_path,
-            accelerator=accelerator_resolution.accelerator,
-        )
-        scope = scope_inventory_report(report, keys_by_domain)
-    except Exception:
-        # Accelerator resolution can legitimately raise on genuine ambiguity — this is
-        # an advisory observation for `next`, not a hard gate, so fall back to the
-        # unscoped repo-wide result rather than propagating an exception.
-        if report.is_blocking:
-            return InputStatus.MISSING
-        return InputStatus.PRESENT
-
-    if scope.is_blocking:
-        return InputStatus.MISSING
-    return InputStatus.PRESENT
 
 
 def _configured_adapter(root: Path) -> str:
@@ -576,7 +502,6 @@ def gather_hub_input_snapshot(
         adapter=_configured_adapter(root),
         discovery_conformance=_discovery_conformance_status(root),
         source_samples=source_samples,
-        inventory_status=_inventory_status(root, domains),
         bi_concept_mappings=_bi_concept_mapping_status(root),
         source_domain_coverage=_source_domain_coverage_status(root),
         registered_concepts_unbound=_registered_concepts_unbound(root),

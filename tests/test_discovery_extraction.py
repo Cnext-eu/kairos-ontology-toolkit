@@ -24,7 +24,7 @@ from kairos_ontology.core.discovery_extraction import (
     source_relative_path,
     write_extraction,
 )
-from kairos_ontology.core.inventory import compute_source_hash
+from kairos_ontology.core.discovery_extraction import compute_source_hash
 
 
 # --------------------------------------------------------------------------- #

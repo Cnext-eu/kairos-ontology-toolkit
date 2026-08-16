@@ -36,7 +36,6 @@ from typing import Any
 import yaml
 
 from .hub_utils import is_scaffold_placeholder_text
-from .inventory import compute_source_hash
 
 # Marker used to reduce a stored ``source_path`` to a key relative to the
 # business-discovery import root.  Both the documented relative form
@@ -52,6 +51,18 @@ EXTRACTION_SUFFIX = ".extraction.yaml"
 
 # Files in the import folder that are never treated as discovery documents.
 _IGNORED_NAMES = {"readme.md"}
+
+
+
+def compute_source_hash(path: Path) -> str:
+    """Return the SHA-256 hex digest of a file's bytes.
+
+    Re-homed here when DD-173 removed ``core/inventory.py``: this module's document
+    freshness check was its only remaining caller.
+    """
+    digest = hashlib.sha256()
+    digest.update(Path(path).read_bytes())
+    return digest.hexdigest()
 
 
 def slugify_source_name(name: str) -> str:

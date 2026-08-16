@@ -408,26 +408,10 @@ def test_discovery_gate_satisfied_false_when_neither_signal_present():
 # ---------------------------------------------------------------------------
 
 
-def test_generate_inventory_maps_to_design_domain_skill():
-    assert ACTION_SKILLS["generate-inventory"] == "kairos-design-domain"
 
 
-def test_missing_inventory_yields_blocking_generate_inventory_action():
-    proposal = propose_next_actions(_hub(inventory_status=InputStatus.MISSING))
-    by_kind = {action.kind: action for action in proposal.actions}
-    action = by_kind["generate-inventory"]
-    assert action.status is ActionStatus.BLOCKING
-    assert action.blocking is True
-    assert action.command == "kairos-ontology generate-inventory"
-    assert action.skill == "kairos-design-domain"
 
 
-def test_missing_inventory_action_sorts_before_discovery_gate():
-    proposal = propose_next_actions(
-        _hub(inventory_status=InputStatus.MISSING, discovery=InputStatus.MISSING)
-    )
-    kinds = _kinds(proposal)
-    assert kinds.index("generate-inventory") < kinds.index("design-discovery")
 
 
 def test_present_inventory_adds_no_action():

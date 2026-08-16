@@ -66,34 +66,27 @@ or downstream demand into a business fact.
 
 ## Hard gates
 
-### Gate 0: Scoped reference-inventory freshness
+### Gate 0: Reference models resolve
 
-Before proposing or editing a class/property, run the scoped pre-flight:
+Before proposing or editing a class/property, confirm the active domain's imports
+actually resolve:
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-uv run kairos-ontology check-inventory --domains <active-domain> --explain-scope
+uv run kairos-ontology suggest-anchor <active-domain>
 ```
 
-If the hub installs more than one accelerator pack and pins none, this aborts with
-`Accelerator selection is ambiguous`; pass `--accelerator <pack>` or pin
-`[tool.kairos].accelerator` in the hub `pyproject.toml` (see **kairos-setup-config**).
+A reference-model term count of zero means the hub catalog does not map the domain's
+`owl:imports`, and every downstream step will silently model against nothing: **STOP**
+and fix `ontology-hub/catalog-v001.xml` first. Never silently update reference models —
+route an approved update through **kairos-toolkit-ops**.
 
-This is the only freshness authority for selected reference inventories. Missing
-or stale in-scope inventories are blocking: **STOP**. Unrelated repository-wide
-failures are non-blocking when the scoped command exits zero. Report the
-installed/current local reference-model version from the installed
-package (reported by `kairos-ontology check-inventory`), or `unknown` when absent. Never silently
-update reference models. Route an approved update through **kairos-toolkit-ops**
-and rerun the same check.
-
-If this gate is blocking, run `kairos-ontology generate-inventory` and commit the
-result — it materializes the missing/stale `referencemodels-unpacked/*.yaml`
-files this gate checks. A hub scaffolded by `kairos-ontology init` (with
-reference models installed as a package dependency, the default) generates
-inventories on-demand, so a freshly-scaffolded hub should not hit this block;
-a stale inventory after a reference-model update still requires rerunning
-`generate-inventory`.
+There is no inventory to keep fresh (DD-173). Reference models resolve live from the
+catalog through the canonical loader on every call, so there is no materialized snapshot
+that can drift from the resolver, and nothing to regenerate after a reference-model
+update. The previous freshness gate existed only to police that snapshot; when the
+resolver itself was fixed, every snapshot silently kept the old wrong answer, which is
+the failure mode the gate could not see.
 
 ### Gate 1: Source completeness
 

@@ -58,7 +58,7 @@ from the workspace it lands in.
 
 ## Pin the accelerator (multi-pack hubs)
 
-When the hub ships more than one reference-model accelerator pack, `check-inventory`,
+When the hub ships more than one reference-model accelerator pack,
 `validate`, and `compile` cannot guess which pack to resolve inventories against and abort
 with an `Accelerator selection is ambiguous` error. Pin the pack once in the hub
 `pyproject.toml` (not `kairos.yaml`) so every command resolves it without a per-invocation

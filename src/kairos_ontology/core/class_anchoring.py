@@ -221,12 +221,26 @@ def read_reference_terms(catalog_path: Optional[Path]) -> list[ReferenceTerm]:
     except Exception:  # defensive: a broken catalog must not fail the suggestion
         return terms
 
-    # Every reference-model IRI the catalog knows, minus the hub's own domains.
+    # Every IRI the catalog maps, minus the hub's own domain ontologies — those are the
+    # thing being checked, not reference material, and a hub class must never be offered
+    # as an anchor for itself.
+    #
+    # Selected by resolved path rather than by hostname: an earlier version filtered on
+    # "kairosflow.ai", which silently excluded every other vendor's reference model and
+    # any test fixture.
+    own_domains = (Path(catalog_path).parent / "model" / "ontologies").resolve()
+
+    def _is_reference(target: Path) -> bool:
+        try:
+            return own_domains not in Path(target).resolve().parents
+        except OSError:
+            return True
+
     module_uris = sorted(
         {
             uri
-            for uri in resolver.mappings
-            if uri.startswith("http") and "kairosflow.ai" in uri or "onerecord" in uri
+            for uri, target in resolver.mappings.items()
+            if uri.startswith("http") and _is_reference(Path(target))
         }
     )
     if not module_uris:

@@ -577,12 +577,10 @@ def extract_ref_model_inventory(
     domain_uris: list[str],
     catalog_path: Path | None,
     *,
-    inventory_dir: Path | None = None,
     module_map: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve domain URIs and extract full class+property inventory.
 
-    If *inventory_dir* contains pre-generated YAML inventories (DD-044), those
     are preferred over re-parsing TTL files.
 
     When *module_map* (``{uri: {"module", "domains"}}``) is provided (DD-070,
@@ -595,11 +593,11 @@ def extract_ref_model_inventory(
     {name, uri, label, comment, properties: [{name, uri, label, range, range_label,
      prop_type, comment}], specializations: [...]}
     """
-    # DD-044: Try cached inventories first
-    if inventory_dir and inventory_dir.is_dir():
-        inv_classes = _load_inventory_classes(inventory_dir)
-        if inv_classes:
-            return inv_classes
+    # DD-173: no cached-inventory fast path. This used to prefer
+    # referencemodels-unpacked/*.yaml whenever the directory existed, which meant a hub
+    # WITH inventories kept whatever the resolver got wrong when they were written --
+    # the schema:domainIncludes fix was invisible to exactly the hubs that had run
+    # generate-inventory. Resolving live costs milliseconds and cannot go stale.
 
     if not catalog_path or not catalog_path.exists():
         return []
@@ -682,39 +680,6 @@ def extract_ref_model_inventory(
     return all_classes
 
 
-def _load_inventory_classes(inventory_dir: Path) -> list[dict[str, Any]]:
-    """Load all classes from YAML inventory files in a directory (DD-044)."""
-    from .inventory import InventoryMigrationRequiredError, load_inventory
-
-    all_classes: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for yaml_file in sorted(inventory_dir.glob("*.yaml")):
-        try:
-            inv = load_inventory(yaml_file)
-        except InventoryMigrationRequiredError:
-            # A retired inventory must block alignment rather than be silently
-            # skipped and replaced with a direct source-model read.
-            raise
-        except Exception as e:
-            logger.warning("Failed to load inventory %s: %s", yaml_file, e)
-            continue
-        for cls in inv.get("classes", []):
-            cls_uri = str(cls.get("uri") or "")
-            dedup_key = cls_uri or f"{yaml_file.name}:{cls.get('name', '')}"
-            if dedup_key in seen:
-                continue
-            seen.add(dedup_key)
-            enriched = dict(cls)
-            enriched["_semantic"] = {
-                "semantic_profile": inv.get("semantic_profile", "unknown"),
-                "closure_hash": inv.get("closure_hash", ""),
-                "import_complete": inv.get("import_complete", False),
-                "source_identity": (cls.get("provenance", {}).get("source_identity", "")),
-            }
-            all_classes.append(enriched)
-
-    return all_classes
 
 
 # ---------------------------------------------------------------------------
@@ -2898,7 +2863,6 @@ def _propose_alignments(
     cross_module: bool = False,
     accelerator: str | None = None,
     ref_models_dir: Path | None = None,
-    inventory_dir: Path | None = None,
     custom_confidence_floor: float = CUSTOM_CONFIDENCE_FLOOR,
     emit_output: bool = True,
     allow_fallback_output: bool = False,
@@ -2938,10 +2902,6 @@ def _propose_alignments(
             cross-module property pool (required when *cross_module* is True).
         ref_models_dir: Reference-models directory containing ``accelerator-packs/``
             (required when *cross_module* is True).
-        inventory_dir: Materialized reference-model inventory directory
-            (``referencemodels-unpacked/``). When present, newly written claims get
-            deterministic ``class_uri`` / ``property_uri`` backfilled from the
-            inventory (toolkit-optimizations F4). Default ``None`` leaves URIs null.
         allow_fallback_output: Alignment-reliability — a domain where *every*
             table produced ``fallback_only`` (no reference model to align
             against — the LLM was never even called) is skipped by default so a
@@ -3940,9 +3900,7 @@ def _propose_alignments(
         if staged["kind"] == "cached":
             output_files.append(staged["path"])
             continue
-        out_path = write_alignment_output(
-            staged["alignment"], output_dir, inventory_dir=inventory_dir
-        )
+        out_path = write_alignment_output(staged["alignment"], output_dir)
         output_files.append(out_path)
         report(f"     ✓ Written: {out_path.name}")
 
@@ -4248,11 +4206,8 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
 def write_alignment_output(
     alignment: DomainAlignment,
     output_dir: Path,
-    *,
-    inventory_dir: Path | None = None,
 ) -> Path:
     """Write the complete advisory alignment without creating governance state."""
-    del inventory_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / f"{alignment.domain}-alignment.yaml"
     target.write_text(

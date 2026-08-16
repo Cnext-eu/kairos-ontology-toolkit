@@ -361,64 +361,12 @@ def test_next_json_discovery_gate_not_satisfied_when_neither_signal_present(hub,
 # ---------------------------------------------------------------------------
 
 
-def test_next_text_reports_missing_inventory(hub, monkeypatch):
-    # v5-hub's party.ttl has classes but referencemodels-unpacked/ was never generated.
-    result = _invoke(hub, monkeypatch, [])
-    assert "inventory:      missing" in result.output
 
 
-def test_next_json_includes_inventory_status_and_blocking_action(hub, monkeypatch):
-    result = _invoke(hub, monkeypatch, ["--format", "json"])
-    payload = _stdout_json(result)
-    assert payload["inputs"]["inventory_status"] == "missing"
-    action = next(a for a in payload["actions"] if a["kind"] == "generate-inventory")
-    assert action["status"] == "blocking"
-    assert action["blocking"] is True
-    assert action["command"] == "kairos-ontology generate-inventory"
-    assert action["skill"] == "kairos-design-domain"
 
 
-def test_next_inventory_status_present_once_generated(hub, monkeypatch):
-    from kairos_ontology.core.inventory import (
-        generate_inventory,
-        inventory_filename,
-        write_inventory,
-    )
-
-    ttl = hub / "model" / "ontologies" / "party.ttl"
-    inv = generate_inventory(ttl, include_specializations=False)
-    write_inventory(inv, hub / "referencemodels-unpacked" / inventory_filename(ttl))
-
-    result = _invoke(hub, monkeypatch, ["--format", "json"])
-    payload = _stdout_json(result)
-    assert payload["inputs"]["inventory_status"] == "present"
-    assert not any(a["kind"] == "generate-inventory" for a in payload["actions"])
 
 
-def test_next_inventory_status_present_with_unbuildable_reference_model(hub, monkeypatch):
-    """Issue #405/#408 (B3/B4): an unbuildable (unparseable) reference-model source
-    is non-blocking by default — it must not make ``next``'s ``inventory_status``
-    MISSING once the hub's own local ontology inventory is present. Also exercises
-    ``hub_inspection.py``'s collapse to ``report.is_blocking`` (previously an inline
-    copy of the blocking rule that would have silently drifted once ``unbuildable``
-    was added to :class:`InventoryCheckReport`)."""
-    from kairos_ontology.core.inventory import (
-        generate_inventory,
-        inventory_filename,
-        write_inventory,
-    )
-
-    ttl = hub / "model" / "ontologies" / "party.ttl"
-    inv = generate_inventory(ttl, include_specializations=False)
-    write_inventory(inv, hub / "referencemodels-unpacked" / inventory_filename(ttl))
-
-    ref_dir = hub / "ontology-reference-models"
-    ref_dir.mkdir()
-    (ref_dir / "broken.ttl").write_text("this is not valid turtle @@@ ###", encoding="utf-8")
-
-    result = _invoke(hub, monkeypatch, ["--format", "json"])
-    payload = _stdout_json(result)
-    assert payload["inputs"]["inventory_status"] == "present"
 
 
 # ---------------------------------------------------------------------------
@@ -532,41 +480,10 @@ def multi_accelerator_hub(tmp_path: Path) -> Path:
     return root
 
 
-def test_next_domain_scoped_inventory_ignores_unrelated_accelerator(
-    multi_accelerator_hub, monkeypatch
-):
-    # party's accelerator pack never had its inventory generated at all, but the
-    # query is scoped to booking (a different, unrelated accelerator pack) — the
-    # out-of-scope missing party inventory must not block booking's readiness (#386).
-    result = _invoke(
-        multi_accelerator_hub, monkeypatch, ["--domain", "booking", "--format", "json"]
-    )
-    payload = _stdout_json(result)
-    assert payload["inputs"]["inventory_status"] == "present"
-    assert not any(a["kind"] == "generate-inventory" for a in payload["actions"])
 
 
-def test_next_domain_scoped_inventory_still_blocks_relevant_gap(multi_accelerator_hub, monkeypatch):
-    # party's own inventory really is missing, and the query is scoped to party
-    # itself — this must still block. The fix must scope, not blanket-suppress.
-    result = _invoke(multi_accelerator_hub, monkeypatch, ["--domain", "party", "--format", "json"])
-    payload = _stdout_json(result)
-    assert payload["inputs"]["inventory_status"] == "missing"
-    action = next(a for a in payload["actions"] if a["kind"] == "generate-inventory")
-    assert action["blocking"] is True
 
 
-def test_next_without_domain_filter_reports_unscoped_inventory_status(
-    multi_accelerator_hub, monkeypatch
-):
-    # Regression: omitting --domain (the common case) must behave exactly as
-    # before — the plain repo-wide check_inventories() result, unscoped. party's
-    # missing inventory blocks even with no domain filter to disambiguate.
-    result = _invoke(multi_accelerator_hub, monkeypatch, ["--format", "json"])
-    payload = _stdout_json(result)
-    assert payload["inputs"]["inventory_status"] == "missing"
-    action = next(a for a in payload["actions"] if a["kind"] == "generate-inventory")
-    assert action["blocking"] is True
 
 
 def test_next_reports_unfilled_concept_mapping_worksheets(hub, monkeypatch):
