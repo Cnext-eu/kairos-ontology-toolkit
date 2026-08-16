@@ -31,6 +31,23 @@ def test_packaged_v5_scaffold_contract() -> None:
     assert all(not (scaffold / path).exists() for path in retired)
 
 
+def _git_identity(monkeypatch):
+    """Give the scaffold's `git commit` an identity on runners that have none.
+
+    `new-repo` makes a real initial commit. Locally a developer's global config
+    supplies user.name/email; CI runners have neither, and git fails with
+    "Author identity unknown". Environment variables outrank config, so this
+    also cannot leak a developer's real identity into test fixtures.
+    """
+    for key, value in (
+        ("GIT_AUTHOR_NAME", "kairos-tests"),
+        ("GIT_AUTHOR_EMAIL", "tests@example.invalid"),
+        ("GIT_COMMITTER_NAME", "kairos-tests"),
+        ("GIT_COMMITTER_EMAIL", "tests@example.invalid"),
+    ):
+        monkeypatch.setenv(key, value)
+
+
 def test_new_repo_local_only_skips_github(tmp_path, monkeypatch):
     """--local-only scaffolds a hub with no remote, for toolkit-iteration use.
 
@@ -39,6 +56,8 @@ def test_new_repo_local_only_skips_github(tmp_path, monkeypatch):
     whole purpose is exercising the toolkit end to end.
     """
     from unittest import mock
+
+    _git_identity(monkeypatch)
 
     from click.testing import CliRunner
 
@@ -85,10 +104,12 @@ def test_root_env_example_matches_the_scaffold_copy():
     assert committed.read_bytes() == scaffold.read_bytes()
 
 
-def test_new_repo_emits_env_example_into_the_initial_commit(tmp_path):
+def test_new_repo_emits_env_example_into_the_initial_commit(tmp_path, monkeypatch):
     """A --local-only hub must be self-describing before `init` ever runs."""
     import subprocess
     from unittest import mock
+
+    _git_identity(monkeypatch)
 
     from click.testing import CliRunner
 
