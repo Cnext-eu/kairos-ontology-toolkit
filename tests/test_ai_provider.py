@@ -690,6 +690,90 @@ class TestCreateChatCompletion:
             )
         assert client.chat.completions.create.call_count == 2
 
+    def test_rejection_is_remembered_for_later_calls_to_same_model(self):
+        """A per-table stage pays the discovery round-trip once, not once per table."""
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = self._client(
+            side_effect=[
+                RuntimeError("Unsupported parameter: 'temperature' is not supported"),
+                "ok-1",
+                "ok-2",
+                "ok-3",
+            ]
+        )
+        for _ in range(3):
+            create_chat_completion(
+                client,
+                model="m",
+                messages=[{"role": "user", "content": "hi"}],
+                temperature=0.1,
+                seed=7,
+            )
+        # 1 rejected + 1 retry for the first call, then 2 clean calls: 4, not 6.
+        assert client.chat.completions.create.call_count == 4
+        for call in client.chat.completions.create.call_args_list[1:]:
+            assert "temperature" not in call.kwargs
+            assert call.kwargs["seed"] == 7, "the supported parameter must survive"
+
+    def test_rejection_is_remembered_per_model_not_globally(self):
+        """One model rejecting a parameter must not strip it for a different model."""
+        from kairos_ontology.core.ai_provider import create_chat_completion
+
+        client = self._client(
+            side_effect=[
+                RuntimeError("Unsupported parameter: 'temperature' is not supported"),
+                "ok-reasoning",
+                "ok-other",
+            ]
+        )
+        create_chat_completion(
+            client, model="reasoning", messages=[], temperature=0.1
+        )
+        create_chat_completion(client, model="other", messages=[], temperature=0.1)
+        assert client.chat.completions.create.call_args_list[-1].kwargs["temperature"] == 0.1
+
+
+class TestResolveAISeed:
+    """DD-174: seeding is the only variance lever the reasoning tier accepts."""
+
+    def test_defaults_to_the_fixed_seed(self):
+        from kairos_ontology.core.ai_provider import DEFAULT_AI_SEED, resolve_ai_seed
+
+        assert resolve_ai_seed("alignment") == DEFAULT_AI_SEED
+        assert resolve_ai_seed(None) == DEFAULT_AI_SEED
+
+    def test_global_override(self):
+        from kairos_ontology.core.ai_provider import resolve_ai_seed
+
+        with patch.dict(os.environ, {"KAIROS_AI_SEED": "99"}):
+            assert resolve_ai_seed("alignment") == 99
+
+    def test_role_override_beats_global(self):
+        from kairos_ontology.core.ai_provider import resolve_ai_seed
+
+        with patch.dict(
+            os.environ, {"KAIROS_AI_SEED": "99", "KAIROS_AI_ALIGNMENT_SEED": "7"}
+        ):
+            assert resolve_ai_seed("alignment") == 7
+            assert resolve_ai_seed("affinity") == 99
+
+    @pytest.mark.parametrize("value", ["off", "none", "random", "", "  "])
+    def test_seeding_can_be_disabled(self, value):
+        """The escape hatch for deliberately measuring run-to-run variation."""
+        from kairos_ontology.core.ai_provider import resolve_ai_seed
+
+        with patch.dict(os.environ, {"KAIROS_AI_SEED": value}):
+            assert resolve_ai_seed("alignment") is None
+
+    def test_non_integer_raises_rather_than_silently_unseeding(self):
+        """A typo must not produce output that looks reproducible but is not."""
+        from kairos_ontology.core.ai_provider import resolve_ai_seed
+
+        with patch.dict(os.environ, {"KAIROS_AI_SEED": "cheese"}):
+            with pytest.raises(ValueError, match="not an integer"):
+                resolve_ai_seed("alignment")
+
 
 class TestFoundryOpenAIBaseUrl:
     """DD: derive the OpenAI-compatible surface from either configured shape."""

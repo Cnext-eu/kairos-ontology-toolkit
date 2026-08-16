@@ -52,6 +52,7 @@ from .ai_provider import (
     ROLE_ALIGNMENT,
     create_chat_completion,
     get_ai_client,
+    resolve_ai_seed,
     sanitize_provider_error,
 )
 from .ai_preflight import require_ai_provider
@@ -1450,6 +1451,7 @@ def _align_table_once(
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
+                seed=resolve_ai_seed(ROLE_ALIGNMENT),
                 response_format={"type": "json_object"},
             )
         )

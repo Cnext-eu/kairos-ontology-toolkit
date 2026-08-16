@@ -151,11 +151,12 @@ AI_ENV_VAR_NAMES: frozenset[str] = frozenset(
         ENV_AZURE_KEY,
         ENV_FOUNDRY_ENDPOINT,
         ENV_FOUNDRY_API_KEY,
+        "KAIROS_AI_SEED",
     }
     | {
         f"KAIROS_AI_{role.upper()}_{suffix}"
         for role in ("affinity", "alignment", "judgment")
-        for suffix in ("ENDPOINT", "KEY", "MODEL")
+        for suffix in ("ENDPOINT", "KEY", "MODEL", "SEED")
     }
 )
 
@@ -194,6 +195,55 @@ def _role_env(role: str | None, suffix: str) -> str:
 def resolve_role_model(role: str | None, default: str = DEFAULT_MODEL) -> str:
     """Return the model configured for ``role`` (``KAIROS_AI_{ROLE}_MODEL``) or ``default``."""
     return _role_env(role, "MODEL") or default
+
+
+#: Default sampling seed for every LLM-backed pipeline stage (DD-174).
+#:
+#: The pipeline's LLM stages are *analysis* steps, not creative ones: the same
+#: evidence should produce the same proposal on Tuesday as it did on Monday, or
+#: a re-run silently changes the model a human already reviewed.  ``temperature``
+#: cannot deliver that on the reasoning tier — those models reject the parameter
+#: outright (see ``create_chat_completion``), so the only lever the API offers is
+#: a fixed seed.  Measured on this provider: 3/3 byte-identical completions with
+#: a seed, 3/3 different without.
+#:
+#: Seeding is best-effort by design of the underlying APIs: it removes *sampling*
+#: noise, not the effect of a changed prompt, a changed model, or a provider-side
+#: backend change.  This provider returns no ``system_fingerprint``, so a backend
+#: change cannot be detected from the response — which is why the seed is recorded
+#: alongside the model in generated-artifact provenance rather than assumed.
+DEFAULT_AI_SEED = 20260101
+
+
+def resolve_ai_seed(role: str | None = None) -> int | None:
+    """Return the sampling seed for ``role``.
+
+    Resolution order: ``KAIROS_AI_{ROLE}_SEED`` → ``KAIROS_AI_SEED`` →
+    :data:`DEFAULT_AI_SEED`.  Setting either variable to an empty value or to
+    ``off`` disables seeding entirely (returns ``None``), which is the escape
+    hatch for deliberately sampling variation — e.g. running the same stage
+    several times to see how much the model actually disagrees with itself.
+
+    A non-integer value is a configuration error and raises, rather than
+    silently falling back to unseeded output that looks stable but is not.
+    """
+    for name in (f"KAIROS_AI_{role.upper()}_SEED" if role else "", "KAIROS_AI_SEED"):
+        if not name:
+            continue
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        value = raw.strip()
+        if not value or value.lower() in {"off", "none", "random"}:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(
+                f"{name}={value!r} is not an integer. Use an integer seed, "
+                f"or 'off' to disable seeding."
+            ) from None
+    return DEFAULT_AI_SEED
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +612,17 @@ _UNSUPPORTED_PARAM_RE = re.compile(
 )
 
 
+#: Per-model request parameters the provider has already rejected this process.
+#: Populated only from a provider rejection that named the parameter — never
+#: guessed from a model name, so a newly-shipped model is discovered, not assumed.
+_UNSUPPORTED_PARAMS_BY_MODEL: dict[str, set[str]] = {}
+
+
+def reset_unsupported_param_cache() -> None:
+    """Forget every remembered per-model parameter rejection (test seam)."""
+    _UNSUPPORTED_PARAMS_BY_MODEL.clear()
+
+
 def _unsupported_request_param(message: str) -> str | None:
     """Best-effort extraction of a rejected top-level request-parameter name."""
     match = _UNSUPPORTED_PARAM_RE.search(message or "")
@@ -590,7 +651,14 @@ def create_chat_completion(
     rejection that does not name one of the parameters actually sent)
     propagates unchanged; this is a single narrowly-guarded retry, not a
     general error-suppression path.
+
+    A model's rejection is remembered for the rest of the process, so a stage
+    that makes one call per source table pays the discovery round-trip once
+    instead of once per table.
     """
+    known_unsupported = _UNSUPPORTED_PARAMS_BY_MODEL.get(model, frozenset())
+    if known_unsupported:
+        request_kwargs = {k: v for k, v in request_kwargs.items() if k not in known_unsupported}
     try:
         return client.chat.completions.create(model=model, messages=messages, **request_kwargs)
     except Exception as exc:  # noqa: BLE001 — inspected below, re-raised if not a match
@@ -598,9 +666,11 @@ def create_chat_completion(
         if not param or param not in request_kwargs:
             raise
         logger.info(
-            "Model %s rejected request parameter '%s'; retrying once without it.",
+            "Model %s rejected request parameter '%s'; retrying once without it "
+            "(and omitting it for the rest of this run).",
             model,
             param,
         )
+        _UNSUPPORTED_PARAMS_BY_MODEL.setdefault(model, set()).add(param)
         retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
         return client.chat.completions.create(model=model, messages=messages, **retry_kwargs)

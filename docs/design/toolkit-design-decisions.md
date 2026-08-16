@@ -12314,3 +12314,209 @@ ten surviving `conforms` are precisely the concepts a source table is identified
 174 need human confirmation — high, and honest: most of this archetype is genuinely unproven
 before mapping has run.
 
+
+## DD-168: Alignment coverage is reported with a reason code per unmapped column
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, kairos-design-discovery
+**Implementation:** `core/alignment_report.py`, `propose-alignment alignment-report`
+
+### Context
+
+Alignment finished with no statement of what it had *not* done. On the live corpus it
+mapped 494 of 1,994 columns; the other 1,096 simply vanished from view. "75 tables aligned"
+reads as completion. The first version of the report was worse than silence: it printed
+"0 gaps" because it looked for `example_values` on entries that never carry that key, so
+the no-evidence branch always fired and every gap was filtered away as noise.
+
+### Decision
+
+Every source column not bound to a reference property is reported with one code from a
+closed set: `no-reference-property`, `low-confidence-suggestion`, `no-sample-evidence`,
+`vendor-slot`, `operational`. Evidence is read from the source vocabulary, not from the
+proposal. A column whose evidence cannot be established counts as a **gap**, never as
+noise — the fallback must be the direction that gets a human to look.
+
+### Consequences
+
+`GAP_REASONS` names the two codes that mean the domain model is short of a property, which
+is the subset that blocks (DD-169). Grouping by column name collapsed 1,096 gap columns to
+609 distinct names, of which 258 recur across tables and cover 745 columns — the recurring
+names are the tractable work.
+
+## DD-169: The alignment gap is a hard stop before entity binding
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `compile`, entity binding, kairos-design-domain
+**Implementation:** `core/alignment_report.py` (`undecided_gap_columns`, `GAP_RESOLUTIONS`)
+
+### Context
+
+Entity binding is the last point at which an omission is cheap. After it, an unmapped
+column with real business signal is not merely missing — the binding asserts a shape that
+says the model is complete, and every downstream projection inherits that claim.
+
+### Decision
+
+Gap columns carrying real signal and no recorded decision block the workflow before entity
+binding. Not a warning: a stop. Clearing one is an explicit recorded resolution from
+`GAP_RESOLUTIONS`, so "we looked at it and it does not belong" is a durable, auditable
+answer rather than an absence.
+
+### Consequences
+
+The gate is deliberately upstream of the expensive stage. A gap found here costs a
+decision; the same gap found after binding costs a re-model.
+
+## DD-170: A model-proposed hub-local property is validated, not trusted
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`
+**Implementation:** `core/propose_alignment.py` (`normalize_local_proposal`, `flag_risky_proposals`)
+
+### Context
+
+When no reference property fits, the aligner may propose a hub-local one. Left unchecked
+the model returns IRI-shaped names, ranges that are classes, and role-flavoured properties
+(`isShipper`, `customerFlag`) that are the `subclass-identity-by-role` anti-pattern wearing
+a property's clothes.
+
+### Decision
+
+Local proposals pass `normalize_local_proposal`, which rejects IRI-shaped `name`, `range`
+and `on_class`, and `flag_risky_proposals`, which flags role-shaped names for review. A
+rejected proposal degrades to a gap column (DD-168) rather than entering the registry.
+
+### Consequences
+
+The two checks are coded, not prompt instructions — a prompt can be talked out of a rule,
+a normalizer cannot.
+
+## DD-171: The business glossary is a preflight input to alignment
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, discovery preflight
+**Implementation:** `core/propose_alignment.py` (`load_glossary_terms`)
+
+### Context
+
+The glossary was treated as documentation. It is evidence: it is where the organisation
+already wrote down what its own terms mean, and the pattern-library cautions need it on
+every run, not on the runs where someone remembered to pass it.
+
+### Decision
+
+Alignment loads glossary terms as part of discovery preflight, unconditionally.
+
+### Consequences
+
+Glossary absence is now visible at preflight rather than silently producing a
+vocabulary-blind alignment.
+
+## DD-172: Namespace constants are pinned by test, after `domainIncludes` never matched
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** every projection and reader touching schema.org terms
+**Implementation:** `core/projections/shared.py`, `tests/test_namespace_constants.py`
+
+### Context
+
+`SCHEMA = Namespace("http://schema.org/")`. Every reference model in the pack binds
+`https://schema.org/`. The constant had therefore **never matched a single triple** in the
+project's life, so the REUSABLE domainless-property pattern — `schema:domainIncludes` —
+was invisible to every consumer. `TradeParty` presented 9 properties instead of 13, and
+the four it hid were `hasAddress`, `hasBillingAddress`, `hasShippingAddress`, `hasContact`.
+The live symptom was the aligner replying that *no address property is listed on
+TradeParty* while `hasBillingAddress` to `Address` sat in the list it was reading.
+
+A second instance of the same class of defect: object properties rendered identically to
+datatype ones, so `hasBillingAddress (Address)` looked like a string property named
+Address.
+
+### Decision
+
+Match both spellings (`DOMAIN_INCLUDES_PREDICATES`), mark object properties explicitly in
+the prompt, and pin every namespace constant with a test that asserts the constant matches
+what the shipped reference models actually bind.
+
+### Consequences
+
+A silently-never-matching constant produces no error, no warning and a plausible answer —
+it can only be caught by asserting against real data. The guard was verified by
+reintroducing the bug: it fails 2 of 3. The other 13 namespace constants were audited and
+are correct.
+
+## DD-173: Reference models resolve live; there is no inventory
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** all reference-model consumers
+**Implementation:** `core/class_anchoring.py` (`read_reference_terms`), `core/ontology_loader.py`
+
+### Context
+
+A materialized inventory sat between the resolver and its consumers, kept honest by a
+freshness gate. DD-172 showed what that costs: when the resolver was fixed, every cached
+inventory kept the old wrong answer, and the fast path *preferred* the cache — so the hubs
+that had an inventory were exactly the hubs that stayed broken. The freshness gate could
+not see this, because the snapshot was perfectly fresh with respect to a stale resolver.
+
+### Decision
+
+Delete the inventory. `read_reference_terms` resolves live from the catalog through the
+canonical loader (DD-103) on every call. `generate-inventory`, `check-inventory` and the
+freshness gate are removed with no compatibility shim.
+
+### Consequences
+
+Nothing can drift from the resolver, because nothing is stored. Module selection excludes
+the hub's own `model/ontologies` by resolved path — an earlier hostname filter also
+excluded every other vendor and all test fixtures.
+
+## DD-174: LLM pipeline stages are seeded, and capability degradation is centralised
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `analyse-sources`, `discovery-conformance judge`
+**Implementation:** `core/ai_provider.py` (`resolve_ai_seed`, `create_chat_completion`), `tests/test_ai_determinism_guard.py`
+
+### Context
+
+The LLM stages are analysis, not authorship: the same evidence should yield the same
+proposal on Tuesday as on Monday, or a re-run silently rewrites a model a human already
+reviewed. Measured on one domain, three identical runs mapped 21, 26 and 25 columns.
+
+Three defects underlay this, all invisible to review:
+
+1. `temperature=0.1` had never taken effect on the reasoning tier. Those models reject the
+   parameter outright; the provider wrapper caught the rejection and retried without it.
+   The setting read as variance control and was a no-op.
+2. The affinity and judgment stages called `chat.completions.create` directly, bypassing
+   that wrapper. They worked only because they happened to point at a model tolerating
+   `temperature`; repointing either at a reasoning model was a hard 400.
+3. The discovery round-trip was paid once per source table, not once per model.
+
+Measured on this provider: `temperature` and `top_p` rejected on the reasoning tier,
+`seed` accepted on every model, and with a seed 3/3 completions byte-identical against
+3/3 different without.
+
+### Decision
+
+Every pipeline completion passes `seed=resolve_ai_seed(role)`, resolving
+`KAIROS_AI_{ROLE}_SEED` then `KAIROS_AI_SEED` then `DEFAULT_AI_SEED`, where `off` disables
+seeding so run-to-run variation can still be measured deliberately and a non-integer value
+raises rather than silently unseeding. Every stage routes through `create_chat_completion`,
+which now remembers a per-model parameter rejection for the process.
+
+### Consequences
+
+Seeding is best-effort by construction: it removes sampling noise, not the effect of a
+changed prompt, model or provider backend. This provider returns no `system_fingerprint`,
+so a backend change is undetectable from the response — which is why the seed is recorded
+next to the model in artifact provenance rather than assumed. A source-level guard fails
+any new stage that forgets either the seed or the wrapper.

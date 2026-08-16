@@ -544,7 +544,13 @@ def judge_concepts(
     never guessed: a missing concept fails ``validate``'s completeness check loudly,
     which is the correct outcome, whereas a fabricated one passes silently.
     """
-    from .ai_provider import ROLE_JUDGMENT, get_ai_client, resolve_role_model
+    from .ai_provider import (
+        ROLE_JUDGMENT,
+        create_chat_completion,
+        get_ai_client,
+        resolve_ai_seed,
+        resolve_role_model,
+    )
 
     # Alignment evidence is concept-level by construction; affinity is only
     # concept-level where a table was identified AS this concept.
@@ -584,7 +590,8 @@ def judge_concepts(
             )
 
         try:
-            response = active_client.chat.completions.create(
+            response = create_chat_completion(
+                active_client,
                 model=resolved_model,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
@@ -593,6 +600,7 @@ def judge_concepts(
                         "content": build_batch_prompt(prompt_concepts, business_context),
                     },
                 ],
+                seed=resolve_ai_seed(ROLE_JUDGMENT),
                 response_format={"type": "json_object"},
             )
             report.calls_made += 1

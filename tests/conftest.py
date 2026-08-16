@@ -63,6 +63,25 @@ def _clean_ai_env():
         _os.environ.pop(key, None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_unsupported_param_cache():
+    """Clear the per-model parameter-rejection cache between tests (DD-174).
+
+    ``create_chat_completion`` remembers a rejection for the life of the process
+    so a per-table stage pays the discovery round-trip once.  That memory is
+    module-global, so without this a test whose mock rejects ``temperature``
+    would silently change what a later test sends for the same model name.
+    """
+    try:
+        from kairos_ontology.core.ai_provider import reset_unsupported_param_cache
+    except ImportError:  # pragma: no cover — ai_provider must be importable
+        yield
+        return
+    reset_unsupported_param_cache()
+    yield
+    reset_unsupported_param_cache()
+
+
 @pytest.fixture
 def github_provider_env():
     """Opt-in fixture: set a configured GitHub Models provider for tests that need one."""

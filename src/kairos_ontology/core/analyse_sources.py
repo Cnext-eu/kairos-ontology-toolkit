@@ -25,7 +25,12 @@ from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import SidecarCache, compute_entry_hash, open_cache
 from .source_catalog import build_source_catalog
-from .ai_provider import ROLE_AFFINITY, sanitize_provider_error
+from .ai_provider import (
+    ROLE_AFFINITY,
+    create_chat_completion,
+    resolve_ai_seed,
+    sanitize_provider_error,
+)
 from .generation_outcome import (
     OUTCOME_PROVIDER_FAILURE,
     OUTCOME_SEMANTIC_SUCCESS,
@@ -1148,7 +1153,8 @@ def analyse_table_single_call(
     prompt = _build_single_call_prompt(table_name, columns, candidates)
 
     response = call_with_backoff(
-        lambda: client.chat.completions.create(
+        lambda: create_chat_completion(
+            client,
             model=model,
             messages=[
                 {
@@ -1163,6 +1169,7 @@ def analyse_table_single_call(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
+            seed=resolve_ai_seed(ROLE_AFFINITY),
             response_format={"type": "json_object"},
         )
     )
