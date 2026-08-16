@@ -178,8 +178,16 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
 
     tables: dict[str, list[dict[str, Any]]] = {}
 
-    # Find all source tables
-    for tbl_uri in g.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
+    # Find all source tables.
+    #
+    # DD-175: sorted, both here and over the columns below. These lists are
+    # rendered straight into the alignment prompt, and graph iteration — and a
+    # set of URIRefs, whose iteration order follows string hashing and is
+    # randomised per process — put the columns in a different order on every
+    # run. That made the prompt itself unstable, which no sampling seed can
+    # compensate for. The bronze vocabulary records no column ordinal, so URI
+    # order is the available deterministic order.
+    for tbl_uri in sorted(g.subjects(RDF.type, KAIROS_BRONZE.SourceTable), key=str):
         tbl_name = str(
             g.value(tbl_uri, KAIROS_BRONZE.tableName) or tbl_uri.split("#")[-1].split("/")[-1]
         )
@@ -188,7 +196,7 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
         # Find columns belonging to this table (both predicates are used)
         col_uris = set(g.subjects(KAIROS_BRONZE.belongsToTable, tbl_uri))
         col_uris.update(g.subjects(KAIROS_BRONZE.sourceTable, tbl_uri))
-        for col_uri in col_uris:
+        for col_uri in sorted(col_uris, key=str):
             col_name = str(
                 g.value(col_uri, KAIROS_BRONZE.columnName) or col_uri.split("#")[-1].split("/")[-1]
             )
