@@ -482,6 +482,58 @@ def run_anchor_tables(
     return out_path
 
 
+def regroup_by_anchor(
+    domain_tables: dict[str, list[dict[str, Any]]],
+    anchors: dict[tuple[str, str], dict[str, Any]],
+    domain_uris_by_id: dict[str, list[str]],
+    *,
+    floor: float = ANCHOR_CONFIDENCE_FLOOR,
+) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, str]]]:
+    """Move tables to their anchor-derived domain before alignment (DD-185).
+
+    This is the half of the inversion that makes affinity *derived*: without it,
+    a table affinity misplaced is aligned inside the wrong domain's class pool
+    and its (correct) anchor is merely reported as outside that pool. Observed
+    live: fresh affinity moved ``stops`` from consignment to events between two
+    runs, and events cannot see ``TransportCall`` — the exact table the anchor
+    stage fixed was the one the old grouping still broke.
+
+    Conservative by construction: a table moves only when its anchor clears the
+    confidence floor, derives a real domain, and that domain's module URIs are
+    known (no URIs would mean an empty class pool — strictly worse than the
+    wrong one). Everything else stays where affinity put it. Returns the new
+    grouping and the moves, each ``{system, table, from, to, anchor}``.
+    """
+    regrouped: dict[str, list[dict[str, Any]]] = {}
+    moves: list[dict[str, str]] = []
+    for current_domain, tables in domain_tables.items():
+        for entry in tables:
+            key = (str(entry.get("system") or ""), str(entry.get("table") or ""))
+            anchor = anchors.get(key) or {}
+            target = str(anchor.get("domain") or "")
+            if (
+                target
+                and target != current_domain
+                and float(anchor.get("confidence") or 0.0) >= floor
+                and domain_uris_by_id.get(target)
+            ):
+                moved = dict(entry)
+                moved["domain_uris"] = list(domain_uris_by_id[target])
+                regrouped.setdefault(target, []).append(moved)
+                moves.append(
+                    {
+                        "system": key[0],
+                        "table": key[1],
+                        "from": current_domain,
+                        "to": target,
+                        "anchor": str(anchor.get("anchor") or ""),
+                    }
+                )
+            else:
+                regrouped.setdefault(current_domain, []).append(entry)
+    return regrouped, moves
+
+
 def load_table_anchors(analysis_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
     """Read the anchors artifact, keyed ``(system, table)``. Empty when absent."""
     path = Path(analysis_dir) / ANCHORS_FILENAME

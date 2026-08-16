@@ -47,6 +47,7 @@ from .analyse_sources import (
     DEFAULT_MODEL,
     bridge_anchor_classes,
     load_cross_domain_bridges,
+    load_data_domains,
     parse_source_vocabulary,
     parse_reference_model,
 )
@@ -60,7 +61,7 @@ from .ai_provider import (
     sanitize_provider_error,
 )
 from ._provenance import ai_attribution, provenance_comment
-from .anchor_tables import ANCHOR_CONFIDENCE_FLOOR, load_table_anchors
+from .anchor_tables import ANCHOR_CONFIDENCE_FLOOR, load_table_anchors, regroup_by_anchor
 from .tracing import call_metadata, flush_tracing, new_session_id
 from .ai_preflight import require_ai_provider
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
@@ -3469,6 +3470,7 @@ def _propose_alignments(
     # property pool below, this needs no flag and no explicit accelerator — the
     # blueprint's own declarations are read wherever they are found.
     cross_domain_bridges: list[dict[str, Any]] = []
+    bridge_accelerator: str | None = None
     if ref_models_dir is not None:
         # The pack must be resolved, not guessed: with several installed, globbing
         # takes the first alphabetically — `financial-services` ahead of
@@ -3526,6 +3528,31 @@ def _propose_alignments(
             f"No affinity reports found in {analysis_dir}. "
             "Run 'kairos-ontology analyse-sources' first."
         )
+
+    # DD-185: regroup tables into their anchor-derived domains BEFORE the domain
+    # filter, so a table moving into a filtered-in domain is included. This is
+    # what makes affinity a prior rather than a constraint: a misplaced table is
+    # aligned in the domain whose classes it actually needs.
+    global_anchors = load_table_anchors(analysis_dir)
+    anchor_counters = {"applied": 0, "low_confidence": 0, "outside_pool": 0}
+    if global_anchors:
+        report(f"  ⚓ {len(global_anchors)} global table anchor(s) loaded")
+        domain_uris_by_id: dict[str, list[str]] = {}
+        if ref_models_dir is not None and bridge_accelerator:
+            domain_uris_by_id = {
+                dom: list(meta.get("uris") or [])
+                for dom, meta in load_data_domains(
+                    Path(ref_models_dir), accelerator=bridge_accelerator
+                ).items()
+            }
+        domain_tables, anchor_moves = regroup_by_anchor(
+            domain_tables, global_anchors, domain_uris_by_id
+        )
+        for move in anchor_moves:
+            report(
+                f"  ⚓ {move['system']}.{move['table']}: {move['from'] or '(none)'} → "
+                f"{move['to']} (anchored to {move['anchor']})"
+            )
 
     # Apply domain filter
     if domains_filter:
@@ -3663,14 +3690,6 @@ def _propose_alignments(
     # threads, where a context-manager span would not reliably parent them, so
     # grouping uses the session mechanism the SDK provides for exactly this.
     trace_session_id = new_session_id("align")
-
-    # DD-185: global table anchors, when the anchor-tables stage has run. Loaded
-    # once; consulted per table only where the uri-anchor-contract produced no
-    # human-confirmed override — a human decision always outranks the model's.
-    global_anchors = load_table_anchors(analysis_dir)
-    anchor_counters = {"applied": 0, "low_confidence": 0, "outside_pool": 0}
-    if global_anchors:
-        report(f"  ⚓ {len(global_anchors)} global table anchor(s) loaded")
 
     for domain_index, (domain_id, tables) in enumerate(domain_order, start=1):
         in_flight = min(max_workers, len(tables))

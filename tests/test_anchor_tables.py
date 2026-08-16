@@ -263,3 +263,60 @@ class TestDuplicateNameDerivation:
         domain, basis, owners, _ = derive_domain("Consignment", catalog())
         assert (domain, basis) == ("consignment", "owner")
         assert owners == ["consignment"]
+
+
+class TestRegroupByAnchor:
+    """The half of the inversion that makes affinity derived (DD-185)."""
+
+    URIS = {"consignment": ["https://ex.org/mmt/consignment#"],
+            "route-schedule": ["https://ex.org/dcsa/transport-call#"]}
+
+    def _grouping(self):
+        return {
+            "events": [{"system": "qargo", "table": "stops", "domain_uris": ["https://ex.org/ev#"]}],
+            "party": [{"system": "qargo", "table": "companies", "domain_uris": ["https://ex.org/p#"]}],
+        }
+
+    def test_misplaced_table_moves_to_its_derived_domain(self):
+        from kairos_ontology.core.anchor_tables import regroup_by_anchor
+
+        anchors = {("qargo", "stops"): {"anchor": "TransportCall", "confidence": 0.86,
+                                        "domain": "route-schedule"}}
+        grouped, moves = regroup_by_anchor(self._grouping(), anchors, self.URIS)
+        assert "events" not in grouped
+        assert grouped["route-schedule"][0]["table"] == "stops"
+        assert grouped["route-schedule"][0]["domain_uris"] == self.URIS["route-schedule"]
+        assert moves == [{"system": "qargo", "table": "stops", "from": "events",
+                          "to": "route-schedule", "anchor": "TransportCall"}]
+
+    def test_low_confidence_anchor_does_not_move_a_table(self):
+        from kairos_ontology.core.anchor_tables import regroup_by_anchor
+
+        anchors = {("qargo", "stops"): {"anchor": "TransportCall", "confidence": 0.4,
+                                        "domain": "route-schedule"}}
+        grouped, moves = regroup_by_anchor(self._grouping(), anchors, self.URIS)
+        assert moves == [] and "events" in grouped
+
+    def test_unknown_target_uris_block_the_move(self):
+        """No URIs means an empty class pool — strictly worse than the wrong one."""
+        from kairos_ontology.core.anchor_tables import regroup_by_anchor
+
+        anchors = {("qargo", "stops"): {"anchor": "Widget", "confidence": 0.9,
+                                        "domain": "widget-domain"}}
+        grouped, moves = regroup_by_anchor(self._grouping(), anchors, self.URIS)
+        assert moves == [] and grouped["events"][0]["table"] == "stops"
+
+    def test_agreeing_domain_is_left_untouched(self):
+        from kairos_ontology.core.anchor_tables import regroup_by_anchor
+
+        anchors = {("qargo", "companies"): {"anchor": "TradeParty", "confidence": 0.9,
+                                            "domain": "party"}}
+        grouped, moves = regroup_by_anchor(self._grouping(), anchors, self.URIS)
+        assert moves == []
+        assert grouped["party"][0]["domain_uris"] == ["https://ex.org/p#"], "no rewrite in place"
+
+    def test_unanchored_tables_stay_put(self):
+        from kairos_ontology.core.anchor_tables import regroup_by_anchor
+
+        grouped, moves = regroup_by_anchor(self._grouping(), {}, self.URIS)
+        assert moves == [] and set(grouped) == {"events", "party"}
