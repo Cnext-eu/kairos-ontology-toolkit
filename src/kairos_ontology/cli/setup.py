@@ -1733,31 +1733,16 @@ def _load_cross_domain_relationships(
 
     Best-effort: an unreadable or absent blueprint yields ``[]`` rather than failing a
     scaffold, since this enriches a header and gates nothing.
+
+    Delegates to the core loader (DD-181), which alignment also uses for its anchor
+    pool — one reader, so a scaffold header and the anchor pool can never disagree
+    about what the blueprint authorises.
     """
     if refmodels_dir is None or not accelerator:
         return []
-    path = (
-        Path(refmodels_dir)
-        / "accelerator-packs"
-        / accelerator
-        / "client-hub-blueprint"
-        / "data-domains.yaml"
-    )
-    if not path.is_file():
-        return []
-    try:
-        import yaml
+    from ..core.analyse_sources import load_cross_domain_bridges
 
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - advisory enrichment only
-        return []
-    if not isinstance(payload, dict):
-        return []
-    return [
-        bridge
-        for bridge in payload.get("cross_domain_relationships") or []
-        if isinstance(bridge, dict)
-    ]
+    return load_cross_domain_bridges(Path(refmodels_dir), accelerator)
 
 
 def _wrap_comment(text: str, *, prefix: str = "#   ", width: int = 88) -> list[str]:

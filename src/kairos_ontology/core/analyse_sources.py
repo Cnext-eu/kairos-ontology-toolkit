@@ -755,6 +755,58 @@ def load_data_domains(
     return {}
 
 
+def load_cross_domain_bridges(
+    ref_models_dir: Path, accelerator: str | None = None
+) -> list[dict[str, Any]]:
+    """Return the pack blueprint's declared ``cross_domain_relationships`` (DD-181).
+
+    Each bridge names a ``source_domain`` that may reference a ``range_class_uri``
+    owned by a ``target_domain``, through an exact ``property_uri``. The logistics
+    pack ships 24.
+
+    A bridge is the blueprint's own statement that reaching across a boundary is
+    *authorised* — which is precisely the authority the anchor pool needs, and why
+    honouring it requires no extra flag.
+
+    Returned verbatim, without filtering on which fields are populated: the scaffold
+    header needs only ``property_uri`` while the anchor pool needs
+    ``range_class_uri``, so each consumer applies its own requirement.
+    """
+    if accelerator:
+        glob_pattern = f"accelerator-packs/{accelerator}/client-hub-blueprint/data-domains.yaml"
+    else:
+        glob_pattern = "accelerator-packs/*/client-hub-blueprint/data-domains.yaml"
+
+    for path in sorted(Path(ref_models_dir).glob(glob_pattern)):
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - advisory input, never fails a run
+            continue
+        if not isinstance(payload, dict):
+            continue
+        return [
+            bridge
+            for bridge in payload.get("cross_domain_relationships") or []
+            if isinstance(bridge, dict)
+        ]
+    return []
+
+
+def bridge_anchor_classes(bridges: list[dict[str, Any]], domain_id: str) -> dict[str, str]:
+    """Map ``class_uri -> target_domain`` for bridges declared *from* ``domain_id``.
+
+    These are classes the domain is authorised to reference but does not own. A
+    source table holding rows of a referenced entity — ``stops`` under
+    ``consignment``, whose rows *are* transport calls — should be able to anchor
+    to one, while the class stays owned where the blueprint puts it.
+    """
+    return {
+        str(bridge["range_class_uri"]): str(bridge.get("target_domain") or "")
+        for bridge in bridges
+        if str(bridge.get("source_domain") or "") == domain_id and bridge.get("range_class_uri")
+    }
+
+
 def load_accelerator_uri_modules(
     ref_models_dir: Path, accelerator: str | None = None
 ) -> dict[str, dict[str, Any]]:

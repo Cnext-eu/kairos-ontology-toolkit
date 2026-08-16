@@ -45,6 +45,8 @@ from .unresolved_anchors import (
 )
 from .analyse_sources import (
     DEFAULT_MODEL,
+    bridge_anchor_classes,
+    load_cross_domain_bridges,
     parse_source_vocabulary,
     parse_reference_model,
 )
@@ -715,6 +717,63 @@ def extract_ref_model_inventory(
 # ---------------------------------------------------------------------------
 
 
+def resolve_bridge_anchor_classes(
+    bridge_classes: dict[str, str],
+    catalog_path: Path | None,
+    *,
+    exclude_uris: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve blueprint-authorised cross-domain classes into anchor candidates (DD-181).
+
+    *bridge_classes* maps ``class_uri -> target_domain``, from
+    :func:`~.analyse_sources.bridge_anchor_classes`.
+
+    A source table often holds rows of an entity its domain *references* rather than
+    *owns*: ``stops`` sits under ``consignment``, but each row is a transport call,
+    a concept ``route-schedule`` owns. Offering only home classes leaves the model
+    with nothing truthful to pick, and it correctly declines — which is how 306
+    columns across nine tables ended up unanchored (DD-180) with no way forward
+    short of importing a module the domain has no business owning.
+
+    A declared bridge already says this reach is authorised, so the class is offered
+    as an anchor and tagged with the domain that owns it. Ownership does not move:
+    the tag is what keeps the boundary check (DD-163) able to tell an authorised
+    reference from a redeclaration.
+
+    Classes already in the home pool are excluded via *exclude_uris* — the model has
+    seen those, and offering them twice would just inflate the prompt.
+    """
+    if not bridge_classes or not catalog_path:
+        return []
+
+    modules = sorted({uri.split("#")[0] + "#" for uri in bridge_classes if "#" in uri})
+    if not modules:
+        return []
+
+    wanted = set(bridge_classes)
+    skip = exclude_uris or set()
+    resolved: list[dict[str, Any]] = []
+    for cls in extract_ref_model_inventory(modules, catalog_path):
+        uri = str(cls.get("uri") or "")
+        if uri not in wanted or uri in skip:
+            continue
+        entry = dict(cls)
+        entry["bridge_target_domain"] = bridge_classes[uri]
+        resolved.append(entry)
+    return _sorted_terms(resolved)
+
+
+def _bridge_tag(cls: dict[str, Any]) -> str:
+    """Render the cross-domain marker for a blueprint-bridged anchor candidate."""
+    owner = cls.get("bridge_target_domain", "")
+    if not owner:
+        return ""
+    return (
+        f"  [CROSS-DOMAIN → owned by '{owner}', referenced here under a blueprint-declared "
+        f"relationship; anchoring a table to it is allowed, redeclaring it locally is not]"
+    )
+
+
 def _module_tag(cls: dict[str, Any]) -> str:
     """Render a ``  [module: X]`` suffix for a tagged cross-module class.
 
@@ -745,7 +804,10 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
             label = p.get("label") or p["name"]
             label_str = f" [{label}]" if label != p["name"] else ""
             prop_lines.append(f"    - {p['name']}{label_str}{range_str}{kind}")
-        lines.append(f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])}){_module_tag(cls)}")
+        lines.append(
+            f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})"
+            f"{_module_tag(cls)}{_bridge_tag(cls)}"
+        )
         if cls.get("comment"):
             lines.append(f"    Description: {cls['comment']}")
         if prop_lines:
@@ -3322,6 +3384,15 @@ def _propose_alignments(
         report = lambda msg, **kw: None  # noqa: E731
 
     # DD-070: resolve the accelerator import → module map for cross-module mode.
+    # DD-181: declared cross-domain bridges, loaded once. Unlike the cross-module
+    # property pool below, this needs no flag and no explicit accelerator — the
+    # blueprint's own declarations are read wherever they are found.
+    cross_domain_bridges: list[dict[str, Any]] = []
+    if ref_models_dir is not None:
+        cross_domain_bridges = load_cross_domain_bridges(Path(ref_models_dir), accelerator)
+        if cross_domain_bridges:
+            report(f"  🌉 {len(cross_domain_bridges)} declared cross-domain relationship(s)")
+
     accelerator_uri_modules: dict[str, dict[str, Any]] = {}
     if cross_module:
         if not accelerator or not ref_models_dir:
@@ -3541,6 +3612,23 @@ def _propose_alignments(
             )
         else:
             report(f"     ⚠ No reference model resolved for {domain_uris}")
+
+        # DD-181: widen the anchor pool with classes this domain is *declared* to be
+        # able to reference. On by default and unflagged: a bridge in the blueprint
+        # is the authorisation, and requiring a CLI flag to honour it would mean the
+        # default run ignores governance the hub already expressed.
+        bridge_anchors = resolve_bridge_anchor_classes(
+            bridge_anchor_classes(cross_domain_bridges, domain_id),
+            catalog_path,
+            exclude_uris={str(c.get("uri") or "") for c in ref_classes},
+        )
+        if bridge_anchors:
+            owners = sorted({c["bridge_target_domain"] for c in bridge_anchors})
+            report(
+                f"     Cross-domain anchors: {len(bridge_anchors)} class(es) "
+                f"via declared bridges to {', '.join(owners)}"
+            )
+            ref_classes = ref_classes + bridge_anchors
 
         # DD-070: widened STEP-2 property pool spanning the whole accelerator.
         if cross_module:
