@@ -238,6 +238,32 @@ def compile_cmd(
     # DD-169: the last point before a binding makes an omission permanent. Compile is
     # what a binding author runs, so gating it here is what "close the gap before entity
     # binding" actually means in practice.
+    # DD-180: check the anchor before the columns. An unanchored table is the larger
+    # omission — none of its columns can map well, and reporting a hundred homeless
+    # columns underneath it describes the symptom while hiding the cause.
+    try:
+        from ..core.alignment_report import (
+            render_unanchored_guidance,
+            undecided_unanchored_tables,
+        )
+
+        unanchored = undecided_unanchored_tables(hub, domains=[domain])
+    except Exception:  # noqa: BLE001 - never fail a compile on the guard itself
+        unanchored = []
+    if unanchored:
+        click.echo(
+            f"✗ {len(unanchored)} table(s) in '{domain}' have no reference class and no "
+            "recorded decision. Their columns cannot map well until this is resolved:",
+            err=True,
+        )
+        for line in render_unanchored_guidance(unanchored).splitlines()[2:]:
+            click.echo(line, err=True)
+        click.echo(
+            "  Or record a table-level disposition to accept the table as out of scope.",
+            err=True,
+        )
+        raise click.exceptions.Exit(1)
+
     try:
         from ..core.alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
 

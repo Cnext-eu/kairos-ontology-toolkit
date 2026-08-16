@@ -106,6 +106,44 @@ class UnmappedColumn:
         }
 
 
+#: Anchor statuses that mean the table has no reference class (DD-180).
+#:
+#: ``unmatched`` is the model declining to force-fit: it was shown every class the
+#: domain imports and said none of them is what this table is. ``rejected`` is the
+#: model naming a class that does not exist, with no valid fallback. Both leave the
+#: table with no frame.
+UNANCHORED_STATUSES: frozenset[str] = frozenset({"unmatched", "rejected"})
+
+
+@dataclass(frozen=True)
+class UnanchoredTable:
+    """A source table alignment could not attach to any reference class (DD-180).
+
+    The anchor is the frame for everything else. Step 1 of alignment decides which
+    class the *table* is; step 2 maps its columns to properties of that class. With
+    no anchor, step 2 is choosing from the whole pool with nothing to constrain it,
+    which is measurably where the output stops being reproducible: on the live
+    corpus, anchored tables held 60-67% run-to-run stability and unanchored ones
+    30-44%, swinging between 26 and 8 mapped columns for the same input.
+    """
+
+    domain: str
+    system: str
+    table: str
+    columns: int
+    status: str
+    likely_entity: str = ""
+    rejected_class: str = ""
+    #: Classes elsewhere in the reference models that plausibly fit this table,
+    #: as ``(class_name, module_uri, importing_domain)``. Empty when nothing matched.
+    candidates: tuple[tuple[str, str, str], ...] = ()
+
+    @property
+    def has_candidate_elsewhere(self) -> bool:
+        """True when the class this table needs exists but the domain cannot see it."""
+        return bool(self.candidates)
+
+
 @dataclass
 class DomainCoverage:
     domain: str
@@ -114,6 +152,7 @@ class DomainCoverage:
     mapped: int = 0
     by_alignment: dict[str, int] = field(default_factory=dict)
     unmapped: list[UnmappedColumn] = field(default_factory=list)
+    unanchored: list[UnanchoredTable] = field(default_factory=list)
 
     @property
     def coverage(self) -> float:
@@ -154,6 +193,17 @@ class AlignmentReport:
             for reason, count in domain.reason_counts().items():
                 counts[reason] = counts.get(reason, 0) + count
         return counts
+
+    @property
+    def unanchored(self) -> list[UnanchoredTable]:
+        """Every table with no reference class, worst (widest) first."""
+        tables = [t for d in self.domains for t in d.unanchored]
+        return sorted(tables, key=lambda t: (-t.columns, t.domain, t.table))
+
+    @property
+    def unanchored_columns(self) -> int:
+        """Columns sitting under an unanchored table — the size of the blind spot."""
+        return sum(t.columns for t in self.unanchored)
 
     @property
     def gap_columns(self) -> list[UnmappedColumn]:
@@ -278,6 +328,140 @@ def source_sample_presence(hub_root: Path) -> dict[tuple[str, str, str], bool]:
     return presence
 
 
+def _reference_class_modules(hub_root: Path) -> dict[str, str]:
+    """Map every reference-model class name to the module URI that declares it.
+
+    Resolves live through the DD-173 canonical path, so it reflects what the hub
+    can actually reach rather than a snapshot. Returns empty on any failure: the
+    unanchored tables are still worth reporting without the pointer.
+    """
+    try:
+        from .class_anchoring import read_reference_terms
+
+        catalog = Path(hub_root) / "ontology-hub" / "catalog-v001.xml"
+        if not catalog.exists():
+            catalog = Path(hub_root) / "catalog-v001.xml"
+        if not catalog.exists():
+            return {}
+        modules: dict[str, str] = {}
+        for term in read_reference_terms(catalog):
+            if getattr(term, "kind", "") != "class":
+                continue
+            uri = str(getattr(term, "uri", ""))
+            # Module URI is the namespace: everything up to and including the '#'.
+            module = uri.split("#")[0] + "#" if "#" in uri else uri.rsplit("/", 1)[0] + "/"
+            modules.setdefault(str(getattr(term, "name", "")), module)
+        return modules
+    except Exception:  # defensive: the report must survive a resolver problem
+        return {}
+
+
+def domain_imports(hub_root: Path) -> dict[str, set[str]]:
+    """Map each hub domain to the module URIs its ontology imports.
+
+    Read straight from the domain TTLs rather than the blueprint, because what
+    constrains alignment is what the domain *actually* imports, which is the thing
+    that can drift from what the blueprint intended.
+    """
+    imports: dict[str, set[str]] = {}
+    ontologies = Path(hub_root) / "ontology-hub" / "model" / "ontologies"
+    if not ontologies.is_dir():
+        ontologies = Path(hub_root) / "model" / "ontologies"
+    if not ontologies.is_dir():
+        return imports
+    pattern = re.compile(r"owl:imports\s+<([^>]+)>")
+    for path in sorted(ontologies.glob("*.ttl")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        # Skip commented-out example imports, which the scaffold ships by default.
+        found = {
+            match.group(1)
+            for line in text.splitlines()
+            if not line.lstrip().startswith("#")
+            for match in [pattern.search(line)]
+            if match
+        }
+        if found:
+            imports[path.stem] = found
+    return imports
+
+
+def _table_name_tokens(*values: str) -> set[str]:
+    """Lowercase singular-ish tokens from a table name or candidate entity."""
+    tokens: set[str] = set()
+    for value in values:
+        cleaned = re.sub(r"[^A-Za-z0-9]+", " ", str(value or ""))
+        cleaned = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", cleaned)
+        for raw in cleaned.split():
+            token = raw.lower()
+            if len(token) < 3:
+                continue
+            tokens.add(token)
+            if token.endswith("s") and len(token) > 3:
+                tokens.add(token[:-1])  # stops -> stop
+    return tokens
+
+
+def find_anchor_candidates(
+    table_name: str,
+    likely_entity: str,
+    *,
+    reference_classes: dict[str, str],
+    imports_by_domain: dict[str, set[str]],
+    own_domain: str,
+    limit: int = 4,
+) -> tuple[tuple[str, str, str], ...]:
+    """Find classes elsewhere that would anchor this table (DD-180).
+
+    *reference_classes* maps class name to its module URI, across every reference
+    model available to the hub — not merely the ones this domain imports.
+
+    This is the difference between a report saying "the model could not anchor
+    ``stops``" and one saying "``TransportCall`` exists in ``dcsa/transport-call#``,
+    which ``route-schedule`` imports and ``consignment`` does not". The first is an
+    observation; the second is the fix.
+
+    Matching is on shared name tokens, singularised, which is deliberately blunt:
+    the output is a pointer for a human, not an automatic re-anchor, so a false
+    suggestion costs a moment's reading and a missed one costs a silent blind spot.
+    """
+    wanted = _table_name_tokens(table_name, likely_entity)
+    if not wanted:
+        return ()
+
+    scored: list[tuple[int, int, str, str, str]] = []
+    for class_name, module_uri in reference_classes.items():
+        class_tokens = _table_name_tokens(class_name)
+        overlap = wanted & class_tokens
+        if not overlap:
+            continue
+        # Tokens the class carries that the table did not ask for. `TransportCall`
+        # and `BargeTransportCall` overlap equally with a table whose candidate
+        # entity is "TransportCall"; the unqualified one is the better suggestion,
+        # and a modal specialisation is a refinement for the modeller to choose.
+        surplus = len(class_tokens - wanted)
+        importers = sorted(
+            domain
+            for domain, uris in imports_by_domain.items()
+            if domain != own_domain and module_uri in uris
+        )
+        # A class the domain already imports is not the explanation for a failed
+        # anchor — the model saw it and declined it.
+        if module_uri in imports_by_domain.get(own_domain, set()):
+            continue
+        scored.append(
+            (len(overlap), surplus, class_name, module_uri, importers[0] if importers else "")
+        )
+
+    # Rank a module some *other* domain already imports above one nothing imports.
+    # The first is a boundary mismatch — the hub decided this concept belongs
+    # somewhere, and the table landed elsewhere — which is both the likelier
+    # diagnosis and the cheaper fix. The second is often vocabulary coincidence:
+    # "empty-units" matching `ConversionFactorBetweenUnits` in an OMG units module
+    # no domain uses.
+    scored.sort(key=lambda row: (0 if row[4] else 1, -row[0], row[1], row[2]))
+    return tuple((name, uri, importer) for _, _, name, uri, importer in scored[:limit])
+
+
 def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) -> AlignmentReport:
     """Aggregate every ``*-alignment.yaml`` into one cross-domain coverage picture.
 
@@ -294,6 +478,11 @@ def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) 
         return report
 
     presence = source_sample_presence(hub_root) if hub_root is not None else {}
+    # DD-180: resolving anchor candidates needs the full reference vocabulary and
+    # each domain's real imports. Without a hub root the unanchored tables are still
+    # reported — only the "the class exists over here" pointer is unavailable.
+    reference_classes = _reference_class_modules(hub_root) if hub_root is not None else {}
+    imports_by_domain = domain_imports(hub_root) if hub_root is not None else {}
 
     files = sorted(directory.glob("*-alignment.yaml"))
     if not files:
@@ -318,6 +507,33 @@ def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) 
             coverage.tables += 1
             system = str(table.get("system") or "")
             name = str(table.get("table") or "")
+
+            # DD-180: a table with no reference class produces low-value output that
+            # is indistinguishable from ordinary output downstream. Record it here,
+            # where the whole corpus is in view.
+            status = str(table.get("ref_class_status") or "")
+            if not str(table.get("ref_class") or "") or status in UNANCHORED_STATUSES:
+                likely = str(table.get("likely_entity") or "")
+                coverage.unanchored.append(
+                    UnanchoredTable(
+                        domain=coverage.domain,
+                        system=system,
+                        table=name,
+                        columns=int(table.get("source_column_count") or 0)
+                        or len(table.get("columns") or ())
+                        + len(table.get("custom_columns") or ()),
+                        status=status or "unmatched",
+                        likely_entity=likely,
+                        rejected_class=str(table.get("rejected_ref_class") or ""),
+                        candidates=find_anchor_candidates(
+                            name,
+                            likely,
+                            reference_classes=reference_classes,
+                            imports_by_domain=imports_by_domain,
+                            own_domain=coverage.domain,
+                        ),
+                    )
+                )
 
             for column in table.get("columns") or ():
                 if not isinstance(column, dict):
@@ -372,6 +588,41 @@ def render_markdown(report: AlignmentReport, *, gap_limit: int = 40) -> str:
         f"**{len(report.gap_columns):,}** carry real signal with no canonical home."
     )
     lines.append("")
+
+    if report.unanchored:
+        lines.append("## Tables with no reference class")
+        lines.append("")
+        lines.append(
+            f"**{len(report.unanchored)} table(s), {report.unanchored_columns:,} columns.** "
+            f"Alignment could not decide what these tables *are*, so their columns were "
+            f"matched against the whole property pool with nothing to constrain the "
+            f"choice. Output for them is low-value and unstable regardless of model or "
+            f"settings — fix the anchor, not the prompt."
+        )
+        lines.append("")
+        lines.append("| Domain | Table | Columns | Status | The class exists in |")
+        lines.append("|---|---|---:|---|---|")
+        for entry in report.unanchored:
+            if entry.candidates:
+                name, module, importer = entry.candidates[0]
+                where = f"`{name}` in `{module}`"
+                if importer:
+                    where += f" — imported by **{importer}**, not this domain"
+            else:
+                where = "_no matching class found — genuine blueprint gap_"
+            lines.append(
+                f"| {entry.domain} | `{entry.table}` | {entry.columns:,} "
+                f"| {entry.status} | {where} |"
+            )
+        lines.append("")
+        if any(e.has_candidate_elsewhere for e in report.unanchored):
+            lines.append(
+                "Where a class is named above, this is a domain-boundary problem, not a "
+                "modelling one: either add the module to this domain's `owl:imports`, or "
+                "move the table to the domain that already imports it. Record the choice "
+                "so the next run does not re-raise it."
+            )
+            lines.append("")
 
     lines.append("## Why columns are unmapped")
     lines.append("")
@@ -481,6 +732,68 @@ def undecided_gap_columns(
                 continue
             undecided.append(column)
     return undecided
+
+
+def undecided_unanchored_tables(
+    hub_root: Path,
+    *,
+    domains: Iterable[str] | None = None,
+) -> list[UnanchoredTable]:
+    """Unanchored tables with no recorded disposition (DD-180).
+
+    The companion to :func:`undecided_gap_columns`, one level up. That gate asks
+    "this column has real signal and no home — decide"; this one asks "this *table*
+    has no home at all — decide", which is the larger and more damaging omission:
+    an unanchored table's columns cannot be mapped well no matter what happens
+    downstream, and nothing else in the pipeline notices.
+
+    Cleared the same way, by recording a table-grain disposition (DD-164), so
+    "this table is genuinely out of scope" is a durable answer rather than an
+    absence. A disposition on the table covers it whatever the reason.
+    """
+    from .source_disposition import load_dispositions
+
+    report = build_alignment_report(
+        Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
+    )
+    scope = set(domains) if domains is not None else None
+    decided = {
+        (str(entry.get("system") or ""), str(entry.get("table") or ""))
+        for entry in load_dispositions(Path(hub_root)).values()
+    }
+    return [
+        table
+        for table in report.unanchored
+        if (scope is None or table.domain in scope)
+        and (table.system, table.table) not in decided
+    ]
+
+
+def render_unanchored_guidance(tables: list[UnanchoredTable]) -> str:
+    """Render the actionable next step for each unanchored table (DD-180)."""
+    if not tables:
+        return ""
+    lines = [
+        f"{len(tables)} table(s) covering {sum(t.columns for t in tables):,} columns "
+        f"have no reference class. Their columns cannot map well until this is fixed:",
+        "",
+    ]
+    for table in tables:
+        lines.append(f"  {table.domain} / {table.table}  ({table.columns:,} columns)")
+        if not table.candidates:
+            lines.append(
+                "      No matching class in any reference model — a real blueprint gap. "
+                "Register an extension concept, or record the table as out of scope."
+            )
+            continue
+        for name, module, importer in table.candidates:
+            owner = f" (imported by {importer})" if importer else " (imported by no domain)"
+            lines.append(f"      candidate: {name} in {module}{owner}")
+        lines.append(
+            f"      Fix: add the module to {table.domain}'s owl:imports, or move the "
+            f"table to the domain that already imports it."
+        )
+    return "\n".join(lines)
 
 
 @dataclass
