@@ -92,6 +92,39 @@ def _raise_for_probe(*a, **kw):
 
 
 # ---------------------------------------------------------------------------
+# Global observability isolation (order-independence)
+# ---------------------------------------------------------------------------
+# ``cli``'s root group calls ``configure_logging()``, which installs handlers on
+# the ``kairos_ontology`` logger and sets ``propagate = False``. The matching
+# teardown runs from Click's ``@result_callback``, which Click only invokes on a
+# *successful* command. Every test that drives the CLI down a non-zero-exit path
+# (~136 of them) therefore leaks ``propagate = False`` plus an owned handler into
+# whichever test runs next, starving that test's root-based ``caplog`` of records.
+# The same leak applies to the operation-context ``ContextVar``.
+#
+# Two test modules already worked around this with a local copy of this fixture
+# (``test_compile_cli.py``, ``test_cli_exception_boundary.py``). Hoisting it here
+# makes *every* test start from a clean slate, so the suite no longer depends on
+# collection order — which is what lets it run correctly under ``pytest -n`` and
+# under any future reordering. This only ever *adds* isolation; no test's own
+# assertions are affected, because the reset happens outside the call phase.
+from kairos_ontology.core.observability import reset_logging as _reset_logging
+from kairos_ontology.core.observability.context import (
+    clear_operation_context as _clear_operation_context,
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_observability_state():
+    """Give every test a clean logging + operation-context slate (both ends)."""
+    _reset_logging()
+    _clear_operation_context()
+    yield
+    _reset_logging()
+    _clear_operation_context()
+
+
+# ---------------------------------------------------------------------------
 # Guard: detect stale (non-editable) installs early
 # ---------------------------------------------------------------------------
 def _check_editable_install() -> None:
