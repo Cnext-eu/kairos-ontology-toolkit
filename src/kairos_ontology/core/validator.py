@@ -676,17 +676,46 @@ def _check_hash_in_triple_quoted(
             )
 
 
+def discover_hub_source_system_names(ontologies_path: Path) -> tuple[str, ...]:
+    """Return the hub's actual source-system names, read off ``integration/sources/``.
+
+    Every imported source system gets a directory there, so the hub already states its
+    own vendor names on disk — no configuration required. Deriving them closes the hole
+    :func:`load_hub_source_system_names` documents but cannot fix on its own: a generic
+    vendor list can never carry a name like ``Qargo`` or ``Qlik``, so the check silently
+    passed on precisely the names a hub actually leaks into its canonical comments.
+
+    Returns ``()`` when the directory is absent, which leaves the caller's configured or
+    default list untouched.
+    """
+    try:
+        sources_dir = Path(ontologies_path).resolve().parent.parent / "integration" / "sources"
+        if not sources_dir.is_dir():
+            return ()
+        return tuple(
+            sorted(
+                entry.name
+                for entry in sources_dir.iterdir()
+                # "_analysis" and friends are toolkit-managed, not source systems.
+                if entry.is_dir() and not entry.name.startswith(("_", "."))
+            )
+        )
+    except Exception:  # defensive: an unreadable hub tree must not break validate
+        return ()
+
+
 def load_hub_source_system_names(ontologies_path: Path) -> tuple[str, ...] | None:
     """Read ``validation.source_system_names`` from the hub's ``kairos.yaml`` (#501).
 
     Returns ``None`` when the key is absent, so the caller falls back to
-    :data:`_DEFAULT_SOURCE_SYSTEM_NAMES`. An explicitly empty list returns ``()``, which
-    disables the check -- that distinction is the point of returning ``None`` rather than
-    an empty tuple for "not configured".
+    :data:`_DEFAULT_SOURCE_SYSTEM_NAMES` **unioned with the hub's own discovered source
+    systems** (:func:`discover_hub_source_system_names`). An explicitly empty list
+    returns ``()``, which disables the check outright -- that distinction is the point of
+    returning ``None`` rather than an empty tuple for "not configured".
 
-    The default vendor list cannot know a hub's real source systems (the CLdN hub's are
-    Qargo and Qlik, neither of which any generic list would carry), so without this the
-    check quietly passes on exactly the names that matter most.
+    An explicit list still wins: a hub that configures the key gets exactly what it
+    configured, because overriding a deliberate choice with a directory listing would
+    make the setting unreliable.
     """
     try:
         hub_root = Path(ontologies_path).resolve().parent.parent
@@ -1115,6 +1144,7 @@ def propose_lifecycle_state(
         + results["shacl"]["failed"]
         + results["consistency"]["failed"]
         + results.get("decisions", {}).get("failed", 0)
+        + results.get("integrity", {}).get("failed", 0)
     )
     if total_failed:
         return LifecycleStateProposal(
@@ -1318,6 +1348,7 @@ def run_validation(
         "shacl": {"passed": 0, "failed": 0, "errors": []},
         "consistency": {"passed": 0, "failed": 0, "errors": []},
         "decisions": {"passed": 0, "failed": 0, "errors": [], "warnings": []},
+        "integrity": {"passed": 0, "failed": 0, "errors": [], "warnings": []},
     }
 
     # Find all ontology files. Sorted for deterministic iteration/reporting order
@@ -1468,6 +1499,168 @@ def run_validation(
             print(f"\n  Imports — Warnings: {imports_warning_count}")
         print()
 
+    # Hub-wide ontology integrity (DD-163). Every check above reads one
+    # file at a time, which is precisely why cross-domain concept duplication survived
+    # a full 21-domain autopilot run and surfaced only as a dbt duplicate-model build
+    # failure two stages later. This pass reads the hub as a whole.
+    if ontology_files:
+        from .ontology_integrity import audit_ontology_integrity
+
+        data_domains: dict = {}
+        if ref_models_dir is not None and accelerator:
+            try:
+                from .analyse_sources import load_data_domains
+
+                data_domains = load_data_domains(Path(ref_models_dir), accelerator=accelerator)
+            except Exception:  # noqa: BLE001 - a broken blueprint must not crash validate
+                data_domains = {}
+
+        integrity_report = audit_ontology_integrity(
+            ontologies_dir=ontologies_path,
+            data_domains=data_domains,
+            catalog_path=catalog_path,
+            domains=sorted({path.stem for path in ontology_files}),
+        )
+        results["integrity"]["report"] = integrity_report.to_dict()
+
+        print("🧩 Ontology Integrity (hub-wide)")
+        print("-" * 50)
+        from .ontology_integrity import NON_DEGRADABLE_CODES
+
+        integrity_warnings = integrity_report.warnings
+        results["integrity"]["warnings"].extend(item.to_dict() for item in integrity_warnings)
+
+        # --degraded is scoped, not blanket: a hub cannot edit the accelerator pack, so a
+        # blueprint-boundary divergence is degradable, while a cross-domain redeclaration
+        # (a real build break) and a file contradicting its own header are not.
+        hard_errors = [
+            item for item in integrity_report.errors if item.code in NON_DEGRADABLE_CODES
+        ]
+        soft_errors = [
+            item for item in integrity_report.errors if item.code not in NON_DEGRADABLE_CODES
+        ]
+        blocking = hard_errors + ([] if degraded else soft_errors)
+
+        if blocking:
+            results["integrity"]["failed"] += len(blocking)
+            results["integrity"]["errors"].extend(item.to_dict() for item in blocking)
+            for item in blocking:
+                print(f"  ✗ [{item.domain}] {item.message}")
+                print(f"    ↪ {item.remediation}")
+            if degraded and hard_errors:
+                print(
+                    f"  ℹ --degraded does not clear {len(hard_errors)} of these; "
+                    "they are correctness failures, not policy divergence."
+                )
+        if degraded and soft_errors:
+            results["integrity"]["warnings"].extend(item.to_dict() for item in soft_errors)
+            print(f"  ⚠ degraded mode accepted {len(soft_errors)} boundary divergence(s)")
+        if not blocking:
+            results["integrity"]["passed"] += 1
+            print("  ✓ no cross-domain or boundary violations")
+
+        for item in integrity_warnings:
+            print(f"  ⚠ [{item.domain}] {item.message}")
+        for notice in integrity_report.notices:
+            print(f"  ℹ {notice}")
+
+        scores = integrity_report.scores()
+        print(
+            "\n  Fit scores — "
+            + ", ".join(f"{name}: {value:.0%}" for name, value in sorted(scores.items()))
+        )
+        print()
+
+        # Source-table disposition (DD-164). The blueprint deliberately
+        # scopes which domains exist, so homeless source tables are expected — what is
+        # not acceptable is disposing of them silently, in either direction (dropped as
+        # "no canonical home", or force-fitted by minting a local class).
+        from .source_disposition import audit_source_dispositions
+
+        disposition_report = audit_source_dispositions(hub_root=ontologies_path.parent.parent)
+        results["integrity"]["source_dispositions"] = disposition_report.to_dict()
+        if disposition_report.tables_total:
+            print("🗂  Source-table dispositions")
+            print("-" * 50)
+            disposition_errors = disposition_report.errors
+            results["integrity"]["warnings"].extend(
+                item.to_dict() for item in disposition_report.warnings
+            )
+            if disposition_errors and not degraded:
+                results["integrity"]["failed"] += len(disposition_errors)
+                results["integrity"]["errors"].extend(
+                    item.to_dict() for item in disposition_errors
+                )
+                for item in disposition_errors:
+                    print(f"  ✗ {item.message}")
+                print(f"    ↪ {disposition_errors[0].remediation}")
+            elif disposition_errors:
+                results["integrity"]["warnings"].extend(
+                    item.to_dict() for item in disposition_errors
+                )
+                print(
+                    f"  ⚠ degraded mode accepted {len(disposition_errors)} undecided table(s)"
+                )
+            else:
+                print("  ✓ every source table is bound or explicitly disposed")
+            for item in disposition_report.warnings:
+                print(f"  ⚠ {item.message}")
+            print(
+                f"\n  Decision coverage: {disposition_report.coverage():.0%} "
+                f"({disposition_report.tables_bound} bound, "
+                f"{disposition_report.tables_disposed} disposed, "
+                f"{disposition_report.tables_undecided} undecided "
+                f"of {disposition_report.tables_total})"
+            )
+            print()
+
+        # Unmapped real signal (DD-169). A HARD stop, not degradable: alignment is the
+        # first stage that can say "this column holds business data the canonical model
+        # has nowhere to put", and entity binding is where that becomes permanent — a
+        # binding either maps a column or silently leaves it behind, and afterwards the
+        # omission is indistinguishable from a finished mapping. Deciding is cheap here
+        # and expensive later, so the gate sits before binding rather than after.
+        from .alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
+
+        undecided_columns = undecided_gap_columns(
+            ontologies_path.parent.parent, domains=sorted({p.stem for p in ontology_files})
+        )
+        if undecided_columns:
+            results["integrity"]["failed"] += len(undecided_columns)
+            results["integrity"]["errors"].extend(
+                {
+                    "code": "alignment.undecided-gap-column",
+                    "message": (
+                        f"{c.system}.{c.table}.{c.column} ({c.data_type}) carries real "
+                        f"signal with no canonical home [{c.reason}]"
+                    ),
+                }
+                for c in undecided_columns
+            )
+            print("🕳  Unmapped source signal")
+            print("-" * 50)
+            print(
+                f"  ✗ {len(undecided_columns)} source column(s) carry real business data "
+                "with no home in the domain model, and no recorded decision."
+            )
+            by_table: dict[str, int] = {}
+            for column in undecided_columns:
+                key = f"{column.system}.{column.table}"
+                by_table[key] = by_table.get(key, 0) + 1
+            for table, count in sorted(by_table.items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
+                print(f"     {table}: {count} column(s)")
+            print("\n  Resolve each by one of:")
+            for resolution in GAP_RESOLUTIONS:
+                print(f"     - {resolution}")
+            print(
+                "\n  Full list: kairos-ontology alignment-report --format json"
+            )
+            print(
+                "  This is not degradable: --degraded is for policy divergence, and an "
+                "unmapped business signal is a modelling decision nobody has made yet."
+            )
+            print()
+
     if decisions_path is not None and Path(decisions_path).is_dir():
         from .decision_records import validate_decision_bundle
 
@@ -1522,6 +1715,16 @@ def run_validation(
         temporal_quartet_synonym_rule = _load_temporal_quartet_synonym_rule(ref_models_dir)
         # #501: let the hub name its own source systems; None keeps the vendor defaults.
         hub_source_system_names = load_hub_source_system_names(ontologies_path)
+        if hub_source_system_names is None:
+            # Unconfigured: union the generic vendor defaults with the systems this hub
+            # demonstrably imported. Without this the check can only catch vendors a
+            # generic list happens to name, and never the hub's own ("Qargo", "Qlik") --
+            # which are exactly the names that leak into canonical comments.
+            discovered = discover_hub_source_system_names(ontologies_path)
+            if discovered:
+                hub_source_system_names = tuple(
+                    sorted({*_DEFAULT_SOURCE_SYSTEM_NAMES, *discovered})
+                )
         for ontology_file in ontology_files:
             try:
                 g = Graph()
@@ -1681,6 +1884,7 @@ def run_validation(
         + results["shacl"]["failed"]
         + results["consistency"]["failed"]
         + results["decisions"]["failed"]
+        + results.get("integrity", {}).get("failed", 0)
     )
     # Issue #332: warnings never feed the exit code (unchanged), but the final line
     # must not claim a clean bill of health while ANY section still has open warnings
@@ -1692,6 +1896,7 @@ def run_validation(
         len(results["naming"]["warnings"])
         + len(results["imports"]["warnings"])
         + len(results["decisions"]["warnings"])
+        + len(results.get("integrity", {}).get("warnings", []))
     )
     total_open_warnings = gdpr_warnings + section_warning_count
 

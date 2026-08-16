@@ -151,11 +151,13 @@ AI_ENV_VAR_NAMES: frozenset[str] = frozenset(
         ENV_AZURE_KEY,
         ENV_FOUNDRY_ENDPOINT,
         ENV_FOUNDRY_API_KEY,
+        "KAIROS_AI_SEED",
+        "KAIROS_AI_REASONING_EFFORT",
     }
     | {
         f"KAIROS_AI_{role.upper()}_{suffix}"
-        for role in ("affinity", "alignment")
-        for suffix in ("ENDPOINT", "KEY", "MODEL")
+        for role in ("affinity", "alignment", "judgment")
+        for suffix in ("ENDPOINT", "KEY", "MODEL", "SEED", "REASONING_EFFORT")
     }
 )
 
@@ -177,6 +179,11 @@ AI_ENV_VAR_NAMES: frozenset[str] = frozenset(
 # optional ``KAIROS_AI_{ROLE}_MODEL`` model override.
 ROLE_AFFINITY = "affinity"
 ROLE_ALIGNMENT = "alignment"
+#: Archetype-conformance judgment (DD-167). A third role because the work differs
+#: again: ~174 one-shot judgments against a closed outcome vocabulary, where a
+#: wrong "conforms" silently certifies a concept the hub never models. Accuracy
+#: matters more than cost here, so it gets its own endpoint/model knobs.
+ROLE_JUDGMENT = "judgment"
 
 
 def _role_env(role: str | None, suffix: str) -> str:
@@ -189,6 +196,109 @@ def _role_env(role: str | None, suffix: str) -> str:
 def resolve_role_model(role: str | None, default: str = DEFAULT_MODEL) -> str:
     """Return the model configured for ``role`` (``KAIROS_AI_{ROLE}_MODEL``) or ``default``."""
     return _role_env(role, "MODEL") or default
+
+
+#: Default sampling seed for every LLM-backed pipeline stage (DD-174).
+#:
+#: The pipeline's LLM stages are *analysis* steps, not creative ones: the same
+#: evidence should produce the same proposal on Tuesday as it did on Monday, or
+#: a re-run silently changes the model a human already reviewed.  ``temperature``
+#: cannot deliver that on the reasoning tier — those models reject the parameter
+#: outright (see ``create_chat_completion``), so the only lever the API offers is
+#: a fixed seed.  Measured on this provider: 3/3 byte-identical completions with
+#: a seed, 3/3 different without.
+#:
+#: Seeding is best-effort by design of the underlying APIs: it removes *sampling*
+#: noise, not the effect of a changed prompt, a changed model, or a provider-side
+#: backend change.  This provider returns no ``system_fingerprint``, so a backend
+#: change cannot be detected from the response — which is why the seed is recorded
+#: alongside the model in generated-artifact provenance rather than assumed.
+DEFAULT_AI_SEED = 20260101
+
+
+def resolve_ai_seed(role: str | None = None) -> int | None:
+    """Return the sampling seed for ``role``.
+
+    Resolution order: ``KAIROS_AI_{ROLE}_SEED`` → ``KAIROS_AI_SEED`` →
+    :data:`DEFAULT_AI_SEED`.  Setting either variable to an empty value or to
+    ``off`` disables seeding entirely (returns ``None``), which is the escape
+    hatch for deliberately sampling variation — e.g. running the same stage
+    several times to see how much the model actually disagrees with itself.
+
+    A non-integer value is a configuration error and raises, rather than
+    silently falling back to unseeded output that looks stable but is not.
+    """
+    for name in (f"KAIROS_AI_{role.upper()}_SEED" if role else "", "KAIROS_AI_SEED"):
+        if not name:
+            continue
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        value = raw.strip()
+        if not value or value.lower() in {"off", "none", "random"}:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(
+                f"{name}={value!r} is not an integer. Use an integer seed, "
+                f"or 'off' to disable seeding."
+            ) from None
+    return DEFAULT_AI_SEED
+
+
+#: Reasoning-effort tiers the provider accepts, cheapest first.
+REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+
+#: Default reasoning effort per role (DD-176).
+#:
+#: Affinity is a one-of-N pick over a short candidate list, made once per source
+#: table — the highest-volume call in the pipeline and the one least helped by
+#: extended reasoning. Alignment and judgment are closed-vocabulary reasoning
+#: over a large candidate set, where a wrong answer is silently wrong, so they
+#: get the middle tier rather than the cheapest.
+#:
+#: These are defaults, not findings: effort trades latency against recall, and
+#: recall is the weak axis here (a quarter of source columns map). Change them
+#: from measurement, not from intuition.
+DEFAULT_REASONING_EFFORT: dict[str, str] = {
+    ROLE_AFFINITY: "low",
+    ROLE_ALIGNMENT: "medium",
+    ROLE_JUDGMENT: "medium",
+}
+
+
+def resolve_reasoning_effort(role: str | None = None) -> str | None:
+    """Return the reasoning effort for ``role``, or ``None`` to leave it to the model.
+
+    Resolution order: ``KAIROS_AI_{ROLE}_REASONING_EFFORT`` →
+    ``KAIROS_AI_REASONING_EFFORT`` → the per-role default. ``off`` (or ``default``)
+    sends no ``reasoning_effort`` at all, which is also what a non-reasoning model
+    needs — though that case is handled anyway, since such a model rejects the
+    parameter by name and ``create_chat_completion`` drops it.
+
+    An unrecognised tier raises rather than being passed through, so a typo fails
+    at the first call instead of silently reverting to the model's own default.
+    """
+    for name in (
+        f"KAIROS_AI_{role.upper()}_REASONING_EFFORT" if role else "",
+        "KAIROS_AI_REASONING_EFFORT",
+    ):
+        if not name:
+            continue
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        value = raw.strip().lower()
+        if not value or value in {"off", "none", "default"}:
+            return None
+        if value not in REASONING_EFFORTS:
+            raise ValueError(
+                f"{name}={raw.strip()!r} is not a reasoning effort. "
+                f"Use one of {', '.join(REASONING_EFFORTS)}, or 'off'."
+            )
+        return value
+    return DEFAULT_REASONING_EFFORT.get(role or "", None)
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +418,28 @@ def _resolve_github(model: str) -> AIProviderConfig:
     )
 
 
+def foundry_openai_base_url(endpoint: str) -> str:
+    """Derive the OpenAI-compatible base URL from a Foundry endpoint.
+
+    Accepts either shape a user may have configured and normalises both to
+    ``https://<resource>.services.ai.azure.com/openai/v1``:
+
+    * the project endpoint the SDK path wants --
+      ``https://<resource>.services.ai.azure.com/api/projects/<project>``
+    * the bare resource URL -- ``https://<resource>.services.ai.azure.com``
+
+    The project segment is dropped deliberately: it scopes the *projects* API, while an
+    API key authenticates the resource-level inference surface.
+    """
+    base = endpoint.strip().rstrip("/")
+    marker = "/api/projects/"
+    if marker in base:
+        base = base.split(marker, 1)[0]
+    if base.endswith("/openai/v1"):
+        return base
+    return f"{base}/openai/v1"
+
+
 def _resolve_azure(model: str) -> AIProviderConfig:
     """Resolve Azure AI Foundry configuration."""
     endpoint = os.environ.get(ENV_AZURE_ENDPOINT)
@@ -408,12 +540,36 @@ def _create_client_from_config(config: AIProviderConfig):
     if config.provider == "foundry":
         return _create_foundry_client(config)
 
-    from openai import OpenAI
-
-    return OpenAI(
+    return _openai_class()(
         base_url=config.endpoint,
         api_key=config.api_key,
     )
+
+
+def _openai_class():
+    """Return the ``OpenAI`` class, Langfuse-instrumented when tracing is on (DD-184).
+
+    Langfuse ships a drop-in replacement that records model, token usage and the
+    ``generation`` observation type without the call sites knowing. Preferring it
+    over hand-rolled spans is the documented guidance, and it is why nothing in
+    ``create_chat_completion`` has to know tracing exists.
+
+    Falls back to the plain client whenever tracing is off or the package is
+    missing, so an unconfigured hub is byte-for-byte unchanged.
+    """
+    from .tracing import get_tracing_client
+
+    if get_tracing_client() is not None:
+        try:
+            from langfuse.openai import OpenAI as TracedOpenAI
+
+            return TracedOpenAI
+        except Exception as exc:  # noqa: BLE001 - tracing must never fail a run
+            logger.info("Langfuse OpenAI wrapper unavailable (%s); using plain client.", exc)
+
+    from openai import OpenAI
+
+    return OpenAI
 
 
 def _endpoint_for_log(endpoint: str) -> str:
@@ -461,31 +617,25 @@ def _create_foundry_client(config: AIProviderConfig):
         )
         return project_client.get_openai_client()
 
-    if config.api_key:
-        try:
-            from azure.core.credentials import AzureKeyCredential
+    def _openai_key_client(cfg):
+        # DD-184: via _openai_class so the Foundry key path is instrumented too.
+        # This is the path this deployment actually takes, so importing OpenAI
+        # directly here silently excluded every real call from tracing.
+        return _openai_class()(
+            base_url=foundry_openai_base_url(cfg.endpoint), api_key=cfg.api_key
+        )
 
-            return _openai_from_credential(AzureKeyCredential(config.api_key))
-        except AttributeError:
-            # azure-ai-projects requires a TokenCredential (get_token); an API key
-            # cannot be used on this SDK path. Fall back to DefaultAzureCredential.
-            logger.warning(
-                "%s is set but the Foundry SDK requires AAD token auth "
-                "(AzureKeyCredential has no get_token). Falling back to "
-                "DefaultAzureCredential (az login / managed identity).",
-                ENV_FOUNDRY_API_KEY,
-            )
-            token_credential = _build_token_credential()
-            if token_credential is None:
-                raise NotConfigured(
-                    "The Microsoft Foundry SDK requires AAD token authentication, "
-                    f"but {ENV_FOUNDRY_API_KEY} (an API key) cannot provide a token "
-                    "and azure-identity is not installed.\n"
-                    "Either run `az login` (or use a managed identity) with "
-                    "azure-identity installed, or unset the API key.\n"
-                    "Install with: pip install kairos-ontology-toolkit[foundry]"
-                )
-            return _openai_from_credential(token_credential)
+    if config.api_key:
+        # Key auth does not go through AIProjectClient at all. That SDK path calls
+        # credential.get_token(), which AzureKeyCredential does not implement -- and it
+        # does so *lazily*, when the returned client is first used, so the previous
+        # AttributeError fallback here never fired: the error surfaced later, at the
+        # call site, as an opaque "endpoint unreachable".
+        #
+        # A Foundry resource serves an OpenAI-compatible surface at
+        # <resource>/openai/v1, which is exactly what an API key authenticates against.
+        # Talk to it directly.
+        return _openai_key_client(config)
 
     token_credential = _build_token_credential()
     if token_credential is None:
@@ -544,6 +694,17 @@ _UNSUPPORTED_PARAM_RE = re.compile(
 )
 
 
+#: Per-model request parameters the provider has already rejected this process.
+#: Populated only from a provider rejection that named the parameter — never
+#: guessed from a model name, so a newly-shipped model is discovered, not assumed.
+_UNSUPPORTED_PARAMS_BY_MODEL: dict[str, set[str]] = {}
+
+
+def reset_unsupported_param_cache() -> None:
+    """Forget every remembered per-model parameter rejection (test seam)."""
+    _UNSUPPORTED_PARAMS_BY_MODEL.clear()
+
+
 def _unsupported_request_param(message: str) -> str | None:
     """Best-effort extraction of a rejected top-level request-parameter name."""
     match = _UNSUPPORTED_PARAM_RE.search(message or "")
@@ -559,6 +720,9 @@ def create_chat_completion(
     *,
     model: str,
     messages: list[dict[str, Any]],
+    param_fallbacks: dict[str, Any] | None = None,
+    trace_name: str = "",
+    trace_metadata: dict[str, Any] | None = None,
     **request_kwargs: Any,
 ):
     """Create a chat completion, capability-aware for per-model parameter support.
@@ -572,17 +736,63 @@ def create_chat_completion(
     rejection that does not name one of the parameters actually sent)
     propagates unchanged; this is a single narrowly-guarded retry, not a
     general error-suppression path.
+
+    A model's rejection is remembered for the rest of the process, so a stage
+    that makes one call per source table pays the discovery round-trip once
+    instead of once per table.
+
+    ``param_fallbacks`` maps a parameter name to a weaker value to substitute
+    when the model rejects it, instead of dropping it outright. A strict
+    ``response_format`` schema falls back to plain JSON mode this way: a model
+    that cannot honour the schema should still be asked for JSON, rather than
+    silently losing the constraint the caller already had.
     """
+    # ``None`` means "not configured" for the optional tuning parameters
+    # (``seed``, ``reasoning_effort``): the caller resolves them unconditionally
+    # and a disabled one must be absent from the request, not sent as null.
+    request_kwargs = {k: v for k, v in request_kwargs.items() if v is not None}
+    fallbacks = param_fallbacks or {}
+
+    # DD-184: the Langfuse OpenAI wrapper consumes `name`/`metadata` and strips them
+    # before the provider call. A plain client would reject them as unknown
+    # parameters, so they are attached only when tracing is actually live.
+    from .tracing import get_tracing_client
+
+    if get_tracing_client() is not None:
+        if trace_name:
+            request_kwargs["name"] = trace_name
+        if trace_metadata:
+            request_kwargs["metadata"] = trace_metadata
+
+    known_unsupported = _UNSUPPORTED_PARAMS_BY_MODEL.get(model, frozenset())
+    if known_unsupported:
+        request_kwargs = {
+            k: (fallbacks[k] if k in fallbacks else v)
+            for k, v in request_kwargs.items()
+            if k not in known_unsupported or k in fallbacks
+        }
     try:
         return client.chat.completions.create(model=model, messages=messages, **request_kwargs)
     except Exception as exc:  # noqa: BLE001 — inspected below, re-raised if not a match
         param = _unsupported_request_param(str(exc))
         if not param or param not in request_kwargs:
             raise
-        logger.info(
-            "Model %s rejected request parameter '%s'; retrying once without it.",
-            model,
-            param,
-        )
-        retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
+        _UNSUPPORTED_PARAMS_BY_MODEL.setdefault(model, set()).add(param)
+        if param in fallbacks:
+            logger.info(
+                "Model %s rejected request parameter '%s'; retrying with the weaker "
+                "fallback value (for the rest of this run).",
+                model,
+                param,
+            )
+            retry_kwargs = dict(request_kwargs)
+            retry_kwargs[param] = fallbacks[param]
+        else:
+            logger.info(
+                "Model %s rejected request parameter '%s'; retrying once without it "
+                "(and omitting it for the rest of this run).",
+                model,
+                param,
+            )
+            retry_kwargs = {k: v for k, v in request_kwargs.items() if k != param}
         return client.chat.completions.create(model=model, messages=messages, **retry_kwargs)

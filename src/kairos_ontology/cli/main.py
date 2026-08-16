@@ -62,12 +62,14 @@ from .sources import (
     source_privacy_cmd,
     import_flatfile,
     analyse_sources_cmd,
+    anchor_tables_cmd,
     audit_silver_samples_cmd,
     audit_column_coverage_cmd,
     propose_alignment_cmd,
     discovery_status_cmd,
     discovery_conformance,
     register_concept_cmd,
+    source_disposition_group,
     build_glossary_cmd,
     list_patterns_cmd,
 )
@@ -82,14 +84,14 @@ from .inspection import (
     explain_term_cmd,
     coverage_report_cmd,
     field_mapping_report_cmd,
-    generate_inventory_cmd,
-    check_inventory_cmd,
     domain_coverage_cmd,
     draft_model_report_cmd,
     next_action_cmd,
     design_landscape_cmd,
     guard_scope_cmd,
     check_ai_config_cmd,
+    alignment_report_cmd,
+    suggest_anchor_cmd,
     suggest_type_cmd,
 )
 from .operations import (
@@ -284,12 +286,14 @@ def register_commands(group: click.Group) -> None:
     group.add_command(source_privacy_cmd)
     group.add_command(import_flatfile)
     group.add_command(analyse_sources_cmd)
+    group.add_command(anchor_tables_cmd)
     group.add_command(audit_silver_samples_cmd)
     group.add_command(audit_column_coverage_cmd)
     group.add_command(propose_alignment_cmd)
     group.add_command(discovery_status_cmd)
     group.add_command(discovery_conformance)
     group.add_command(register_concept_cmd)
+    group.add_command(source_disposition_group)
     group.add_command(build_glossary_cmd)
     group.add_command(list_patterns_cmd)
     group.add_command(resolve_ontology_cmd)
@@ -302,14 +306,14 @@ def register_commands(group: click.Group) -> None:
     group.add_command(explain_term_cmd)
     group.add_command(coverage_report_cmd)
     group.add_command(field_mapping_report_cmd)
-    group.add_command(generate_inventory_cmd)
-    group.add_command(check_inventory_cmd)
     group.add_command(domain_coverage_cmd)
     group.add_command(draft_model_report_cmd)
     group.add_command(next_action_cmd)
     group.add_command(design_landscape_cmd)
     group.add_command(guard_scope_cmd)
     group.add_command(check_ai_config_cmd)
+    group.add_command(alignment_report_cmd)
+    group.add_command(suggest_anchor_cmd)
     group.add_command(suggest_type_cmd)
     group.add_command(update)
     group.add_command(update_refmodels)

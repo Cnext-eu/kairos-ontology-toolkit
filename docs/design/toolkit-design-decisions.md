@@ -214,6 +214,29 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-160](#dd-160-source-affinity-domain-coverage-and-relationship-proposal) | Source-affinity domain coverage and relationship proposal | Accepted | 2026-08-15 |
 | [DD-161](#dd-161-multiple-bindings-per-source-relation-multi-target-bindings-rejected) | Multiple bindings per source relation; multi-target bindings rejected | Accepted | 2026-08-15 |
 | [DD-162](#dd-162-hub-side-registration-of-source-discovered-concepts) | Hub-side registration of source-discovered concepts | Accepted | 2026-08-15 |
+| [DD-163](#dd-163-hub-wide-ontology-integrity-is-enforced-not-advised) | Hub-wide ontology integrity is enforced, not advised | Accepted | 2026-08-16 |
+| [DD-164](#dd-164-every-source-table-needs-a-recorded-disposition) | Every source table needs a recorded disposition | Accepted | 2026-08-16 |
+| [DD-165](#dd-165-anchoring-is-suggested-deterministically-never-invented) | Anchoring is suggested deterministically, never invented | Accepted | 2026-08-16 |
+| [DD-166](#dd-166-sample-values-are-evidence-and-are-gated-before-they-leave-the-hub) | Sample values are evidence, and are gated before they leave the hub | Accepted | 2026-08-16 |
+| [DD-167](#dd-167-conformance-judgment-is-offloaded-retrieval-grounded-and-code-gated) | Conformance judgment is offloaded, retrieval-grounded, and code-gated | Accepted | 2026-08-16 |
+| [DD-168](#dd-168-alignment-coverage-is-reported-with-a-reason-code-per-unmapped-column) | Alignment coverage is reported with a reason code per unmapped column | Accepted | 2026-08-16 |
+| [DD-169](#dd-169-the-alignment-gap-is-a-hard-stop-before-entity-binding) | The alignment gap is a hard stop before entity binding | Accepted | 2026-08-16 |
+| [DD-170](#dd-170-a-model-proposed-hub-local-property-is-validated-not-trusted) | A model-proposed hub-local property is validated, not trusted | Accepted | 2026-08-16 |
+| [DD-171](#dd-171-the-business-glossary-is-a-preflight-input-to-alignment) | The business glossary is a preflight input to alignment | Accepted | 2026-08-16 |
+| [DD-172](#dd-172-namespace-constants-are-pinned-by-test-after-domainincludes-never-matched) | Namespace constants are pinned by test, after `domainIncludes` never matched | Accepted | 2026-08-16 |
+| [DD-173](#dd-173-reference-models-resolve-live-there-is-no-inventory) | Reference models resolve live; there is no inventory | Accepted | 2026-08-16 |
+| [DD-174](#dd-174-llm-pipeline-stages-are-seeded-and-capability-degradation-is-centralised) | LLM pipeline stages are seeded, and capability degradation is centralised | Accepted | 2026-08-16 |
+| [DD-175](#dd-175-the-prompt-is-reproducible-because-a-seed-cannot-stabilise-a-moving-question) | The prompt is reproducible, because a seed cannot stabilise a moving question | Accepted | 2026-08-16 |
+| [DD-176](#dd-176-reasoning-effort-is-a-per-role-knob-defaulted-from-the-shape-of-the-work) | Reasoning effort is a per-role knob, defaulted from the shape of the work | Accepted | 2026-08-16 |
+| [DD-177](#dd-177-the-alignment-answer-is-shape-constrained-so-a-column-cannot-be-skipped) | The alignment answer is shape-constrained, so a column cannot be skipped | Accepted | 2026-08-16 |
+| [DD-178](#dd-178-an-ai-generated-artifact-states-its-own-provenance-and-review-status) | An AI-generated artifact states its own provenance and review status | Accepted | 2026-08-16 |
+| [DD-179](#dd-179-alignment-sees-the-tables-role-structure-and-the-mapping-is-checked-as-a-set) | Alignment sees the table's role structure, and the mapping is checked as a set | Accepted | 2026-08-16 |
+| [DD-180](#dd-180-an-unanchored-table-is-reported-gated-and-told-where-its-class-lives) | An unanchored table is reported, gated, and told where its class lives | Accepted | 2026-08-16 |
+| [DD-181](#dd-181-a-declared-cross-domain-bridge-makes-a-class-anchorable-by-default) | A declared cross-domain bridge makes a class anchorable, by default | Accepted | 2026-08-16 |
+| [DD-182](#dd-182-per-table-vocabulary-is-a-projection-of-the-aggregate-not-a-second-derivation) | Per-table vocabulary is a projection of the aggregate, not a second derivation | Accepted | 2026-08-16 |
+| [DD-183](#dd-183-affinity-resolves-the-hubs-accelerator-instead-of-scanning-the-whole-tree) | Affinity resolves the hub's accelerator instead of scanning the whole tree | Accepted | 2026-08-16 |
+| [DD-184](#dd-184-llm-calls-are-traced-to-langfuse-opt-in-with-source-values-masked) | LLM calls are traced to Langfuse, opt-in, with source values masked | Accepted | 2026-08-16 |
+| [DD-185](#dd-185-tables-are-anchored-globally-in-one-call-before-per-table-alignment) | Tables are anchored globally, in one call, before per-table alignment | Accepted | 2026-08-16 |
 
 ---
 
@@ -12004,3 +12027,1206 @@ incomparable across hubs, which is the number the scorecard exists to provide.
   registration is proposed from `analyse-sources`' own unassigned-table output.
 
 ---
+
+## DD-163: Hub-wide ontology integrity is enforced, not advised
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `validate`, kairos-design-domain Gate 3, kairos-design-mapping
+**Implementation:** `core/ontology_integrity.py`, wired into `core/validator.py:run_validation`
+
+### Context
+
+Every ontology check the toolkit had was single-file by construction.
+`validate_naming_conventions` parses one `.ttl` with no import resolution — deliberately, and
+its docstring says so — and `validate_managed_imports` compares one domain's declared imports
+against the blueprint. Neither can observe a relationship *between* two domain files.
+
+A 21-domain autopilot run exposed the consequence. Of 132 locally declared classes, 34 were
+re-mints of the same eight concepts across domains: `Consignment` and `Booking` in eight domains
+each, `Document` and `Company` in seven, `Contact` and `Comment` in four. Each domain has its own
+namespace, so these are unrelated OWL entities that merely share a name, with no
+`owl:equivalentClass` between them. `validate` passed the hub cleanly. The defect surfaced two
+stages later as a dbt parse failure — the projector derives a model filename from the class local
+name, so `party#Company` and `mdm#Company` both emitted `company.sql`.
+
+Nine of those files stated the violation in their own headers. `party.ttl` lists under
+`Deliberate exclusions`: *"Party bookings: owned by the booking domain"*, then declares
+`:Booking`. The accelerator blueprint agrees — `party.does_not_own` reads *"Contracts, bookings,
+invoices, operational events, or terminal moves."* That prose was already a contract field
+(`analyse_sources` feeds it to the source-affinity classifier, so its wording is behavioural),
+but nothing read it after classification. kairos-design-domain Gate 3 conceded the point in
+writing: *"the blueprint's owns/does_not_own boundaries are free text no validator can enforce."*
+
+The affinity analysis was not the cause. Every leaked concept had been assigned to exactly one
+domain, and the correct one — `Booking` to booking, `Comment` to claims. The evidence entering
+design was clean; the design stage did not honour it.
+
+### Decision
+
+Add a hub-wide integrity pass to `validate`, blocking by default and degradable with
+`--degraded`. Three checks are errors:
+
+- `integrity.class-redeclared-across-domains` — purely mechanical, no interpretation, and
+  already a build failure downstream;
+- `integrity.class-violates-declared-exclusion` — the file's own header contradicts the file;
+- `integrity.class-outside-blueprint-boundary` — the blueprint's `does_not_own` names the concept.
+
+Four more are advisory: reference-model shadowing (class and property), unused `owl:imports`,
+and collapsed address value objects.
+
+**Precision is chosen over recall.** A false positive on a blocking check teaches an operator to
+pass `--degraded`, which would cost more than the check earns. So each blocking check reads
+either a machine-readable fact or the hub's own written-down intent. Notably, a bullet naming
+*this* domain as owner ("Contact details: owned by the party domain") is a clarification, not an
+exclusion, and must not flag `:Contact`; and the domain's own name inside a subject phrase
+("Party bookings") must flag `Booking` without flagging `Party`. Both are regression-tested.
+
+Fuzzy inference — "does this class feel like it belongs here" — is deliberately absent. Anchoring
+ratios are reported as scores rather than enforced, because a hub legitimately declares local
+classes the reference model does not carry.
+
+### Alternatives rejected
+
+| Alternative | Why not |
+|---|---|
+| Ship as warnings first | `kairos-flow-autopilot` states "warnings are acceptable but must be explained". A warning would have been explained and ignored in exactly the run that produced this. |
+| Put the rule in the skill | Skills are prose an agent may skip under context pressure, and this rule was *already* in prose — in the exemplar, in Gate 3, and in nine file headers — and was violated anyway. |
+| Enforce via SHACL | Cross-file identity comparison across namespaces is not what SHACL shapes are for, and the hub's shapes are hand-authored governance, not toolkit-owned. |
+| Reuse `load_ontology()` | It merges the import closure, erasing the locally-declared vs imported distinction every check depends on. Registered in both TTL-boundary tests with that reasoning. |
+
+### Consequences
+
+Existing non-conforming hubs fail `validate` until fixed or run with `--degraded`. That is the
+intent: the CLdN hub moves from passing to 63 blocking errors, all of which were already real.
+
+
+## DD-164: Every source table needs a recorded disposition
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `validate`, kairos-design-domain Gate 1, kairos-design-mapping
+**Implementation:** `core/source_disposition.py`, `source-disposition` CLI, wired into
+`core/validator.py:run_validation`
+
+### Context
+
+A blueprint deliberately scopes which domains exist (DD-149/DD-150), so a hub will always hold
+source tables no blueprint domain claims. `domain-coverage` already reports this — `not-modeled`,
+`deferred`, unassigned tables — but reports it advisorily and always exits 0, so nothing obliges
+anyone to answer.
+
+Unanswered, the question resolves itself two ways, both unrecorded. The table is dropped ("no
+canonical entity"), or it is force-fitted by minting a local class in whatever domain was in
+scope. A real run did both to the same table: `comments` (3,149 rows) was skipped in `claims` as
+having no canonical home, while a local `Comment` class appeared in commercial, customs, mdm and
+roro, and a `hasCommentCategory` property was hung off a leaked `Document` class in party. The
+run's transparency report then asserted *"All unbound tables are metadata, schema-lookup, or
+workflow tables with no canonical entity target"* — while `qargo.stops` (72,633 rows),
+`qargo.shipments` (32,491) and `qargo.resource_allocations` (30,492) sat unbound and unmentioned.
+The hand-built `.dap-dbt` project models all three as first-class entities, so they are plainly
+business data.
+
+`register-concept` (DD-162) already existed as the sanctioned route for "our source data argued
+this concept in". It was referenced by one skill, once, and the run produced
+`registered_concepts: []`.
+
+### Decision
+
+Make the outcome an artifact. Every source table above `DEFAULT_ROW_THRESHOLD` (100) rows must be
+either bound by an EntityBinding or carry an explicit disposition in
+`integration/sources/_analysis/table-dispositions.yaml`. An unbound, undisposed table fails
+`validate`; smaller ones warn.
+
+The disposition set is closed: `bound`, `registered-extension`, `deferred`, `not-business-data`,
+`blueprint-gap`. The last three require a written rationale, because a reviewer cannot otherwise
+distinguish a considered skip from an overlooked table.
+
+This does not force data into the ontology. `not-business-data` remains a good answer — it simply
+has to be an answer, attributed and reasoned, rather than the absence of one. `blueprint-gap`
+exists so a genuine accelerator shortfall is filed upstream instead of absorbed hub-side, and the
+undecided-table remediation names `register-concept` explicitly so the sanctioned path is the
+visible one.
+
+### Alternatives rejected
+
+| Alternative | Why not |
+|---|---|
+| Add a `--strict` flag to `domain-coverage` | Deferred once already (issue #393). An opt-in flag is not run by the pipeline that needs it, and the gap is in `validate`, which stage exits already call. |
+| A hub-local extension domain | Solves where a concept lives, not whether anyone decided. Still available later as a disposition value. |
+| One record per table | The ledger's value is that a reviewer sees every skipped table in one place and can judge the shape of what the hub declined to model. |
+| Threshold on row count alone | A table with no recorded `rowCount` is reported as unknown and still requires a decision: not knowing its size is not evidence that it is empty. |
+
+### Consequences
+
+The CLdN hub reports 56% decision coverage — 42 bound, 0 disposed, 33 undecided of 75 — and 22
+blocking errors. Closing them is a human pass over tables that were, until now, invisible.
+
+
+## DD-165: Anchoring is suggested deterministically, never invented
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** kairos-design-domain step 3 (inspect selected industry references)
+**Implementation:** `core/class_anchoring.py`, `suggest-anchor` CLI
+
+### Context
+
+DD-163 made an unanchored local class visible. Visibility does not change what gets
+authored: the run that prompted it anchored 5 of 132 classes (3.8%) and 0 of 473
+properties, while declaring 57 `owl:imports` and referencing terms from 4 of them. The
+reference models were installed, imported, and then ignored. A hand-built hub over the
+same sources reached 87% class anchoring and 18 `rdfs:subPropertyOf` links, so the gap is
+effort, not feasibility.
+
+The effort is mundane and entirely mechanical: find which of ~80 materialized inventories
+covers the domain's imports, then read it for a plausible match. Declaring a local class
+is always cheaper. Warning about the result afterwards does not change that arithmetic.
+
+### Decision
+
+`suggest-anchor <domain>` reads the inventories for the modules the domain already
+imports, ranks candidates for each unanchored term by name evidence, and prints the exact
+`rdfs:subClassOf` / `rdfs:subPropertyOf` line. It never writes.
+
+Three constraints make the output trustworthy rather than merely plentiful:
+
+**Silence beats a plausible wrong answer.** An early scoring pass rewarded a shared head
+noun and produced `companyBillingPostalCode -> companyCode` and
+`companyLegalName -> contactName`. Acting on either writes a false subsumption into the
+canonical model, and both look considered. Nothing below an exact, case, plural, or label
+match now scores at all.
+
+**Turtle is emitted only for a confident match.** Weaker matches ("X is a qualified form
+of Y") are shown as candidates with the paste-ready line withheld, because name evidence
+cannot separate a right specialisation from a sibling.
+
+**Ranking uses the archetype, and warnings do not reorder it.** Eight classes in the party
+modules end in "Party" and score identically; the archetype breaks the tie, marking
+`mmt/party#TransportParty` *required* and `NotifyParty` *optional*. Separately, a first
+version sorted pattern-library grain collisions last — which buried `TransportParty`, a
+flagged collision *and* the archetype's required party identity, beneath two deprecated
+role overlays. The caution is now an annotation on the ranked answer, never a demotion.
+
+### Alternatives rejected
+
+| Alternative | Why not |
+|---|---|
+| Auto-apply the top anchor | Subsumption is a modelling assertion. `qualified-role-assignment` exists because subclassing the wrong party parent is a known, costly error. |
+| Embedding/LLM similarity | A score no one can explain makes the author's judgement harder, and this must stay deterministic and offline like every other design-stage check. |
+| Enforce an anchoring ratio | A hub legitimately declares classes the reference model does not carry. Ratios stay reported by DD-163, unenforced. |
+| Suggest from all inventories | An anchor into an unimported module produces a dangling reference the managed-import check then rejects. Scoped to declared imports. |
+
+### Consequences
+
+Advisory and exit-0 always. On the CLdN hub it finds confident anchors for 3 of party's
+40 unanchored terms, 6 of financial's 120, and 4 of booking's 64 — modest, and every one
+is an exact name match against a module the domain already imports, i.e. reuse that was
+sitting there unused.
+
+
+## DD-166: Sample values are evidence, and are gated before they leave the hub
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `analyse-sources`, `propose-alignment`, `import-flatfile`, `import-source`
+**Implementation:** `core/analyse_sources.py`, `core/import_flatfile.py`, `core/import_source.py`,
+`core/propose_alignment.py`, `cli/sources.py`
+
+### Context
+
+`analyse-sources` sends sample values from every column to a third-party LLM. The module
+contained no privacy check: redaction happened earlier, at import and via
+`source-privacy`, and the send step relied on that ordering. Ordering is not a control.
+
+Separately, capture was five values per column, and the alignment step showed three. That
+is too few to tell a governed code list from free text, which is the judgement alignment
+exists to make.
+
+### Decision
+
+`analyse-sources` runs the privacy scan and refuses on any finding, reporting paths and
+kinds only, never the offending value.
+
+Capture rises to twenty **distinct** values. Three separate caps had to move, each of which
+made the previous fix a no-op: four hardcoded five-value slices in `import_source` that took
+the first five rather than five distinct; a single `DEFAULT_SAMPLE_SIZE` in `import_flatfile`
+governing both column values and whole sample rows; and finally the real one — column values
+were stripped from the schema YAML on write, with the TTL deriving its values from the five
+sample rows instead.
+
+That last point is the substantive change. Stripping the values *was* the privacy control:
+they had never been sanitized. They now pass through the same `redact_sample_rows` detector
+as rows — reused rather than reimplemented, each value becoming a one-cell row — and are
+published. Redaction collapses distinct values to identical tokens, so they are deduped
+again: a PII column contributes one masked token, not twenty copies.
+
+Row samples stay at five and stay out of the schema YAML. A row correlates every column of
+one real record; a column value does not. Conflating the two under one constant is what hid
+the distinction.
+
+Affinity keeps three values (`MAX_AFFINITY_SAMPLES`): it classifies a table into a domain and
+needs a type hint, not a distribution. Alignment gets twenty. The asymmetry is asserted in a
+test so it cannot drift.
+
+### Consequences
+
+On 75 real tables, 34% of 3,410 columns now carry more than the old cap and 604 hold the full
+twenty, with `source-privacy` clean across 227 artifacts. Note for reviewers: legal entity
+names (`companies.name`) are correctly *not* PII and are now sent twenty at a time. That is
+commercial confidentiality, not GDPR, and is a separate control if the business wants one.
+
+## DD-167: Conformance judgment is offloaded, retrieval-grounded, and code-gated
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `discovery-conformance`, kairos-design-discovery
+**Implementation:** `core/conformance_judge.py`, `discovery-conformance judge`
+
+### Context
+
+`discovery-conformance` could scaffold a judgments file and validate a finished one, but
+nothing filled it in. For `unit-load-carrier` that is 174 concepts, so the orchestrating
+agent judged them inline. The hub's own issue log recorded this as an open enhancement —
+the pass belongs on the configured provider, not in the orchestrator's context.
+
+The risk is specific. A wrong `conforms` silently certifies a concept the hub never models:
+a real run scored the party domain "6 conforms / 0 deviates" while its ontology contained
+none of the three classes it certified, and recorded *"the same companies carry customer,
+subcontractor and consignee roles"* as proof a role-assignment entity existed — which is the
+evidence that one is **needed**, not that one exists.
+
+### Decision
+
+`discovery-conformance judge` offloads the pass, batched (~15 calls for 174 concepts), under
+a third AI role (`judgment`). It is retrieval-grounded: the model never recalls concepts or
+emits URIs, receiving the archetype catalog plus collected evidence and choosing from a
+closed outcome set.
+
+Enforcement is in code, not in the prompt, because a prompt asks the thing being checked to
+check itself. Four guards run over every response:
+
+1. An unrecognised outcome becomes `partial`, never coerced to the nearest valid one.
+2. `conforms` with no source evidence is downgraded.
+3. `conforms` on **domain-level evidence only** is downgraded. Alignment evidence and an
+   affinity `likely_entity` match name the concept; "16 tables in the party domain" does not.
+   Without this guard the first live run reproduced the original error exactly.
+4. A concept the pattern library flags (grain collision, anti-pattern exemption) **escalates**
+   rather than downgrades. A grain collision governs how a concept is modelled, not whether
+   the business has it; forcing `mmt:TransportParty` to `partial` would be wrong, but
+   certifying it unreviewed is worse.
+
+Evidence placement is derived from the blueprint: a concept's URI names its module and
+`data-domains.yaml` maps modules to domains, breaking the circularity where evidence needed
+the `likely_domains` that the judgment was meant to produce. Downstream BI demand is passed
+as a distinct, labelled signal — it can corroborate, never certify.
+
+Every judgment is `decided_by: ai`, so DD-148's gate still requires human resolution, and the
+command cannot satisfy DD-149's archetype confirmation as a side effect.
+
+### Consequences
+
+On the live hub: `TransportPartyRoleAssignment` moved from conforms 0.91 to partial 0.58
+flagged, `TransportPartyRoleCode` from 0.86 to 0.56, `TransportParty` from 0.95 to 0.61. The
+ten surviving `conforms` are precisely the concepts a source table is identified as. 147 of
+174 need human confirmation — high, and honest: most of this archetype is genuinely unproven
+before mapping has run.
+
+
+## DD-168: Alignment coverage is reported with a reason code per unmapped column
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, kairos-design-discovery
+**Implementation:** `core/alignment_report.py`, `propose-alignment alignment-report`
+
+### Context
+
+Alignment finished with no statement of what it had *not* done. On the live corpus it
+mapped 494 of 1,994 columns; the other 1,096 simply vanished from view. "75 tables aligned"
+reads as completion. The first version of the report was worse than silence: it printed
+"0 gaps" because it looked for `example_values` on entries that never carry that key, so
+the no-evidence branch always fired and every gap was filtered away as noise.
+
+### Decision
+
+Every source column not bound to a reference property is reported with one code from a
+closed set: `no-reference-property`, `low-confidence-suggestion`, `no-sample-evidence`,
+`vendor-slot`, `operational`. Evidence is read from the source vocabulary, not from the
+proposal. A column whose evidence cannot be established counts as a **gap**, never as
+noise — the fallback must be the direction that gets a human to look.
+
+### Consequences
+
+`GAP_REASONS` names the two codes that mean the domain model is short of a property, which
+is the subset that blocks (DD-169). Grouping by column name collapsed 1,096 gap columns to
+609 distinct names, of which 258 recur across tables and cover 745 columns — the recurring
+names are the tractable work.
+
+## DD-169: The alignment gap is a hard stop before entity binding
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `compile`, entity binding, kairos-design-domain
+**Implementation:** `core/alignment_report.py` (`undecided_gap_columns`, `GAP_RESOLUTIONS`)
+
+### Context
+
+Entity binding is the last point at which an omission is cheap. After it, an unmapped
+column with real business signal is not merely missing — the binding asserts a shape that
+says the model is complete, and every downstream projection inherits that claim.
+
+### Decision
+
+Gap columns carrying real signal and no recorded decision block the workflow before entity
+binding. Not a warning: a stop. Clearing one is an explicit recorded resolution from
+`GAP_RESOLUTIONS`, so "we looked at it and it does not belong" is a durable, auditable
+answer rather than an absence.
+
+### Consequences
+
+The gate is deliberately upstream of the expensive stage. A gap found here costs a
+decision; the same gap found after binding costs a re-model.
+
+## DD-170: A model-proposed hub-local property is validated, not trusted
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`
+**Implementation:** `core/propose_alignment.py` (`normalize_local_proposal`, `flag_risky_proposals`)
+
+### Context
+
+When no reference property fits, the aligner may propose a hub-local one. Left unchecked
+the model returns IRI-shaped names, ranges that are classes, and role-flavoured properties
+(`isShipper`, `customerFlag`) that are the `subclass-identity-by-role` anti-pattern wearing
+a property's clothes.
+
+### Decision
+
+Local proposals pass `normalize_local_proposal`, which rejects IRI-shaped `name`, `range`
+and `on_class`, and `flag_risky_proposals`, which flags role-shaped names for review. A
+rejected proposal degrades to a gap column (DD-168) rather than entering the registry.
+
+### Consequences
+
+The two checks are coded, not prompt instructions — a prompt can be talked out of a rule,
+a normalizer cannot.
+
+## DD-171: The business glossary is a preflight input to alignment
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, discovery preflight
+**Implementation:** `core/propose_alignment.py` (`load_glossary_terms`)
+
+### Context
+
+The glossary was treated as documentation. It is evidence: it is where the organisation
+already wrote down what its own terms mean, and the pattern-library cautions need it on
+every run, not on the runs where someone remembered to pass it.
+
+### Decision
+
+Alignment loads glossary terms as part of discovery preflight, unconditionally.
+
+### Consequences
+
+Glossary absence is now visible at preflight rather than silently producing a
+vocabulary-blind alignment.
+
+## DD-172: Namespace constants are pinned by test, after `domainIncludes` never matched
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** every projection and reader touching schema.org terms
+**Implementation:** `core/projections/shared.py`, `tests/test_namespace_constants.py`
+
+### Context
+
+`SCHEMA = Namespace("http://schema.org/")`. Every reference model in the pack binds
+`https://schema.org/`. The constant had therefore **never matched a single triple** in the
+project's life, so the REUSABLE domainless-property pattern — `schema:domainIncludes` —
+was invisible to every consumer. `TradeParty` presented 9 properties instead of 13, and
+the four it hid were `hasAddress`, `hasBillingAddress`, `hasShippingAddress`, `hasContact`.
+The live symptom was the aligner replying that *no address property is listed on
+TradeParty* while `hasBillingAddress` to `Address` sat in the list it was reading.
+
+A second instance of the same class of defect: object properties rendered identically to
+datatype ones, so `hasBillingAddress (Address)` looked like a string property named
+Address.
+
+### Decision
+
+Match both spellings (`DOMAIN_INCLUDES_PREDICATES`), mark object properties explicitly in
+the prompt, and pin every namespace constant with a test that asserts the constant matches
+what the shipped reference models actually bind.
+
+### Consequences
+
+A silently-never-matching constant produces no error, no warning and a plausible answer —
+it can only be caught by asserting against real data. The guard was verified by
+reintroducing the bug: it fails 2 of 3. The other 13 namespace constants were audited and
+are correct.
+
+## DD-173: Reference models resolve live; there is no inventory
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** all reference-model consumers
+**Implementation:** `core/class_anchoring.py` (`read_reference_terms`), `core/ontology_loader.py`
+
+### Context
+
+A materialized inventory sat between the resolver and its consumers, kept honest by a
+freshness gate. DD-172 showed what that costs: when the resolver was fixed, every cached
+inventory kept the old wrong answer, and the fast path *preferred* the cache — so the hubs
+that had an inventory were exactly the hubs that stayed broken. The freshness gate could
+not see this, because the snapshot was perfectly fresh with respect to a stale resolver.
+
+### Decision
+
+Delete the inventory. `read_reference_terms` resolves live from the catalog through the
+canonical loader (DD-103) on every call. `generate-inventory`, `check-inventory` and the
+freshness gate are removed with no compatibility shim.
+
+### Consequences
+
+Nothing can drift from the resolver, because nothing is stored. Module selection excludes
+the hub's own `model/ontologies` by resolved path — an earlier hostname filter also
+excluded every other vendor and all test fixtures.
+
+## DD-174: LLM pipeline stages are seeded, and capability degradation is centralised
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `analyse-sources`, `discovery-conformance judge`
+**Implementation:** `core/ai_provider.py` (`resolve_ai_seed`, `create_chat_completion`), `tests/test_ai_determinism_guard.py`
+
+### Context
+
+The LLM stages are analysis, not authorship: the same evidence should yield the same
+proposal on Tuesday as on Monday, or a re-run silently rewrites a model a human already
+reviewed. Measured on one domain, three identical runs mapped 21, 26 and 25 columns.
+
+Three defects underlay this, all invisible to review:
+
+1. `temperature=0.1` had never taken effect on the reasoning tier. Those models reject the
+   parameter outright; the provider wrapper caught the rejection and retried without it.
+   The setting read as variance control and was a no-op.
+2. The affinity and judgment stages called `chat.completions.create` directly, bypassing
+   that wrapper. They worked only because they happened to point at a model tolerating
+   `temperature`; repointing either at a reasoning model was a hard 400.
+3. The discovery round-trip was paid once per source table, not once per model.
+
+Measured on this provider: `temperature` and `top_p` rejected on the reasoning tier,
+`seed` accepted on every model, and with a seed 3/3 completions byte-identical against
+3/3 different without.
+
+### Decision
+
+Every pipeline completion passes `seed=resolve_ai_seed(role)`, resolving
+`KAIROS_AI_{ROLE}_SEED` then `KAIROS_AI_SEED` then `DEFAULT_AI_SEED`, where `off` disables
+seeding so run-to-run variation can still be measured deliberately and a non-integer value
+raises rather than silently unseeding. Every stage routes through `create_chat_completion`,
+which now remembers a per-model parameter rejection for the process.
+
+### Consequences
+
+Seeding is best-effort by construction: it removes sampling noise, not the effect of a
+changed prompt, model or provider backend. This provider returns no `system_fingerprint`,
+so a backend change is undetectable from the response — which is why the seed is recorded
+next to the model in artifact provenance rather than assumed. A source-level guard fails
+any new stage that forgets either the seed or the wrapper.
+
+## DD-175: The prompt is reproducible, because a seed cannot stabilise a moving question
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `analyse-sources`, every reference-model consumer
+**Implementation:** `core/ontology_loader.py` (`stable_value`), `core/semantic_index.py`, `core/analyse_sources.py`, `core/ontology_ops.py`, `core/propose_alignment.py` (`_sorted_terms`)
+
+### Context
+
+Seeding every LLM stage (DD-174) moved party-domain stability from 62% to 77%, not to
+100%. The residual was ours, not the provider's: the prompt was different on every run.
+
+Two independent causes, both invisible in review because both look like ordinary code:
+
+`Graph.value()` returns an *arbitrary* object when a term carries more than one. It takes
+whatever graph iteration yields first, and that order differs between processes.
+Reference-model classes routinely carry several `rdfs:comment` triples — a local
+definition plus one pulled in through the import closure — so the same class described
+itself differently each run. Measured on the live catalog: 46 of 2,706 resolved terms
+changed their comment between two consecutive runs. `ontology_ops._first_literal` was the
+same defect wearing a different name; there is no "first" when iteration order is
+undefined.
+
+Separately, `parse_source_vocabulary` collected a table's columns into a `set` of
+`URIRef` and iterated it. `URIRef` hashes as a string, so iteration order is randomised
+per process. All five party-domain table prompts differed between two processes, and 70
+of 352 prompt lines differed for `companies` alone.
+
+### Decision
+
+`stable_value` lands in `ontology_loader` — the DD-103 canonical loader — and is used by
+`semantic_index`, `analyse_sources` and `ontology_ops`, so every consumer stabilises from
+one definition. It prefers an `en` literal, then breaks ties lexically. This is a
+tie-break, not a merge: where several definitions genuinely apply, one is chosen, always
+the same one.
+
+Reference-model classes and properties are ordered by `_sorted_terms` on `(name, uri)`,
+keeping own and inherited properties in separate groups because the prompt relies on that
+distinction. Source tables and columns are sorted by URI; the bronze vocabulary records no
+column ordinal, so that is the available deterministic order.
+
+Restriction reads (`owl:onProperty`, `owl:onClass`) keep `Graph.value`: those are
+functional by OWL semantics, so an arbitrary pick is the only pick.
+
+### Consequences
+
+`read_reference_terms` now hashes identically across four consecutive processes (2,706
+terms), and all five party table prompts hash identically across three. Stability rose to
+80%.
+
+The remaining gap is provider-side and not ours to close: on the real 23 KB alignment
+prompt a fixed seed yields three distinct completions from both `gpt-5.5` and
+`gpt-5.6-terra`, where the same seed on a short prompt is byte-identical. That is what
+motivated DD-177. A stable prompt is still the precondition — it is what makes a stable
+answer mean anything.
+
+## DD-176: Reasoning effort is a per-role knob, defaulted from the shape of the work
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `analyse-sources`, `discovery-conformance judge`
+**Implementation:** `core/ai_provider.py` (`resolve_reasoning_effort`, `DEFAULT_REASONING_EFFORT`)
+
+### Context
+
+The reasoning-tier models accept a `reasoning_effort` parameter, and the pipeline's three
+LLM stages do genuinely different work. Affinity is a one-of-N pick over a short candidate
+list, made once per source table — the highest-volume call and the one least helped by
+extended reasoning. Alignment and judgment are closed-vocabulary reasoning over a large
+candidate set, where a wrong answer is silently wrong.
+
+### Decision
+
+`resolve_reasoning_effort` resolves exactly like the seed (DD-174):
+`KAIROS_AI_{ROLE}_REASONING_EFFORT`, then `KAIROS_AI_REASONING_EFFORT`, then a per-role
+default of `low` for affinity and `medium` for alignment and judgment. `off` sends no
+`reasoning_effort` at all. An unrecognised tier raises rather than being passed through,
+so a typo fails at the first call instead of silently reverting to the model's default.
+
+`create_chat_completion` drops `None`-valued kwargs, so a disabled knob is absent from the
+request rather than sent as null.
+
+### Consequences
+
+These are defaults, not findings. Effort trades latency against recall, and recall is the
+weak axis here — roughly a quarter of source columns map. They should be changed from
+measurement, not intuition.
+
+One measurement already argues against reaching for the cheap tier: `gpt-5.6-terra` at
+`low` scored 63% stability and 21.7 columns mapped on the party domain, against 80% and 23
+for `gpt-5.5` at its default. Speed was the only axis on which the cheaper configuration
+won.
+
+## DD-177: The alignment answer is shape-constrained, so a column cannot be skipped
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`
+**Implementation:** `core/propose_alignment.py` (`build_alignment_response_schema`, `normalize_schema_response`), `core/ai_provider.py` (`param_fallbacks`)
+
+### Context
+
+Alignment asked for `{"type": "json_object"}`, which guarantees parseable JSON
+and nothing else. Under it the model may simply leave a column out of its answer,
+and measurement showed that is exactly what it did — inconsistently.
+
+Three identical runs of the party domain mapped 24, 22 and 23 columns with **zero**
+disagreement about what the shared columns meant. The instability was never in the
+model's judgement; it was in which columns the model bothered to answer for.
+
+The earlier variance work took stability from 62% to 80% — a fixed seed (DD-174),
+then a reproducible prompt (DD-175) — but could not close it. Seeding turns out not
+to survive a real prompt: on the 23 KB alignment prompt, one seed produced three
+distinct completions from both `gpt-5.5` and `gpt-5.6-terra`, where the same seed on
+a short prompt is byte-identical. Provider-side determinism is simply not on offer at
+this size, so the remaining lever is the shape of the answer.
+
+### Decision
+
+`column_alignments` is a JSON-schema **object keyed by source column name**, with every
+key in `required` and `additionalProperties` false — not an array. Omitting a column
+then violates the schema, so the model must return a verdict for each one; a
+duplicated or invented column name is impossible for the same reason. `null` remains
+a legal `ref_property`, because forcing a *verdict* must not become forcing a
+*mapping* — that would be a worse failure than silence.
+
+`ref_property` and `ref_class` are enum-constrained to terms drawn from the same
+inventory the prompt renders, so the enum and the prose cannot disagree and a
+hallucinated property is unrepresentable rather than caught afterwards (DD-170).
+
+Provider limits, measured by bisection against the live endpoint: at most 1,000 enum
+values *in total across one schema*, and `$defs`/`$ref` is required because inlining
+the verdict per column exceeds a separate total-size limit at realistic widths. "In
+total" is the trap — the class enum is emitted twice and every nullable enum carries
+its own `null` — so the property enum takes what remains of a shared budget rather
+than a fixed cap. An enum that does not fit is dropped and reported in the returned
+notes, never silently.
+
+`create_chat_completion` gains `param_fallbacks`: a model rejecting the strict schema
+falls back to plain JSON mode instead of losing the constraint entirely.
+
+### Consequences
+
+Party-domain stability rose from 62-80% to **82-100%** across repeated three-run trials
+(100%, 96%, 82% — the byte-identical trial was a favourable draw, not the expected
+outcome). Recall improved at the same time, from a drifting 22-24 columns to 24-26.
+Forcing a verdict per column recovers the ones the model used to drop.
+
+This is the fix the seed could not be, but it is not determinism. Reruns of the same
+configuration still differ, so a re-run may still change a model a human has reviewed;
+what the schema removes is the *silent* form of that drift, where a column disappeared
+from the answer entirely rather than being answered "no match". The seed and the stable
+prompt remain necessary, because a stable question is what makes a stable answer
+meaningful.
+
+One confound worth recording: runs whose `--analysis` directory already contained a
+previous run's output scored 82%, against 96% from pristine inputs. Prior output appears
+to influence the next run, which is a separate thread to pull.
+
+The response shape changes only how the answer is obtained. `normalize_schema_response`
+converts the object back to the historical list of per-column dicts, so every consumer
+downstream is untouched, and a list response — the JSON-mode fallback path — passes
+through unchanged.
+
+## DD-178: An AI-generated artifact states its own provenance and review status
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `alignment-report`, any future model-authored artifact
+**Implementation:** `core/_provenance.py` (`ai_attribution`, `ai_attribution_note`, `provenance_comment(ai_generated=...)`)
+
+### Context
+
+An ontology reads as authoritative — that is what one is for. So does a coverage
+report with precise percentages in it. Neither carried any trace of the fact that a
+language model proposed its content, or of which model, so a reader six months later
+had no way to tell a machine proposal from a human decision, and no way to know what
+would have to be re-run to reproduce it.
+
+The run log has this information and nobody keeps run logs.
+
+### Decision
+
+Any artifact whose content a model proposed carries the model on its face. For Turtle
+and YAML that is a `#`-comment block extending the existing DD-072 provenance header;
+for Markdown reports it is a one-line note placed *above* the figures it qualifies.
+
+`ai_attribution` records what a re-run would need — model, pipeline role, seed,
+reasoning effort — omitting anything not set, so an artifact generated without a seed
+does not claim one. The disclaimer names the artifact as a proposal for human review
+and points at the decision log for recording acceptance.
+
+The wording is about provenance and review status, not liability. The reader needs to
+know which statements were machine-proposed and that a human has not necessarily
+confirmed them; that is a claim the toolkit can actually stand behind.
+
+### Consequences
+
+Because seeding is best-effort at this prompt size (DD-177), the recorded settings are
+an audit trail of what was *asked for*, not a promise the artifact can be reproduced
+byte for byte. Recording them is still what makes a later divergence diagnosable
+rather than mysterious.
+
+Comment headers are inert in both formats — `rdflib` and `yaml.safe_load` ignore them
+— and the header is idempotent, so regenerating never stacks. Deterministic generators
+(`init`, `build-glossary`, `import-source`) are untouched and must never claim AI
+assistance they did not use; a test pins that.
+
+## DD-179: Alignment sees the table's role structure, and the mapping is checked as a set
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`
+**Implementation:** `core/propose_alignment.py` (`group_columns_by_role`, `format_role_structure`, `flag_role_collisions`)
+
+### Context
+
+The prompt presented source columns as a flat list, one line each, and asked for a
+property per column. The reference-model side was already graph-shaped — DD-172 renders
+`hasShipper (Organization) [OBJECT PROPERTY]` — but the source side was not, so the
+strongest signal a flat table carries was left on the floor.
+
+A flat table hides its relationships in its naming. `shipper_code`, `shipper_name`,
+`consignee_code`, `consignee_name` is not four unrelated columns: it is two references
+to the same kind of entity, in two different roles. That is exactly what distinguishes
+`hasShipper` from `hasConsignee`, two object properties with the same range that no
+amount of per-column name similarity can separate. Presented flat, the model had to
+rediscover the structure on every call, and nothing prevented it mapping both roles
+onto one property — a mistake that is individually defensible for each column and only
+visible when the set is examined together.
+
+### Decision
+
+The prompt gains an `APPARENT ROLE STRUCTURE` block listing columns grouped by shared
+leading token, with the rule that two different groups must not map to the same object
+property. Separately, `flag_role_collisions` checks the finished mapping as a set and
+records a `role-collision` flag on the table when two distinct roles do land on one
+property.
+
+Grouping is deliberately conservative, because a false group asserts a relationship the
+data does not have. A group needs a shared leading token, at least two members, no more
+than half the table (beyond that it is the table's *subject*, not a related entity),
+no structural token like `is`/`created`/`total`, and at least one member that actually
+identifies or names something (`code`, `name`, `id`, `key`, `ref`, …).
+
+That last condition came from the corpus, not from theory: a prefix-only rule produced
+`ActualDate`/`ActualTimeFrom` and `KmLoadingTotal`/`KmUnloadingTotal`, which share a
+prefix for reasons unrelated to entity identity. With it, 98 of 150 source tables carry
+a role structure, and they are the right ones — `origin(16)`/`destination(16)` on the
+orders table, `pickup(8)`/`delivery(8)` on stops.
+
+The guard flags and never blocks. Two roles legitimately share a property when the
+reference model is deliberately coarser than the source, and that is a design decision
+for a human, not an error to reject automatically.
+
+### Consequences
+
+Measured on the party domain, three parallel runs: recall rose from 24-25 columns to a
+steady **28** (+15%), with stability at 93% — inside the 82-100% band established in
+DD-177, and traded for materially more coverage on the axis that was weakest.
+
+The guard immediately earned itself, firing identically on all three runs: the `company`
+and `reference` roles both mapped to `partyIdentifier`. That is precisely the failure
+this decision exists to surface — plausible per column, wrong as a set.
+
+One honest cost: a single column mapped to different properties across runs, where
+earlier configurations had shown zero such conflicts. More columns attempted means more
+opportunity to disagree.
+
+A table with no role group renders no block, so its prompt is byte-identical to before,
+and `consistency_flags` is emitted only when a rule fires.
+
+Declared relationships from Power BI semantic models (`import-tmdl` already parses 17 of
+them across this hub's two models) remain unused. They are real relational evidence, but
+the BI table names are the semantic model's, not the source tables' — wiring them in
+needs a name-resolution step that this decision does not attempt.
+
+## DD-180: An unanchored table is reported, gated, and told where its class lives
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `alignment-report`, `compile`
+**Implementation:** `core/alignment_report.py` (`UnanchoredTable`, `find_anchor_candidates`, `domain_imports`, `undecided_unanchored_tables`), `cli/compile.py`
+
+### Context
+
+Alignment anchors a table before mapping its columns: step 1 decides which reference
+class the table *is*, step 2 maps each column to a property of that class. The anchor
+is the frame. Without one, step 2 draws from the whole property pool with nothing to
+constrain the choice.
+
+Nothing reported when step 1 failed. The alignment file for an unanchored table looks
+like any other, and every downstream consumer reads it as an ordinary result.
+
+Testing a second domain is what exposed it. On `consignment`, run-to-run stability was
+48% against `party`'s 93%, and the cause was not the model, the prompt or the settings
+— all three had just been measured and improved. Split by anchor status it was
+unambiguous:
+
+| table | anchor | mapped per run | stability |
+|---|---|---|---|
+| `consignments` | Consignment | 26, 26, 24 | 67% |
+| `shipments` | Shipment | 5, 3, 4 | 60% |
+| `stops` | **none** | 26, 13, 8 | **30%** |
+| `stops_table` | **none** | 23, 11, 16 | **44%** |
+
+Both unanchored tables returned `unmatched` — the model was shown every class the
+domain imports and declined to force-fit, which is the anchor contract working. It was
+also right: the class those tables need is `TransportCall`, which exists in
+`dcsa/transport-call#` and is imported by **`route-schedule`**, not `consignment`. 237
+columns had no reachable home because of where a module was imported, not because of
+anything a language model did.
+
+An A/B on the same 122-column table ruled out the obvious alternative explanation: the
+strict schema (DD-177) maps *more* under identical conditions (24/22 vs 16/11), varies
+less, and uses half the output tokens. Width was not the problem either.
+
+### Decision
+
+`build_alignment_report` collects every table whose `ref_class` is empty or whose
+status is `unmatched`/`rejected`, and for each one searches the *full* reference
+vocabulary — not merely what the domain imports — for classes matching the table's name
+and candidate entity, reporting which domain already imports each module.
+
+That is the difference between "the model could not anchor `stops`" and "`TransportCall`
+exists in `dcsa/transport-call#`, which `route-schedule` imports and `consignment` does
+not". The first is an observation; the second is the fix.
+
+Candidates rank by: a module some other domain imports first (a boundary mismatch is
+both the likelier diagnosis and the cheaper fix, where an orphan module is usually
+vocabulary coincidence), then token overlap, then fewest surplus tokens so
+`TransportCall` outranks `BargeTransportCall`. Matching is blunt on purpose — the output
+is a pointer for a human, not an automatic re-anchor, so a false suggestion costs a
+moment's reading while a missed one costs a silent blind spot.
+
+`compile` gates on it, before the DD-169 column gate: an unanchored table is the larger
+omission, and listing a hundred homeless columns underneath one describes the symptom
+while hiding the cause. Cleared by a table-grain disposition (DD-164), like any other
+scope decision.
+
+### Consequences
+
+On the live hub this found **9 unanchored tables covering 306 columns**, across six
+domains — only two of which were known. Every one names a candidate class and the
+domain that already imports it, so each is a boundary decision rather than an
+investigation: `compliance/resource_calendar_events` wants `events#` (imported by
+`events`), `equipment/equipmentcode_fix` wants `onerecord/cargo#` (imported by
+`booking`).
+
+This is the mirror image of the defect that started this work. `Booking` appeared in
+`party` where it did not belong; here `TransportCall` is absent from `consignment`
+where it is needed. Same root cause — a mismatch between where affinity puts tables and
+where the blueprint puts classes — and until now only the first direction was
+detectable.
+
+The wider lesson is about method, and is recorded here because it cost real time: every
+conclusion in DD-174 through DD-179 was drawn from one domain of five narrow tables, and
+the first different domain overturned the headline number. Single-domain measurement
+sets a hypothesis; it does not settle one.
+
+## DD-181: A declared cross-domain bridge makes a class anchorable, by default
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `scaffold-domain`
+**Implementation:** `core/analyse_sources.py` (`load_cross_domain_bridges`, `bridge_anchor_classes`), `core/propose_alignment.py` (`resolve_bridge_anchor_classes`, `_bridge_tag`)
+
+### Context
+
+A source table often holds rows of an entity its domain *references* rather than
+*owns*. `stops` sits under `consignment`, but each row is a transport call — a
+concept `route-schedule` owns. Offered only its home classes, the model has nothing
+truthful to pick and correctly declines to anchor.
+
+That is how 306 columns across nine tables ended up unanchored (DD-180), and the
+only routes forward were both bad: import a module the domain has no business owning
+(recreating the boundary erosion that DD-163 exists to catch, and that produced
+`Booking` in `party` in the first place), or move the table to a domain that fits the
+class but not the grain.
+
+The blueprint already had the right mechanism and nothing read it for this purpose.
+`cross_domain_relationships` declares exactly this — `source_domain` may reference
+`range_class_uri`, owned by `target_domain`, through a named `property_uri` — and the
+logistics pack ships 24 of them. The existing cross-module machinery is opt-in behind
+`--cross-module --accelerator` and widens the *property* pool, not the anchor pool, so
+a hub could declare a bridge and alignment would still not offer the class.
+
+Reference-models v1.28.1 confirmed this is not a vocabulary problem: it added 663
+resolved properties and **zero** classes, leaving all nine tables unanchored.
+
+### Decision
+
+Classes reachable through a bridge declared *from* a domain join that domain's anchor
+candidate pool, tagged with the domain that owns them. Ownership does not move — the
+tag is what lets the boundary check (DD-163) distinguish an authorised reference from
+a redeclaration, and it tells the model in as many words that anchoring to the class
+is allowed while minting a local copy is not.
+
+**On by default, with no flag.** A bridge in the blueprint *is* the authorisation;
+requiring a CLI flag to honour it would mean the default run ignores governance the
+hub already expressed. Bridges load whenever a reference-models directory is present,
+independently of `--cross-module`, and a test pins that ordering so the two cannot be
+re-coupled by accident.
+
+`load_cross_domain_bridges` returns bridges verbatim rather than filtering on
+populated fields, because the scaffold header needs only `property_uri` while the
+anchor pool needs `range_class_uri`. `cli/setup.py` now delegates to it, so a scaffold
+header and an anchor pool cannot disagree about what the blueprint authorises.
+
+### Consequences
+
+On the live hub, `consignment`'s anchor pool goes from 25 to 33 classes —
+`Invoice`, `TransportEvent`, `ServiceLoop`, `CustomsDeclaration` and four more, each
+marked with its owner.
+
+This supplies the mechanism, not the cure. **None of DD-180's nine tables is fixed by
+the bridges that exist today**: no bridge declares `TransportCall`, and `compliance`
+declares none at all. What changes is the shape of the remedy — a one-line blueprint
+declaration that the toolkit then honours everywhere, instead of nine hand-added
+imports that erode boundaries and trip DD-163. Landing the 306 columns needs, at
+minimum, `consignment → route-schedule : TransportCall` (237 columns) and
+`compliance → events : Event` (25).
+
+A bridge is directional by construction: `booking → consignment` does not let
+`consignment` anchor to `booking`'s classes.
+
+## DD-182: Per-table vocabulary is a projection of the aggregate, not a second derivation
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `import-source`, source catalog, every downstream stage
+**Implementation:** `core/import_source.py` (`split_vocabulary_by_table`)
+
+### Context
+
+`import-source` writes each table's Bronze vocabulary twice: into the source's
+aggregate `<system>.vocabulary.ttl` and into `vocabulary/<table>.vocabulary.ttl`.
+Both were derived independently from the parsed source schema, and they were
+maintained by *different* update paths — the aggregate by an in-place merge that
+syncs a fixed list of managed predicates, the per-table files by wholesale
+regeneration.
+
+Any enrichment added to the generator but not to the merge's sync list therefore
+landed in one and never the other. `formatHint` did exactly that. On the live hub,
+38 columns carried it in their per-table file and not in the aggregate.
+
+The consequence was out of all proportion to the cause. The source catalog reads
+both files, found the same `SourceTable` IRI with two different signatures, and
+reported 75 conflicts — one per table. It could not decide which definition was
+authoritative, so it refused to load, and `analyse-sources` aborted. Affinity,
+alignment and everything after them were blocked by a missing format annotation.
+
+### Decision
+
+The per-table files are produced by `split_vocabulary_by_table`, which projects
+each `bronze:SourceTable` and its columns out of the finished aggregate graph. They
+are a view of the aggregate, not a parallel derivation from the schema.
+
+Whatever the aggregate says about a table is, verbatim, what its per-table file
+says — so divergence is impossible by construction rather than policed by a sync
+list that must be remembered. The split carries no allow-list of its own; it copies
+every triple on the table and its columns, which is what keeps a future enrichment
+from reintroducing the same defect.
+
+### Consequences
+
+Adding `formatHint` to the merge's sync list would have unblocked the hub in one
+line and left the class of bug intact — the next predicate added to one path and
+not the other would repeat it. This closes the class.
+
+The existing hub was already divergent, so the fix needed a re-import of all four
+sources through the corrected path. Afterwards the catalog loads 75 tables with 0
+conflicts.
+
+The guard that caught this stays exactly as strict: a test tampers with a per-table
+file and confirms the catalog still reports the conflict. The problem was never that
+the guard was wrong — it was that two writers were allowed to disagree.
+
+## DD-183: Affinity resolves the hub's accelerator instead of scanning the whole tree
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `analyse-sources`
+**Implementation:** `cli/sources.py`
+
+### Context
+
+Affinity classifies each source table into a data domain. Given an accelerator it
+uses the blueprint's governed domains; given none it falls back to globbing every
+TTL under the reference-models tree and treating each directory group as a
+candidate domain.
+
+That fallback was never sound, and reference-models v1.28/1.29 made it obvious by
+adding 80 TTL files. A run without `--accelerator` reported:
+
+    📊 Resolved 274 domain(s) (12501 classes, 29089 properties)
+       • Partnerships Ontology …  • ACTUS Challenge Examples Ontology …
+       • 1.2.0 …  • current …  • deferred-relationship …
+
+FIBO, ACTUS, the pattern library and version strings, offered as domains alongside
+`party` and `financial`. 75 tables were classified against those 274 candidates,
+and 8 of the 19 resulting domains — `shipment-journey`, `track-and-trace`,
+`transport-order`, `revenue-yield`, `cost-accounting`, `vessel-registry`,
+`container-operations`, `carbon` — are reference-model *module* names that no
+blueprint domain owns.
+
+What makes this dangerous is that the output looks entirely normal. The affinity
+file has the same shape either way, and nothing downstream can tell a governed
+domain from a scanned directory name. The same run with `--accelerator logistics`
+produced 22 domains and assignments closely tracking the previous baseline
+(financial 17→16, booking 11→7, consignment 4→5).
+
+The hub already declares `[tool.kairos].accelerator = "logistics"` — the same
+setting DD-181 reads for cross-domain bridges. Affinity simply never consulted it.
+
+### Decision
+
+When `--accelerator` is absent, `analyse-sources` resolves the hub's declared
+accelerator through `resolve_hub_accelerator` (DD-125) — the shared path `validate`,
+`project` and DD-181 already use — with any `--domains` filter as a hint. Inference
+only fills a gap; an explicit flag is never overridden, and the output states which
+of the two applied.
+
+If nothing resolves, the fallback still runs but says plainly, on stderr, that
+classification is against every ontology in the tree rather than the blueprint's
+governed domains, and names both remedies.
+
+### Consequences
+
+This is the second defect of the same shape in one session: DD-181's bridge loader
+also silently took the alphabetically-first accelerator pack when none was
+resolved. Both produced plausible output from the wrong vocabulary. The pattern
+worth naming is that a *default* which quietly widens scope is more dangerous than
+one that fails — a failure gets investigated, a wrong-but-shaped-right answer gets
+consumed.
+
+The remaining exposure is that the fallback still exists. It is retained because a
+hub with no accelerator is a legitimate configuration, but it is now loud rather
+than silent.
+
+## DD-184: LLM calls are traced to Langfuse, opt-in, with source values masked
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `analyse-sources`, `discovery-conformance judge`
+**Implementation:** `core/tracing.py`, `core/ai_provider.py` (`_openai_class`, `create_chat_completion`)
+
+### Context
+
+Three pipeline stages call a model, and the only durable record was a progress
+line plus, on failure, a sanitized error. Diagnosing a questionable mapping meant
+re-running the stage under a purpose-written instrumentation script — which is
+exactly what it took to discover that `companies` was prompted twice, that its
+first shortlist omitted `TradeParty`, and that the retry tripled the token cost.
+That should not have required a bespoke harness.
+
+### Decision
+
+Tracing uses Langfuse's OpenAI drop-in wrapper rather than hand-rolled spans, so
+model name, token usage and the `generation` observation type are captured
+without the call sites knowing tracing exists. `_openai_class()` returns the
+instrumented client when tracing is live and the plain one otherwise; nothing in
+`create_chat_completion` branches on it beyond attaching `name`/`metadata`, which
+only the wrapper accepts.
+
+Calls are grouped by a per-invocation **session id** rather than a parent span.
+Alignment fans out across threads, where a context-manager span does not reliably
+parent concurrent work, and sessions are the SDK's documented mechanism for
+grouping logically-connected traces.
+
+Three properties are non-negotiable and each is pinned by test:
+
+1. **Off unless configured.** All of `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`
+   and `LANGFUSE_HOST` must be set. There is deliberately no default host, so a
+   hub cannot ship traces anywhere by accident.
+2. **Source values masked by default.** Alignment prompts carry real sample data
+   from client tables. It already passes the `source-privacy` gate, but "not
+   personal" is not "safe to send to a third party". The mask strips the
+   `| samples: …` block and keeps column names, types, the reference classes
+   offered, the instructions and the model's full response — nearly all the
+   diagnostic value at none of the egress. `KAIROS_LANGFUSE_SEND_SAMPLES=1` opts
+   in, which is reasonable for a self-hosted collector and a deliberate act
+   either way.
+3. **Never fails a run.** A missing package, an unreachable collector or a broken
+   constructor logs at info level and continues untraced. Observability that can
+   break a pipeline is worse than none.
+
+An autouse fixture clears the Langfuse variables and the memoised client around
+every test: tracing activates purely from the environment, so a developer with
+real credentials in their shell would otherwise export fixture data to a live
+project simply by running pytest.
+
+### Consequences
+
+Metadata carries what the earlier bespoke harness had to reconstruct — role,
+table, source-column count, candidate-class count, resolved anchor override,
+likely entity, and any dropped schema enum — plus the seed and reasoning effort
+already recorded for provenance (DD-178). Filtering "every alignment call on a
+table where the schema enum was dropped" becomes a query rather than a re-run.
+
+`flush_tracing()` is called before `_propose_alignments` returns. These are
+short-lived CLI processes; without it the buffered events are lost at exit and
+the run appears never to have happened.
+
+What this does **not** yet cover: the affinity and judgment stages get the traced
+client for free through `get_ai_client`, but do not pass `trace_name`/
+`trace_metadata`, so their calls arrive with default names and no role tag.
+
+## DD-185: Tables are anchored globally, in one call, before per-table alignment
+
+**Status:** Accepted
+**Date:** 2026-08-17
+**Affects:** `anchor-tables` (new), `propose-alignment`, `analyse-sources`
+**Implementation:** `core/anchor_tables.py`, `cli/sources.py` (`anchor-tables`), `core/propose_alignment.py` (consumption)
+
+### Context
+
+The per-table pipeline decided a table's anchor from inside one domain's view:
+affinity guessed the domain, a lexical shortlist picked twelve candidate classes,
+the model chose among them. Measured failures: the shortlist ranked `TradeParty`
+#24 for a table of companies (`Address` won on column overlap 44:20), ~40% of
+tables needed a second 70KB full-inventory call, a plausible-but-wrong shortlist
+anchor passed both retry thresholds silently, and affinity itself moved tables
+between runs (`stops`: consignment → events on consecutive runs).
+
+Anchoring is a grain question — *what is one row?* — and it wants the widest view
+with the least detail. Brute force is arithmetically impossible (2,035 column
+verdicts ≈ 163k output tokens in one response; the full property-detailed model is
+~250k tokens per table). But every table's column names against a one-line-per-class
+catalog fits in one ~35k-token call.
+
+Tested on the live corpus before building: 6/6 on human-reviewed anchors (with
+ownership marks; 5/6 without), honest nulls on metadata junk tables, zero invented
+class names, and — against the hand-crafted cldn2 hub's nine bindings — 9/9 exact
+grain-column matches as a secondary output. Sample values were tested and cost
+accuracy here (5/6) and ~7k tokens: they stay in stage-2 mapping, where they are
+proven, and out of anchoring.
+
+### Decision
+
+`anchor-tables` runs one global call (chunked above 150 tables): all tables'
+column names × the full class catalog, each class marked with its owning blueprint
+domain, plus the three anchoring-relevant pattern rules (role flags → neutral
+party class; code-list tables; grain-of-one-row). Output is `table-anchors.yaml`:
+anchor, alternate, confidence, derived domain, grain columns, natural key and load
+hint per table, with DD-178 AI provenance. Every table is a required key in the
+strict response schema (the DD-177 shape), so a table cannot be skipped; class
+names are free strings — 1,275 candidates exceed the 1,000-value enum budget — and
+are validated afterwards, invented names nulled with the evidence kept.
+
+The domain is derived, not guessed: candidates are the domains owning any copy of
+the anchor plus the domains bridging to it (DD-181), with affinity kept as a
+tie-break *within* candidates. Bridge-awareness keeps a table in the bridging
+domain instead of moving it to the owner — a move would trade an anchor gap for a
+grain error. An anchor no domain can reach keeps its affinity domain and is
+flagged `unowned`: the extension worklist, surfaced up front.
+
+`propose-alignment` consumes the anchors through the existing uri-anchor-contract
+override, with three guards: a human-confirmed alias always outranks the model's
+anchor; nothing below `ANCHOR_CONFIDENCE_FLOOR` (0.6) is applied; and an anchor
+outside the domain's pool (home + bridges) is reported, never silently applied.
+Applied anchors are recorded as status `anchored` — never `confirmed`, which
+means a human decided. The anchor and its status join the per-table cache key.
+
+Column-level dispositions (DD-164) now feed the prompt: a column recorded as
+`not-business-data` — including a system-wide `(system, "", column)` entry — is
+excluded from the outline, so a SaaS tenant discriminator cannot become a grain or
+key member. On the live run the model had keyed every qargo table on `tenant_id`
+before the exclusion; zero after.
+
+### Consequences
+
+Live pilot on the hub: 72/75 tables anchored in one 54-second call, all five
+session-confirmed anchors correct, six unowned-class flags, zero invented names.
+Party alignment with anchors: three overrides applied, one refused as
+outside-pool, one refused below the floor (0.18 — the honest `unmatched` beat a
+bad pin), no full-inventory retries.
+
+Two defects were found live and fixed: duplicate class names across modules
+(ownership derived from an arbitrary copy put `consignments` in `commercial`; the
+index now keeps every copy and aggregates), and the affinity reader using a field
+name that does not exist (`primary_domain` vs `domain`).
+
+Not yet done, in honest order: alignment still *groups* tables by affinity's
+domains, so an anchor pointing outside that grouping is reported rather than
+moving the table — regrouping by derived domain is the follow-up that makes
+affinity fully derived. The binding-draft generator (assemble EntityBinding
+skeletons from anchors + alignment) and the Langfuse golden-set evaluation are
+deferred; the latter because the cldn2 golden set contains genuine modelling
+disagreements (`shipments`: Shipment vs TransportMovement) that need human labels
+before they can score anything.

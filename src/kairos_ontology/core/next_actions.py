@@ -119,7 +119,6 @@ ACTION_SKILLS: dict[str, str] = {
     # evidence; authoring the class is still a domain-design decision.
     "model-registered-concept": "kairos-design-domain",
     "design-domain": "kairos-design-domain",
-    "generate-inventory": "kairos-design-domain",
     "author-binding": "kairos-design-mapping",
     "develop-dbt": "kairos-develop-dbt-transformation",
     "run-check": "kairos-execute-validate",
@@ -316,22 +315,6 @@ def discovery_gate_satisfied(snapshot: HubInputSnapshot) -> bool:
 
 def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
     actions: list[NextAction] = []
-    if snapshot.inventory_status is InputStatus.MISSING:
-        actions.append(
-            _action(
-                "generate-inventory",
-                ActionStatus.BLOCKING,
-                rationale=(
-                    "One or more materialized reference-model/ontology inventories under "
-                    "referencemodels-unpacked/ are missing, stale, or require migration "
-                    "(DD-047). kairos-design-domain's Gate 0 (check-inventory) blocks "
-                    "modeling on this until inventories are regenerated."
-                ),
-                command="kairos-ontology generate-inventory",
-                priority=1,
-                blocking=True,
-            )
-        )
     if snapshot.discovery is InputStatus.UNREADABLE:
         actions.append(
             _action(

@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.4.0] — 2026-08-17
+
+One arc: make the generated ontology match what the evidence supports, and make every
+step that decides something be measurable, reproducible, and attributable. Every change
+below was driven by a measured failure on a live client hub, and each is recorded as a
+design decision (DD-163 … DD-185).
+
+### Added
+- **Global table anchoring** (`kairos-ontology anchor-tables`, DD-185): one model call
+  anchors every source table against the full reference class catalog (ownership-marked,
+  pattern-rule-guided), emitting `table-anchors.yaml` with anchor, confidence, derived
+  domain, grain columns, natural key and load hint. `propose-alignment` consumes anchors
+  through the uri-anchor-contract (status `anchored`, never `confirmed`), regroups tables
+  into their anchor-derived domains, and states the decided anchor in the prompt.
+  Affinity becomes a prior, not a constraint. Measured: 6/6 human-reviewed anchors, 9/9
+  grain-column matches against a hand-crafted hub, 55/71 tables anchored on the full run,
+  −40 low-confidence mappings / +15 high-confidence, 37% faster.
+- **Strict alignment output schema** (DD-177): `column_alignments` keyed by column name
+  with every key required — omitting, inventing or duplicating a column is a schema
+  violation. Enum-constrained `ref_class`/`ref_property` under a measured 1,000-value
+  provider budget; automatic JSON-mode fallback via `param_fallbacks`.
+- **Graph-aware alignment** (DD-179): the prompt renders the table's apparent role
+  structure (`shipper_*` / `consignee_*` groups) with the rule that distinct roles must
+  not share an object property, and `flag_role_collisions` checks the finished mapping as
+  a set (flags, never blocks).
+- **Cross-domain bridge anchoring** (DD-181): classes reachable through blueprint-declared
+  `cross_domain_relationships` join the anchor pool by default, tagged with their owning
+  domain — no flag, the declaration is the authorisation.
+- **Unanchored-table detection and gate** (DD-180): tables alignment cannot anchor are
+  reported with the candidate class and the domain that already imports it, and `compile`
+  gates on undecided ones before the column gate.
+- **Alignment coverage report with reason codes** (DD-168) and a **hard gap gate before
+  entity binding** (DD-169): every unmapped column carries one of a closed reason set;
+  gap columns with real signal and no recorded decision block `compile`.
+- **Conformance judgment offload** (DD-167) with retrieval grounding, coded guards,
+  themed review (`discovery-conformance review`) and auditable human confirmation
+  (`confirm`, the only path that clears `needs_confirmation`).
+- **Hub-wide ontology integrity checks** (DD-163) and the **source disposition ledger**
+  (DD-164), now also consumed at prompt time: column-grain `not-business-data` entries
+  (including system-wide wildcards) are excluded from anchoring outlines.
+- **Langfuse tracing** (DD-184, opt-in extra `langfuse`): every pipeline model call is a
+  named, tagged, session-grouped generation with token usage; source sample values are
+  masked by default and the strict schema is summarised to counts. Off unless all three
+  `LANGFUSE_*` variables are set; can never fail a run.
+- **Deterministic sampling** (DD-174): every stage passes `seed=resolve_ai_seed(role)`
+  (`KAIROS_AI_{ROLE}_SEED` → `KAIROS_AI_SEED` → default) and per-role
+  **reasoning effort** (DD-176, `resolve_reasoning_effort`). `temperature` was measured
+  as rejected by the reasoning tier and had never taken effect.
+- **AI provenance on generated artifacts** (DD-178): model, role, seed and effort in a
+  comment header plus an AI-assistance disclaimer; Markdown reports lead with a one-line
+  attribution. Deterministic generators never claim AI assistance.
+- **Local-proposal validation** (DD-170), **glossary as a preflight input** (DD-171,
+  now filtered per table to terms sharing tokens with its columns), and **class-anchoring
+  suggestions** with live resolution (DD-165).
+
+### Changed
+- **Reference models resolve live; the materialized inventory is removed** (DD-173):
+  `generate-inventory`/`check-inventory` and the freshness gate are gone with no
+  compatibility shim. When the resolver was fixed, every cached inventory kept the old
+  wrong answer — the fast path preferred the cache.
+- **Prompts are reproducible** (DD-175): multi-valued RDF annotations are picked
+  deterministically (`stable_value` in the canonical loader), reference terms and source
+  tables/columns are ordered stably, and the per-table cache key includes the anchor.
+- **`analyse-sources` resolves the hub's accelerator** (DD-183) instead of silently
+  classifying against every ontology in the reference tree (274 pseudo-domains including
+  FIBO and version strings); unresolved packs warn loudly on stderr.
+- Per-table vocabulary files are a **projection of the aggregate** (DD-182), written by
+  `split_vocabulary_by_table` — the two can no longer drift (a missed `formatHint` sync
+  produced 75 catalog conflicts and blocked the pipeline).
+- Sample values are budgeted by cardinality (DD-166) and wide tables split across calls
+  at 200 columns with pinned anchors instead of silent truncation.
+
+### Fixed
+- `schema:domainIncludes` had **never matched a triple** — the constant bound
+  `http://schema.org/` while every reference model binds `https` (DD-172; namespace
+  guard test added). TradeParty gained its four address/contact properties.
+- The Foundry provider path bypassed tracing instrumentation; the capability-aware
+  completion wrapper now remembers per-model parameter rejections for the process and
+  supports value fallbacks.
+- Affinity/judgment stages called the client directly and would have hard-failed on
+  reasoning models; all stages now route through `create_chat_completion` (guard test).
+- Cross-domain bridge loading resolved the wrong accelerator pack when several are
+  installed (alphabetically-first); now resolved via the shared DD-125 path.
+- Duplicate class names across modules no longer derive table ownership from an
+  arbitrary copy; ownership aggregates across every copy of the name.
+- AI preflight treats a 404 from `models.list()` as "try a minimal inference call",
+  and API-key auth goes directly to the OpenAI-compatible surface.
+
+### Removed
+- `core/inventory.py`, `generate-inventory`, `check-inventory` and their tests (DD-173).
+
 ## [5.3.0] — 2026-08-15
 
 ### Added

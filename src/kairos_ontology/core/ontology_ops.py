@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
+from .ontology_loader import stable_value
 from .projections.uri_utils import extract_local_name
 
 
@@ -292,12 +293,15 @@ def serialize_graph(graph: Graph, format: str = "turtle") -> str:
 
 
 def _first_literal(graph: Graph, subject, predicate) -> Optional[str]:
-    for obj in graph.objects(subject, predicate):
-        return str(obj)
-    return None
+    """Return one literal for the pair, chosen reproducibly (DD-175).
+
+    Named "first" but there is no first: iteration order over several objects
+    differs between processes. Delegates to the shared deterministic picker.
+    """
+    obj = stable_value(graph, subject, predicate)
+    return None if obj is None else str(obj)
 
 
 def _first_object(graph: Graph, subject, predicate):
-    for obj in graph.objects(subject, predicate):
-        return obj
-    return None
+    """Return one object for the pair, chosen reproducibly (DD-175)."""
+    return stable_value(graph, subject, predicate)

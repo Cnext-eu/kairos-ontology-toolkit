@@ -709,8 +709,10 @@ def import_flatfile(
 @click.option(
     "--max-workers",
     type=int,
-    default=8,
-    help="Max concurrent per-table LLM calls (default: 8; use 1 for serial).",
+    default=16,
+    help="Max concurrent per-table LLM calls (default: 16; use 1 for serial). These "
+    "calls are network-bound, so the useful ceiling is the provider's rate limit "
+    "rather than the core count.",
 )
 @click.option(
     "--force",
@@ -821,12 +823,78 @@ def analyse_sources_cmd(
         click.echo(f"❌ Sources directory not found: {sources_path}", err=True)
         raise SystemExit(1)
 
+    # PII gate (DD-166). This command sends sample values from every column to a
+    # third-party LLM. Redaction happens earlier -- at import, and via `source-privacy`
+    # -- and this module trusted that silently: it contained no privacy check at all, so
+    # an unsanitized vocabulary would have been shipped to the provider with nothing
+    # objecting. Ordering is not a control. Scan before sending.
+    from ..core.source_privacy import run_source_privacy
+
+    privacy_report = run_source_privacy(sources_path, fix=False)
+    if not privacy_report.passed:
+        findings = privacy_report.findings
+        click.echo(
+            f"❌ Refusing to send source samples to the AI provider: "
+            f"{len(findings)} unredacted PII finding(s) across "
+            f"{privacy_report.files_scanned} artifact(s).",
+            err=True,
+        )
+        # Paths and kinds only -- never the offending value, which is the thing we are
+        # trying not to disclose.
+        for path, finding in findings[:10]:
+            click.echo(f"   - {path}: {getattr(finding, 'kind', 'pii')}", err=True)
+        if len(findings) > 10:
+            click.echo(f"   … and {len(findings) - 10} more", err=True)
+        click.echo(
+            "   Fix with: kairos-ontology source-privacy --fix, then re-run.", err=True
+        )
+        raise SystemExit(1)
+
+    # DD-183: resolve the hub's declared accelerator when none was passed.
+    #
+    # Without one, classification falls back to scanning every TTL under the
+    # reference-models tree and treating each directory group as a candidate
+    # domain. On this corpus that is 274 pseudo-domains — FIBO, ACTUS, the
+    # pattern library, and version strings like "1.2.0" and "current" — instead
+    # of the blueprint's 22 governed domains, and tables get classified into
+    # module names (`shipment-journey`, `track-and-trace`) that no domain owns.
+    # The output looks entirely normal, which is what makes the fallback
+    # dangerous: nothing downstream can tell a governed domain from a scanned
+    # directory. The hub already declares `[tool.kairos].accelerator`.
+    accelerator_inferred = False
+    if not accelerator:
+        try:
+            from ..core.reference_modules import resolve_hub_accelerator
+
+            accelerator = resolve_hub_accelerator(
+                explicit=None,
+                hub_root=hub_root,
+                ref_models_dir=ref_models_path,
+                domain_hint=(
+                    [d.strip() for d in domains_filter.split(",") if d.strip()]
+                    if domains_filter
+                    else None
+                ),
+            )
+            accelerator_inferred = bool(accelerator)
+        except Exception:  # noqa: BLE001 - ambiguity falls through to the warning below
+            accelerator = None
+
     if not quiet:
         click.echo(f"🔍 Analysing sources in: {sources_path}")
         click.echo(f"   Reference models: {ref_models_path}")
         click.echo(f"   Model: {llm_model}")
         if accelerator:
-            click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
+            source = "inferred from hub" if accelerator_inferred else "explicit"
+            click.echo(f"   Accelerator: {accelerator} (data-domain-first, {source})")
+        else:
+            click.echo(
+                "   ⚠ No accelerator resolved — classifying against every ontology "
+                "found under the reference-models tree, not the blueprint's governed "
+                "domains. Tables may be assigned to module names no domain owns. "
+                "Pass --accelerator <pack>, or set [tool.kairos].accelerator.",
+                err=True,
+            )
         if domains_filter:
             click.echo(
                 f"   Domain filter: {domains_filter} (output focus only — full set is classified)"
@@ -1246,8 +1314,17 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
 @click.option(
     "--max-workers",
     type=int,
-    default=8,
-    help="Max concurrent per-table LLM calls (default: 8; use 1 for serial).",
+    default=16,
+    help="Max concurrent per-table LLM calls (default: 16; use 1 for serial). These "
+    "calls are network-bound, so the useful ceiling is the provider's rate limit "
+    "rather than the core count.",
+)
+@click.option(
+    "--without-discovery",
+    is_flag=True,
+    default=False,
+    help="Run even though the hub has no authored business glossary. The proposals "
+    "will be source-shaped rather than grounded in the business's own vocabulary.",
 )
 @click.option(
     "--force",
@@ -1314,6 +1391,7 @@ def propose_alignment_cmd(
     max_prompt_classes,
     retry_min_confidence,
     retry_min_mapped_ratio,
+    without_discovery,
     max_workers,
     force,
     cross_module,
@@ -1340,11 +1418,36 @@ def propose_alignment_cmd(
     from ..core.propose_alignment import (
         HIGH_ACCURACY_MODEL,
         AlignmentTotalFailureError,
+        load_glossary_terms,
         run_propose_alignment,
     )
     from ..core.ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
     from ..core.conformance_artifact import ARTIFACT_RELPATH
     from ..core.hub_utils import find_hub_root
+
+    # Discovery preflight (DD-171). The business glossary is a real input to alignment
+    # quality, not decoration: without it the model proposes source-shaped terms like
+    # "associatedCompanySubcontractorStatus" instead of the word the business uses.
+    # This is also the most expensive call in the pipeline — tens of minutes against a
+    # reasoning model — so spending it on ungrounded input and finding out afterwards is
+    # the worst available ordering. Blocking with an explicit escape rather than a
+    # warning, because a warning here is read after the money is spent.
+    _preflight_hub = find_hub_root(Path.cwd(), require_model=False)
+    if _preflight_hub is not None:
+        if not load_glossary_terms(_preflight_hub) and not without_discovery:
+            raise click.ClickException(
+                "No authored business glossary found under businessdiscovery/*.ttl.\n"
+                "  Alignment uses it to ground proposed terms in the business's own "
+                "vocabulary; without it the proposals mirror source column names.\n"
+                "  Run kairos-design-discovery first, or pass --without-discovery to "
+                "proceed deliberately."
+            )
+        if without_discovery:
+            click.echo(
+                "⚠ Running without a business glossary (--without-discovery): proposed "
+                "terms will be source-shaped.",
+                err=True,
+            )
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -1400,9 +1503,12 @@ def propose_alignment_cmd(
     output_path = Path(output) if output else analysis_path
 
     # DD-070: resolve the reference-models dir + validate cross-module prerequisites.
-    ref_models_dir = None
+    # Resolved unconditionally: --cross-module needs it for the widened property pool,
+    # and DD-171 needs it for the pattern-library cautions on every run. It used to be
+    # resolved only under --cross-module, so a normal run silently got no cautions —
+    # the grounding was wired end to end and never fired.
+    ref_models_dir = resolve_refmodels_dir(cwd, hub_root)
     if cross_module:
-        ref_models_dir = resolve_refmodels_dir(cwd, hub_root)
         if not accelerator:
             click.echo(
                 "❌ --cross-module requires --accelerator <name> (the accelerator "
@@ -2148,6 +2254,291 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, domains,
         )
 
 
+@discovery_conformance.command(name="judge")
+@click.option("--archetype", "archetype_id", required=True, help="Archetype id to judge against.")
+@click.option(
+    "--output",
+    "output_path",
+    default=None,
+    help="Where to write the judgments file (default: integration/discovery/"
+    "core-concepts-judgments.yaml).",
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    default=None,
+    help="Concepts per model call. Lower it if responses get truncated.",
+)
+@click.option(
+    "--business-context",
+    default="",
+    help="Short description of the business, included in every batch prompt.",
+)
+@click.option("--model", default=None, help="Override the model for this run.")
+@_REFMODELS_OPTION
+def discovery_conformance_judge_cmd(
+    archetype_id, output_path, batch_size, business_context, model, refmodels_root
+):
+    """Judge every archetype concept via the configured AI provider (DD-167).
+
+    Writes a judgments file for ``discovery-conformance build --judgments``. Every entry
+    is attributed ``decided_by: ai``, so DD-148's gate still requires a human to resolve
+    the uncertain ones before compile/validate pass. This command cannot confirm the
+    archetype itself — that is DD-149's human gate and stays a sentinel in the output.
+
+    
+    Example:
+      kairos-ontology discovery-conformance judge --archetype unit-load-carrier \
+        --business-context "Short-sea ro-ro carrier; own and subcontracted haulage."
+    """
+    from ..core.analyse_sources import load_data_domains
+    from ..core.archetype_loader import load_archetype
+    from ..core.conformance_evidence import collect_concept_source_evidence
+    from ..core.conformance_judge import (
+        DEFAULT_BATCH_SIZE,
+        bi_demand_terms,
+        blueprint_concept_domains,
+        concepts_named_by_affinity,
+        judge_concepts,
+        pattern_cautions,
+        write_judgments,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+
+    refmodels_dir = _resolve_conformance_root(refmodels_root)
+    archetype = load_archetype(refmodels_dir, archetype_id)
+    catalog = [
+        {"uri": c.uri, "label": c.label, "tier": c.tier} for c in archetype.core_concepts
+    ]
+
+    # Place each concept in a domain from the blueprint so affinity evidence can be
+    # found. Without this the evidence collector needs authored likely_domains, which do
+    # not exist until the judgment it is meant to inform has been made.
+    from ..core.reference_modules import resolve_hub_accelerator
+
+    try:
+        accelerator = resolve_hub_accelerator(
+            explicit=None, hub_root=hub_root, ref_models_dir=refmodels_dir
+        )
+    except Exception:  # noqa: BLE001 - evidence enrichment must not fail the judgment
+        accelerator = None
+    data_domains = (
+        load_data_domains(refmodels_dir, accelerator)
+        if accelerator and refmodels_dir is not None
+        else {}
+    )
+    concept_domains = blueprint_concept_domains([c["uri"] for c in catalog], data_domains)
+    evidence = collect_concept_source_evidence(
+        [c["uri"] for c in catalog], hub_root, concept_domains=concept_domains
+    )
+
+    uris = [c["uri"] for c in catalog]
+    concept_level = concepts_named_by_affinity(
+        uris, hub_root / "integration" / "sources" / "_analysis"
+    )
+    cautions = pattern_cautions(uris, refmodels_dir)
+    bi_terms = bi_demand_terms(hub_root)
+
+    click.echo(
+        f"⚖️  Judging {len(catalog)} concept(s) from '{archetype_id}' — "
+        f"{len(evidence)} with source evidence, {len(concept_level)} named directly by a "
+        f"source table, {len(cautions)} carrying a pattern-library caution"
+    )
+    with click.progressbar(length=len(catalog), label="   judging") as bar:
+        report = judge_concepts(
+            catalog=catalog,
+            evidence=evidence,
+            archetype_id=archetype_id,
+            business_context=business_context,
+            concept_level_uris=concept_level,
+            cautions=cautions,
+            bi_terms=bi_terms,
+            batch_size=batch_size or DEFAULT_BATCH_SIZE,
+            model=model,
+            progress=bar.update,
+        )
+
+    destination = (
+        Path(output_path)
+        if output_path
+        else hub_root / "integration" / "discovery" / "core-concepts-judgments.yaml"
+    )
+    written = write_judgments(report, destination)
+
+    click.echo("")
+    click.echo(f"   Calls made: {report.calls_made}")
+    for outcome, count in report.outcome_counts().items():
+        click.echo(f"   {outcome}: {count}")
+    click.echo(f"   ⚠ needs human confirmation: {len(report.needs_confirmation)}")
+    for notice in report.notices:
+        click.echo(f"   ℹ {notice}")
+    click.echo("")
+    click.echo(f"✅ Judgments written to {written}")
+    click.echo(
+        "   Next: review the flagged entries, set archetype_confirmed_by to 'human', "
+        "then run: kairos-ontology discovery-conformance build --judgments <file>"
+    )
+
+
+@discovery_conformance.command(name="review")
+@click.option(
+    "--judgments-file",
+    default=None,
+    help="Review this judgments file instead of the hub's conformance artifact.",
+)
+@click.option(
+    "--theme", default=None, help="Show every concept in one theme instead of a summary."
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json", "yaml"]),
+    default="text",
+    show_default=True,
+    help="Text is the default: this surface exists for a human doing the review.",
+)
+def discovery_conformance_review_cmd(judgments_file, theme, output_format):
+    """Group unresolved AI judgments by business theme for human review (AP-022).
+
+    A flat list of 147 concepts does not get reviewed. This groups them by the domains
+    they inform, shows the outcome mix and confidence range per block, and surfaces the
+    least-confident concepts in each — the ones where a reviewer's attention is worth
+    most. Read-only: it decides nothing and confirms nothing.
+    """
+    import yaml as _yaml
+
+    from ..core.conformance_artifact import ARTIFACT_RELPATH
+    from ..core.conformance_judge import group_unresolved
+    from ..core.hub_utils import find_hub_root
+
+    if judgments_file:
+        source = Path(judgments_file)
+    else:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+        if hub_root is None:
+            raise click.ClickException("Cannot locate an ontology hub.")
+        source = hub_root / ARTIFACT_RELPATH
+    if not source.is_file():
+        raise click.ClickException(f"No conformance artifact or judgments file at {source}")
+
+    document = _yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    groups = group_unresolved(document.get("core_concepts") or [])
+
+    if output_format in {"json", "yaml"}:
+        _emit({"groups": [g.to_dict() for g in groups]}, output_format)
+        return
+
+    total = sum(g.size for g in groups)
+    if not total:
+        click.echo("No unresolved AI judgments — nothing to review.")
+        return
+
+    if theme:
+        matched = [g for g in groups if g.theme == theme]
+        if not matched:
+            raise click.ClickException(
+                f"No theme {theme!r}. Available: {', '.join(g.theme for g in groups)}"
+            )
+        group = matched[0]
+        click.echo(f"🔍 {group.theme} — {group.size} unresolved")
+        for concept in sorted(
+            group.concepts,
+            key=lambda c: (c.get("confidence") if isinstance(c.get("confidence"), (int, float)) else -1.0),
+        ):
+            click.echo(
+                f"   [{concept.get('outcome')}] {concept.get('label')} "
+                f"(conf={concept.get('confidence')})"
+            )
+            click.echo(f"      {str(concept.get('rationale') or '')[:180]}")
+        return
+
+    click.echo(f"🔍 {total} unresolved AI judgment(s) in {len(groups)} theme(s)")
+    for group in groups:
+        low, high = group.confidence_range()
+        span = f"{low:.2f}-{high:.2f}" if low is not None else "n/a"
+        mix = ", ".join(f"{k}:{v}" for k, v in group.outcome_mix().items())
+        click.echo("")
+        click.echo(f"── {group.theme}  ({group.size} concepts, confidence {span}, {mix})")
+        for rep in group.representatives():
+            click.echo(f"     · {rep.get('label')} [{rep.get('outcome')}] {rep.get('confidence')}")
+            click.echo(f"       {str(rep.get('rationale') or '')[:150]}")
+    click.echo("")
+    click.echo("   Drill into one with: discovery-conformance review --theme \"<theme>\"")
+
+
+@discovery_conformance.command(name="confirm")
+@click.option("--judgments-file", required=True, help="Judgments file to update in place.")
+@click.option("--outcome", required=True, help="The outcome the human decided on.")
+@click.option("--rationale", required=True, help="Why. Recorded against every entry changed.")
+@click.option("--theme", default=None, help="Restrict to one review theme.")
+@click.option("--match", default=None, help="Restrict to labels containing this substring.")
+@click.option("--concept", "concept_uris", multiple=True, help="Restrict to these URIs.")
+@click.option(
+    "--decided-by",
+    type=click.Choice(sorted(("user", "ai", "autopilot"))),
+    default="user",
+    show_default=True,
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would change.")
+def discovery_conformance_confirm_cmd(
+    judgments_file, outcome, rationale, theme, match, concept_uris, decided_by, dry_run
+):
+    """Record a human's block decision over unresolved judgments (AP-022).
+
+    The only path that clears ``needs_confirmation``, deliberately: clearing it should be
+    an explicit act with a written reason, not a side effect of re-running the judge. The
+    AI's original outcome and rationale are preserved inside the new rationale, so a
+    reviewer can always see what was overridden.
+
+    
+    Example:
+      kairos-ontology discovery-conformance confirm --judgments-file <f> \
+        --theme customs --outcome not-applicable \
+        --rationale "CLdN does not perform customs brokerage in this hub's scope."
+    """
+    import yaml as _yaml
+
+    from ..core.conformance_judge import apply_human_decision
+
+    path = Path(judgments_file)
+    if not path.is_file():
+        raise click.ClickException(f"No judgments file at {path}")
+    document = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    concepts = document.get("core_concepts") or []
+
+    try:
+        changed = apply_human_decision(
+            concepts,
+            outcome=outcome,
+            rationale=rationale,
+            theme=theme,
+            match=match,
+            uris=concept_uris,
+            decided_by=decided_by,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not changed:
+        click.echo("No unresolved concepts matched that selection; nothing changed.")
+        return
+    for concept in changed:
+        click.echo(f"   {'would set' if dry_run else 'set'} {concept.get('label')} -> {outcome}")
+    if dry_run:
+        click.echo(f"(dry run) {len(changed)} concept(s) would be confirmed.")
+        return
+    path.write_text(
+        _yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    click.echo(f"Confirmed {len(changed)} concept(s) as '{outcome}' in {path}")
+
+
 @discovery_conformance.command(name="build")
 @click.option("--archetype", "archetype_id", required=True, help="Archetype id to build against.")
 @click.option(
@@ -2813,6 +3204,164 @@ def conformance_summarize(artifact_file, judgments_file, outcomes_filter, output
     _emit(payload, output_format)
 
 
+def _DISPOSITION_CHOICES() -> tuple[str, ...]:
+    """Return the closed disposition set, kept as the single source of truth in core."""
+    from ..core.source_disposition import DISPOSITIONS
+
+    return tuple(DISPOSITIONS)
+
+
+@click.group(name="source-disposition")
+def source_disposition_group() -> None:
+    """Record what the hub decided to do with each source table (DD-164).
+
+    A blueprint deliberately scopes which domains exist, so some source tables will have
+    no canonical home. That is expected; disposing of them *silently* is not. Without a
+    recorded outcome the same table can be dropped as "no canonical entity" in one domain
+    and force-fitted as a local class in another — which is exactly what a real run did.
+    """
+
+
+@source_disposition_group.command(name="set")
+@click.option("--system", required=True, help="Source system the table belongs to.")
+@click.option("--table", required=True, help="Physical table name (source.relation's suffix).")
+@click.option(
+    "--column",
+    default="",
+    help="Decide one column rather than the whole table. A table-grain decision "
+    "already covers every column in it.",
+)
+@click.option(
+    "--all-tables",
+    is_flag=True,
+    default=False,
+    help="With --column: record the same decision for every table where that column is "
+    "an undecided gap. The same column name recurs because the same business fact does, "
+    "so it is one decision, not N.",
+)
+@click.option(
+    "--disposition",
+    required=True,
+    type=click.Choice(sorted(_DISPOSITION_CHOICES())),
+    help="What the hub decided to do with this table.",
+)
+@click.option("--rationale", default="", help="Why. Required for a non-obvious disposition.")
+@click.option(
+    "--decided-by",
+    type=click.Choice(sorted(("user", "ai", "autopilot"))),
+    default="user",
+    show_default=True,
+    help="Who made this call, so a reviewer can weight it.",
+)
+@click.option(
+    "--evidence",
+    multiple=True,
+    help="Supporting evidence locator (row counts, a report, a column list). Repeatable.",
+)
+def source_disposition_set_cmd(
+    system: str,
+    table: str,
+    column: str,
+    all_tables: bool,
+    disposition: str,
+    rationale: str,
+    decided_by: str,
+    evidence: tuple[str, ...],
+) -> None:
+    """Record one table's disposition in the hub ledger.
+
+    \b
+    Example:
+      kairos-ontology source-disposition set --system qargo --table comments \\
+        --disposition not-business-data \\
+        --rationale "Generic notes table; no claim-specific columns (3,149 rows)."
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_disposition import record_disposition
+
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+    # One column name recurring across tables is one business fact, so it is one
+    # decision. Expanding it here keeps the ledger explicit — every affected table gets
+    # its own entry, so a later reader sees exactly what was decided and where, rather
+    # than a wildcard they have to re-evaluate.
+    targets: list[tuple[str, str]] = [(system, table)]
+    if all_tables:
+        if not column:
+            raise click.ClickException("--all-tables requires --column.")
+        from ..core.alignment_report import undecided_gap_columns
+
+        matches = [c for c in undecided_gap_columns(hub_root) if c.column == column]
+        if not matches:
+            raise click.ClickException(
+                f"No undecided gap column named {column!r}. Check "
+                "'kairos-ontology alignment-report --group-by-column'."
+            )
+        targets = sorted({(c.system, c.table) for c in matches})
+
+    path = None
+    for target_system, target_table in targets:
+        try:
+            path = record_disposition(
+                hub_root=hub_root,
+                system=target_system,
+                table=target_table,
+                column=column,
+                disposition=disposition,
+                rationale=rationale,
+                decided_by=decided_by,
+                evidence=evidence,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        label = (
+            f"{target_system}.{target_table}.{column}"
+            if column
+            else f"{target_system}.{target_table}"
+        )
+        click.echo(f"✓ {label} recorded as '{disposition}'")
+    click.echo(f"  {len(targets)} entr(y/ies) written to {path}")
+
+
+@source_disposition_group.command(name="list")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json", "yaml"]),
+    default="text",
+    show_default=True,
+    help="Text is the default here: this surface exists for a human deciding what to "
+    "do with each table.",
+)
+def source_disposition_list_cmd(output_format: str) -> None:
+    """Show every source table's decision state, and what is still undecided."""
+    from ..core.hub_utils import find_hub_root
+    from ..core.source_disposition import audit_source_dispositions
+
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+    report = audit_source_dispositions(hub_root=hub_root)
+    if output_format in {"json", "yaml"}:
+        _emit(report.to_dict(), output_format)
+        return
+    click.echo(
+        f"🗂  Source-table dispositions — {report.coverage():.0%} decided "
+        f"({report.tables_bound} bound, {report.tables_disposed} disposed, "
+        f"{report.tables_undecided} undecided of {report.tables_total})"
+    )
+    for item in report.diagnostics:
+        marker = "✗" if item.level == "error" else "⚠"
+        click.echo(f"   {marker} {item.message}")
+    for notice in report.notices:
+        click.echo(f"   ℹ {notice}")
+
+
 @click.command(name="build-glossary")
 @click.option(
     "--extraction-dir",
@@ -3086,3 +3635,104 @@ def _emit_pattern_coverage(root, ledger, output_format):
     payload = {"refmodels_root": str(root)}
     payload.update(ledger.to_payload())
     _emit(payload, output_format)
+
+
+@click.command(name="anchor-tables")
+@click.option(
+    "--sources",
+    "sources_opt",
+    default=None,
+    help="Path to integration/sources/ (default: auto-detect from the hub).",
+)
+@click.option(
+    "--analysis",
+    "analysis_opt",
+    default=None,
+    help="Path to the _analysis/ directory to read affinity from and write "
+    "table-anchors.yaml into (default: auto-detect).",
+)
+@click.option(
+    "--catalog",
+    "catalog_opt",
+    default=None,
+    help="Path to the hub's catalog-v001.xml (default: auto-detect).",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack whose blueprint supplies ownership and bridges "
+    "(default: resolved from [tool.kairos].accelerator).",
+)
+@click.option("--model", "llm_model", default=None, help="Override the anchoring model.")
+@click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress progress output.")
+def anchor_tables_cmd(sources_opt, analysis_opt, catalog_opt, accelerator, llm_model, quiet):
+    """Anchor every source table against the full reference class catalog (DD-185).
+
+    One global model call: all tables' column names against a one-line-per-class
+    catalog marked with blueprint ownership. Writes table-anchors.yaml — anchor
+    class, alternate, confidence, derived domain, grain columns, natural key and
+    load hint per table. propose-alignment consumes the anchors as overrides.
+
+    Run after analyse-sources (affinity is used as a tie-break between legitimate
+    domain candidates) and before propose-alignment.
+    """
+    from pathlib import Path as _Path
+
+    from ..core.ai_preflight import require_ai_provider
+    from ..core.ai_provider import ROLE_ALIGNMENT, get_ai_client, resolve_role_model
+    from ..core.anchor_tables import run_anchor_tables
+    from ..core.hub_utils import find_hub_root
+
+    cwd = _Path.cwd()
+    hub_root = find_hub_root(cwd)
+    sources_path = _Path(sources_opt) if sources_opt else (
+        (hub_root / "integration" / "sources") if hub_root else cwd
+    )
+    analysis_path = _Path(analysis_opt) if analysis_opt else sources_path / "_analysis"
+    catalog_path = _Path(catalog_opt) if catalog_opt else (
+        (hub_root / "catalog-v001.xml") if hub_root else cwd / "catalog-v001.xml"
+    )
+    if not catalog_path.is_file():
+        click.echo(f"❌ No catalog at {catalog_path}. Pass --catalog.", err=True)
+        raise SystemExit(1)
+    ref_models_path = resolve_refmodels_dir(cwd, hub_root)
+
+    # Same resolution discipline as analyse-sources (DD-183): never silently
+    # classify against an unresolved pack.
+    if not accelerator:
+        try:
+            from ..core.reference_modules import resolve_hub_accelerator
+
+            accelerator = resolve_hub_accelerator(
+                explicit=None, hub_root=hub_root, ref_models_dir=ref_models_path
+            )
+        except Exception:  # noqa: BLE001 - falls through to the warning below
+            accelerator = None
+    if not accelerator:
+        click.echo(
+            "⚠ No accelerator resolved — ownership marks and domain derivation "
+            "will be empty. Pass --accelerator or set [tool.kairos].accelerator.",
+            err=True,
+        )
+
+    model = llm_model or resolve_role_model(ROLE_ALIGNMENT)
+    require_ai_provider(ROLE_ALIGNMENT, model=model, probe=False)
+    client = get_ai_client(model, role=ROLE_ALIGNMENT)
+
+    def report(message):
+        if not quiet:
+            click.echo(message)
+
+    report(f"⚓ Anchoring tables in: {sources_path}")
+    report(f"   Model: {model}  Accelerator: {accelerator or '(none)'}")
+    out = run_anchor_tables(
+        client=client,
+        model=model,
+        sources_dir=sources_path,
+        catalog_path=catalog_path,
+        ref_models_dir=ref_models_path,
+        accelerator=accelerator,
+        analysis_dir=analysis_path,
+        report=report,
+    )
+    report(f"✅ Anchors written: {out}")

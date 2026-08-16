@@ -59,6 +59,12 @@ otel = [
     "opentelemetry-sdk>=1.28.0,<2.0.0",
     "opentelemetry-exporter-otlp>=1.28.0,<2.0.0",
 ]
+# Langfuse LLM tracing (DD-184). Opt-in and off by default: activated only when
+# LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and LANGFUSE_HOST are all set. A missing
+# package degrades to untraced operation and never fails a run.
+langfuse = [
+    "langfuse>=4.14.0,<5.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
@@ -77,6 +83,10 @@ dev = [
     "ruff>=0.5.0",
     "pytest-ruff>=0.4.0",
     "pytest-asyncio>=0.23,<1.0",
+    # Parallel test execution. The suite is ~3.8k small tests whose cost is
+    # dominated by per-test overhead rather than any single slow case, so
+    # sharding across cores is by far the largest available speedup.
+    "pytest-xdist>=3.5.0",
     # Reference models for cross-repo contract tests (DD-158). Resolved from the
     # installed package via [tool.uv.sources] below.
     "kairos-ontology-referencemodels",
@@ -98,6 +108,9 @@ otel = [
     "opentelemetry-api>=1.28.0,<2.0.0",
     "opentelemetry-sdk>=1.28.0,<2.0.0",
     "opentelemetry-exporter-otlp>=1.28.0,<2.0.0",
+]
+langfuse = [
+    "langfuse>=4.14.0,<5.0.0",
 ]
 
 [build-system]
@@ -141,9 +154,18 @@ select = ["F", "E4", "E7"]
 per-file-ignores = {"tests/*" = ["E741", "E402", "F841"]}
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
+# "strict", not "auto": the suite currently contains zero `async def` tests and
+# zero async fixtures, so "auto" only paid pytest-asyncio's per-item collection
+# wrapper on ~3.8k synchronous tests for no benefit. Under "strict" an *unmarked*
+# async test does not silently skip — pytest 8 fails it outright with "async
+# functions are not natively supported" — so this cannot hide a future async test.
+# To add one, decorate it with `@pytest.mark.asyncio`.
+asyncio_mode = "strict"
 testpaths = ["tests"]
-addopts = "-m 'not slow'"
+# `-n auto` shards the suite across cores via pytest-xdist. Verified
+# order-independent: see the observability-isolation fixture in tests/conftest.py.
+# Use `-p no:xdist` or `-n0` for a single-process run when debugging.
+addopts = "-m 'not slow' -n auto"
 markers = [
     "slow: marks tests as slow QA checks (deselect with '-m \"not slow\"')",
 ]

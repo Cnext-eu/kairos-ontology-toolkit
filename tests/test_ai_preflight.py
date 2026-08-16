@@ -198,3 +198,81 @@ class TestEndpointWithoutKey:
             client.models.list()
 
             assert factory_called, "Probe must use _create_client_from_config"
+
+
+from kairos_ontology.core.ai_preflight import _probe_client as _real_probe_client
+
+
+class TestProbeFallsBackFromModelListing:
+    """A 404 from models.list() is not evidence that inference is unreachable.
+
+    An Azure Foundry project serves its OpenAI surface under /openai/v1 and need not
+    implement GET /models at all. Treating that 404 as "unreachable" declared both AI
+    roles unusable for a full hub run (AP-002/AP-030) against a provider that worked.
+    """
+
+    def _config(self):
+        from kairos_ontology.core.ai_provider import AIProviderConfig
+
+        return AIProviderConfig(
+            provider="foundry",
+            endpoint="https://res.services.ai.azure.com/api/projects/proj",
+            api_key="k",
+            model="gpt-5.4-mini",
+        )
+
+    def test_404_on_listing_falls_back_to_inference_and_passes(self):
+        from unittest.mock import MagicMock, patch
+
+
+        class NotFoundError(Exception):
+            status_code = 404
+
+        client = MagicMock()
+        client.models.list.side_effect = NotFoundError("no /models here")
+
+        with patch(
+            "kairos_ontology.core.ai_provider._create_client_from_config", return_value=client
+        ):
+            _real_probe_client(self._config())
+
+        client.chat.completions.create.assert_called_once()
+
+    def test_404_on_both_reports_the_deployment_name_as_the_likely_cause(self):
+        from unittest.mock import MagicMock, patch
+
+        import pytest as _pytest
+
+        from kairos_ontology.core import ai_preflight
+
+        class NotFoundError(Exception):
+            status_code = 404
+
+        client = MagicMock()
+        client.models.list.side_effect = NotFoundError("no /models here")
+        client.chat.completions.create.side_effect = NotFoundError("DeploymentNotFound")
+
+        with patch(
+            "kairos_ontology.core.ai_provider._create_client_from_config", return_value=client
+        ):
+            with _pytest.raises(ai_preflight.Unreachable, match="deployment name"):
+                _real_probe_client(self._config())
+
+    def test_a_non_404_error_still_fails_immediately(self):
+        """401/403 is a real answer from a reachable endpoint; do not spend a call."""
+        from unittest.mock import MagicMock, patch
+
+        import pytest as _pytest
+
+        from kairos_ontology.core import ai_preflight
+
+        client = MagicMock()
+        client.models.list.side_effect = PermissionError("403 Forbidden")
+
+        with patch(
+            "kairos_ontology.core.ai_provider._create_client_from_config", return_value=client
+        ):
+            with _pytest.raises(ai_preflight.Unreachable):
+                _real_probe_client(self._config())
+
+        client.chat.completions.create.assert_not_called()

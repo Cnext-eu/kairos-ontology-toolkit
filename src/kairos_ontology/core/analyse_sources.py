@@ -23,9 +23,16 @@ import yaml
 from rdflib import Graph, Namespace, RDF, RDFS, OWL, URIRef
 
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
+from .ontology_loader import stable_value
 from ._cache import SidecarCache, compute_entry_hash, open_cache
 from .source_catalog import build_source_catalog
-from .ai_provider import ROLE_AFFINITY, sanitize_provider_error
+from .ai_provider import (
+    ROLE_AFFINITY,
+    create_chat_completion,
+    resolve_ai_seed,
+    resolve_reasoning_effort,
+    sanitize_provider_error,
+)
 from .generation_outcome import (
     OUTCOME_PROVIDER_FAILURE,
     OUTCOME_SEMANTIC_SUCCESS,
@@ -171,8 +178,16 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
 
     tables: dict[str, list[dict[str, Any]]] = {}
 
-    # Find all source tables
-    for tbl_uri in g.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
+    # Find all source tables.
+    #
+    # DD-175: sorted, both here and over the columns below. These lists are
+    # rendered straight into the alignment prompt, and graph iteration — and a
+    # set of URIRefs, whose iteration order follows string hashing and is
+    # randomised per process — put the columns in a different order on every
+    # run. That made the prompt itself unstable, which no sampling seed can
+    # compensate for. The bronze vocabulary records no column ordinal, so URI
+    # order is the available deterministic order.
+    for tbl_uri in sorted(g.subjects(RDF.type, KAIROS_BRONZE.SourceTable), key=str):
         tbl_name = str(
             g.value(tbl_uri, KAIROS_BRONZE.tableName) or tbl_uri.split("#")[-1].split("/")[-1]
         )
@@ -181,7 +196,7 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
         # Find columns belonging to this table (both predicates are used)
         col_uris = set(g.subjects(KAIROS_BRONZE.belongsToTable, tbl_uri))
         col_uris.update(g.subjects(KAIROS_BRONZE.sourceTable, tbl_uri))
-        for col_uri in col_uris:
+        for col_uri in sorted(col_uris, key=str):
             col_name = str(
                 g.value(col_uri, KAIROS_BRONZE.columnName) or col_uri.split("#")[-1].split("/")[-1]
             )
@@ -259,6 +274,24 @@ def analyse_sample_evidence(
 # ---------------------------------------------------------------------------
 
 
+def _domain_properties_for(graph: Graph, cls_uri: URIRef) -> set[URIRef]:
+    """Return the properties that apply to *cls_uri*, using the DD-131 authority.
+
+    Thin adapter over ``projections.shared``: that module already resolves union and
+    ``schema:domainIncludes`` semantics for the projectors and ``validate-mapping``, and
+    its own docstring calls itself "the single authority ... so union semantics are
+    resolved identically everywhere". This routes source analysis through it rather than
+    keeping a second, narrower interpretation of what a property's domain is.
+    """
+    from .projections.shared import effective_domain_classes, properties_with_domain
+
+    return {
+        prop
+        for prop in properties_with_domain(graph)
+        if cls_uri in effective_domain_classes(graph, prop)
+    }
+
+
 def parse_reference_model(
     ttl_path: Path | None = None,
     *,
@@ -301,7 +334,7 @@ def parse_reference_model(
     # Get ontology metadata
     resolved_name = domain_name or (ttl_path.stem if ttl_path else "unknown")
     for ont in g.subjects(RDF.type, OWL.Ontology):
-        label = g.value(ont, RDFS.label)
+        label = stable_value(g, ont, RDFS.label)
         if label:
             resolved_name = str(label)
         break
@@ -313,16 +346,26 @@ def parse_reference_model(
         if not isinstance(cls_uri, URIRef):
             continue
         cls_name = cls_uri.split("#")[-1].split("/")[-1]
-        cls_label = str(g.value(cls_uri, RDFS.label) or cls_name)
-        cls_comment = str(g.value(cls_uri, RDFS.comment) or "")
+        cls_label = str(stable_value(g, cls_uri, RDFS.label) or cls_name)
+        cls_comment = str(stable_value(g, cls_uri, RDFS.comment) or "")
 
-        # Find properties with this class as domain
+        # Find properties with this class as domain.
+        #
+        # Via the shared DD-131 authority rather than a direct rdfs:domain lookup. The
+        # bespoke query this replaced saw only literal `rdfs:domain` triples, so it
+        # silently dropped two whole families the reference models rely on:
+        # `schema:domainIncludes` (the REUSABLE pattern — a property deliberately left
+        # domainless so asserting one does not infer subsumption onto every class using
+        # it) and `owl:unionOf` domains. bsp/party declares hasAddress /
+        # hasBillingAddress / hasShippingAddress exactly that way, so alignment was told
+        # TradeParty has no address property and truthfully reported "no address
+        # property is listed on TradeParty" while the property sat in the model.
         properties: list[dict[str, str]] = []
-        for prop_uri in g.subjects(RDFS.domain, cls_uri):
+        for prop_uri in sorted(_domain_properties_for(g, cls_uri), key=str):
             prop_name = prop_uri.split("#")[-1].split("/")[-1]
-            prop_label = str(g.value(prop_uri, RDFS.label) or prop_name)
+            prop_label = str(stable_value(g, prop_uri, RDFS.label) or prop_name)
             prop_range = ""
-            range_val = g.value(prop_uri, RDFS.range)
+            range_val = stable_value(g, prop_uri, RDFS.range)
             if range_val:
                 prop_range = range_val.split("#")[-1].split("/")[-1]
             properties.append(
@@ -330,6 +373,13 @@ def parse_reference_model(
                     "name": prop_name,
                     "label": prop_label,
                     "range": prop_range,
+                    # Lets the prompt distinguish "links to an entity" from "is a
+                    # literal" (DD-172); without it both render identically.
+                    "type": (
+                        "object"
+                        if (prop_uri, RDF.type, OWL.ObjectProperty) in g
+                        else "datatype"
+                    ),
                 }
             )
 
@@ -361,7 +411,7 @@ def _reference_summary_from_index(
 ) -> dict[str, Any]:
     """Render the established reference summary shape from the semantic index."""
     for ontology in graph.subjects(RDF.type, OWL.Ontology):
-        label = graph.value(ontology, RDFS.label)
+        label = stable_value(graph, ontology, RDFS.label)
         if label:
             domain_name = str(label)
             break
@@ -462,9 +512,9 @@ def find_specializations(
             child_props: list[dict[str, str]] = []
             for prop_uri in graph.subjects(RDFS.domain, child):
                 prop_name = str(prop_uri).split("#")[-1].split("/")[-1]
-                prop_label = str(graph.value(prop_uri, RDFS.label) or prop_name)
+                prop_label = str(stable_value(graph, prop_uri, RDFS.label) or prop_name)
                 prop_range = ""
-                range_val = graph.value(prop_uri, RDFS.range)
+                range_val = stable_value(graph, prop_uri, RDFS.range)
                 if range_val:
                     prop_range = str(range_val).split("#")[-1].split("/")[-1]
                 prop_type = "datatype"
@@ -705,6 +755,58 @@ def load_data_domains(
     return {}
 
 
+def load_cross_domain_bridges(
+    ref_models_dir: Path, accelerator: str | None = None
+) -> list[dict[str, Any]]:
+    """Return the pack blueprint's declared ``cross_domain_relationships`` (DD-181).
+
+    Each bridge names a ``source_domain`` that may reference a ``range_class_uri``
+    owned by a ``target_domain``, through an exact ``property_uri``. The logistics
+    pack ships 24.
+
+    A bridge is the blueprint's own statement that reaching across a boundary is
+    *authorised* — which is precisely the authority the anchor pool needs, and why
+    honouring it requires no extra flag.
+
+    Returned verbatim, without filtering on which fields are populated: the scaffold
+    header needs only ``property_uri`` while the anchor pool needs
+    ``range_class_uri``, so each consumer applies its own requirement.
+    """
+    if accelerator:
+        glob_pattern = f"accelerator-packs/{accelerator}/client-hub-blueprint/data-domains.yaml"
+    else:
+        glob_pattern = "accelerator-packs/*/client-hub-blueprint/data-domains.yaml"
+
+    for path in sorted(Path(ref_models_dir).glob(glob_pattern)):
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - advisory input, never fails a run
+            continue
+        if not isinstance(payload, dict):
+            continue
+        return [
+            bridge
+            for bridge in payload.get("cross_domain_relationships") or []
+            if isinstance(bridge, dict)
+        ]
+    return []
+
+
+def bridge_anchor_classes(bridges: list[dict[str, Any]], domain_id: str) -> dict[str, str]:
+    """Map ``class_uri -> target_domain`` for bridges declared *from* ``domain_id``.
+
+    These are classes the domain is authorised to reference but does not own. A
+    source table holding rows of a referenced entity — ``stops`` under
+    ``consignment``, whose rows *are* transport calls — should be able to anchor
+    to one, while the class stays owned where the blueprint puts it.
+    """
+    return {
+        str(bridge["range_class_uri"]): str(bridge.get("target_domain") or "")
+        for bridge in bridges
+        if str(bridge.get("source_domain") or "") == domain_id and bridge.get("range_class_uri")
+    }
+
+
 def load_accelerator_uri_modules(
     ref_models_dir: Path, accelerator: str | None = None
 ) -> dict[str, dict[str, Any]]:
@@ -822,8 +924,8 @@ def _resolve_module_classes(
             if not isinstance(cls_uri, URIRef):
                 continue
             name = cls_uri.split("#")[-1].split("/")[-1]
-            label = str(g.value(cls_uri, RDFS.label) or name)
-            comment = str(g.value(cls_uri, RDFS.comment) or "")
+            label = str(stable_value(g, cls_uri, RDFS.label) or name)
+            comment = str(stable_value(g, cls_uri, RDFS.comment) or "")
             classes.append({"name": name, "label": label, "comment": comment})
     except Exception as e:  # pragma: no cover - parse error path
         logger.debug("Module parse failed for %s: %s", path, e)
@@ -1020,11 +1122,21 @@ def _get_openai_client(model: str = DEFAULT_MODEL):
     return get_ai_client(model=model, role=ROLE_AFFINITY)
 
 
+#: Sample values per column sent to the affinity model (DD-166).
+#:
+#: Deliberately far below the alignment step's limit. Affinity answers "which domain is
+#: this table?", for which a couple of values is a type hint and twenty is twenty times
+#: the prompt weight and PII exposure for no better answer. Alignment answers "which
+#: property is this column?", where the value distribution *is* the evidence.
+MAX_AFFINITY_SAMPLES = 3
+
+
 def _format_columns(columns: list[dict[str, Any]]) -> str:
-    """Render columns as a markdown-ish table with up to 3 sample values each."""
+    """Render columns as a markdown-ish table with a few sample values each."""
     col_lines = []
     for col in columns:
-        samples_str = ", ".join(col["samples"][:3]) if col.get("samples") else ""
+        samples = col.get("samples") or []
+        samples_str = ", ".join(samples[:MAX_AFFINITY_SAMPLES])
         col_lines.append(f"  | {col['name']} | {col['data_type']} | {samples_str} |")
     return "\n".join(col_lines)
 
@@ -1103,7 +1215,8 @@ def analyse_table_single_call(
     prompt = _build_single_call_prompt(table_name, columns, candidates)
 
     response = call_with_backoff(
-        lambda: client.chat.completions.create(
+        lambda: create_chat_completion(
+            client,
             model=model,
             messages=[
                 {
@@ -1118,6 +1231,8 @@ def analyse_table_single_call(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
+            seed=resolve_ai_seed(ROLE_AFFINITY),
+            reasoning_effort=resolve_reasoning_effort(ROLE_AFFINITY),
             response_format={"type": "json_object"},
         )
     )

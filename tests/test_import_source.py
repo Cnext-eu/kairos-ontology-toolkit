@@ -697,11 +697,13 @@ class TestRunImportSource:
     def test_builds_all_turtle_before_publishing(self, valid_yaml_file, tmp_path, monkeypatch):
         output_dir = tmp_path / "output"
 
-        def fail_per_table(_data):
+        def fail_per_table(*_args, **_kwargs):
             raise RuntimeError("candidate generation failed")
 
+        # DD-182: per-table files are now split out of the finished aggregate, so
+        # the build-before-publish invariant is pinned on the splitter.
         monkeypatch.setattr(
-            "kairos_ontology.core.import_source.generate_vocabulary_per_table",
+            "kairos_ontology.core.import_source.split_vocabulary_by_table",
             fail_per_table,
         )
 
@@ -1276,3 +1278,44 @@ class TestColumnUriSanitization:
         # This should NOT raise during serialization
         ttl = g.serialize(format="turtle")
         assert "SOL__SREPORTSPATTERN_ID" in ttl
+
+
+class TestSampleCaptureLimits:
+    """DD-166: capture 20 distinct values; affinity shows 3, alignment shows 20."""
+
+    def test_distinct_samples_dedupes_preserving_order(self):
+        from kairos_ontology.core.import_source import distinct_samples
+
+        assert distinct_samples(["A", "B", "A", "C", "B"]) == ["A", "B", "C"]
+
+    def test_distinct_samples_caps_at_the_limit(self):
+        from kairos_ontology.core.import_source import MAX_SAMPLE_VALUES, distinct_samples
+
+        assert MAX_SAMPLE_VALUES == 20
+        assert len(distinct_samples([str(i) for i in range(100)])) == 20
+
+    def test_low_cardinality_column_no_longer_stores_one_value_five_times(self):
+        """The old first-N slice could store the same value repeatedly and say nothing."""
+        from kairos_ontology.core.import_source import distinct_samples
+
+        assert distinct_samples(["ACTIVE"] * 50) == ["ACTIVE"]
+
+    def test_distinct_samples_handles_empty_and_none(self):
+        from kairos_ontology.core.import_source import distinct_samples
+
+        assert distinct_samples(None) == []
+        assert distinct_samples([]) == []
+
+    def test_affinity_stays_narrow_while_alignment_widens(self):
+        """The asymmetry is deliberate, so assert it rather than leave it to drift."""
+        from kairos_ontology.core.analyse_sources import MAX_AFFINITY_SAMPLES
+        from kairos_ontology.core.propose_alignment import MAX_SAMPLES_PER_COLUMN
+
+        assert MAX_AFFINITY_SAMPLES == 3
+        assert MAX_SAMPLES_PER_COLUMN == 20
+        assert MAX_AFFINITY_SAMPLES < MAX_SAMPLES_PER_COLUMN
+
+    def test_alignment_prompt_samples_are_distinct(self):
+        from kairos_ontology.core.propose_alignment import _compact_prompt_samples
+
+        assert _compact_prompt_samples(["ACTIVE", "ACTIVE", "CLOSED"]) == ["ACTIVE", "CLOSED"]

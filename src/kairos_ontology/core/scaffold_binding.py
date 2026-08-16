@@ -792,9 +792,19 @@ class OntologyStubOutcome:
     preview_path: Path | None = None
 
 
+# This header is written by a *mapping-stage* command into a *design-stage* artifact, so
+# it is the one instruction a later agent is guaranteed to read before editing this file.
+# It previously said "a local class here is fine", which read as an in-file licence to
+# mint classes during binding — the stage that owns bindings, not the canonical model.
+# Every class minted that way bypasses kairos-design-domain's gates and lands as a
+# cross-domain duplicate (see core/ontology_integrity.py).
 _STUB_HEADER = (
-    "# MACHINE-MANAGED by kairos-ontology scaffold-binding — do not hand-edit; a local class\n"
-    "# here is fine, but the owl:imports block above is kept in sync automatically.\n"
+    "# MACHINE-MANAGED by kairos-ontology scaffold-binding — do not hand-edit.\n"
+    "# The owl:imports block above is kept in sync automatically.\n"
+    "# Classes and properties belong to the design stage: author them with\n"
+    "# kairos-design-domain, never while authoring a binding. A concept owned by another\n"
+    "# domain must be referenced across the boundary (externalReference, DD-133 §7), not\n"
+    "# re-declared here — 'kairos-ontology validate' fails the hub for a redeclaration.\n"
 )
 
 

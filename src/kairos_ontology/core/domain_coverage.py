@@ -456,13 +456,27 @@ class ClassOwnershipBatch:
         }
 
 
-def _load_inventory_files(inventory_dir: Path) -> list[Path]:
-    """Return sorted inventory YAML files, or ``[]`` when the directory is absent."""
-    return (
-        sorted(Path(inventory_dir).glob("*-inventory.yaml"))
-        if Path(inventory_dir).is_dir()
-        else []
-    )
+def _reference_classes(catalog_path: Optional[Path]) -> list[dict[str, Any]]:
+    """Return every reference-model class, resolved live from the catalog (DD-173).
+
+    Replaces a scan of ``referencemodels-unpacked/*-inventory.yaml``. Those snapshots
+    could encode a resolver bug indefinitely with nothing marking them invalid, and the
+    same class appeared with different property sets depending on which file a caller
+    read. Resolving through the canonical loader costs milliseconds and cannot go stale.
+    """
+    if catalog_path is None or not Path(catalog_path).is_file():
+        return []
+    from .class_anchoring import read_reference_terms
+
+    return [
+        {
+            "uri": term.uri,
+            "name": term.name,
+            "provenance": {"source_identity": term.module},
+        }
+        for term in read_reference_terms(Path(catalog_path))
+        if term.kind == "class"
+    ]
 
 
 def _load_module_ownership(
@@ -518,7 +532,7 @@ def _ownership_row(
 def lookup_class_ownership(
     *,
     class_name: str,
-    inventory_dir: Path,
+    catalog_path: Optional[Path],
     ref_models_dir: Optional[Path],
     accelerator: Optional[str],
 ) -> ClassOwnershipLookup:
@@ -539,7 +553,7 @@ def lookup_class_ownership(
     """
     batch = lookup_class_ownership_batch(
         class_names={class_name},
-        inventory_dir=inventory_dir,
+        catalog_path=catalog_path,
         ref_models_dir=ref_models_dir,
         accelerator=accelerator,
     )
@@ -553,7 +567,7 @@ def lookup_class_ownership(
 def lookup_class_ownership_batch(
     *,
     class_names: Iterable[str],
-    inventory_dir: Path,
+    catalog_path: Optional[Path],
     ref_models_dir: Optional[Path],
     accelerator: Optional[str],
 ) -> ClassOwnershipBatch:
@@ -568,8 +582,8 @@ def lookup_class_ownership_batch(
     wanted = {name.strip().lower() for name in class_names if name and name.strip()}
     ordered_names = tuple(sorted(wanted))
 
-    inventory_files = _load_inventory_files(inventory_dir)
-    if not inventory_files:
+    reference_classes = _reference_classes(catalog_path)
+    if not reference_classes:
         return ClassOwnershipBatch(
             class_names=ordered_names, inventories_present=False, rows=()
         )
@@ -580,16 +594,8 @@ def lookup_class_ownership_batch(
 
     seen: set[tuple[str, str]] = set()
     rows: list[ClassOwnershipRow] = []
-    for inventory_path in inventory_files:
-        try:
-            data = yaml.safe_load(inventory_path.read_text(encoding="utf-8"))
-        except Exception:  # defensive: check-inventory owns inventory health reporting
-            continue
-        if not isinstance(data, dict):
-            continue
-        for cls in data.get("classes", ()) or ():
-            if not isinstance(cls, dict):
-                continue
+    if True:
+        for cls in reference_classes:
             name = str(cls.get("name") or "")
             if name.lower() not in wanted:
                 continue

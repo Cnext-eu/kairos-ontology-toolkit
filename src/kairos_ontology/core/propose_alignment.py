@@ -16,6 +16,7 @@ import json
 import logging
 import hashlib
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,9 @@ from .unresolved_anchors import (
 )
 from .analyse_sources import (
     DEFAULT_MODEL,
+    bridge_anchor_classes,
+    load_cross_domain_bridges,
+    load_data_domains,
     parse_source_vocabulary,
     parse_reference_model,
 )
@@ -51,8 +55,14 @@ from .ai_provider import (
     ROLE_ALIGNMENT,
     create_chat_completion,
     get_ai_client,
+    resolve_ai_seed,
+    resolve_reasoning_effort,
+    resolve_role_model,
     sanitize_provider_error,
 )
+from ._provenance import ai_attribution, provenance_comment
+from .anchor_tables import ANCHOR_CONFIDENCE_FLOOR, load_table_anchors, regroup_by_anchor
+from .tracing import call_metadata, flush_tracing, new_session_id
 from .ai_preflight import require_ai_provider
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import compute_entry_hash, open_cache
@@ -65,7 +75,11 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_COLUMNS_PER_PROMPT = 80
+#: Columns per alignment call. Wider tables are split across successive calls and
+#: merged (see :func:`align_table`), never truncated: an unassessed column is worse
+#: than a slow one, because it cannot be mapped and does not surface as an orphan
+#: either. Raised from 80 once splitting existed to make the cap safe.
+MAX_COLUMNS_PER_PROMPT = 200
 MAX_REF_PROPERTIES_PER_PROMPT = 60
 MAX_REF_CLASSES_PER_PROMPT = 12
 #: DD-070 (issue #166) — max sibling/shared-module classes added to the STEP-2
@@ -74,7 +88,15 @@ MAX_CROSS_MODULE_CLASSES = 8
 RETRY_MIN_CONFIDENCE = 0.6
 RETRY_MIN_MAPPED_RATIO = 0.4
 MAX_SAMPLE_CHARS = 48
-MAX_SAMPLES_PER_COLUMN = 3
+#: Sample values shown per column in the alignment prompt (DD-166).
+#:
+#: Three was too few to tell a governed code list from free text -- the judgement
+#: this step exists to make. Raised to match the bronze capture limit
+#: (``import_source.MAX_SAMPLE_VALUES``); capturing 20 and then showing 3 would
+#: waste the evidence. Affinity stays at three deliberately: it classifies a table
+#: into a domain and needs only a type hint, so it should not carry the extra
+#: prompt weight or PII surface.
+MAX_SAMPLES_PER_COLUMN = 20
 
 #: Issue #182 — confidence floor below which a ``custom`` column's LLM-suggested
 #: property is treated as untrustworthy and emitted as the canonical *unmatched*
@@ -224,6 +246,130 @@ def auto_disposition(column: str) -> str | None:
     return None
 
 
+def normalize_local_proposal(raw: Any) -> dict[str, str] | None:
+    """Validate a model-proposed **hub-local** property, or return ``None`` (DD-170).
+
+    The aligner is told never to invent a ``ref_property``, and that stays true: an
+    invented reference IRI is a hallucination that fails resolution later. A hub-local
+    proposal is a different object — it says "this does not exist, someone should create
+    it" — and it is what turns a Stage 3 backlog of unhomed columns into a list of named
+    properties on named classes to accept or reject.
+
+    Keeping the two apart is the whole safety property, so this enforces it structurally:
+
+    * a proposal carrying anything IRI-shaped is rejected outright, because the hub mints
+      its own IRIs and a model-supplied one would be indistinguishable from a resolvable
+      reference term downstream;
+    * a proposal without a name is nothing;
+    * the name is normalised to lowerCamelCase, matching the naming rule
+      ``validate --syntax`` enforces, so an accepted proposal does not immediately fail
+      the next gate.
+    """
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        return None
+    # Scoped to the structural fields. ``why`` is prose, and discarding an otherwise
+    # good proposal because its rationale happens to mention a URN would cost more than
+    # it protects: the risk is an IRI being *used* as a term, not being talked about.
+    for key in ("name", "range", "on_class"):
+        text = str(raw.get(key) or "")
+        if "://" in text or text.lower().startswith(("http:", "https:", "urn:")):
+            logger.warning("Discarding local property proposal carrying an IRI: %r", raw)
+            return None
+    parts = re.findall(r"[A-Za-z0-9]+", name)
+    if not parts:
+        return None
+    camel = parts[0][:1].lower() + parts[0][1:] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+    proposal = {"name": camel}
+    for key in ("range", "on_class", "why"):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            proposal[key] = value
+    return proposal
+
+
+#: Proposal name shapes that encode a role as an attribute (DD-171).
+#:
+#: ``isSubcontractor``, ``hasCarrierRole``, ``subcontractorStatus``. Harmless on an
+#: ordinary class; on a party class the pattern library flags, this is
+#: ``subclass-identity-by-role`` arriving as a property instead of a subclass.
+_ROLE_FLAG_RE = re.compile(
+    r"^(?:is|has)[A-Z]|(?:Role|Status)$|Role[A-Z]",
+)
+
+
+def flag_risky_proposals(
+    custom_columns: list[dict[str, Any]],
+    *,
+    class_cautions: dict[str, str],
+    ref_class_uri: str = "",
+) -> int:
+    """Mark local-property proposals that a pattern-library caution bears on (DD-171).
+
+    Flags, never blocks. A role flag is sometimes the right first slice — the pattern
+    library says so itself, permitting one as a ``physical_simplification`` provided it
+    is "documented as a denormalised projection of the role-assignment link entity,
+    never the semantic model itself". What must not happen is it becoming the model by
+    default, which is exactly what bulk-accepting proposals would do.
+
+    Observed on a real run before this existed: aligning ``contacts`` produced
+    ``associatedCompanyIsSubcontractor``, ``associatedCompanyIsIntermodalOperator`` and
+    ``associatedCompanySubcontractorStatus`` as booleans on ``Contact`` — four role
+    flags on the wrong class, faithful to the source and blind to the rule.
+
+    Returns the number flagged.
+    """
+    caution = class_cautions.get(ref_class_uri, "")
+    if not caution:
+        return 0
+    flagged = 0
+    for entry in custom_columns:
+        proposal = entry.get("proposed_local_property")
+        if not isinstance(proposal, dict):
+            continue
+        name = str(proposal.get("name") or "")
+        if not _ROLE_FLAG_RE.search(name):
+            continue
+        proposal["needs_review"] = True
+        proposal["review_reason"] = (
+            f"Proposes a role as an attribute on a class the pattern library flags. "
+            f"{caution} Accept only as a documented denormalised projection of a "
+            "role-assignment entity, not as the role model itself."
+        )
+        flagged += 1
+    return flagged
+
+
+def load_glossary_terms(hub_root: Path | None, *, limit: int = 120) -> list[str]:
+    """Return the business's own vocabulary from ``businessdiscovery/*.ttl`` (DD-171).
+
+    Grounding, not authority. A proposal should reuse the term the business already uses
+    where one exists, rather than minting ``associatedCompanySubcontractorStatus``.
+    Returns ``[]`` when the hub has no authored glossary, which is common early and must
+    never be an error.
+    """
+    if hub_root is None:
+        return []
+    directory = Path(hub_root) / "businessdiscovery"
+    if not directory.is_dir():
+        return []
+    labels: set[str] = set()
+    label_re = re.compile(r"skos:prefLabel\s+\"([^\"]+)\"")
+    for path in sorted(directory.glob("*.ttl")):
+        if path.name.startswith(("glossary-template", "_")):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        labels.update(m.group(1).strip() for m in label_re.finditer(text))
+        if len(labels) >= limit:
+            break
+    return sorted(labels)[:limit]
+
+
 def recommend_disposition(column: str) -> str:
     """Return an advisory custom-column disposition recommendation."""
 
@@ -299,6 +445,11 @@ class TableAlignment:
     #: (e.g. clustered address columns). Populated only when a detector fires, so
     #: default output stays unchanged.
     relationship_candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: DD-179 — relational consistency warnings across the table's whole mapping
+    #: (e.g. two distinct role groups collapsing onto one property). Advisory: a
+    #: coarser model is a legitimate design choice, so these flag rather than
+    #: block. Emitted only when a rule fires, so default output is unchanged.
+    consistency_flags: list[str] = field(default_factory=list)
     #: F6 (toolkit-optimizations) — the true source-vocabulary column count and a
     #: deterministic digest of the sorted source column names, captured before any
     #: prompt truncation. Persisted so ``check-claims`` can detect columns that were
@@ -436,16 +587,25 @@ def load_affinity_reports(
 # ---------------------------------------------------------------------------
 
 
+def _sorted_terms(terms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order reference-model terms reproducibly (DD-175).
+
+    Sorted on ``(name, uri)``: the name is what the prompt renders and what a
+    human reads in a diff, and the URI breaks the tie between same-named terms
+    from different modules. Both are stable across processes, which the parsed
+    graph order is not.
+    """
+    return sorted(terms, key=lambda t: (str(t.get("name") or ""), str(t.get("uri") or "")))
+
+
 def extract_ref_model_inventory(
     domain_uris: list[str],
     catalog_path: Path | None,
     *,
-    inventory_dir: Path | None = None,
     module_map: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve domain URIs and extract full class+property inventory.
 
-    If *inventory_dir* contains pre-generated YAML inventories (DD-044), those
     are preferred over re-parsing TTL files.
 
     When *module_map* (``{uri: {"module", "domains"}}``) is provided (DD-070,
@@ -458,11 +618,11 @@ def extract_ref_model_inventory(
     {name, uri, label, comment, properties: [{name, uri, label, range, range_label,
      prop_type, comment}], specializations: [...]}
     """
-    # DD-044: Try cached inventories first
-    if inventory_dir and inventory_dir.is_dir():
-        inv_classes = _load_inventory_classes(inventory_dir)
-        if inv_classes:
-            return inv_classes
+    # DD-173: no cached-inventory fast path. This used to prefer
+    # referencemodels-unpacked/*.yaml whenever the directory existed, which meant a hub
+    # WITH inventories kept whatever the resolver got wrong when they were written --
+    # the schema:domainIncludes fix was invisible to exactly the hubs that had run
+    # generate-inventory. Resolving live costs milliseconds and cannot go stale.
 
     if not catalog_path or not catalog_path.exists():
         return []
@@ -496,25 +656,37 @@ def extract_ref_model_inventory(
             include_specializations=True,
             catalog_path=catalog_path,
         )
-        for cls in ref.get("classes", []):
+        for cls in _sorted_terms(ref.get("classes", [])):
             cls_name = cls.get("name", "")
             dedup_key = str(cls.get("uri") or f"{uri}#{cls_name}")
             if dedup_key in seen_classes:
                 continue
             seen_classes.add(dedup_key)
 
-            # Enrich properties with full metadata from the parsed graph
+            # Enrich properties with full metadata from the parsed graph.
+            #
+            # DD-175: sorted, because the source order is rdflib graph-iteration
+            # order and therefore differs between processes. That order reaches
+            # the LLM prompt verbatim, so an unsorted list means every run sends
+            # a *different* prompt and no seed can make the answer reproducible.
+            # Own and inherited stay in separate groups (the distinction is real
+            # and the prompt relies on it); each group is ordered within itself.
             props = []
-            for p in cls.get("properties", []) + cls.get("inherited_properties", []):
-                props.append(
-                    {
-                        "uri": p.get("uri", ""),
-                        "name": p.get("name", ""),
-                        "label": p.get("label", ""),
-                        "range": p.get("range", ""),
-                        "comment": "",
-                    }
-                )
+            for group in ("properties", "inherited_properties"):
+                for p in _sorted_terms(cls.get(group, [])):
+                    props.append(
+                        {
+                            "uri": p.get("uri", ""),
+                            "name": p.get("name", ""),
+                            "label": p.get("label", ""),
+                            "range": p.get("range", ""),
+                            "comment": "",
+                            # Carried through so the prompt can mark an object property
+                            # (DD-172); this rebuild previously dropped it, leaving every
+                            # property indistinguishable from a literal one.
+                            "type": p.get("type", ""),
+                        }
+                    )
 
             cls_dict: dict[str, Any] = {
                 "uri": cls.get("uri", ""),
@@ -541,44 +713,83 @@ def extract_ref_model_inventory(
     return all_classes
 
 
-def _load_inventory_classes(inventory_dir: Path) -> list[dict[str, Any]]:
-    """Load all classes from YAML inventory files in a directory (DD-044)."""
-    from .inventory import InventoryMigrationRequiredError, load_inventory
-
-    all_classes: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for yaml_file in sorted(inventory_dir.glob("*.yaml")):
-        try:
-            inv = load_inventory(yaml_file)
-        except InventoryMigrationRequiredError:
-            # A retired inventory must block alignment rather than be silently
-            # skipped and replaced with a direct source-model read.
-            raise
-        except Exception as e:
-            logger.warning("Failed to load inventory %s: %s", yaml_file, e)
-            continue
-        for cls in inv.get("classes", []):
-            cls_uri = str(cls.get("uri") or "")
-            dedup_key = cls_uri or f"{yaml_file.name}:{cls.get('name', '')}"
-            if dedup_key in seen:
-                continue
-            seen.add(dedup_key)
-            enriched = dict(cls)
-            enriched["_semantic"] = {
-                "semantic_profile": inv.get("semantic_profile", "unknown"),
-                "closure_hash": inv.get("closure_hash", ""),
-                "import_complete": inv.get("import_complete", False),
-                "source_identity": (cls.get("provenance", {}).get("source_identity", "")),
-            }
-            all_classes.append(enriched)
-
-    return all_classes
 
 
 # ---------------------------------------------------------------------------
 # LLM prompt and alignment
 # ---------------------------------------------------------------------------
+
+
+def _hub_root_from_catalog(catalog_path: Path | None) -> Path | None:
+    """Walk up from the catalog to the directory holding ``pyproject.toml`` (DD-181).
+
+    The accelerator resolver reads ``[tool.kairos].accelerator`` from the hub's
+    ``pyproject.toml``, which sits above ``ontology-hub/``. Walking up rather than
+    assuming a fixed depth keeps this working for a catalog at either level.
+    """
+    if not catalog_path:
+        return None
+    for candidate in Path(catalog_path).resolve().parents:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return None
+
+
+def resolve_bridge_anchor_classes(
+    bridge_classes: dict[str, str],
+    catalog_path: Path | None,
+    *,
+    exclude_uris: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve blueprint-authorised cross-domain classes into anchor candidates (DD-181).
+
+    *bridge_classes* maps ``class_uri -> target_domain``, from
+    :func:`~.analyse_sources.bridge_anchor_classes`.
+
+    A source table often holds rows of an entity its domain *references* rather than
+    *owns*: ``stops`` sits under ``consignment``, but each row is a transport call,
+    a concept ``route-schedule`` owns. Offering only home classes leaves the model
+    with nothing truthful to pick, and it correctly declines — which is how 306
+    columns across nine tables ended up unanchored (DD-180) with no way forward
+    short of importing a module the domain has no business owning.
+
+    A declared bridge already says this reach is authorised, so the class is offered
+    as an anchor and tagged with the domain that owns it. Ownership does not move:
+    the tag is what keeps the boundary check (DD-163) able to tell an authorised
+    reference from a redeclaration.
+
+    Classes already in the home pool are excluded via *exclude_uris* — the model has
+    seen those, and offering them twice would just inflate the prompt.
+    """
+    if not bridge_classes or not catalog_path:
+        return []
+
+    modules = sorted({uri.split("#")[0] + "#" for uri in bridge_classes if "#" in uri})
+    if not modules:
+        return []
+
+    wanted = set(bridge_classes)
+    skip = exclude_uris or set()
+    resolved: list[dict[str, Any]] = []
+    for cls in extract_ref_model_inventory(modules, catalog_path):
+        uri = str(cls.get("uri") or "")
+        if uri not in wanted or uri in skip:
+            continue
+        entry = dict(cls)
+        entry["bridge_target_domain"] = bridge_classes[uri]
+        resolved.append(entry)
+    return _sorted_terms(resolved)
+
+
+def _bridge_tag(cls: dict[str, Any]) -> str:
+    """Render the cross-domain marker for a blueprint-bridged anchor candidate."""
+    owner = cls.get("bridge_target_domain", "")
+    if not owner:
+        return ""
+    return (
+        f"  [CROSS-DOMAIN → owned by '{owner}', referenced here under a blueprint-declared "
+        f"relationship; anchoring a table to it is allowed, redeclaring it locally is not]"
+    )
 
 
 def _module_tag(cls: dict[str, Any]) -> str:
@@ -599,8 +810,22 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
         prop_lines = []
         for p in props[:MAX_REF_PROPERTIES_PER_PROMPT]:
             range_str = f" ({p['range']})" if p.get("range") else ""
-            prop_lines.append(f"    - {p['name']} [{p.get('label', p['name'])}]{range_str}")
-        lines.append(f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])}){_module_tag(cls)}")
+            # DD-172: mark object properties. Rendered identically to datatype ones,
+            # `hasBillingAddress (Address)` looked like a string property called
+            # Address, so the model could neither map a flat column to it nor say what
+            # it implies. Observed live: `billing_address` came back "no address
+            # property is listed on TradeParty" while hasBillingAddress -> Address was
+            # sitting in the very list it was reading.
+            kind = ""
+            if str(p.get("type") or "").lower() == "object":
+                kind = " [OBJECT PROPERTY → links to a related entity, not a literal]"
+            label = p.get("label") or p["name"]
+            label_str = f" [{label}]" if label != p["name"] else ""
+            prop_lines.append(f"    - {p['name']}{label_str}{range_str}{kind}")
+        lines.append(
+            f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})"
+            f"{_module_tag(cls)}{_bridge_tag(cls)}"
+        )
         if cls.get("comment"):
             lines.append(f"    Description: {cls['comment']}")
         if prop_lines:
@@ -622,14 +847,190 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+#: Sample values shown for a column whose cardinality is high or unknown (DD-166).
+#:
+#: Twenty values is the right budget for a *code list*, which is the judgement alignment
+#: makes. It is pure cost on a surrogate key, a timestamp or a free-text note, where the
+#: values carry no shape the model can use and three already establish the type.
+MAX_SAMPLES_HIGH_CARDINALITY = 3
+
+#: A column with at most this many distinct values is an enum candidate and gets the
+#: full budget. Matches ``MAX_SAMPLES_PER_COLUMN``: if every distinct value fits,
+#: showing all of them *is* the evidence.
+ENUM_CARDINALITY_CEILING = MAX_SAMPLES_PER_COLUMN
+
+#: Ceiling on the whole table's rendered sample text, in characters.
+#:
+#: Sized from the real corpus: the widest table here has 1,304 columns, where an
+#: unbudgeted twenty-per-column renders ~162 KB — roughly 41k tokens of samples alone,
+#: in a prompt sent to a reasoning model once per table. The per-column rule below
+#: usually keeps a table well under this; the cap exists so a pathologically wide table
+#: degrades gracefully instead of dominating the run.
+MAX_TABLE_SAMPLE_CHARS = 8000
+
+
+def _samples_for_column(col: dict[str, Any]) -> list[str]:
+    """Choose how many sample values this column earns.
+
+    Cardinality decides. A column with few distinct values is a code-list candidate and
+    the values are the evidence; a high-cardinality column is identified by its name and
+    type, and twenty IDs say nothing that three do not.
+    """
+    values = _compact_prompt_samples(col.get("samples") or [])
+    distinct = col.get("distinct_count")
+    generous = isinstance(distinct, int) and 0 < distinct <= ENUM_CARDINALITY_CEILING
+    return values if generous else values[:MAX_SAMPLES_HIGH_CARDINALITY]
+
+
+#: Smallest number of columns sharing a leading token that counts as a role (DD-179).
+#: Two is the meaningful floor — ``shipper_code`` + ``shipper_name`` is exactly the
+#: pattern worth surfacing, and it is the commonest shape of a flattened relationship.
+MIN_ROLE_GROUP_COLUMNS = 2
+
+#: A "group" covering more than this share of a table is the table's own subject, not
+#: a role within it: on a ``customers`` table half the columns start with ``customer``,
+#: and calling that a related entity would invent a relationship that is not there.
+MAX_ROLE_GROUP_SHARE = 0.5
+
+#: Leading tokens that never denote a role — they are structural or temporal
+#: qualifiers that cluster for reasons unrelated to entity identity.
+_NON_ROLE_TOKENS = frozenset(
+    {
+        "is", "has", "no", "id", "code", "name", "date", "time", "created", "updated",
+        "modified", "deleted", "archived", "total", "sum", "count", "min", "max", "avg",
+        "first", "last", "new", "old", "current", "previous", "default", "temp", "tmp",
+    }
+)
+
+#: Trailing tokens marking a column as *identifying or naming an entity*.
+#:
+#: This is what separates a role from a coincidence of prefixes. ``shipper_code``
+#: + ``shipper_name`` refers to an entity twice; ``ActualDate`` +
+#: ``ActualTimeFrom`` and ``KmLoadingTotal`` + ``KmUnloadingTotal`` share a prefix
+#: for reasons that have nothing to do with entity identity, and were grouped by a
+#: prefix-only rule on the live corpus. Requiring one of these markers targets the
+#: pattern the "two roles must not share a property" rule is actually about, and
+#: keeps the prompt quiet on the rest — an unhelpful group is not neutral, it
+#: asserts a relationship the data does not have.
+_ENTITY_REFERENCE_TOKENS = frozenset(
+    {
+        "code", "codes", "name", "names", "id", "ids", "identifier", "key", "keys",
+        "number", "no", "nr", "ref", "reference", "description", "descr", "label",
+    }
+)
+
+
+def _is_entity_reference(column_name: str) -> bool:
+    """True when the column's non-leading tokens identify or name something."""
+    cleaned = str(column_name or "").replace("_", " ").replace("-", " ")
+    tokens = [t.lower() for t in _TOKEN_RE.findall(cleaned)]
+    return any(t in _ENTITY_REFERENCE_TOKENS for t in tokens[1:])
+
+
+def _leading_token(column_name: str) -> str:
+    """Return the first token of a column name (``shipper_code`` -> ``shipper``)."""
+    cleaned = str(column_name or "").replace("_", " ").replace("-", " ")
+    tokens = _TOKEN_RE.findall(cleaned)
+    return tokens[0].lower() if tokens else ""
+
+
+def group_columns_by_role(
+    columns: list[dict[str, Any]],
+) -> tuple[list[tuple[str, list[dict[str, Any]]]], list[dict[str, Any]]]:
+    """Split columns into apparent role groups and the ungrouped remainder (DD-179).
+
+    Returns ``(groups, ungrouped)`` where *groups* is an ordered list of
+    ``(role_token, columns)``.
+
+    A flat table hides its relationships in its naming. ``shipper_code``,
+    ``shipper_name``, ``consignee_code``, ``consignee_name`` is not six unrelated
+    columns — it is two references to the same kind of entity, in two different
+    roles, and that is the single strongest signal available for choosing between
+    two object properties with the same range. Presented as a flat list, the model
+    has to rediscover it from names alone on every call, and nothing stops it
+    mapping both roles onto the same property.
+
+    Grouping is deliberately conservative: shared leading token, at least
+    :data:`MIN_ROLE_GROUP_COLUMNS` members, no more than
+    :data:`MAX_ROLE_GROUP_SHARE` of the table, never a structural token like ``is``
+    or ``created``, and at least one member that actually *identifies or names*
+    something (:data:`_ENTITY_REFERENCE_TOKENS`). That last condition is what makes
+    the rule precise: without it the live corpus produced groups like
+    ``ActualDate``/``ActualTimeFrom`` and ``KmLoadingTotal``/``KmUnloadingTotal``,
+    which share a prefix for reasons unrelated to entity identity. A false group is
+    worse than none — it asserts a relationship the data does not have.
+
+    Column order within a group, and group order, follow the input, which is
+    already deterministic (DD-175).
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for col in columns:
+        token = _leading_token(col.get("name", ""))
+        if token and token not in _NON_ROLE_TOKENS:
+            buckets.setdefault(token, []).append(col)
+
+    ceiling = max(MIN_ROLE_GROUP_COLUMNS, int(len(columns) * MAX_ROLE_GROUP_SHARE))
+    grouped_names: set[str] = set()
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    for token, members in buckets.items():
+        if not MIN_ROLE_GROUP_COLUMNS <= len(members) <= ceiling:
+            continue
+        if not any(_is_entity_reference(m.get("name", "")) for m in members):
+            continue
+        groups.append((token, members))
+        grouped_names.update(str(m.get("name", "")) for m in members)
+
+    ungrouped = [c for c in columns if str(c.get("name", "")) not in grouped_names]
+    return groups, ungrouped
+
+
 def _format_source_columns(columns: list[dict[str, Any]]) -> str:
-    """Format source columns for the LLM prompt."""
+    """Format source columns for the LLM prompt, within a per-table sample budget."""
     lines = []
+    remaining = MAX_TABLE_SAMPLE_CHARS
+    # Defence in depth: align_table chunks to this size before calling, so a caller
+    # reaching this slice has bypassed the split and would otherwise silently drop
+    # columns from the prompt.
     for col in columns[:MAX_COLUMNS_PER_PROMPT]:
-        prompt_samples = _compact_prompt_samples(col.get("samples", []))
+        prompt_samples = _samples_for_column(col)
         samples_str = ", ".join(prompt_samples)
+        if len(samples_str) > remaining:
+            # Budget spent: keep enough to convey the type, drop the rest. Columns render
+            # in source order, so this trims the tail rather than a chosen few.
+            samples_str = ", ".join(prompt_samples[:MAX_SAMPLES_HIGH_CARDINALITY])
+            if len(samples_str) > remaining:
+                samples_str = ""
+        remaining -= len(samples_str)
         samples_part = f" | samples: {samples_str}" if samples_str else ""
         lines.append(f"  - {col['name']} ({col.get('data_type', 'unknown')}){samples_part}")
+    return "\n".join(lines)
+
+
+def format_role_structure(columns: list[dict[str, Any]]) -> str:
+    """Render the table's apparent role structure for the prompt (DD-179).
+
+    Returns an empty string when no role group is found, so a table without this
+    shape sends a byte-identical prompt to before.
+    """
+    groups, ungrouped = group_columns_by_role(columns[:MAX_COLUMNS_PER_PROMPT])
+    if not groups:
+        return ""
+
+    lines = [
+        "APPARENT ROLE STRUCTURE (derived from column naming, not declared):",
+        "",
+        "  Columns sharing a leading token usually describe ONE related entity in a",
+        "  specific role. Treat each group as a unit: decide what entity it refers to,",
+        "  then which property carries that role. Two DIFFERENT groups must NOT map to",
+        "  the same object property — that is the signal telling them apart.",
+        "",
+    ]
+    for token, members in groups:
+        names = ", ".join(str(m.get("name", "")) for m in members)
+        lines.append(f'  ROLE "{token}" ({len(members)} columns): {names}')
+    if ungrouped:
+        others = ", ".join(str(c.get("name", "")) for c in ungrouped)
+        lines.append(f"  (no role group: {others})")
     return "\n".join(lines)
 
 
@@ -681,13 +1082,23 @@ def _is_noisy_sample(value: str) -> bool:
 
 
 def _compact_prompt_samples(samples: list[Any]) -> list[str]:
-    """Keep semantically useful, bounded sample values for prompts."""
+    """Keep semantically useful, bounded, **distinct** sample values for prompts.
+
+    Deduplication matters more as the cap rises: showing "ACTIVE" twenty times says
+    nothing that showing it once does not, and it crowds out the values that would have
+    revealed the rest of the code list.
+    """
     kept: list[str] = []
+    seen: set[str] = set()
     for raw in samples:
         text = str(raw).strip()
         if _is_noisy_sample(text):
             continue
-        kept.append(_clip_sample_text(text))
+        clipped = _clip_sample_text(text)
+        if clipped in seen:
+            continue
+        seen.add(clipped)
+        kept.append(clipped)
         if len(kept) >= MAX_SAMPLES_PER_COLUMN:
             break
     return kept
@@ -904,6 +1315,9 @@ def build_alignment_prompt(
     likely_entity: str = "",
     *,
     table_ref_classes: list[dict[str, Any]] | None = None,
+    class_cautions: dict[str, str] | None = None,
+    glossary_terms: list[str] | None = None,
+    anchor_override: str | None = None,
 ) -> str:
     """Build the alignment prompt for one source table.
 
@@ -915,11 +1329,71 @@ def build_alignment_prompt(
     constrained to those home-domain classes while STEP 2 may match properties on
     ANY class in *ref_classes* (the widened accelerator pool). Without it (default),
     both steps draw from *ref_classes* and the output is unchanged.
+
+    When *anchor_override* is set (uri-anchor-contract / DD-185), STEP 1 is stated
+    as decided rather than asked, and the affinity hint is dropped. Found on a live
+    Langfuse trace: the prompt still said "prior analysis suggests 'Company'" while
+    the run's fixed anchor was TradeParty — the model deliberated a question whose
+    answer was pinned, against a hint contradicting it, and mapped columns toward
+    its own pick.
     """
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
+
+    # DD-171: the pattern library's normative cautions for the classes in play, and the
+    # business's own vocabulary. Without these the aligner proposes source-shaped terms
+    # that the model's own rules reject -- observed live, four role-as-boolean-flag
+    # proposals on Contact in a single table.
+    caution_block = ""
+    relevant = sorted(
+        {
+            text
+            for cls in table_classes
+            for text in [(class_cautions or {}).get(str(cls.get("uri") or ""), "")]
+            if text
+        }
+    )
+    if relevant:
+        bullet_lines = "\n".join(f"- {text}" for text in relevant)
+        caution_block = (
+            "\n\nPATTERN LIBRARY — normative cautions for these classes:\n"
+            + bullet_lines
+            + "\nDo NOT propose a role as a boolean flag or status string on these "
+            "classes. Roles belong on a qualified role-assignment entity. If the source "
+            "only has flags, say so in 'why' rather than proposing the flag as the model."
+        )
+
+    glossary_block = ""
+    if glossary_terms:
+        # Audited on a live trace: the flat dump put 'Vessel Departure' and
+        # 'Postcode Zone' into a companies-table prompt. Keep only terms sharing
+        # a token with this table's own name or columns — the ones the model
+        # could actually use — with the full glossary still governing naming at
+        # review time.
+        table_tokens = _tokenize_text(table_name)
+        for col in columns:
+            table_tokens |= _tokenize_text(str(col.get("name", "")))
+        relevant_terms = [t for t in glossary_terms if _tokenize_text(t) & table_tokens]
+        if relevant_terms:
+            glossary_block = (
+                "\n\nBUSINESS VOCABULARY (use these words where one fits; they are the "
+                "business's own terms):\n" + ", ".join(relevant_terms)
+            )
+
     entity_hint = ""
     step1 = "STEP 1: Determine which reference model class this table best represents."
     likely_match = ""
+    if anchor_override:
+        # The anchor is already decided (human-confirmed alias or global anchor
+        # call); asking STEP 1 again wastes reasoning and risks the model mapping
+        # columns toward a different class than the one that will be recorded.
+        step1 = (
+            f"STEP 1 (already decided): this table IS '{anchor_override}'. Do not "
+            f"reconsider the class. Set ref_class to '{anchor_override}' and map "
+            f"every column with that anchor fixed, using properties of "
+            f"'{anchor_override}' or of any other listed class where the column "
+            f"genuinely belongs to a related entity."
+        )
+        likely_entity = ""
     if likely_entity:
         # CR-2: when the affinity step already derived the entity and it matches a
         # candidate class, anchor STEP 1 on it instead of re-deriving from scratch.
@@ -945,13 +1419,13 @@ def build_alignment_prompt(
 
     ref_inventory = _format_ref_inventory(ref_classes)
     source_cols = _format_source_columns(columns)
+    # DD-179: blank line either side when present; empty string when no role group
+    # was found, so a table without this shape keeps its previous prompt exactly.
+    role_block = format_role_structure(columns)
+    role_structure = f"\n{role_block}\n" if role_block else ""
 
     class_names = ", ".join(c["name"] for c in table_classes)
     semantic_records = [c.get("_semantic", {}) for c in ref_classes]
-    profiles = sorted({str(item.get("semantic_profile")) for item in semantic_records if item})
-    closure_hashes = sorted(
-        {str(item.get("closure_hash")) for item in semantic_records if item.get("closure_hash")}
-    )
     modules = sorted(
         {
             str(item.get("source_identity"))
@@ -959,17 +1433,13 @@ def build_alignment_prompt(
             if item.get("source_identity")
         }
     )
+    # DD-172: this block used to carry closure hashes, the selection rule, an
+    # import-complete boolean and "omitted modules: none in this prompt slice" —
+    # provenance for a human debugging a run, not anything a model can act on, repeated
+    # in every prompt and competing for attention with the classes it is meant to read.
+    # Only the module list survives, and only when it says something.
     semantic_disclosure = (
-        "SEMANTIC CONTEXT:\n"
-        f"- profiles: {', '.join(profiles) or 'unknown'}\n"
-        f"- closure hashes: {', '.join(closure_hashes) or 'unknown'}\n"
-        f"- import complete: "
-        f"{all(bool(item.get('import_complete')) for item in semantic_records)}\n"
-        f"- total classes: {len(ref_classes)}\n"
-        f"- included classes: {len(ref_classes)}\n"
-        "- selection rule: deterministic candidate score then full URI\n"
-        f"- included modules: {', '.join(modules) or 'unknown'}\n"
-        "- omitted modules: none in this prompt slice\n"
+        f"REFERENCE MODULES IN SCOPE: {', '.join(modules)}\n" if modules else ""
     )
 
     cross_module_note = ""
@@ -994,12 +1464,12 @@ def build_alignment_prompt(
 
 {step1}
 STEP 2: For each source column, find the best matching reference model property.
-{entity_hint}{cross_module_note}
+{entity_hint}{caution_block}{glossary_block}{cross_module_note}
 {semantic_disclosure}
 SOURCE TABLE: {table_name}
 COLUMNS:
 {source_cols}
-
+{role_structure}
 REFERENCE MODEL CLASSES AND PROPERTIES:
 {ref_inventory}
 
@@ -1015,9 +1485,26 @@ Instructions:
 - CRITICAL — unmatched columns: when a column has no genuine reference-model
   property, set alignment to "custom", ref_property to null, and (optionally) a
   short free-text "note" describing the concept. Do NOT invent a camelCase property
-  name, and NEVER reuse one suggested name across several unrelated columns — a
-  confident-but-wrong guess (e.g. mapping many different columns all onto
+  name for "ref_property", and NEVER reuse one suggested name across several unrelated
+  columns — a confident-but-wrong guess (e.g. mapping many different columns all onto
   "stageCode" or "customsID") is worse than an honest null.
+- SEPARATELY, for a custom column that carries real business meaning, you MAY fill
+  "proposed_local_property": a property the hub should define for itself because the
+  reference model has none. This is NOT a reference property and must never be used as
+  ref_property; it is a proposal for a human to accept or reject at design time.
+  Give {{"name": "<lowerCamelCase>", "range": "<xsd type or class name>",
+  "on_class": "<the class this property belongs on>", "why": "<one line>"}}.
+  Omit it (null) for an audit stamp, a surrogate key, a vendor placeholder, or anything
+  whose meaning you cannot state — an unnecessary proposal costs a reviewer more than a
+  missing one. Never emit an IRI here; the hub mints that itself.
+- OBJECT PROPERTIES: a property marked [OBJECT PROPERTY] links to another entity; a
+  flat source column can never BE one. When a column (or a cluster of columns like
+  street/city/postcode) is clearly the content of the entity an object property points
+  at, do NOT map it to that object property and do NOT call it unmatched. Set
+  ref_property to null and use "proposed_local_property" with
+  "range": "<the target class name>" and "why" naming the object property it should be
+  reached through. That records "this belongs behind hasBillingAddress → Address"
+  rather than losing it.
 - Do NOT over-map: a real ref_property must come from the class's listed properties
   above. Never map more distinct columns onto a class than it has properties.
 - ref_class_confidence: 0.0-1.0 for the table→class match.
@@ -1034,10 +1521,214 @@ Respond with JSON only:
       "alignment": "exact|semantic|partial|custom",
       "confidence": 0.0-1.0,
       "note": "<optional: short concept description for a custom column>",
+      "proposed_local_property": null,
       "rationale": "brief explanation"
     }}
   ]
 }}"""
+
+
+#: Provider ceiling on enum values *in total across one schema* (DD-177).
+#:
+#: Measured against the live endpoint by bisection: 999 accepted, 1,000
+#: rejected with "Expected at most 1000 enum values in total within a single
+#: schema". "In total" is the trap — the class enum is emitted twice (once for
+#: the table's own class, once inside the reusable column verdict), the
+#: alignment kinds cost four, and every nullable enum carries its own ``null``.
+#: A fixed per-enum cap therefore overshoots; the property budget is whatever
+#: is left once the rest of the schema is paid for.
+TOTAL_SCHEMA_ENUM_BUDGET = 999
+
+#: Headroom kept below the provider limit, so a schema close to the ceiling is
+#: not rejected outright by a future change in how the provider counts.
+SCHEMA_ENUM_SAFETY_MARGIN = 20
+
+#: The four alignment kinds a column verdict may carry.
+ALIGNMENT_KINDS = ("exact", "semantic", "partial", "custom")
+
+
+def build_alignment_response_schema(
+    column_names: list[str],
+    class_names: list[str],
+    property_names: list[str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Build a strict response schema for one table's alignment (DD-177).
+
+    Returns ``(response_format, notes)``, where *notes* records any constraint
+    that had to be relaxed — a dropped enum is reported, never silent.
+
+    The point is the *shape*, not validation. Under plain JSON mode the model
+    may simply omit a column it has no opinion about, and measurement shows
+    which columns it omits drifts between runs: three identical runs of the
+    party domain mapped 24, 22 and 23 columns with **zero** disagreement about
+    what the shared columns meant. The instability was entirely in what the
+    model chose to answer for.
+
+    So ``column_alignments`` is an object keyed by column name with every key
+    ``required`` and ``additionalProperties`` false, rather than an array.
+    Omitting a column then violates the schema: the model must return a verdict
+    for each one, even if that verdict is "no reference property fits". It also
+    rules out a duplicated or invented column name for free.
+
+    Enums pin ``ref_property`` and ``ref_class`` to terms that actually exist,
+    which makes a hallucinated property unrepresentable rather than caught
+    afterwards by ``normalize_local_proposal`` (DD-170). Classes are budgeted
+    first because they are the smaller vocabulary and anchor the table; the
+    property enum takes what remains of
+    :data:`TOTAL_SCHEMA_ENUM_BUDGET`. An enum that does not fit is dropped and
+    the field falls back to a free string — reported in *notes*, never silent,
+    and the downstream validation still runs, so this weakens the constraint
+    rather than the correctness of the result.
+    """
+    notes: list[str] = []
+    budget = TOTAL_SCHEMA_ENUM_BUDGET - SCHEMA_ENUM_SAFETY_MARGIN - len(ALIGNMENT_KINDS)
+
+    def enum_field(values: list[str], label: str, *, copies: int = 1) -> dict[str, Any]:
+        """A nullable string, enum-constrained while the shared budget allows.
+
+        *copies* is how many times this enum appears in the finished schema:
+        the provider counts every occurrence, and ``$ref`` does not help because
+        the limit is on values emitted, not on distinct definitions.
+        """
+        nonlocal budget
+        unique = sorted({v for v in values if v})
+        if not unique:
+            return {"type": ["string", "null"]}
+        cost = (len(unique) + 1) * copies  # +1 for the null each enum carries
+        if cost > budget:
+            notes.append(
+                f"{label} enum dropped: {len(unique)} values cost {cost} against "
+                f"{budget} remaining of the provider's "
+                f"{TOTAL_SCHEMA_ENUM_BUDGET}-value schema budget; the model may "
+                f"name a term that does not exist."
+            )
+            return {"type": ["string", "null"]}
+        budget -= cost
+        return {"type": ["string", "null"], "enum": [*unique, None]}
+
+    # Classes are emitted twice (table anchor + column verdict), so they are
+    # costed once at double and the same field object is reused for both.
+    class_field = enum_field(class_names, "ref_class", copies=2)
+
+    verdict = {
+        "type": "object",
+        "properties": {
+            "ref_class": dict(class_field),
+            "ref_property": enum_field(property_names, "ref_property"),
+            "alignment": {"type": "string", "enum": list(ALIGNMENT_KINDS)},
+            "confidence": {"type": "number"},
+            "note": {"type": ["string", "null"]},
+            "proposed_local_property": {"type": ["string", "null"]},
+            "rationale": {"type": "string"},
+        },
+        # strict mode requires every property to be listed as required; an
+        # optional field is expressed as nullable, not as an absent key.
+        "required": [
+            "ref_class",
+            "ref_property",
+            "alignment",
+            "confidence",
+            "note",
+            "proposed_local_property",
+            "rationale",
+        ],
+        "additionalProperties": False,
+    }
+
+    columns = list(dict.fromkeys(column_names))
+    schema = {
+        # $defs/$ref keeps one copy of the verdict shape. Inlining it per column
+        # blows the provider's total-schema-size limit at realistic table widths.
+        "$defs": {"ColumnVerdict": verdict},
+        "type": "object",
+        "properties": {
+            "ref_class": dict(class_field),
+            "ref_class_confidence": {"type": "number"},
+            "column_alignments": {
+                "type": "object",
+                "properties": {c: {"$ref": "#/$defs/ColumnVerdict"} for c in columns},
+                "required": columns,
+                "additionalProperties": False,
+            },
+        },
+        "required": ["ref_class", "ref_class_confidence", "column_alignments"],
+        "additionalProperties": False,
+    }
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "column_alignment", "strict": True, "schema": schema},
+    }
+    return response_format, notes
+
+
+def normalize_schema_response(result: dict[str, Any]) -> dict[str, Any]:
+    """Convert an object-keyed ``column_alignments`` back to the list shape (DD-177).
+
+    The strict schema keys verdicts by column name so omission is impossible;
+    every consumer downstream expects the historical list of dicts each carrying
+    its own ``column``. Converting here keeps that contract, so the schema is a
+    change to how the answer is *obtained*, not to how it is read.
+
+    A response already in list form passes through untouched, which is what
+    happens when the model rejected the schema and fell back to JSON mode.
+    """
+    alignments = result.get("column_alignments")
+    if not isinstance(alignments, dict):
+        return result
+    converted = [
+        {"column": name, **verdict}
+        for name, verdict in alignments.items()
+        if isinstance(verdict, dict)
+    ]
+    return {**result, "column_alignments": converted}
+
+
+#: Flag raised when two distinct role groups collapse onto one object property.
+FLAG_ROLE_COLLISION = "role-collision"
+
+
+def flag_role_collisions(
+    columns: list[dict[str, Any]],
+    alignments: list[dict[str, Any]],
+) -> list[str]:
+    """Flag distinct role groups mapped onto the same property (DD-179).
+
+    The relational check the prompt cannot enforce. If ``shipper_code`` and
+    ``consignee_code`` both land on ``hasShipper``, one of them is wrong — and it
+    is wrong in a way that reads as plausible in isolation, because each mapping
+    is individually defensible. Only looking at the set reveals it.
+
+    Flags, never blocks: two roles legitimately share a property when the model
+    is genuinely coarser than the source (a single ``hasParty`` where the source
+    tracks shipper and consignee separately), and that is a design decision for a
+    human, not an error to reject automatically.
+
+    Only the *shared leading token* defines a role here, so this cannot fire on
+    columns that merely happen to map alike.
+    """
+    groups, _ = group_columns_by_role(columns)
+    if len(groups) < 2:
+        return []
+
+    role_of = {
+        str(member.get("name", "")): token for token, members in groups for member in members
+    }
+    property_roles: dict[str, set[str]] = {}
+    for entry in alignments:
+        if not isinstance(entry, dict):
+            continue
+        prop = entry.get("ref_property")
+        role = role_of.get(str(entry.get("column", "")))
+        if prop and role:
+            property_roles.setdefault(str(prop), set()).add(role)
+
+    return [
+        f"{FLAG_ROLE_COLLISION}: roles {sorted(roles)} both map to '{prop}' — "
+        f"distinct roles sharing one property loses the distinction the source makes; "
+        f"confirm the model is deliberately coarser, or split the property."
+        for prop, roles in sorted(property_roles.items())
+        if len(roles) > 1
+    ]
 
 
 def _count_non_custom_alignments(result: dict[str, Any]) -> int:
@@ -1089,6 +1780,110 @@ def align_table(
     *,
     table_ref_classes: list[dict[str, Any]] | None = None,
     anchor_override: str | None = None,
+    anchor_status: str = "confirmed",
+    anchor_confidence: float | None = None,
+    class_cautions: dict[str, str] | None = None,
+    glossary_terms: list[str] | None = None,
+    trace_session_id: str = "",
+) -> dict[str, Any]:
+    """Align one source table, splitting across calls when it is too wide.
+
+    ``MAX_COLUMNS_PER_PROMPT`` used to *truncate*: a table's columns beyond the cap were
+    silently never shown to the model, so they could never be mapped and never appeared
+    as orphans either — they simply were not assessed. With real tables running to 121
+    columns that is a coverage hole disguised as a clean result.
+
+    Wide tables are now split into successive calls and the column alignments merged.
+    Chunks after the first are pinned to the first chunk's ``ref_class`` via
+    ``anchor_override``, because a chunk of trailing columns has no way to recognise the
+    table's identity on its own and would otherwise be free to pick a different class
+    for the same table.
+
+    The table-level verdict comes from the first chunk, which holds the identifying
+    columns; later chunks contribute only column alignments.
+    """
+    chunk_size = MAX_COLUMNS_PER_PROMPT
+    if len(columns) <= chunk_size:
+        return _align_table_once(
+            client,
+            model,
+            table_name,
+            columns,
+            ref_classes,
+            likely_entity,
+            table_ref_classes=table_ref_classes,
+            anchor_override=anchor_override,
+            anchor_status=anchor_status,
+            anchor_confidence=anchor_confidence,
+            class_cautions=class_cautions,
+            glossary_terms=glossary_terms,
+            trace_session_id=trace_session_id,
+        )
+
+    chunks = [columns[i : i + chunk_size] for i in range(0, len(columns), chunk_size)]
+    logger.info(
+        "Table %s has %d columns; splitting alignment across %d calls",
+        table_name,
+        len(columns),
+        len(chunks),
+    )
+
+    merged = _align_table_once(
+        client,
+        model,
+        table_name,
+        chunks[0],
+        ref_classes,
+        likely_entity,
+        table_ref_classes=table_ref_classes,
+        anchor_override=anchor_override,
+        anchor_status=anchor_status,
+        anchor_confidence=anchor_confidence,
+        class_cautions=class_cautions,
+        glossary_terms=glossary_terms,
+        trace_session_id=trace_session_id,
+    )
+    pinned = anchor_override or merged.get("ref_class")
+    for chunk in chunks[1:]:
+        part = _align_table_once(
+            client,
+            model,
+            table_name,
+            chunk,
+            ref_classes,
+            likely_entity,
+            table_ref_classes=table_ref_classes,
+            anchor_override=pinned,
+            anchor_status=anchor_status,
+            anchor_confidence=anchor_confidence,
+            class_cautions=class_cautions,
+            glossary_terms=glossary_terms,
+            trace_session_id=trace_session_id,
+        )
+        merged["column_alignments"].extend(part.get("column_alignments") or [])
+        # A failure in any chunk is a failure for the table: the alternative is
+        # reporting a partial column set as if it were complete.
+        if part.get("generation_outcome") != OUTCOME_SEMANTIC_SUCCESS:
+            merged["generation_outcome"] = part.get("generation_outcome")
+            merged["generation_error"] = part.get("generation_error")
+    return merged
+
+
+def _align_table_once(
+    client,
+    model: str,
+    table_name: str,
+    columns: list[dict[str, Any]],
+    ref_classes: list[dict[str, Any]],
+    likely_entity: str = "",
+    *,
+    table_ref_classes: list[dict[str, Any]] | None = None,
+    anchor_override: str | None = None,
+    anchor_status: str = "confirmed",
+    anchor_confidence: float | None = None,
+    class_cautions: dict[str, str] | None = None,
+    glossary_terms: list[str] | None = None,
+    trace_session_id: str = "",
 ) -> dict[str, Any]:
     """Run LLM alignment for one source table against reference model classes.
 
@@ -1120,9 +1915,28 @@ def align_table(
         ref_classes,
         likely_entity,
         table_ref_classes=table_ref_classes,
+        class_cautions=class_cautions,
+        glossary_terms=glossary_terms,
+        anchor_override=anchor_override,
     )
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
     valid_classes = {c["name"] for c in table_classes}
+
+    # DD-177: constrain the answer's shape, not just its syntax. Property and
+    # class names are drawn from the same inventory the prompt renders, so the
+    # enum and the prose cannot disagree.
+    response_format, schema_notes = build_alignment_response_schema(
+        [str(c.get("name", "")) for c in columns if c.get("name")],
+        [str(c.get("name", "")) for c in ref_classes if c.get("name")],
+        [
+            str(p.get("name", ""))
+            for c in ref_classes
+            for p in (c.get("properties") or [])
+            if p.get("name")
+        ],
+    )
+    for note in schema_notes:
+        logger.info("Alignment schema for %s: %s", table_name, note)
 
     generation_outcome = OUTCOME_SEMANTIC_SUCCESS
     generation_error: str | None = None
@@ -1143,10 +1957,28 @@ def align_table(
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
-                response_format={"type": "json_object"},
+                seed=resolve_ai_seed(ROLE_ALIGNMENT),
+                reasoning_effort=resolve_reasoning_effort(ROLE_ALIGNMENT),
+                response_format=response_format,
+                # A model that cannot honour the schema must still be asked for
+                # JSON, rather than losing the constraint we already had.
+                param_fallbacks={"response_format": {"type": "json_object"}},
+                # DD-184: verb-first and stable, so it stays filterable; the table
+                # and the pass number are metadata, not part of the name.
+                trace_name="align-table",
+                trace_metadata=call_metadata(
+                    trace_session_id,
+                    ROLE_ALIGNMENT,
+                    table=table_name,
+                    source_columns=len(columns),
+                    candidate_classes=len(table_classes),
+                    anchor_override=anchor_override or "",
+                    likely_entity=likely_entity,
+                    schema_enum_notes=schema_notes,
+                ),
             )
         )
-        result = json.loads(response.choices[0].message.content)
+        result = normalize_schema_response(json.loads(response.choices[0].message.content))
     except Exception as e:
         logger.warning("LLM alignment failed for table %s: %s", table_name, e)
         result = {}
@@ -1169,9 +2001,14 @@ def align_table(
         # simply not consulted for the *anchor* decision once confirmed
         # evidence exists (it is still used for column-level property
         # alignment below).
+        #
+        # DD-185: a global-anchor-call override travels the same path but is
+        # recorded as status "anchored" with its own confidence, never as
+        # "confirmed" — confirmed means a human decided, and an artifact must
+        # not claim review that did not happen.
         ref_class = anchor_override
-        ref_class_status = "confirmed"
-        ref_class_confidence = 1.0
+        ref_class_status = anchor_status
+        ref_class_confidence = 1.0 if anchor_confidence is None else float(anchor_confidence)
     elif not proposed_ref_class:
         ref_class_status = "unmatched"
         ref_class_confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
@@ -1231,6 +2068,9 @@ def align_table(
         note = str(ca.get("note", "") or "").strip()
         if note:
             norm["note"] = note
+        proposal = normalize_local_proposal(ca.get("proposed_local_property"))
+        if proposal:
+            norm["proposed_local_property"] = proposal
         # DD-070: carry the model's sibling-module signal only when present, so the
         # normalized result (and per-table cache) stays identical in default mode.
         ref_module = str(ca.get("ref_module", "") or "")
@@ -1454,6 +2294,9 @@ def _build_custom_column(
     note = str(ca.get("note", "") or "").strip()
     if note:
         entry["note"] = note
+    proposal = normalize_local_proposal(ca.get("proposed_local_property"))
+    if proposal:
+        entry["proposed_local_property"] = proposal
     return entry
 
 
@@ -2550,7 +3393,6 @@ def _propose_alignments(
     cross_module: bool = False,
     accelerator: str | None = None,
     ref_models_dir: Path | None = None,
-    inventory_dir: Path | None = None,
     custom_confidence_floor: float = CUSTOM_CONFIDENCE_FLOOR,
     emit_output: bool = True,
     allow_fallback_output: bool = False,
@@ -2590,10 +3432,6 @@ def _propose_alignments(
             cross-module property pool (required when *cross_module* is True).
         ref_models_dir: Reference-models directory containing ``accelerator-packs/``
             (required when *cross_module* is True).
-        inventory_dir: Materialized reference-model inventory directory
-            (``referencemodels-unpacked/``). When present, newly written claims get
-            deterministic ``class_uri`` / ``property_uri`` backfilled from the
-            inventory (toolkit-optimizations F4). Default ``None`` leaves URIs null.
         allow_fallback_output: Alignment-reliability — a domain where *every*
             table produced ``fallback_only`` (no reference model to align
             against — the LLM was never even called) is skipped by default so a
@@ -2628,6 +3466,39 @@ def _propose_alignments(
         report = lambda msg, **kw: None  # noqa: E731
 
     # DD-070: resolve the accelerator import → module map for cross-module mode.
+    # DD-181: declared cross-domain bridges, loaded once. Unlike the cross-module
+    # property pool below, this needs no flag and no explicit accelerator — the
+    # blueprint's own declarations are read wherever they are found.
+    cross_domain_bridges: list[dict[str, Any]] = []
+    bridge_accelerator: str | None = None
+    if ref_models_dir is not None:
+        # The pack must be resolved, not guessed: with several installed, globbing
+        # takes the first alphabetically — `financial-services` ahead of
+        # `logistics` — and silently returns another pack's bridges, or none.
+        # Reuse the shared resolver (DD-125) so this agrees with validate/project.
+        bridge_accelerator = accelerator
+        if not bridge_accelerator:
+            try:
+                from .reference_modules import resolve_hub_accelerator
+
+                bridge_accelerator = resolve_hub_accelerator(
+                    explicit=None,
+                    hub_root=_hub_root_from_catalog(catalog_path),
+                    ref_models_dir=Path(ref_models_dir),
+                    domain_hint=domains_filter or None,
+                )
+            except Exception:  # noqa: BLE001 - advisory; ambiguity must not fail a run
+                bridge_accelerator = None
+        if bridge_accelerator:
+            cross_domain_bridges = load_cross_domain_bridges(
+                Path(ref_models_dir), bridge_accelerator
+            )
+        if cross_domain_bridges:
+            report(
+                f"  🌉 {len(cross_domain_bridges)} declared cross-domain "
+                f"relationship(s) from '{bridge_accelerator}'"
+            )
+
     accelerator_uri_modules: dict[str, dict[str, Any]] = {}
     if cross_module:
         if not accelerator or not ref_models_dir:
@@ -2657,6 +3528,31 @@ def _propose_alignments(
             f"No affinity reports found in {analysis_dir}. "
             "Run 'kairos-ontology analyse-sources' first."
         )
+
+    # DD-185: regroup tables into their anchor-derived domains BEFORE the domain
+    # filter, so a table moving into a filtered-in domain is included. This is
+    # what makes affinity a prior rather than a constraint: a misplaced table is
+    # aligned in the domain whose classes it actually needs.
+    global_anchors = load_table_anchors(analysis_dir)
+    anchor_counters = {"applied": 0, "low_confidence": 0, "outside_pool": 0}
+    if global_anchors:
+        report(f"  ⚓ {len(global_anchors)} global table anchor(s) loaded")
+        domain_uris_by_id: dict[str, list[str]] = {}
+        if ref_models_dir is not None and bridge_accelerator:
+            domain_uris_by_id = {
+                dom: list(meta.get("uris") or [])
+                for dom, meta in load_data_domains(
+                    Path(ref_models_dir), accelerator=bridge_accelerator
+                ).items()
+            }
+        domain_tables, anchor_moves = regroup_by_anchor(
+            domain_tables, global_anchors, domain_uris_by_id
+        )
+        for move in anchor_moves:
+            report(
+                f"  ⚓ {move['system']}.{move['table']}: {move['from'] or '(none)'} → "
+                f"{move['to']} (anchored to {move['anchor']})"
+            )
 
     # Apply domain filter
     if domains_filter:
@@ -2770,8 +3666,37 @@ def _propose_alignments(
     run_semantic_success = 0
     run_provider_failures = 0
 
-    for domain_id, tables in sorted(domain_tables.items()):
-        report(f"  📐 Domain: {domain_id} ({len(tables)} table(s))")
+    # DD-171: resolve the two knowledge inputs once for the whole run.
+    class_cautions: dict[str, str] = {}
+    if ref_models_dir is not None:
+        try:
+            from .conformance_judge import pattern_cautions
+
+            class_cautions = pattern_cautions(None, Path(ref_models_dir))
+        except Exception:  # noqa: BLE001 - advisory prompt context only
+            class_cautions = {}
+    glossary_terms = load_glossary_terms(Path(sources_dir).parent.parent)
+    if class_cautions:
+        report(f"  🧭 {len(class_cautions)} pattern-library caution(s) in scope")
+    if glossary_terms:
+        report(f"  📖 {len(glossary_terms)} business glossary term(s) in scope")
+
+    domain_order = sorted(domain_tables.items())
+    total_tables = sum(len(t) for t in domain_tables.values())
+    tables_done = 0
+    run_started = time.monotonic()
+
+    # DD-184: one session id per invocation. Calls run concurrently across
+    # threads, where a context-manager span would not reliably parent them, so
+    # grouping uses the session mechanism the SDK provides for exactly this.
+    trace_session_id = new_session_id("align")
+
+    for domain_index, (domain_id, tables) in enumerate(domain_order, start=1):
+        in_flight = min(max_workers, len(tables))
+        report(
+            f"  📐 Domain {domain_index}/{len(domain_order)}: {domain_id} "
+            f"({len(tables)} table(s), {in_flight} in parallel)"
+        )
 
         # Get domain URIs from first table entry
         domain_uris = tables[0].get("domain_uris", []) if tables else []
@@ -2823,6 +3748,28 @@ def _propose_alignments(
             )
         else:
             report(f"     ⚠ No reference model resolved for {domain_uris}")
+
+        # DD-181: widen the anchor pool with classes this domain is *declared* to be
+        # able to reference. On by default and unflagged: a bridge in the blueprint
+        # is the authorisation, and requiring a CLI flag to honour it would mean the
+        # default run ignores governance the hub already expressed.
+        bridge_anchors = resolve_bridge_anchor_classes(
+            bridge_anchor_classes(cross_domain_bridges, domain_id),
+            catalog_path,
+            exclude_uris={str(c.get("uri") or "") for c in ref_classes},
+        )
+        if bridge_anchors:
+            owners = sorted({c["bridge_target_domain"] for c in bridge_anchors})
+            report(
+                f"     Cross-domain anchors: {len(bridge_anchors)} class(es) "
+                f"via declared bridges to {', '.join(owners)}"
+            )
+            ref_classes = ref_classes + bridge_anchors
+
+        # DD-185: a global anchor may only override to a class this domain can
+        # actually see (home modules + declared bridges); anything else is a
+        # boundary question for a human, not a silent reassignment.
+        pool_class_names = {str(c.get("name") or "") for c in ref_classes}
 
         # DD-070: widened STEP-2 property pool spanning the whole accelerator.
         if cross_module:
@@ -2992,6 +3939,29 @@ def _propose_alignments(
 
             anchor_override = anchor_res.resolved_name if anchor_res.status == "confirmed" else None
 
+            # DD-185: fall back to the global anchor call's verdict. Applied only
+            # above the confidence floor and only when the class is in this
+            # domain's pool — recorded as status "anchored", never "confirmed".
+            anchor_status = "confirmed"
+            anchor_confidence: float | None = None
+            if anchor_override is None and global_anchors:
+                ga = global_anchors.get((system, table)) or {}
+                ga_anchor = str(ga.get("anchor") or "")
+                ga_conf = float(ga.get("confidence") or 0.0)
+                if ga_anchor and ga_conf < ANCHOR_CONFIDENCE_FLOOR:
+                    anchor_counters["low_confidence"] += 1
+                elif ga_anchor and ga_anchor not in pool_class_names:
+                    anchor_counters["outside_pool"] += 1
+                    logger.info(
+                        "Global anchor %s for %s.%s is outside domain '%s' pool; "
+                        "not applied.", ga_anchor, system, table, domain_id,
+                    )
+                elif ga_anchor:
+                    anchor_override = ga_anchor
+                    anchor_status = "anchored"
+                    anchor_confidence = ga_conf
+                    anchor_counters["applied"] += 1
+
             cache_key = compute_entry_hash(
                 {
                     "system": system,
@@ -3008,7 +3978,10 @@ def _propose_alignments(
                     "params": align_params,
                     # uri-anchor-contract: a confirmed-anchor status change (evidence
                     # added/changed) must invalidate the per-table cache entry.
+                    # DD-185: the status distinguishes human-confirmed from
+                    # global-anchored, so switching between them re-runs the table.
                     "anchor_override": anchor_override or "",
+                    "anchor_status": anchor_status if anchor_override else "",
                 }
             )
             cached = cache.get(cache_key)
@@ -3052,6 +4025,11 @@ def _propose_alignments(
                         likely_entity=likely_entity,
                         table_ref_classes=shortlist_classes,
                         anchor_override=anchor_override,
+                        anchor_status=anchor_status,
+                        anchor_confidence=anchor_confidence,
+                        class_cautions=class_cautions,
+                        glossary_terms=glossary_terms,
+                        trace_session_id=trace_session_id,
                     )
                 else:
                     result = align_table(
@@ -3062,6 +4040,11 @@ def _propose_alignments(
                         shortlist_classes,
                         likely_entity=likely_entity,
                         anchor_override=anchor_override,
+                        anchor_status=anchor_status,
+                        anchor_confidence=anchor_confidence,
+                        class_cautions=class_cautions,
+                        glossary_terms=glossary_terms,
+                        trace_session_id=trace_session_id,
                     )
                     if len(shortlist_classes) < len(
                         ref_classes
@@ -3079,6 +4062,11 @@ def _propose_alignments(
                             ref_classes,
                             likely_entity=likely_entity,
                             anchor_override=anchor_override,
+                            anchor_status=anchor_status,
+                            anchor_confidence=anchor_confidence,
+                            class_cautions=class_cautions,
+                            glossary_terms=glossary_terms,
+                            trace_session_id=trace_session_id,
                         )
                         if _alignment_result_score(
                             full_result, len(columns)
@@ -3104,7 +4092,45 @@ def _propose_alignments(
                 "anchor_resolution": anchor_res,
             }
 
-        processed = map_concurrent(_process_table, tables, max_workers=max_workers)
+        # Live progress. A full run is tens of minutes of silence otherwise, with no way
+        # to tell a slow provider from a hung one, and no basis for deciding whether to
+        # wait. map_concurrent already fires on_result as each table lands, so this costs
+        # nothing but the print. Completion order is arrival order, not input order --
+        # which is itself the clearest evidence that the tables really are running
+        # concurrently rather than one after another.
+        domain_started = time.monotonic()
+
+        def _on_table_done(entry: dict[str, Any] | None, _total: int = len(tables)) -> None:
+            nonlocal tables_done
+            tables_done += 1
+            if entry is None:
+                return
+            outcome = (entry.get("result") or {}).get("generation_outcome")
+            mark = "✓" if outcome == OUTCOME_SEMANTIC_SUCCESS else "✗"
+            if entry.get("from_cache"):
+                mark = "•"
+            mapped = len(
+                [
+                    c
+                    for c in ((entry.get("result") or {}).get("column_alignments") or [])
+                    if c.get("ref_property")
+                ]
+            )
+            columns = len(entry.get("columns") or [])
+            elapsed = time.monotonic() - domain_started
+            report(
+                f"     {mark} [{tables_done}/{total_tables}] {entry.get('table')} "
+                f"— {mapped}/{columns} columns mapped ({elapsed:.0f}s)"
+            )
+
+        processed = map_concurrent(
+            _process_table, tables, max_workers=max_workers, on_result=_on_table_done
+        )
+        report(
+            f"     └ {domain_id} done in {time.monotonic() - domain_started:.0f}s "
+            f"({tables_done}/{total_tables} tables, "
+            f"{time.monotonic() - run_started:.0f}s elapsed)"
+        )
 
         # DD-070: accumulate cross-module matches across the domain's tables.
         cross_module_acc: dict[tuple[str, str], dict[str, Any]] = {}
@@ -3311,6 +4337,28 @@ def _propose_alignments(
                         accounted.add(cname)
             src_count, src_hash = _source_column_digest(columns)
 
+            # DD-171: flag role-shaped proposals on a class the pattern library cautions
+            # about. Runs here, after the class is resolved, because the caution is
+            # keyed by class and only now is it known.
+            _resolved_uri = next(
+                (
+                    str(c.get("uri") or "")
+                    for c in ref_classes
+                    if c.get("name") == result.get("ref_class")
+                ),
+                "",
+            )
+            flag_risky_proposals(
+                custom_cols, class_cautions=class_cautions, ref_class_uri=_resolved_uri
+            )
+            # DD-179: the relational check no single-column rule can make — it
+            # needs the whole table's mapping at once.
+            consistency_flags = flag_role_collisions(
+                columns, result.get("column_alignments", []) or []
+            )
+            for flag in consistency_flags:
+                logger.info("Alignment consistency (%s.%s): %s", system, table, flag)
+
             ta = TableAlignment(
                 system=system,
                 table=table,
@@ -3318,6 +4366,7 @@ def _propose_alignments(
                 ref_class_confidence=result.get("ref_class_confidence", 0.0),
                 columns=col_alignments,
                 custom_columns=custom_cols,
+                consistency_flags=consistency_flags,
                 ref_class_status=result.get("ref_class_status", "matched"),
                 rejected_ref_class=result.get("rejected_ref_class"),
                 source_column_count=src_count,
@@ -3511,9 +4560,7 @@ def _propose_alignments(
         if staged["kind"] == "cached":
             output_files.append(staged["path"])
             continue
-        out_path = write_alignment_output(
-            staged["alignment"], output_dir, inventory_dir=inventory_dir
-        )
+        out_path = write_alignment_output(staged["alignment"], output_dir, model=model)
         output_files.append(out_path)
         report(f"     ✓ Written: {out_path.name}")
 
@@ -3533,6 +4580,16 @@ def _propose_alignments(
                 f"— {anchor_doc_path.name}"
             )
 
+    if global_anchors:
+        report(
+            f"  ⚓ Anchor overrides: {anchor_counters['applied']} applied, "
+            f"{anchor_counters['outside_pool']} outside domain pool, "
+            f"{anchor_counters['low_confidence']} below confidence floor"
+        )
+
+    # DD-184: this is a short-lived CLI process; without an explicit flush the
+    # buffered events are lost at exit and the run appears never to have happened.
+    flush_tracing()
     return output_files, alignments
 
 
@@ -3753,6 +4810,10 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
             table_dict["likely_entity_uri"] = ta.likely_entity_uri
         if ta.anchor_candidate_uris:
             table_dict["anchor_candidate_uris"] = list(ta.anchor_candidate_uris)
+        # DD-179: relational consistency warnings, emitted only when a rule fired
+        # so a clean table's output stays byte-identical.
+        if ta.consistency_flags:
+            table_dict["consistency_flags"] = list(ta.consistency_flags)
         # Alignment-reliability: emit the generation outcome + safe metadata only
         # when it is not the happy path, so a fully-successful run's output stays
         # byte-identical to before. ``generation_error`` is already sanitized.
@@ -3820,14 +4881,30 @@ def write_alignment_output(
     alignment: DomainAlignment,
     output_dir: Path,
     *,
-    inventory_dir: Path | None = None,
+    model: str = "",
 ) -> Path:
-    """Write the complete advisory alignment without creating governance state."""
-    del inventory_dir
+    """Write the complete advisory alignment without creating governance state.
+
+    The file carries an AI-attribution header (DD-178). Every mapping in it was
+    proposed by a language model, and the YAML reads as settled fact once it is
+    on disk — so the artifact states its own provenance and review status rather
+    than relying on whoever opens it remembering how it was made.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / f"{alignment.domain}-alignment.yaml"
+    header = provenance_comment(
+        "propose-alignment",
+        extra=ai_attribution(
+            model=model or resolve_role_model(ROLE_ALIGNMENT),
+            role=ROLE_ALIGNMENT,
+            seed=resolve_ai_seed(ROLE_ALIGNMENT),
+            reasoning_effort=resolve_reasoning_effort(ROLE_ALIGNMENT),
+        ),
+        ai_generated=True,
+    )
     target.write_text(
-        yaml.safe_dump(alignment_to_dict(alignment), sort_keys=False, allow_unicode=True),
+        header
+        + yaml.safe_dump(alignment_to_dict(alignment), sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
     return target

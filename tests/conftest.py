@@ -63,6 +63,51 @@ def _clean_ai_env():
         _os.environ.pop(key, None)
 
 
+@pytest.fixture(autouse=True)
+def _no_langfuse_in_tests():
+    """Guarantee no test ever ships a trace to Langfuse (DD-184).
+
+    Tracing activates purely from environment variables, so a developer with real
+    credentials in their shell would otherwise export test prompts — including
+    fixture data — to a live project simply by running pytest. Both the variables
+    and the memoised client are cleared around every test.
+    """
+    try:
+        from kairos_ontology.core.tracing import (
+            LANGFUSE_ENV_VAR_NAMES,
+            reset_tracing_client,
+        )
+    except ImportError:  # pragma: no cover - tracing module must be importable
+        yield
+        return
+    saved = {k: _os.environ.pop(k, None) for k in LANGFUSE_ENV_VAR_NAMES}
+    reset_tracing_client()
+    yield
+    reset_tracing_client()
+    for key, value in saved.items():
+        if value is not None:
+            _os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _reset_unsupported_param_cache():
+    """Clear the per-model parameter-rejection cache between tests (DD-174).
+
+    ``create_chat_completion`` remembers a rejection for the life of the process
+    so a per-table stage pays the discovery round-trip once.  That memory is
+    module-global, so without this a test whose mock rejects ``temperature``
+    would silently change what a later test sends for the same model name.
+    """
+    try:
+        from kairos_ontology.core.ai_provider import reset_unsupported_param_cache
+    except ImportError:  # pragma: no cover — ai_provider must be importable
+        yield
+        return
+    reset_unsupported_param_cache()
+    yield
+    reset_unsupported_param_cache()
+
+
 @pytest.fixture
 def github_provider_env():
     """Opt-in fixture: set a configured GitHub Models provider for tests that need one."""
@@ -89,6 +134,39 @@ def _raise_for_probe(*a, **kw):
     raise RuntimeError(
         "ai_preflight probe blocked by conftest; use the 'live_probe' marker for real network tests"
     )
+
+
+# ---------------------------------------------------------------------------
+# Global observability isolation (order-independence)
+# ---------------------------------------------------------------------------
+# ``cli``'s root group calls ``configure_logging()``, which installs handlers on
+# the ``kairos_ontology`` logger and sets ``propagate = False``. The matching
+# teardown runs from Click's ``@result_callback``, which Click only invokes on a
+# *successful* command. Every test that drives the CLI down a non-zero-exit path
+# (~136 of them) therefore leaks ``propagate = False`` plus an owned handler into
+# whichever test runs next, starving that test's root-based ``caplog`` of records.
+# The same leak applies to the operation-context ``ContextVar``.
+#
+# Two test modules already worked around this with a local copy of this fixture
+# (``test_compile_cli.py``, ``test_cli_exception_boundary.py``). Hoisting it here
+# makes *every* test start from a clean slate, so the suite no longer depends on
+# collection order — which is what lets it run correctly under ``pytest -n`` and
+# under any future reordering. This only ever *adds* isolation; no test's own
+# assertions are affected, because the reset happens outside the call phase.
+from kairos_ontology.core.observability import reset_logging as _reset_logging
+from kairos_ontology.core.observability.context import (
+    clear_operation_context as _clear_operation_context,
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_observability_state():
+    """Give every test a clean logging + operation-context slate (both ends)."""
+    _reset_logging()
+    _clear_operation_context()
+    yield
+    _reset_logging()
+    _clear_operation_context()
 
 
 # ---------------------------------------------------------------------------

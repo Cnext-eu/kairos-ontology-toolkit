@@ -137,6 +137,14 @@ class AIPreflightReport:
 # ---------------------------------------------------------------------------
 
 
+def _is_not_found(exc: Exception) -> bool:
+    """True when *exc* is an HTTP 404, however the provider SDK reports it."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status == 404:
+        return True
+    return type(exc).__name__ in {"NotFoundError", "ResourceNotFoundError"}
+
+
 def _probe_client(config, *, timeout_s: float = 10.0) -> None:
     """Attempt a lightweight reachability probe against the provider endpoint.
 
@@ -144,17 +152,54 @@ def _probe_client(config, *, timeout_s: float = 10.0) -> None:
     uses the same SDK path as normal operation (issue #463). Imported lazily so
     tests can monkey-patch this function to raise (or no-op).
     Raises :class:`Unreachable` on any failure.
-    """
-    try:
-        from kairos_ontology.core.ai_provider import _create_client_from_config
 
+    ``models.list()`` is the cheapest authenticated call and is tried first, but a
+    **404 from it proves nothing about inference**. An Azure Foundry project exposes
+    its OpenAI-compatible surface under ``/openai/v1/`` and need not implement a
+    ``GET /models`` listing at all, so a perfectly working endpoint answers 404 there.
+    Treating that as "unreachable" is a false negative with real cost: it is the
+    reported cause of AP-002/AP-030 on the CLdN hub, where both roles were declared
+    unusable for an entire run and a 174-concept judgement pass was done by hand
+    against a provider that was, as far as this probe can show, fine.
+
+    So a 404 falls through to a minimal inference call — the capability actually being
+    checked. Anything else, including a 401/403, still fails immediately: those are
+    real answers from a reachable endpoint about a configuration problem.
+    """
+    from kairos_ontology.core.ai_provider import _create_client_from_config
+
+    try:
         client = _create_client_from_config(config)
-        # models.list() is the cheapest authenticated call.
-        client.models.list()
     except Exception as exc:
         raise Unreachable(
             f"Provider endpoint '{config.endpoint}' is unreachable: "
             f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    try:
+        client.models.list()
+        return
+    except Exception as exc:
+        if not _is_not_found(exc):
+            raise Unreachable(
+                f"Provider endpoint '{config.endpoint}' is unreachable: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        listing_error = exc
+
+    try:
+        client.chat.completions.create(
+            model=config.model,
+            messages=[{"role": "user", "content": "ping"}],
+            max_completion_tokens=1,
+        )
+    except Exception as exc:
+        raise Unreachable(
+            f"Provider endpoint '{config.endpoint}' did not answer a model listing "
+            f"({type(listing_error).__name__}: 404) and a minimal inference call to "
+            f"model '{config.model}' also failed: {type(exc).__name__}: {exc}. "
+            "A 404 on both usually means the deployment name is wrong rather than the "
+            "endpoint — check the model is deployed under exactly this name."
         ) from exc
 
 

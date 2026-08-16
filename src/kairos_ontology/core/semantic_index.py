@@ -11,7 +11,7 @@ from typing import Any, Iterable
 from rdflib import BNode, Graph, Literal, OWL, RDF, RDFS, URIRef
 from rdflib.collection import Collection
 
-from .ontology_loader import OntologyLoadResult, SemanticProfile
+from .ontology_loader import OntologyLoadResult, SemanticProfile, stable_value
 from .projections.shared import SCHEMA, effective_domain_classes
 
 SEMANTIC_INDEX_VERSION = "1.0"
@@ -530,8 +530,8 @@ def build_semantic_index(
             ClassRecord(
                 uri=str(cls),
                 name=_local_name(str(cls)),
-                label=str(graph.value(cls, RDFS.label) or _local_name(str(cls))),
-                comment=str(graph.value(cls, RDFS.comment) or ""),
+                label=str(stable_value(graph, cls, RDFS.label) or _local_name(str(cls))),
+                comment=str(stable_value(graph, cls, RDFS.comment) or ""),
                 provenance=provenance,
                 ancestors=ancestors,
                 descendants=descendants,
@@ -568,8 +568,8 @@ def build_semantic_index(
             PropertyRecord(
                 uri=str(prop),
                 name=_local_name(str(prop)),
-                label=str(graph.value(prop, RDFS.label) or _local_name(str(prop))),
-                comment=str(graph.value(prop, RDFS.comment) or ""),
+                label=str(stable_value(graph, prop, RDFS.label) or _local_name(str(prop))),
+                comment=str(stable_value(graph, prop, RDFS.comment) or ""),
                 property_type=_property_type(graph, prop),
                 provenance=provenance,
                 domains=tuple(
@@ -663,7 +663,7 @@ def build_semantic_index(
                 IndividualRecord(
                     uri=str(individual),
                     name=_local_name(str(individual)),
-                    label=str(graph.value(individual, RDFS.label) or _local_name(str(individual))),
+                    label=str(stable_value(graph, individual, RDFS.label) or _local_name(str(individual))),
                     provenance=provenance,
                     classes=tuple(
                         SemanticLink(

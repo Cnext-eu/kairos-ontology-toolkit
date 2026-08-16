@@ -72,7 +72,7 @@ prerequisite that transfers to a resumed or handed-off session.
    one level too deep.
 4. **The accelerator pack is selected** (`[tool.kairos] accelerator` in
    `pyproject.toml`) and matches the client's actual domain (logistics, freight,
-   etc.) — confirm with `check-inventory`, not by assumption.
+   etc.) — confirm with `suggest-anchor`, not by assumption.
 5. **The session's stopping stage is declared up front.** Say which of the stages
    below the session is scoped to reach (see next section) before starting — this is
    a scope decision, not a discovery you make along the way. A session legitimately

@@ -17,7 +17,6 @@ from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target regist
 
 from .shared import (
     _autodetect_analysis_dir,
-    _format_refmodels_fetch_provenance,
     _git_head_sha,
     _git_ignored_snapshot,
     _git_repo_root,
@@ -1049,649 +1048,6 @@ def field_mapping_report_cmd(ontologies, bindings, sources, source_system, domai
         click.echo(f"   ⚠ {note}")
 
 
-@click.command(name="generate-inventory")
-@click.option(
-    "--ontology-dir",
-    type=click.Path(exists=True),
-    default=None,
-    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
-)
-@click.option(
-    "--ref-models-dir",
-    type=click.Path(exists=True),
-    default=None,
-    help="Path to ontology-reference-models/ directory (default: auto-detect).",
-)
-@click.option(
-    "--output-dir",
-    "-o",
-    type=click.Path(),
-    default=None,
-    help="Output directory (default: referencemodels-unpacked/).",
-)
-@click.option(
-    "--prune/--no-prune",
-    default=True,
-    help="Remove orphaned inventory files no longer produced by any "
-    "source (default: prune). Retired stem-named files require migrate.",
-)
-def generate_inventory_cmd(ontology_dir, ref_models_dir, output_dir, prune):
-    """Generate materialized YAML inventories for ontologies and reference models.
-
-    Produces one YAML file per domain/reference model containing classes, properties,
-    and specialization trees (DD-044).  Inventories are consumed by analyse-sources,
-    propose-alignment, and coverage-report as a cached alternative to re-parsing TTL.
-
-    Reference-model modules are namespaced by their owning model (DD-054), e.g.
-    ``bsp-party-inventory.yaml``, so same-named modules from different models no
-    longer overwrite each other.
-
-    Files are written to referencemodels-unpacked/ and should be committed to git.
-
-    \\b
-    Examples:
-      kairos-ontology generate-inventory
-      kairos-ontology generate-inventory --output-dir referencemodels-unpacked/
-      kairos-ontology generate-inventory --ref-models-dir path/to/refs/
-    """
-    from ..core.command_outcome import (
-        REASON_COLLISION,
-        REASON_EMPTY,
-        REASON_EXCEPTION,
-        REASON_EXCLUDED,
-        CommandOutcome,
-        CommandOutcomeDecline,
-        CommandOutcomeTarget,
-    )
-    from ..core.inventory import (
-        check_inventories,
-        find_legacy_inventory_files,
-        generate_inventory,
-        inventory_filename,
-        is_pattern_template_source,
-        iter_reference_inventory_sources,
-        legacy_inventory_error,
-        write_inventory,
-    )
-    from ..core.hub_utils import find_hub_root
-
-    cwd = Path.cwd()
-    hub_root = find_hub_root(cwd, require_model=True)
-
-    # Resolve ontology directory
-    if ontology_dir:
-        ont_path = Path(ontology_dir)
-    elif hub_root:
-        ont_path = hub_root / "model" / "ontologies"
-    else:
-        ont_path = None
-
-    # Resolve reference models directory
-    if ref_models_dir:
-        ref_path = Path(ref_models_dir)
-    else:
-        ref_path = resolve_refmodels_dir(cwd, hub_root)
-
-    if not ont_path and not ref_path:
-        click.echo(
-            "❌ No ontology or reference model directories found. "
-            "Use --ontology-dir or --ref-models-dir.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    # Resolve output directory
-    if output_dir:
-        out_path = Path(output_dir)
-    elif hub_root:
-        out_path = hub_root / "referencemodels-unpacked"
-    else:
-        out_path = Path("referencemodels-unpacked")
-
-    legacy_inventories = find_legacy_inventory_files(
-        ref_models_dir=ref_path,
-        inventory_dir=out_path,
-        ontology_dir=ont_path,
-    )
-    if legacy_inventories:
-        click.echo(
-            "❌ Legacy inventory format detected; generation will not overwrite it.", err=True
-        )
-        for finding in legacy_inventories:
-            click.echo(f"   - {legacy_inventory_error(finding)}", err=True)
-        raise SystemExit(1)
-
-    catalog_path = (
-        hub_root / "catalog-v001.xml"
-        if hub_root and (hub_root / "catalog-v001.xml").is_file()
-        else None
-    )
-
-    click.echo("📦 Generating materialized inventories")
-    written: list[Path] = []
-    writes = 0
-    unchanged = 0
-    failed: list[CommandOutcomeDecline] = []
-    skipped: list[CommandOutcomeDecline] = []
-    targets: list[CommandOutcomeTarget] = []
-
-    # Process reference models
-    ref_resolved = bool(ref_path and ref_path.is_dir())
-    produced_by: dict[str, Path] = {}
-    if ref_resolved:
-        click.echo(f"   Reference models: {ref_path}")
-        ref_ttls = iter_reference_inventory_sources(ref_path)
-        ref_produced = 0
-        ref_failed = 0
-        for ttl_file in ref_ttls:
-            stem = ttl_file.stem
-            # Filename derivation is pure path arithmetic (no parsing), so the
-            # collision check runs before generation is even attempted — a colliding
-            # source is a failure regardless of whether it would have parsed cleanly.
-            fname = inventory_filename(ttl_file, ref_models_dir=ref_path)
-            if fname in produced_by and produced_by[fname] != ttl_file:
-                detail = (
-                    f"inventory name collision: {fname} already written from "
-                    f"{produced_by[fname]}; skipping {ttl_file}. "
-                    "Report this (DD-054 disambiguation gap)."
-                )
-                click.echo(f"   ❌ Inventory name collision: {fname} — {detail}", err=True)
-                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_COLLISION, detail))
-                ref_failed += 1
-                continue
-
-            try:
-                inv = generate_inventory(ttl_file, catalog_path=catalog_path, relative_to=ref_path)
-            except Exception as e:
-                detail = f"{type(e).__name__}: {e}"
-                # Advisory, not `❌`: DD-153's ownership rule (fail only for what the
-                # hub author owns and can fix) — a parse exception is frequently a
-                # vendored `ontology-reference-models/` source the author cannot
-                # edit, so this alone must never print a `❌` that a plain (non-
-                # strict, non-total-failure) run would then contradict by exiting 0.
-                click.echo(f"   ⚠ Failed to parse {ttl_file.name}: {detail}", err=True)
-                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
-                ref_failed += 1
-                continue
-
-            if not inv["classes"]:
-                skipped.append(
-                    CommandOutcomeDecline(str(ttl_file), REASON_EMPTY, "source yields no classes.")
-                )
-                continue
-
-            produced_by[fname] = ttl_file
-            yaml_path = out_path / fname
-            try:
-                wrote = write_inventory(inv, yaml_path)
-            except OSError as e:
-                detail = f"{type(e).__name__}: {e}"
-                # Advisory, not `❌` — same ownership rationale as the parse-failure
-                # branch above.
-                click.echo(
-                    f"   ⚠ Failed to write inventory for {ttl_file.name}: {detail}", err=True
-                )
-                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
-                ref_failed += 1
-                del produced_by[fname]
-                continue
-            # An unchanged file still counts as produced (DD-153/DD-154) — the
-            # artifact exists and is current; only the write was elided.
-            written.append(yaml_path)
-            ref_produced += 1
-            n_classes = len(inv["classes"])
-            if wrote:
-                writes += 1
-                n_specs = sum(len(c.get("specializations", [])) for c in inv["classes"])
-                click.echo(f"   ✅ {stem}: {n_classes} classes, {n_specs} specializations")
-            else:
-                unchanged += 1
-                click.echo(f"   ⏭ {stem}: up to date ({n_classes} classes)")
-
-        targets.append(
-            CommandOutcomeTarget(
-                "reference-models",
-                attempted=len(ref_ttls),
-                produced=ref_produced,
-                failed=ref_failed,
-            )
-        )
-
-        # Pattern-library template stubs (blueprints/patterns/*/template.ttl) never
-        # reach ref_ttls at all — iter_reference_inventory_sources excludes them
-        # (issue #406) — but they are still worth naming explicitly as "skipped by
-        # design" rather than leaving them silently unaccounted for.
-        excluded_patterns = [
-            ttl
-            for ttl in sorted(ref_path.glob("**/*.ttl"))
-            if is_pattern_template_source(ttl, ref_models_dir=ref_path)
-        ]
-        for ttl_file in excluded_patterns:
-            skipped.append(
-                CommandOutcomeDecline(
-                    str(ttl_file),
-                    REASON_EXCLUDED,
-                    "pattern-library template stub (placeholder namespace, no "
-                    "owl:versionInfo) — not a real reference-model source.",
-                )
-            )
-
-    # Process domain ontologies
-    ont_resolved = bool(ont_path and ont_path.is_dir())
-    if ont_resolved:
-        click.echo(f"   Ontologies: {ont_path}")
-        ont_ttls = sorted(ont_path.glob("**/*.ttl"))
-        ont_produced = 0
-        ont_failed = 0
-        for ttl_file in ont_ttls:
-            try:
-                inv = generate_inventory(
-                    ttl_file,
-                    include_specializations=False,
-                    catalog_path=catalog_path,
-                    relative_to=hub_root,
-                )
-            except Exception as e:
-                detail = f"{type(e).__name__}: {e}"
-                # Advisory, not `❌` — same ownership rationale as the reference-model
-                # branch above.
-                click.echo(f"   ⚠ Failed to parse {ttl_file.name}: {detail}", err=True)
-                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
-                ont_failed += 1
-                continue
-
-            if not inv["classes"]:
-                skipped.append(
-                    CommandOutcomeDecline(str(ttl_file), REASON_EMPTY, "source yields no classes.")
-                )
-                continue
-
-            stem = ttl_file.stem
-            yaml_path = out_path / inventory_filename(ttl_file)
-            try:
-                wrote = write_inventory(inv, yaml_path)
-            except OSError as e:
-                detail = f"{type(e).__name__}: {e}"
-                # Advisory, not `❌` — same ownership rationale as the reference-model
-                # branch above.
-                click.echo(
-                    f"   ⚠ Failed to write inventory for {ttl_file.name}: {detail}", err=True
-                )
-                failed.append(CommandOutcomeDecline(str(ttl_file), REASON_EXCEPTION, detail))
-                ont_failed += 1
-                continue
-            # Unchanged still counts as produced (DD-153/DD-154).
-            written.append(yaml_path)
-            ont_produced += 1
-            if wrote:
-                writes += 1
-                click.echo(f"   ✅ {stem}: {len(inv['classes'])} classes")
-            else:
-                unchanged += 1
-                click.echo(f"   ⏭ {stem}: up to date ({len(inv['classes'])} classes)")
-
-        targets.append(
-            CommandOutcomeTarget(
-                "ontologies",
-                attempted=len(ont_ttls),
-                produced=ont_produced,
-                failed=ont_failed,
-            )
-        )
-
-    if prune and out_path.is_dir():
-        if not (ont_resolved and ref_resolved):
-            if not ont_resolved and not ref_resolved:
-                unresolved_scope = "ontology and reference-model"
-            elif not ont_resolved:
-                unresolved_scope = "ontology"
-            else:
-                unresolved_scope = "reference-model"
-            click.echo(
-                f"   ⏭  Skipping prune: the {unresolved_scope} scope was not resolved "
-                "this run. Pruning requires both scopes reconciled, so a committed "
-                "inventory belonging to the unresolved scope is never mistaken for "
-                "orphaned. Pass --ontology-dir/--ref-models-dir explicitly, or rerun "
-                "with --no-prune to silence this."
-            )
-        else:
-            # Reuse the checker's own orphan notion (core/inventory.py) rather than a
-            # second, independently-maintained "produced this run" set — a source that
-            # failed this run is still a live source (it stays out of `report.orphan`
-            # via `seen_files`, unconditional of whether it built successfully), so its
-            # previously-committed inventory is never deleted out from under it.
-            prune_report = check_inventories(
-                ontology_dir=ont_path,
-                ref_models_dir=ref_path,
-                inventory_dir=out_path,
-                catalog_path=catalog_path,
-            )
-            for orphan_name in prune_report.orphan:
-                (out_path / orphan_name).unlink()
-                click.echo(f"   🧹 Pruned orphaned inventory: {orphan_name}")
-
-    outcome = CommandOutcome(
-        command="generate-inventory",
-        produced=tuple(str(p) for p in written),
-        failed=tuple(failed),
-        skipped=tuple(skipped),
-        targets=tuple(targets),
-    )
-    # "generated" counts actual writes only (DD-154) — an idempotent rerun says
-    # "0 generated, N unchanged", not "N generated".
-    summary = (
-        f"{writes} generated, {unchanged} unchanged, "
-        f"{len(failed)} failed, {len(skipped)} skipped"
-    )
-    if outcome.is_blocking:
-        # DD-153 invariant: a ❌ line is printed iff the exit code is non-zero.
-        click.echo(f"\n❌ {summary} in {out_path}", err=True)
-        raise SystemExit(1)
-    if outcome.has_warnings:
-        # Non-blocking failures/skips still exit 0 (e.g. an exception on a vendored
-        # source the author does not own) — surfaced as a warning, not a cross mark,
-        # so the ❌⟺exit!=0 invariant holds in both directions.
-        click.echo(f"\n⚠ {summary} in {out_path}")
-    else:
-        click.echo(f"\n✅ {summary} in {out_path}")
-
-
-@click.command(name="check-inventory")
-@click.option(
-    "--ontology-dir",
-    type=click.Path(exists=True),
-    default=None,
-    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
-)
-@click.option(
-    "--ref-models-dir",
-    type=click.Path(exists=True),
-    default=None,
-    help="Path to ontology-reference-models/ directory (default: auto-detect).",
-)
-@click.option(
-    "--inventory-dir",
-    type=click.Path(),
-    default=None,
-    help="Path to referencemodels-unpacked/ directory (default: auto-detect).",
-)
-@click.option(
-    "--accelerator",
-    default=None,
-    help="Accelerator pack whose data-domains.yaml resolves --domains to "
-    "inventory keys (default: [tool.kairos].accelerator, else inferred).",
-)
-@click.option(
-    "--domains",
-    "domains_filter",
-    default=None,
-    help="F5: comma-separated data-domains to scope readiness to "
-    "(case-insensitive substring). Repository-wide check still runs and "
-    "global failures are shown, but the exit code reflects only the "
-    "selected domains"
-    "'"
-    " inventories.",
-)
-@click.option(
-    "--explain-scope",
-    is_flag=True,
-    default=False,
-    help="F5: print the domain→inventory-file mapping so it is clear which "
-    "inventories belong to the selected --domains (and which global "
-    "failures are out of scope).",
-)
-@click.option(
-    "--strict",
-    is_flag=True,
-    default=False,
-    help="Also fail when an inventory cannot be verified (no stored hash).",
-)
-@click.option(
-    "--warn-only",
-    is_flag=True,
-    default=False,
-    help="Report problems but always exit 0 (never block).",
-)
-@click.option(
-    "--verbose",
-    "--all",
-    "verbose",
-    is_flag=True,
-    default=False,
-    help="With --domains, also list every out-of-scope module inventory instead of "
-    "collapsing them to a one-line, non-blocking summary.",
-)
-def check_inventory_cmd(
-    ontology_dir,
-    ref_models_dir,
-    inventory_dir,
-    accelerator,
-    domains_filter,
-    explain_scope,
-    strict,
-    warn_only,
-    verbose,
-):
-    """Verify that materialized inventories exist and are up to date (DD-047).
-
-    Deterministic pre-flight gate for ``design-domain``: confirms that every source
-    TTL has a matching ``referencemodels-unpacked/*-inventory.yaml`` and that the stored
-    ``source_sha256`` matches the current file content.  Exits non-zero (blocking)
-    when an inventory is **missing** or **stale**, so a modeler never works against
-    an out-of-date view of the reference model's specialization tree.
-
-    \\b
-    F5 (toolkit-optimizations): ``--domains`` keeps the repository-wide check but
-    scopes the blocking decision to the selected data-domains, so an unrelated
-    missing/stale inventory no longer blocks the active domain (global failures are
-    still printed). ``--explain-scope`` prints which inventories belong to each
-    selected domain.
-
-    \\b
-    Examples:
-      kairos-ontology check-inventory
-      kairos-ontology check-inventory --strict
-      kairos-ontology check-inventory --warn-only
-      kairos-ontology check-inventory --domains booking --explain-scope
-    """
-    from ..core.inventory import (
-        ACCELERATOR_PROFILE,
-        DIRECT_PROFILE,
-        classify_domain_scope,
-        check_inventories,
-        resolve_domain_inventory_keys,
-        scope_inventory_report,
-    )
-    from ..core.hub_utils import find_hub_root
-    from ..core.reference_modules import resolve_hub_accelerator_detailed
-
-    cwd = Path.cwd()
-    hub_root = find_hub_root(cwd, require_model=True)
-
-    if ontology_dir:
-        ont_path: Path | None = Path(ontology_dir)
-    elif hub_root:
-        ont_path = hub_root / "model" / "ontologies"
-    else:
-        ont_path = None
-
-    if ref_models_dir:
-        ref_path: Path | None = Path(ref_models_dir)
-    else:
-        ref_path = resolve_refmodels_dir(cwd, hub_root)
-
-    if inventory_dir:
-        inv_path = Path(inventory_dir)
-    elif hub_root:
-        inv_path = hub_root / "referencemodels-unpacked"
-    else:
-        inv_path = Path("referencemodels-unpacked")
-
-    if not ont_path and not ref_path:
-        click.echo(
-            "❌ No ontology or reference model directories found. "
-            "Use --ontology-dir or --ref-models-dir.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    report = check_inventories(
-        ontology_dir=ont_path,
-        ref_models_dir=ref_path,
-        inventory_dir=inv_path,
-        catalog_path=(
-            hub_root / "catalog-v001.xml"
-            if hub_root and (hub_root / "catalog-v001.xml").is_file()
-            else None
-        ),
-    )
-
-    click.echo("🔎 Checking materialized inventories")
-    click.echo(f"   Inventory dir: {inv_path}")
-    if ref_path is not None:
-        click.echo(f"   Reference models VERSION: {_format_refmodels_version(ref_path)}")
-        provenance = _format_refmodels_fetch_provenance(ref_path)
-        if provenance:
-            click.echo(f"   Reference models provenance: {provenance}")
-    # F5: parse the domain filter early so the global missing/stale wall can be
-    # collapsed when scoping is active (it is reclassified as out-of-scope below).
-    filter_list = None
-    if domains_filter:
-        filter_list = [d.strip() for d in domains_filter.split(",") if d.strip()]
-    collapse_out_of_scope = bool(filter_list) and not verbose
-
-    for stem in report.ok:
-        click.echo(f"   ✓ {stem}: up to date")
-    if not collapse_out_of_scope:
-        for stem in report.missing:
-            click.echo(f"   ❌ {stem}: MISSING inventory", err=True)
-        for stem in report.stale:
-            click.echo(f"   ❌ {stem}: STALE (source changed since generation)", err=True)
-    for stem in report.unverifiable:
-        click.echo(f"   ⚠ {stem}: cannot verify freshness (no stored hash — regenerate)")
-    for stem in report.unbuildable:
-        click.echo(
-            f"   ⚠ {stem}: cannot build inventory (source TTL fails to parse — "
-            "generate-inventory cannot fix this until the source itself is fixed)"
-        )
-    for name in report.orphan:
-        click.echo(f"   ⚠ {name}: orphan inventory (no matching source TTL)")
-    for diagnostic in report.migration_required:
-        click.echo(f"   ❌ MIGRATION REQUIRED: {diagnostic}", err=True)
-
-    scope = None
-    if filter_list:
-        # Auto-detect the catalog so import URIs can be resolved to source TTLs.
-        catalog_path = None
-        if hub_root:
-            candidate_cat = hub_root / "catalog-v001.xml"
-            if candidate_cat.exists():
-                catalog_path = candidate_cat
-
-        try:
-            accelerator_resolution = resolve_hub_accelerator_detailed(
-                explicit=accelerator,
-                hub_root=hub_root,
-                ref_models_dir=ref_path,
-                domain_hint=filter_list,
-            )
-        except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
-
-        if ref_path is not None:
-            click.echo(
-                f"   Accelerator:  {accelerator_resolution.accelerator or '(none)'} "
-                f"(source: {accelerator_resolution.source})"
-            )
-            if accelerator_resolution.data_domains_path is not None:
-                click.echo(f"   Data domains: {accelerator_resolution.data_domains_path}")
-
-        keys_by_domain, unresolved_by_domain = resolve_domain_inventory_keys(
-            filter_list,
-            ref_models_dir=ref_path,
-            catalog_path=catalog_path,
-            accelerator=accelerator_resolution.accelerator,
-        )
-        scope = scope_inventory_report(report, keys_by_domain, unresolved_by_domain)
-
-        click.echo("\n🎯 Active-domain readiness:")
-        for domain in filter_list:
-            status, keys = classify_domain_scope(domain, keys_by_domain, report)
-            if status == ACCELERATOR_PROFILE:
-                label = "matched accelerator profile"
-            elif status == DIRECT_PROFILE:
-                label = "matched direct inventory"
-            else:
-                label = "no reference-model profile — no in-scope inventories to check"
-            key_list = ", ".join(sorted(keys)) if keys else "(none)"
-            click.echo(f"   • {domain}: {label} — inventories: {key_list}")
-        out_of_scope = sorted((set(report.missing) | set(report.stale)) - scope.keys)
-        if explain_scope:
-            for domain in scope.domains:
-                keys = sorted(keys_by_domain.get(domain, set()))
-                click.echo(f"   • {domain}: {', '.join(keys) if keys else '(no inventories)'}")
-            if out_of_scope:
-                click.echo(
-                    f"   ↪ out-of-scope global failures (not blocking here): "
-                    f"{', '.join(out_of_scope)}"
-                )
-        elif collapse_out_of_scope and out_of_scope:
-            click.echo(
-                f"   ○ {len(out_of_scope)} out-of-scope module "
-                f"{'inventory' if len(out_of_scope) == 1 else 'inventories'} "
-                "not checked (not blocking; pass --verbose or --explain-scope to list)."
-            )
-        for stem in scope.missing:
-            click.echo(f"   ❌ {stem}: MISSING (in scope)", err=True)
-        for stem in scope.stale:
-            click.echo(f"   ❌ {stem}: STALE (in scope)", err=True)
-        for uri in scope.unresolved:
-            click.echo(f"   ⚠ unresolved import URI (no source TTL in catalog): {uri}")
-
-    # When --domains is given, the exit code follows the scoped readiness so an
-    # unrelated missing/stale inventory does not block the active domain (F5). The
-    # repository-wide failures above are still shown for visibility.
-    if scope is not None:
-        blocking = scope.is_blocking or (strict and (scope.unverifiable or scope.unbuildable))
-    else:
-        blocking = report.is_blocking or (strict and (report.unverifiable or report.unbuildable))
-
-    if blocking and not warn_only:
-        unbuildable_in_scope = scope.unbuildable if scope is not None else report.unbuildable
-        if report.migration_required:
-            next_step = "`kairos-ontology migrate --hub <hub>` and commit the result"
-        elif not (report.missing or report.stale) and unbuildable_in_scope:
-            # Distinct from the generic "run generate-inventory" remediation below:
-            # regenerating cannot fix a source that does not parse (issue #405/#408 —
-            # unbuildable is a closure failure, not staleness).
-            next_step = (
-                "fix the unbuildable source TTL(s) named above (a parse/import error) "
-                "— `generate-inventory` cannot produce an inventory for them until the "
-                "source itself is fixed"
-            )
-        else:
-            next_step = "`kairos-ontology generate-inventory` and commit the result"
-        click.echo(
-            f"\n❌ Inventory check failed. Run {next_step} before modeling.",
-            err=True,
-        )
-        raise SystemExit(1)
-
-    if scope is not None and not blocking and report.is_blocking:
-        click.echo(
-            "\n✅ Active-domain inventories are ready "
-            "(unrelated repository-wide failures shown above are out of scope)."
-        )
-    elif report.is_blocking or report.has_warnings:
-        click.echo("\n⚠ Inventory check completed with warnings (not blocking).")
-    else:
-        click.echo("\n✅ Inventories are present and up to date.")
-
-
-# ---------------------------------------------------------------------------
-# check-ai-config (DD-159)
-# ---------------------------------------------------------------------------
-
 _STATUS_ICONS = {
     "ok": "✅",
     "not_configured": "❌",
@@ -1725,6 +1081,7 @@ def _render_ai_config_text(report) -> None:
         click.echo("⚠ AI provider check passed (unprobed — run with --probe to verify reachability).")
     else:
         click.echo("✅ AI provider check passed.")
+
 
 
 @click.command(name="check-ai-config")
@@ -1973,7 +1330,8 @@ def _render_class_ownership_text(owns: dict) -> None:
     if not owns["inventories_present"]:
         click.echo(
             "ℹ No materialized inventories found under referencemodels-unpacked/ — run "
-            "`kairos-ontology generate-inventory` first, then retry the ownership lookup."
+            "reference models resolve through ontology-hub/catalog-v001.xml; check it "
+            "maps the accelerator modules."
         )
         return
     matches = owns["matches"]
@@ -2006,7 +1364,8 @@ def _render_class_ownership_batch_text(batch: dict) -> None:
     if not batch["inventories_present"]:
         click.echo(
             "ℹ No materialized inventories found under referencemodels-unpacked/ — run "
-            "`kairos-ontology generate-inventory` first, then retry the ownership lookup."
+            "reference models resolve through ontology-hub/catalog-v001.xml; check it "
+            "maps the accelerator modules."
         )
         return
     matches = batch["matches"]
@@ -2246,22 +1605,22 @@ def domain_coverage_cmd(
             flat_names.extend(part.strip() for part in item.split(",") if part.strip())
         unique_names = list(dict.fromkeys(flat_names))  # preserve order, deduplicate
 
-        if hub_root:
-            inventory_dir = hub_root / "referencemodels-unpacked"
-        else:
-            inventory_dir = ont_path.parent.parent / "referencemodels-unpacked"
+        # DD-173: reference models resolve live through the hub catalog.
+        catalog = (
+            hub_root / "catalog-v001.xml" if hub_root else ont_path.parent / "catalog-v001.xml"
+        )
 
         if len(unique_names) == 1:
             owns_payload = lookup_class_ownership(
                 class_name=unique_names[0],
-                inventory_dir=inventory_dir,
+                catalog_path=catalog,
                 ref_models_dir=ref_path,
                 accelerator=accelerator_resolution.accelerator,
             ).to_dict()
         else:
             owns_batch_payload = lookup_class_ownership_batch(
                 class_names=set(unique_names),
-                inventory_dir=inventory_dir,
+                catalog_path=catalog,
                 ref_models_dir=ref_path,
                 accelerator=accelerator_resolution.accelerator,
             ).to_dict()
@@ -2944,6 +2303,208 @@ def guard_scope_cmd(
     except OSError:
         pass
     click.echo("✓ guard-scope passed — no unexpected file changes.")
+
+
+def _archetype_tiers(hub) -> dict:
+    """Map reference-model class URI -> archetype tier for the hub's selected archetype.
+
+    Best-effort. Returns ``{}`` when the hub has no conformance artifact, no archetype,
+    or no resolvable reference models -- anchor ranking then falls back to name evidence
+    alone, which is weaker but never wrong.
+    """
+    if hub is None:
+        return {}
+    try:
+        from ..core.archetype_loader import load_archetype
+        from ..core.conformance_artifact import ARTIFACT_RELPATH, read_artifact
+
+        artifact_path = hub / ARTIFACT_RELPATH
+        if not artifact_path.is_file():
+            return {}
+        archetype_id = (read_artifact(artifact_path).get("archetype") or {}).get("id")
+        if not archetype_id:
+            return {}
+        refmodels = resolve_refmodels_dir(Path.cwd(), hub)
+        if refmodels is None:
+            return {}
+        archetype = load_archetype(refmodels, archetype_id)
+    except Exception:  # noqa: BLE001 - advisory ranking input only
+        return {}
+    return {concept.uri: concept.tier for concept in archetype.core_concepts}
+
+
+@click.command(name="alignment-report")
+@click.option(
+    "--analysis",
+    "analysis_dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/_analysis/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--output", "output_path", default=None, help="Write the report to a file as well."
+)
+@click.option(
+    "--gap-limit",
+    type=int,
+    default=40,
+    help="Rows shown in the 'needs a decision' table (json carries all).",
+)
+@click.option(
+    "--group-by-column",
+    is_flag=True,
+    default=False,
+    help="Collapse gap columns to one row per column name — the decide-once view. The "
+    "same name recurs across tables because the same business fact does.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["markdown", "json"]),
+    default="markdown",
+    show_default=True,
+)
+def alignment_report_cmd(
+    analysis_dir, output_path, gap_limit, group_by_column, output_format
+):
+    """Report source-column alignment coverage with a reason per unmapped column.
+
+    Answers the question a per-domain alignment file cannot: across the whole hub, which
+    real business signal still has no home in the domain model? Most unmapped columns
+    should be unmapped -- audit stamps, vendor placeholders, empty fields -- so each is
+    bucketed by reason and only the genuine gaps are surfaced for a decision.
+
+    Read-only and deterministic: it re-reads what propose-alignment already wrote.
+    """
+    from ..core.alignment_report import (
+        build_alignment_report,
+        group_gaps_by_column,
+        render_gap_groups_markdown,
+        render_markdown,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    if analysis_dir:
+        directory = Path(analysis_dir)
+    else:
+        hub = find_hub_root(Path.cwd(), require_model=False)
+        directory = (
+            hub / "integration" / "sources" / "_analysis"
+            if hub
+            else Path("integration/sources/_analysis")
+        )
+
+    report = build_alignment_report(directory, hub_root=directory.parent.parent.parent)
+
+    if output_format == "json":
+        payload = report.to_dict()
+        if group_by_column:
+            payload["gap_groups"] = [g.to_dict() for g in group_gaps_by_column(report)]
+        rendered = json.dumps(payload, indent=2, sort_keys=True)
+    elif group_by_column:
+        rendered = render_gap_groups_markdown(report, limit=gap_limit)
+    else:
+        rendered = render_markdown(report, gap_limit=gap_limit)
+    click.echo(rendered)
+
+    if output_path:
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(rendered.rstrip() + "\n", encoding="utf-8")
+        click.echo(f"(written to {destination})", err=True)
+
+
+@click.command(name="suggest-anchor")
+@click.argument("domain")
+@click.option(
+    "--ontology-dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to model/ontologies/ directory (default: auto-detect from hub).",
+)
+@click.option(
+    "--catalog",
+    "catalog_path",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to catalog-v001.xml (default: auto-detect from hub). Reference models "
+    "resolve live through it; there is no materialized inventory to keep in sync.",
+)
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help="Include terms with no candidate, so the gap is visible rather than omitted.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    show_default=True,
+)
+def suggest_anchor_cmd(domain, ontology_dir, catalog_path, show_all, output_format):
+    """Suggest reference-model anchors for DOMAIN's unanchored classes and properties.
+
+    Reads the inventories for the modules DOMAIN already imports and ranks candidates by
+    name evidence, printing the exact rdfs:subClassOf / rdfs:subPropertyOf line for a
+    confident match. Advisory and read-only: it never edits the ontology, and it
+    withholds the Turtle for a weak match rather than dressing a guess up as an answer.
+
+    
+    Example:
+      kairos-ontology suggest-anchor party
+      kairos-ontology suggest-anchor financial --format json
+    """
+    from ..core.class_anchoring import suggest_anchors
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=False)
+    onto_dir = (
+        Path(ontology_dir)
+        if ontology_dir
+        else (hub / "model" / "ontologies" if hub else Path("model/ontologies"))
+    )
+    catalog = (
+        Path(catalog_path)
+        if catalog_path
+        else (hub / "catalog-v001.xml" if hub else None)
+    )
+
+    report = suggest_anchors(
+        ontologies_dir=onto_dir,
+        domain=domain,
+        catalog_path=catalog,
+        archetype_tiers=_archetype_tiers(hub),
+    )
+
+    if output_format == "json":
+        click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return
+
+    click.echo(
+        f"⚓ Anchor suggestions — {domain}: {report.already_anchored} anchored, "
+        f"{report.unanchored} unanchored, {len(report.confident)} confident candidate(s) "
+        f"from {len(report.modules_read)} imported module(s)"
+    )
+    for suggestion in report.suggestions:
+        if not suggestion.candidates and not show_all:
+            continue
+        marker = "✓" if suggestion.confident else "?"
+        click.echo(f"   {marker} {suggestion.local_name} ({suggestion.kind})")
+        click.echo(f"       {suggestion.turtle_line()}")
+        for candidate in suggestion.candidates:
+            click.echo(
+                f"       - {candidate.name} <{candidate.uri}> "
+                f"[{candidate.score:.2f}] {candidate.reason}"
+            )
+            if candidate.caution:
+                click.echo(f"         ⚠ {candidate.caution}")
+    for notice in report.notices:
+        click.echo(f"   ℹ {notice}")
+    if not report.suggestions:
+        click.echo("   ✓ every local term is already anchored")
 
 
 @click.command(name="suggest-type")

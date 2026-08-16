@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 
 from ..core._provenance import provenance_comment
@@ -902,9 +903,17 @@ def migrate(check, dry_run, hub_path):
     help="Toolkit release channel to pin: 'stable' (latest GA) or 'preview' (latest rc/beta). "
     "Defaults to auto-detection from the running toolkit version.",
 )
+@click.option(
+    "--local-only",
+    "local_only",
+    is_flag=True,
+    default=False,
+    help="Scaffold and git-init on disk without creating or pushing a GitHub remote. "
+    "For throwaway hubs used to exercise the toolkit; a client hub belongs on GitHub.",
+)
 def new_repo(
     name, desc, dest, org, is_private, ref_models_version, company_domain, skip_protection,
-    channel,
+    channel, local_only,
 ):
     """Create a new ontology hub GitHub repository.
 
@@ -1189,6 +1198,16 @@ def new_repo(
     # update-referencemodels.ps1 is no longer installed; reference models are
     # populated by the `kairos-ontology update-refmodels` command instead.
 
+    # --- .env.example ---------------------------------------------------------
+    # `init` and `update` both install this, but a hub scaffolded with --local-only may
+    # sit for a while before `init` runs, and the AI provider config is the first thing
+    # someone looks for. Emitted here, before git init, so it lands in the first commit.
+    env_example_src = _SCAFFOLD_DIR / ".env.example"
+    env_example_dst = repo_dir / ".env.example"
+    if env_example_src.is_file() and not env_example_dst.exists():
+        shutil.copy2(env_example_src, env_example_dst)
+        print("  ✓ .env.example (AI provider configuration template)")
+
     # setup-env.ps1 (uv environment bootstrap)
     setup_env_src = _SCAFFOLD_DIR / "setup-env.ps1"
     if setup_env_src.is_file():
@@ -1236,7 +1255,19 @@ def new_repo(
         raise click.ClickException(f"git command failed: {exc.stderr.decode().strip()}")
 
     # --- GitHub repo creation ------------------------------------------------
-    _create_github_repo(repo_dir, repo_slug, org, description, is_private)
+    # _create_github_repo hard-fails by design ("repos must be never local-only"), which
+    # is right for a client hub and wrong for a hub whose only purpose is to exercise the
+    # toolkit end-to-end. --local-only relaxes that deliberately and says so on the way out.
+    if local_only:
+        print("\n⏭  Skipping GitHub repo creation (--local-only)")
+        print("   This hub has no remote. Publish it later with:")
+        print(f"     cd {repo_dir}")
+        print(
+            f"     gh repo create {org}/{repo_slug} "
+            f"{'--private' if is_private else '--public'} --source . --push"
+        )
+    else:
+        _create_github_repo(repo_dir, repo_slug, org, description, is_private)
 
     # --- Reference models are installed via pyproject.toml + uv sync ----------
     # No separate fetch step — the scaffolded pyproject.toml already pins
@@ -1244,13 +1275,17 @@ def new_repo(
     # new-repo) installs it.
 
     # --- Configure branch protection on main ---------------------------------
-    if not skip_protection:
+    if not skip_protection and not local_only:
         full_name = f"{org}/{repo_slug}"
         print("\n🔒 Configuring branch protection on main...")
         _configure_branch_protection(repo_dir, full_name)
 
     print(f"\n✅ Repository created: {repo_slug}")
-    print(f"   GitHub: https://github.com/{org}/{repo_slug}")
+    if local_only:
+        # Printing a github.com URL here would advertise a repo that does not exist.
+        print(f"   Local only (no remote): {repo_dir}")
+    else:
+        print(f"   GitHub: https://github.com/{org}/{repo_slug}")
     print("\nNext steps:")
     print(f"  cd {repo_dir}")
     print("  uv sync")
@@ -1686,19 +1721,125 @@ def _extract_company_domain(hub: Path) -> str | None:
     return None
 
 
+def _load_cross_domain_relationships(
+    refmodels_dir: Path | None, accelerator: str | None
+) -> list[dict[str, Any]]:
+    """Return the accelerator blueprint's declared ``cross_domain_relationships``.
+
+    The logistics pack ships 24 of these — ``booking-to-consignment``,
+    ``consignment-to-invoice``, and so on — each naming a property IRI plus its domain and
+    range classes. Nothing in the toolkit read them, so an author who needed to reach
+    another domain had no declared route and minted a local class instead.
+
+    Best-effort: an unreadable or absent blueprint yields ``[]`` rather than failing a
+    scaffold, since this enriches a header and gates nothing.
+
+    Delegates to the core loader (DD-181), which alignment also uses for its anchor
+    pool — one reader, so a scaffold header and the anchor pool can never disagree
+    about what the blueprint authorises.
+    """
+    if refmodels_dir is None or not accelerator:
+        return []
+    from ..core.analyse_sources import load_cross_domain_bridges
+
+    return load_cross_domain_bridges(Path(refmodels_dir), accelerator)
+
+
+def _wrap_comment(text: str, *, prefix: str = "#   ", width: int = 88) -> list[str]:
+    """Wrap *text* into ``#``-prefixed comment lines."""
+    import textwrap
+
+    return [f"{prefix}{line}" for line in textwrap.wrap(text, width=width - len(prefix))] or []
+
+
+def _build_boundary_header(
+    *,
+    domain: str,
+    label: str,
+    blueprint: dict[str, Any] | None,
+    cross_domain: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Render the blueprint's ownership boundary as the file's own header (DD-163).
+
+    ``scaffold-domain --from-blueprint`` previously copied only ``imports[].uri``, so the
+    one artifact an author actually edits never stated what the domain owns. The
+    boundaries existed — as a contract field feeding the source-affinity classifier — but
+    were invisible at the moment they were being crossed, and a full run produced eight
+    domains declaring ``Booking``.
+
+    Writing them here also makes them *enforceable*: ``integrity.class-violates-declared-
+    exclusion`` reads exactly this ``Deliberate exclusions`` block, so a scaffold-generated
+    domain arrives with a boundary a validator can check rather than an empty header a
+    later pass has to remember to write (the same header every file in that run kept
+    verbatim).
+    """
+    lines = [
+        "# " + "=" * 76,
+        f"# Domain: {domain}",
+        f"# {label}",
+        "#",
+    ]
+    if blueprint:
+        owns = str(blueprint.get("owns") or "").strip()
+        excluded = str(blueprint.get("does_not_own") or "").strip()
+        if owns:
+            lines.append("# OWNS (accelerator blueprint):")
+            lines.extend(_wrap_comment(owns))
+            lines.append("#")
+        if excluded:
+            # Parsed by core/ontology_integrity.py -- keep the heading text stable, and
+            # seed the bullet form its parser recognises ("- <Concept>: owned by the <x>
+            # domain"). An author extending this block then produces enforceable entries
+            # by default instead of prose the checker cannot read.
+            lines.append("# Deliberate exclusions (with reasons):")
+            lines.extend(
+                _wrap_comment(f"Blueprint DOES NOT OWN: {excluded}", prefix="#   ")
+            )
+            lines.append("#   Record each concept you leave out as its own bullet, in this")
+            lines.append("#   form, so 'kairos-ontology validate' can enforce it:")
+            lines.append("#     - <Concept>: owned by the <other> domain; <why>")
+            lines.append("#")
+    if cross_domain:
+        lines.append("# Declared cross-domain relationships (use these, do not re-mint a class):")
+        for bridge in cross_domain:
+            prop = str(bridge.get("property_uri") or "")
+            target = str(bridge.get("target_domain") or "")
+            desc = str(bridge.get("description") or "").strip()
+            lines.append(f"#   -> {target}: <{prop}>")
+            if desc:
+                lines.extend(_wrap_comment(desc, prefix="#      "))
+        lines.append("#")
+    lines.extend(
+        [
+            "# Author classes and properties with kairos-design-domain. A concept another",
+            "# domain owns is referenced across the boundary (externalReference, DD-133 §7),",
+            "# never re-declared here -- 'kairos-ontology validate' fails a redeclaration.",
+            "# " + "=" * 76,
+            "",
+        ]
+    )
+    return lines
+
+
 def _build_domain_ttl(
     *,
     domain: str,
     label: str,
     company_domain: str,
     imports: list[dict[str, str]],
+    blueprint: dict[str, Any] | None = None,
+    cross_domain: list[dict[str, Any]] | None = None,
 ) -> str:
     """Generate starter TTL content for a domain ontology (text template, not rdflib).
 
     Mirrors the ``starter.ttl.template`` convention but injects mandated
-    ``owl:imports`` lines from the accelerator blueprint when available.
+    ``owl:imports`` lines from the accelerator blueprint when available, plus the
+    blueprint's ownership boundary as a header block (see :func:`_build_boundary_header`).
     """
-    lines: list[str] = [
+    lines: list[str] = _build_boundary_header(
+        domain=domain, label=label, blueprint=blueprint, cross_domain=cross_domain
+    )
+    lines += [
         f"@prefix : <https://{company_domain}/ont/{domain}#> .",
         "@prefix owl: <http://www.w3.org/2002/07/owl#> .",
         "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
@@ -2038,6 +2179,8 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
 
     # 6. Resolve mandated imports from the blueprint if --from-blueprint is given.
     imports: list[dict[str, str]] = []
+    blueprint_domain: dict[str, Any] | None = None
+    cross_domain_bridges: list[dict[str, Any]] = []
     if accelerator:
         if refmodels_root is not None:
             refmodels_dir: Path | None = Path(refmodels_root)
@@ -2066,6 +2209,19 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
         imports = data_domains[domain_slug].get("imports", [])
         if imports:
             print(f"  ✓ Loaded {len(imports)} mandated import(s) from blueprint")
+        blueprint_domain = data_domains[domain_slug]
+        # The blueprint's own declared bridges out of this domain. Naming them in the
+        # header is what makes "reference it, do not re-mint it" actionable rather than
+        # an instruction with no target.
+        cross_domain_bridges = [
+            bridge
+            for bridge in _load_cross_domain_relationships(refmodels_dir, accelerator)
+            if bridge.get("source_domain") == domain_slug
+        ]
+        if blueprint_domain.get("does_not_own"):
+            print("  ✓ Wrote blueprint ownership boundary into the domain header")
+        if cross_domain_bridges:
+            print(f"  ✓ Listed {len(cross_domain_bridges)} declared cross-domain bridge(s)")
 
     # 7. Generate the TTL content.
     content: str
@@ -2096,6 +2252,8 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
                 label=resolved_label,
                 company_domain=company_domain,
                 imports=imports,
+                blueprint=blueprint_domain,
+                cross_domain=cross_domain_bridges,
             )
     else:
         content = _build_domain_ttl(
@@ -2103,6 +2261,8 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
             label=resolved_label,
             company_domain=company_domain,
             imports=imports,
+            blueprint=blueprint_domain,
+            cross_domain=cross_domain_bridges,
         )
     content = provenance_comment("scaffold-domain", editable=True) + "\n" + content
     ontology_dst.write_text(content, encoding="utf-8")

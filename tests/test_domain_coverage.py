@@ -261,26 +261,28 @@ groups:
 """
 
 
-def _inventory_yaml(classes: list[tuple[str, str, str]]) -> str:
-    lines = ["version: 4", "domain_name: Test", "classes:"]
-    for name, uri, source_identity in classes:
+def _reference_ttl(classes: list[tuple[str, str]]) -> str:
+    """Render a minimal reference-model TTL declaring *classes* (name, namespace)."""
+    lines = [
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .",
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .",
+        "",
+    ]
+    namespaces = sorted({ns for _, ns in classes})
+    for ns in namespaces:
+        lines.append(f"<{ns}> a owl:Ontology .")
+    for name, ns in classes:
         lines += [
-            f"  - uri: {uri}",
-            f"    name: {name}",
-            f"    label: {name}",
-            "    comment: ''",
-            "    provenance:",
-            f"      source_identity: {source_identity}",
-            "      import_depth: 0",
-            "      asserted: true",
-            "    properties: []",
+            f'<{ns}#{name}> a owl:Class ;',
+            f'    rdfs:label "{name}" ;',
+            f'    rdfs:comment "{name} class." .',
         ]
     return "\n".join(lines) + "\n"
 
 
 @pytest.fixture()
 def ownership_hub(hub: Path) -> Path:
-    """The base hub plus a typed-profile blueprint and materialized inventories."""
+    """The base hub plus a typed-profile blueprint and catalog-resolvable reference models."""
     dd_path = (
         hub.parent
         / "ontology-reference-models"
@@ -291,22 +293,46 @@ def ownership_hub(hub: Path) -> Path:
     )
     dd_path.write_text(_OWNERSHIP_DATA_DOMAINS_YAML, encoding="utf-8")
 
-    inv_dir = hub / "referencemodels-unpacked"
-    inv_dir.mkdir()
-    (inv_dir / "party-inventory.yaml").write_text(
-        _inventory_yaml(
-            [
-                ("Person", "https://ref.test/ont/party#Person", "https://ref.test/ont/party"),
-                # Same class name asserted by a second managed module (multi-row case).
-                ("Person", "https://ref.test/ont/shared#Person", "https://ref.test/ont/shared"),
-                # Asserted by a managed module that no blueprint domain activates.
-                ("Orphan", "https://ref.test/ont/orphan#Orphan", "https://ref.test/ont/orphan"),
-                # Asserted by an ontology that is no managed module at all.
-                ("LocalThing", "https://acme.test/ont/party#LocalThing", "https://acme.test/ont/party"),
-            ]
-        ),
-        encoding="utf-8",
-    )
+    # DD-173: reference models resolve live through the catalog, so the fixture is a
+    # real ontology plus catalog entries rather than a hand-built inventory snapshot.
+    refs = hub / "refs"
+    refs.mkdir(exist_ok=True)
+    modules = {
+        "party": ("Person", "https://ref.test/ont/party"),
+        # Same class name asserted by a second managed module (multi-row case).
+        "shared": ("Person", "https://ref.test/ont/shared"),
+        # Asserted by a managed module that no blueprint domain activates.
+        "orphan": ("Orphan", "https://ref.test/ont/orphan"),
+        # Asserted by an ontology that is no managed module at all.
+        "acme": ("LocalThing", "https://acme.test/ont/party"),
+    }
+    entries = []
+    for stem, (cls_name, namespace) in modules.items():
+        (refs / f"{stem}.ttl").write_text(
+            _reference_ttl([(cls_name, namespace)]), encoding="utf-8"
+        )
+        entries.append(f'  <uri name="{namespace}" uri="refs/{stem}.ttl"/>')
+
+    catalog = hub / "catalog-v001.xml"
+    existing = catalog.read_text(encoding="utf-8") if catalog.is_file() else ""
+    if "</catalog>" in existing:
+        catalog.write_text(
+            existing.replace("</catalog>", "\n".join(entries) + "\n</catalog>"),
+            encoding="utf-8",
+        )
+    else:
+        catalog.write_text(
+            "\n".join(
+                [
+                    '<?xml version="1.0" encoding="UTF-8"?>',
+                    '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">',
+                    *entries,
+                    "</catalog>",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
     return hub
 
 
@@ -376,12 +402,12 @@ class TestDomainCoverageOwns:
     def test_owns_class_found_nowhere_says_so(self, ownership_hub, monkeypatch):
         result = _invoke(ownership_hub, monkeypatch, ["--owns", "DoesNotExist"])
         assert result.exit_code == 0
-        assert "not found in any materialized inventory" in result.output
+        assert "was not found" in result.output
 
-    def test_owns_without_inventories_advises_generate_inventory(self, hub, monkeypatch):
+    def test_owns_without_reference_models_advises_the_catalog(self, hub, monkeypatch):
         result = _invoke(hub, monkeypatch, ["--owns", "Person"])
         assert result.exit_code == 0
-        assert "generate-inventory" in result.output
+        assert "catalog" in result.output
 
     def test_owns_json_payload_included(self, ownership_hub, monkeypatch):
         result = _invoke(ownership_hub, monkeypatch, ["--owns", "Person", "--json-output"])
@@ -453,12 +479,12 @@ class TestDomainCoverageOwnsBatch:
         assert result.exit_code == 0
         assert "None of the requested classes" in result.output
 
-    def test_owns_batch_without_inventories_advises_generate_inventory(
+    def test_owns_batch_without_reference_models_advises_the_catalog(
         self, hub, monkeypatch
     ):
         result = _invoke(hub, monkeypatch, ["--owns", "Person,Orphan"])
         assert result.exit_code == 0
-        assert "generate-inventory" in result.output
+        assert "catalog" in result.output
 
     def test_owns_batch_skips_full_coverage_report(self, ownership_hub, monkeypatch):
         """When only --owns (no --explain), the text output must not list domain rows."""

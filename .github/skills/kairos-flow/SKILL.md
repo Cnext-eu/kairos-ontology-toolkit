@@ -34,7 +34,7 @@ installed/current local reference-model version is:
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-uv run kairos-ontology check-inventory --domains <active-domain> --explain-scope
+uv run kairos-ontology suggest-anchor <active-domain>
 ```
 
 Missing optional modules outside the selected scope are non-blocking. Never update
