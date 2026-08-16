@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, TemplateSyntaxError
@@ -40,6 +41,27 @@ from .quality_renderers import (
 from .specs import CoverageSpec, ModelOutcome, SchemaKind, SilverModelKind, SourceCatalogSpec
 
 logger = logging.getLogger(__name__)
+
+
+# Jinja environments are cached rather than rebuilt per render call.
+#
+# Every ``template_root`` in the codebase resolves to the package's own read-only
+# ``kairos_ontology/templates/dbt`` directory, and these environments are only ever
+# read from (``get_template``/``parse``) — never mutated with per-call globals or
+# filters — so one instance per root is safe to share. Building a fresh
+# ``Environment`` each call gave every call a fresh, empty template cache, so the
+# same handful of templates were re-read and re-compiled on every render.
+# ``FileSystemLoader`` keeps ``auto_reload=True``, so a template edited on disk is
+# still picked up; only the redundant recompilation is avoided.
+@lru_cache(maxsize=8)
+def _template_environment(template_root: str) -> Environment:
+    """Return the shared Jinja environment for ``template_root``."""
+    return Environment(loader=FileSystemLoader(template_root))
+
+
+# Standalone environment used only to syntax-check *rendered* output. The content
+# differs every call, but the environment itself carries no per-call state.
+_SYNTAX_CHECK_ENV = Environment()
 
 
 class RuntimeRenderBlocked(ValueError):
@@ -250,7 +272,7 @@ The `macros/` folder contains platform-abstraction macros:
 
 def render_project_config(plan: MaterializationPlan) -> dict[str, str]:
     """Render a standalone project configuration through the render authority."""
-    env = Environment(loader=FileSystemLoader(plan.adapter.template_root))
+    env = _template_environment(plan.adapter.template_root)
     return _render_project_config(plan, env)
 
 
@@ -264,7 +286,7 @@ def render_canonical_project(
     deliberately outside this renderer. Focused binding quality checks are ordinary dbt
     tests and are added by the compiler after this shared render phase.
     """
-    env = Environment(loader=FileSystemLoader(plan.adapter.template_root))
+    env = _template_environment(plan.adapter.template_root)
     physical = {item.artifact_path: item for item in plan.models}
     document_plans = {item.artifact_path: item for item in plan.documents}
     quality_by_model = {item.model_name: item for item in plan.quality_models}
@@ -370,7 +392,7 @@ def render_project(
     plan: MaterializationPlan,
 ) -> dict:
     """Render and validate artifacts from logical specs plus physical plans only."""
-    env = Environment(loader=FileSystemLoader(plan.adapter.template_root))
+    env = _template_environment(plan.adapter.template_root)
     physical = {item.artifact_path: item for item in plan.models}
     quality_by_model = {item.model_name: item for item in plan.quality_models}
     document_plans = {item.artifact_path: item for item in plan.documents}
@@ -1236,7 +1258,7 @@ def _check_jinja_syntax(path: str, content: str) -> None:
     if "{% test " in content:
         return
     try:
-        Environment().parse(content)
+        _SYNTAX_CHECK_ENV.parse(content)
     except TemplateSyntaxError as exc:
         logger.warning(
             "dbt validation: Jinja syntax error in %s line %s: %s",
