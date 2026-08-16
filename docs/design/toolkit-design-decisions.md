@@ -229,6 +229,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-175](#dd-175-the-prompt-is-reproducible-because-a-seed-cannot-stabilise-a-moving-question) | The prompt is reproducible, because a seed cannot stabilise a moving question | Accepted | 2026-08-16 |
 | [DD-176](#dd-176-reasoning-effort-is-a-per-role-knob-defaulted-from-the-shape-of-the-work) | Reasoning effort is a per-role knob, defaulted from the shape of the work | Accepted | 2026-08-16 |
 | [DD-177](#dd-177-the-alignment-answer-is-shape-constrained-so-a-column-cannot-be-skipped) | The alignment answer is shape-constrained, so a column cannot be skipped | Accepted | 2026-08-16 |
+| [DD-178](#dd-178-an-ai-generated-artifact-states-its-own-provenance-and-review-status) | An AI-generated artifact states its own provenance and review status | Accepted | 2026-08-16 |
+| [DD-179](#dd-179-alignment-sees-the-tables-role-structure-and-the-mapping-is-checked-as-a-set) | Alignment sees the table's role structure, and the mapping is checked as a set | Accepted | 2026-08-16 |
 
 ---
 
@@ -12694,3 +12696,116 @@ The response shape changes only how the answer is obtained. `normalize_schema_re
 converts the object back to the historical list of per-column dicts, so every consumer
 downstream is untouched, and a list response — the JSON-mode fallback path — passes
 through unchanged.
+
+## DD-178: An AI-generated artifact states its own provenance and review status
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`, `alignment-report`, any future model-authored artifact
+**Implementation:** `core/_provenance.py` (`ai_attribution`, `ai_attribution_note`, `provenance_comment(ai_generated=...)`)
+
+### Context
+
+An ontology reads as authoritative — that is what one is for. So does a coverage
+report with precise percentages in it. Neither carried any trace of the fact that a
+language model proposed its content, or of which model, so a reader six months later
+had no way to tell a machine proposal from a human decision, and no way to know what
+would have to be re-run to reproduce it.
+
+The run log has this information and nobody keeps run logs.
+
+### Decision
+
+Any artifact whose content a model proposed carries the model on its face. For Turtle
+and YAML that is a `#`-comment block extending the existing DD-072 provenance header;
+for Markdown reports it is a one-line note placed *above* the figures it qualifies.
+
+`ai_attribution` records what a re-run would need — model, pipeline role, seed,
+reasoning effort — omitting anything not set, so an artifact generated without a seed
+does not claim one. The disclaimer names the artifact as a proposal for human review
+and points at the decision log for recording acceptance.
+
+The wording is about provenance and review status, not liability. The reader needs to
+know which statements were machine-proposed and that a human has not necessarily
+confirmed them; that is a claim the toolkit can actually stand behind.
+
+### Consequences
+
+Because seeding is best-effort at this prompt size (DD-177), the recorded settings are
+an audit trail of what was *asked for*, not a promise the artifact can be reproduced
+byte for byte. Recording them is still what makes a later divergence diagnosable
+rather than mysterious.
+
+Comment headers are inert in both formats — `rdflib` and `yaml.safe_load` ignore them
+— and the header is idempotent, so regenerating never stacks. Deterministic generators
+(`init`, `build-glossary`, `import-source`) are untouched and must never claim AI
+assistance they did not use; a test pins that.
+
+## DD-179: Alignment sees the table's role structure, and the mapping is checked as a set
+
+**Status:** Accepted
+**Date:** 2026-08-16
+**Affects:** `propose-alignment`
+**Implementation:** `core/propose_alignment.py` (`group_columns_by_role`, `format_role_structure`, `flag_role_collisions`)
+
+### Context
+
+The prompt presented source columns as a flat list, one line each, and asked for a
+property per column. The reference-model side was already graph-shaped — DD-172 renders
+`hasShipper (Organization) [OBJECT PROPERTY]` — but the source side was not, so the
+strongest signal a flat table carries was left on the floor.
+
+A flat table hides its relationships in its naming. `shipper_code`, `shipper_name`,
+`consignee_code`, `consignee_name` is not four unrelated columns: it is two references
+to the same kind of entity, in two different roles. That is exactly what distinguishes
+`hasShipper` from `hasConsignee`, two object properties with the same range that no
+amount of per-column name similarity can separate. Presented flat, the model had to
+rediscover the structure on every call, and nothing prevented it mapping both roles
+onto one property — a mistake that is individually defensible for each column and only
+visible when the set is examined together.
+
+### Decision
+
+The prompt gains an `APPARENT ROLE STRUCTURE` block listing columns grouped by shared
+leading token, with the rule that two different groups must not map to the same object
+property. Separately, `flag_role_collisions` checks the finished mapping as a set and
+records a `role-collision` flag on the table when two distinct roles do land on one
+property.
+
+Grouping is deliberately conservative, because a false group asserts a relationship the
+data does not have. A group needs a shared leading token, at least two members, no more
+than half the table (beyond that it is the table's *subject*, not a related entity),
+no structural token like `is`/`created`/`total`, and at least one member that actually
+identifies or names something (`code`, `name`, `id`, `key`, `ref`, …).
+
+That last condition came from the corpus, not from theory: a prefix-only rule produced
+`ActualDate`/`ActualTimeFrom` and `KmLoadingTotal`/`KmUnloadingTotal`, which share a
+prefix for reasons unrelated to entity identity. With it, 98 of 150 source tables carry
+a role structure, and they are the right ones — `origin(16)`/`destination(16)` on the
+orders table, `pickup(8)`/`delivery(8)` on stops.
+
+The guard flags and never blocks. Two roles legitimately share a property when the
+reference model is deliberately coarser than the source, and that is a design decision
+for a human, not an error to reject automatically.
+
+### Consequences
+
+Measured on the party domain, three parallel runs: recall rose from 24-25 columns to a
+steady **28** (+15%), with stability at 93% — inside the 82-100% band established in
+DD-177, and traded for materially more coverage on the axis that was weakest.
+
+The guard immediately earned itself, firing identically on all three runs: the `company`
+and `reference` roles both mapped to `partyIdentifier`. That is precisely the failure
+this decision exists to surface — plausible per column, wrong as a set.
+
+One honest cost: a single column mapped to different properties across runs, where
+earlier configurations had shown zero such conflicts. More columns attempted means more
+opportunity to disagree.
+
+A table with no role group renders no block, so its prompt is byte-identical to before,
+and `consistency_flags` is emitted only when a rule fires.
+
+Declared relationships from Power BI semantic models (`import-tmdl` already parses 17 of
+them across this hub's two models) remain unused. They are real relational evidence, but
+the BI table names are the semantic model's, not the source tables' — wiring them in
+needs a name-resolution step that this decision does not attempt.

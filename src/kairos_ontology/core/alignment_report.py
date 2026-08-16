@@ -34,6 +34,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from ._provenance import ai_attribution_note
+from .ai_provider import ROLE_ALIGNMENT
+
 SCHEMA_VERSION = 1
 
 REASON_OPERATIONAL = "operational"
@@ -354,8 +357,15 @@ def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) 
 
 
 def render_markdown(report: AlignmentReport, *, gap_limit: int = 40) -> str:
-    """Render the short report a reviewer reads before a design session."""
+    """Render the short report a reviewer reads before a design session.
+
+    Carries an AI-attribution note (DD-178): every coverage figure here counts
+    decisions a language model made, so the reader is told which model made them
+    before reading a single number.
+    """
     lines: list[str] = ["# Source alignment coverage", ""]
+    lines.append(f"> {ai_attribution_note(ROLE_ALIGNMENT)}")
+    lines.append("")
     lines.append(
         f"**{report.mapped:,} of {report.columns:,} source columns** aligned to a "
         f"reference-model property ({report.coverage:.0%}). "

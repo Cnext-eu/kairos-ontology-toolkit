@@ -54,8 +54,10 @@ from .ai_provider import (
     get_ai_client,
     resolve_ai_seed,
     resolve_reasoning_effort,
+    resolve_role_model,
     sanitize_provider_error,
 )
+from ._provenance import ai_attribution, provenance_comment
 from .ai_preflight import require_ai_provider
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import compute_entry_hash, open_cache
@@ -438,6 +440,11 @@ class TableAlignment:
     #: (e.g. clustered address columns). Populated only when a detector fires, so
     #: default output stays unchanged.
     relationship_candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: DD-179 — relational consistency warnings across the table's whole mapping
+    #: (e.g. two distinct role groups collapsing onto one property). Advisory: a
+    #: coarser model is a legitimate design choice, so these flag rather than
+    #: block. Emitted only when a rule fires, so default output is unchanged.
+    consistency_flags: list[str] = field(default_factory=list)
     #: F6 (toolkit-optimizations) — the true source-vocabulary column count and a
     #: deterministic digest of the sorted source column names, captured before any
     #: prompt truncation. Persisted so ``check-claims`` can detect columns that were
@@ -795,6 +802,108 @@ def _samples_for_column(col: dict[str, Any]) -> list[str]:
     return values if generous else values[:MAX_SAMPLES_HIGH_CARDINALITY]
 
 
+#: Smallest number of columns sharing a leading token that counts as a role (DD-179).
+#: Two is the meaningful floor — ``shipper_code`` + ``shipper_name`` is exactly the
+#: pattern worth surfacing, and it is the commonest shape of a flattened relationship.
+MIN_ROLE_GROUP_COLUMNS = 2
+
+#: A "group" covering more than this share of a table is the table's own subject, not
+#: a role within it: on a ``customers`` table half the columns start with ``customer``,
+#: and calling that a related entity would invent a relationship that is not there.
+MAX_ROLE_GROUP_SHARE = 0.5
+
+#: Leading tokens that never denote a role — they are structural or temporal
+#: qualifiers that cluster for reasons unrelated to entity identity.
+_NON_ROLE_TOKENS = frozenset(
+    {
+        "is", "has", "no", "id", "code", "name", "date", "time", "created", "updated",
+        "modified", "deleted", "archived", "total", "sum", "count", "min", "max", "avg",
+        "first", "last", "new", "old", "current", "previous", "default", "temp", "tmp",
+    }
+)
+
+#: Trailing tokens marking a column as *identifying or naming an entity*.
+#:
+#: This is what separates a role from a coincidence of prefixes. ``shipper_code``
+#: + ``shipper_name`` refers to an entity twice; ``ActualDate`` +
+#: ``ActualTimeFrom`` and ``KmLoadingTotal`` + ``KmUnloadingTotal`` share a prefix
+#: for reasons that have nothing to do with entity identity, and were grouped by a
+#: prefix-only rule on the live corpus. Requiring one of these markers targets the
+#: pattern the "two roles must not share a property" rule is actually about, and
+#: keeps the prompt quiet on the rest — an unhelpful group is not neutral, it
+#: asserts a relationship the data does not have.
+_ENTITY_REFERENCE_TOKENS = frozenset(
+    {
+        "code", "codes", "name", "names", "id", "ids", "identifier", "key", "keys",
+        "number", "no", "nr", "ref", "reference", "description", "descr", "label",
+    }
+)
+
+
+def _is_entity_reference(column_name: str) -> bool:
+    """True when the column's non-leading tokens identify or name something."""
+    cleaned = str(column_name or "").replace("_", " ").replace("-", " ")
+    tokens = [t.lower() for t in _TOKEN_RE.findall(cleaned)]
+    return any(t in _ENTITY_REFERENCE_TOKENS for t in tokens[1:])
+
+
+def _leading_token(column_name: str) -> str:
+    """Return the first token of a column name (``shipper_code`` -> ``shipper``)."""
+    cleaned = str(column_name or "").replace("_", " ").replace("-", " ")
+    tokens = _TOKEN_RE.findall(cleaned)
+    return tokens[0].lower() if tokens else ""
+
+
+def group_columns_by_role(
+    columns: list[dict[str, Any]],
+) -> tuple[list[tuple[str, list[dict[str, Any]]]], list[dict[str, Any]]]:
+    """Split columns into apparent role groups and the ungrouped remainder (DD-179).
+
+    Returns ``(groups, ungrouped)`` where *groups* is an ordered list of
+    ``(role_token, columns)``.
+
+    A flat table hides its relationships in its naming. ``shipper_code``,
+    ``shipper_name``, ``consignee_code``, ``consignee_name`` is not six unrelated
+    columns — it is two references to the same kind of entity, in two different
+    roles, and that is the single strongest signal available for choosing between
+    two object properties with the same range. Presented as a flat list, the model
+    has to rediscover it from names alone on every call, and nothing stops it
+    mapping both roles onto the same property.
+
+    Grouping is deliberately conservative: shared leading token, at least
+    :data:`MIN_ROLE_GROUP_COLUMNS` members, no more than
+    :data:`MAX_ROLE_GROUP_SHARE` of the table, never a structural token like ``is``
+    or ``created``, and at least one member that actually *identifies or names*
+    something (:data:`_ENTITY_REFERENCE_TOKENS`). That last condition is what makes
+    the rule precise: without it the live corpus produced groups like
+    ``ActualDate``/``ActualTimeFrom`` and ``KmLoadingTotal``/``KmUnloadingTotal``,
+    which share a prefix for reasons unrelated to entity identity. A false group is
+    worse than none — it asserts a relationship the data does not have.
+
+    Column order within a group, and group order, follow the input, which is
+    already deterministic (DD-175).
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for col in columns:
+        token = _leading_token(col.get("name", ""))
+        if token and token not in _NON_ROLE_TOKENS:
+            buckets.setdefault(token, []).append(col)
+
+    ceiling = max(MIN_ROLE_GROUP_COLUMNS, int(len(columns) * MAX_ROLE_GROUP_SHARE))
+    grouped_names: set[str] = set()
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    for token, members in buckets.items():
+        if not MIN_ROLE_GROUP_COLUMNS <= len(members) <= ceiling:
+            continue
+        if not any(_is_entity_reference(m.get("name", "")) for m in members):
+            continue
+        groups.append((token, members))
+        grouped_names.update(str(m.get("name", "")) for m in members)
+
+    ungrouped = [c for c in columns if str(c.get("name", "")) not in grouped_names]
+    return groups, ungrouped
+
+
 def _format_source_columns(columns: list[dict[str, Any]]) -> str:
     """Format source columns for the LLM prompt, within a per-table sample budget."""
     lines = []
@@ -814,6 +923,34 @@ def _format_source_columns(columns: list[dict[str, Any]]) -> str:
         remaining -= len(samples_str)
         samples_part = f" | samples: {samples_str}" if samples_str else ""
         lines.append(f"  - {col['name']} ({col.get('data_type', 'unknown')}){samples_part}")
+    return "\n".join(lines)
+
+
+def format_role_structure(columns: list[dict[str, Any]]) -> str:
+    """Render the table's apparent role structure for the prompt (DD-179).
+
+    Returns an empty string when no role group is found, so a table without this
+    shape sends a byte-identical prompt to before.
+    """
+    groups, ungrouped = group_columns_by_role(columns[:MAX_COLUMNS_PER_PROMPT])
+    if not groups:
+        return ""
+
+    lines = [
+        "APPARENT ROLE STRUCTURE (derived from column naming, not declared):",
+        "",
+        "  Columns sharing a leading token usually describe ONE related entity in a",
+        "  specific role. Treat each group as a unit: decide what entity it refers to,",
+        "  then which property carries that role. Two DIFFERENT groups must NOT map to",
+        "  the same object property — that is the signal telling them apart.",
+        "",
+    ]
+    for token, members in groups:
+        names = ", ".join(str(m.get("name", "")) for m in members)
+        lines.append(f'  ROLE "{token}" ({len(members)} columns): {names}')
+    if ungrouped:
+        others = ", ".join(str(c.get("name", "")) for c in ungrouped)
+        lines.append(f"  (no role group: {others})")
     return "\n".join(lines)
 
 
@@ -1172,6 +1309,10 @@ def build_alignment_prompt(
 
     ref_inventory = _format_ref_inventory(ref_classes)
     source_cols = _format_source_columns(columns)
+    # DD-179: blank line either side when present; empty string when no role group
+    # was found, so a table without this shape keeps its previous prompt exactly.
+    role_block = format_role_structure(columns)
+    role_structure = f"\n{role_block}\n" if role_block else ""
 
     class_names = ", ".join(c["name"] for c in table_classes)
     semantic_records = [c.get("_semantic", {}) for c in ref_classes]
@@ -1218,7 +1359,7 @@ STEP 2: For each source column, find the best matching reference model property.
 SOURCE TABLE: {table_name}
 COLUMNS:
 {source_cols}
-
+{role_structure}
 REFERENCE MODEL CLASSES AND PROPERTIES:
 {ref_inventory}
 
@@ -1430,6 +1571,54 @@ def normalize_schema_response(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(verdict, dict)
     ]
     return {**result, "column_alignments": converted}
+
+
+#: Flag raised when two distinct role groups collapse onto one object property.
+FLAG_ROLE_COLLISION = "role-collision"
+
+
+def flag_role_collisions(
+    columns: list[dict[str, Any]],
+    alignments: list[dict[str, Any]],
+) -> list[str]:
+    """Flag distinct role groups mapped onto the same property (DD-179).
+
+    The relational check the prompt cannot enforce. If ``shipper_code`` and
+    ``consignee_code`` both land on ``hasShipper``, one of them is wrong — and it
+    is wrong in a way that reads as plausible in isolation, because each mapping
+    is individually defensible. Only looking at the set reveals it.
+
+    Flags, never blocks: two roles legitimately share a property when the model
+    is genuinely coarser than the source (a single ``hasParty`` where the source
+    tracks shipper and consignee separately), and that is a design decision for a
+    human, not an error to reject automatically.
+
+    Only the *shared leading token* defines a role here, so this cannot fire on
+    columns that merely happen to map alike.
+    """
+    groups, _ = group_columns_by_role(columns)
+    if len(groups) < 2:
+        return []
+
+    role_of = {
+        str(member.get("name", "")): token for token, members in groups for member in members
+    }
+    property_roles: dict[str, set[str]] = {}
+    for entry in alignments:
+        if not isinstance(entry, dict):
+            continue
+        prop = entry.get("ref_property")
+        role = role_of.get(str(entry.get("column", "")))
+        if prop and role:
+            property_roles.setdefault(str(prop), set()).add(role)
+
+    return [
+        f"{FLAG_ROLE_COLLISION}: roles {sorted(roles)} both map to '{prop}' — "
+        f"distinct roles sharing one property loses the distinction the source makes; "
+        f"confirm the model is deliberately coarser, or split the property."
+        for prop, roles in sorted(property_roles.items())
+        if len(roles) > 1
+    ]
 
 
 def _count_non_custom_alignments(result: dict[str, Any]) -> int:
@@ -3896,6 +4085,13 @@ def _propose_alignments(
             flag_risky_proposals(
                 custom_cols, class_cautions=class_cautions, ref_class_uri=_resolved_uri
             )
+            # DD-179: the relational check no single-column rule can make — it
+            # needs the whole table's mapping at once.
+            consistency_flags = flag_role_collisions(
+                columns, result.get("column_alignments", []) or []
+            )
+            for flag in consistency_flags:
+                logger.info("Alignment consistency (%s.%s): %s", system, table, flag)
 
             ta = TableAlignment(
                 system=system,
@@ -3904,6 +4100,7 @@ def _propose_alignments(
                 ref_class_confidence=result.get("ref_class_confidence", 0.0),
                 columns=col_alignments,
                 custom_columns=custom_cols,
+                consistency_flags=consistency_flags,
                 ref_class_status=result.get("ref_class_status", "matched"),
                 rejected_ref_class=result.get("rejected_ref_class"),
                 source_column_count=src_count,
@@ -4097,7 +4294,7 @@ def _propose_alignments(
         if staged["kind"] == "cached":
             output_files.append(staged["path"])
             continue
-        out_path = write_alignment_output(staged["alignment"], output_dir)
+        out_path = write_alignment_output(staged["alignment"], output_dir, model=model)
         output_files.append(out_path)
         report(f"     ✓ Written: {out_path.name}")
 
@@ -4337,6 +4534,10 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
             table_dict["likely_entity_uri"] = ta.likely_entity_uri
         if ta.anchor_candidate_uris:
             table_dict["anchor_candidate_uris"] = list(ta.anchor_candidate_uris)
+        # DD-179: relational consistency warnings, emitted only when a rule fired
+        # so a clean table's output stays byte-identical.
+        if ta.consistency_flags:
+            table_dict["consistency_flags"] = list(ta.consistency_flags)
         # Alignment-reliability: emit the generation outcome + safe metadata only
         # when it is not the happy path, so a fully-successful run's output stays
         # byte-identical to before. ``generation_error`` is already sanitized.
@@ -4403,12 +4604,31 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
 def write_alignment_output(
     alignment: DomainAlignment,
     output_dir: Path,
+    *,
+    model: str = "",
 ) -> Path:
-    """Write the complete advisory alignment without creating governance state."""
+    """Write the complete advisory alignment without creating governance state.
+
+    The file carries an AI-attribution header (DD-178). Every mapping in it was
+    proposed by a language model, and the YAML reads as settled fact once it is
+    on disk — so the artifact states its own provenance and review status rather
+    than relying on whoever opens it remembering how it was made.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / f"{alignment.domain}-alignment.yaml"
+    header = provenance_comment(
+        "propose-alignment",
+        extra=ai_attribution(
+            model=model or resolve_role_model(ROLE_ALIGNMENT),
+            role=ROLE_ALIGNMENT,
+            seed=resolve_ai_seed(ROLE_ALIGNMENT),
+            reasoning_effort=resolve_reasoning_effort(ROLE_ALIGNMENT),
+        ),
+        ai_generated=True,
+    )
     target.write_text(
-        yaml.safe_dump(alignment_to_dict(alignment), sort_keys=False, allow_unicode=True),
+        header
+        + yaml.safe_dump(alignment_to_dict(alignment), sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
     return target
