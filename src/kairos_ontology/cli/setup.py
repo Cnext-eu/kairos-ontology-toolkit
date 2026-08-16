@@ -1198,6 +1198,16 @@ def new_repo(
     # update-referencemodels.ps1 is no longer installed; reference models are
     # populated by the `kairos-ontology update-refmodels` command instead.
 
+    # --- .env.example ---------------------------------------------------------
+    # `init` and `update` both install this, but a hub scaffolded with --local-only may
+    # sit for a while before `init` runs, and the AI provider config is the first thing
+    # someone looks for. Emitted here, before git init, so it lands in the first commit.
+    env_example_src = _SCAFFOLD_DIR / ".env.example"
+    env_example_dst = repo_dir / ".env.example"
+    if env_example_src.is_file() and not env_example_dst.exists():
+        shutil.copy2(env_example_src, env_example_dst)
+        print("  ✓ .env.example (AI provider configuration template)")
+
     # setup-env.ps1 (uv environment bootstrap)
     setup_env_src = _SCAFFOLD_DIR / "setup-env.ps1"
     if setup_env_src.is_file():

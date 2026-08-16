@@ -308,6 +308,28 @@ def _resolve_github(model: str) -> AIProviderConfig:
     )
 
 
+def foundry_openai_base_url(endpoint: str) -> str:
+    """Derive the OpenAI-compatible base URL from a Foundry endpoint.
+
+    Accepts either shape a user may have configured and normalises both to
+    ``https://<resource>.services.ai.azure.com/openai/v1``:
+
+    * the project endpoint the SDK path wants --
+      ``https://<resource>.services.ai.azure.com/api/projects/<project>``
+    * the bare resource URL -- ``https://<resource>.services.ai.azure.com``
+
+    The project segment is dropped deliberately: it scopes the *projects* API, while an
+    API key authenticates the resource-level inference surface.
+    """
+    base = endpoint.strip().rstrip("/")
+    marker = "/api/projects/"
+    if marker in base:
+        base = base.split(marker, 1)[0]
+    if base.endswith("/openai/v1"):
+        return base
+    return f"{base}/openai/v1"
+
+
 def _resolve_azure(model: str) -> AIProviderConfig:
     """Resolve Azure AI Foundry configuration."""
     endpoint = os.environ.get(ENV_AZURE_ENDPOINT)
@@ -461,31 +483,22 @@ def _create_foundry_client(config: AIProviderConfig):
         )
         return project_client.get_openai_client()
 
-    if config.api_key:
-        try:
-            from azure.core.credentials import AzureKeyCredential
+    def _openai_key_client(cfg):
+        from openai import OpenAI
 
-            return _openai_from_credential(AzureKeyCredential(config.api_key))
-        except AttributeError:
-            # azure-ai-projects requires a TokenCredential (get_token); an API key
-            # cannot be used on this SDK path. Fall back to DefaultAzureCredential.
-            logger.warning(
-                "%s is set but the Foundry SDK requires AAD token auth "
-                "(AzureKeyCredential has no get_token). Falling back to "
-                "DefaultAzureCredential (az login / managed identity).",
-                ENV_FOUNDRY_API_KEY,
-            )
-            token_credential = _build_token_credential()
-            if token_credential is None:
-                raise NotConfigured(
-                    "The Microsoft Foundry SDK requires AAD token authentication, "
-                    f"but {ENV_FOUNDRY_API_KEY} (an API key) cannot provide a token "
-                    "and azure-identity is not installed.\n"
-                    "Either run `az login` (or use a managed identity) with "
-                    "azure-identity installed, or unset the API key.\n"
-                    "Install with: pip install kairos-ontology-toolkit[foundry]"
-                )
-            return _openai_from_credential(token_credential)
+        return OpenAI(base_url=foundry_openai_base_url(cfg.endpoint), api_key=cfg.api_key)
+
+    if config.api_key:
+        # Key auth does not go through AIProjectClient at all. That SDK path calls
+        # credential.get_token(), which AzureKeyCredential does not implement -- and it
+        # does so *lazily*, when the returned client is first used, so the previous
+        # AttributeError fallback here never fired: the error surfaced later, at the
+        # call site, as an opaque "endpoint unreachable".
+        #
+        # A Foundry resource serves an OpenAI-compatible surface at
+        # <resource>/openai/v1, which is exactly what an API key authenticates against.
+        # Talk to it directly.
+        return _openai_key_client(config)
 
     token_credential = _build_token_credential()
     if token_credential is None:

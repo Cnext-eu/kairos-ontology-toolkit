@@ -418,131 +418,72 @@ class TestCreateFoundryClient:
             with pytest.raises(EnvironmentError, match="azure-ai-projects"):
                 _create_foundry_client(config)
 
-    def test_foundry_with_api_key(self):
-        """Foundry with API key uses AzureKeyCredential when the SDK accepts it."""
-        from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
+    def test_foundry_with_api_key_uses_the_openai_surface_directly(self):
+        """An API key must NOT go through AIProjectClient.
 
-        mock_project_client = MagicMock()
-        mock_openai = MagicMock()
-        mock_project_client.get_openai_client.return_value = mock_openai
-
-        mock_projects_module = MagicMock()
-        mock_projects_module.AIProjectClient.return_value = mock_project_client
-
-        mock_key_cred_module = MagicMock()
+        That SDK path calls ``credential.get_token()``, which ``AzureKeyCredential``
+        does not implement -- and it does so lazily, when the client is first used, so
+        the old ``AttributeError`` fallback never fired and the failure surfaced at the
+        call site as "endpoint unreachable". Verified against a live Foundry resource:
+        both configured models answer over ``<resource>/openai/v1`` with key auth.
+        """
+        from kairos_ontology.core.ai_provider import AIProviderConfig, _create_foundry_client
 
         config = AIProviderConfig(
             provider="foundry",
-            endpoint="https://my.ai.azure.com/api/projects/proj",
+            endpoint="https://my.services.ai.azure.com/api/projects/proj",
             api_key="my-foundry-key",
             model="gpt-5.4-mini",
         )
 
+        mock_openai_module = MagicMock()
+        mock_projects_module = MagicMock()
         with patch.dict(
             "sys.modules",
-            {
-                "azure.ai.projects": mock_projects_module,
-                "azure.core.credentials": mock_key_cred_module,
-            },
+            {"openai": mock_openai_module, "azure.ai.projects": mock_projects_module},
         ):
             client = _create_foundry_client(config)
 
-        mock_projects_module.AIProjectClient.assert_called_once()
-        call_kwargs = mock_projects_module.AIProjectClient.call_args.kwargs
-        assert call_kwargs["endpoint"] == config.endpoint
-        mock_project_client.get_openai_client.assert_called_once()
-        assert client is mock_openai
-
-    def test_foundry_api_key_falls_back_to_token_credential(self):
-        """When the Foundry SDK rejects the API key (needs get_token), fall back
-        to DefaultAzureCredential and succeed."""
-        from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
-
-        key_sentinel = object()
-        token_sentinel = object()
-        mock_openai = MagicMock()
-
-        key_project = MagicMock()
-        key_project.get_openai_client.side_effect = AttributeError(
-            "'AzureKeyCredential' object has no attribute 'get_token'"
+        mock_projects_module.AIProjectClient.assert_not_called()
+        mock_openai_module.OpenAI.assert_called_once_with(
+            base_url="https://my.services.ai.azure.com/openai/v1",
+            api_key="my-foundry-key",
         )
-        token_project = MagicMock()
-        token_project.get_openai_client.return_value = mock_openai
+        assert client is mock_openai_module.OpenAI.return_value
 
-        def make_client(*, endpoint, credential):
-            if credential is key_sentinel:
-                return key_project
-            return token_project
-
-        mock_projects_module = MagicMock()
-        mock_projects_module.AIProjectClient.side_effect = make_client
-
-        mock_key_cred_module = MagicMock()
-        mock_key_cred_module.AzureKeyCredential.return_value = key_sentinel
-
-        mock_identity_module = MagicMock()
-        mock_identity_module.DefaultAzureCredential.return_value = token_sentinel
+    def test_foundry_without_api_key_still_uses_token_credential(self):
+        """Entra ID auth is unchanged: no key means AIProjectClient + a TokenCredential."""
+        from kairos_ontology.core.ai_provider import AIProviderConfig, _create_foundry_client
 
         config = AIProviderConfig(
             provider="foundry",
-            endpoint="https://my.ai.azure.com/api/projects/proj",
-            api_key="my-foundry-key",
+            endpoint="https://my.services.ai.azure.com/api/projects/proj",
+            api_key="",
             model="gpt-5.4-mini",
         )
+
+        mock_openai = MagicMock()
+        project_client = MagicMock()
+        project_client.get_openai_client.return_value = mock_openai
+        mock_projects_module = MagicMock()
+        mock_projects_module.AIProjectClient.return_value = project_client
+        mock_identity_module = MagicMock()
 
         with patch.dict(
             "sys.modules",
             {
                 "azure.ai.projects": mock_projects_module,
-                "azure.core.credentials": mock_key_cred_module,
                 "azure.identity": mock_identity_module,
             },
         ):
             client = _create_foundry_client(config)
 
+        mock_projects_module.AIProjectClient.assert_called_once()
+        assert (
+            mock_projects_module.AIProjectClient.call_args.kwargs["endpoint"]
+            == config.endpoint
+        )
         assert client is mock_openai
-        assert mock_projects_module.AIProjectClient.call_count == 2
-        mock_identity_module.DefaultAzureCredential.assert_called_once()
-
-    def test_foundry_api_key_fallback_no_identity_raises(self):
-        """API key rejected by SDK and azure-identity missing → clear error."""
-        from kairos_ontology.core.ai_provider import _create_foundry_client, AIProviderConfig
-
-        key_sentinel = object()
-        key_project = MagicMock()
-        key_project.get_openai_client.side_effect = AttributeError(
-            "'AzureKeyCredential' object has no attribute 'get_token'"
-        )
-        mock_projects_module = MagicMock()
-        mock_projects_module.AIProjectClient.return_value = key_project
-
-        mock_key_cred_module = MagicMock()
-        mock_key_cred_module.AzureKeyCredential.return_value = key_sentinel
-
-        config = AIProviderConfig(
-            provider="foundry",
-            endpoint="https://my.ai.azure.com/api/projects/proj",
-            api_key="my-foundry-key",
-            model="gpt-5.4-mini",
-        )
-
-        real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
-
-        def selective_import(name, *args, **kwargs):
-            if name == "azure.identity":
-                raise ImportError("No module named 'azure.identity'")
-            return real_import(name, *args, **kwargs)
-
-        with patch.dict(
-            "sys.modules",
-            {
-                "azure.ai.projects": mock_projects_module,
-                "azure.core.credentials": mock_key_cred_module,
-            },
-        ):
-            with patch("builtins.__import__", side_effect=selective_import):
-                with pytest.raises(EnvironmentError, match="azure-identity"):
-                    _create_foundry_client(config)
 
     def test_foundry_no_key_no_identity_raises(self):
         """Foundry without API key and without azure-identity should error."""
@@ -748,3 +689,30 @@ class TestCreateChatCompletion:
                 temperature=0.1,
             )
         assert client.chat.completions.create.call_count == 2
+
+
+class TestFoundryOpenAIBaseUrl:
+    """DD: derive the OpenAI-compatible surface from either configured shape."""
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://res.services.ai.azure.com/api/projects/proj",
+            "https://res.services.ai.azure.com/api/projects/proj/",
+            "https://res.services.ai.azure.com",
+            "https://res.services.ai.azure.com/",
+            "https://res.services.ai.azure.com/openai/v1",
+        ],
+    )
+    def test_all_configured_shapes_normalise_to_one_base(self, endpoint: str) -> None:
+        from kairos_ontology.core.ai_provider import foundry_openai_base_url
+
+        assert foundry_openai_base_url(endpoint) == "https://res.services.ai.azure.com/openai/v1"
+
+    def test_project_segment_is_dropped_not_appended(self) -> None:
+        """The project scopes the projects API; a key authenticates the resource."""
+        from kairos_ontology.core.ai_provider import foundry_openai_base_url
+
+        assert "projects" not in foundry_openai_base_url(
+            "https://res.services.ai.azure.com/api/projects/kairos-ontology"
+        )

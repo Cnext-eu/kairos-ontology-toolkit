@@ -68,3 +68,52 @@ def test_new_repo_local_only_skips_github(tmp_path, monkeypatch):
     assert (repo / ".git").is_dir()
     # The command must say how to publish later rather than silently leaving no remote.
     assert "gh repo create" in result.output
+
+
+def test_root_env_example_matches_the_scaffold_copy():
+    """The toolkit repo ships the same AI-config template it scaffolds into hubs.
+
+    Without a committed root copy, a contributor cloning the toolkit has no template
+    at all -- the only one lives under scaffold/ as packaged data for hubs. Two copies
+    invite drift, so they are asserted byte-identical, the same way the two skill trees
+    are (see test_v5_skill_scenario).
+    """
+    root = Path(__file__).resolve().parents[1]
+    scaffold = root / "src" / "kairos_ontology" / "scaffold" / ".env.example"
+    committed = root / ".env.example"
+    assert committed.is_file(), "toolkit root is missing .env.example"
+    assert committed.read_bytes() == scaffold.read_bytes()
+
+
+def test_new_repo_emits_env_example_into_the_initial_commit(tmp_path):
+    """A --local-only hub must be self-describing before `init` ever runs."""
+    import subprocess
+    from unittest import mock
+
+    from click.testing import CliRunner
+
+    from kairos_ontology.cli.main import cli
+
+    with mock.patch("kairos_ontology.cli.setup._create_github_repo"), mock.patch(
+        "kairos_ontology.cli.setup._configure_branch_protection"
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "new-repo",
+                "envtest",
+                "--path",
+                str(tmp_path),
+                "--company-domain",
+                "example.com",
+                "--local-only",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+
+    repo = tmp_path / "envtest-ontology-hub"
+    assert (repo / ".env.example").is_file()
+    tracked = subprocess.run(
+        ["git", "ls-files", ".env.example"], cwd=repo, capture_output=True, text=True
+    ).stdout
+    assert ".env.example" in tracked, "emitted after git init, so it missed the first commit"
