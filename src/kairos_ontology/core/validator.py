@@ -1614,6 +1614,53 @@ def run_validation(
             )
             print()
 
+        # Unmapped real signal (DD-169). A HARD stop, not degradable: alignment is the
+        # first stage that can say "this column holds business data the canonical model
+        # has nowhere to put", and entity binding is where that becomes permanent — a
+        # binding either maps a column or silently leaves it behind, and afterwards the
+        # omission is indistinguishable from a finished mapping. Deciding is cheap here
+        # and expensive later, so the gate sits before binding rather than after.
+        from .alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
+
+        undecided_columns = undecided_gap_columns(
+            ontologies_path.parent.parent, domains=sorted({p.stem for p in ontology_files})
+        )
+        if undecided_columns:
+            results["integrity"]["failed"] += len(undecided_columns)
+            results["integrity"]["errors"].extend(
+                {
+                    "code": "alignment.undecided-gap-column",
+                    "message": (
+                        f"{c.system}.{c.table}.{c.column} ({c.data_type}) carries real "
+                        f"signal with no canonical home [{c.reason}]"
+                    ),
+                }
+                for c in undecided_columns
+            )
+            print("🕳  Unmapped source signal")
+            print("-" * 50)
+            print(
+                f"  ✗ {len(undecided_columns)} source column(s) carry real business data "
+                "with no home in the domain model, and no recorded decision."
+            )
+            by_table: dict[str, int] = {}
+            for column in undecided_columns:
+                key = f"{column.system}.{column.table}"
+                by_table[key] = by_table.get(key, 0) + 1
+            for table, count in sorted(by_table.items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
+                print(f"     {table}: {count} column(s)")
+            print("\n  Resolve each by one of:")
+            for resolution in GAP_RESOLUTIONS:
+                print(f"     - {resolution}")
+            print(
+                "\n  Full list: kairos-ontology alignment-report --format json"
+            )
+            print(
+                "  This is not degradable: --degraded is for policy divergence, and an "
+                "unmapped business signal is a modelling decision nobody has made yet."
+            )
+            print()
+
     if decisions_path is not None and Path(decisions_path).is_dir():
         from .decision_records import validate_decision_bundle
 

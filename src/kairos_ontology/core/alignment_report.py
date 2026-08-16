@@ -355,6 +355,60 @@ def render_markdown(report: AlignmentReport, *, gap_limit: int = 40) -> str:
     return "\n".join(lines)
 
 
+#: What a reviewer must choose between for each undecided gap column. Rendered into the
+#: gate's failure output, because a hard stop that does not say how to clear it is an
+#: obstacle rather than a control.
+GAP_RESOLUTIONS: tuple[str, ...] = (
+    "model it in the domain that owns it (the reference model lacks it, the business "
+    "has it, and a sibling domain is the right home)",
+    "register it with 'kairos-ontology register-concept' — real business data outside "
+    "the archetype catalog, recorded with its source evidence",
+    "record a disposition: 'source-disposition set --system <s> --table <t> --column "
+    "<c> --disposition <blueprint-gap|not-business-data|deferred> --rationale \"...\"'",
+)
+
+
+def undecided_gap_columns(
+    hub_root: Path, *, domains: Iterable[str] | None = None
+) -> list[UnmappedColumn]:
+    """Return gap columns that carry real signal and have no recorded decision (DD-169).
+
+    This is the pre-binding gate. Alignment is the first stage that can say "this column
+    holds business data and the canonical model has nowhere to put it", and Stage 4 is
+    where that becomes permanent: an EntityBinding either maps a column or silently
+    leaves it behind, and by then the omission looks like a completed mapping.
+
+    Only :data:`GAP_REASONS` columns count. Audit stamps, vendor placeholders and
+    evidence-free columns are excluded by construction, so clearing this gate means
+    deciding about real signal, not clicking through noise.
+    """
+    from .source_disposition import load_dispositions
+
+    report = build_alignment_report(
+        Path(hub_root) / "integration" / "sources" / "_analysis"
+    )
+    scope = set(domains) if domains is not None else None
+    recorded = load_dispositions(Path(hub_root))
+    decided = {
+        (str(entry.get("system") or ""), str(entry.get("table") or ""), str(entry.get("column") or ""))
+        for entry in recorded.values()
+    }
+
+    undecided: list[UnmappedColumn] = []
+    for domain in report.domains:
+        if scope is not None and domain.domain not in scope:
+            continue
+        for column in domain.gap_columns:
+            # A table-grain disposition covers every column in it: deciding a whole
+            # table is out of scope also decides its columns.
+            if (column.system, column.table, "") in decided:
+                continue
+            if (column.system, column.table, column.column) in decided:
+                continue
+            undecided.append(column)
+    return undecided
+
+
 def iter_gap_columns(report: AlignmentReport) -> Iterable[UnmappedColumn]:
     """Yield gap columns worst-table-first, for callers driving a review."""
     ranked = {table: index for index, (table, _) in enumerate(report.gaps_by_table())}

@@ -232,3 +232,95 @@ def test_every_reason_carries_guidance(reason: str) -> None:
     from kairos_ontology.core.alignment_report import REASON_GUIDANCE
 
     assert REASON_GUIDANCE[reason].strip()
+
+
+class TestPreBindingGate:
+    """DD-169: real unmapped signal must be decided before entity binding."""
+
+    def _hub(self, tmp_path: Path, custom: list[dict]) -> Path:
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        _write_domain(analysis, "party", [_table(custom=custom)])
+        return tmp_path
+
+    def test_real_signal_without_a_decision_is_reported(self, tmp_path: Path) -> None:
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+
+        hub = self._hub(tmp_path, [{"column": "quay_code", "example_values": ["ZEE"]}])
+        undecided = undecided_gap_columns(hub)
+        assert [c.column for c in undecided] == ["quay_code"]
+
+    def test_noise_never_reaches_the_gate(self, tmp_path: Path) -> None:
+        """Clearing this gate must mean deciding about signal, not clicking through noise."""
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+
+        hub = self._hub(
+            tmp_path,
+            [
+                {"column": "created_at"},
+                {"column": "Column7", "example_values": ["x"]},
+                {"column": "empty_field"},
+            ],
+        )
+        assert undecided_gap_columns(hub) == []
+
+    def test_a_column_decision_clears_that_column(self, tmp_path: Path) -> None:
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+        from kairos_ontology.core.source_disposition import record_disposition
+
+        hub = self._hub(
+            tmp_path,
+            [
+                {"column": "quay_code", "example_values": ["ZEE"]},
+                {"column": "lane_code", "example_values": ["A1"]},
+            ],
+        )
+        record_disposition(
+            hub_root=hub, system="qargo", table="companies", column="quay_code",
+            disposition="blueprint-gap", rationale="No accelerator home for quay codes.",
+        )
+        assert [c.column for c in undecided_gap_columns(hub)] == ["lane_code"]
+
+    def test_a_table_decision_covers_all_its_columns(self, tmp_path: Path) -> None:
+        """Deciding a whole table is out of scope also decides its columns."""
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+        from kairos_ontology.core.source_disposition import record_disposition
+
+        hub = self._hub(
+            tmp_path,
+            [
+                {"column": "quay_code", "example_values": ["ZEE"]},
+                {"column": "lane_code", "example_values": ["A1"]},
+            ],
+        )
+        record_disposition(
+            hub_root=hub, system="qargo", table="companies",
+            disposition="not-business-data", rationale="Scratch export.",
+        )
+        assert undecided_gap_columns(hub) == []
+
+    def test_the_gate_is_domain_scoped(self, tmp_path: Path) -> None:
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        _write_domain(analysis, "party", [_table(custom=[{"column": "a", "example_values": ["v"]}])])
+        _write_domain(
+            analysis, "booking",
+            [_table(table="orders", custom=[{"column": "b", "example_values": ["v"]}])],
+        )
+        assert len(undecided_gap_columns(tmp_path)) == 2
+        assert [c.column for c in undecided_gap_columns(tmp_path, domains=["party"])] == ["a"]
+
+    def test_no_alignment_yet_is_not_a_failure(self, tmp_path: Path) -> None:
+        """A hub that has not aligned cannot be blocked by an alignment gate."""
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+
+        assert undecided_gap_columns(tmp_path) == []
+
+    def test_the_gate_states_how_to_clear_it(self) -> None:
+        """A hard stop that does not say how to clear it is an obstacle, not a control."""
+        from kairos_ontology.core.alignment_report import GAP_RESOLUTIONS
+
+        joined = " ".join(GAP_RESOLUTIONS)
+        assert "register-concept" in joined
+        assert "source-disposition set" in joined
+        assert "model it in the domain that owns it" in joined

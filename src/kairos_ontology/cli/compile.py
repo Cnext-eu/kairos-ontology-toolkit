@@ -235,6 +235,34 @@ def compile_cmd(
     # Scoped to this domain and to the non-degradable subset only: a compile must not be
     # blocked by another domain's boundary divergence, and these two codes are
     # correctness failures a hub can always fix itself.
+    # DD-169: the last point before a binding makes an omission permanent. Compile is
+    # what a binding author runs, so gating it here is what "close the gap before entity
+    # binding" actually means in practice.
+    try:
+        from ..core.alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
+
+        undecided = undecided_gap_columns(hub, domains=[domain])
+    except Exception:  # noqa: BLE001 - never fail a compile on the guard itself
+        undecided = []
+    if undecided:
+        click.echo(
+            f"✗ {len(undecided)} source column(s) in '{domain}' carry real business data "
+            "with no canonical home and no recorded decision:",
+            err=True,
+        )
+        for column in undecided[:10]:
+            click.echo(
+                f"    {column.system}.{column.table}.{column.column} "
+                f"({column.data_type}) [{column.reason}]",
+                err=True,
+            )
+        if len(undecided) > 10:
+            click.echo(f"    … and {len(undecided) - 10} more", err=True)
+        click.echo("  Resolve each by one of:", err=True)
+        for resolution in GAP_RESOLUTIONS:
+            click.echo(f"    - {resolution}", err=True)
+        raise click.exceptions.Exit(1)
+
     integrity_failures = _domain_integrity_failures(hub, domain)
     if integrity_failures:
         for finding in integrity_failures:

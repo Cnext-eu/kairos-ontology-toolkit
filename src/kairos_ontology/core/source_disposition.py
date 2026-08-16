@@ -197,14 +197,14 @@ def load_dispositions(hub_root: Path) -> dict[tuple[str, str], dict[str, Any]]:
         return {}
     if not isinstance(payload, dict):
         return {}
-    recorded: dict[tuple[str, str], dict[str, Any]] = {}
+    recorded: dict[tuple[str, str, str], dict[str, Any]] = {}
     for entry in payload.get("tables") or []:
         if not isinstance(entry, dict):
             continue
         system = str(entry.get("system") or "").strip()
         table = str(entry.get("table") or "").strip()
         if system and table:
-            recorded[(system, table)] = entry
+            recorded[(system, table, str(entry.get("column") or ""))] = entry
     return recorded
 
 
@@ -233,7 +233,7 @@ def audit_source_dispositions(
             report.tables_bound += 1
             continue
 
-        entry = recorded.get(key)
+        entry = recorded.get((*key, ""))
         if entry is not None:
             disposition = str(entry.get("disposition") or "").strip()
             if disposition not in DISPOSITIONS:
@@ -307,6 +307,7 @@ def record_disposition(
     rationale: str = "",
     decided_by: str = "user",
     evidence: tuple[str, ...] = (),
+    column: str = "",
 ) -> Path:
     """Write or replace one disposition, returning the ledger path.
 
@@ -337,6 +338,10 @@ def record_disposition(
     entry = {
         "system": system,
         "table": table,
+        # Column-grain entries sit in the same ledger as table-grain ones (DD-169): a
+        # reviewer should see everything the hub decided not to model in one place, and
+        # a second file would drift from the first.
+        **({"column": column} if column else {}),
         "disposition": disposition,
         "rationale": rationale,
         "decided_by": decided_by,
@@ -353,7 +358,12 @@ def record_disposition(
     ]
     rows.append(entry)
     payload["tables"] = sorted(
-        rows, key=lambda item: (str(item.get("system")), str(item.get("table")))
+        rows,
+        key=lambda item: (
+            str(item.get("system")),
+            str(item.get("table")),
+            str(item.get("column") or ""),
+        ),
     )
 
     path.write_text(yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")

@@ -3149,6 +3149,12 @@ def source_disposition_group() -> None:
 @click.option("--system", required=True, help="Source system the table belongs to.")
 @click.option("--table", required=True, help="Physical table name (source.relation's suffix).")
 @click.option(
+    "--column",
+    default="",
+    help="Decide one column rather than the whole table. A table-grain decision "
+    "already covers every column in it.",
+)
+@click.option(
     "--disposition",
     required=True,
     type=click.Choice(sorted(_DISPOSITION_CHOICES())),
@@ -3170,6 +3176,7 @@ def source_disposition_group() -> None:
 def source_disposition_set_cmd(
     system: str,
     table: str,
+    column: str,
     disposition: str,
     rationale: str,
     decided_by: str,
@@ -3196,6 +3203,7 @@ def source_disposition_set_cmd(
             hub_root=hub_root,
             system=system,
             table=table,
+            column=column,
             disposition=disposition,
             rationale=rationale,
             decided_by=decided_by,
@@ -3203,7 +3211,8 @@ def source_disposition_set_cmd(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    click.echo(f"✓ {system}.{table} recorded as '{disposition}' in {path}")
+    target = f"{system}.{table}.{column}" if column else f"{system}.{table}"
+    click.echo(f"✓ {target} recorded as '{disposition}' in {path}")
 
 
 @source_disposition_group.command(name="list")
