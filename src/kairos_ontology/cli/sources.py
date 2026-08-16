@@ -709,8 +709,10 @@ def import_flatfile(
 @click.option(
     "--max-workers",
     type=int,
-    default=8,
-    help="Max concurrent per-table LLM calls (default: 8; use 1 for serial).",
+    default=16,
+    help="Max concurrent per-table LLM calls (default: 16; use 1 for serial). These "
+    "calls are network-bound, not CPU-bound, so the useful ceiling is the provider's "
+    "rate limit rather than the core count.",
 )
 @click.option(
     "--force",
@@ -2391,6 +2393,73 @@ def discovery_conformance_review_cmd(judgments_file, theme, output_format):
             click.echo(f"       {str(rep.get('rationale') or '')[:150]}")
     click.echo("")
     click.echo("   Drill into one with: discovery-conformance review --theme \"<theme>\"")
+
+
+@discovery_conformance.command(name="confirm")
+@click.option("--judgments-file", required=True, help="Judgments file to update in place.")
+@click.option("--outcome", required=True, help="The outcome the human decided on.")
+@click.option("--rationale", required=True, help="Why. Recorded against every entry changed.")
+@click.option("--theme", default=None, help="Restrict to one review theme.")
+@click.option("--match", default=None, help="Restrict to labels containing this substring.")
+@click.option("--concept", "concept_uris", multiple=True, help="Restrict to these URIs.")
+@click.option(
+    "--decided-by",
+    type=click.Choice(sorted(("user", "ai", "autopilot"))),
+    default="user",
+    show_default=True,
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would change.")
+def discovery_conformance_confirm_cmd(
+    judgments_file, outcome, rationale, theme, match, concept_uris, decided_by, dry_run
+):
+    """Record a human's block decision over unresolved judgments (AP-022).
+
+    The only path that clears ``needs_confirmation``, deliberately: clearing it should be
+    an explicit act with a written reason, not a side effect of re-running the judge. The
+    AI's original outcome and rationale are preserved inside the new rationale, so a
+    reviewer can always see what was overridden.
+
+    
+    Example:
+      kairos-ontology discovery-conformance confirm --judgments-file <f> \
+        --theme customs --outcome not-applicable \
+        --rationale "CLdN does not perform customs brokerage in this hub's scope."
+    """
+    import yaml as _yaml
+
+    from ..core.conformance_judge import apply_human_decision
+
+    path = Path(judgments_file)
+    if not path.is_file():
+        raise click.ClickException(f"No judgments file at {path}")
+    document = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    concepts = document.get("core_concepts") or []
+
+    try:
+        changed = apply_human_decision(
+            concepts,
+            outcome=outcome,
+            rationale=rationale,
+            theme=theme,
+            match=match,
+            uris=concept_uris,
+            decided_by=decided_by,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not changed:
+        click.echo("No unresolved concepts matched that selection; nothing changed.")
+        return
+    for concept in changed:
+        click.echo(f"   {'would set' if dry_run else 'set'} {concept.get('label')} -> {outcome}")
+    if dry_run:
+        click.echo(f"(dry run) {len(changed)} concept(s) would be confirmed.")
+        return
+    path.write_text(
+        _yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    click.echo(f"Confirmed {len(changed)} concept(s) as '{outcome}' in {path}")
 
 
 @discovery_conformance.command(name="build")

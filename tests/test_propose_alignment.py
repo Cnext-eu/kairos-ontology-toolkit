@@ -3397,3 +3397,75 @@ def test_allow_fallback_registry_appears_nowhere():
     assert result.returncode == 1, (
         f"--allow-fallback-registry found in source/skills:\n{result.stdout}"
     )
+
+
+class TestSampleBudget:
+    """DD-166: 20 values per column is right for a code list, not for 1,304 columns."""
+
+    def test_low_cardinality_column_gets_the_full_budget(self):
+        from kairos_ontology.core.propose_alignment import _samples_for_column
+
+        col = {"name": "status", "samples": [f"S{i}" for i in range(20)], "distinct_count": 6}
+        assert len(_samples_for_column(col)) == 20
+
+    def test_high_cardinality_column_is_trimmed_to_a_type_hint(self):
+        from kairos_ontology.core.propose_alignment import (
+            MAX_SAMPLES_HIGH_CARDINALITY,
+            _samples_for_column,
+        )
+
+        col = {"name": "order_id", "samples": [f"ORD{i}" for i in range(20)],
+               "distinct_count": 50_000}
+        assert len(_samples_for_column(col)) == MAX_SAMPLES_HIGH_CARDINALITY
+
+    def test_unknown_cardinality_is_treated_as_high(self):
+        """Absent distinct_count is not evidence of a small code list."""
+        from kairos_ontology.core.propose_alignment import (
+            MAX_SAMPLES_HIGH_CARDINALITY,
+            _samples_for_column,
+        )
+
+        col = {"name": "note", "samples": [f"n{i}" for i in range(20)]}
+        assert len(_samples_for_column(col)) == MAX_SAMPLES_HIGH_CARDINALITY
+
+    def test_a_very_wide_table_stays_within_the_per_table_budget(self):
+        """The widest real table rendered ~162 KB of samples before this."""
+        from kairos_ontology.core.propose_alignment import (
+            MAX_TABLE_SAMPLE_CHARS,
+            _format_source_columns,
+        )
+
+        columns = [
+            {"name": f"col_{i}", "data_type": "varchar",
+             "samples": [f"value-{i}-{j}" for j in range(20)], "distinct_count": 5}
+            for i in range(1000)
+        ]
+        rendered = _format_source_columns(columns)
+        sample_text = sum(
+            len(line.split("| samples: ", 1)[1]) for line in rendered.splitlines()
+            if "| samples: " in line
+        )
+        assert sample_text <= MAX_TABLE_SAMPLE_CHARS
+
+    def test_budget_drops_samples_not_columns(self):
+        """Dropping samples is acceptable; dropping a column silently is not.
+
+        Note the pre-existing MAX_COLUMNS_PER_PROMPT cap: only the first 80 columns
+        reach the prompt at all, independent of this budget. Every column *within* that
+        window must still be listed even after the sample budget is exhausted.
+        """
+        from kairos_ontology.core.propose_alignment import (
+            MAX_COLUMNS_PER_PROMPT,
+            _format_source_columns,
+        )
+
+        columns = [
+            {"name": f"col_{i}", "data_type": "varchar",
+             "samples": ["x" * 40 for _ in range(20)], "distinct_count": 5}
+            for i in range(300)
+        ]
+        rendered = _format_source_columns(columns)
+        assert len(rendered.splitlines()) == MAX_COLUMNS_PER_PROMPT
+        assert all(f"col_{i} " in rendered for i in range(MAX_COLUMNS_PER_PROMPT))
+        # The tail of that window keeps its name and type after the budget is spent.
+        assert f"col_{MAX_COLUMNS_PER_PROMPT - 1} (varchar)" in rendered

@@ -713,3 +713,59 @@ def group_unresolved(core_concepts: Iterable[dict[str, Any]]) -> list[ReviewGrou
         theme = ", ".join(sorted(domains)) if domains else "(cross-cutting)"
         groups.setdefault(theme, ReviewGroup(theme=theme)).concepts.append(concept)
     return sorted(groups.values(), key=lambda g: (-g.size, g.theme))
+
+
+def apply_human_decision(
+    core_concepts: list[dict[str, Any]],
+    *,
+    outcome: str,
+    rationale: str,
+    theme: str | None = None,
+    match: str | None = None,
+    uris: Iterable[str] = (),
+    decided_by: str = "user",
+) -> list[dict[str, Any]]:
+    """Record a human's block decision over selected unresolved concepts.
+
+    Returns the entries changed. Selection is by theme (``likely_domains``), a substring
+    of the label, an explicit URI list, or any combination — all of which must match.
+
+    This is the one path that can clear ``needs_confirmation``, and it exists precisely
+    so that clearing it is an explicit human act with a written reason attached, rather
+    than a side effect of re-running a judge. It refuses an outcome outside the closed
+    vocabulary and refuses an empty rationale: a block marked ``not-applicable`` with no
+    reason is indistinguishable later from one nobody looked at.
+    """
+    if outcome not in VALID_OUTCOMES:
+        raise ValueError(f"Unknown outcome {outcome!r}; expected one of {sorted(VALID_OUTCOMES)}.")
+    if not rationale.strip():
+        raise ValueError("A human decision requires a rationale.")
+
+    wanted_uris = {str(u) for u in uris}
+    changed: list[dict[str, Any]] = []
+    for concept in core_concepts:
+        if not isinstance(concept, dict) or not concept.get("needs_confirmation"):
+            continue
+        if theme is not None:
+            domains = [str(d) for d in (concept.get("likely_domains") or []) if str(d).strip()]
+            actual = ", ".join(sorted(domains)) if domains else "(cross-cutting)"
+            if actual != theme:
+                continue
+        if match and match.casefold() not in str(concept.get("label") or "").casefold():
+            continue
+        if wanted_uris and str(concept.get("uri")) not in wanted_uris:
+            continue
+
+        prior = str(concept.get("outcome") or "?")
+        concept["outcome"] = outcome
+        concept["needs_confirmation"] = False
+        concept["decided_by"] = decided_by
+        concept["confidence"] = 1.0
+        concept["rationale"] = (
+            f"{rationale.strip()} [human decision; AI had proposed '{prior}': "
+            f"{str(concept.get('rationale') or '').strip()}]"
+        )
+        if outcome == "deviates" and not concept.get("deviation_reason"):
+            concept["deviation_reason"] = rationale.strip()
+        changed.append(concept)
+    return changed

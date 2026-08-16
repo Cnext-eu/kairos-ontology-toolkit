@@ -630,12 +630,55 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+#: Sample values shown for a column whose cardinality is high or unknown (DD-166).
+#:
+#: Twenty values is the right budget for a *code list*, which is the judgement alignment
+#: makes. It is pure cost on a surrogate key, a timestamp or a free-text note, where the
+#: values carry no shape the model can use and three already establish the type.
+MAX_SAMPLES_HIGH_CARDINALITY = 3
+
+#: A column with at most this many distinct values is an enum candidate and gets the
+#: full budget. Matches ``MAX_SAMPLES_PER_COLUMN``: if every distinct value fits,
+#: showing all of them *is* the evidence.
+ENUM_CARDINALITY_CEILING = MAX_SAMPLES_PER_COLUMN
+
+#: Ceiling on the whole table's rendered sample text, in characters.
+#:
+#: Sized from the real corpus: the widest table here has 1,304 columns, where an
+#: unbudgeted twenty-per-column renders ~162 KB — roughly 41k tokens of samples alone,
+#: in a prompt sent to a reasoning model once per table. The per-column rule below
+#: usually keeps a table well under this; the cap exists so a pathologically wide table
+#: degrades gracefully instead of dominating the run.
+MAX_TABLE_SAMPLE_CHARS = 8000
+
+
+def _samples_for_column(col: dict[str, Any]) -> list[str]:
+    """Choose how many sample values this column earns.
+
+    Cardinality decides. A column with few distinct values is a code-list candidate and
+    the values are the evidence; a high-cardinality column is identified by its name and
+    type, and twenty IDs say nothing that three do not.
+    """
+    values = _compact_prompt_samples(col.get("samples") or [])
+    distinct = col.get("distinct_count")
+    generous = isinstance(distinct, int) and 0 < distinct <= ENUM_CARDINALITY_CEILING
+    return values if generous else values[:MAX_SAMPLES_HIGH_CARDINALITY]
+
+
 def _format_source_columns(columns: list[dict[str, Any]]) -> str:
-    """Format source columns for the LLM prompt."""
+    """Format source columns for the LLM prompt, within a per-table sample budget."""
     lines = []
+    remaining = MAX_TABLE_SAMPLE_CHARS
     for col in columns[:MAX_COLUMNS_PER_PROMPT]:
-        prompt_samples = _compact_prompt_samples(col.get("samples", []))
+        prompt_samples = _samples_for_column(col)
         samples_str = ", ".join(prompt_samples)
+        if len(samples_str) > remaining:
+            # Budget spent: keep enough to convey the type, drop the rest. Columns render
+            # in source order, so this trims the tail rather than a chosen few.
+            samples_str = ", ".join(prompt_samples[:MAX_SAMPLES_HIGH_CARDINALITY])
+            if len(samples_str) > remaining:
+                samples_str = ""
+        remaining -= len(samples_str)
         samples_part = f" | samples: {samples_str}" if samples_str else ""
         lines.append(f"  - {col['name']} ({col.get('data_type', 'unknown')}){samples_part}")
     return "\n".join(lines)
