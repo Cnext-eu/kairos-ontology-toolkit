@@ -86,6 +86,9 @@ class UnmappedColumn:
     reason: str
     suggestion: str = ""
     recommended_disposition: str = ""
+    #: DD-170 hub-local property the aligner proposes for this column, when it could
+    #: state one. Never a reference IRI — the hub mints that at design time.
+    proposal: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +99,7 @@ class UnmappedColumn:
             "reason": self.reason,
             "suggestion": self.suggestion,
             "recommended_disposition": self.recommended_disposition,
+            "proposed_local_property": self.proposal or None,
         }
 
 
@@ -340,6 +344,7 @@ def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) 
                         reason=reason,
                         suggestion=str(entry.get("suggested_property") or ""),
                         recommended_disposition=str(entry.get("recommended_disposition") or ""),
+                        proposal=dict(entry.get("proposed_local_property") or {}),
                     )
                 )
         report.domains.append(coverage)
@@ -487,6 +492,19 @@ class GapGroup:
     def data_types(self) -> list[str]:
         return sorted({o.data_type for o in self.occurrences if o.data_type})
 
+    @property
+    def proposals(self) -> list[dict[str, str]]:
+        """Distinct local-property proposals across this name's occurrences.
+
+        More than one means the aligner read the same column name differently in
+        different tables — worth seeing before accepting, not averaging away.
+        """
+        seen: dict[str, dict[str, str]] = {}
+        for occurrence in self.occurrences:
+            if occurrence.proposal:
+                seen.setdefault(str(occurrence.proposal.get("name") or ""), occurrence.proposal)
+        return [p for _, p in sorted(seen.items())]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "column": self.column,
@@ -494,6 +512,7 @@ class GapGroup:
             "tables": self.tables,
             "data_types": self.data_types,
             "reasons": sorted({o.reason for o in self.occurrences}),
+            "proposals": self.proposals,
         }
 
 
@@ -530,14 +549,26 @@ def render_gap_groups_markdown(report: AlignmentReport, *, limit: int = 60) -> s
         f"{sum(g.count for g in repeated):,} of them — decide those once."
     )
     lines.append("")
-    lines.append("| Column | Tables | Types | Appears in |")
-    lines.append("|---|---:|---|---|")
-    for group in groups[:limit]:
-        shown = ", ".join(group.tables[:4])
-        if len(group.tables) > 4:
-            shown += f", +{len(group.tables) - 4} more"
+    proposed = [g for g in groups if g.proposals]
+    if proposed:
         lines.append(
-            f"| `{group.column}` | {group.count} | {', '.join(group.data_types) or '—'} | {shown} |"
+            f"{len(proposed):,} of them arrive with a proposed hub-local property — "
+            "review and accept rather than author from scratch."
+        )
+        lines.append("")
+    lines.append("| Column | Tables | Types | Proposed property | Appears in |")
+    lines.append("|---|---:|---|---|---|")
+    for group in groups[:limit]:
+        shown = ", ".join(group.tables[:3])
+        if len(group.tables) > 3:
+            shown += f", +{len(group.tables) - 3} more"
+        proposal = " / ".join(
+            f"`{p.get('name')}`" + (f" on {p['on_class']}" if p.get("on_class") else "")
+            for p in group.proposals
+        )
+        lines.append(
+            f"| `{group.column}` | {group.count} | {', '.join(group.data_types) or '—'} "
+            f"| {proposal or '—'} | {shown} |"
         )
     if len(groups) > limit:
         lines.append("")

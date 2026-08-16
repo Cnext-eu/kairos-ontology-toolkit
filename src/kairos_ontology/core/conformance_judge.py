@@ -375,7 +375,9 @@ def blueprint_concept_domains(
     return mapped
 
 
-def pattern_cautions(concept_uris: Iterable[str], refmodels_dir: Path | None) -> dict[str, str]:
+def pattern_cautions(
+    concept_uris: Iterable[str] | None, refmodels_dir: Path | None
+) -> dict[str, str]:
     """Map concept URI -> the pattern library's warning about modelling it, if any.
 
     The library's ``grain_collisions`` and ``anti_patterns`` name concept IRIs outright
@@ -397,10 +399,13 @@ def pattern_cautions(concept_uris: Iterable[str], refmodels_dir: Path | None) ->
         return {}
 
     cautions: dict[str, list[str]] = {}
-    wanted = {str(uri) for uri in concept_uris}
+    # None means "every caution the library defines" -- a caller that does not yet
+    # know which classes are in play (the aligner resolves them per table) still gets
+    # the full map and looks up by URI later.
+    wanted = None if concept_uris is None else {str(uri) for uri in concept_uris}
 
     def _note(iri: str, text: str) -> None:
-        if iri in wanted and text:
+        if text and (wanted is None or iri in wanted):
             cautions.setdefault(iri, []).append(text)
 
     for pattern in patterns:

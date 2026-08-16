@@ -711,8 +711,8 @@ def import_flatfile(
     type=int,
     default=16,
     help="Max concurrent per-table LLM calls (default: 16; use 1 for serial). These "
-    "calls are network-bound, not CPU-bound, so the useful ceiling is the provider's "
-    "rate limit rather than the core count.",
+    "calls are network-bound, so the useful ceiling is the provider's rate limit "
+    "rather than the core count.",
 )
 @click.option(
     "--force",
@@ -1275,8 +1275,17 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
 @click.option(
     "--max-workers",
     type=int,
-    default=8,
-    help="Max concurrent per-table LLM calls (default: 8; use 1 for serial).",
+    default=16,
+    help="Max concurrent per-table LLM calls (default: 16; use 1 for serial). These "
+    "calls are network-bound, so the useful ceiling is the provider's rate limit "
+    "rather than the core count.",
+)
+@click.option(
+    "--without-discovery",
+    is_flag=True,
+    default=False,
+    help="Run even though the hub has no authored business glossary. The proposals "
+    "will be source-shaped rather than grounded in the business's own vocabulary.",
 )
 @click.option(
     "--force",
@@ -1343,6 +1352,7 @@ def propose_alignment_cmd(
     max_prompt_classes,
     retry_min_confidence,
     retry_min_mapped_ratio,
+    without_discovery,
     max_workers,
     force,
     cross_module,
@@ -1369,11 +1379,36 @@ def propose_alignment_cmd(
     from ..core.propose_alignment import (
         HIGH_ACCURACY_MODEL,
         AlignmentTotalFailureError,
+        load_glossary_terms,
         run_propose_alignment,
     )
     from ..core.ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
     from ..core.conformance_artifact import ARTIFACT_RELPATH
     from ..core.hub_utils import find_hub_root
+
+    # Discovery preflight (DD-171). The business glossary is a real input to alignment
+    # quality, not decoration: without it the model proposes source-shaped terms like
+    # "associatedCompanySubcontractorStatus" instead of the word the business uses.
+    # This is also the most expensive call in the pipeline — tens of minutes against a
+    # reasoning model — so spending it on ungrounded input and finding out afterwards is
+    # the worst available ordering. Blocking with an explicit escape rather than a
+    # warning, because a warning here is read after the money is spent.
+    _preflight_hub = find_hub_root(Path.cwd(), require_model=False)
+    if _preflight_hub is not None:
+        if not load_glossary_terms(_preflight_hub) and not without_discovery:
+            raise click.ClickException(
+                "No authored business glossary found under businessdiscovery/*.ttl.\n"
+                "  Alignment uses it to ground proposed terms in the business's own "
+                "vocabulary; without it the proposals mirror source column names.\n"
+                "  Run kairos-design-discovery first, or pass --without-discovery to "
+                "proceed deliberately."
+            )
+        if without_discovery:
+            click.echo(
+                "⚠ Running without a business glossary (--without-discovery): proposed "
+                "terms will be source-shaped.",
+                err=True,
+            )
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)

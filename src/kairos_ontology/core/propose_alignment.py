@@ -237,6 +237,130 @@ def auto_disposition(column: str) -> str | None:
     return None
 
 
+def normalize_local_proposal(raw: Any) -> dict[str, str] | None:
+    """Validate a model-proposed **hub-local** property, or return ``None`` (DD-170).
+
+    The aligner is told never to invent a ``ref_property``, and that stays true: an
+    invented reference IRI is a hallucination that fails resolution later. A hub-local
+    proposal is a different object — it says "this does not exist, someone should create
+    it" — and it is what turns a Stage 3 backlog of unhomed columns into a list of named
+    properties on named classes to accept or reject.
+
+    Keeping the two apart is the whole safety property, so this enforces it structurally:
+
+    * a proposal carrying anything IRI-shaped is rejected outright, because the hub mints
+      its own IRIs and a model-supplied one would be indistinguishable from a resolvable
+      reference term downstream;
+    * a proposal without a name is nothing;
+    * the name is normalised to lowerCamelCase, matching the naming rule
+      ``validate --syntax`` enforces, so an accepted proposal does not immediately fail
+      the next gate.
+    """
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        return None
+    # Scoped to the structural fields. ``why`` is prose, and discarding an otherwise
+    # good proposal because its rationale happens to mention a URN would cost more than
+    # it protects: the risk is an IRI being *used* as a term, not being talked about.
+    for key in ("name", "range", "on_class"):
+        text = str(raw.get(key) or "")
+        if "://" in text or text.lower().startswith(("http:", "https:", "urn:")):
+            logger.warning("Discarding local property proposal carrying an IRI: %r", raw)
+            return None
+    parts = re.findall(r"[A-Za-z0-9]+", name)
+    if not parts:
+        return None
+    camel = parts[0][:1].lower() + parts[0][1:] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+    proposal = {"name": camel}
+    for key in ("range", "on_class", "why"):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            proposal[key] = value
+    return proposal
+
+
+#: Proposal name shapes that encode a role as an attribute (DD-171).
+#:
+#: ``isSubcontractor``, ``hasCarrierRole``, ``subcontractorStatus``. Harmless on an
+#: ordinary class; on a party class the pattern library flags, this is
+#: ``subclass-identity-by-role`` arriving as a property instead of a subclass.
+_ROLE_FLAG_RE = re.compile(
+    r"^(?:is|has)[A-Z]|(?:Role|Status)$|Role[A-Z]",
+)
+
+
+def flag_risky_proposals(
+    custom_columns: list[dict[str, Any]],
+    *,
+    class_cautions: dict[str, str],
+    ref_class_uri: str = "",
+) -> int:
+    """Mark local-property proposals that a pattern-library caution bears on (DD-171).
+
+    Flags, never blocks. A role flag is sometimes the right first slice — the pattern
+    library says so itself, permitting one as a ``physical_simplification`` provided it
+    is "documented as a denormalised projection of the role-assignment link entity,
+    never the semantic model itself". What must not happen is it becoming the model by
+    default, which is exactly what bulk-accepting proposals would do.
+
+    Observed on a real run before this existed: aligning ``contacts`` produced
+    ``associatedCompanyIsSubcontractor``, ``associatedCompanyIsIntermodalOperator`` and
+    ``associatedCompanySubcontractorStatus`` as booleans on ``Contact`` — four role
+    flags on the wrong class, faithful to the source and blind to the rule.
+
+    Returns the number flagged.
+    """
+    caution = class_cautions.get(ref_class_uri, "")
+    if not caution:
+        return 0
+    flagged = 0
+    for entry in custom_columns:
+        proposal = entry.get("proposed_local_property")
+        if not isinstance(proposal, dict):
+            continue
+        name = str(proposal.get("name") or "")
+        if not _ROLE_FLAG_RE.search(name):
+            continue
+        proposal["needs_review"] = True
+        proposal["review_reason"] = (
+            f"Proposes a role as an attribute on a class the pattern library flags. "
+            f"{caution} Accept only as a documented denormalised projection of a "
+            "role-assignment entity, not as the role model itself."
+        )
+        flagged += 1
+    return flagged
+
+
+def load_glossary_terms(hub_root: Path | None, *, limit: int = 120) -> list[str]:
+    """Return the business's own vocabulary from ``businessdiscovery/*.ttl`` (DD-171).
+
+    Grounding, not authority. A proposal should reuse the term the business already uses
+    where one exists, rather than minting ``associatedCompanySubcontractorStatus``.
+    Returns ``[]`` when the hub has no authored glossary, which is common early and must
+    never be an error.
+    """
+    if hub_root is None:
+        return []
+    directory = Path(hub_root) / "businessdiscovery"
+    if not directory.is_dir():
+        return []
+    labels: set[str] = set()
+    label_re = re.compile(r"skos:prefLabel\s+\"([^\"]+)\"")
+    for path in sorted(directory.glob("*.ttl")):
+        if path.name.startswith(("glossary-template", "_")):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        labels.update(m.group(1).strip() for m in label_re.finditer(text))
+        if len(labels) >= limit:
+            break
+    return sorted(labels)[:limit]
+
+
 def recommend_disposition(column: str) -> str:
     """Return an advisory custom-column disposition recommendation."""
 
@@ -973,6 +1097,8 @@ def build_alignment_prompt(
     likely_entity: str = "",
     *,
     table_ref_classes: list[dict[str, Any]] | None = None,
+    class_cautions: dict[str, str] | None = None,
+    glossary_terms: list[str] | None = None,
 ) -> str:
     """Build the alignment prompt for one source table.
 
@@ -986,6 +1112,37 @@ def build_alignment_prompt(
     both steps draw from *ref_classes* and the output is unchanged.
     """
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
+
+    # DD-171: the pattern library's normative cautions for the classes in play, and the
+    # business's own vocabulary. Without these the aligner proposes source-shaped terms
+    # that the model's own rules reject -- observed live, four role-as-boolean-flag
+    # proposals on Contact in a single table.
+    caution_block = ""
+    relevant = sorted(
+        {
+            text
+            for cls in table_classes
+            for text in [(class_cautions or {}).get(str(cls.get("uri") or ""), "")]
+            if text
+        }
+    )
+    if relevant:
+        bullet_lines = "\n".join(f"- {text}" for text in relevant)
+        caution_block = (
+            "\n\nPATTERN LIBRARY — normative cautions for these classes:\n"
+            + bullet_lines
+            + "\nDo NOT propose a role as a boolean flag or status string on these "
+            "classes. Roles belong on a qualified role-assignment entity. If the source "
+            "only has flags, say so in 'why' rather than proposing the flag as the model."
+        )
+
+    glossary_block = ""
+    if glossary_terms:
+        glossary_block = (
+            "\n\nBUSINESS VOCABULARY (use these words where one fits; they are the "
+            "business's own terms):\n" + ", ".join(glossary_terms)
+        )
+
     entity_hint = ""
     step1 = "STEP 1: Determine which reference model class this table best represents."
     likely_match = ""
@@ -1063,7 +1220,7 @@ def build_alignment_prompt(
 
 {step1}
 STEP 2: For each source column, find the best matching reference model property.
-{entity_hint}{cross_module_note}
+{entity_hint}{caution_block}{glossary_block}{cross_module_note}
 {semantic_disclosure}
 SOURCE TABLE: {table_name}
 COLUMNS:
@@ -1084,9 +1241,18 @@ Instructions:
 - CRITICAL — unmatched columns: when a column has no genuine reference-model
   property, set alignment to "custom", ref_property to null, and (optionally) a
   short free-text "note" describing the concept. Do NOT invent a camelCase property
-  name, and NEVER reuse one suggested name across several unrelated columns — a
-  confident-but-wrong guess (e.g. mapping many different columns all onto
+  name for "ref_property", and NEVER reuse one suggested name across several unrelated
+  columns — a confident-but-wrong guess (e.g. mapping many different columns all onto
   "stageCode" or "customsID") is worse than an honest null.
+- SEPARATELY, for a custom column that carries real business meaning, you MAY fill
+  "proposed_local_property": a property the hub should define for itself because the
+  reference model has none. This is NOT a reference property and must never be used as
+  ref_property; it is a proposal for a human to accept or reject at design time.
+  Give {{"name": "<lowerCamelCase>", "range": "<xsd type or class name>",
+  "on_class": "<the class this property belongs on>", "why": "<one line>"}}.
+  Omit it (null) for an audit stamp, a surrogate key, a vendor placeholder, or anything
+  whose meaning you cannot state — an unnecessary proposal costs a reviewer more than a
+  missing one. Never emit an IRI here; the hub mints that itself.
 - Do NOT over-map: a real ref_property must come from the class's listed properties
   above. Never map more distinct columns onto a class than it has properties.
 - ref_class_confidence: 0.0-1.0 for the table→class match.
@@ -1103,6 +1269,7 @@ Respond with JSON only:
       "alignment": "exact|semantic|partial|custom",
       "confidence": 0.0-1.0,
       "note": "<optional: short concept description for a custom column>",
+      "proposed_local_property": null,
       "rationale": "brief explanation"
     }}
   ]
@@ -1158,6 +1325,8 @@ def align_table(
     *,
     table_ref_classes: list[dict[str, Any]] | None = None,
     anchor_override: str | None = None,
+    class_cautions: dict[str, str] | None = None,
+    glossary_terms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Align one source table, splitting across calls when it is too wide.
 
@@ -1186,6 +1355,8 @@ def align_table(
             likely_entity,
             table_ref_classes=table_ref_classes,
             anchor_override=anchor_override,
+            class_cautions=class_cautions,
+            glossary_terms=glossary_terms,
         )
 
     chunks = [columns[i : i + chunk_size] for i in range(0, len(columns), chunk_size)]
@@ -1205,6 +1376,8 @@ def align_table(
         likely_entity,
         table_ref_classes=table_ref_classes,
         anchor_override=anchor_override,
+        class_cautions=class_cautions,
+        glossary_terms=glossary_terms,
     )
     pinned = anchor_override or merged.get("ref_class")
     for chunk in chunks[1:]:
@@ -1217,6 +1390,8 @@ def align_table(
             likely_entity,
             table_ref_classes=table_ref_classes,
             anchor_override=pinned,
+            class_cautions=class_cautions,
+            glossary_terms=glossary_terms,
         )
         merged["column_alignments"].extend(part.get("column_alignments") or [])
         # A failure in any chunk is a failure for the table: the alternative is
@@ -1237,6 +1412,8 @@ def _align_table_once(
     *,
     table_ref_classes: list[dict[str, Any]] | None = None,
     anchor_override: str | None = None,
+    class_cautions: dict[str, str] | None = None,
+    glossary_terms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run LLM alignment for one source table against reference model classes.
 
@@ -1268,6 +1445,8 @@ def _align_table_once(
         ref_classes,
         likely_entity,
         table_ref_classes=table_ref_classes,
+        class_cautions=class_cautions,
+        glossary_terms=glossary_terms,
     )
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
     valid_classes = {c["name"] for c in table_classes}
@@ -1379,6 +1558,9 @@ def _align_table_once(
         note = str(ca.get("note", "") or "").strip()
         if note:
             norm["note"] = note
+        proposal = normalize_local_proposal(ca.get("proposed_local_property"))
+        if proposal:
+            norm["proposed_local_property"] = proposal
         # DD-070: carry the model's sibling-module signal only when present, so the
         # normalized result (and per-table cache) stays identical in default mode.
         ref_module = str(ca.get("ref_module", "") or "")
@@ -1602,6 +1784,9 @@ def _build_custom_column(
     note = str(ca.get("note", "") or "").strip()
     if note:
         entry["note"] = note
+    proposal = normalize_local_proposal(ca.get("proposed_local_property"))
+    if proposal:
+        entry["proposed_local_property"] = proposal
     return entry
 
 
@@ -2918,6 +3103,21 @@ def _propose_alignments(
     run_semantic_success = 0
     run_provider_failures = 0
 
+    # DD-171: resolve the two knowledge inputs once for the whole run.
+    class_cautions: dict[str, str] = {}
+    if ref_models_dir is not None:
+        try:
+            from .conformance_judge import pattern_cautions
+
+            class_cautions = pattern_cautions(None, Path(ref_models_dir))
+        except Exception:  # noqa: BLE001 - advisory prompt context only
+            class_cautions = {}
+    glossary_terms = load_glossary_terms(Path(sources_dir).parent.parent)
+    if class_cautions:
+        report(f"  🧭 {len(class_cautions)} pattern-library caution(s) in scope")
+    if glossary_terms:
+        report(f"  📖 {len(glossary_terms)} business glossary term(s) in scope")
+
     domain_order = sorted(domain_tables.items())
     total_tables = sum(len(t) for t in domain_tables.values())
     tables_done = 0
@@ -3209,6 +3409,8 @@ def _propose_alignments(
                         likely_entity=likely_entity,
                         table_ref_classes=shortlist_classes,
                         anchor_override=anchor_override,
+                        class_cautions=class_cautions,
+                        glossary_terms=glossary_terms,
                     )
                 else:
                     result = align_table(
@@ -3219,6 +3421,8 @@ def _propose_alignments(
                         shortlist_classes,
                         likely_entity=likely_entity,
                         anchor_override=anchor_override,
+                        class_cautions=class_cautions,
+                        glossary_terms=glossary_terms,
                     )
                     if len(shortlist_classes) < len(
                         ref_classes
@@ -3505,6 +3709,21 @@ def _propose_alignments(
                         custom_cols.append(_build_reconciled_passthrough(col))
                         accounted.add(cname)
             src_count, src_hash = _source_column_digest(columns)
+
+            # DD-171: flag role-shaped proposals on a class the pattern library cautions
+            # about. Runs here, after the class is resolved, because the caution is
+            # keyed by class and only now is it known.
+            _resolved_uri = next(
+                (
+                    str(c.get("uri") or "")
+                    for c in ref_classes
+                    if c.get("name") == result.get("ref_class")
+                ),
+                "",
+            )
+            flag_risky_proposals(
+                custom_cols, class_cautions=class_cautions, ref_class_uri=_resolved_uri
+            )
 
             ta = TableAlignment(
                 system=system,

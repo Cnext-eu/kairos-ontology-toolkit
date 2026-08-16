@@ -3486,7 +3486,7 @@ class TestWideTableSplitting:
         from kairos_ontology.core import propose_alignment as pa
 
         def fake_once(client, model, table_name, columns, ref_classes, likely_entity="",
-                      *, table_ref_classes=None, anchor_override=None):
+                      *, table_ref_classes=None, anchor_override=None, **_kwargs):
             capture.append({"columns": [c["name"] for c in columns],
                             "anchor_override": anchor_override})
             return {
@@ -3558,3 +3558,173 @@ class TestWideTableSplitting:
             MagicMock(), "m", "t", self._columns(pa.MAX_COLUMNS_PER_PROMPT + 5), self._classes()
         )
         assert result["generation_outcome"] == pa.OUTCOME_PROVIDER_FAILURE
+
+
+class TestLocalPropertyProposal:
+    """DD-170: propose the property that should exist, without inventing a reference one."""
+
+    def test_a_stated_proposal_is_normalised_to_the_naming_rule(self):
+        from kairos_ontology.core.propose_alignment import normalize_local_proposal
+
+        result = normalize_local_proposal(
+            {"name": "is_customer", "range": "xsd:boolean", "on_class": "Company",
+             "why": "role flag the reference model has no property for"}
+        )
+        # lowerCamelCase, matching what validate --syntax enforces, so an accepted
+        # proposal does not immediately fail the next gate.
+        assert result["name"] == "isCustomer"
+        assert result["on_class"] == "Company"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"name": "x", "range": "https://www.kairosflow.ai/ont/bsp/party#taxId"},
+            {"name": "x", "on_class": "https://evil.example/#Party"},
+            {"name": "http://evil/#x"},
+        ],
+    )
+    def test_anything_iri_shaped_is_rejected_outright(self, raw):
+        """A model-supplied IRI would be indistinguishable from a resolvable term."""
+        from kairos_ontology.core.propose_alignment import normalize_local_proposal
+
+        assert normalize_local_proposal(raw) is None
+
+    @pytest.mark.parametrize("raw", [None, "nope", {}, {"name": ""}, {"name": "!!!"}])
+    def test_an_empty_or_malformed_proposal_is_simply_absent(self, raw):
+        from kairos_ontology.core.propose_alignment import normalize_local_proposal
+
+        assert normalize_local_proposal(raw) is None
+
+    def test_optional_fields_are_dropped_when_blank_not_stored_empty(self):
+        from kairos_ontology.core.propose_alignment import normalize_local_proposal
+
+        assert normalize_local_proposal({"name": "quayCode", "range": "", "why": None}) == {
+            "name": "quayCode"
+        }
+
+    def test_prose_may_mention_a_urn_without_losing_the_proposal(self):
+        """The risk is an IRI being used as a term, not being talked about."""
+        from kairos_ontology.core.propose_alignment import normalize_local_proposal
+
+        result = normalize_local_proposal(
+            {"name": "quayCode", "why": "no equivalent of urn:x in the reference model"}
+        )
+        assert result is not None and result["name"] == "quayCode"
+
+    def test_the_prompt_separates_a_proposal_from_a_reference_property(self):
+        """The old instruction forbade inventing names at all. That must stay true for
+        ref_property, and must not be what blocks a clearly-labelled local proposal."""
+        import inspect
+
+        from kairos_ontology.core import propose_alignment as pa
+
+        source = inspect.getsource(pa)
+        assert 'name for "ref_property"' in source
+        assert "proposed_local_property" in source
+        assert "Never emit an IRI here" in source
+
+
+class TestPatternAndGlossaryGrounding:
+    """DD-171: the aligner must know the model's own rules and the business's words."""
+
+    def test_a_caution_reaches_the_prompt_with_the_role_flag_rule(self):
+        from kairos_ontology.core.propose_alignment import build_alignment_prompt
+
+        classes = [{"name": "TradeParty", "uri": "https://x/#TradeParty", "properties": []}]
+        prompt = build_alignment_prompt(
+            "companies", [{"name": "is_subcontractor", "data_type": "bit"}], classes,
+            class_cautions={"https://x/#TradeParty": "role-bearing parent, not the identity"},
+        )
+        assert "PATTERN LIBRARY" in prompt
+        assert "role-bearing parent" in prompt
+        assert "Do NOT propose a role as a boolean flag" in prompt
+
+    def test_no_caution_leaves_the_prompt_unchanged(self):
+        from kairos_ontology.core.propose_alignment import build_alignment_prompt
+
+        classes = [{"name": "Invoice", "uri": "https://x/#Invoice", "properties": []}]
+        columns = [{"name": "total", "data_type": "decimal"}]
+        assert "PATTERN LIBRARY" not in build_alignment_prompt("i", columns, classes)
+
+    def test_glossary_terms_reach_the_prompt(self):
+        from kairos_ontology.core.propose_alignment import build_alignment_prompt
+
+        classes = [{"name": "Party", "uri": "https://x/#Party", "properties": []}]
+        prompt = build_alignment_prompt(
+            "companies", [{"name": "x", "data_type": "int"}], classes,
+            glossary_terms=["Haulier", "Unaccompanied Unit"],
+        )
+        assert "BUSINESS VOCABULARY" in prompt
+        assert "Unaccompanied Unit" in prompt
+
+    def test_glossary_absent_is_silent_not_empty_section(self):
+        from kairos_ontology.core.propose_alignment import build_alignment_prompt
+
+        classes = [{"name": "Party", "uri": "https://x/#Party", "properties": []}]
+        prompt = build_alignment_prompt("c", [{"name": "x", "data_type": "int"}], classes)
+        assert "BUSINESS VOCABULARY" not in prompt
+
+    def test_a_template_only_glossary_counts_as_absent(self, tmp_path):
+        """v5b shipped glossary-template.ttl; a template is not authored vocabulary."""
+        from kairos_ontology.core.propose_alignment import load_glossary_terms
+
+        d = tmp_path / "businessdiscovery"
+        d.mkdir()
+        (d / "glossary-template.ttl").write_text(
+            'x skos:prefLabel "Placeholder" .', encoding="utf-8"
+        )
+        assert load_glossary_terms(tmp_path) == []
+
+    def test_an_authored_glossary_is_read(self, tmp_path):
+        from kairos_ontology.core.propose_alignment import load_glossary_terms
+
+        d = tmp_path / "businessdiscovery"
+        d.mkdir()
+        (d / "cldn.ttl").write_text('a skos:prefLabel "Haulier" .', encoding="utf-8")
+        assert load_glossary_terms(tmp_path) == ["Haulier"]
+
+
+class TestRiskyProposalFlagging:
+    """DD-171: flag, never block — a role flag is sometimes the right first slice."""
+
+    def _entries(self):
+        return [
+            {"column": "is_subcontractor",
+             "proposed_local_property": {"name": "isSubcontractor", "range": "xsd:boolean"}},
+            {"column": "subcontractor_status",
+             "proposed_local_property": {"name": "subcontractorStatus", "range": "xsd:string"}},
+            {"column": "vat_number",
+             "proposed_local_property": {"name": "vatNumber", "range": "xsd:string"}},
+        ]
+
+    def test_role_shaped_proposals_on_a_cautioned_class_are_flagged(self):
+        from kairos_ontology.core.propose_alignment import flag_risky_proposals
+
+        entries = self._entries()
+        flagged = flag_risky_proposals(
+            entries,
+            class_cautions={"https://x/#TradeParty": "role-bearing parent"},
+            ref_class_uri="https://x/#TradeParty",
+        )
+        assert flagged == 2
+        assert entries[0]["proposed_local_property"]["needs_review"] is True
+        assert "role-assignment" in entries[0]["proposed_local_property"]["review_reason"]
+        # A plain attribute is untouched.
+        assert "needs_review" not in entries[2]["proposed_local_property"]
+
+    def test_the_proposal_survives_flagging(self):
+        """Flag, not block: the pattern library itself permits a documented flag."""
+        from kairos_ontology.core.propose_alignment import flag_risky_proposals
+
+        entries = self._entries()
+        flag_risky_proposals(
+            entries, class_cautions={"https://x/#P": "caution"}, ref_class_uri="https://x/#P"
+        )
+        assert entries[0]["proposed_local_property"]["name"] == "isSubcontractor"
+
+    def test_an_uncautioned_class_flags_nothing(self):
+        from kairos_ontology.core.propose_alignment import flag_risky_proposals
+
+        entries = self._entries()
+        assert flag_risky_proposals(entries, class_cautions={}, ref_class_uri="https://x/#Inv") == 0
+        assert all("needs_review" not in e["proposed_local_property"] for e in entries)
