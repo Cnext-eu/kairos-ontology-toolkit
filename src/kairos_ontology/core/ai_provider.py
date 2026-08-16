@@ -618,9 +618,12 @@ def _create_foundry_client(config: AIProviderConfig):
         return project_client.get_openai_client()
 
     def _openai_key_client(cfg):
-        from openai import OpenAI
-
-        return OpenAI(base_url=foundry_openai_base_url(cfg.endpoint), api_key=cfg.api_key)
+        # DD-184: via _openai_class so the Foundry key path is instrumented too.
+        # This is the path this deployment actually takes, so importing OpenAI
+        # directly here silently excluded every real call from tracing.
+        return _openai_class()(
+            base_url=foundry_openai_base_url(cfg.endpoint), api_key=cfg.api_key
+        )
 
     if config.api_key:
         # Key auth does not go through AIProjectClient at all. That SDK path calls

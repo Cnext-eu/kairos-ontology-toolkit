@@ -193,3 +193,53 @@ class TestProviderIntegration:
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["name"] == "align-table"
         assert kwargs["metadata"]["table"] == "companies"
+
+
+class TestResponseFormatSummary:
+    """The strict schema is recorded as counts, not verbatim (DD-184)."""
+
+    SCHEMA = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "column_alignment",
+            "strict": True,
+            "schema": {
+                "$defs": {
+                    "ColumnVerdict": {
+                        "properties": {
+                            "ref_property": {"enum": [f"p{i}" for i in range(900)] + [None]},
+                            "ref_class": {"enum": ["A", "B", None]},
+                        }
+                    }
+                },
+                "properties": {"column_alignments": {"required": ["a", "b", "c"]}},
+            },
+        },
+    }
+
+    def test_schema_is_replaced_by_counts(self):
+        out = mask_source_samples(data={"response_format": self.SCHEMA})["response_format"]
+        assert out["strict"] is True
+        assert out["summary"] == {
+            "required_columns": 3,
+            "ref_property_enum": 901,
+            "ref_class_enum": 3,
+        }
+
+    def test_the_enum_values_are_gone(self):
+        import json
+
+        out = json.dumps(mask_source_samples(data={"response_format": self.SCHEMA}))
+        assert "p899" not in out
+        assert len(out) < 300, "summary must be far smaller than the schema it replaces"
+
+    def test_plain_json_mode_is_left_alone(self):
+        """The JSON-mode fallback carries no schema and needs no summarising."""
+        fmt = {"type": "json_object"}
+        assert mask_source_samples(data={"response_format": fmt})["response_format"] == fmt
+
+    def test_summary_applies_even_when_samples_are_opted_in(self):
+        """Sending samples is a privacy choice; it is not a reason to ship the enum."""
+        with patch.dict(os.environ, {ENV_SEND_SAMPLES: "1"}, clear=False):
+            out = mask_source_samples(data={"response_format": self.SCHEMA})["response_format"]
+        assert "summary" in out

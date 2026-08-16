@@ -64,20 +64,68 @@ def _send_samples() -> bool:
 
 
 def mask_source_samples(*, data: Any, **_kwargs: Any) -> Any:
-    """Strip rendered source sample values from anything sent to Langfuse.
+    """Reduce anything sent to Langfuse: mask source values, summarise the schema.
 
-    Applied to inputs and outputs alike. Walks lists and dicts because a chat
-    payload arrives as a list of message dicts, not a bare string.
+    Applied to inputs, outputs and metadata alike. Walks lists and dicts because a
+    chat payload arrives as a list of message dicts, not a bare string.
+
+    Two independent reductions. Masking sample values is a *privacy* decision and
+    honours ``KAIROS_LANGFUSE_SEND_SAMPLES``. Summarising ``response_format`` is a
+    *volume* decision and always applies: opting into sample values is no reason
+    to also ship a 900-entry enum on every call.
     """
-    if _send_samples():
-        return data
     if isinstance(data, str):
+        if _send_samples():
+            return data
         return _SAMPLE_BLOCK_RE.sub(r"\1" + _MASKED, data)
     if isinstance(data, list):
         return [mask_source_samples(data=item) for item in data]
     if isinstance(data, dict):
-        return {key: mask_source_samples(data=value) for key, value in data.items()}
+        return {
+            key: _summarise_response_format(value)
+            if key == "response_format"
+            else mask_source_samples(data=value)
+            for key, value in data.items()
+        }
     return data
+
+
+def _summarise_response_format(value: Any) -> Any:
+    """Replace the strict JSON schema with a one-line summary (DD-184).
+
+    The OpenAI wrapper records every request parameter, and ``response_format``
+    carries the whole DD-177 schema — one enum entry per candidate class and per
+    reference property. Measured on the smallest domain it was 78% of the
+    observation's metadata; on a wide table with a 900-value property enum it
+    would dwarf the prompt itself, once per call, for no diagnostic value: the
+    classes offered are already legible in the prompt.
+
+    Kept: the format name and the counts, which are what a reader would actually
+    check ("was the schema strict, and how big was the vocabulary?").
+    """
+    if not isinstance(value, dict) or value.get("type") != "json_schema":
+        return value
+    schema = (value.get("json_schema") or {}).get("schema") or {}
+    verdict = (schema.get("$defs") or {}).get("ColumnVerdict") or {}
+    properties = verdict.get("properties") or {}
+
+    def enum_size(field: str) -> int:
+        return len((properties.get(field) or {}).get("enum") or [])
+
+    return {
+        "type": "json_schema",
+        "strict": bool((value.get("json_schema") or {}).get("strict")),
+        "summary": {
+            "required_columns": len(
+                ((schema.get("properties") or {}).get("column_alignments") or {}).get(
+                    "required"
+                )
+                or []
+            ),
+            "ref_property_enum": enum_size("ref_property"),
+            "ref_class_enum": enum_size("ref_class"),
+        },
+    }
 
 
 def tracing_configured() -> bool:
@@ -113,6 +161,12 @@ def get_tracing_client() -> Any | None:
             mask=mask_source_samples,
             environment=os.environ.get(ENV_ENVIRONMENT, "").strip() or None,
         )
+        # Importing this instruments the `openai` module in place, so *every*
+        # client is traced however it was built — including the one the Foundry
+        # SDK returns from AIProjectClient.get_openai_client(), which this code
+        # never constructs and so could not otherwise wrap.
+        import langfuse.openai  # noqa: F401
+
         logger.info("Langfuse tracing enabled (host=%s)", host)
     except ImportError:
         logger.info(
