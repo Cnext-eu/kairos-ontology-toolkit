@@ -362,3 +362,17 @@ def test_author_filled_bullet_under_scaffold_header_is_enforced(tmp_path: Path) 
         for d in check_declared_exclusions(scan_hub_ontologies(tmp_path))
     }
     assert flagged == {"Booking"}
+
+
+def test_unauthored_scaffold_does_not_warn_about_its_own_imports(tmp_path: Path) -> None:
+    """A scaffolded domain with no classes yet cannot use its blueprint imports."""
+    _write_domain(
+        tmp_path, "party", classes=(), imports=("https://www.kairosflow.ai/ont/bsp/party",)
+    )
+    assert check_unused_imports(scan_hub_ontologies(tmp_path)) == []
+
+
+def test_authored_domain_still_warns_about_unused_imports(tmp_path: Path) -> None:
+    module = "https://www.kairosflow.ai/ont/bsp/party"
+    _write_domain(tmp_path, "party", classes=("Party",), imports=(module,))
+    assert [d.term_uri for d in check_unused_imports(scan_hub_ontologies(tmp_path))] == [module]

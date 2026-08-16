@@ -903,9 +903,17 @@ def migrate(check, dry_run, hub_path):
     help="Toolkit release channel to pin: 'stable' (latest GA) or 'preview' (latest rc/beta). "
     "Defaults to auto-detection from the running toolkit version.",
 )
+@click.option(
+    "--local-only",
+    "local_only",
+    is_flag=True,
+    default=False,
+    help="Scaffold and git-init on disk without creating or pushing a GitHub remote. "
+    "For throwaway hubs used to exercise the toolkit; a client hub belongs on GitHub.",
+)
 def new_repo(
     name, desc, dest, org, is_private, ref_models_version, company_domain, skip_protection,
-    channel,
+    channel, local_only,
 ):
     """Create a new ontology hub GitHub repository.
 
@@ -1237,7 +1245,19 @@ def new_repo(
         raise click.ClickException(f"git command failed: {exc.stderr.decode().strip()}")
 
     # --- GitHub repo creation ------------------------------------------------
-    _create_github_repo(repo_dir, repo_slug, org, description, is_private)
+    # _create_github_repo hard-fails by design ("repos must be never local-only"), which
+    # is right for a client hub and wrong for a hub whose only purpose is to exercise the
+    # toolkit end-to-end. --local-only relaxes that deliberately and says so on the way out.
+    if local_only:
+        print("\n⏭  Skipping GitHub repo creation (--local-only)")
+        print("   This hub has no remote. Publish it later with:")
+        print(f"     cd {repo_dir}")
+        print(
+            f"     gh repo create {org}/{repo_slug} "
+            f"{'--private' if is_private else '--public'} --source . --push"
+        )
+    else:
+        _create_github_repo(repo_dir, repo_slug, org, description, is_private)
 
     # --- Reference models are installed via pyproject.toml + uv sync ----------
     # No separate fetch step — the scaffolded pyproject.toml already pins
@@ -1245,13 +1265,17 @@ def new_repo(
     # new-repo) installs it.
 
     # --- Configure branch protection on main ---------------------------------
-    if not skip_protection:
+    if not skip_protection and not local_only:
         full_name = f"{org}/{repo_slug}"
         print("\n🔒 Configuring branch protection on main...")
         _configure_branch_protection(repo_dir, full_name)
 
     print(f"\n✅ Repository created: {repo_slug}")
-    print(f"   GitHub: https://github.com/{org}/{repo_slug}")
+    if local_only:
+        # Printing a github.com URL here would advertise a repo that does not exist.
+        print(f"   Local only (no remote): {repo_dir}")
+    else:
+        print(f"   GitHub: https://github.com/{org}/{repo_slug}")
     print("\nNext steps:")
     print(f"  cd {repo_dir}")
     print("  uv sync")

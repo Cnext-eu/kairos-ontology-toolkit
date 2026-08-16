@@ -683,6 +683,12 @@ def check_unused_imports(
     """
     diagnostics: list[IntegrityDiagnostic] = []
     for domain, onto in sorted(ontologies.items()):
+        # A freshly scaffolded domain declares its blueprint-mandated imports before any
+        # class exists, so every import is trivially "unused". Reporting that says only
+        # "you have not authored this domain yet" -- 58 such warnings on a 22-domain
+        # scaffold is exactly the noise that teaches people to skip the warning list.
+        if not onto.classes and not onto.properties:
+            continue
         for module in onto.imports:
             if module in onto.referenced_external:
                 continue
