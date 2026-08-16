@@ -2974,6 +2974,68 @@ def _archetype_tiers(hub) -> dict:
     return {concept.uri: concept.tier for concept in archetype.core_concepts}
 
 
+@click.command(name="alignment-report")
+@click.option(
+    "--analysis",
+    "analysis_dir",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to integration/sources/_analysis/ (default: auto-detect from hub).",
+)
+@click.option(
+    "--output", "output_path", default=None, help="Write the report to a file as well."
+)
+@click.option(
+    "--gap-limit",
+    type=int,
+    default=40,
+    help="Rows shown in the 'needs a decision' table (json carries all).",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["markdown", "json"]),
+    default="markdown",
+    show_default=True,
+)
+def alignment_report_cmd(analysis_dir, output_path, gap_limit, output_format):
+    """Report source-column alignment coverage with a reason per unmapped column.
+
+    Answers the question a per-domain alignment file cannot: across the whole hub, which
+    real business signal still has no home in the domain model? Most unmapped columns
+    should be unmapped -- audit stamps, vendor placeholders, empty fields -- so each is
+    bucketed by reason and only the genuine gaps are surfaced for a decision.
+
+    Read-only and deterministic: it re-reads what propose-alignment already wrote.
+    """
+    from ..core.alignment_report import build_alignment_report, render_markdown
+    from ..core.hub_utils import find_hub_root
+
+    if analysis_dir:
+        directory = Path(analysis_dir)
+    else:
+        hub = find_hub_root(Path.cwd(), require_model=False)
+        directory = (
+            hub / "integration" / "sources" / "_analysis"
+            if hub
+            else Path("integration/sources/_analysis")
+        )
+
+    report = build_alignment_report(directory)
+
+    if output_format == "json":
+        rendered = json.dumps(report.to_dict(), indent=2, sort_keys=True)
+    else:
+        rendered = render_markdown(report, gap_limit=gap_limit)
+    click.echo(rendered)
+
+    if output_path:
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(rendered.rstrip() + "\n", encoding="utf-8")
+        click.echo(f"(written to {destination})", err=True)
+
+
 @click.command(name="suggest-anchor")
 @click.argument("domain")
 @click.option(
