@@ -540,12 +540,36 @@ def _create_client_from_config(config: AIProviderConfig):
     if config.provider == "foundry":
         return _create_foundry_client(config)
 
-    from openai import OpenAI
-
-    return OpenAI(
+    return _openai_class()(
         base_url=config.endpoint,
         api_key=config.api_key,
     )
+
+
+def _openai_class():
+    """Return the ``OpenAI`` class, Langfuse-instrumented when tracing is on (DD-184).
+
+    Langfuse ships a drop-in replacement that records model, token usage and the
+    ``generation`` observation type without the call sites knowing. Preferring it
+    over hand-rolled spans is the documented guidance, and it is why nothing in
+    ``create_chat_completion`` has to know tracing exists.
+
+    Falls back to the plain client whenever tracing is off or the package is
+    missing, so an unconfigured hub is byte-for-byte unchanged.
+    """
+    from .tracing import get_tracing_client
+
+    if get_tracing_client() is not None:
+        try:
+            from langfuse.openai import OpenAI as TracedOpenAI
+
+            return TracedOpenAI
+        except Exception as exc:  # noqa: BLE001 - tracing must never fail a run
+            logger.info("Langfuse OpenAI wrapper unavailable (%s); using plain client.", exc)
+
+    from openai import OpenAI
+
+    return OpenAI
 
 
 def _endpoint_for_log(endpoint: str) -> str:
@@ -694,6 +718,8 @@ def create_chat_completion(
     model: str,
     messages: list[dict[str, Any]],
     param_fallbacks: dict[str, Any] | None = None,
+    trace_name: str = "",
+    trace_metadata: dict[str, Any] | None = None,
     **request_kwargs: Any,
 ):
     """Create a chat completion, capability-aware for per-model parameter support.
@@ -723,6 +749,17 @@ def create_chat_completion(
     # and a disabled one must be absent from the request, not sent as null.
     request_kwargs = {k: v for k, v in request_kwargs.items() if v is not None}
     fallbacks = param_fallbacks or {}
+
+    # DD-184: the Langfuse OpenAI wrapper consumes `name`/`metadata` and strips them
+    # before the provider call. A plain client would reject them as unknown
+    # parameters, so they are attached only when tracing is actually live.
+    from .tracing import get_tracing_client
+
+    if get_tracing_client() is not None:
+        if trace_name:
+            request_kwargs["name"] = trace_name
+        if trace_metadata:
+            request_kwargs["metadata"] = trace_metadata
 
     known_unsupported = _UNSUPPORTED_PARAMS_BY_MODEL.get(model, frozenset())
     if known_unsupported:

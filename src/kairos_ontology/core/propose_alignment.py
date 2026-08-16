@@ -60,6 +60,7 @@ from .ai_provider import (
     sanitize_provider_error,
 )
 from ._provenance import ai_attribution, provenance_comment
+from .tracing import call_metadata, flush_tracing, new_session_id
 from .ai_preflight import require_ai_provider
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import compute_entry_hash, open_cache
@@ -1749,6 +1750,7 @@ def align_table(
     anchor_override: str | None = None,
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
+    trace_session_id: str = "",
 ) -> dict[str, Any]:
     """Align one source table, splitting across calls when it is too wide.
 
@@ -1779,6 +1781,7 @@ def align_table(
             anchor_override=anchor_override,
             class_cautions=class_cautions,
             glossary_terms=glossary_terms,
+            trace_session_id=trace_session_id,
         )
 
     chunks = [columns[i : i + chunk_size] for i in range(0, len(columns), chunk_size)]
@@ -1800,6 +1803,7 @@ def align_table(
         anchor_override=anchor_override,
         class_cautions=class_cautions,
         glossary_terms=glossary_terms,
+        trace_session_id=trace_session_id,
     )
     pinned = anchor_override or merged.get("ref_class")
     for chunk in chunks[1:]:
@@ -1814,6 +1818,7 @@ def align_table(
             anchor_override=pinned,
             class_cautions=class_cautions,
             glossary_terms=glossary_terms,
+            trace_session_id=trace_session_id,
         )
         merged["column_alignments"].extend(part.get("column_alignments") or [])
         # A failure in any chunk is a failure for the table: the alternative is
@@ -1836,6 +1841,7 @@ def _align_table_once(
     anchor_override: str | None = None,
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
+    trace_session_id: str = "",
 ) -> dict[str, Any]:
     """Run LLM alignment for one source table against reference model classes.
 
@@ -1914,6 +1920,19 @@ def _align_table_once(
                 # A model that cannot honour the schema must still be asked for
                 # JSON, rather than losing the constraint we already had.
                 param_fallbacks={"response_format": {"type": "json_object"}},
+                # DD-184: verb-first and stable, so it stays filterable; the table
+                # and the pass number are metadata, not part of the name.
+                trace_name="align-table",
+                trace_metadata=call_metadata(
+                    trace_session_id,
+                    ROLE_ALIGNMENT,
+                    table=table_name,
+                    source_columns=len(columns),
+                    candidate_classes=len(table_classes),
+                    anchor_override=anchor_override or "",
+                    likely_entity=likely_entity,
+                    schema_enum_notes=schema_notes,
+                ),
             )
         )
         result = normalize_schema_response(json.loads(response.choices[0].message.content))
@@ -3593,6 +3612,11 @@ def _propose_alignments(
     tables_done = 0
     run_started = time.monotonic()
 
+    # DD-184: one session id per invocation. Calls run concurrently across
+    # threads, where a context-manager span would not reliably parent them, so
+    # grouping uses the session mechanism the SDK provides for exactly this.
+    trace_session_id = new_session_id("align")
+
     for domain_index, (domain_id, tables) in enumerate(domain_order, start=1):
         in_flight = min(max_workers, len(tables))
         report(
@@ -3898,6 +3922,7 @@ def _propose_alignments(
                         anchor_override=anchor_override,
                         class_cautions=class_cautions,
                         glossary_terms=glossary_terms,
+                        trace_session_id=trace_session_id,
                     )
                 else:
                     result = align_table(
@@ -3910,6 +3935,7 @@ def _propose_alignments(
                         anchor_override=anchor_override,
                         class_cautions=class_cautions,
                         glossary_terms=glossary_terms,
+                        trace_session_id=trace_session_id,
                     )
                     if len(shortlist_classes) < len(
                         ref_classes
@@ -4440,6 +4466,9 @@ def _propose_alignments(
                 f"— {anchor_doc_path.name}"
             )
 
+    # DD-184: this is a short-lived CLI process; without an explicit flush the
+    # buffered events are lost at exit and the run appears never to have happened.
+    flush_tracing()
     return output_files, alignments
 
 

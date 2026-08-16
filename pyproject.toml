@@ -59,6 +59,12 @@ otel = [
     "opentelemetry-sdk>=1.28.0,<2.0.0",
     "opentelemetry-exporter-otlp>=1.28.0,<2.0.0",
 ]
+# Langfuse LLM tracing (DD-184). Opt-in and off by default: activated only when
+# LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and LANGFUSE_HOST are all set. A missing
+# package degrades to untraced operation and never fails a run.
+langfuse = [
+    "langfuse>=4.14.0,<5.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/Cnext-eu/kairos-ontology-toolkit"
@@ -102,6 +108,9 @@ otel = [
     "opentelemetry-api>=1.28.0,<2.0.0",
     "opentelemetry-sdk>=1.28.0,<2.0.0",
     "opentelemetry-exporter-otlp>=1.28.0,<2.0.0",
+]
+langfuse = [
+    "langfuse>=4.14.0,<5.0.0",
 ]
 
 [build-system]

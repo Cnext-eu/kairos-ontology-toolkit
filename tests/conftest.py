@@ -64,6 +64,32 @@ def _clean_ai_env():
 
 
 @pytest.fixture(autouse=True)
+def _no_langfuse_in_tests():
+    """Guarantee no test ever ships a trace to Langfuse (DD-184).
+
+    Tracing activates purely from environment variables, so a developer with real
+    credentials in their shell would otherwise export test prompts — including
+    fixture data — to a live project simply by running pytest. Both the variables
+    and the memoised client are cleared around every test.
+    """
+    try:
+        from kairos_ontology.core.tracing import (
+            LANGFUSE_ENV_VAR_NAMES,
+            reset_tracing_client,
+        )
+    except ImportError:  # pragma: no cover - tracing module must be importable
+        yield
+        return
+    saved = {k: _os.environ.pop(k, None) for k in LANGFUSE_ENV_VAR_NAMES}
+    reset_tracing_client()
+    yield
+    reset_tracing_client()
+    for key, value in saved.items():
+        if value is not None:
+            _os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
 def _reset_unsupported_param_cache():
     """Clear the per-model parameter-rejection cache between tests (DD-174).
 
