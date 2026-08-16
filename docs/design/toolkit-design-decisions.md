@@ -12674,11 +12674,21 @@ falls back to plain JSON mode instead of losing the constraint entirely.
 
 ### Consequences
 
-Party-domain stability went from 80% to **100%** — three parallel runs produced
-byte-identical output. Recall improved at the same time, from a drifting 22-24 columns
-to a steady 25: forcing a verdict per column recovers the ones the model used to drop.
-This is the fix the seed could not be; the seed and the stable prompt remain necessary,
-because a stable *question* is what makes a stable answer meaningful.
+Party-domain stability rose from 62-80% to **82-100%** across repeated three-run trials
+(100%, 96%, 82% — the byte-identical trial was a favourable draw, not the expected
+outcome). Recall improved at the same time, from a drifting 22-24 columns to 24-26.
+Forcing a verdict per column recovers the ones the model used to drop.
+
+This is the fix the seed could not be, but it is not determinism. Reruns of the same
+configuration still differ, so a re-run may still change a model a human has reviewed;
+what the schema removes is the *silent* form of that drift, where a column disappeared
+from the answer entirely rather than being answered "no match". The seed and the stable
+prompt remain necessary, because a stable question is what makes a stable answer
+meaningful.
+
+One confound worth recording: runs whose `--analysis` directory already contained a
+previous run's output scored 82%, against 96% from pristine inputs. Prior output appears
+to influence the next run, which is a separate thread to pull.
 
 The response shape changes only how the answer is obtained. `normalize_schema_response`
 converts the object back to the historical list of per-column dicts, so every consumer
