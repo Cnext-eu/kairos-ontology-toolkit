@@ -1020,11 +1020,21 @@ def _get_openai_client(model: str = DEFAULT_MODEL):
     return get_ai_client(model=model, role=ROLE_AFFINITY)
 
 
+#: Sample values per column sent to the affinity model (DD-166).
+#:
+#: Deliberately far below the alignment step's limit. Affinity answers "which domain is
+#: this table?", for which a couple of values is a type hint and twenty is twenty times
+#: the prompt weight and PII exposure for no better answer. Alignment answers "which
+#: property is this column?", where the value distribution *is* the evidence.
+MAX_AFFINITY_SAMPLES = 3
+
+
 def _format_columns(columns: list[dict[str, Any]]) -> str:
-    """Render columns as a markdown-ish table with up to 3 sample values each."""
+    """Render columns as a markdown-ish table with a few sample values each."""
     col_lines = []
     for col in columns:
-        samples_str = ", ".join(col["samples"][:3]) if col.get("samples") else ""
+        samples = col.get("samples") or []
+        samples_str = ", ".join(samples[:MAX_AFFINITY_SAMPLES])
         col_lines.append(f"  | {col['name']} | {col['data_type']} | {samples_str} |")
     return "\n".join(col_lines)
 

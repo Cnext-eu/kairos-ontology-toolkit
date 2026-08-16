@@ -74,7 +74,15 @@ MAX_CROSS_MODULE_CLASSES = 8
 RETRY_MIN_CONFIDENCE = 0.6
 RETRY_MIN_MAPPED_RATIO = 0.4
 MAX_SAMPLE_CHARS = 48
-MAX_SAMPLES_PER_COLUMN = 3
+#: Sample values shown per column in the alignment prompt (DD-166).
+#:
+#: Three was too few to tell a governed code list from free text -- the judgement
+#: this step exists to make. Raised to match the bronze capture limit
+#: (``import_source.MAX_SAMPLE_VALUES``); capturing 20 and then showing 3 would
+#: waste the evidence. Affinity stays at three deliberately: it classifies a table
+#: into a domain and needs only a type hint, so it should not carry the extra
+#: prompt weight or PII surface.
+MAX_SAMPLES_PER_COLUMN = 20
 
 #: Issue #182 — confidence floor below which a ``custom`` column's LLM-suggested
 #: property is treated as untrustworthy and emitted as the canonical *unmatched*
@@ -681,13 +689,23 @@ def _is_noisy_sample(value: str) -> bool:
 
 
 def _compact_prompt_samples(samples: list[Any]) -> list[str]:
-    """Keep semantically useful, bounded sample values for prompts."""
+    """Keep semantically useful, bounded, **distinct** sample values for prompts.
+
+    Deduplication matters more as the cap rises: showing "ACTIVE" twenty times says
+    nothing that showing it once does not, and it crowds out the values that would have
+    revealed the rest of the code list.
+    """
     kept: list[str] = []
+    seen: set[str] = set()
     for raw in samples:
         text = str(raw).strip()
         if _is_noisy_sample(text):
             continue
-        kept.append(_clip_sample_text(text))
+        clipped = _clip_sample_text(text)
+        if clipped in seen:
+            continue
+        seen.add(clipped)
+        kept.append(clipped)
         if len(kept) >= MAX_SAMPLES_PER_COLUMN:
             break
     return kept

@@ -201,7 +201,15 @@ class TestWriteSourceDir:
         assert manifest["version"] == "1.2"
         assert manifest["tables"] == ["orders"]
 
-    def test_writes_table_yaml_without_samples(self, tmp_path):
+    def test_writes_table_yaml_with_sanitized_column_values_but_no_rows(self, tmp_path):
+        """DD-166: distinct column values are published; sample *rows* are not.
+
+        These were previously stripped, and stripping them was the only thing
+        keeping raw values out of the artifact -- they were never sanitized. They
+        now clear the same redaction bar as rows, so the alignment step can reason
+        over them. Rows stay in <table>.samples.yaml: a row correlates every column
+        of one real record, a column value does not.
+        """
         tables = [
             {
                 "name": "orders",
@@ -223,8 +231,10 @@ class TestWriteSourceDir:
         import yaml
 
         table_data = yaml.safe_load((output / "orders.yaml").read_text(encoding="utf-8"))
-        # Table YAML should NOT have inline samples (they go to .samples.yaml)
-        assert "samples" not in table_data["columns"][0]
+        assert table_data["columns"][0]["samples"] == ["1", "2", "3"]
+        # Whole rows remain out of the schema YAML.
+        assert "sample_rows" not in table_data
+        assert "rows" not in table_data
 
     def test_writes_samples_yaml(self, tmp_path):
         tables = [

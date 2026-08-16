@@ -285,3 +285,78 @@ def test_generic_name_column_not_flagged_on_non_person_table(tmp_path):
 
     assert find_source_data_privacy_issues(data) == []
     assert detect_sample_pii_kind("Name", "Loading place", context_name="TransportStop") is None
+
+
+class TestAnalyseSourcesPiiGate:
+    """DD-166: analyse-sources must not ship unredacted samples to a third party.
+
+    The module had no privacy check at all — redaction happened earlier, at import, and
+    the send step trusted that ordering. Ordering is not a control.
+    """
+
+    def _hub(self, tmp_path):
+        sources = tmp_path / "integration" / "sources" / "crm"
+        sources.mkdir(parents=True)
+        # A ref-models dir must exist: that check runs before the gate, and both are
+        # pre-LLM, so the ordering does not matter for safety.
+        refs = tmp_path / "ontology-reference-models"
+        (refs / "accelerator-packs").mkdir(parents=True)
+        return tmp_path / "integration" / "sources", refs
+
+    def test_gate_blocks_and_names_no_values(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        root, refs = self._hub(tmp_path)
+        finding = MagicMock()
+        finding.kind = "email"
+        report = MagicMock()
+        report.passed = False
+        report.findings = [(root / "crm" / "crm.vocabulary.ttl", finding)]
+        report.files_scanned = 1
+
+        with patch("kairos_ontology.core.source_privacy.run_source_privacy", return_value=report):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "analyse-sources",
+                    "--sources", str(root),
+                    "--ref-models", str(refs),
+                    "--accelerator", "logistics",
+                ],
+            )
+
+        assert result.exit_code == 1, result.output
+        assert "Refusing to send source samples" in result.output
+        assert "email" in result.output
+        assert "source-privacy --fix" in result.output
+
+    def test_clean_sources_are_not_blocked_by_the_gate(self, tmp_path):
+        """A passing scan must fall through; the gate is not allowed to be the failure."""
+        from unittest.mock import MagicMock, patch
+
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        root, refs = self._hub(tmp_path)
+        report = MagicMock()
+        report.passed = True
+        report.findings = []
+        report.files_scanned = 1
+
+        with patch("kairos_ontology.core.source_privacy.run_source_privacy", return_value=report):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "analyse-sources",
+                    "--sources", str(root),
+                    "--ref-models", str(refs),
+                    "--accelerator", "logistics",
+                ],
+            )
+
+        assert "Refusing to send source samples" not in result.output

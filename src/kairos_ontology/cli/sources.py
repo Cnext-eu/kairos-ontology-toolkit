@@ -821,6 +821,33 @@ def analyse_sources_cmd(
         click.echo(f"❌ Sources directory not found: {sources_path}", err=True)
         raise SystemExit(1)
 
+    # PII gate (DD-166). This command sends sample values from every column to a
+    # third-party LLM. Redaction happens earlier -- at import, and via `source-privacy`
+    # -- and this module trusted that silently: it contained no privacy check at all, so
+    # an unsanitized vocabulary would have been shipped to the provider with nothing
+    # objecting. Ordering is not a control. Scan before sending.
+    from ..core.source_privacy import run_source_privacy
+
+    privacy_report = run_source_privacy(sources_path, fix=False)
+    if not privacy_report.passed:
+        findings = privacy_report.findings
+        click.echo(
+            f"❌ Refusing to send source samples to the AI provider: "
+            f"{len(findings)} unredacted PII finding(s) across "
+            f"{privacy_report.files_scanned} artifact(s).",
+            err=True,
+        )
+        # Paths and kinds only -- never the offending value, which is the thing we are
+        # trying not to disclose.
+        for path, finding in findings[:10]:
+            click.echo(f"   - {path}: {getattr(finding, 'kind', 'pii')}", err=True)
+        if len(findings) > 10:
+            click.echo(f"   … and {len(findings) - 10} more", err=True)
+        click.echo(
+            "   Fix with: kairos-ontology source-privacy --fix, then re-run.", err=True
+        )
+        raise SystemExit(1)
+
     if not quiet:
         click.echo(f"🔍 Analysing sources in: {sources_path}")
         click.echo(f"   Reference models: {ref_models_path}")

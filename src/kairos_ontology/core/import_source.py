@@ -48,6 +48,35 @@ _WAREHOUSE_PLATFORMS = {
 }
 
 
+#: How many sample values per column reach the bronze vocabulary, and from there the
+#: alignment prompt (DD-166).
+#:
+#: This was a hardcoded five-value slice in four places, taking the *first* five rather
+#: than five distinct ones -- so a low-cardinality column could store the same value
+#: five times and say nothing at all. Twenty distinct values is enough to recognise a
+#: governed code list (most are shorter than that) and to tell coded from free text,
+#: which is the judgement the alignment step actually makes. Beyond that the marginal
+#: value collapses: ``distinct_count`` already answers "is this an enum?" for a
+#: high-cardinality column, while more raw values inflate every prompt and widen the
+#: PII surface. Affinity deliberately stays at three -- it only needs a type hint.
+MAX_SAMPLE_VALUES = 20
+
+
+def distinct_samples(samples, limit: int = MAX_SAMPLE_VALUES) -> list:
+    """Return up to *limit* distinct sample values, preserving first-seen order."""
+    seen: set[str] = set()
+    kept: list = []
+    for value in samples or []:
+        key = str(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(value)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
 @dataclass
 class ColumnChange:
     """Represents a change to a single column."""
@@ -283,7 +312,7 @@ def _merge_samples_from_file(schema_dir: Path, tbl_name: str, tbl_data: dict) ->
             continue  # Already has inline samples (backward compat)
         name = col.get("name", "")
         if name in col_samples:
-            col["samples"] = col_samples[name][:5]
+            col["samples"] = distinct_samples(col_samples[name])
 
 
 def normalize_profiling_evidence(data: dict) -> dict:
@@ -482,7 +511,7 @@ def generate_vocabulary_ttl(data: dict) -> str:
                     (
                         col_uri,
                         KAIROS_BRONZE.sampleValues,
-                        Literal(" | ".join(str(s) for s in samples[:5])),
+                        Literal(" | ".join(str(s) for s in distinct_samples(samples))),
                     )
                 )
 
@@ -711,7 +740,7 @@ def _add_table_to_graph(g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef
                 (
                     col_uri,
                     KAIROS_BRONZE.sampleValues,
-                    Literal(" | ".join(str(s) for s in samples[:5])),
+                    Literal(" | ".join(str(s) for s in distinct_samples(samples))),
                 )
             )
 
@@ -833,7 +862,7 @@ def _sync_managed_sample_predicates(
                     (
                         subject,
                         KAIROS_BRONZE.sampleValues,
-                        Literal(" | ".join(str(item) for item in samples[:5])),
+                        Literal(" | ".join(str(item) for item in distinct_samples(samples))),
                     )
                 )
             enum_values = column.get("enum_values") or []

@@ -41,6 +41,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ROWS = 1000
 DEFAULT_SAMPLE_SIZE = 5
 
+#: Distinct values captured per column (DD-166).
+#:
+#: Deliberately separate from DEFAULT_SAMPLE_SIZE, which the two once shared. They are
+#: different artifacts with different risk: a sample *row* correlates every column of
+#: one real record and is the PII-sensitive output, while distinct column *values* are
+#: de-correlated and are what the alignment step reasons over to tell a governed code
+#: list from free text. Five was too few for that judgement; twenty covers most code
+#: lists. Raising the row count to match would have widened the PII surface for no
+#: modelling gain, which is why these are now two numbers.
+DEFAULT_DISTINCT_VALUES = 20
+
 # File extensions directory mode will attempt to read. Anything else in the
 # directory is ignored silently (not counted as a failure). Exported so callers
 # can report "M of K file(s)" against the same candidate set the loop uses.
@@ -207,7 +218,7 @@ def read_csv_table(
         }
         if distinct_values:
             col_dict["distinct_count"] = len(distinct_values)
-            col_dict["samples"] = distinct_values[:sample_size]
+            col_dict["samples"] = distinct_values[:DEFAULT_DISTINCT_VALUES]
 
         columns.append(col_dict)
 
@@ -323,7 +334,7 @@ def read_xlsx_tables(
             }
             if distinct_values:
                 col_dict["distinct_count"] = len(distinct_values)
-                col_dict["samples"] = distinct_values[:sample_size]
+                col_dict["samples"] = distinct_values[:DEFAULT_DISTINCT_VALUES]
 
             columns.append(col_dict)
 
@@ -519,7 +530,7 @@ def read_parquet_table(
         }
         if distinct_values:
             col_dict["distinct_count"] = len(distinct_values)
-            col_dict["samples"] = distinct_values[:sample_size]
+            col_dict["samples"] = distinct_values[:DEFAULT_DISTINCT_VALUES]
 
         columns.append(col_dict)
 
@@ -590,6 +601,29 @@ def write_source_dir(
         assert_no_unredacted_sample_pii(safe_rows, table=str(table["name"]))
         table["sample_rows"] = safe_rows
 
+        # Per-column distinct values were previously left raw and then dropped on write
+        # -- dropping them *was* the privacy control. They are now published (the
+        # alignment step reasons over them), so they must clear the same bar as rows.
+        # Reusing redact_sample_rows rather than writing a second detector keeps one
+        # audited implementation: each value becomes a one-cell row for that column.
+        for col in table.get("columns", []):
+            values = col.get("samples") or []
+            if not values:
+                continue
+            name = str(col.get("name", ""))
+            pseudo_rows = [{name: value} for value in values]
+            safe_values, _ = redact_sample_rows(
+                pseudo_rows, table=str(table["name"]), column_types=column_types
+            )
+            assert_no_unredacted_sample_pii(safe_values, table=str(table["name"]))
+            # Redaction collapses distinct values to identical tokens; dedupe again so a
+            # PII column contributes one masked token, not twenty copies of it.
+            col["samples"] = list(
+                dict.fromkeys(
+                    row[name] for row in safe_values if row.get(name) not in (None, "")
+                )
+            )
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Write manifest
@@ -621,9 +655,10 @@ def write_source_dir(
             table_yaml["row_count"] = table["row_count"]
         if table.get("rows_sampled") is not None:
             table_yaml["rows_sampled"] = table["rows_sampled"]
-        table_yaml["columns"] = [
-            {k: v for k, v in col.items() if k != "samples"} for col in table["columns"]
-        ]
+        # ``samples`` (sanitized distinct column values) is published; ``sample_rows``
+        # still lives only in <table>.samples.yaml. Column values are de-correlated --
+        # they cannot be reassembled into a record the way a row can.
+        table_yaml["columns"] = list(table["columns"])
         with open(output_dir / f"{tbl_name}.yaml", "w", encoding="utf-8") as f:
             yaml.dump(table_yaml, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
