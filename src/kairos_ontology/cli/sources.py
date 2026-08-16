@@ -850,12 +850,51 @@ def analyse_sources_cmd(
         )
         raise SystemExit(1)
 
+    # DD-183: resolve the hub's declared accelerator when none was passed.
+    #
+    # Without one, classification falls back to scanning every TTL under the
+    # reference-models tree and treating each directory group as a candidate
+    # domain. On this corpus that is 274 pseudo-domains — FIBO, ACTUS, the
+    # pattern library, and version strings like "1.2.0" and "current" — instead
+    # of the blueprint's 22 governed domains, and tables get classified into
+    # module names (`shipment-journey`, `track-and-trace`) that no domain owns.
+    # The output looks entirely normal, which is what makes the fallback
+    # dangerous: nothing downstream can tell a governed domain from a scanned
+    # directory. The hub already declares `[tool.kairos].accelerator`.
+    accelerator_inferred = False
+    if not accelerator:
+        try:
+            from ..core.reference_modules import resolve_hub_accelerator
+
+            accelerator = resolve_hub_accelerator(
+                explicit=None,
+                hub_root=hub_root,
+                ref_models_dir=ref_models_path,
+                domain_hint=(
+                    [d.strip() for d in domains_filter.split(",") if d.strip()]
+                    if domains_filter
+                    else None
+                ),
+            )
+            accelerator_inferred = bool(accelerator)
+        except Exception:  # noqa: BLE001 - ambiguity falls through to the warning below
+            accelerator = None
+
     if not quiet:
         click.echo(f"🔍 Analysing sources in: {sources_path}")
         click.echo(f"   Reference models: {ref_models_path}")
         click.echo(f"   Model: {llm_model}")
         if accelerator:
-            click.echo(f"   Accelerator: {accelerator} (data-domain-first)")
+            source = "inferred from hub" if accelerator_inferred else "explicit"
+            click.echo(f"   Accelerator: {accelerator} (data-domain-first, {source})")
+        else:
+            click.echo(
+                "   ⚠ No accelerator resolved — classifying against every ontology "
+                "found under the reference-models tree, not the blueprint's governed "
+                "domains. Tables may be assigned to module names no domain owns. "
+                "Pass --accelerator <pack>, or set [tool.kairos].accelerator.",
+                err=True,
+            )
         if domains_filter:
             click.echo(
                 f"   Domain filter: {domains_filter} (output focus only — full set is classified)"

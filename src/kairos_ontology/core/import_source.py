@@ -685,6 +685,81 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
     return results
 
 
+def split_vocabulary_by_table(
+    vocabulary_ttl: str,
+    *,
+    system_name: str,
+    extracted_at: str = "",
+) -> dict[str, str]:
+    """Split one source vocabulary into per-table Turtle, by table (DD-182).
+
+    Returns ``{table_name: turtle}``, projecting each ``bronze:SourceTable`` and its
+    columns out of *vocabulary_ttl* rather than re-deriving them from the source
+    schema.
+
+    This exists because deriving the two outputs independently let them drift. The
+    aggregate is updated by an in-place merge that syncs a fixed list of managed
+    predicates; the per-table files were regenerated wholesale from the schema. Any
+    enrichment added to the generator but not to the merge's sync list therefore
+    appeared in one and never the other — ``formatHint`` did exactly that, on 38
+    columns, and the resulting disagreement made the source catalog refuse to load
+    at all, blocking every downstream stage.
+
+    Splitting the finished graph makes the two identical by construction: whatever
+    the aggregate says about a table is, verbatim, what its per-table file says.
+    """
+    source = Graph()
+    source.parse(data=vocabulary_ttl, format="turtle")
+
+    base_ns = Namespace(f"https://kairos.cnext.eu/source/{system_name}#")
+    sys_uri = _system_uri(base_ns, system_name)
+    # System-level triples are context every per-table file repeats.
+    system_triples = list(source.predicate_objects(sys_uri))
+
+    results: dict[str, str] = {}
+    for table_uri in source.subjects(RDF.type, KAIROS_BRONZE.SourceTable):
+        if not isinstance(table_uri, URIRef):
+            continue
+        table_name = str(source.value(table_uri, KAIROS_BRONZE.tableName) or "")
+        if not table_name:
+            continue
+
+        g = Graph()
+        g.bind("kairos-bronze", KAIROS_BRONZE)
+        g.bind(system_name, base_ns)
+        g.bind("rdfs", RDFS)
+        g.bind("xsd", XSD)
+        g.bind("owl", OWL)
+
+        ont_uri = URIRef(
+            f"https://kairos.cnext.eu/source/{system_name}/vocabulary/"
+            f"{_sanitize_uri_part(table_name)}"
+        )
+        g.add((ont_uri, RDF.type, OWL.Ontology))
+        g.add((ont_uri, RDFS.label, Literal(f"{system_name} — {table_name} Vocabulary")))
+        if extracted_at:
+            g.add((ont_uri, OWL.versionInfo, Literal(f"Extracted {extracted_at}")))
+
+        for predicate, value in system_triples:
+            g.add((sys_uri, predicate, value))
+
+        for predicate, value in source.predicate_objects(table_uri):
+            g.add((table_uri, predicate, value))
+
+        column_uris = set(source.subjects(KAIROS_BRONZE.belongsToTable, table_uri))
+        column_uris.update(source.subjects(KAIROS_BRONZE.sourceTable, table_uri))
+        for column_uri in column_uris:
+            for predicate, value in source.predicate_objects(column_uri):
+                g.add((column_uri, predicate, value))
+
+        results[table_name] = prepend_provenance(
+            g.serialize(format="turtle"),
+            "import-source",
+            extra={"Source system": system_name, "Table": table_name},
+        )
+    return results
+
+
 def _add_table_to_graph(g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef) -> None:
     """Add a single table and its columns to an rdflib Graph."""
     tbl_name = tbl["name"]
@@ -1258,7 +1333,18 @@ def run_import_source(
         report = None
 
     # Build every output before publishing any of them.
-    per_table = generate_vocabulary_per_table(data)
+    #
+    # DD-182: the per-table files are a projection of the aggregate, not an
+    # independent derivation from *data*. Deriving them separately let the two
+    # drift — the aggregate is merged in place and syncs a fixed predicate list,
+    # while the per-table generator always emitted everything — which left 38
+    # columns disagreeing about `formatHint` and stopped the source catalog from
+    # loading at all.
+    per_table = split_vocabulary_by_table(
+        ttl_content,
+        system_name=sys_name,
+        extracted_at=str(data.get("extracted_at", "") or ""),
+    )
 
     if dry_run:
         return None, report

@@ -697,11 +697,13 @@ class TestRunImportSource:
     def test_builds_all_turtle_before_publishing(self, valid_yaml_file, tmp_path, monkeypatch):
         output_dir = tmp_path / "output"
 
-        def fail_per_table(_data):
+        def fail_per_table(*_args, **_kwargs):
             raise RuntimeError("candidate generation failed")
 
+        # DD-182: per-table files are now split out of the finished aggregate, so
+        # the build-before-publish invariant is pinned on the splitter.
         monkeypatch.setattr(
-            "kairos_ontology.core.import_source.generate_vocabulary_per_table",
+            "kairos_ontology.core.import_source.split_vocabulary_by_table",
             fail_per_table,
         )
 
