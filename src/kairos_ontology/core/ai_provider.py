@@ -154,7 +154,7 @@ AI_ENV_VAR_NAMES: frozenset[str] = frozenset(
     }
     | {
         f"KAIROS_AI_{role.upper()}_{suffix}"
-        for role in ("affinity", "alignment")
+        for role in ("affinity", "alignment", "judgment")
         for suffix in ("ENDPOINT", "KEY", "MODEL")
     }
 )
@@ -177,6 +177,11 @@ AI_ENV_VAR_NAMES: frozenset[str] = frozenset(
 # optional ``KAIROS_AI_{ROLE}_MODEL`` model override.
 ROLE_AFFINITY = "affinity"
 ROLE_ALIGNMENT = "alignment"
+#: Archetype-conformance judgment (DD-167). A third role because the work differs
+#: again: ~174 one-shot judgments against a closed outcome vocabulary, where a
+#: wrong "conforms" silently certifies a concept the hub never models. Accuracy
+#: matters more than cost here, so it gets its own endpoint/model knobs.
+ROLE_JUDGMENT = "judgment"
 
 
 def _role_env(role: str | None, suffix: str) -> str:

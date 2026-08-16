@@ -2175,6 +2175,138 @@ def conformance_validate(artifact_file, archetype_id, allow_unresolved, domains,
         )
 
 
+@discovery_conformance.command(name="judge")
+@click.option("--archetype", "archetype_id", required=True, help="Archetype id to judge against.")
+@click.option(
+    "--output",
+    "output_path",
+    default=None,
+    help="Where to write the judgments file (default: integration/discovery/"
+    "core-concepts-judgments.yaml).",
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    default=None,
+    help="Concepts per model call. Lower it if responses get truncated.",
+)
+@click.option(
+    "--business-context",
+    default="",
+    help="Short description of the business, included in every batch prompt.",
+)
+@click.option("--model", default=None, help="Override the model for this run.")
+@_REFMODELS_OPTION
+def discovery_conformance_judge_cmd(
+    archetype_id, output_path, batch_size, business_context, model, refmodels_root
+):
+    """Judge every archetype concept via the configured AI provider (DD-167).
+
+    Writes a judgments file for ``discovery-conformance build --judgments``. Every entry
+    is attributed ``decided_by: ai``, so DD-148's gate still requires a human to resolve
+    the uncertain ones before compile/validate pass. This command cannot confirm the
+    archetype itself — that is DD-149's human gate and stays a sentinel in the output.
+
+    
+    Example:
+      kairos-ontology discovery-conformance judge --archetype unit-load-carrier \
+        --business-context "Short-sea ro-ro carrier; own and subcontracted haulage."
+    """
+    from ..core.analyse_sources import load_data_domains
+    from ..core.archetype_loader import load_archetype
+    from ..core.conformance_evidence import collect_concept_source_evidence
+    from ..core.conformance_judge import (
+        DEFAULT_BATCH_SIZE,
+        bi_demand_terms,
+        blueprint_concept_domains,
+        concepts_named_by_affinity,
+        judge_concepts,
+        pattern_cautions,
+        write_judgments,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
+        )
+
+    refmodels_dir = _resolve_conformance_root(refmodels_root)
+    archetype = load_archetype(refmodels_dir, archetype_id)
+    catalog = [
+        {"uri": c.uri, "label": c.label, "tier": c.tier} for c in archetype.core_concepts
+    ]
+
+    # Place each concept in a domain from the blueprint so affinity evidence can be
+    # found. Without this the evidence collector needs authored likely_domains, which do
+    # not exist until the judgment it is meant to inform has been made.
+    from ..core.reference_modules import resolve_hub_accelerator
+
+    try:
+        accelerator = resolve_hub_accelerator(
+            explicit=None, hub_root=hub_root, ref_models_dir=refmodels_dir
+        )
+    except Exception:  # noqa: BLE001 - evidence enrichment must not fail the judgment
+        accelerator = None
+    data_domains = (
+        load_data_domains(refmodels_dir, accelerator)
+        if accelerator and refmodels_dir is not None
+        else {}
+    )
+    concept_domains = blueprint_concept_domains([c["uri"] for c in catalog], data_domains)
+    evidence = collect_concept_source_evidence(
+        [c["uri"] for c in catalog], hub_root, concept_domains=concept_domains
+    )
+
+    uris = [c["uri"] for c in catalog]
+    concept_level = concepts_named_by_affinity(
+        uris, hub_root / "integration" / "sources" / "_analysis"
+    )
+    cautions = pattern_cautions(uris, refmodels_dir)
+    bi_terms = bi_demand_terms(hub_root)
+
+    click.echo(
+        f"⚖️  Judging {len(catalog)} concept(s) from '{archetype_id}' — "
+        f"{len(evidence)} with source evidence, {len(concept_level)} named directly by a "
+        f"source table, {len(cautions)} carrying a pattern-library caution"
+    )
+    with click.progressbar(length=len(catalog), label="   judging") as bar:
+        report = judge_concepts(
+            catalog=catalog,
+            evidence=evidence,
+            archetype_id=archetype_id,
+            business_context=business_context,
+            concept_level_uris=concept_level,
+            cautions=cautions,
+            bi_terms=bi_terms,
+            batch_size=batch_size or DEFAULT_BATCH_SIZE,
+            model=model,
+            progress=bar.update,
+        )
+
+    destination = (
+        Path(output_path)
+        if output_path
+        else hub_root / "integration" / "discovery" / "core-concepts-judgments.yaml"
+    )
+    written = write_judgments(report, destination)
+
+    click.echo("")
+    click.echo(f"   Calls made: {report.calls_made}")
+    for outcome, count in report.outcome_counts().items():
+        click.echo(f"   {outcome}: {count}")
+    click.echo(f"   ⚠ needs human confirmation: {len(report.needs_confirmation)}")
+    for notice in report.notices:
+        click.echo(f"   ℹ {notice}")
+    click.echo("")
+    click.echo(f"✅ Judgments written to {written}")
+    click.echo(
+        "   Next: review the flagged entries, set archetype_confirmed_by to 'human', "
+        "then run: kairos-ontology discovery-conformance build --judgments <file>"
+    )
+
+
 @discovery_conformance.command(name="build")
 @click.option("--archetype", "archetype_id", required=True, help="Archetype id to build against.")
 @click.option(
