@@ -634,3 +634,82 @@ def write_judgments(report: JudgeReport, path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+# ---------------------------------------------------------------------------
+# Grouped review (AP-022)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ReviewGroup:
+    """One themed block of unresolved judgments, sized for a single decision."""
+
+    theme: str
+    concepts: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def size(self) -> int:
+        return len(self.concepts)
+
+    def outcome_mix(self) -> dict[str, int]:
+        mix: dict[str, int] = {}
+        for concept in self.concepts:
+            outcome = str(concept.get("outcome") or "?")
+            mix[outcome] = mix.get(outcome, 0) + 1
+        return dict(sorted(mix.items()))
+
+    def confidence_range(self) -> tuple[float | None, float | None]:
+        values = [
+            c["confidence"] for c in self.concepts if isinstance(c.get("confidence"), (int, float))
+        ]
+        return (min(values), max(values)) if values else (None, None)
+
+    def representatives(self, limit: int = 3) -> list[dict[str, Any]]:
+        """The least-confident concepts: where a reviewer's attention is worth most."""
+        return sorted(
+            self.concepts,
+            key=lambda c: (
+                c.get("confidence") if isinstance(c.get("confidence"), (int, float)) else -1.0
+            ),
+        )[:limit]
+
+    def to_dict(self) -> dict[str, Any]:
+        low, high = self.confidence_range()
+        return {
+            "theme": self.theme,
+            "size": self.size,
+            "outcome_mix": self.outcome_mix(),
+            "confidence_range": [low, high],
+            "representatives": [
+                {
+                    "label": r.get("label"),
+                    "uri": r.get("uri"),
+                    "outcome": r.get("outcome"),
+                    "confidence": r.get("confidence"),
+                    "rationale": r.get("rationale"),
+                }
+                for r in self.representatives()
+            ],
+            "all_concepts": [c.get("label") or c.get("uri") for c in self.concepts],
+        }
+
+
+def group_unresolved(core_concepts: Iterable[dict[str, Any]]) -> list[ReviewGroup]:
+    """Group unresolved AI judgments by business theme, largest block first.
+
+    A flat list of 147 concepts is not reviewable, and the practical consequence is that
+    nobody reviews it — the previous run's human approved the lot after seeing a handful
+    of grouped examples, which is the right instinct with no tool support. Grouping by
+    ``likely_domains`` uses the tag the judgment already carries; concepts with no tag
+    are genuinely cross-cutting and get their own block rather than being hidden in one.
+    """
+    groups: dict[str, ReviewGroup] = {}
+    for concept in core_concepts:
+        if not isinstance(concept, dict):
+            continue
+        if not concept.get("needs_confirmation"):
+            continue
+        domains = [str(d) for d in (concept.get("likely_domains") or []) if str(d).strip()]
+        theme = ", ".join(sorted(domains)) if domains else "(cross-cutting)"
+        groups.setdefault(theme, ReviewGroup(theme=theme)).concepts.append(concept)
+    return sorted(groups.values(), key=lambda g: (-g.size, g.theme))

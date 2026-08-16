@@ -335,3 +335,49 @@ def test_valid_outcomes_match_the_published_vocabulary() -> None:
         "deviates",
         "not-applicable",
     }
+
+
+class TestGroupedReview:
+    """AP-022: a flat list of 147 concepts does not get reviewed."""
+
+    def _concepts(self):
+        return [
+            {"label": "A", "outcome": "partial", "confidence": 0.2,
+             "needs_confirmation": True, "likely_domains": ["financial"]},
+            {"label": "B", "outcome": "partial", "confidence": 0.6,
+             "needs_confirmation": True, "likely_domains": ["financial"]},
+            {"label": "C", "outcome": "conforms", "confidence": 0.9,
+             "needs_confirmation": False, "likely_domains": ["financial"]},
+            {"label": "D", "outcome": "deviates", "confidence": 0.4,
+             "needs_confirmation": True, "likely_domains": []},
+        ]
+
+    def test_only_unresolved_judgments_are_grouped(self):
+        from kairos_ontology.core.conformance_judge import group_unresolved
+
+        groups = {g.theme: g for g in group_unresolved(self._concepts())}
+        assert groups["financial"].size == 2  # the confirmed one is excluded
+        assert "C" not in [c["label"] for c in groups["financial"].concepts]
+
+    def test_untagged_concepts_get_their_own_block_not_a_hiding_place(self):
+        from kairos_ontology.core.conformance_judge import group_unresolved
+
+        groups = {g.theme: g for g in group_unresolved(self._concepts())}
+        assert groups["(cross-cutting)"].size == 1
+
+    def test_representatives_are_the_least_confident(self):
+        from kairos_ontology.core.conformance_judge import group_unresolved
+
+        financial = [g for g in group_unresolved(self._concepts()) if g.theme == "financial"][0]
+        assert [r["label"] for r in financial.representatives(limit=1)] == ["A"]
+        assert financial.confidence_range() == (0.2, 0.6)
+
+    def test_largest_block_sorts_first(self):
+        from kairos_ontology.core.conformance_judge import group_unresolved
+
+        assert group_unresolved(self._concepts())[0].theme == "financial"
+
+    def test_nothing_unresolved_yields_no_groups(self):
+        from kairos_ontology.core.conformance_judge import group_unresolved
+
+        assert group_unresolved([{"label": "X", "needs_confirmation": False}]) == []

@@ -2307,6 +2307,92 @@ def discovery_conformance_judge_cmd(
     )
 
 
+@discovery_conformance.command(name="review")
+@click.option(
+    "--judgments-file",
+    default=None,
+    help="Review this judgments file instead of the hub's conformance artifact.",
+)
+@click.option(
+    "--theme", default=None, help="Show every concept in one theme instead of a summary."
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json", "yaml"]),
+    default="text",
+    show_default=True,
+    help="Text is the default: this surface exists for a human doing the review.",
+)
+def discovery_conformance_review_cmd(judgments_file, theme, output_format):
+    """Group unresolved AI judgments by business theme for human review (AP-022).
+
+    A flat list of 147 concepts does not get reviewed. This groups them by the domains
+    they inform, shows the outcome mix and confidence range per block, and surfaces the
+    least-confident concepts in each — the ones where a reviewer's attention is worth
+    most. Read-only: it decides nothing and confirms nothing.
+    """
+    import yaml as _yaml
+
+    from ..core.conformance_artifact import ARTIFACT_RELPATH
+    from ..core.conformance_judge import group_unresolved
+    from ..core.hub_utils import find_hub_root
+
+    if judgments_file:
+        source = Path(judgments_file)
+    else:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+        if hub_root is None:
+            raise click.ClickException("Cannot locate an ontology hub.")
+        source = hub_root / ARTIFACT_RELPATH
+    if not source.is_file():
+        raise click.ClickException(f"No conformance artifact or judgments file at {source}")
+
+    document = _yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    groups = group_unresolved(document.get("core_concepts") or [])
+
+    if output_format in {"json", "yaml"}:
+        _emit({"groups": [g.to_dict() for g in groups]}, output_format)
+        return
+
+    total = sum(g.size for g in groups)
+    if not total:
+        click.echo("No unresolved AI judgments — nothing to review.")
+        return
+
+    if theme:
+        matched = [g for g in groups if g.theme == theme]
+        if not matched:
+            raise click.ClickException(
+                f"No theme {theme!r}. Available: {', '.join(g.theme for g in groups)}"
+            )
+        group = matched[0]
+        click.echo(f"🔍 {group.theme} — {group.size} unresolved")
+        for concept in sorted(
+            group.concepts,
+            key=lambda c: (c.get("confidence") if isinstance(c.get("confidence"), (int, float)) else -1.0),
+        ):
+            click.echo(
+                f"   [{concept.get('outcome')}] {concept.get('label')} "
+                f"(conf={concept.get('confidence')})"
+            )
+            click.echo(f"      {str(concept.get('rationale') or '')[:180]}")
+        return
+
+    click.echo(f"🔍 {total} unresolved AI judgment(s) in {len(groups)} theme(s)")
+    for group in groups:
+        low, high = group.confidence_range()
+        span = f"{low:.2f}-{high:.2f}" if low is not None else "n/a"
+        mix = ", ".join(f"{k}:{v}" for k, v in group.outcome_mix().items())
+        click.echo("")
+        click.echo(f"── {group.theme}  ({group.size} concepts, confidence {span}, {mix})")
+        for rep in group.representatives():
+            click.echo(f"     · {rep.get('label')} [{rep.get('outcome')}] {rep.get('confidence')}")
+            click.echo(f"       {str(rep.get('rationale') or '')[:150]}")
+    click.echo("")
+    click.echo("   Drill into one with: discovery-conformance review --theme \"<theme>\"")
+
+
 @discovery_conformance.command(name="build")
 @click.option("--archetype", "archetype_id", required=True, help="Archetype id to build against.")
 @click.option(
