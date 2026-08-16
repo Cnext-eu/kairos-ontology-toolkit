@@ -65,7 +65,11 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_COLUMNS_PER_PROMPT = 80
+#: Columns per alignment call. Wider tables are split across successive calls and
+#: merged (see :func:`align_table`), never truncated: an unassessed column is worse
+#: than a slow one, because it cannot be mapped and does not surface as an orphan
+#: either. Raised from 80 once splitting existed to make the cap safe.
+MAX_COLUMNS_PER_PROMPT = 200
 MAX_REF_PROPERTIES_PER_PROMPT = 60
 MAX_REF_CLASSES_PER_PROMPT = 12
 #: DD-070 (issue #166) — max sibling/shared-module classes added to the STEP-2
@@ -669,6 +673,9 @@ def _format_source_columns(columns: list[dict[str, Any]]) -> str:
     """Format source columns for the LLM prompt, within a per-table sample budget."""
     lines = []
     remaining = MAX_TABLE_SAMPLE_CHARS
+    # Defence in depth: align_table chunks to this size before calling, so a caller
+    # reaching this slice has bypassed the split and would otherwise silently drop
+    # columns from the prompt.
     for col in columns[:MAX_COLUMNS_PER_PROMPT]:
         prompt_samples = _samples_for_column(col)
         samples_str = ", ".join(prompt_samples)
@@ -1141,6 +1148,85 @@ def _alignment_result_score(result: dict[str, Any], total_columns: int) -> float
 
 
 def align_table(
+    client,
+    model: str,
+    table_name: str,
+    columns: list[dict[str, Any]],
+    ref_classes: list[dict[str, Any]],
+    likely_entity: str = "",
+    *,
+    table_ref_classes: list[dict[str, Any]] | None = None,
+    anchor_override: str | None = None,
+) -> dict[str, Any]:
+    """Align one source table, splitting across calls when it is too wide.
+
+    ``MAX_COLUMNS_PER_PROMPT`` used to *truncate*: a table's columns beyond the cap were
+    silently never shown to the model, so they could never be mapped and never appeared
+    as orphans either — they simply were not assessed. With real tables running to 121
+    columns that is a coverage hole disguised as a clean result.
+
+    Wide tables are now split into successive calls and the column alignments merged.
+    Chunks after the first are pinned to the first chunk's ``ref_class`` via
+    ``anchor_override``, because a chunk of trailing columns has no way to recognise the
+    table's identity on its own and would otherwise be free to pick a different class
+    for the same table.
+
+    The table-level verdict comes from the first chunk, which holds the identifying
+    columns; later chunks contribute only column alignments.
+    """
+    chunk_size = MAX_COLUMNS_PER_PROMPT
+    if len(columns) <= chunk_size:
+        return _align_table_once(
+            client,
+            model,
+            table_name,
+            columns,
+            ref_classes,
+            likely_entity,
+            table_ref_classes=table_ref_classes,
+            anchor_override=anchor_override,
+        )
+
+    chunks = [columns[i : i + chunk_size] for i in range(0, len(columns), chunk_size)]
+    logger.info(
+        "Table %s has %d columns; splitting alignment across %d calls",
+        table_name,
+        len(columns),
+        len(chunks),
+    )
+
+    merged = _align_table_once(
+        client,
+        model,
+        table_name,
+        chunks[0],
+        ref_classes,
+        likely_entity,
+        table_ref_classes=table_ref_classes,
+        anchor_override=anchor_override,
+    )
+    pinned = anchor_override or merged.get("ref_class")
+    for chunk in chunks[1:]:
+        part = _align_table_once(
+            client,
+            model,
+            table_name,
+            chunk,
+            ref_classes,
+            likely_entity,
+            table_ref_classes=table_ref_classes,
+            anchor_override=pinned,
+        )
+        merged["column_alignments"].extend(part.get("column_alignments") or [])
+        # A failure in any chunk is a failure for the table: the alternative is
+        # reporting a partial column set as if it were complete.
+        if part.get("generation_outcome") != OUTCOME_SEMANTIC_SUCCESS:
+            merged["generation_outcome"] = part.get("generation_outcome")
+            merged["generation_error"] = part.get("generation_error")
+    return merged
+
+
+def _align_table_once(
     client,
     model: str,
     table_name: str,

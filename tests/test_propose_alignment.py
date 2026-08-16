@@ -3469,3 +3469,92 @@ class TestSampleBudget:
         assert all(f"col_{i} " in rendered for i in range(MAX_COLUMNS_PER_PROMPT))
         # The tail of that window keeps its name and type after the budget is spent.
         assert f"col_{MAX_COLUMNS_PER_PROMPT - 1} (varchar)" in rendered
+
+
+class TestWideTableSplitting:
+    """A column that is never shown to the model is not assessed, only invisible."""
+
+    def _classes(self):
+        return [{"name": "Party", "uri": "https://x/#Party", "properties": []}]
+
+    def _columns(self, n):
+        return [{"name": f"col_{i}", "data_type": "varchar", "samples": []} for i in range(n)]
+
+    def _client(self, monkeypatch, capture):
+        from unittest.mock import MagicMock
+
+        from kairos_ontology.core import propose_alignment as pa
+
+        def fake_once(client, model, table_name, columns, ref_classes, likely_entity="",
+                      *, table_ref_classes=None, anchor_override=None):
+            capture.append({"columns": [c["name"] for c in columns],
+                            "anchor_override": anchor_override})
+            return {
+                "ref_class": "Party",
+                "ref_class_confidence": 0.9,
+                "ref_class_status": "ok",
+                "rejected_ref_class": None,
+                "column_alignments": [{"column": c["name"]} for c in columns],
+                "generation_outcome": pa.OUTCOME_SEMANTIC_SUCCESS,
+                "generation_error": None,
+            }
+
+        monkeypatch.setattr(pa, "_align_table_once", fake_once)
+        return MagicMock()
+
+    def test_narrow_table_is_a_single_call(self, monkeypatch):
+        from kairos_ontology.core.propose_alignment import align_table
+
+        calls = []
+        client = self._client(monkeypatch, calls)
+        align_table(client, "m", "t", self._columns(10), self._classes())
+        assert len(calls) == 1
+
+    def test_wide_table_splits_and_every_column_is_assessed(self, monkeypatch):
+        from kairos_ontology.core.propose_alignment import MAX_COLUMNS_PER_PROMPT, align_table
+
+        calls = []
+        client = self._client(monkeypatch, calls)
+        total = MAX_COLUMNS_PER_PROMPT * 2 + 25
+        result = align_table(client, "m", "t", self._columns(total), self._classes())
+
+        assert len(calls) == 3
+        aligned = [a["column"] for a in result["column_alignments"]]
+        assert len(aligned) == total
+        assert aligned == [f"col_{i}" for i in range(total)]
+
+    def test_later_chunks_are_pinned_to_the_first_chunks_class(self, monkeypatch):
+        """A chunk of trailing columns cannot recognise the table on its own."""
+        from kairos_ontology.core.propose_alignment import MAX_COLUMNS_PER_PROMPT, align_table
+
+        calls = []
+        client = self._client(monkeypatch, calls)
+        align_table(client, "m", "t", self._columns(MAX_COLUMNS_PER_PROMPT + 5), self._classes())
+
+        assert calls[0]["anchor_override"] is None
+        assert calls[1]["anchor_override"] == "Party"
+
+    def test_a_failing_chunk_fails_the_table(self, monkeypatch):
+        """Reporting a partial column set as complete is the worse outcome."""
+        from unittest.mock import MagicMock
+
+        from kairos_ontology.core import propose_alignment as pa
+
+        seen = {"n": 0}
+
+        def fake_once(*args, **kwargs):
+            seen["n"] += 1
+            outcome = (
+                pa.OUTCOME_SEMANTIC_SUCCESS if seen["n"] == 1 else pa.OUTCOME_PROVIDER_FAILURE
+            )
+            return {
+                "ref_class": "Party", "ref_class_confidence": 0.9, "ref_class_status": "ok",
+                "rejected_ref_class": None, "column_alignments": [],
+                "generation_outcome": outcome, "generation_error": "boom",
+            }
+
+        monkeypatch.setattr(pa, "_align_table_once", fake_once)
+        result = pa.align_table(
+            MagicMock(), "m", "t", self._columns(pa.MAX_COLUMNS_PER_PROMPT + 5), self._classes()
+        )
+        assert result["generation_outcome"] == pa.OUTCOME_PROVIDER_FAILURE
