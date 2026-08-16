@@ -246,3 +246,60 @@ def test_compile_check_fails_when_unresolved_judgment_is_cross_cutting(tmp_path,
 
     assert result.exit_code != 0
     assert "Unresolved discovery item" in result.output
+
+
+def test_compile_blocks_on_non_degradable_integrity_failure(tmp_path, monkeypatch):
+    """DD-163: binding-stage compile must refuse a cross-domain redeclaration.
+
+    Binding authoring is where an agent is pushed to silence
+    ``binding.unknown-property`` by minting the missing term locally. validate catches
+    the result, but a stage later -- the previous run reached a dbt build failure first.
+    """
+    from kairos_ontology.cli.compile import _domain_integrity_failures
+
+    ontologies = tmp_path / "model" / "ontologies"
+    ontologies.mkdir(parents=True)
+    for domain in ("party", "booking"):
+        (ontologies / f"{domain}.ttl").write_text(
+            f"@prefix : <https://example.com/ont/{domain}#> .\n"
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n"
+            f"<https://example.com/ont/{domain}> a owl:Ontology ;\n"
+            f'    rdfs:label "{domain}"@en ;\n'
+            '    owl:versionInfo "1.0.0" .\n\n'
+            ":Booking a owl:Class ;\n"
+            '    rdfs:label "Booking"@en ;\n'
+            '    rdfs:comment "A booking."@en .\n',
+            encoding="utf-8",
+        )
+
+    failures = _domain_integrity_failures(tmp_path, "party")
+    assert failures, "a class declared in two domains must block this domain's compile"
+    assert all(f.code == "integrity.class-redeclared-across-domains" for f in failures)
+
+
+def test_compile_integrity_guard_is_silent_on_a_clean_hub(tmp_path):
+    from kairos_ontology.cli.compile import _domain_integrity_failures
+
+    ontologies = tmp_path / "model" / "ontologies"
+    ontologies.mkdir(parents=True)
+    (ontologies / "party.ttl").write_text(
+        "@prefix : <https://example.com/ont/party#> .\n"
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\n"
+        "<https://example.com/ont/party> a owl:Ontology ;\n"
+        '    rdfs:label "party"@en ;\n'
+        '    owl:versionInfo "1.0.0" .\n\n'
+        ":Party a owl:Class ;\n"
+        '    rdfs:label "Party"@en ;\n'
+        '    rdfs:comment "A party."@en .\n',
+        encoding="utf-8",
+    )
+    assert _domain_integrity_failures(tmp_path, "party") == []
+
+
+def test_compile_integrity_guard_never_raises_on_a_broken_hub(tmp_path):
+    """The guard must not convert an infrastructure problem into a compile failure."""
+    from kairos_ontology.cli.compile import _domain_integrity_failures
+
+    assert _domain_integrity_failures(tmp_path / "does-not-exist", "party") == []

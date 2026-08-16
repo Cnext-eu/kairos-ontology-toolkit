@@ -47,15 +47,37 @@ from rdflib.namespace import OWL, RDF
 
 SCHEMA_VERSION = 1
 
-#: Diagnostics that fail ``validate`` (overridable with ``--degraded``). Everything
-#: else in :data:`ALL_CODES` reports and never changes an exit code.
-BLOCKING_CODES: frozenset[str] = frozenset(
+#: Errors ``--degraded`` cannot clear.
+#:
+#: A blanket bypass on every integrity error would hand the mode that caused this defect
+#: class a one-flag exit from it -- kairos-design-domain already tells fleet mode it "may
+#: pass it explicitly". So the escape is scoped to the one check a hub might legitimately
+#: fail, and withheld from the two where it cannot:
+#:
+#: * ``class-redeclared-across-domains`` -- two domains minting the same concept is a
+#:   real downstream build break (colliding dbt model filenames), not a judgement call.
+#:   There is no hub for which this is correct, so there is nothing to bypass.
+#: * ``class-violates-declared-exclusion`` -- the file contradicts its own header. The
+#:   fix costs nothing (delete the class, or correct the header if the exclusion is no
+#:   longer intended), so a bypass would only preserve an inconsistency.
+NON_DEGRADABLE_CODES: frozenset[str] = frozenset(
     {
         "integrity.class-redeclared-across-domains",
         "integrity.class-violates-declared-exclusion",
+    }
+)
+
+#: Errors a hub may clear with ``--degraded``: a hub does not own the accelerator pack
+#: and can have a defensible reason to diverge from a boundary it cannot edit.
+DEGRADABLE_CODES: frozenset[str] = frozenset(
+    {
         "integrity.class-outside-blueprint-boundary",
     }
 )
+
+#: Diagnostics that fail ``validate``. Everything else in :data:`ALL_CODES` reports and
+#: never changes an exit code.
+BLOCKING_CODES: frozenset[str] = NON_DEGRADABLE_CODES | DEGRADABLE_CODES
 
 ALL_CODES: tuple[str, ...] = (
     "integrity.class-redeclared-across-domains",

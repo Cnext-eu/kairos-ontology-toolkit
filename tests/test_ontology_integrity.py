@@ -376,3 +376,17 @@ def test_authored_domain_still_warns_about_unused_imports(tmp_path: Path) -> Non
     module = "https://www.kairosflow.ai/ont/bsp/party"
     _write_domain(tmp_path, "party", classes=("Party",), imports=(module,))
     assert [d.term_uri for d in check_unused_imports(scan_hub_ontologies(tmp_path))] == [module]
+
+
+def test_degradable_and_non_degradable_codes_partition_the_blocking_set() -> None:
+    from kairos_ontology.core.ontology_integrity import (
+        DEGRADABLE_CODES,
+        NON_DEGRADABLE_CODES,
+    )
+
+    assert NON_DEGRADABLE_CODES | DEGRADABLE_CODES == BLOCKING_CODES
+    assert not (NON_DEGRADABLE_CODES & DEGRADABLE_CODES)
+    # The two failures a hub can always fix itself must not be bypassable, or fleet mode
+    # clears the whole defect class with one flag.
+    assert "integrity.class-redeclared-across-domains" in NON_DEGRADABLE_CODES
+    assert "integrity.class-violates-declared-exclusion" in NON_DEGRADABLE_CODES

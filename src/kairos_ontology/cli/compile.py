@@ -22,6 +22,28 @@ _SHARED_MANIFEST_NAME = ".kairos-compile-manifest.shared.json"
 _PACKAGE_ARTIFACTS = frozenset({"README.md", "dbt_project.yml", "packages.yml"})
 
 
+def _domain_integrity_failures(hub: Path, domain: str) -> list:
+    """Return this domain's non-degradable integrity errors, or ``[]``.
+
+    Best-effort by design: a hub with no resolvable accelerator, or an ontology
+    directory that cannot be read, yields no findings rather than blocking a compile on
+    an infrastructure problem. The blueprint-boundary check needs the accelerator and is
+    degradable anyway, so it is deliberately not consulted here — only the two
+    correctness codes, which need nothing but the hub's own files.
+    """
+    try:
+        from ..core.ontology_integrity import NON_DEGRADABLE_CODES, audit_ontology_integrity
+
+        report = audit_ontology_integrity(
+            ontologies_dir=hub / "model" / "ontologies",
+            data_domains={},
+            domains=[domain],
+        )
+    except Exception:  # noqa: BLE001 - never fail a compile on the guard itself
+        return []
+    return [item for item in report.errors if item.code in NON_DEGRADABLE_CODES]
+
+
 def _payload(result) -> dict:
     return {
         "domain": result.domain,
@@ -203,6 +225,28 @@ def compile_cmd(
         for error in discovery_errors:
             click.echo(f"✗ {error}", err=True)
         raise click.exceptions.Exit(1)
+
+    # Ontology integrity, at the stage the damage is done (DD-163). Binding authoring is
+    # where an agent is under pressure to make `binding.unknown-property` go away, and
+    # minting the missing term locally is the fastest way to do it. validate would catch
+    # the result, but not until a later stage -- the previous run's cross-domain
+    # duplicates reached a dbt build failure before anything objected.
+    #
+    # Scoped to this domain and to the non-degradable subset only: a compile must not be
+    # blocked by another domain's boundary divergence, and these two codes are
+    # correctness failures a hub can always fix itself.
+    integrity_failures = _domain_integrity_failures(hub, domain)
+    if integrity_failures:
+        for finding in integrity_failures:
+            click.echo(f"✗ {finding.message}", err=True)
+            click.echo(f"  ↪ {finding.remediation}", err=True)
+        click.echo(
+            "✗ ontology integrity must pass before a binding compiles; "
+            "run 'kairos-ontology validate --all' for the full picture",
+            err=True,
+        )
+        raise click.exceptions.Exit(1)
+
     result = compile_domain(hub, domain, mode)
     if check_mode and explain_mode:
         # Both diagnostics and the explain report are already computed as part of the

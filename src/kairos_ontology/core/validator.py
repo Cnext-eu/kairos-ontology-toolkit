@@ -1525,20 +1525,37 @@ def run_validation(
 
         print("🧩 Ontology Integrity (hub-wide)")
         print("-" * 50)
-        integrity_errors = integrity_report.errors
+        from .ontology_integrity import NON_DEGRADABLE_CODES
+
         integrity_warnings = integrity_report.warnings
         results["integrity"]["warnings"].extend(item.to_dict() for item in integrity_warnings)
 
-        if integrity_errors and not degraded:
-            results["integrity"]["failed"] += len(integrity_errors)
-            results["integrity"]["errors"].extend(item.to_dict() for item in integrity_errors)
-            for item in integrity_errors:
+        # --degraded is scoped, not blanket: a hub cannot edit the accelerator pack, so a
+        # blueprint-boundary divergence is degradable, while a cross-domain redeclaration
+        # (a real build break) and a file contradicting its own header are not.
+        hard_errors = [
+            item for item in integrity_report.errors if item.code in NON_DEGRADABLE_CODES
+        ]
+        soft_errors = [
+            item for item in integrity_report.errors if item.code not in NON_DEGRADABLE_CODES
+        ]
+        blocking = hard_errors + ([] if degraded else soft_errors)
+
+        if blocking:
+            results["integrity"]["failed"] += len(blocking)
+            results["integrity"]["errors"].extend(item.to_dict() for item in blocking)
+            for item in blocking:
                 print(f"  ✗ [{item.domain}] {item.message}")
                 print(f"    ↪ {item.remediation}")
-        elif integrity_errors:
-            results["integrity"]["warnings"].extend(item.to_dict() for item in integrity_errors)
-            print(f"  ⚠ degraded mode accepted {len(integrity_errors)} integrity error(s)")
-        else:
+            if degraded and hard_errors:
+                print(
+                    f"  ℹ --degraded does not clear {len(hard_errors)} of these; "
+                    "they are correctness failures, not policy divergence."
+                )
+        if degraded and soft_errors:
+            results["integrity"]["warnings"].extend(item.to_dict() for item in soft_errors)
+            print(f"  ⚠ degraded mode accepted {len(soft_errors)} boundary divergence(s)")
+        if not blocking:
             results["integrity"]["passed"] += 1
             print("  ✓ no cross-domain or boundary violations")
 
