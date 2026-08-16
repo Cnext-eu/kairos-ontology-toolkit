@@ -206,11 +206,21 @@ _POSITIONAL_PLACEHOLDER_RE = re.compile(
 )
 
 
-def classify_unmapped(entry: dict[str, Any], column_name: str) -> str:
+def classify_unmapped(
+    entry: dict[str, Any], column_name: str, *, has_samples: bool | None = None
+) -> str:
     """Return the reason code for one unmapped column.
 
     Order matters: a column can be both operational and evidence-free, and the
     operational answer is the more useful one because it needs no action.
+
+    *has_samples* must come from the **source vocabulary**, not from *entry*. A
+    ``custom_columns`` record carries no ``example_values`` key at all, so inferring
+    "no evidence" from its absence marks every unmapped column evidence-free and empties
+    the gap bucket entirely — a report that says "0 gaps" because it cannot see any.
+    ``None`` means the source was not consulted, in which case the default is the gap:
+    the column reached ``custom_columns`` precisely because the aligner assessed it and
+    found no property, and silence about evidence is not evidence of silence.
     """
     from .propose_alignment import _is_operational_column, is_generic_vendor_slot
 
@@ -222,13 +232,52 @@ def classify_unmapped(entry: dict[str, Any], column_name: str) -> str:
         return REASON_VENDOR_SLOT
     if entry.get("suggested_property"):
         return REASON_LOW_CONFIDENCE
-    if not (entry.get("example_values") or entry.get("samples")):
+    if has_samples is False:
         return REASON_NO_EVIDENCE
     return REASON_NO_REFERENCE_PROPERTY
 
 
-def build_alignment_report(analysis_dir: Path) -> AlignmentReport:
-    """Aggregate every ``*-alignment.yaml`` into one cross-domain coverage picture."""
+def source_sample_presence(hub_root: Path) -> dict[tuple[str, str, str], bool]:
+    """Map ``(system, table, column)`` -> whether the source captured any sample value.
+
+    Read from ``integration/sources/<system>/<table>.yaml``, which is where the evidence
+    actually lives; the alignment files do not carry it for unmapped columns.
+    """
+    import yaml
+
+    presence: dict[tuple[str, str, str], bool] = {}
+    sources = Path(hub_root) / "integration" / "sources"
+    if not sources.is_dir():
+        return presence
+    for system_dir in sorted(sources.iterdir()):
+        if not system_dir.is_dir() or system_dir.name.startswith((".", "_")):
+            continue
+        for path in sorted(system_dir.glob("*.yaml")):
+            if path.name.endswith(".samples.yaml") or path.name == "_manifest.yaml":
+                continue
+            try:
+                document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except Exception:  # defensive: a broken source file must not skew the report
+                continue
+            if not isinstance(document, dict):
+                continue
+            table = str(document.get("name") or path.stem)
+            for column in document.get("columns") or ():
+                if not isinstance(column, dict):
+                    continue
+                presence[(system_dir.name, table, str(column.get("name") or ""))] = bool(
+                    column.get("samples")
+                )
+    return presence
+
+
+def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) -> AlignmentReport:
+    """Aggregate every ``*-alignment.yaml`` into one cross-domain coverage picture.
+
+    *hub_root* enables the ``no-sample-evidence`` bucket by consulting the source
+    vocabularies. Without it every unmapped column defaults to the gap bucket, which
+    over-reports rather than under-reports -- the safer direction for a gate.
+    """
     import yaml
 
     report = AlignmentReport()
@@ -236,6 +285,8 @@ def build_alignment_report(analysis_dir: Path) -> AlignmentReport:
     if not directory.is_dir():
         report.notices.append(f"No analysis directory at {directory}.")
         return report
+
+    presence = source_sample_presence(hub_root) if hub_root is not None else {}
 
     files = sorted(directory.glob("*-alignment.yaml"))
     if not files:
@@ -275,7 +326,11 @@ def build_alignment_report(analysis_dir: Path) -> AlignmentReport:
                     continue
                 column_name = str(entry.get("column") or "")
                 coverage.columns += 1
-                reason = classify_unmapped(entry, column_name)
+                reason = classify_unmapped(
+                    entry,
+                    column_name,
+                    has_samples=presence.get((system, name, column_name)),
+                )
                 coverage.unmapped.append(
                     UnmappedColumn(
                         system=system,
@@ -364,7 +419,7 @@ GAP_RESOLUTIONS: tuple[str, ...] = (
     "register it with 'kairos-ontology register-concept' — real business data outside "
     "the archetype catalog, recorded with its source evidence",
     "record a disposition: 'source-disposition set --system <s> --table <t> --column "
-    "<c> --disposition <blueprint-gap|not-business-data|deferred> --rationale \"...\"'",
+    '<c> --disposition <blueprint-gap|not-business-data|deferred> --rationale "..."\'',
 )
 
 
@@ -385,12 +440,16 @@ def undecided_gap_columns(
     from .source_disposition import load_dispositions
 
     report = build_alignment_report(
-        Path(hub_root) / "integration" / "sources" / "_analysis"
+        Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
     )
     scope = set(domains) if domains is not None else None
     recorded = load_dispositions(Path(hub_root))
     decided = {
-        (str(entry.get("system") or ""), str(entry.get("table") or ""), str(entry.get("column") or ""))
+        (
+            str(entry.get("system") or ""),
+            str(entry.get("table") or ""),
+            str(entry.get("column") or ""),
+        )
         for entry in recorded.values()
     }
 
@@ -407,6 +466,85 @@ def undecided_gap_columns(
                 continue
             undecided.append(column)
     return undecided
+
+
+@dataclass
+class GapGroup:
+    """One column name and every table it appears in — a single decision."""
+
+    column: str
+    occurrences: list[UnmappedColumn] = field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.occurrences)
+
+    @property
+    def tables(self) -> list[str]:
+        return sorted({f"{o.system}.{o.table}" for o in self.occurrences})
+
+    @property
+    def data_types(self) -> list[str]:
+        return sorted({o.data_type for o in self.occurrences if o.data_type})
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "column": self.column,
+            "count": self.count,
+            "tables": self.tables,
+            "data_types": self.data_types,
+            "reasons": sorted({o.reason for o in self.occurrences}),
+        }
+
+
+def group_gaps_by_column(report: AlignmentReport) -> list[GapGroup]:
+    """Collapse gap columns to one entry per column name, widest first.
+
+    A reviewer facing 1,096 undecided columns is really facing far fewer *decisions*:
+    the same name recurs across tables because the same business fact does.
+    Measured on a real hub, 1,096 gap columns reduce to 609 distinct names, and 258 of
+    those names account for 745 of the columns — so deciding by name is roughly a
+    threefold reduction on the repeated portion, and the widest names clear the most
+    ground first.
+
+    Grouping is by exact column name. Deliberately not fuzzy: ``order_id`` and
+    ``orderId`` may or may not be the same fact, and a wrong merge would apply one
+    decision to two different things silently.
+    """
+    grouped: dict[str, GapGroup] = {}
+    for column in report.gap_columns:
+        grouped.setdefault(column.column, GapGroup(column=column.column)).occurrences.append(column)
+    return sorted(grouped.values(), key=lambda g: (-g.count, g.column))
+
+
+def render_gap_groups_markdown(report: AlignmentReport, *, limit: int = 60) -> str:
+    """Render the decide-once view: column names ranked by how much they clear."""
+    groups = group_gaps_by_column(report)
+    total = sum(g.count for g in groups)
+    repeated = [g for g in groups if g.count > 1]
+
+    lines = ["# Unmapped signal, grouped by column name", ""]
+    lines.append(
+        f"**{total:,} gap columns** reduce to **{len(groups):,} distinct names**. "
+        f"{len(repeated):,} names recur across tables, covering "
+        f"{sum(g.count for g in repeated):,} of them — decide those once."
+    )
+    lines.append("")
+    lines.append("| Column | Tables | Types | Appears in |")
+    lines.append("|---|---:|---|---|")
+    for group in groups[:limit]:
+        shown = ", ".join(group.tables[:4])
+        if len(group.tables) > 4:
+            shown += f", +{len(group.tables) - 4} more"
+        lines.append(
+            f"| `{group.column}` | {group.count} | {', '.join(group.data_types) or '—'} | {shown} |"
+        )
+    if len(groups) > limit:
+        lines.append("")
+        lines.append(
+            f"_…and {len(groups) - limit:,} more names; use `--format json` for the full set._"
+        )
+    return "\n".join(lines)
 
 
 def iter_gap_columns(report: AlignmentReport) -> Iterable[UnmappedColumn]:

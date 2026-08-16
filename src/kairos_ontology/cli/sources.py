@@ -3155,6 +3155,14 @@ def source_disposition_group() -> None:
     "already covers every column in it.",
 )
 @click.option(
+    "--all-tables",
+    is_flag=True,
+    default=False,
+    help="With --column: record the same decision for every table where that column is "
+    "an undecided gap. The same column name recurs because the same business fact does, "
+    "so it is one decision, not N.",
+)
+@click.option(
     "--disposition",
     required=True,
     type=click.Choice(sorted(_DISPOSITION_CHOICES())),
@@ -3177,6 +3185,7 @@ def source_disposition_set_cmd(
     system: str,
     table: str,
     column: str,
+    all_tables: bool,
     disposition: str,
     rationale: str,
     decided_by: str,
@@ -3198,21 +3207,46 @@ def source_disposition_set_cmd(
         raise click.ClickException(
             "Cannot locate an ontology hub. Run from the hub root (or inside ontology-hub/)."
         )
-    try:
-        path = record_disposition(
-            hub_root=hub_root,
-            system=system,
-            table=table,
-            column=column,
-            disposition=disposition,
-            rationale=rationale,
-            decided_by=decided_by,
-            evidence=evidence,
+    # One column name recurring across tables is one business fact, so it is one
+    # decision. Expanding it here keeps the ledger explicit — every affected table gets
+    # its own entry, so a later reader sees exactly what was decided and where, rather
+    # than a wildcard they have to re-evaluate.
+    targets: list[tuple[str, str]] = [(system, table)]
+    if all_tables:
+        if not column:
+            raise click.ClickException("--all-tables requires --column.")
+        from ..core.alignment_report import undecided_gap_columns
+
+        matches = [c for c in undecided_gap_columns(hub_root) if c.column == column]
+        if not matches:
+            raise click.ClickException(
+                f"No undecided gap column named {column!r}. Check "
+                "'kairos-ontology alignment-report --group-by-column'."
+            )
+        targets = sorted({(c.system, c.table) for c in matches})
+
+    path = None
+    for target_system, target_table in targets:
+        try:
+            path = record_disposition(
+                hub_root=hub_root,
+                system=target_system,
+                table=target_table,
+                column=column,
+                disposition=disposition,
+                rationale=rationale,
+                decided_by=decided_by,
+                evidence=evidence,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        label = (
+            f"{target_system}.{target_table}.{column}"
+            if column
+            else f"{target_system}.{target_table}"
         )
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    target = f"{system}.{table}.{column}" if column else f"{system}.{table}"
-    click.echo(f"✓ {target} recorded as '{disposition}' in {path}")
+        click.echo(f"✓ {label} recorded as '{disposition}'")
+    click.echo(f"  {len(targets)} entr(y/ies) written to {path}")
 
 
 @source_disposition_group.command(name="list")

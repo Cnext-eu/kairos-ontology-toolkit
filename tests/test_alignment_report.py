@@ -73,7 +73,22 @@ def test_a_suggested_property_means_low_confidence_not_absent() -> None:
 
 
 def test_no_samples_means_nothing_could_be_judged() -> None:
-    assert classify_unmapped({}, "customer_segment") == REASON_NO_EVIDENCE
+    """Evidence comes from the source vocabulary, never from the alignment entry."""
+    assert classify_unmapped({}, "customer_segment", has_samples=False) == REASON_NO_EVIDENCE
+
+
+def test_unknown_evidence_defaults_to_the_gap_not_to_silence() -> None:
+    """The original bug: a custom_columns entry has no example_values key at all.
+
+    Inferring "no evidence" from its absence marked every unmapped column evidence-free
+    and emptied the gap bucket — a report that said "0 gaps" because it could not see
+    any. Absent knowledge now defaults to the gap, which over-reports rather than under-
+    reports, the safer direction for a gate.
+    """
+    assert classify_unmapped({}, "customer_segment") == REASON_NO_REFERENCE_PROPERTY
+    assert (
+        classify_unmapped({}, "customer_segment", has_samples=True) == REASON_NO_REFERENCE_PROPERTY
+    )
 
 
 def test_real_data_with_no_candidate_is_the_gap() -> None:
@@ -257,9 +272,18 @@ class TestPreBindingGate:
             tmp_path,
             [
                 {"column": "created_at"},
-                {"column": "Column7", "example_values": ["x"]},
+                {"column": "Column7"},
                 {"column": "empty_field"},
             ],
+        )
+        # An evidence-free column is only knowable from the source vocabulary.
+        source = tmp_path / "integration" / "sources" / "qargo"
+        source.mkdir(parents=True, exist_ok=True)
+        (source / "companies.yaml").write_text(
+            yaml.safe_dump(
+                {"name": "companies", "columns": [{"name": "empty_field", "samples": []}]}
+            ),
+            encoding="utf-8",
         )
         assert undecided_gap_columns(hub) == []
 
@@ -275,8 +299,12 @@ class TestPreBindingGate:
             ],
         )
         record_disposition(
-            hub_root=hub, system="qargo", table="companies", column="quay_code",
-            disposition="blueprint-gap", rationale="No accelerator home for quay codes.",
+            hub_root=hub,
+            system="qargo",
+            table="companies",
+            column="quay_code",
+            disposition="blueprint-gap",
+            rationale="No accelerator home for quay codes.",
         )
         assert [c.column for c in undecided_gap_columns(hub)] == ["lane_code"]
 
@@ -293,8 +321,11 @@ class TestPreBindingGate:
             ],
         )
         record_disposition(
-            hub_root=hub, system="qargo", table="companies",
-            disposition="not-business-data", rationale="Scratch export.",
+            hub_root=hub,
+            system="qargo",
+            table="companies",
+            disposition="not-business-data",
+            rationale="Scratch export.",
         )
         assert undecided_gap_columns(hub) == []
 
@@ -302,9 +333,12 @@ class TestPreBindingGate:
         from kairos_ontology.core.alignment_report import undecided_gap_columns
 
         analysis = tmp_path / "integration" / "sources" / "_analysis"
-        _write_domain(analysis, "party", [_table(custom=[{"column": "a", "example_values": ["v"]}])])
         _write_domain(
-            analysis, "booking",
+            analysis, "party", [_table(custom=[{"column": "a", "example_values": ["v"]}])]
+        )
+        _write_domain(
+            analysis,
+            "booking",
             [_table(table="orders", custom=[{"column": "b", "example_values": ["v"]}])],
         )
         assert len(undecided_gap_columns(tmp_path)) == 2
@@ -324,3 +358,71 @@ class TestPreBindingGate:
         assert "register-concept" in joined
         assert "source-disposition set" in joined
         assert "model it in the domain that owns it" in joined
+
+
+class TestDecideOnceGrouping:
+    """1,096 gap columns are far fewer decisions: the same name recurs across tables."""
+
+    def _report(self, tmp_path: Path):
+        _write_domain(
+            tmp_path,
+            "party",
+            [
+                _table(
+                    table="a",
+                    custom=[
+                        {"column": "status", "example_values": ["X"], "data_type": "varchar"},
+                        {"column": "only_here", "example_values": ["Y"]},
+                    ],
+                ),
+                _table(
+                    table="b",
+                    custom=[{"column": "status", "example_values": ["X"], "data_type": "int"}],
+                ),
+                _table(table="c", custom=[{"column": "status", "example_values": ["X"]}]),
+            ],
+        )
+        return build_alignment_report(tmp_path)
+
+    def test_a_recurring_name_is_one_decision(self, tmp_path: Path) -> None:
+        from kairos_ontology.core.alignment_report import group_gaps_by_column
+
+        groups = group_gaps_by_column(self._report(tmp_path))
+
+        assert [g.column for g in groups] == ["status", "only_here"]
+        assert groups[0].count == 3
+        assert groups[0].tables == ["qargo.a", "qargo.b", "qargo.c"]
+
+    def test_conflicting_types_are_surfaced_not_merged_away(self, tmp_path: Path) -> None:
+        """Same name, different type across tables is worth seeing before deciding."""
+        from kairos_ontology.core.alignment_report import group_gaps_by_column
+
+        groups = group_gaps_by_column(self._report(tmp_path))
+        assert groups[0].data_types == ["int", "varchar"]
+
+    def test_grouping_is_exact_never_fuzzy(self, tmp_path: Path) -> None:
+        """order_id and orderId may be different facts; a silent merge would hide that."""
+        from kairos_ontology.core.alignment_report import group_gaps_by_column
+
+        _write_domain(
+            tmp_path,
+            "booking",
+            [
+                _table(
+                    table="d",
+                    custom=[
+                        {"column": "order_id", "example_values": ["1"]},
+                        {"column": "orderId", "example_values": ["1"]},
+                    ],
+                )
+            ],
+        )
+        names = {g.column for g in group_gaps_by_column(build_alignment_report(tmp_path))}
+        assert {"order_id", "orderId"} <= names
+
+    def test_rendered_view_leads_with_the_reduction(self, tmp_path: Path) -> None:
+        from kairos_ontology.core.alignment_report import render_gap_groups_markdown
+
+        rendered = render_gap_groups_markdown(self._report(tmp_path)).replace("**", "")
+        assert "4 gap columns" in rendered
+        assert "2 distinct names" in rendered

@@ -2992,13 +2992,22 @@ def _archetype_tiers(hub) -> dict:
     help="Rows shown in the 'needs a decision' table (json carries all).",
 )
 @click.option(
+    "--group-by-column",
+    is_flag=True,
+    default=False,
+    help="Collapse gap columns to one row per column name — the decide-once view. The "
+    "same name recurs across tables because the same business fact does.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(["markdown", "json"]),
     default="markdown",
     show_default=True,
 )
-def alignment_report_cmd(analysis_dir, output_path, gap_limit, output_format):
+def alignment_report_cmd(
+    analysis_dir, output_path, gap_limit, group_by_column, output_format
+):
     """Report source-column alignment coverage with a reason per unmapped column.
 
     Answers the question a per-domain alignment file cannot: across the whole hub, which
@@ -3008,7 +3017,12 @@ def alignment_report_cmd(analysis_dir, output_path, gap_limit, output_format):
 
     Read-only and deterministic: it re-reads what propose-alignment already wrote.
     """
-    from ..core.alignment_report import build_alignment_report, render_markdown
+    from ..core.alignment_report import (
+        build_alignment_report,
+        group_gaps_by_column,
+        render_gap_groups_markdown,
+        render_markdown,
+    )
     from ..core.hub_utils import find_hub_root
 
     if analysis_dir:
@@ -3021,10 +3035,15 @@ def alignment_report_cmd(analysis_dir, output_path, gap_limit, output_format):
             else Path("integration/sources/_analysis")
         )
 
-    report = build_alignment_report(directory)
+    report = build_alignment_report(directory, hub_root=directory.parent.parent.parent)
 
     if output_format == "json":
-        rendered = json.dumps(report.to_dict(), indent=2, sort_keys=True)
+        payload = report.to_dict()
+        if group_by_column:
+            payload["gap_groups"] = [g.to_dict() for g in group_gaps_by_column(report)]
+        rendered = json.dumps(payload, indent=2, sort_keys=True)
+    elif group_by_column:
+        rendered = render_gap_groups_markdown(report, limit=gap_limit)
     else:
         rendered = render_markdown(report, gap_limit=gap_limit)
     click.echo(rendered)
