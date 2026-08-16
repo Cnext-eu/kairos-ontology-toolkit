@@ -33,6 +33,9 @@ _SEEDED_STAGES = {
     "propose_alignment.py": "ROLE_ALIGNMENT",
     "analyse_sources.py": "ROLE_AFFINITY",
     "conformance_judge.py": "ROLE_JUDGMENT",
+    # DD-185: global anchoring reuses the alignment role's model/seed/effort —
+    # it is STEP 1 of alignment, extracted to where it can see the whole corpus.
+    "anchor_tables.py": "ROLE_ALIGNMENT",
 }
 
 #: ``ai_preflight`` deliberately calls the client directly: it is the liveness

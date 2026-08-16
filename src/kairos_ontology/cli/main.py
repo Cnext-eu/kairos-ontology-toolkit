@@ -62,6 +62,7 @@ from .sources import (
     source_privacy_cmd,
     import_flatfile,
     analyse_sources_cmd,
+    anchor_tables_cmd,
     audit_silver_samples_cmd,
     audit_column_coverage_cmd,
     propose_alignment_cmd,
@@ -285,6 +286,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(source_privacy_cmd)
     group.add_command(import_flatfile)
     group.add_command(analyse_sources_cmd)
+    group.add_command(anchor_tables_cmd)
     group.add_command(audit_silver_samples_cmd)
     group.add_command(audit_column_coverage_cmd)
     group.add_command(propose_alignment_cmd)

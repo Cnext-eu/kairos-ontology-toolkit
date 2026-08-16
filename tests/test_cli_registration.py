@@ -10,6 +10,7 @@ from kairos_ontology.cli.main import cli
 
 RETAINED_COMMANDS = {
     "analyse-sources",
+    "anchor-tables",
     "audit-silver-samples",
     "audit-column-coverage",
     "build-glossary",

@@ -60,6 +60,7 @@ from .ai_provider import (
     sanitize_provider_error,
 )
 from ._provenance import ai_attribution, provenance_comment
+from .anchor_tables import ANCHOR_CONFIDENCE_FLOOR, load_table_anchors
 from .tracing import call_metadata, flush_tracing, new_session_id
 from .ai_preflight import require_ai_provider
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
@@ -1748,6 +1749,8 @@ def align_table(
     *,
     table_ref_classes: list[dict[str, Any]] | None = None,
     anchor_override: str | None = None,
+    anchor_status: str = "confirmed",
+    anchor_confidence: float | None = None,
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
     trace_session_id: str = "",
@@ -1779,6 +1782,8 @@ def align_table(
             likely_entity,
             table_ref_classes=table_ref_classes,
             anchor_override=anchor_override,
+            anchor_status=anchor_status,
+            anchor_confidence=anchor_confidence,
             class_cautions=class_cautions,
             glossary_terms=glossary_terms,
             trace_session_id=trace_session_id,
@@ -1801,6 +1806,8 @@ def align_table(
         likely_entity,
         table_ref_classes=table_ref_classes,
         anchor_override=anchor_override,
+        anchor_status=anchor_status,
+        anchor_confidence=anchor_confidence,
         class_cautions=class_cautions,
         glossary_terms=glossary_terms,
         trace_session_id=trace_session_id,
@@ -1816,6 +1823,8 @@ def align_table(
             likely_entity,
             table_ref_classes=table_ref_classes,
             anchor_override=pinned,
+            anchor_status=anchor_status,
+            anchor_confidence=anchor_confidence,
             class_cautions=class_cautions,
             glossary_terms=glossary_terms,
             trace_session_id=trace_session_id,
@@ -1839,6 +1848,8 @@ def _align_table_once(
     *,
     table_ref_classes: list[dict[str, Any]] | None = None,
     anchor_override: str | None = None,
+    anchor_status: str = "confirmed",
+    anchor_confidence: float | None = None,
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
     trace_session_id: str = "",
@@ -1958,9 +1969,14 @@ def _align_table_once(
         # simply not consulted for the *anchor* decision once confirmed
         # evidence exists (it is still used for column-level property
         # alignment below).
+        #
+        # DD-185: a global-anchor-call override travels the same path but is
+        # recorded as status "anchored" with its own confidence, never as
+        # "confirmed" — confirmed means a human decided, and an artifact must
+        # not claim review that did not happen.
         ref_class = anchor_override
-        ref_class_status = "confirmed"
-        ref_class_confidence = 1.0
+        ref_class_status = anchor_status
+        ref_class_confidence = 1.0 if anchor_confidence is None else float(anchor_confidence)
     elif not proposed_ref_class:
         ref_class_status = "unmatched"
         ref_class_confidence = _clamp_confidence(result.get("ref_class_confidence", 0.0))
@@ -3617,6 +3633,14 @@ def _propose_alignments(
     # grouping uses the session mechanism the SDK provides for exactly this.
     trace_session_id = new_session_id("align")
 
+    # DD-185: global table anchors, when the anchor-tables stage has run. Loaded
+    # once; consulted per table only where the uri-anchor-contract produced no
+    # human-confirmed override — a human decision always outranks the model's.
+    global_anchors = load_table_anchors(analysis_dir)
+    anchor_counters = {"applied": 0, "low_confidence": 0, "outside_pool": 0}
+    if global_anchors:
+        report(f"  ⚓ {len(global_anchors)} global table anchor(s) loaded")
+
     for domain_index, (domain_id, tables) in enumerate(domain_order, start=1):
         in_flight = min(max_workers, len(tables))
         report(
@@ -3691,6 +3715,11 @@ def _propose_alignments(
                 f"via declared bridges to {', '.join(owners)}"
             )
             ref_classes = ref_classes + bridge_anchors
+
+        # DD-185: a global anchor may only override to a class this domain can
+        # actually see (home modules + declared bridges); anything else is a
+        # boundary question for a human, not a silent reassignment.
+        pool_class_names = {str(c.get("name") or "") for c in ref_classes}
 
         # DD-070: widened STEP-2 property pool spanning the whole accelerator.
         if cross_module:
@@ -3860,6 +3889,29 @@ def _propose_alignments(
 
             anchor_override = anchor_res.resolved_name if anchor_res.status == "confirmed" else None
 
+            # DD-185: fall back to the global anchor call's verdict. Applied only
+            # above the confidence floor and only when the class is in this
+            # domain's pool — recorded as status "anchored", never "confirmed".
+            anchor_status = "confirmed"
+            anchor_confidence: float | None = None
+            if anchor_override is None and global_anchors:
+                ga = global_anchors.get((system, table)) or {}
+                ga_anchor = str(ga.get("anchor") or "")
+                ga_conf = float(ga.get("confidence") or 0.0)
+                if ga_anchor and ga_conf < ANCHOR_CONFIDENCE_FLOOR:
+                    anchor_counters["low_confidence"] += 1
+                elif ga_anchor and ga_anchor not in pool_class_names:
+                    anchor_counters["outside_pool"] += 1
+                    logger.info(
+                        "Global anchor %s for %s.%s is outside domain '%s' pool; "
+                        "not applied.", ga_anchor, system, table, domain_id,
+                    )
+                elif ga_anchor:
+                    anchor_override = ga_anchor
+                    anchor_status = "anchored"
+                    anchor_confidence = ga_conf
+                    anchor_counters["applied"] += 1
+
             cache_key = compute_entry_hash(
                 {
                     "system": system,
@@ -3876,7 +3928,10 @@ def _propose_alignments(
                     "params": align_params,
                     # uri-anchor-contract: a confirmed-anchor status change (evidence
                     # added/changed) must invalidate the per-table cache entry.
+                    # DD-185: the status distinguishes human-confirmed from
+                    # global-anchored, so switching between them re-runs the table.
                     "anchor_override": anchor_override or "",
+                    "anchor_status": anchor_status if anchor_override else "",
                 }
             )
             cached = cache.get(cache_key)
@@ -3920,6 +3975,8 @@ def _propose_alignments(
                         likely_entity=likely_entity,
                         table_ref_classes=shortlist_classes,
                         anchor_override=anchor_override,
+                        anchor_status=anchor_status,
+                        anchor_confidence=anchor_confidence,
                         class_cautions=class_cautions,
                         glossary_terms=glossary_terms,
                         trace_session_id=trace_session_id,
@@ -3933,6 +3990,8 @@ def _propose_alignments(
                         shortlist_classes,
                         likely_entity=likely_entity,
                         anchor_override=anchor_override,
+                        anchor_status=anchor_status,
+                        anchor_confidence=anchor_confidence,
                         class_cautions=class_cautions,
                         glossary_terms=glossary_terms,
                         trace_session_id=trace_session_id,
@@ -3953,6 +4012,11 @@ def _propose_alignments(
                             ref_classes,
                             likely_entity=likely_entity,
                             anchor_override=anchor_override,
+                            anchor_status=anchor_status,
+                            anchor_confidence=anchor_confidence,
+                            class_cautions=class_cautions,
+                            glossary_terms=glossary_terms,
+                            trace_session_id=trace_session_id,
                         )
                         if _alignment_result_score(
                             full_result, len(columns)
@@ -4465,6 +4529,13 @@ def _propose_alignments(
                 f"{len(merged_anchors) - open_count} resolved "
                 f"— {anchor_doc_path.name}"
             )
+
+    if global_anchors:
+        report(
+            f"  ⚓ Anchor overrides: {anchor_counters['applied']} applied, "
+            f"{anchor_counters['outside_pool']} outside domain pool, "
+            f"{anchor_counters['low_confidence']} below confidence floor"
+        )
 
     # DD-184: this is a short-lived CLI process; without an explicit flush the
     # buffered events are lost at exit and the run appears never to have happened.

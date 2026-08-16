@@ -3635,3 +3635,104 @@ def _emit_pattern_coverage(root, ledger, output_format):
     payload = {"refmodels_root": str(root)}
     payload.update(ledger.to_payload())
     _emit(payload, output_format)
+
+
+@click.command(name="anchor-tables")
+@click.option(
+    "--sources",
+    "sources_opt",
+    default=None,
+    help="Path to integration/sources/ (default: auto-detect from the hub).",
+)
+@click.option(
+    "--analysis",
+    "analysis_opt",
+    default=None,
+    help="Path to the _analysis/ directory to read affinity from and write "
+    "table-anchors.yaml into (default: auto-detect).",
+)
+@click.option(
+    "--catalog",
+    "catalog_opt",
+    default=None,
+    help="Path to the hub's catalog-v001.xml (default: auto-detect).",
+)
+@click.option(
+    "--accelerator",
+    default=None,
+    help="Accelerator pack whose blueprint supplies ownership and bridges "
+    "(default: resolved from [tool.kairos].accelerator).",
+)
+@click.option("--model", "llm_model", default=None, help="Override the anchoring model.")
+@click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress progress output.")
+def anchor_tables_cmd(sources_opt, analysis_opt, catalog_opt, accelerator, llm_model, quiet):
+    """Anchor every source table against the full reference class catalog (DD-185).
+
+    One global model call: all tables' column names against a one-line-per-class
+    catalog marked with blueprint ownership. Writes table-anchors.yaml — anchor
+    class, alternate, confidence, derived domain, grain columns, natural key and
+    load hint per table. propose-alignment consumes the anchors as overrides.
+
+    Run after analyse-sources (affinity is used as a tie-break between legitimate
+    domain candidates) and before propose-alignment.
+    """
+    from pathlib import Path as _Path
+
+    from ..core.ai_preflight import require_ai_provider
+    from ..core.ai_provider import ROLE_ALIGNMENT, get_ai_client, resolve_role_model
+    from ..core.anchor_tables import run_anchor_tables
+    from ..core.hub_utils import find_hub_root
+
+    cwd = _Path.cwd()
+    hub_root = find_hub_root(cwd)
+    sources_path = _Path(sources_opt) if sources_opt else (
+        (hub_root / "integration" / "sources") if hub_root else cwd
+    )
+    analysis_path = _Path(analysis_opt) if analysis_opt else sources_path / "_analysis"
+    catalog_path = _Path(catalog_opt) if catalog_opt else (
+        (hub_root / "catalog-v001.xml") if hub_root else cwd / "catalog-v001.xml"
+    )
+    if not catalog_path.is_file():
+        click.echo(f"❌ No catalog at {catalog_path}. Pass --catalog.", err=True)
+        raise SystemExit(1)
+    ref_models_path = resolve_refmodels_dir(cwd, hub_root)
+
+    # Same resolution discipline as analyse-sources (DD-183): never silently
+    # classify against an unresolved pack.
+    if not accelerator:
+        try:
+            from ..core.reference_modules import resolve_hub_accelerator
+
+            accelerator = resolve_hub_accelerator(
+                explicit=None, hub_root=hub_root, ref_models_dir=ref_models_path
+            )
+        except Exception:  # noqa: BLE001 - falls through to the warning below
+            accelerator = None
+    if not accelerator:
+        click.echo(
+            "⚠ No accelerator resolved — ownership marks and domain derivation "
+            "will be empty. Pass --accelerator or set [tool.kairos].accelerator.",
+            err=True,
+        )
+
+    model = llm_model or resolve_role_model(ROLE_ALIGNMENT)
+    require_ai_provider(ROLE_ALIGNMENT, model=model, probe=False)
+    client = get_ai_client(model, role=ROLE_ALIGNMENT)
+
+    def report(message):
+        if not quiet:
+            click.echo(message)
+
+    report(f"⚓ Anchoring tables in: {sources_path}")
+    report(f"   Model: {model}  Accelerator: {accelerator or '(none)'}")
+    out = run_anchor_tables(
+        client=client,
+        model=model,
+        sources_dir=sources_path,
+        catalog_path=catalog_path,
+        ref_models_dir=ref_models_path,
+        accelerator=accelerator,
+        analysis_dir=analysis_path,
+        report=report,
+    )
+    report(f"✅ Anchors written: {out}")
