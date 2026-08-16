@@ -7,7 +7,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
 from kairos_ontology.core.class_anchoring import (
     AUTO_ANCHOR_SCORE,
@@ -125,44 +124,55 @@ def test_grain_collision_is_annotated_but_still_ranked_on_evidence() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _write_inventory(directory: Path) -> None:
+def _write_reference_model(directory: Path) -> Path:
+    """Write a real reference-model TTL plus a catalog, and return the catalog path.
+
+    DD-173: terms resolve live through the catalog and the canonical loader, so the
+    fixture is an actual ontology rather than a hand-built inventory snapshot — which
+    is also what let the previous snapshots drift from the resolver silently.
+    """
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "bsp-party-inventory.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "classes": [
-                    {
-                        "uri": f"{BSP}#Contact",
-                        "name": "Contact",
-                        "label": "Contact",
-                        "properties": [
-                            {"uri": f"{BSP}#contactEmail", "name": "contactEmail"},
-                            # Inherited entries repeat a parent's property and would
-                            # attribute it to the wrong module.
-                            {
-                                "uri": f"{MMT}#partyName",
-                                "name": "partyName",
-                                "inherited": True,
-                            },
-                        ],
-                    }
-                ]
-            }
+    (directory / "party.ttl").write_text(
+        f"""
+        @prefix : <{BSP}#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+        <{BSP}> a owl:Ontology ; rdfs:label "BSP Party"@en .
+
+        :Contact a owl:Class ; rdfs:label "Contact"@en ;
+            rdfs:comment "A contact person."@en .
+        :contactEmail a owl:DatatypeProperty ; rdfs:label "contact email"@en ;
+            rdfs:domain :Contact ; rdfs:range xsd:string .
+        """,
+        encoding="utf-8",
+    )
+    catalog = directory / "catalog-v001.xml"
+    catalog.write_text(
+        "\n".join(
+            [
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">',
+                f'  <uri name="{BSP}" uri="party.ttl"/>',
+                "</catalog>",
+                "",
+            ]
         ),
         encoding="utf-8",
     )
+    return catalog
 
 
-def test_read_reference_terms_skips_inherited_properties(tmp_path: Path) -> None:
-    _write_inventory(tmp_path)
-    names = {(t.name, t.kind) for t in read_reference_terms(tmp_path)}
+def test_read_reference_terms_resolves_classes_and_properties(tmp_path: Path) -> None:
+    catalog = _write_reference_model(tmp_path)
+    names = {(t.name, t.kind) for t in read_reference_terms(catalog)}
     assert ("Contact", "class") in names
     assert ("contactEmail", "property") in names
-    assert ("partyName", "property") not in names
 
 
-def test_read_reference_terms_without_inventories_is_empty(tmp_path: Path) -> None:
-    assert read_reference_terms(tmp_path / "nope") == []
+def test_read_reference_terms_without_a_catalog_is_empty(tmp_path: Path) -> None:
+    assert read_reference_terms(tmp_path / "nope.xml") == []
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +196,8 @@ def _write_domain(directory: Path, *, body: str, imports: tuple[str, ...]) -> No
 
 
 def test_suggest_anchors_offers_a_paste_ready_line_for_an_exact_match(tmp_path: Path) -> None:
-    onto, inv = tmp_path / "ontologies", tmp_path / "inventories"
-    _write_inventory(inv)
+    onto, refs = tmp_path / "ontologies", tmp_path / "refs"
+    catalog = _write_reference_model(refs)
     _write_domain(
         onto,
         body=':Contact a owl:Class ;\n    rdfs:label "Contact"@en ;\n'
@@ -195,7 +205,7 @@ def test_suggest_anchors_offers_a_paste_ready_line_for_an_exact_match(tmp_path: 
         imports=(BSP,),
     )
 
-    report = suggest_anchors(ontologies_dir=onto, domain="party", inventory_dir=inv)
+    report = suggest_anchors(ontologies_dir=onto, domain="party", catalog_path=catalog)
 
     assert report.unanchored == 1
     assert len(report.confident) == 1
@@ -203,8 +213,8 @@ def test_suggest_anchors_offers_a_paste_ready_line_for_an_exact_match(tmp_path: 
 
 
 def test_suggest_anchors_withholds_turtle_for_a_weak_match(tmp_path: Path) -> None:
-    onto, inv = tmp_path / "ontologies", tmp_path / "inventories"
-    _write_inventory(inv)
+    onto, refs = tmp_path / "ontologies", tmp_path / "refs"
+    catalog = _write_reference_model(refs)
     _write_domain(
         onto,
         body=':BusinessContact a owl:Class ;\n    rdfs:label "Business Contact"@en ;\n'
@@ -212,7 +222,7 @@ def test_suggest_anchors_withholds_turtle_for_a_weak_match(tmp_path: Path) -> No
         imports=(BSP,),
     )
 
-    report = suggest_anchors(ontologies_dir=onto, domain="party", inventory_dir=inv)
+    report = suggest_anchors(ontologies_dir=onto, domain="party", catalog_path=catalog)
 
     suggestion = report.suggestions[0]
     assert suggestion.candidates and not suggestion.confident
@@ -222,8 +232,8 @@ def test_suggest_anchors_withholds_turtle_for_a_weak_match(tmp_path: Path) -> No
 
 def test_suggest_anchors_ignores_modules_the_domain_does_not_import(tmp_path: Path) -> None:
     """An anchor into an unimported module would fail the managed-import check."""
-    onto, inv = tmp_path / "ontologies", tmp_path / "inventories"
-    _write_inventory(inv)
+    onto, refs = tmp_path / "ontologies", tmp_path / "refs"
+    catalog = _write_reference_model(refs)
     _write_domain(
         onto,
         body=':Contact a owl:Class ;\n    rdfs:label "Contact"@en ;\n'
@@ -231,15 +241,15 @@ def test_suggest_anchors_ignores_modules_the_domain_does_not_import(tmp_path: Pa
         imports=("https://www.kairosflow.ai/ont/imo/party",),
     )
 
-    report = suggest_anchors(ontologies_dir=onto, domain="party", inventory_dir=inv)
+    report = suggest_anchors(ontologies_dir=onto, domain="party", catalog_path=catalog)
 
     assert report.suggestions == []
-    assert any("materialized inventory" in n for n in report.notices)
+    assert any("resolve through the hub catalog" in n for n in report.notices)
 
 
 def test_already_anchored_terms_are_counted_not_resuggested(tmp_path: Path) -> None:
-    onto, inv = tmp_path / "ontologies", tmp_path / "inventories"
-    _write_inventory(inv)
+    onto, refs = tmp_path / "ontologies", tmp_path / "refs"
+    catalog = _write_reference_model(refs)
     _write_domain(
         onto,
         body=':Contact a owl:Class ;\n    rdfs:label "Contact"@en ;\n'
@@ -248,17 +258,19 @@ def test_already_anchored_terms_are_counted_not_resuggested(tmp_path: Path) -> N
         imports=(BSP,),
     )
 
-    report = suggest_anchors(ontologies_dir=onto, domain="party", inventory_dir=inv)
+    report = suggest_anchors(ontologies_dir=onto, domain="party", catalog_path=catalog)
 
     assert report.already_anchored == 1
     assert report.unanchored == 0
 
 
-def test_missing_domain_and_missing_inventories_report_notices(tmp_path: Path) -> None:
-    absent = suggest_anchors(ontologies_dir=tmp_path, domain="nope", inventory_dir=tmp_path)
+def test_missing_domain_and_missing_catalog_report_notices(tmp_path: Path) -> None:
+    absent = suggest_anchors(ontologies_dir=tmp_path, domain="nope", catalog_path=None)
     assert absent.notices and not absent.suggestions
 
     onto = tmp_path / "ontologies"
     _write_domain(onto, body="", imports=(BSP,))
-    no_inv = suggest_anchors(ontologies_dir=onto, domain="party", inventory_dir=tmp_path / "nope")
-    assert any("generate-inventory" in n for n in no_inv.notices)
+    no_catalog = suggest_anchors(
+        ontologies_dir=onto, domain="party", catalog_path=tmp_path / "nope.xml"
+    )
+    assert any("catalog" in n for n in no_catalog.notices)

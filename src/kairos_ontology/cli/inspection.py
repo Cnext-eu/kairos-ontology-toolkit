@@ -3064,10 +3064,12 @@ def alignment_report_cmd(
     help="Path to model/ontologies/ directory (default: auto-detect from hub).",
 )
 @click.option(
-    "--inventory-dir",
+    "--catalog",
+    "catalog_path",
     type=click.Path(exists=True),
     default=None,
-    help="Path to referencemodels-unpacked/ (default: auto-detect from hub).",
+    help="Path to catalog-v001.xml (default: auto-detect from hub). Reference models "
+    "resolve live through it; there is no materialized inventory to keep in sync.",
 )
 @click.option(
     "--all",
@@ -3083,7 +3085,7 @@ def alignment_report_cmd(
     default="text",
     show_default=True,
 )
-def suggest_anchor_cmd(domain, ontology_dir, inventory_dir, show_all, output_format):
+def suggest_anchor_cmd(domain, ontology_dir, catalog_path, show_all, output_format):
     """Suggest reference-model anchors for DOMAIN's unanchored classes and properties.
 
     Reads the inventories for the modules DOMAIN already imports and ranks candidates by
@@ -3105,16 +3107,16 @@ def suggest_anchor_cmd(domain, ontology_dir, inventory_dir, show_all, output_for
         if ontology_dir
         else (hub / "model" / "ontologies" if hub else Path("model/ontologies"))
     )
-    inv_dir = (
-        Path(inventory_dir)
-        if inventory_dir
-        else (hub / "referencemodels-unpacked" if hub else None)
+    catalog = (
+        Path(catalog_path)
+        if catalog_path
+        else (hub / "catalog-v001.xml" if hub else None)
     )
 
     report = suggest_anchors(
         ontologies_dir=onto_dir,
         domain=domain,
-        inventory_dir=inv_dir,
+        catalog_path=catalog,
         archetype_tiers=_archetype_tiers(hub),
     )
 

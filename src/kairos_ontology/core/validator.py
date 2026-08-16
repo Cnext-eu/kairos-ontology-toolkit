@@ -1518,7 +1518,7 @@ def run_validation(
         integrity_report = audit_ontology_integrity(
             ontologies_dir=ontologies_path,
             data_domains=data_domains,
-            inventory_dir=ontologies_path.parent.parent / "referencemodels-unpacked",
+            catalog_path=catalog_path,
             domains=sorted({path.stem for path in ontology_files}),
         )
         results["integrity"]["report"] = integrity_report.to_dict()

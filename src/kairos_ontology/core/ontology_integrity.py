@@ -832,7 +832,7 @@ def check_unanchored_classes(
 # ---------------------------------------------------------------------------
 
 
-def _module_terms_from_inventories(inventory_dir: Optional[Path]) -> dict[str, dict[str, set[str]]]:
+def _module_terms(catalog_path: Optional[Path]) -> dict[str, dict[str, set[str]]]:
     """Read materialized reference inventories into ``{module_iri: {classes, properties}}``.
 
     Returns ``{}`` when inventories are absent — the shadowing check then silently
@@ -841,7 +841,7 @@ def _module_terms_from_inventories(inventory_dir: Optional[Path]) -> dict[str, d
     from .class_anchoring import read_reference_terms
 
     terms: dict[str, dict[str, set[str]]] = {}
-    for term in read_reference_terms(inventory_dir):
+    for term in read_reference_terms(catalog_path):
         module = term.module.rstrip("#/")
         bucket = "classes" if term.kind == "class" else "properties"
         terms.setdefault(module, {"classes": set(), "properties": set()})
@@ -853,7 +853,7 @@ def audit_ontology_integrity(
     *,
     ontologies_dir: Path,
     data_domains: Optional[dict[str, dict[str, Any]]] = None,
-    inventory_dir: Optional[Path] = None,
+    catalog_path: Optional[Path] = None,
     domains: Optional[Iterable[str]] = None,
 ) -> IntegrityReport:
     """Run every hub-wide integrity check and return a scored report.
@@ -870,11 +870,11 @@ def audit_ontology_integrity(
         )
         return report
 
-    module_terms = _module_terms_from_inventories(inventory_dir)
+    module_terms = _module_terms(catalog_path)
     if not module_terms:
         report.notices.append(
-            "No materialized reference inventories found; reference-model shadowing checks "
-            "were skipped. Run 'kairos-ontology generate-inventory' to enable them."
+            "No reference models resolved from the hub catalog; reference-model "
+            "shadowing checks were skipped."
         )
     if not data_domains:
         report.notices.append(

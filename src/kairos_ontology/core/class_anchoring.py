@@ -191,64 +191,77 @@ def _module_of(uri: str) -> str:
     return uri.rstrip("/").rsplit("/", 1)[0]
 
 
-def read_reference_terms(inventory_dir: Optional[Path]) -> list[ReferenceTerm]:
-    """Read every class and asserted property from the materialized inventories.
+def read_reference_terms(catalog_path: Optional[Path]) -> list[ReferenceTerm]:
+    """Resolve every reference-model class and property, live from the catalog (DD-173).
 
-    Inventories carry a flat ``classes:`` list; each class nests the properties asserted
-    on it, and repeats inherited ones. Inherited entries are skipped so each term stays
-    attributed to the module that declares it — otherwise a property would be offered
-    under every subclass's module and the "which module do I import" answer would be
-    wrong.
+    Reads through ``parse_reference_model`` — the same canonical DD-103 loader path the
+    aligner uses, resolving ``owl:imports`` and honouring the DD-131 domain authority —
+    rather than the materialized ``referencemodels-unpacked/*.yaml`` snapshots this used
+    to consume.
 
-    Returns ``[]`` when inventories are absent; callers report that as a notice rather
-    than guessing.
+    The snapshots were removed because they were indistinguishable from truth. Generated
+    once per hub, nothing marked them invalid when the resolver itself was fixed, so a
+    hub carried the old wrong answer indefinitely: every inventory written before the
+    ``schema:domainIncludes`` fix omits the whole REUSABLE property family, and the same
+    class appeared with 9 or 13 properties depending on which snapshot a caller happened
+    to read. Resolving live costs ~60ms for two modules, which is nothing against the
+    LLM stages this feeds, and it cannot go stale.
+
+    Returns ``[]`` when no catalog resolves; callers report that as a notice.
     """
     terms: list[ReferenceTerm] = []
-    if inventory_dir is None or not Path(inventory_dir).is_dir():
+    if catalog_path is None or not Path(catalog_path).is_file():
         return terms
-    import yaml
+
+    from .catalog_utils import CatalogResolver
+    from .propose_alignment import extract_ref_model_inventory
+
+    try:
+        resolver = CatalogResolver.with_reference_models(Path(catalog_path))
+    except Exception:  # defensive: a broken catalog must not fail the suggestion
+        return terms
+
+    # Every reference-model IRI the catalog knows, minus the hub's own domains.
+    module_uris = sorted(
+        {
+            uri
+            for uri in resolver.mappings
+            if uri.startswith("http") and "kairosflow.ai" in uri or "onerecord" in uri
+        }
+    )
+    if not module_uris:
+        return terms
 
     seen: set[str] = set()
-    for path in sorted(Path(inventory_dir).glob("*.yaml")):
-        try:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except Exception:  # defensive: a broken inventory must not fail the suggestion
-            continue
-        if not isinstance(payload, dict):
-            continue
-        for entry in payload.get("classes") or []:
-            if not isinstance(entry, dict):
+    for cls in extract_ref_model_inventory(module_uris, Path(catalog_path)):
+        uri = str(cls.get("uri") or "")
+        if uri.startswith("http") and uri not in seen:
+            seen.add(uri)
+            terms.append(
+                ReferenceTerm(
+                    uri=uri,
+                    name=str(cls.get("name") or _local_name(uri)),
+                    label=str(cls.get("label") or ""),
+                    comment=str(cls.get("comment") or ""),
+                    module=_module_of(uri),
+                    kind="class",
+                )
+            )
+        for prop in cls.get("properties") or []:
+            puri = str(prop.get("uri") or "")
+            if not puri.startswith("http") or puri in seen:
                 continue
-            uri = str(entry.get("uri") or "")
-            if uri.startswith("http") and uri not in seen:
-                seen.add(uri)
-                terms.append(
-                    ReferenceTerm(
-                        uri=uri,
-                        name=str(entry.get("name") or _local_name(uri)),
-                        label=str(entry.get("label") or ""),
-                        comment=str(entry.get("comment") or ""),
-                        module=_module_of(uri),
-                        kind="class",
-                    )
+            seen.add(puri)
+            terms.append(
+                ReferenceTerm(
+                    uri=puri,
+                    name=str(prop.get("name") or _local_name(puri)),
+                    label=str(prop.get("label") or ""),
+                    comment=str(prop.get("comment") or ""),
+                    module=_module_of(puri),
+                    kind="property",
                 )
-            for prop in entry.get("properties") or []:
-                if not isinstance(prop, dict) or prop.get("inherited"):
-                    continue
-                puri = str(prop.get("uri") or "")
-                if not puri.startswith("http") or puri in seen:
-                    continue
-                seen.add(puri)
-                terms.append(
-                    ReferenceTerm(
-                        uri=puri,
-                        name=str(prop.get("name") or _local_name(puri)),
-                        label=str(prop.get("label") or ""),
-                        comment=str(prop.get("comment") or ""),
-                        module=_module_of(puri),
-                        kind="property",
-                    )
-                )
+            )
     return terms
 
 
@@ -391,7 +404,7 @@ def suggest_anchors(
     *,
     ontologies_dir: Path,
     domain: str,
-    inventory_dir: Optional[Path],
+    catalog_path: Optional[Path],
     archetype_tiers: Optional[dict[str, str]] = None,
 ) -> AnchorReport:
     """Rank reference-model anchors for every unanchored term in *domain*.
@@ -413,11 +426,11 @@ def suggest_anchors(
         report.notices.append(f"{path} could not be parsed; fix syntax first.")
         return report
 
-    all_terms = read_reference_terms(inventory_dir)
+    all_terms = read_reference_terms(catalog_path)
     if not all_terms:
         report.notices.append(
-            "No materialized reference inventories found. Run "
-            "'kairos-ontology generate-inventory' first."
+            "No reference models resolved from the hub catalog "
+            "(ontology-hub/catalog-v001.xml)."
         )
         return report
 
@@ -430,8 +443,8 @@ def suggest_anchors(
     report.available_terms = len(pool)
     if not pool:
         report.notices.append(
-            f"Domain '{domain}' imports {len(imported)} module(s), none of which have a "
-            "materialized inventory. Run 'kairos-ontology generate-inventory'."
+            f"Domain '{domain}' imports {len(imported)} module(s), none of which "
+            "resolve through the hub catalog."
         )
         return report
 
