@@ -204,3 +204,39 @@ class TestDefaultOn:
             "cross-domain bridges must load before (and independently of) the "
             "cross-module flag; see DD-181."
         )
+
+
+class TestAcceleratorResolution:
+    """The pack must be resolved, not guessed (found on the live hub)."""
+
+    def test_glob_order_would_pick_the_wrong_pack(self, tmp_path):
+        """`financial-services` sorts before `logistics`; first-match is not the hub's."""
+        write_blueprint(tmp_path, [], accelerator="financial-services")
+        write_blueprint(tmp_path, BRIDGES, accelerator="logistics")
+        assert load_cross_domain_bridges(tmp_path) == [], (
+            "unresolved lookup returns the alphabetically-first pack — which is why "
+            "the caller must resolve the accelerator rather than omit it"
+        )
+        assert len(load_cross_domain_bridges(tmp_path, "logistics")) == 3
+
+    def test_hub_root_is_found_by_walking_up_to_pyproject(self, tmp_path):
+        from kairos_ontology.core.propose_alignment import _hub_root_from_catalog
+
+        hub = tmp_path / "hub"
+        (hub / "ontology-hub").mkdir(parents=True)
+        (hub / "pyproject.toml").write_text("[tool.kairos]\n", encoding="utf-8")
+        catalog = hub / "ontology-hub" / "catalog-v001.xml"
+        catalog.write_text("<catalog/>", encoding="utf-8")
+        assert _hub_root_from_catalog(catalog) == hub.resolve()
+
+    def test_no_pyproject_anywhere_yields_none(self, tmp_path):
+        from kairos_ontology.core.propose_alignment import _hub_root_from_catalog
+
+        catalog = tmp_path / "catalog-v001.xml"
+        catalog.write_text("<catalog/>", encoding="utf-8")
+        assert _hub_root_from_catalog(catalog) is None
+
+    def test_no_catalog_yields_none(self):
+        from kairos_ontology.core.propose_alignment import _hub_root_from_catalog
+
+        assert _hub_root_from_catalog(None) is None

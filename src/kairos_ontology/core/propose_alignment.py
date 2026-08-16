@@ -717,6 +717,21 @@ def extract_ref_model_inventory(
 # ---------------------------------------------------------------------------
 
 
+def _hub_root_from_catalog(catalog_path: Path | None) -> Path | None:
+    """Walk up from the catalog to the directory holding ``pyproject.toml`` (DD-181).
+
+    The accelerator resolver reads ``[tool.kairos].accelerator`` from the hub's
+    ``pyproject.toml``, which sits above ``ontology-hub/``. Walking up rather than
+    assuming a fixed depth keeps this working for a catalog at either level.
+    """
+    if not catalog_path:
+        return None
+    for candidate in Path(catalog_path).resolve().parents:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return None
+
+
 def resolve_bridge_anchor_classes(
     bridge_classes: dict[str, str],
     catalog_path: Path | None,
@@ -3389,9 +3404,32 @@ def _propose_alignments(
     # blueprint's own declarations are read wherever they are found.
     cross_domain_bridges: list[dict[str, Any]] = []
     if ref_models_dir is not None:
-        cross_domain_bridges = load_cross_domain_bridges(Path(ref_models_dir), accelerator)
+        # The pack must be resolved, not guessed: with several installed, globbing
+        # takes the first alphabetically — `financial-services` ahead of
+        # `logistics` — and silently returns another pack's bridges, or none.
+        # Reuse the shared resolver (DD-125) so this agrees with validate/project.
+        bridge_accelerator = accelerator
+        if not bridge_accelerator:
+            try:
+                from .reference_modules import resolve_hub_accelerator
+
+                bridge_accelerator = resolve_hub_accelerator(
+                    explicit=None,
+                    hub_root=_hub_root_from_catalog(catalog_path),
+                    ref_models_dir=Path(ref_models_dir),
+                    domain_hint=domains_filter or None,
+                )
+            except Exception:  # noqa: BLE001 - advisory; ambiguity must not fail a run
+                bridge_accelerator = None
+        if bridge_accelerator:
+            cross_domain_bridges = load_cross_domain_bridges(
+                Path(ref_models_dir), bridge_accelerator
+            )
         if cross_domain_bridges:
-            report(f"  🌉 {len(cross_domain_bridges)} declared cross-domain relationship(s)")
+            report(
+                f"  🌉 {len(cross_domain_bridges)} declared cross-domain "
+                f"relationship(s) from '{bridge_accelerator}'"
+            )
 
     accelerator_uri_modules: dict[str, dict[str, Any]] = {}
     if cross_module:
