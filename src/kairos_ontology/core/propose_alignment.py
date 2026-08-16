@@ -16,6 +16,7 @@ import json
 import logging
 import hashlib
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2917,8 +2918,17 @@ def _propose_alignments(
     run_semantic_success = 0
     run_provider_failures = 0
 
-    for domain_id, tables in sorted(domain_tables.items()):
-        report(f"  📐 Domain: {domain_id} ({len(tables)} table(s))")
+    domain_order = sorted(domain_tables.items())
+    total_tables = sum(len(t) for t in domain_tables.values())
+    tables_done = 0
+    run_started = time.monotonic()
+
+    for domain_index, (domain_id, tables) in enumerate(domain_order, start=1):
+        in_flight = min(max_workers, len(tables))
+        report(
+            f"  📐 Domain {domain_index}/{len(domain_order)}: {domain_id} "
+            f"({len(tables)} table(s), {in_flight} in parallel)"
+        )
 
         # Get domain URIs from first table entry
         domain_uris = tables[0].get("domain_uris", []) if tables else []
@@ -3251,7 +3261,45 @@ def _propose_alignments(
                 "anchor_resolution": anchor_res,
             }
 
-        processed = map_concurrent(_process_table, tables, max_workers=max_workers)
+        # Live progress. A full run is tens of minutes of silence otherwise, with no way
+        # to tell a slow provider from a hung one, and no basis for deciding whether to
+        # wait. map_concurrent already fires on_result as each table lands, so this costs
+        # nothing but the print. Completion order is arrival order, not input order --
+        # which is itself the clearest evidence that the tables really are running
+        # concurrently rather than one after another.
+        domain_started = time.monotonic()
+
+        def _on_table_done(entry: dict[str, Any] | None, _total: int = len(tables)) -> None:
+            nonlocal tables_done
+            tables_done += 1
+            if entry is None:
+                return
+            outcome = (entry.get("result") or {}).get("generation_outcome")
+            mark = "✓" if outcome == OUTCOME_SEMANTIC_SUCCESS else "✗"
+            if entry.get("from_cache"):
+                mark = "•"
+            mapped = len(
+                [
+                    c
+                    for c in ((entry.get("result") or {}).get("column_alignments") or [])
+                    if c.get("ref_property")
+                ]
+            )
+            columns = len(entry.get("columns") or [])
+            elapsed = time.monotonic() - domain_started
+            report(
+                f"     {mark} [{tables_done}/{total_tables}] {entry.get('table')} "
+                f"— {mapped}/{columns} columns mapped ({elapsed:.0f}s)"
+            )
+
+        processed = map_concurrent(
+            _process_table, tables, max_workers=max_workers, on_result=_on_table_done
+        )
+        report(
+            f"     └ {domain_id} done in {time.monotonic() - domain_started:.0f}s "
+            f"({tables_done}/{total_tables} tables, "
+            f"{time.monotonic() - run_started:.0f}s elapsed)"
+        )
 
         # DD-070: accumulate cross-module matches across the domain's tables.
         cross_module_acc: dict[tuple[str, str], dict[str, Any]] = {}
