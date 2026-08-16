@@ -1316,6 +1316,7 @@ def build_alignment_prompt(
     table_ref_classes: list[dict[str, Any]] | None = None,
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
+    anchor_override: str | None = None,
 ) -> str:
     """Build the alignment prompt for one source table.
 
@@ -1327,6 +1328,13 @@ def build_alignment_prompt(
     constrained to those home-domain classes while STEP 2 may match properties on
     ANY class in *ref_classes* (the widened accelerator pool). Without it (default),
     both steps draw from *ref_classes* and the output is unchanged.
+
+    When *anchor_override* is set (uri-anchor-contract / DD-185), STEP 1 is stated
+    as decided rather than asked, and the affinity hint is dropped. Found on a live
+    Langfuse trace: the prompt still said "prior analysis suggests 'Company'" while
+    the run's fixed anchor was TradeParty — the model deliberated a question whose
+    answer was pinned, against a hint contradicting it, and mapped columns toward
+    its own pick.
     """
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
 
@@ -1355,14 +1363,36 @@ def build_alignment_prompt(
 
     glossary_block = ""
     if glossary_terms:
-        glossary_block = (
-            "\n\nBUSINESS VOCABULARY (use these words where one fits; they are the "
-            "business's own terms):\n" + ", ".join(glossary_terms)
-        )
+        # Audited on a live trace: the flat dump put 'Vessel Departure' and
+        # 'Postcode Zone' into a companies-table prompt. Keep only terms sharing
+        # a token with this table's own name or columns — the ones the model
+        # could actually use — with the full glossary still governing naming at
+        # review time.
+        table_tokens = _tokenize_text(table_name)
+        for col in columns:
+            table_tokens |= _tokenize_text(str(col.get("name", "")))
+        relevant_terms = [t for t in glossary_terms if _tokenize_text(t) & table_tokens]
+        if relevant_terms:
+            glossary_block = (
+                "\n\nBUSINESS VOCABULARY (use these words where one fits; they are the "
+                "business's own terms):\n" + ", ".join(relevant_terms)
+            )
 
     entity_hint = ""
     step1 = "STEP 1: Determine which reference model class this table best represents."
     likely_match = ""
+    if anchor_override:
+        # The anchor is already decided (human-confirmed alias or global anchor
+        # call); asking STEP 1 again wastes reasoning and risks the model mapping
+        # columns toward a different class than the one that will be recorded.
+        step1 = (
+            f"STEP 1 (already decided): this table IS '{anchor_override}'. Do not "
+            f"reconsider the class. Set ref_class to '{anchor_override}' and map "
+            f"every column with that anchor fixed, using properties of "
+            f"'{anchor_override}' or of any other listed class where the column "
+            f"genuinely belongs to a related entity."
+        )
+        likely_entity = ""
     if likely_entity:
         # CR-2: when the affinity step already derived the entity and it matches a
         # candidate class, anchor STEP 1 on it instead of re-deriving from scratch.
@@ -1886,6 +1916,7 @@ def _align_table_once(
         table_ref_classes=table_ref_classes,
         class_cautions=class_cautions,
         glossary_terms=glossary_terms,
+        anchor_override=anchor_override,
     )
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
     valid_classes = {c["name"] for c in table_classes}

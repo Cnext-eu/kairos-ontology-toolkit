@@ -3650,12 +3650,16 @@ class TestPatternAndGlossaryGrounding:
         from kairos_ontology.core.propose_alignment import build_alignment_prompt
 
         classes = [{"name": "Party", "uri": "https://x/#Party", "properties": []}]
+        # Trace-audit refinement (DD-185): only terms sharing a token with the
+        # table's own name or columns reach the prompt — the live dump put
+        # 'Vessel Departure' into a companies-table prompt.
         prompt = build_alignment_prompt(
-            "companies", [{"name": "x", "data_type": "int"}], classes,
+            "companies", [{"name": "haulier_key", "data_type": "int"}], classes,
             glossary_terms=["Haulier", "Unaccompanied Unit"],
         )
         assert "BUSINESS VOCABULARY" in prompt
-        assert "Unaccompanied Unit" in prompt
+        assert "Haulier" in prompt
+        assert "Unaccompanied Unit" not in prompt
 
     def test_glossary_absent_is_silent_not_empty_section(self):
         from kairos_ontology.core.propose_alignment import build_alignment_prompt

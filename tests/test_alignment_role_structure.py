@@ -242,3 +242,44 @@ class TestEntityReferenceRequirement:
         assert group_columns_by_role(
             cols("shipper_name", "shipper_country", "shipper_since")
         ) == ([], cols("shipper_name", "shipper_country", "shipper_since"))
+
+
+class TestPromptAnchorAndGlossary:
+    """Trace-audit fixes (DD-185): the prompt must know a decided anchor, and the
+    glossary must be filtered to terms the table could actually use."""
+
+    CLASSES = [
+        {"name": "TradeParty", "label": "Trade Party", "properties": []},
+        {"name": "Address", "label": "Address", "properties": []},
+    ]
+    COLS = [{"name": "company_id", "data_type": "varchar"},
+            {"name": "billing_city", "data_type": "varchar"}]
+
+    def _prompt(self, **kw):
+        from kairos_ontology.core.propose_alignment import build_alignment_prompt
+
+        return build_alignment_prompt("companies", self.COLS, self.CLASSES, **kw)
+
+    def test_decided_anchor_replaces_step1_and_hint(self):
+        text = self._prompt(likely_entity="Company", anchor_override="TradeParty")
+        assert "already decided" in text
+        assert "IS 'TradeParty'" in text
+        assert "HINT:" not in text, "affinity's guess must not contradict the fixed anchor"
+        assert "Prior analysis" not in text
+
+    def test_without_override_the_hint_survives(self):
+        text = self._prompt(likely_entity="Company")
+        assert "HINT:" in text
+        assert "already decided" not in text
+
+    def test_glossary_is_filtered_to_table_relevant_terms(self):
+        text = self._prompt(glossary_terms=["Company Registration", "Vessel Departure",
+                                            "Billing Address", "Postcode Zone"])
+        assert "Company Registration" in text
+        assert "Billing Address" in text
+        assert "Vessel Departure" not in text, "audited live: irrelevant terms are noise"
+        assert "Postcode Zone" not in text
+
+    def test_no_relevant_terms_means_no_vocabulary_block(self):
+        text = self._prompt(glossary_terms=["Vessel Departure", "Postcode Zone"])
+        assert "BUSINESS VOCABULARY" not in text
