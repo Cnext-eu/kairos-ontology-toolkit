@@ -19,7 +19,23 @@ from rdflib.namespace import OWL, RDF, RDFS
 
 # schema.org namespace — used for ``schema:domainIncludes``, an additive,
 # entailment-free way to declare that a property may be used on several classes.
+#
+# Both scheme spellings are honoured, and that is not defensive tidiness: schema.org
+# publishes its vocabulary under both, authors use them interchangeably, and every
+# reference model this toolkit ships binds the ``https`` form while this constant bound
+# only ``http``. The result was that ``domainIncludes`` had never matched a single
+# triple in the shipped models — silently, because an unmatched optional predicate looks
+# exactly like an absent one. Properties declared the REUSABLE way (deliberately
+# domainless, per kairos-design-domain Gate 5) were invisible to every consumer of this
+# module: the silver/dbt projectors, validate-mapping, and source analysis. bsp/party's
+# hasAddress / hasBillingAddress / hasShippingAddress are the visible casualties —
+# alignment reported "no address property is listed on TradeParty" and was telling the
+# truth about what it had been shown.
 SCHEMA = Namespace("http://schema.org/")
+SCHEMA_HTTPS = Namespace("https://schema.org/")
+
+#: Every spelling of ``domainIncludes`` treated as equivalent.
+DOMAIN_INCLUDES_PREDICATES = (SCHEMA.domainIncludes, SCHEMA_HTTPS.domainIncludes)
 
 # ---------------------------------------------------------------------------
 # Multi-class property domain resolution (DD-131)
@@ -49,9 +65,10 @@ def effective_domain_classes(graph: Graph, prop: URIRef) -> set[URIRef]:
         union = graph.value(domain, OWL.unionOf)
         if union is not None:
             classes.update(member for member in graph.items(union) if isinstance(member, URIRef))
-    for domain in graph.objects(prop, SCHEMA.domainIncludes):
-        if isinstance(domain, URIRef):
-            classes.add(domain)
+    for predicate in DOMAIN_INCLUDES_PREDICATES:
+        for domain in graph.objects(prop, predicate):
+            if isinstance(domain, URIRef):
+                classes.add(domain)
     return classes
 
 
@@ -60,7 +77,7 @@ def properties_with_domain(graph: Graph) -> set[URIRef]:
     ``schema:domainIncludes`` (subjects of either predicate)."""
     return {
         subject
-        for predicate in (RDFS.domain, SCHEMA.domainIncludes)
+        for predicate in (RDFS.domain, *DOMAIN_INCLUDES_PREDICATES)
         for subject in graph.subjects(predicate, None)
         if isinstance(subject, URIRef)
     }

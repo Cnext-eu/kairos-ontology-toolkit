@@ -650,6 +650,10 @@ def extract_ref_model_inventory(
                         "label": p.get("label", ""),
                         "range": p.get("range", ""),
                         "comment": "",
+                        # Carried through so the prompt can mark an object property
+                        # (DD-172); this rebuild previously dropped it, leaving every
+                        # property indistinguishable from a literal one.
+                        "type": p.get("type", ""),
                     }
                 )
 
@@ -736,7 +740,18 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
         prop_lines = []
         for p in props[:MAX_REF_PROPERTIES_PER_PROMPT]:
             range_str = f" ({p['range']})" if p.get("range") else ""
-            prop_lines.append(f"    - {p['name']} [{p.get('label', p['name'])}]{range_str}")
+            # DD-172: mark object properties. Rendered identically to datatype ones,
+            # `hasBillingAddress (Address)` looked like a string property called
+            # Address, so the model could neither map a flat column to it nor say what
+            # it implies. Observed live: `billing_address` came back "no address
+            # property is listed on TradeParty" while hasBillingAddress -> Address was
+            # sitting in the very list it was reading.
+            kind = ""
+            if str(p.get("type") or "").lower() == "object":
+                kind = " [OBJECT PROPERTY → links to a related entity, not a literal]"
+            label = p.get("label") or p["name"]
+            label_str = f" [{label}]" if label != p["name"] else ""
+            prop_lines.append(f"    - {p['name']}{label_str}{range_str}{kind}")
         lines.append(f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])}){_module_tag(cls)}")
         if cls.get("comment"):
             lines.append(f"    Description: {cls['comment']}")
@@ -1174,10 +1189,6 @@ def build_alignment_prompt(
 
     class_names = ", ".join(c["name"] for c in table_classes)
     semantic_records = [c.get("_semantic", {}) for c in ref_classes]
-    profiles = sorted({str(item.get("semantic_profile")) for item in semantic_records if item})
-    closure_hashes = sorted(
-        {str(item.get("closure_hash")) for item in semantic_records if item.get("closure_hash")}
-    )
     modules = sorted(
         {
             str(item.get("source_identity"))
@@ -1185,17 +1196,13 @@ def build_alignment_prompt(
             if item.get("source_identity")
         }
     )
+    # DD-172: this block used to carry closure hashes, the selection rule, an
+    # import-complete boolean and "omitted modules: none in this prompt slice" —
+    # provenance for a human debugging a run, not anything a model can act on, repeated
+    # in every prompt and competing for attention with the classes it is meant to read.
+    # Only the module list survives, and only when it says something.
     semantic_disclosure = (
-        "SEMANTIC CONTEXT:\n"
-        f"- profiles: {', '.join(profiles) or 'unknown'}\n"
-        f"- closure hashes: {', '.join(closure_hashes) or 'unknown'}\n"
-        f"- import complete: "
-        f"{all(bool(item.get('import_complete')) for item in semantic_records)}\n"
-        f"- total classes: {len(ref_classes)}\n"
-        f"- included classes: {len(ref_classes)}\n"
-        "- selection rule: deterministic candidate score then full URI\n"
-        f"- included modules: {', '.join(modules) or 'unknown'}\n"
-        "- omitted modules: none in this prompt slice\n"
+        f"REFERENCE MODULES IN SCOPE: {', '.join(modules)}\n" if modules else ""
     )
 
     cross_module_note = ""
@@ -1253,6 +1260,14 @@ Instructions:
   Omit it (null) for an audit stamp, a surrogate key, a vendor placeholder, or anything
   whose meaning you cannot state — an unnecessary proposal costs a reviewer more than a
   missing one. Never emit an IRI here; the hub mints that itself.
+- OBJECT PROPERTIES: a property marked [OBJECT PROPERTY] links to another entity; a
+  flat source column can never BE one. When a column (or a cluster of columns like
+  street/city/postcode) is clearly the content of the entity an object property points
+  at, do NOT map it to that object property and do NOT call it unmatched. Set
+  ref_property to null and use "proposed_local_property" with
+  "range": "<the target class name>" and "why" naming the object property it should be
+  reached through. That records "this belongs behind hasBillingAddress → Address"
+  rather than losing it.
 - Do NOT over-map: a real ref_property must come from the class's listed properties
   above. Never map more distinct columns onto a class than it has properties.
 - ref_class_confidence: 0.0-1.0 for the table→class match.

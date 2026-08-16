@@ -259,6 +259,24 @@ def analyse_sample_evidence(
 # ---------------------------------------------------------------------------
 
 
+def _domain_properties_for(graph: Graph, cls_uri: URIRef) -> set[URIRef]:
+    """Return the properties that apply to *cls_uri*, using the DD-131 authority.
+
+    Thin adapter over ``projections.shared``: that module already resolves union and
+    ``schema:domainIncludes`` semantics for the projectors and ``validate-mapping``, and
+    its own docstring calls itself "the single authority ... so union semantics are
+    resolved identically everywhere". This routes source analysis through it rather than
+    keeping a second, narrower interpretation of what a property's domain is.
+    """
+    from .projections.shared import effective_domain_classes, properties_with_domain
+
+    return {
+        prop
+        for prop in properties_with_domain(graph)
+        if cls_uri in effective_domain_classes(graph, prop)
+    }
+
+
 def parse_reference_model(
     ttl_path: Path | None = None,
     *,
@@ -316,9 +334,19 @@ def parse_reference_model(
         cls_label = str(g.value(cls_uri, RDFS.label) or cls_name)
         cls_comment = str(g.value(cls_uri, RDFS.comment) or "")
 
-        # Find properties with this class as domain
+        # Find properties with this class as domain.
+        #
+        # Via the shared DD-131 authority rather than a direct rdfs:domain lookup. The
+        # bespoke query this replaced saw only literal `rdfs:domain` triples, so it
+        # silently dropped two whole families the reference models rely on:
+        # `schema:domainIncludes` (the REUSABLE pattern — a property deliberately left
+        # domainless so asserting one does not infer subsumption onto every class using
+        # it) and `owl:unionOf` domains. bsp/party declares hasAddress /
+        # hasBillingAddress / hasShippingAddress exactly that way, so alignment was told
+        # TradeParty has no address property and truthfully reported "no address
+        # property is listed on TradeParty" while the property sat in the model.
         properties: list[dict[str, str]] = []
-        for prop_uri in g.subjects(RDFS.domain, cls_uri):
+        for prop_uri in sorted(_domain_properties_for(g, cls_uri), key=str):
             prop_name = prop_uri.split("#")[-1].split("/")[-1]
             prop_label = str(g.value(prop_uri, RDFS.label) or prop_name)
             prop_range = ""
@@ -330,6 +358,13 @@ def parse_reference_model(
                     "name": prop_name,
                     "label": prop_label,
                     "range": prop_range,
+                    # Lets the prompt distinguish "links to an entity" from "is a
+                    # literal" (DD-172); without it both render identically.
+                    "type": (
+                        "object"
+                        if (prop_uri, RDF.type, OWL.ObjectProperty) in g
+                        else "datatype"
+                    ),
                 }
             )
 

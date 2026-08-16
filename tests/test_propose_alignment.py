@@ -3728,3 +3728,58 @@ class TestRiskyProposalFlagging:
         entries = self._entries()
         assert flag_risky_proposals(entries, class_cautions={}, ref_class_uri="https://x/#Inv") == 0
         assert all("needs_review" not in e["proposed_local_property"] for e in entries)
+
+
+class TestDomainIncludesNamespace:
+    """DD-172: schema:domainIncludes was never matched in any shipped reference model."""
+
+    def _graph(self, scheme: str):
+        from rdflib import Graph
+
+        return Graph().parse(
+            data=f"""
+            @prefix : <https://x/#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix schema: <{scheme}schema.org/> .
+            :TradeParty a owl:Class .
+            :Address a owl:Class .
+            :hasBillingAddress a owl:ObjectProperty ;
+                schema:domainIncludes :TradeParty ;
+                rdfs:range :Address .
+            """,
+            format="turtle",
+        )
+
+    @pytest.mark.parametrize("scheme", ["http://", "https://"])
+    def test_both_scheme_spellings_resolve_the_domain(self, scheme: str):
+        """Every shipped reference model binds https; the constant bound only http, so
+        the predicate had never matched a single triple — silently, because an
+        unmatched optional predicate looks exactly like an absent one."""
+        from rdflib import URIRef
+
+        from kairos_ontology.core.projections.shared import effective_domain_classes
+
+        g = self._graph(scheme)
+        classes = effective_domain_classes(g, URIRef("https://x/#hasBillingAddress"))
+        assert URIRef("https://x/#TradeParty") in classes
+
+    @pytest.mark.parametrize("scheme", ["http://", "https://"])
+    def test_a_reusable_property_reaches_its_class(self, scheme: str):
+        """bsp/party declares hasAddress/hasBillingAddress/hasShippingAddress this way;
+        alignment reported 'no address property is listed on TradeParty' and was telling
+        the truth about what it had been shown."""
+        from kairos_ontology.core.analyse_sources import parse_reference_model
+
+        ref = parse_reference_model(graph=self._graph(scheme), domain_name="party")
+        party = [c for c in ref["classes"] if c["name"] == "TradeParty"][0]
+        names = {p["name"] for p in party["properties"]}
+        assert "hasBillingAddress" in names
+
+    def test_an_object_property_is_typed_so_the_prompt_can_mark_it(self):
+        from kairos_ontology.core.analyse_sources import parse_reference_model
+
+        ref = parse_reference_model(graph=self._graph("https://"), domain_name="party")
+        party = [c for c in ref["classes"] if c["name"] == "TradeParty"][0]
+        prop = [p for p in party["properties"] if p["name"] == "hasBillingAddress"][0]
+        assert prop["type"] == "object"

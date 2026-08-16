@@ -1464,9 +1464,12 @@ def propose_alignment_cmd(
     output_path = Path(output) if output else analysis_path
 
     # DD-070: resolve the reference-models dir + validate cross-module prerequisites.
-    ref_models_dir = None
+    # Resolved unconditionally: --cross-module needs it for the widened property pool,
+    # and DD-171 needs it for the pattern-library cautions on every run. It used to be
+    # resolved only under --cross-module, so a normal run silently got no cautions —
+    # the grounding was wired end to end and never fired.
+    ref_models_dir = resolve_refmodels_dir(cwd, hub_root)
     if cross_module:
-        ref_models_dir = resolve_refmodels_dir(cwd, hub_root)
         if not accelerator:
             click.echo(
                 "❌ --cross-module requires --accelerator <name> (the accelerator "
