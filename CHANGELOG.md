@@ -7,35 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.5.0] — 2026-08-17
+## [5.6.0] — 2026-08-17
 
 ### Added
-- **`kairos-ontology draft-gap-decisions`** — drafts the DD-169 gap-gate decisions instead of
-  presenting a thousand-row column list (DD-186). `--auto` records only the two reason codes that
-  were never judgment calls (`operational` audit columns, `vendor-slot` placeholders); the default
-  drafts everything else into `gap-decisions.yaml` as one entry per **domain-scoped family** or
-  single column name, with occurrence counts, tables and types; `--apply` fans one decision out to
-  every column it covers. Measured on a live hub: 224 auto-recorded, and the remaining 1,286
-  blocking columns reduced to 526 decisions (63 families + 463 names).
-- **`draft-gap-decisions --suggest`** — one opt-in model call that names the concept each family
-  represents and flags families whose members do not belong together. It fills `reasoning` and
-  `proposed_disposition` only; `decision` is always the reviewer's, and `blueprint-gap` (which
-  asserts a reference-model defect to file upstream) is never treated as the neutral default.
-
-### Changed
-- Gap grouping respects the domain boundary: `UnmappedColumn` carries its `domain`, so the same
-  column name in two domains is two decisions — it can be a modelled fact in one and a genuine gap
-  in the other. Families additionally require semantic coherence: structural prefixes (`is_`,
-  `created_`, `total_`) never form a family, and members must be a qualified form of the shared
-  token, not the bare entity.
-- The `kairos-design-source` skill documents the new pipeline order, including that `anchor-tables`
-  runs **before** `propose-alignment`.
+- **`draft-gap-decisions --accept-proposals`** — fills every empty `decision` in
+  `gap-decisions.yaml` from its drafted proposal and applies it, recorded as `decided_by=autopilot`
+  so it is never mistaken for a human decision. Intended for unblocking the DD-169 gate once the
+  drafts have been read, not as a substitute for reading them.
+- **`source_disposition.clear_dispositions()`** — withdraws recorded dispositions by table,
+  disposition or decider, so a blanket deferral can be reversed once the tables behind it are
+  anchored.
 
 ### Fixed
-- **`record_disposition` silently deleted previously recorded columns.** Its replace filter matched
-  `(system, table)` and ignored the column, so each column-grain write removed the table's earlier
-  column entries — a run recording 224 dispositions kept 37. The writer now matches the
-  `(system, table, column)` grain that `load_dispositions` already keyed on.
 - **Value objects were crowded out of the alignment pool, producing false gaps (#517).** The
   candidate pool is a flat top-12 lexical shortlist over the domain, so a measurement class such as
   `imo/vessel-registry` `GrossTonnage` lost to eleven certificate classes and `grossTonnageValue`
@@ -72,6 +55,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   auto-recorded columns are contradicted, including `stops.actual_start_timestamp` and
   `consignments.pickup_start_timestamp`. The underlying name predicate is tracked separately
   (#522).
+
+## [5.5.0] — 2026-08-17
+
+### Added
+- **`kairos-ontology draft-gap-decisions`** — drafts the DD-169 gap-gate decisions instead of
+  presenting a thousand-row column list (DD-186). `--auto` records only the two reason codes that
+  were never judgment calls (`operational` audit columns, `vendor-slot` placeholders); the default
+  drafts everything else into `gap-decisions.yaml` as one entry per **domain-scoped family** or
+  single column name, with occurrence counts, tables and types; `--apply` fans one decision out to
+  every column it covers. Measured on a live hub: 224 auto-recorded, and the remaining 1,286
+  blocking columns reduced to 526 decisions (63 families + 463 names).
+- **`draft-gap-decisions --suggest`** — one opt-in model call that names the concept each family
+  represents and flags families whose members do not belong together. It fills `reasoning` and
+  `proposed_disposition` only; `decision` is always the reviewer's, and `blueprint-gap` (which
+  asserts a reference-model defect to file upstream) is never treated as the neutral default.
+
+### Changed
+- Gap grouping respects the domain boundary: `UnmappedColumn` carries its `domain`, so the same
+  column name in two domains is two decisions — it can be a modelled fact in one and a genuine gap
+  in the other. Families additionally require semantic coherence: structural prefixes (`is_`,
+  `created_`, `total_`) never form a family, and members must be a qualified form of the shared
+  token, not the bare entity.
+- The `kairos-design-source` skill documents the new pipeline order, including that `anchor-tables`
+  runs **before** `propose-alignment`.
+
+### Fixed
+- **`record_disposition` silently deleted previously recorded columns.** Its replace filter matched
+  `(system, table)` and ignored the column, so each column-grain write removed the table's earlier
+  column entries — a run recording 224 dispositions kept 37. The writer now matches the
+  `(system, table, column)` grain that `load_dispositions` already keyed on.
 
 ## [5.4.0] — 2026-08-17
 
