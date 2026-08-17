@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.10.2] — 2026-08-17
+
+### Fixed
+- **A freshly scaffolded hub could be born on a stale reference-models bundle (#542).** `_resolve_scaffold_refmodels_pin` picked the pin with `gh api /repos/.../releases --jq '.[0].tag_name'`, which is wrong in two independent ways: `/releases` includes **drafts** and GitHub lists them ahead of published releases, and element zero is the newest *by creation date*, not by version. The refmodels repo held a draft tagged `v1.28.1`, so every hub scaffolded after 2026-08-16 17:54Z pinned `v1.28.1` while `v1.33.1` was current.
+
+  Nothing caught it. `gh` exited 0 with a non-empty tag, so the existing "could not list releases" warning never fired, and because a *published* `v1.28.1` also exists the wheel URL built from the draft's tag resolved and `uv sync` succeeded. A client hub therefore ran the bundle that predates the 1.32.0 `owl:imports` fix and 1.33.0 module routing — precisely the ontology that makes 5.10.0's `property-domain-unreachable` warning fire.
+
+  Both scaffold pins now resolve through one shared `_list_published_release_tags`, which filters drafts in the jq expression and sorts by PEP 440 version. This also closes a gap in the *toolkit* pin: `_resolve_scaffold_toolkit_pin` documents that it "only ever pins a ref that has a published GitHub release", but it delegates to `_resolve_channel`, which read drafts too — a draft toolkit release would have produced a pin that 404s on a hub's first `uv sync`.
+- **`--ref-models-version` did nothing.** Both `init` and `new-repo` declared the option, accepted it as a parameter, and never read it, so the documented way to reproduce a known-good bundle silently pinned latest instead. It is now threaded to the resolver and accepts either `v1.29.0` or `1.29.0`.
+
+### Changed
+- `init` and `new-repo` print the pins they resolved (`toolkit v5.10.1 (channel 'stable'), reference models v1.33.1`). The resolvers were silent on success, so a mispin was invisible at the one moment an operator could still question it.
+- `_REFMODELS_FALLBACK_TAG`, used only when the release list is unreachable, moves `v1.20.0` → `v1.33.1` and is now tethered by a test to the reference-models version this toolkit is actually tested against. It had drifted thirteen minor versions behind with nothing to catch it; bumping the dev pin (as #539 did) now forces the fallback to keep up, with no network access needed in CI.
+
 ## [5.10.1] — 2026-08-17
 
 ### Fixed
