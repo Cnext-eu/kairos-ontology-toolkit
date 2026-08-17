@@ -361,7 +361,11 @@ def _namespace_of(uri: str) -> str:
     return uri.rstrip("/").rsplit("/", 1)[0] + "/"
 
 
-def scan_domain_ontology(path: Path, domain: str) -> Optional[DomainOntology]:
+def scan_domain_ontology(
+    path: Path,
+    domain: str,
+    module_terms: Optional[dict[str, dict[str, set[str]]]] = None,
+) -> Optional[DomainOntology]:
     """Parse one domain ``.ttl`` into the facts the hub-wide checks need.
 
     Returns ``None`` when the file cannot be parsed — syntax is already the
@@ -398,12 +402,34 @@ def scan_domain_ontology(path: Path, domain: str) -> Optional[DomainOntology]:
 
     imports = tuple(sorted({str(obj).rstrip("#/") for obj in graph.objects(None, OWL.imports)}))
 
+    def _resolves(target: URIRef) -> bool:
+        """True when *target* is a term a reference module actually declares.
+
+        An anchor is a claim that this class specialises a real reference term. Before
+        this check the claim was taken on faith -- any non-local parent counted -- so a
+        typo'd parent (right namespace, wrong local name) registered as *anchored* and
+        silenced check_unanchored_classes and both arms of
+        check_reference_model_shadowing, while inflating the anchoring score. A
+        misspelled reference was treated better than a correctly spelled dangling one.
+
+        With no ``module_terms`` (no catalog resolved -- ``compile`` passes none) this
+        falls back to the old namespace-only test rather than declaring every anchor
+        broken.
+        """
+        if not module_terms:
+            return True
+        known = module_terms.get(_namespace_of(str(target)).rstrip("#/"))
+        if known is None:
+            return True  # unmanaged module: missing_managed_import's business, not ours
+        name = _local_name(str(target))
+        return name in known["classes"] or name in known["properties"]
+
     anchored_classes = {
         _local_name(str(subject))
         for subject in graph.subjects(RDF.type, OWL.Class)
         if str(subject).startswith(namespace)
         and any(
-            not str(parent).startswith(namespace)
+            not str(parent).startswith(namespace) and _resolves(parent)
             for predicate in (RDFS.subClassOf, OWL.equivalentClass)
             for parent in graph.objects(subject, predicate)
             if isinstance(parent, URIRef)
@@ -414,7 +440,7 @@ def scan_domain_ontology(path: Path, domain: str) -> Optional[DomainOntology]:
         for subject in graph.subjects(RDFS.subPropertyOf, None)
         if str(subject).startswith(namespace)
         and any(
-            not str(parent).startswith(namespace)
+            not str(parent).startswith(namespace) and _resolves(parent)
             for parent in graph.objects(subject, RDFS.subPropertyOf)
             if isinstance(parent, URIRef)
         )
@@ -488,7 +514,10 @@ def scan_domain_ontology(path: Path, domain: str) -> Optional[DomainOntology]:
     )
 
 
-def scan_hub_ontologies(ontologies_dir: Path) -> dict[str, DomainOntology]:
+def scan_hub_ontologies(
+    ontologies_dir: Path,
+    module_terms: Optional[dict[str, dict[str, set[str]]]] = None,
+) -> dict[str, DomainOntology]:
     """Parse every authored domain ``.ttl`` in *ontologies_dir*.
 
     Files beginning with ``_`` (``_master.ttl``, ``_foundation.ttl``) are
@@ -500,7 +529,7 @@ def scan_hub_ontologies(ontologies_dir: Path) -> dict[str, DomainOntology]:
     for path in sorted(ontologies_dir.glob("*.ttl")):
         if path.name.startswith("_"):
             continue
-        parsed = scan_domain_ontology(path, path.stem)
+        parsed = scan_domain_ontology(path, path.stem, module_terms)
         if parsed is not None:
             scanned[path.stem] = parsed
     return scanned
@@ -951,7 +980,11 @@ def audit_ontology_integrity(
     always scans the whole hub, because a duplicate is by definition invisible from
     inside one domain.
     """
-    ontologies = scan_hub_ontologies(ontologies_dir)
+    # Resolved BEFORE the scan: scan_domain_ontology needs it to tell a real anchor from
+    # a typo'd one. Without it an unresolvable parent counts as an anchor and silences
+    # check_unanchored_classes and both arms of check_reference_model_shadowing.
+    module_terms = _module_terms(catalog_path)
+    ontologies = scan_hub_ontologies(ontologies_dir, module_terms)
     report = IntegrityReport(domains_scanned=len(ontologies))
     if not ontologies:
         report.notices.append(
@@ -959,7 +992,6 @@ def audit_ontology_integrity(
         )
         return report
 
-    module_terms = _module_terms(catalog_path)
     if not module_terms:
         report.notices.append(
             "No reference models resolved from the hub catalog; reference-model "
