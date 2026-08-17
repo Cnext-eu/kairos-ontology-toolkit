@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.0] — 2026-08-17
+
+### Added
+- **`anchor-tables --no-schema-catalogue-screen`** — an escape hatch for the screen that routes a source's own schema-catalogue tables out before anchoring, plus help text covering the screen and the artifact keys it writes (`excluded`, `anchor_properties`, `anchor_column_overlap`, per-entry `warning`).
+- **`load_excluded_tables()`** — reads the screen's verdicts back out of `table-anchors.yaml`. The `excluded` block was write-only: nothing in the codebase read it. It carries the evidence string per table, so a stage that honours an exclusion can say what it dropped and why.
+
+### Fixed
+- **Disposition conflicts included tables the anchoring screen had already excluded (#528).** A quarter of the conflicts on a live hub — 26 of 109 — were rows of two schema-catalogue sheets, i.e. columns of a table that lists another table's columns. Two stages cannot meaningfully disagree about those. `find_disposition_conflicts` now skips excluded tables (109 → 83, residual zero) and logs the suppressed count.
+- **The CLI never surfaced withheld conflicts (#525).** `apply_auto_dispositions` has returned `withheld_conflicting` and `conflicts` since 5.6.0 and the handler printed neither, so on the live hub 83 contradicted columns were reported as silence. `--auto` now names the count, the block to open and the remediation, and separately calls out entries written by an earlier run before the cross-check existed — those are recorded today and are *not* withheld.
+
+### Notes
+- `build_decision_sheet` deliberately does **not** drop excluded tables. The DD-169 gate still counts those columns undecided, so removing them from the sheet would strand them with no bulk route to a decision, and the sheet is read as the complete worklist — a false positive in the screen should be questioned, not vanish. It reports `schema_catalogue_tables_excluded` and `gap_columns_in_excluded_tables` instead.
+- Three stages still need this fix in files outside the change: `_propose_alignments` (the single-point fix — excluded tables are still aligned), `build_alignment_report`, and `undecided_gap_columns`, where it is largest at **175 of 1,097 undecided columns**.
+
 ## [5.6.0] — 2026-08-17
 
 ### Added

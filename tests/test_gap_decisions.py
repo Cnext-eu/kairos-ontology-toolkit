@@ -548,3 +548,102 @@ class TestAutoDispositionConflicts:
         for business in ("transaction_timestamp", "settled_timestamp",
                          "pickup_start_timestamp", "owned_by_subco", "origin_timestamp"):
             assert not is_audit_named(business), business
+
+
+class TestSchemaCatalogueTablesAreHonoured:
+    """#528: the anchoring screen's exclusions are a pipeline-level fact.
+
+    A table that lists another table's columns is not business data, so a column
+    of it cannot be a real disagreement between the rule and the alignment pass.
+    On the live hub 26 of 109 reported conflicts were rows of two sheets of a
+    "Qargo Tables Columns Info" workbook, and both sat at the top of the list.
+    """
+
+    CATALOGUE = "Qargo Tables Columns Info__orders_table"
+
+    def _hub(self, tmp_path, *, excluded=True):
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "booking-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "booking", "tables": [
+                {
+                    "system": "qargo", "table": table, "ref_class": "Order",
+                    # A confident mapping of an audit-named column is a conflict.
+                    "columns": [{"column": "created_at", "data_type": "datetime",
+                                 "confidence": 0.91, "ref_property": "placedOn"}],
+                    "custom_columns": [
+                        {"column": "created_at", "data_type": "datetime"},
+                        {"column": "destination_reference", "data_type": "varchar(max)"},
+                    ],
+                }
+                for table in ("orders", self.CATALOGUE)
+            ]}),
+            encoding="utf-8",
+        )
+        if excluded:
+            (analysis / "table-anchors.yaml").write_text(
+                yaml.safe_dump({
+                    "schema_version": 1, "tables": [], "unanchored": [],
+                    "excluded": [{
+                        "system": "qargo", "table": self.CATALOGUE, "columns": 121,
+                        "disposition": "not-business-data",
+                        "reason": "sheet of 'Qargo Tables Columns Info', shown to be a "
+                                  "schema catalogue by sibling sheet",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+        return tmp_path
+
+    def test_a_conflict_inside_an_excluded_table_is_not_reported(self, tmp_path):
+        from kairos_ontology.core.gap_decisions import find_disposition_conflicts
+
+        unscreened = find_disposition_conflicts(self._hub(tmp_path, excluded=False))
+        assert {c.table for c in unscreened} == {"orders", self.CATALOGUE}
+
+        conflicts = find_disposition_conflicts(self._hub(tmp_path / "screened"))
+        assert [c.table for c in conflicts] == ["orders"], (
+            "a row of a table that lists another table's columns is not a column "
+            "of a business entity, so the two stages cannot disagree about it"
+        )
+
+    def test_the_unscreened_set_stays_reachable(self, tmp_path):
+        """An empty mapping is the explicit 'show me everything' escape hatch."""
+        from kairos_ontology.core.gap_decisions import find_disposition_conflicts
+
+        hub = self._hub(tmp_path)
+        assert len(find_disposition_conflicts(hub, excluded_tables={})) == 2
+
+    def test_the_screen_does_not_reach_past_the_tables_it_named(self, tmp_path):
+        """Only the recorded (system, table) pairs are skipped, not a name prefix."""
+        from kairos_ontology.core.gap_decisions import find_disposition_conflicts
+
+        conflicts = find_disposition_conflicts(
+            self._hub(tmp_path), excluded_tables={("qlik", self.CATALOGUE): "other system"}
+        )
+        assert {c.table for c in conflicts} == {"orders", self.CATALOGUE}
+
+    def test_the_withheld_count_drops_with_the_noise(self, tmp_path):
+        """The conflicts feed the withholding, so the noise inflated that too."""
+        hub = self._hub(tmp_path)
+        stats = apply_auto_dispositions(hub, dry_run=True)
+        assert stats["withheld_conflicting"] == 1
+        assert len(stats["conflicts"]) == 1
+
+    def test_the_sheet_counts_excluded_table_columns_rather_than_hiding_them(self, tmp_path):
+        """Honoured visibly. The DD-169 gate still counts these columns undecided,
+        so dropping them from the sheet would strand them with no bulk route to a
+        decision — and would hide a false positive in the screen itself."""
+        sheet = build_decision_sheet(self._hub(tmp_path))
+        summary = sheet["summary"]
+        assert summary["auto_disposition_conflicts"] == 1
+        assert summary["schema_catalogue_tables_excluded"] == 1
+        assert summary["gap_columns_in_excluded_tables"] == 1
+        tables = {t for entry in sheet["decisions"] for t in entry["tables"]}
+        assert any(self.CATALOGUE in t for t in tables), "counted, not vanished"
+        assert "excluded" in sheet["how_to_use"] and "--table" in sheet["how_to_use"]
+
+    def test_a_hub_without_an_anchors_artifact_is_unaffected(self, tmp_path):
+        summary = build_decision_sheet(self._hub(tmp_path, excluded=False))["summary"]
+        assert summary["schema_catalogue_tables_excluded"] == 0
+        assert summary["gap_columns_in_excluded_tables"] == 0
