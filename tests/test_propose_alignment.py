@@ -3792,3 +3792,232 @@ class TestDomainIncludesNamespace:
         party = [c for c in ref["classes"] if c["name"] == "TradeParty"][0]
         prop = [p for p in party["properties"] if p["name"] == "hasBillingAddress"][0]
         assert prop["type"] == "object"
+
+
+class TestSchemaCatalogueExclusionsInAlignment:
+    """#528 follow-up: alignment must honour ``table-anchors.yaml``'s ``excluded``.
+
+    Alignment enumerates its work from the affinity reports, which are written
+    before anchoring and know nothing about the schema-catalogue screen. Nothing
+    read the screen's verdict here, so a table already judged "not business data
+    at all" was aligned anyway and its columns landed in the registry as claims
+    about a reference class — on the live hub, 29 mapped columns of two sheets of
+    a "Tables Columns Info" workbook.
+    """
+
+    CATALOGUE = "Catalogue Info__orders"
+    REASON = "9 of 9 columns are information-schema fields (column_name, data_type)"
+
+    # -- fixtures -----------------------------------------------------------
+
+    def _affinity(self, system: str, tables: list[str]) -> dict:
+        return {
+            "system": system,
+            "schema_version": 2,
+            "analysed_at": "2026-08-17T10:00:00Z",
+            "model_used": "test-model",
+            "tables": [
+                {
+                    "table": t,
+                    "total_columns": 1,
+                    "domain": "commercial",
+                    "domain_uris": ["https://example.com/ont/commercial#"],
+                    "confidence": 0.9,
+                    "likely_entity": "SalesContract",
+                    "indicative_columns": ["ContractNo"],
+                }
+                for t in tables
+            ],
+        }
+
+    def _vocab(self, tables: list[str]) -> str:
+        ttl = ["@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .\n"]
+        for i, t in enumerate(tables):
+            ttl.append(
+                f'<#t{i}> a kairos-bronze:SourceTable ;\n'
+                f'    kairos-bronze:tableName "{t}" .\n'
+                f'<#t{i}_ContractNo> a kairos-bronze:SourceColumn ;\n'
+                f'    kairos-bronze:columnName "ContractNo" ;\n'
+                f'    kairos-bronze:dataType "nvarchar(50)" ;\n'
+                f'    kairos-bronze:belongsToTable <#t{i}> .\n'
+            )
+        return "".join(ttl)
+
+    def _hub(self, tmp_path, *, excluded: list[tuple[str, str]] | None = None):
+        """A two-system hub: ``alpha`` holds the catalogue sheet and a real table,
+        ``beta`` holds a table with the *same name* that was never screened out."""
+        analysis = tmp_path / "_analysis"
+        analysis.mkdir()
+        alpha_tables = [self.CATALOGUE, "tblContracts"]
+        beta_tables = [self.CATALOGUE]
+        with open(analysis / "alpha-affinity.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(self._affinity("alpha", alpha_tables), f)
+        with open(analysis / "beta-affinity.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(self._affinity("beta", beta_tables), f)
+
+        if excluded is not None:
+            anchors = {
+                "schema_version": 1,
+                "generated_by": "anchor-tables",
+                "table_count": 3,
+                "tables": [],
+                "unanchored": [],
+                "excluded": [
+                    {"system": s, "table": t, "columns": 1, "reason": self.REASON}
+                    for s, t in excluded
+                ],
+            }
+            with open(analysis / "table-anchors.yaml", "w", encoding="utf-8") as f:
+                yaml.dump(anchors, f)
+
+        sources = tmp_path / "sources"
+        for system, tables in (("alpha", alpha_tables), ("beta", beta_tables)):
+            d = sources / system
+            d.mkdir(parents=True)
+            (d / f"{system}.vocabulary.ttl").write_text(self._vocab(tables), encoding="utf-8")
+        return analysis, sources
+
+    def _client(self):
+        def create_completion(**kwargs):
+            payload = {
+                "ref_class": "SalesContract",
+                "ref_class_confidence": 0.9,
+                "column_alignments": [
+                    {
+                        "column": "ContractNo",
+                        "ref_class": "SalesContract",
+                        "ref_property": "contractIdentifier",
+                        "alignment": "semantic",
+                        "confidence": 0.9,
+                        "rationale": "Contract ID",
+                    }
+                ],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        return client
+
+    def _run(self, analysis, sources, **kwargs):
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=self._client(),
+            ),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=[
+                    {
+                        "name": "SalesContract",
+                        "label": "Sales Contract",
+                        "comment": "",
+                        "properties": [
+                            {
+                                "name": "contractIdentifier",
+                                "label": "Contract Identifier",
+                                "range": "string",
+                            }
+                        ],
+                    }
+                ],
+            ),
+        ):
+            return build_domain_alignments(
+                analysis_dir=analysis,
+                sources_dir=sources,
+                catalog_path=None,
+                **kwargs,
+            )
+
+    @staticmethod
+    def _keys(alignments) -> set[tuple[str, str]]:
+        return {(ta.system, ta.table) for a in alignments for ta in a.tables}
+
+    # -- tests --------------------------------------------------------------
+
+    def test_an_excluded_table_is_not_aligned(self, tmp_path):
+        """The whole point: the screen said this is not business data."""
+        analysis, sources = self._hub(tmp_path, excluded=[("alpha", self.CATALOGUE)])
+        assert ("alpha", self.CATALOGUE) not in self._keys(self._run(analysis, sources))
+
+    def test_a_sibling_table_in_the_same_system_is_still_aligned(self, tmp_path):
+        """The filter is per table, not per system — alpha keeps its real table."""
+        analysis, sources = self._hub(tmp_path, excluded=[("alpha", self.CATALOGUE)])
+        assert ("alpha", "tblContracts") in self._keys(self._run(analysis, sources))
+
+    def test_the_same_table_name_in_another_system_is_still_aligned(self, tmp_path):
+        """An exclusion is keyed ``(system, table)``. Matching on the bare table
+        name would delete an unrelated table that happens to share it."""
+        analysis, sources = self._hub(tmp_path, excluded=[("alpha", self.CATALOGUE)])
+        assert ("beta", self.CATALOGUE) in self._keys(self._run(analysis, sources))
+
+    def test_the_escape_hatch_restores_the_old_behaviour(self, tmp_path):
+        """Counterpart of ``anchor-tables --no-schema-catalogue-screen``: the screen
+        is a heuristic and a false positive must be answerable without a code change."""
+        analysis, sources = self._hub(tmp_path, excluded=[("alpha", self.CATALOGUE)])
+        keys = self._keys(self._run(analysis, sources, honour_table_exclusions=False))
+        assert ("alpha", self.CATALOGUE) in keys
+        assert len(keys) == 3
+
+    def test_a_hub_with_no_anchors_artifact_is_unaffected(self, tmp_path):
+        """Anchoring is an optional stage: no artifact, no filter."""
+        analysis, sources = self._hub(tmp_path, excluded=None)
+        assert not (analysis / "table-anchors.yaml").exists()
+        assert len(self._keys(self._run(analysis, sources))) == 3
+
+    def test_an_empty_excluded_block_changes_nothing(self, tmp_path):
+        analysis, sources = self._hub(tmp_path, excluded=[])
+        assert len(self._keys(self._run(analysis, sources))) == 3
+
+    def test_the_exclusion_is_recorded_in_the_artifact_with_its_evidence(self, tmp_path):
+        """An excluded table must not merely vanish: the artifact has to be able to
+        answer 'why is my orders sheet not in here?' after the run."""
+        analysis, sources = self._hub(tmp_path, excluded=[("alpha", self.CATALOGUE)])
+        data = alignment_to_dict(self._run(analysis, sources)[0])
+        assert data["excluded_tables"] == [
+            {"system": "alpha", "table": self.CATALOGUE, "reason": self.REASON}
+        ]
+
+    def test_an_unaffected_domain_emits_no_excluded_block(self, tmp_path):
+        """Emitted only when something was actually dropped, so an untouched
+        domain's file stays byte-identical to before this change."""
+        analysis, sources = self._hub(tmp_path, excluded=None)
+        assert "excluded_tables" not in alignment_to_dict(self._run(analysis, sources)[0])
+
+    def test_the_exclusion_is_reported_with_its_evidence(self, tmp_path):
+        """Reported the way anchoring reports its own screen — a count and the
+        per-table evidence — so it is visible in the run, not only in the file."""
+        analysis, sources = self._hub(tmp_path, excluded=[("alpha", self.CATALOGUE)])
+        lines: list[str] = []
+        self._run(analysis, sources, report=lambda msg, **kw: lines.append(msg))
+        text = "\n".join(lines)
+        assert "1 table(s) excluded from alignment by the schema-catalogue screen" in text
+        assert f"alpha.{self.CATALOGUE} [commercial] — {self.REASON}" in text
+        assert "--no-schema-catalogue-screen" in text
+
+    def test_a_domain_left_with_nothing_fails_loudly(self, tmp_path):
+        """Never write an empty registry over a good one, and never report the run
+        as a success that produced nothing."""
+        analysis, sources = self._hub(
+            tmp_path,
+            excluded=[
+                ("alpha", self.CATALOGUE),
+                ("alpha", "tblContracts"),
+                ("beta", self.CATALOGUE),
+            ],
+        )
+        with pytest.raises(ValueError, match="Every affinity table was excluded"):
+            self._run(analysis, sources)
+
+    def test_removing_a_table_moves_the_freshness_hash(self, tmp_path):
+        """The domain-level skip keys on the affinity digest. If the digest did not
+        move, a registry written before this fix would be served from cache and the
+        excluded table would survive the upgrade."""
+        analysis, sources = self._hub(tmp_path, excluded=[("alpha", self.CATALOGUE)])
+        honoured = self._run(analysis, sources)[0].affinity_sha256
+        ignored = self._run(analysis, sources, honour_table_exclusions=False)[0].affinity_sha256
+        assert honoured and ignored and honoured != ignored

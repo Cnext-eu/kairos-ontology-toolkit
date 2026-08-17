@@ -1377,6 +1377,17 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
     "flag such a domain is skipped as incomplete so a placeholder "
     "never masquerades as a real proposal.",
 )
+@click.option(
+    "--no-schema-catalogue-screen",
+    "no_schema_catalogue_screen",
+    is_flag=True,
+    default=False,
+    help="Align tables that anchor-tables screened out as the source's own "
+    "schema catalogue (a table listing tables, or columns). By default such a "
+    "table is skipped and recorded under 'excluded_tables' in the domain's "
+    "alignment file with the evidence that excluded it. Use this to overrule a "
+    "false positive in the screen.",
+)
 def propose_alignment_cmd(
     analysis,
     sources,
@@ -1399,6 +1410,7 @@ def propose_alignment_cmd(
     custom_confidence_floor,
     high_accuracy,
     allow_fallback_output,
+    no_schema_catalogue_screen,
 ):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
@@ -1587,6 +1599,7 @@ def propose_alignment_cmd(
             ref_models_dir=ref_models_dir,
             custom_confidence_floor=custom_confidence_floor,
             allow_fallback_output=allow_fallback_output,
+            honour_table_exclusions=not no_schema_catalogue_screen,
             generation_stats=generation_stats,
             conformance_artifact_path=conformance_artifact_path,
         )
