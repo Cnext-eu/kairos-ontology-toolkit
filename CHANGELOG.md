@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.10.0] — 2026-08-17
+
+### Added
+- **Reference-model properties that attach to no class are now reported (#534).** A property whose `rdfs:domain` names a class its module never `owl:imports` attaches to nothing, and was dropped in silence — the property was enumerated and its domain resolved, then discarded because no bucket existed. The silence was the defect: it made a real reference term indistinguishable from an absent one, so a coverage audit proposed adding terms the model already defined. `SemanticIndex` gains `unattached_property_domains`, threaded beside `import_complete` and summarised once per resolution pass.
+
+  On the shipped reference models: **50 distinct orphaned assertions across 14 modules** in four of five vendor trees, every module reporting `import_complete: True`. The upstream fix is the missing `owl:imports` (reference-models #97); this only makes the loss visible, and is advisory because the toolkit consumes bundles it does not own.
+- **`integrity.external-term-unresolved`** — flags a reference term a hub TTL names that does not exist in the module it names. Distinct from `missing_managed_import`, which asks whether the *module* is imported; this asks whether the *term* is real. A typo in the local name satisfies the import check completely and was previously caught by nothing. Registered `DEGRADABLE`, matching the severity of the check it complements.
+
+### Notes
+- `unattached_property_domains` is excluded from `SemanticIndex.to_dict()`: it describes what a closure failed to hold, so it must not move a closure hash or a determinism baseline.
+- No global warning-dedup state was introduced. An earlier draft proposed a module-level set to suppress repeats across the ~131 parses in a run; threading the data on the returned dict removes the need, and `extract_ref_model_inventory` is untouched.
+- **Known gap, tracked separately:** `scan_domain_ontology` still counts a class as *anchored* on the strength of an unresolvable parent, so a typo'd `rdfs:subClassOf` continues to silence `check_unanchored_classes` and both arms of `check_reference_model_shadowing`. The new diagnostic surfaces the typo; it does not yet restore those three checks.
+
 ## [5.9.0] — 2026-08-17
 
 ### Changed
