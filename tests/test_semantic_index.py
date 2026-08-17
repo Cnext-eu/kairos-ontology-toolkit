@@ -148,3 +148,68 @@ def test_index_serialization_and_slice_disclose_semantic_coverage(tmp_path):
     assert sliced["metadata"]["total_class_count"] == len(index.classes)
     assert sliced["metadata"]["truncated"] is True
     assert sliced["metadata"]["selection_rule"] == "uri-order"
+
+
+ORPHANED_DOMAIN_ONTOLOGY = """\
+@prefix ex: <https://example.org/main#> .
+@prefix absent: <https://example.org/absent#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.org/main> a owl:Ontology ; owl:versionInfo "1.0" .
+
+ex:Present a owl:Class .
+ex:RdfsTyped a rdfs:Class .
+ex:ImpliedByParent rdfs:subClassOf ex:Present .
+
+# Attaches: its domain is a declared owl:Class.
+ex:onPresent a owl:DatatypeProperty ; rdfs:domain ex:Present ; rdfs:range xsd:string .
+# Attaches: rdfs:Class counts, and so does a class implied by rdfs:subClassOf.
+ex:onRdfsTyped a owl:DatatypeProperty ; rdfs:domain ex:RdfsTyped ; rdfs:range xsd:string .
+ex:onImplied a owl:DatatypeProperty ; rdfs:domain ex:ImpliedByParent ; rdfs:range xsd:string .
+# Does NOT attach: the module declares the prefix but never imports it, so the class
+# is never typed here. This is the shipped defect in bsp/financial.
+ex:orphaned a owl:DatatypeProperty ; rdfs:domain absent:NeverDeclared ; rdfs:range xsd:string .
+"""
+
+
+def test_a_domain_naming_an_absent_class_is_recorded_not_dropped(tmp_path):
+    """The silent version of this made a real reference term look like a missing one."""
+    path = tmp_path / "orphan.ttl"
+    path.write_text(ORPHANED_DOMAIN_ONTOLOGY, encoding="utf-8")
+    index = load_ontology(path, profile=SemanticProfile.KAIROS_DESIGN).semantic_index
+
+    assert index.unattached_property_domains == (
+        ("https://example.org/main#orphaned", "https://example.org/absent#NeverDeclared"),
+    )
+
+
+def test_the_wider_class_universe_is_honoured(tmp_path):
+    """rdfs:Class and subClassOf-implied targets must not be reported as unattached.
+
+    The class universe here is wider than ``rdf:type owl:Class``; a narrower predicate
+    would report two false positives on this fixture alone.
+    """
+    path = tmp_path / "orphan.ttl"
+    path.write_text(ORPHANED_DOMAIN_ONTOLOGY, encoding="utf-8")
+    index = load_ontology(path, profile=SemanticProfile.KAIROS_DESIGN).semantic_index
+
+    reported = {prop for prop, _ in index.unattached_property_domains}
+    assert "https://example.org/main#onRdfsTyped" not in reported
+    assert "https://example.org/main#onImplied" not in reported
+
+
+def test_a_clean_closure_reports_nothing(tmp_path):
+    index = _load(tmp_path, SemanticProfile.KAIROS_DESIGN)
+    assert index.unattached_property_domains == ()
+
+
+def test_unattached_domains_stay_out_of_the_serialized_index(tmp_path):
+    """It describes what the closure failed to hold, so it must not move a closure hash."""
+    path = tmp_path / "orphan.ttl"
+    path.write_text(ORPHANED_DOMAIN_ONTOLOGY, encoding="utf-8")
+    index = load_ontology(path, profile=SemanticProfile.KAIROS_DESIGN).semantic_index
+
+    assert index.unattached_property_domains  # precondition: there is something to leak
+    assert "unattached_property_domains" not in index.to_dict()

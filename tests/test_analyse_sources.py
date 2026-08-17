@@ -2056,3 +2056,63 @@ class TestReliabilityTableAssignment:
         )
         assert ta.generation_outcome == OUTCOME_PROVIDER_FAILURE
         assert ta.confidence is None
+
+
+class TestUnattachedPropertyDomainsAreReported:
+    """A property whose rdfs:domain names a class its module never imports attaches to
+    nothing. Silently, until this: on the shipped reference models 50 properties across
+    14 modules were lost that way, every module still reporting import_complete=True.
+
+    The silence is the defect. It makes a real reference term indistinguishable from an
+    absent one, so a coverage report proposes adding a term the model already defines --
+    which is exactly what happened before this was found.
+    """
+
+    ORPHAN = """\
+@prefix ex: <https://example.org/orphan#> .
+@prefix absent: <https://example.org/absent#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.org/orphan> a owl:Ontology ; owl:versionInfo "1.0" .
+ex:Thing a owl:Class .
+ex:fine a owl:DatatypeProperty ; rdfs:domain ex:Thing ; rdfs:range xsd:string .
+ex:lost a owl:DatatypeProperty ; rdfs:domain absent:NeverDeclared ; rdfs:range xsd:string .
+"""
+
+    CLEAN = """\
+@prefix ex: <https://example.org/clean#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.org/clean> a owl:Ontology ; owl:versionInfo "1.0" .
+ex:Thing a owl:Class .
+ex:fine a owl:DatatypeProperty ; rdfs:domain ex:Thing ; rdfs:range xsd:string .
+"""
+
+    def _resolve(self, tmp_path, ttl: str, name: str, caplog):
+        import logging
+
+        (tmp_path / f"{name}.ttl").write_text(ttl, encoding="utf-8")
+        with caplog.at_level(logging.WARNING, logger="kairos_ontology.core.analyse_sources"):
+            resolve_reference_models(tmp_path)
+        return caplog.text
+
+    def test_the_loss_is_reported_with_a_count_and_the_owning_module(self, tmp_path, caplog):
+        text = self._resolve(tmp_path, self.ORPHAN, "orphan", caplog)
+        assert "1 property-domain assertion(s) could not be attached" in text
+        assert "orphan" in text, "name the module that must gain the owl:imports"
+
+    def test_the_message_says_the_hub_import_list_will_not_fix_it(self, tmp_path, caplog):
+        """The natural place to try to fix this is data-domains.yaml, and it is a no-op
+        there -- only an owl:imports inside the source module works. Verified: adding
+        bsp/financial to a hub domain's imports leaves TradeParty at 13 properties."""
+        text = self._resolve(tmp_path, self.ORPHAN, "orphan", caplog)
+        assert "owl:imports" in text
+        assert "data-domains.yaml does NOT resolve it" in text
+
+    def test_a_clean_module_is_silent(self, tmp_path, caplog):
+        text = self._resolve(tmp_path, self.CLEAN, "clean", caplog)
+        assert "could not be attached" not in text

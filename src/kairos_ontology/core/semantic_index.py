@@ -110,6 +110,14 @@ class SemanticIndex:
     properties: tuple[PropertyRecord, ...]
     individuals: tuple[IndividualRecord, ...]
 
+    #: ``(property_uri, domain_class_uri)`` for every property whose declared domain
+    #: names a class this closure does not contain, so the property attaches to nothing
+    #: and is invisible to every consumer. Advisory: the defect is in the source module
+    #: (an ``rdfs:domain`` on a class it never ``owl:imports``), not here. Deliberately
+    #: excluded from :meth:`to_dict` so it cannot move a closure hash or a determinism
+    #: baseline -- it describes what the closure *failed* to contain, not what it holds.
+    unattached_property_domains: tuple[tuple[str, str], ...] = ()
+
     def class_by_uri(self, uri: str) -> ClassRecord | None:
         """Return a class by full URI."""
         return next((item for item in self.classes if item.uri == uri), None)
@@ -474,11 +482,21 @@ def build_semantic_index(
     property_uris = _property_uris(graph)
 
     direct_properties: dict[URIRef, set[URIRef]] = {cls: set() for cls in class_uris}
+    # A property whose domain names a class this closure does not contain attaches to
+    # nothing. That used to happen in silence, which made a real reference term
+    # indistinguishable from an absent one: on a live corpus 57 properties across 16
+    # modules were lost this way, every module still reporting import_complete=True.
+    # The cause is upstream (a module asserting rdfs:domain on a class it declares a
+    # prefix for but never owl:imports), so this records the loss rather than repairing
+    # it -- see kairos-ontology-referencemodels#97.
+    unattached: list[tuple[str, str]] = []
     for prop in property_uris:
         for cls in effective_domain_classes(graph, prop):
             bucket = direct_properties.get(cls)
             if bucket is not None:
                 bucket.add(prop)
+            else:
+                unattached.append((str(prop), str(cls)))
 
     class_records: list[ClassRecord] = []
     for cls in sorted(class_uris, key=str):
@@ -684,4 +702,5 @@ def build_semantic_index(
         classes=tuple(class_records),
         properties=tuple(property_records),
         individuals=tuple(individuals),
+        unattached_property_domains=tuple(sorted(set(unattached))),
     )
