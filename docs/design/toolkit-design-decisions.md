@@ -238,6 +238,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-184](#dd-184-llm-calls-are-traced-to-langfuse-opt-in-with-source-values-masked) | LLM calls are traced to Langfuse, opt-in, with source values masked | Accepted | 2026-08-16 |
 | [DD-185](#dd-185-tables-are-anchored-globally-in-one-call-before-per-table-alignment) | Tables are anchored globally, in one call, before per-table alignment | Accepted | 2026-08-16 |
 | [DD-186](#dd-186-the-gap-gate-is-drafted-grouped-by-domain-scoped-family-and-still-decided-by-a-human) | The gap gate is drafted, grouped by domain-scoped family, and still decided by a human | Accepted | 2026-08-16 |
+| [DD-187](#dd-187-domain-design-runs-as-a-fleet-and-every-refusal-is-recorded-in-the-file-it-belongs-to) | Domain design runs as a fleet, and every refusal is recorded in the file it belongs to | Accepted | 2026-08-17 |
 
 ---
 

@@ -36,6 +36,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(system, table)` and ignored the column, so each column-grain write removed the table's earlier
   column entries — a run recording 224 dispositions kept 37. The writer now matches the
   `(system, table, column)` grain that `load_dispositions` already keyed on.
+- **Value objects were crowded out of the alignment pool, producing false gaps (#517).** The
+  candidate pool is a flat top-12 lexical shortlist over the domain, so a measurement class such as
+  `imo/vessel-registry` `GrossTonnage` lost to eleven certificate classes and `grossTonnageValue`
+  never reached the prompt. The model then correctly reported no matching property and the column
+  was recorded as a gap for a term that already existed. The pool now expands two hops from the
+  shortlist through object-property ranges into value objects and related entities, contributing
+  only a subclass's own asserted properties, capped at 8 added classes per table (measured: 0–8,
+  average 3.5).
+- **The strict-schema property enum was flat, so a valid-but-wrong-class property passed validation
+  (#520).** `(class, property)` was never checked as a pair. Every response is now validated
+  against the offered pool: a pair that exists is kept, a property owned by exactly one offered
+  class has its class repaired, and an ambiguous or unowned pair is rejected to the canonical
+  unmatched form with the discarded pair recorded in the rationale. Enum members are additionally
+  qualified as `Class.property` where the provider budget allows, degrading through bare names to a
+  free string so nothing that previously fitted stops fitting.
+- **Anchoring chose classes that could not carry a single column (#519).** Among duplicate class
+  names, ownership was the only tier and ties fell through to catalog read order — so `bookings`
+  and `shipments` anchored to `onerecord/cargo` classes with zero properties in closure instead of
+  the `dcsa/booking` classes carrying 23 and 13. A 0.98-confidence anchor over 90 columns therefore
+  produced no class at all. Ties within the ownership tier now break on column-to-property word
+  overlap, and a propertyless anchor on a table with columns is reported.
+- **The source's own schema-catalogue tables were anchored as business tables (#519).** A workbook
+  listing tables and columns was fed to the model as four business tables. A screen now routes them
+  to `not-business-data` before anchoring, on three decreasing-directness rules, recording the
+  evidence for each exclusion rather than dropping anything silently. Measured on a live hub: 4 of
+  75 tables flagged, no false positives — a seed table whose `TableName` column holds table names
+  from a different system is correctly kept.
+- **Auto-disposition silenced real business data (#521).** `operational` was derived from a bare
+  substring match on the column name and converted straight to `not-business-data`, the one
+  disposition that removes a column from the DD-169 gate rather than deferring it, with nothing
+  checking it against what alignment had said about the same column. `apply_auto_dispositions` now
+  withholds a candidate when the alignment output contradicts it and surfaces the conflict in the
+  decision sheet, where `accept_proposals` cannot reach it. Measured on a live hub: 114 of 185
+  auto-recorded columns are contradicted, including `stops.actual_start_timestamp` and
+  `consignments.pickup_start_timestamp`. The underlying name predicate is tracked separately
+  (#522).
 
 ## [5.4.0] — 2026-08-17
 

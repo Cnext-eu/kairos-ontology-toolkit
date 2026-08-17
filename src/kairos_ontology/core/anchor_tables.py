@@ -23,12 +23,28 @@ see. Derivation is bridge-aware: a table whose anchor is owned elsewhere but
 reachable through a declared cross-domain bridge (DD-181) stays in the bridging
 domain rather than being moved to the owner, because moving it would trade an
 anchor gap for a grain error.
+
+Two things the live run proved the stage also has to do (#519):
+
+* **Resolve duplicate class names by property overlap, not by read order.**
+  ``bookings`` and ``shipments`` resolved to ``onerecord/cargo#Booking`` and
+  ``#Shipment``, which the closure gives ZERO properties, while the identically
+  named ``dcsa/booking`` copies carry the 23 and 13 properties alignment then
+  proposed. Both modules are owned by the same domain, so ownership could not
+  separate them and whichever copy the catalog read first won. A 0.98-confidence
+  anchor over 90 columns produced no class at all.
+* **Route the source's own schema catalogue out before anchoring.** A flatfile
+  import of a "Tables Columns Info" workbook profiles the source's description of
+  its own schema as if it were business data. Anchoring a table that lists tables
+  costs a domain assignment, an alignment pass, and — when the workbook also
+  carries a sample extract of a real table — a duplicate-mapping refusal.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -80,17 +96,117 @@ ANCHORING RULES FROM THE PATTERN LIBRARY:
   LINE class, not the header; an events table to the EVENT class, not the subject.
 """
 
+#: Column names that only occur in a description of a schema — the
+#: ``INFORMATION_SCHEMA.COLUMNS`` family, plus the BigQuery/Snowflake extras the
+#: live workbook carried. Matched on the normalised name, so ``TABLE_NAME``,
+#: ``tableName`` and ``Table Name`` all count as one hit.
+_CATALOGUE_COLUMNS = frozenset(
+    {
+        "table_name",
+        "table_schema",
+        "table_catalog",
+        "table_type",
+        "schema_name",
+        "column_name",
+        "column_default",
+        "column_type",
+        "data_type",
+        "field_name",
+        "field_type",
+        "ordinal_position",
+        "is_nullable",
+        "is_partitioning_column",
+        "clustering_ordinal_position",
+        "collation_name",
+        "character_maximum_length",
+        "numeric_precision",
+        "numeric_scale",
+        "constraint_name",
+        "index_name",
+    }
+)
+
+#: A table is its own proof of being a schema catalogue when it carries at least
+#: this many distinct catalogue columns AND they dominate its column list. Both
+#: halves matter: three hits alone would catch a business table that happens to
+#: record a ``data_type``, and a share alone would catch a two-column lookup.
+_CATALOGUE_COLUMN_HITS = 3
+_CATALOGUE_COLUMN_SHARE = 0.6
+
+#: The other proof: a column whose values ARE the names of other profiled tables.
+#: Deliberately steep — five distinct matches covering four fifths of the sampled
+#: values, and only on a narrow table. A polymorphic ``entity_type`` column on a
+#: wide audit or comment table can legitimately hold table names; a table whose
+#: entire content is a list of table names cannot be anything else.
+_CATALOGUE_SAMPLE_MATCHES = 5
+_CATALOGUE_SAMPLE_SHARE = 0.8
+_CATALOGUE_NARROW_COLUMNS = 4
+
+#: ``import-source`` names a flatfile sheet ``<workbook>__<sheet>``.
+_SHEET_SEPARATOR = "__"
+
+#: A workbook name is catalogue-ish only when it says *table* AND says what about
+#: the tables. "Qargo Tables Columns Info" qualifies; "Average Margins 08-2025"
+#: and "Shipping Routes Table" do not.
+_CATALOGUE_CONTAINER_SUBJECTS = frozenset({"table", "tables"})
+_CATALOGUE_CONTAINER_ASPECTS = frozenset(
+    {
+        "column",
+        "columns",
+        "schema",
+        "schemas",
+        "metadata",
+        "dictionary",
+        "catalog",
+        "catalogue",
+        "ddl",
+        "datatypes",
+    }
+)
+
+#: Tokens too generic to evidence that a column and a property mean the same
+#: thing. Without them ``id``/``name``/``code`` match nearly every class.
+_GENERIC_TOKENS = frozenset(
+    {
+        "and",
+        "code",
+        "codes",
+        "date",
+        "datetime",
+        "for",
+        "from",
+        "has",
+        "identifier",
+        "ids",
+        "name",
+        "names",
+        "number",
+        "ref",
+        "status",
+        "the",
+        "time",
+        "type",
+        "types",
+        "value",
+        "values",
+    }
+)
+
 
 @dataclass
 class ClassCatalog:
     """The one-line-per-class view of every reference class the hub can resolve."""
 
     text: str
-    #: name -> every copy of that name: [{"module": str, "uri": str}, ...].
+    #: name -> every copy of that name:
+    #: ``[{"module": str, "uri": str, "properties": [str, ...]}, ...]``.
     #: A list, deliberately: the same class name exists in several modules
     #: (``Consignment`` in bsp/commercial AND mmt/consignment), and keeping one
     #: arbitrary copy derived ownership from the wrong module on the live run.
-    index: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+    #: ``properties`` is that copy's own+inherited property local names in the
+    #: resolved closure — the only thing that tells ``Booking`` in a vocabulary
+    #: which defines none from ``Booking`` in the one which defines 23 (#519).
+    index: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     #: module uri (no trailing #) -> owning domain ids
     owners: dict[str, list[str]] = field(default_factory=dict)
     #: class uri -> domain ids declaring a bridge TO that class
@@ -99,6 +215,53 @@ class ClassCatalog:
 
 def _first_sentence(text: str) -> str:
     return (text or "").replace("\n", " ").split(". ")[0][:130]
+
+
+def _normalise(name: str) -> str:
+    """``TABLE_NAME``, ``tableName`` and ``Table Name`` all to ``table_name``."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name or ""))
+    return re.sub(r"[^a-z0-9]+", "_", spaced.lower()).strip("_")
+
+
+def _tokens(name: str) -> set[str]:
+    """Meaning-bearing words in an identifier, generic ones dropped."""
+    return {
+        part
+        for part in _normalise(name).split("_")
+        if len(part) > 2 and part not in _GENERIC_TOKENS
+    }
+
+
+def _class_property_names(catalog_path: Path, modules: set[str]) -> dict[str, list[str]]:
+    """``class uri -> property local names``, from the resolved closure.
+
+    A second pass over the modules :func:`read_reference_terms` just read, because
+    that loader flattens classes and properties into one list and drops the link
+    between them, and it lives in a module this one only imports. The repeat parse
+    costs ~10s on a 109-module hub against a stage that then spends minutes in the
+    model — cheap for the thing it buys, which is knowing that a candidate anchor
+    class cannot carry a single column.
+
+    Advisory: a failure degrades the tie-break to ownership order rather than
+    failing the run.
+    """
+    if not modules:
+        return {}
+    try:
+        # Local import: propose_alignment imports this module.
+        from .propose_alignment import extract_ref_model_inventory
+
+        inventory = extract_ref_model_inventory(sorted(modules), Path(catalog_path))
+    except Exception:  # noqa: BLE001 - enrichment only; anchoring must still run
+        logger.warning("Could not resolve class properties; anchor tie-break degraded.")
+        return {}
+    return {
+        str(cls.get("uri")): [
+            str(p.get("name")) for p in cls.get("properties") or [] if p.get("name")
+        ]
+        for cls in inventory
+        if cls.get("uri")
+    }
 
 
 def build_class_catalog(
@@ -112,6 +275,11 @@ def build_class_catalog(
     Record's thin ``Company`` over UN/CEFACT's ``TradeParty`` for a companies
     table (5/6 known answers); with it, 6/6. A name match in a foreign vocabulary
     must not outrank the class the blueprint governs.
+
+    Each copy of a name additionally carries its property local names in the
+    closure. The rendered line stays one-per-name — the model reads grain from
+    descriptions, not property lists — but the resolver needs per-copy properties
+    to break a name collision on something better than read order (#519).
     """
     owners: dict[str, list[str]] = {}
     bridged: dict[str, list[str]] = {}
@@ -126,7 +294,7 @@ def build_class_catalog(
             if rng and src:
                 bridged.setdefault(rng, []).append(src)
 
-    index: dict[str, list[dict[str, str]]] = {}
+    index: dict[str, list[dict[str, Any]]] = {}
     comments: dict[str, str] = {}
     for term in read_reference_terms(Path(catalog_path)):
         if term.kind != "class":
@@ -137,6 +305,13 @@ def build_class_catalog(
         text = _first_sentence(term.comment) or str(term.label or "")
         if len(text) > len(comments.get(term.name, "")):
             comments[term.name] = text
+
+    properties = _class_property_names(
+        Path(catalog_path), {copy["module"] for copies in index.values() for copy in copies}
+    )
+    for copies in index.values():
+        for copy in copies:
+            copy["properties"] = list(properties.get(copy["uri"], ()))
 
     # One line per NAME, ownership merged across every copy. Rendering each copy
     # separately gave the model contradictory lines ("Contact [owned by 'party']"
@@ -190,9 +365,26 @@ def _is_excluded(
     return (system, table, column) in excluded or (system, "", column) in excluded
 
 
+def read_source_tables(sources_dir: Path) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    """``(system, table, column dicts)`` for every profiled source table.
+
+    The single parse pass behind both the anchor outline and the schema-catalogue
+    screen. Keeps the full column dicts — profiling metadata such as
+    ``samples`` never reaches the prompt, but the screen needs it to see that a
+    column's values are the names of other tables.
+    """
+    tables: list[tuple[str, str, list[dict[str, Any]]]] = []
+    for vocab_file in sorted(Path(sources_dir).glob("*/vocabulary/*.vocabulary.ttl")):
+        system = vocab_file.parts[-3]
+        for table, columns in sorted(parse_source_vocabulary(vocab_file).items()):
+            tables.append((system, table, list(columns)))
+    return tables
+
+
 def build_source_outline(
     sources_dir: Path,
     excluded_columns: set[tuple[str, str, str]] | None = None,
+    tables: list[tuple[str, str, list[dict[str, Any]]]] | None = None,
 ) -> list[tuple[str, str, list[str]]]:
     """Return ``(system, table, column_names)`` for every source table.
 
@@ -204,19 +396,181 @@ def build_source_outline(
     build a grain or key on a column the hub has ruled non-business — a SaaS
     tenant id looks exactly like a composite-key member until someone says
     otherwise, and on the live run the model keyed every qargo table on it.
+
+    Pass *tables* (from :func:`read_source_tables`) to render an already-parsed,
+    already-screened set of tables instead of re-reading *sources_dir*.
     """
     excluded = excluded_columns or set()
+    parsed = read_source_tables(Path(sources_dir)) if tables is None else tables
     outline: list[tuple[str, str, list[str]]] = []
-    for vocab_file in sorted(Path(sources_dir).glob("*/vocabulary/*.vocabulary.ttl")):
-        system = vocab_file.parts[-3]
-        for table, columns in sorted(parse_source_vocabulary(vocab_file).items()):
-            names = [
-                str(c.get("name", ""))
-                for c in columns
-                if not _is_excluded(excluded, system, table, str(c.get("name", "")))
-            ]
-            outline.append((system, table, names))
+    for system, table, columns in parsed:
+        names = [
+            str(c.get("name", ""))
+            for c in columns
+            if not _is_excluded(excluded, system, table, str(c.get("name", "")))
+        ]
+        outline.append((system, table, names))
     return outline
+
+
+def load_table_dispositions(analysis_dir: Path) -> dict[tuple[str, str], str]:
+    """``(system, table) -> disposition`` for the table-grain ledger entries (DD-164).
+
+    The override for the schema-catalogue screen: any recorded disposition other
+    than ``not-business-data`` is someone having already decided the table IS in
+    scope, and a heuristic must not overrule that.
+    """
+    path = Path(analysis_dir) / "table-dispositions.yaml"
+    if not path.is_file():
+        return {}
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001 - advisory input
+        return {}
+    decided: dict[tuple[str, str], str] = {}
+    for entry in payload.get("tables") or []:
+        if not isinstance(entry, dict) or entry.get("column") or not entry.get("table"):
+            continue
+        decided[(str(entry.get("system") or ""), str(entry["table"]))] = str(
+            entry.get("disposition") or ""
+        )
+    return decided
+
+
+def _is_catalogue_container(container: str) -> bool:
+    """Does this workbook name claim to describe a schema rather than hold data?"""
+    tokens = set(_normalise(container).split("_"))
+    return bool(tokens & _CATALOGUE_CONTAINER_SUBJECTS) and bool(
+        tokens & _CATALOGUE_CONTAINER_ASPECTS
+    )
+
+
+def _catalogue_evidence(
+    system: str,
+    table: str,
+    columns: list[dict[str, Any]],
+    other_tables: set[str],
+) -> str:
+    """Direct evidence that *table* describes a schema, or ``""``.
+
+    Two independent proofs, both steep on purpose. A false positive here deletes a
+    real business table from the pipeline before anyone sees it, which is strictly
+    worse than leaving a metadata table in for a human to dispose of.
+    """
+    names = [str(c.get("name") or "") for c in columns]
+    if not names:
+        return ""
+    hits = {n for n in (_normalise(x) for x in names) if n in _CATALOGUE_COLUMNS}
+    if len(hits) >= _CATALOGUE_COLUMN_HITS and len(hits) >= _CATALOGUE_COLUMN_SHARE * len(names):
+        return (
+            f"{len(hits)} of {len(names)} columns are information-schema fields "
+            f"({', '.join(sorted(hits)[:4])})"
+        )
+    if len(names) > _CATALOGUE_NARROW_COLUMNS:
+        return ""
+    for column in columns:
+        sampled = {_normalise(s) for s in column.get("samples") or [] if str(s).strip()}
+        sampled.discard("")
+        matched = {s for s in sampled if s in other_tables or s.rsplit("_", 1)[-1] in other_tables}
+        if (
+            len(matched) >= _CATALOGUE_SAMPLE_MATCHES
+            and len(matched) >= _CATALOGUE_SAMPLE_SHARE * len(sampled)
+        ):
+            return (
+                f"column '{column.get('name')}' holds the names of {len(matched)} "
+                f"other tables profiled in {system}"
+            )
+    return ""
+
+
+def detect_schema_catalogue_tables(
+    tables: list[tuple[str, str, list[dict[str, Any]]]],
+    decided: dict[tuple[str, str], str] | None = None,
+) -> list[dict[str, Any]]:
+    """Tables that describe the source's own schema, to route out before anchoring.
+
+    A table listing tables is not business data and cannot be anchored to a
+    business concept, but it looks like an ordinary narrow lookup to the model: on
+    the live run all four sheets of a "Qargo Tables Columns Info" workbook were
+    anchored and assigned to the ``booking`` domain, and the sheet holding a
+    sample extract of the real ``orders`` table went on to cause a 21-column
+    duplicate-mapping refusal downstream.
+
+    Flagged three ways, in decreasing directness:
+
+    1. the table's own columns are dominated by information-schema fields;
+    2. the table is narrow and one column's values are the names of other tables
+       profiled in the same source system;
+    3. the table is a sheet of a workbook whose *name* claims to describe a schema
+       AND at least one sibling sheet was flagged by (1) or (2). This is what
+       catches the sample-extract sheets, whose own columns look like business
+       data — nothing about them is suspicious except the company they keep.
+
+    Rule (3) never chains: a sheet flagged by (3) is not evidence for its
+    siblings, so one proven catalogue sheet is required per workbook.
+
+    Any table carrying a ledger disposition other than ``not-business-data`` is
+    left alone — a heuristic does not overrule a recorded decision.
+
+    Returns one entry per excluded table, each with the evidence that excluded it,
+    for the caller to record and report. Nothing is dropped silently.
+    """
+    recorded = decided or {}
+    names_by_system: dict[str, set[str]] = {}
+    for system, table, _ in tables:
+        names_by_system.setdefault(system, set()).add(_normalise(table))
+
+    direct: dict[tuple[str, str], str] = {}
+    for system, table, columns in tables:
+        others = names_by_system.get(system, set()) - {_normalise(table)}
+        evidence = _catalogue_evidence(system, table, columns, others)
+        if evidence:
+            direct[(system, table)] = evidence
+
+    flagged = dict(direct)
+    for system, table, _ in tables:
+        if (system, table) in flagged:
+            continue
+        container, separator, sheet = str(table).partition(_SHEET_SEPARATOR)
+        if not separator or not sheet or not _is_catalogue_container(container):
+            continue
+        siblings = sorted(
+            key[1]
+            for key in direct
+            if key[0] == system and key[1].partition(_SHEET_SEPARATOR)[0] == container
+        )
+        if siblings:
+            flagged[(system, table)] = (
+                f"sheet of '{container}', shown to be a schema catalogue by "
+                f"sibling sheet '{siblings[0]}'"
+            )
+
+    excluded: list[dict[str, Any]] = []
+    for system, table, columns in tables:
+        evidence = flagged.get((system, table))
+        if not evidence:
+            continue
+        disposition = recorded.get((system, table), "")
+        if disposition and disposition != "not-business-data":
+            logger.info(
+                "%s.%s looks like a schema catalogue (%s) but the ledger records "
+                "'%s'; keeping it.",
+                system,
+                table,
+                evidence,
+                disposition,
+            )
+            continue
+        excluded.append(
+            {
+                "system": system,
+                "table": table,
+                "columns": len(columns),
+                "disposition": "not-business-data",
+                "reason": evidence,
+            }
+        )
+    return excluded
 
 
 def build_anchor_prompt(
@@ -345,6 +699,57 @@ def derive_domain(
     return affinity_domain, "unowned", owner_ids, bridge_ids
 
 
+def column_property_overlap(columns: list[str], copy: dict[str, Any]) -> int:
+    """Distinct meaning-bearing words shared by a table's columns and a class's properties.
+
+    Word overlap rather than name equality: measured on the live corpus, exact
+    matching between snake_case source columns and ontology property names scored
+    1 across 77 ``bookings`` columns against the *right* class and 0 against every
+    other candidate — too sparse to break a tie. Word overlap separated the same
+    candidates 5/2/0.
+    """
+    props = copy.get("properties") or ()
+    if not props or not columns:
+        return 0
+    column_words: set[str] = set().union(*(_tokens(c) for c in columns))
+    property_words: set[str] = set().union(*(_tokens(p) for p in props))
+    return len(column_words & property_words)
+
+
+def choose_class_copy(
+    copies: list[dict[str, Any]],
+    catalog: ClassCatalog,
+    domain: str,
+    columns: list[str],
+) -> dict[str, Any]:
+    """Pick which copy of a duplicate class name the anchor URI points at.
+
+    Ownership decides the tier — a name match in a foreign vocabulary must not
+    outrank the class the blueprint governs — and *within* the tier the copy whose
+    properties actually overlap the table's columns wins, with the richer class
+    breaking a remaining tie.
+
+    That second key is the #519 fix. ``shipments`` (90 columns, 0.98 confidence)
+    resolved to ``onerecord/cargo#Shipment``, which the closure gives zero
+    properties, over ``dcsa/booking#Shipment``, which carries the 13 alignment
+    then proposed. Both modules are owned by ``booking``, so the ownership tier
+    could not separate them and the first copy the catalog read won. No proposed
+    property survived against the anchor, and a large, clean entity produced no
+    class at all.
+    """
+    if not copies:
+        return {}
+    owned_by_domain = [c for c in copies if domain in catalog.owners.get(c.get("module", ""), [])]
+    owned = [c for c in copies if catalog.owners.get(c.get("module", ""))]
+    tier = owned_by_domain or owned or list(copies)
+    # max() keeps the first maximal element, so an all-zero tier preserves the
+    # existing order and this stays a tie-break rather than a re-ranking.
+    return max(
+        tier,
+        key=lambda c: (column_property_overlap(columns, c), len(c.get("properties") or ())),
+    )
+
+
 def load_affinity_domains(analysis_dir: Path) -> dict[tuple[str, str], str]:
     """Read ``(system, table) -> primary_domain`` from the affinity artifacts."""
     out: dict[tuple[str, str], str] = {}
@@ -371,13 +776,37 @@ def run_anchor_tables(
     analysis_dir: Path,
     report=None,
 ) -> Path:
-    """Run the global anchor call(s) and write ``table-anchors.yaml``."""
+    """Run the global anchor call(s) and write ``table-anchors.yaml``.
+
+    Tables that describe the source's own schema are screened out first and
+    recorded under ``excluded`` with the evidence that excluded them; anchored
+    tables carry ``anchor_properties`` and ``anchor_column_overlap``, and one with
+    no properties in the closure carries a ``warning`` and is reported (#519).
+    """
     say = report or (lambda *_a, **_k: None)
     catalog = build_class_catalog(catalog_path, ref_models_dir, accelerator)
     excluded = load_excluded_columns(analysis_dir)
     if excluded:
         say(f"  ⚓ {len(excluded)} column exclusion(s) from the disposition ledger")
-    outline = build_source_outline(sources_dir, excluded_columns=excluded)
+
+    source_tables = read_source_tables(sources_dir)
+    catalogue = detect_schema_catalogue_tables(
+        source_tables, load_table_dispositions(analysis_dir)
+    )
+    skip = {(e["system"], e["table"]) for e in catalogue}
+    if catalogue:
+        say(
+            f"  ⚓ {len(catalogue)} schema-catalogue table(s) routed to "
+            "not-business-data before anchoring (they describe the source's own "
+            "schema, not its business):"
+        )
+        for entry in catalogue:
+            say(f"       {entry['system']}.{entry['table']} — {entry['reason']}")
+    outline = build_source_outline(
+        sources_dir,
+        excluded_columns=excluded,
+        tables=[t for t in source_tables if (t[0], t[1]) not in skip],
+    )
     affinity = load_affinity_domains(analysis_dir)
     n_classes = catalog.text.count("\n") + 1 if catalog.text else 0
     say(f"  ⚓ Anchoring {len(outline)} table(s) against {n_classes} class(es)")
@@ -404,6 +833,7 @@ def run_anchor_tables(
 
     tables: list[dict[str, Any]] = []
     unanchored: list[dict[str, Any]] = []
+    propertyless: list[dict[str, Any]] = []
     invented = 0
     for system, table, cols in outline:
         verdict = raw.get(f"{system}.{table}") or {}
@@ -422,31 +852,35 @@ def run_anchor_tables(
         domain, basis, owner_ids, bridge_ids = derive_domain(
             anchor, catalog, affinity.get((system, table), "")
         )
-        # Among duplicate copies of the name, record the URI whose module the
-        # chosen domain owns; else the first owned copy; else the first.
-        copies = catalog.index[anchor]
-        chosen = next(
-            (c for c in copies if domain in catalog.owners.get(c["module"], [])),
-            next((c for c in copies if catalog.owners.get(c["module"])), copies[0]),
-        )
-        tables.append(
-            {
-                "system": system,
-                "table": table,
-                "columns": len(cols),
-                "anchor": anchor,
-                "anchor_uri": chosen["uri"],
-                "alternate": verdict.get("alternate"),
-                "confidence": round(float(verdict.get("confidence") or 0.0), 3),
-                "domain": domain,
-                "domain_basis": basis,
-                "owners": owner_ids,
-                "bridged_from": bridge_ids,
-                "grain_columns": list(verdict.get("grain_columns") or []),
-                "natural_key": list(verdict.get("natural_key") or []),
-                "load_hint": verdict.get("load_hint"),
-            }
-        )
+        # Among duplicate copies of the name, ownership picks the tier and
+        # column/property overlap picks within it (#519).
+        chosen = choose_class_copy(catalog.index[anchor], catalog, domain, cols)
+        n_properties = len(chosen.get("properties") or ())
+        entry = {
+            "system": system,
+            "table": table,
+            "columns": len(cols),
+            "anchor": anchor,
+            "anchor_uri": chosen["uri"],
+            "anchor_properties": n_properties,
+            "anchor_column_overlap": column_property_overlap(cols, chosen),
+            "alternate": verdict.get("alternate"),
+            "confidence": round(float(verdict.get("confidence") or 0.0), 3),
+            "domain": domain,
+            "domain_basis": basis,
+            "owners": owner_ids,
+            "bridged_from": bridge_ids,
+            "grain_columns": list(verdict.get("grain_columns") or []),
+            "natural_key": list(verdict.get("natural_key") or []),
+            "load_hint": verdict.get("load_hint"),
+        }
+        if cols and not n_properties:
+            entry["warning"] = (
+                f"{chosen['uri']} has no properties in the resolved closure, so no "
+                f"column of this {len(cols)}-column table can map to it"
+            )
+            propertyless.append(entry)
+        tables.append(entry)
 
     unowned = sum(1 for t in tables if t["domain_basis"] == "unowned")
     say(
@@ -454,6 +888,21 @@ def run_anchor_tables(
         f"{unowned} on unowned classes (blueprint gaps), "
         f"{len(unanchored)} unanchored, {invented} invented name(s) rejected"
     )
+    if propertyless:
+        # Almost never right for a table with columns: alignment has nothing to
+        # propose against the anchor, so the entity is lost rather than mismapped.
+        say(
+            f"  ⚓ WARNING: {len(propertyless)} anchor(s) resolve to a class with NO "
+            "properties in the closure — alignment cannot map any column to them:"
+        )
+        for t in propertyless:
+            say(f"       {t['system']}.{t['table']} ({t['columns']} cols) → {t['anchor_uri']}")
+            logger.warning(
+                "Anchor %s for %s.%s has no properties in the resolved closure.",
+                t["anchor_uri"],
+                t["system"],
+                t["table"],
+            )
 
     payload = {
         "schema_version": 1,
@@ -461,6 +910,7 @@ def run_anchor_tables(
         "table_count": len(outline),
         "tables": tables,
         "unanchored": unanchored,
+        "excluded": catalogue,
     }
     header = provenance_comment(
         "anchor-tables",

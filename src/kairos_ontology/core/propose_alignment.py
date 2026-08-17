@@ -7,6 +7,17 @@ source columns map to reference model classes and properties. Consumes
 affinity reports from ``analyse-sources`` and produces machine-readable YAML
 that the modeling skill uses to pre-populate the Source Evidence Table.
 
+The candidate property pool a column may be mapped to is *owner-tagged*: every
+offered property is presented, enumerated and validated together with the class
+that declares it. That single structure carries two guarantees:
+
+* value objects reachable one hop from the anchor are offered at all, so a
+  measurement the anchor class does not carry itself stops being reported as a
+  gap (issue #517, :func:`expand_value_object_pool`);
+* a proposed ``(class, property)`` pair must exist as a pair, not merely as two
+  names that each exist somewhere in the pool (issue #520, qualified schema enum
+  plus :func:`enforce_class_property_pairs`).
+
 Requires an AI provider configuration (GITHUB_TOKEN or AZURE_AI_ENDPOINT).
 """
 
@@ -680,6 +691,11 @@ def extract_ref_model_inventory(
                             "name": p.get("name", ""),
                             "label": p.get("label", ""),
                             "range": p.get("range", ""),
+                            # Issue #517: the *resolved* range URI, not just its local
+                            # name. Value-object expansion follows object-property
+                            # ranges one hop out, and a local name is ambiguous the
+                            # moment two modules both declare e.g. ``Terminal``.
+                            "range_uri": p.get("range_uri", ""),
                             "comment": "",
                             # Carried through so the prompt can mark an object property
                             # (DD-172); this rebuild previously dropped it, leaving every
@@ -802,6 +818,21 @@ def _module_tag(cls: dict[str, Any]) -> str:
     return f"  [module: {module}]" if module else ""
 
 
+def _value_object_tag(cls: dict[str, Any]) -> str:
+    """Render the ``[VALUE OBJECT …]`` marker for an issue-#517 pool addition.
+
+    Empty for a shortlist class, so a domain with no value objects renders the
+    same prompt it always did.
+    """
+    via = str((cls.get("_value_object_of") or {}).get("via") or "")
+    if not via:
+        return ""
+    return (
+        f"  [VALUE OBJECT / RELATED ENTITY reached from {via} — the reference model "
+        f"puts these properties here, not on the class that owns the link]"
+    )
+
+
 def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
     """Format reference model inventory for the LLM prompt."""
     lines = []
@@ -824,7 +855,7 @@ def _format_ref_inventory(ref_classes: list[dict[str, Any]]) -> str:
             prop_lines.append(f"    - {p['name']}{label_str}{range_str}{kind}")
         lines.append(
             f"  CLASS: {cls['name']} ({cls.get('label', cls['name'])})"
-            f"{_module_tag(cls)}{_bridge_tag(cls)}"
+            f"{_module_tag(cls)}{_bridge_tag(cls)}{_value_object_tag(cls)}"
         )
         if cls.get("comment"):
             lines.append(f"    Description: {cls['comment']}")
@@ -1256,6 +1287,236 @@ def _select_property_pool(
     return selected
 
 
+#: Issue #517 — max value-object / related classes appended to the STEP-2 property
+#: pool on top of the table shortlist. Sized like ``MAX_CROSS_MODULE_CLASSES``: enough
+#: to carry an anchor's measurement objects (``Vessel`` reaches exactly three tonnage
+#: classes through ``hasCapacity``) without letting one richly-linked class flood the
+#: prompt with everything it points at.
+MAX_VALUE_OBJECT_CLASSES = 8
+
+
+def expand_value_object_pool(
+    shortlist: list[dict[str, Any]],
+    ref_classes: list[dict[str, Any]],
+    *,
+    anchor_class: str = "",
+    max_classes: int = MAX_VALUE_OBJECT_CLASSES,
+) -> list[dict[str, Any]]:
+    """Return classes reachable one hop out as value objects (issue #517).
+
+    Measurement/quantity value objects are the normal reference-model idiom: the
+    entity carries an object property, and the *number* lives on a small class at
+    the other end. ``imo/vessel-registry`` is the canonical shape —
+    ``Vessel --hasCapacity--> VesselCapacity``, with ``GrossTonnage``,
+    ``NetTonnage`` and ``DeadweightTonnage`` as its subclasses, each carrying the
+    actual value (``grossTonnageValue``). ``Vessel`` itself carries none of them.
+
+    The shortlist is a flat top-N lexical scoring over the whole domain, so on the
+    real corpus those value objects lose to whatever else happens to share a token:
+    for ``d_vyr_ship_s_archive`` the twelve selected classes were ``Vessel`` plus
+    eleven certificate/security classes, and ``grossTonnageValue`` was never shown
+    to the model at all. The column came back as ``no listed Vessel property
+    corresponds to gross registered tonnage`` and became a false blueprint gap.
+
+    Two hops are walked, and only two:
+
+    * the **range class** of each object property on a shortlisted class, with its
+      full property list;
+    * that range class's **subclasses**, each contributing only its *own* asserted
+      properties — the parent already supplies the inherited ones, and re-listing
+      them turns a handful of specialisations into pages of identical prompt text.
+
+    A candidate with nothing of its own to offer is skipped, which is what keeps
+    this quiet: an abstract range class, or a subclass that only inherits, adds no
+    vocabulary and so is not worth a prompt slot.
+
+    *anchor_class* is walked first so the table's own anchor gets first claim on the
+    budget. Everything is deterministic: shortlist order, then the (already sorted)
+    property order, then subclasses by ``(name, uri)``.
+
+    Returns only the **added** classes, each tagged ``_value_object_of``
+    (``{"owner", "via"}``) so :func:`_format_ref_inventory` can name the route and
+    the caller can tell an addition from a shortlist entry.
+    """
+    if max_classes <= 0:
+        return []
+
+    by_uri: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+    for cls in ref_classes:
+        uri = str(cls.get("uri") or "")
+        if uri:
+            by_uri.setdefault(uri, cls)
+        name = str(cls.get("name") or "")
+        if name:
+            by_name.setdefault(name, cls)
+
+    def _key(cls: dict[str, Any]) -> str:
+        return str(cls.get("uri") or "") or str(cls.get("name") or "")
+
+    have = {_key(c) for c in shortlist}
+    owners = sorted(
+        shortlist, key=lambda c: 0 if str(c.get("name") or "") == anchor_class else 1
+    )
+
+    added: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for owner in owners:
+        owner_name = str(owner.get("name") or "")
+        for prop in owner.get("properties") or []:
+            if str(prop.get("type") or "").lower() != "object":
+                continue
+            target = by_uri.get(str(prop.get("range_uri") or "")) or by_name.get(
+                str(prop.get("range") or "")
+            )
+            if target is None:
+                continue
+            via = f"{owner_name}.{prop.get('name', '')}"
+
+            # (candidate class, the properties it contributes). The range class
+            # contributes everything it offers; a subclass contributes only what it
+            # declares itself.
+            chain: list[tuple[dict[str, Any], list[dict[str, Any]]]] = [
+                (target, list(target.get("properties") or []))
+            ]
+            specs = sorted(
+                target.get("specializations") or [],
+                key=lambda s: (str(s.get("class") or ""), str(s.get("class_uri") or "")),
+            )
+            for spec in specs:
+                spec_name = str(spec.get("class") or "")
+                spec_uri = str(spec.get("class_uri") or "")
+                resolved = by_uri.get(spec_uri) or {
+                    "uri": spec_uri,
+                    "name": spec_name,
+                    "label": spec_name,
+                    "comment": "",
+                }
+                chain.append((resolved, list(spec.get("properties") or [])))
+
+            for candidate, own_properties in chain:
+                key = _key(candidate)
+                if not key or key in have or key in seen or not own_properties:
+                    continue
+                seen.add(key)
+                entry = dict(candidate)
+                entry["properties"] = own_properties
+                # The range class's specialisations are appended as their own pool
+                # entries above; rendering them again under the parent would say the
+                # same thing twice.
+                entry.pop("specializations", None)
+                entry["_value_object_of"] = {"owner": owner_name, "via": via}
+                added.append(entry)
+                if len(added) >= max_classes:
+                    return added
+    return added
+
+
+def build_class_property_index(
+    ref_classes: list[dict[str, Any]],
+) -> dict[str, frozenset[str]]:
+    """Map each offered class name to the property names offered *on it* (#520).
+
+    This is the structure issues #517 and #520 share. #517 widens the candidate pool
+    with other classes' properties, which is exactly what makes #520's hazard worse:
+    the strict schema's ``ref_property`` enum is one flat list for the whole schema,
+    so it validates that a name exists *somewhere in the pool*, never that it exists
+    on the class it is being assigned to. Recording the owner is what lets
+    :func:`enforce_class_property_pairs` check the pair rather than the name.
+
+    Keyed by *name* because a name is all the model returns. Same-named classes from
+    different modules are unioned — ``tic/terminal-infrastructure#Terminal`` and
+    ``tic/locations#Terminal`` are both in the ``terminal-operations`` pool and
+    nothing in the response distinguishes them.
+    """
+    index: dict[str, set[str]] = {}
+    for cls in ref_classes:
+        name = str(cls.get("name") or "")
+        if not name:
+            continue
+        bucket = index.setdefault(name, set())
+        for prop in cls.get("properties") or []:
+            prop_name = str(prop.get("name") or "")
+            if prop_name:
+                bucket.add(prop_name)
+    return {name: frozenset(props) for name, props in index.items()}
+
+
+def build_property_owner_index(
+    pair_index: dict[str, frozenset[str]],
+) -> dict[str, tuple[str, ...]]:
+    """Invert :func:`build_class_property_index`: property name → owning classes."""
+    owners: dict[str, set[str]] = {}
+    for cls_name, props in pair_index.items():
+        for prop in props:
+            owners.setdefault(prop, set()).add(cls_name)
+    return {prop: tuple(sorted(names)) for prop, names in owners.items()}
+
+
+def enforce_class_property_pairs(
+    alignments: list[dict[str, Any]],
+    ref_classes: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Reject or repair ``(ref_class, ref_property)`` pairs absent from the pool (#520).
+
+    DD-177's strict schema was meant to make an invalid proposal structurally
+    impossible. It half-succeeded: a flat property enum makes an *invented* name
+    impossible but leaves a real name on the wrong class fully representable, and
+    that is the failure mode least likely to be caught downstream — the name is
+    real, the enum accepted it, and only a human re-resolving the closure notices.
+    Observed live: ``terminalName`` attached to a ``Terminal`` class that does not
+    carry it, reported by the authoring agent as a hallucination it was not.
+
+    Two outcomes, both deterministic:
+
+    * **repaired** — the property exists on exactly one offered class. The property
+      determines its own owner, so the class is corrected rather than the mapping
+      thrown away. This is the common case and it *recovers* recall.
+    * **rejected** — the property exists on no offered class, or on several and none
+      of them is the one named. Nothing here can choose between them, so the column
+      collapses to the canonical unmatched form (``alignment: custom``,
+      ``ref_property`` cleared) with the discarded pair recorded in the rationale.
+      An honest null beats a plausible wrong class that survives into an
+      ``rdfs:subPropertyOf`` assertion.
+
+    Deliberately *not* a retry: the enum already pins the property name, so a
+    mismatch is a class-assignment slip, and re-rolling the whole table would
+    re-litigate every mapping that was right to fix one that was not.
+
+    Mutates *alignments* in place; returns ``(repaired, rejected)``.
+    """
+    pair_index = build_class_property_index(ref_classes)
+    owner_index = build_property_owner_index(pair_index)
+
+    repaired = 0
+    rejected = 0
+    for entry in alignments:
+        if not isinstance(entry, dict) or entry.get("alignment") == "custom":
+            continue
+        prop = str(entry.get("ref_property") or "")
+        cls_name = str(entry.get("ref_class") or "")
+        if not prop or prop in pair_index.get(cls_name, frozenset()):
+            continue
+        owners = owner_index.get(prop, ())
+        if len(owners) == 1:
+            entry["ref_class"] = owners[0]
+            repaired += 1
+            continue
+        entry["alignment"] = "custom"
+        entry["ref_property"] = ""
+        detail = (
+            "none of the offered classes carries it"
+            if not owners
+            else f"it is carried by {', '.join(owners)}, not by '{cls_name}'"
+        )
+        entry["rationale"] = (
+            f"Rejected wrong-class reference property '{prop}' on '{cls_name}': "
+            f"{detail}. Original rationale: {entry.get('rationale', '') or '(none)'}"
+        )
+        rejected += 1
+    return repaired, rejected
+
+
 def _build_class_meta_index(
     property_ref_classes: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -1318,6 +1579,7 @@ def build_alignment_prompt(
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
     anchor_override: str | None = None,
+    qualified_properties: bool = False,
 ) -> str:
     """Build the alignment prompt for one source table.
 
@@ -1336,6 +1598,12 @@ def build_alignment_prompt(
     the run's fixed anchor was TradeParty — the model deliberated a question whose
     answer was pinned, against a hint contradicting it, and mapped columns toward
     its own pick.
+
+    When *qualified_properties* is True (issue #520), ``ref_property`` is asked for
+    as ``OwningClass.propertyName``, matching the qualified response-schema enum
+    :func:`build_alignment_response_schema` emits when the pair vocabulary fits the
+    provider budget. The prose and the enum must agree, so the caller passes
+    whichever form the schema actually used rather than assuming one.
     """
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
 
@@ -1442,9 +1710,13 @@ def build_alignment_prompt(
         f"REFERENCE MODULES IN SCOPE: {', '.join(modules)}\n" if modules else ""
     )
 
+    # Issue #517: the value-object pool also splits STEP 1 from STEP 2, so
+    # ``table_ref_classes is not None`` no longer implies cross-module mode. Gate on
+    # the thing the note actually describes — a class tagged '[module: X]' — so a
+    # home-only run is never told to read markers that are not there.
     cross_module_note = ""
     ref_module_field = ""
-    if table_ref_classes is not None:
+    if table_ref_classes is not None and any(str(c.get("module") or "") for c in ref_classes):
         ref_module_field = (
             '\n      "ref_module": "<module name if the matched property\'s class is '
             'a sibling/shared module, else empty>",'
@@ -1460,11 +1732,38 @@ def build_alignment_prompt(
             "class, set its `ref_module` to that class's module name.\n"
         )
 
+    # Issue #517: name the idiom explicitly. Left empty when the pool has no value
+    # objects, so those prompts stay byte-identical.
+    value_object_note = ""
+    if any(c.get("_value_object_of") for c in ref_classes):
+        value_object_note = (
+            "\nVALUE OBJECTS: classes marked '[VALUE OBJECT / RELATED ENTITY reached "
+            "from <Class>.<property>]' hold measurements and identifiers that the "
+            "linking class does not carry itself — a gross-tonnage column belongs on "
+            "GrossTonnage.grossTonnageValue, not nowhere. Map a column to one of these "
+            "when it is genuinely that measurement, and never report such a column as "
+            "unmatched merely because the table's own class does not list it.\n"
+        )
+
+    # Issue #520: the schema enum and the prose must ask for the same token shape.
+    ref_property_hint = "<real reference property name, or null if alignment is custom>"
+    property_format_note = ""
+    if qualified_properties:
+        ref_property_hint = (
+            "<OwningClass.propertyName exactly as listed above, or null if custom>"
+        )
+        property_format_note = (
+            "\n- PROPERTY NAMING: give ref_property as '<OwningClass>.<propertyName>', using "
+            "the CLASS heading the property is listed under above (e.g. "
+            "'GrossTonnage.grossTonnageValue'). A property name is only valid on the class "
+            "that declares it; qualifying it with any other class is rejected."
+        )
+
     return f"""Align this source database table to the reference model.
 
 {step1}
 STEP 2: For each source column, find the best matching reference model property.
-{entity_hint}{caution_block}{glossary_block}{cross_module_note}
+{entity_hint}{caution_block}{glossary_block}{cross_module_note}{value_object_note}
 {semantic_disclosure}
 SOURCE TABLE: {table_name}
 COLUMNS:
@@ -1507,7 +1806,7 @@ Instructions:
   rather than losing it.
 - Do NOT over-map: a real ref_property must come from the class's listed properties
   above. Never map more distinct columns onto a class than it has properties.
-- ref_class_confidence: 0.0-1.0 for the table→class match.
+- ref_class_confidence: 0.0-1.0 for the table→class match.{property_format_note}
 
 Respond with JSON only:
 {{
@@ -1517,7 +1816,7 @@ Respond with JSON only:
     {{
       "column": "<source column name>",
       "ref_class": "<class name that owns this property, or null if custom>",{ref_module_field}
-      "ref_property": "<real reference property name, or null if alignment is custom>",
+      "ref_property": "{ref_property_hint}",
       "alignment": "exact|semantic|partial|custom",
       "confidence": 0.0-1.0,
       "note": "<optional: short concept description for a custom column>",
@@ -1546,11 +1845,53 @@ SCHEMA_ENUM_SAFETY_MARGIN = 20
 #: The four alignment kinds a column verdict may carry.
 ALIGNMENT_KINDS = ("exact", "semantic", "partial", "custom")
 
+#: Version of the *candidate pool contract* — which classes' properties are offered
+#: to the model, and how a proposed ``(class, property)`` pair is validated.
+#:
+#: Folded into both the per-table cache key and the domain freshness hash. Issues
+#: #517 and #520 change what the model can see and what survives validation, so an
+#: on-disk alignment produced before them is not merely older, it is answering a
+#: narrower question — reusing it would keep serving the false gaps this fixes.
+#: Bump whenever the pool or the pair check changes.
+ALIGNMENT_POOL_CONTRACT = 2
+
+
+def qualified_property_names(ref_classes: list[dict[str, Any]]) -> list[str]:
+    """Render the pool as ``ClassName.propertyName`` tokens (issue #520)."""
+    return sorted(
+        {
+            f"{cls['name']}.{prop['name']}"
+            for cls in ref_classes
+            if cls.get("name")
+            for prop in (cls.get("properties") or [])
+            if prop.get("name")
+        }
+    )
+
+
+def schema_uses_qualified_properties(response_format: dict[str, Any]) -> bool:
+    """Whether the built schema's ``ref_property`` enum carries qualified pairs.
+
+    The prompt has to ask for the same token shape the enum accepts, and only the
+    schema builder knows which tier the budget allowed. Reading the answer back off
+    the schema keeps that single source of truth instead of re-deriving the budget
+    arithmetic at the call site. A bare property name never contains a dot, so the
+    test is unambiguous.
+    """
+    try:
+        verdict = response_format["json_schema"]["schema"]["$defs"]["ColumnVerdict"]
+        values = verdict["properties"]["ref_property"].get("enum") or []
+    except (KeyError, TypeError):
+        return False
+    return any(isinstance(v, str) and "." in v for v in values)
+
 
 def build_alignment_response_schema(
     column_names: list[str],
     class_names: list[str],
     property_names: list[str],
+    *,
+    qualified_properties: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Build a strict response schema for one table's alignment (DD-177).
 
@@ -1579,42 +1920,80 @@ def build_alignment_response_schema(
     the field falls back to a free string — reported in *notes*, never silent,
     and the downstream validation still runs, so this weakens the constraint
     rather than the correctness of the result.
+
+    Issue #520: a flat property enum only proves a name exists *somewhere* in the
+    pool, never that it exists on the class it is assigned to, so a real name on the
+    wrong class validates cleanly. Passing *qualified_properties* (``Class.property``
+    tokens from :func:`qualified_property_names`) makes the pair itself the enum
+    member, which is the structural fix rather than a check after the fact. It is
+    tried first and costs more — measured over all seventeen domains of a real
+    75-table hub, the widest (``booking``: 215 classes, 378 pairs) costs 803 of the
+    975 available, and every domain fits — so the degradation is three-tier rather
+    than two: qualified pairs, then bare names, then a free string. Whenever the
+    bare enum would have fitted it still does, and
+    :func:`enforce_class_property_pairs` covers the lower two tiers.
     """
     notes: list[str] = []
     budget = TOTAL_SCHEMA_ENUM_BUDGET - SCHEMA_ENUM_SAFETY_MARGIN - len(ALIGNMENT_KINDS)
 
-    def enum_field(values: list[str], label: str, *, copies: int = 1) -> dict[str, Any]:
-        """A nullable string, enum-constrained while the shared budget allows.
+    def fit(values: list[str], *, copies: int = 1) -> tuple[dict[str, Any] | None, int, int]:
+        """Cost an enum against the shared budget without spending it.
 
-        *copies* is how many times this enum appears in the finished schema:
-        the provider counts every occurrence, and ``$ref`` does not help because
-        the limit is on values emitted, not on distinct definitions.
+        Returns ``(field or None, cost, distinct value count)``. *copies* is how many
+        times this enum appears in the finished schema: the provider counts every
+        occurrence, and ``$ref`` does not help because the limit is on values
+        emitted, not on distinct definitions.
         """
-        nonlocal budget
         unique = sorted({v for v in values if v})
         if not unique:
-            return {"type": ["string", "null"]}
+            return None, 0, 0
         cost = (len(unique) + 1) * copies  # +1 for the null each enum carries
         if cost > budget:
-            notes.append(
-                f"{label} enum dropped: {len(unique)} values cost {cost} against "
-                f"{budget} remaining of the provider's "
-                f"{TOTAL_SCHEMA_ENUM_BUDGET}-value schema budget; the model may "
-                f"name a term that does not exist."
-            )
+            return None, cost, len(unique)
+        return {"type": ["string", "null"], "enum": [*unique, None]}, cost, len(unique)
+
+    def enum_field(values: list[str], label: str, *, copies: int = 1) -> dict[str, Any]:
+        """A nullable string, enum-constrained while the shared budget allows."""
+        nonlocal budget
+        field_, cost, count = fit(values, copies=copies)
+        if field_ is None:
+            if count:
+                notes.append(
+                    f"{label} enum dropped: {count} values cost {cost} against "
+                    f"{budget} remaining of the provider's "
+                    f"{TOTAL_SCHEMA_ENUM_BUDGET}-value schema budget; the model may "
+                    f"name a term that does not exist."
+                )
             return {"type": ["string", "null"]}
         budget -= cost
-        return {"type": ["string", "null"], "enum": [*unique, None]}
+        return field_
 
     # Classes are emitted twice (table anchor + column verdict), so they are
     # costed once at double and the same field object is reused for both.
     class_field = enum_field(class_names, "ref_class", copies=2)
 
+    property_field: dict[str, Any] | None = None
+    if qualified_properties:
+        fitted, cost, count = fit(qualified_properties)
+        if fitted is not None:
+            budget -= cost
+            property_field = fitted
+        else:
+            notes.append(
+                f"ref_property enum not qualified: {count} Class.property pairs cost "
+                f"{cost} against {budget} remaining of the provider's "
+                f"{TOTAL_SCHEMA_ENUM_BUDGET}-value schema budget; falling back to "
+                f"unqualified names, so a wrong-class pair is caught by "
+                f"post-validation instead of by the schema."
+            )
+    if property_field is None:
+        property_field = enum_field(property_names, "ref_property")
+
     verdict = {
         "type": "object",
         "properties": {
             "ref_class": dict(class_field),
-            "ref_property": enum_field(property_names, "ref_property"),
+            "ref_property": property_field,
             "alignment": {"type": "string", "enum": list(ALIGNMENT_KINDS)},
             "confidence": {"type": "number"},
             "note": {"type": ["string", "null"]},
@@ -1909,22 +2288,15 @@ def _align_table_once(
             "generation_outcome": OUTCOME_FALLBACK_ONLY,
         }
 
-    prompt = build_alignment_prompt(
-        table_name,
-        columns,
-        ref_classes,
-        likely_entity,
-        table_ref_classes=table_ref_classes,
-        class_cautions=class_cautions,
-        glossary_terms=glossary_terms,
-        anchor_override=anchor_override,
-    )
     table_classes = table_ref_classes if table_ref_classes is not None else ref_classes
     valid_classes = {c["name"] for c in table_classes}
+    pool_class_names = {str(c.get("name") or "") for c in ref_classes if c.get("name")}
 
     # DD-177: constrain the answer's shape, not just its syntax. Property and
     # class names are drawn from the same inventory the prompt renders, so the
-    # enum and the prose cannot disagree.
+    # enum and the prose cannot disagree. Issue #520: prefer qualified
+    # ``Class.property`` enum members, which make a wrong-class pair
+    # unrepresentable rather than merely detectable.
     response_format, schema_notes = build_alignment_response_schema(
         [str(c.get("name", "")) for c in columns if c.get("name")],
         [str(c.get("name", "")) for c in ref_classes if c.get("name")],
@@ -1934,9 +2306,24 @@ def _align_table_once(
             for p in (c.get("properties") or [])
             if p.get("name")
         ],
+        qualified_properties=qualified_property_names(ref_classes),
     )
     for note in schema_notes:
         logger.info("Alignment schema for %s: %s", table_name, note)
+
+    # Built after the schema so the prose asks for whichever token shape the
+    # budget actually allowed.
+    prompt = build_alignment_prompt(
+        table_name,
+        columns,
+        ref_classes,
+        likely_entity,
+        table_ref_classes=table_ref_classes,
+        class_cautions=class_cautions,
+        glossary_terms=glossary_terms,
+        anchor_override=anchor_override,
+        qualified_properties=schema_uses_qualified_properties(response_format),
+    )
 
     generation_outcome = OUTCOME_SEMANTIC_SUCCESS
     generation_error: str | None = None
@@ -2049,6 +2436,15 @@ def _align_table_once(
         if alignment not in valid_alignments:
             alignment = "custom"
         ref_property = str(ca.get("ref_property", "") or "")
+        col_ref_class = str(ca.get("ref_class", ref_class) or ref_class)
+        # Issue #520: a qualified ``Class.property`` answer carries its own owner,
+        # and the owner it names is the authoritative one — the point of the
+        # qualified enum is that the pair travels as a single token. Split it back
+        # into the historical two fields so nothing downstream has to know.
+        if "." in ref_property:
+            owner, _, bare = ref_property.partition(".")
+            if bare and owner in pool_class_names:
+                col_ref_class, ref_property = owner, bare
         # WS-NORM (issue #182): canonical state model. The pipeline's single
         # discriminator is ``alignment == "custom"``; a "mapped" alignment with no
         # ``ref_property`` is contradictory (it cannot be counted as a real map),
@@ -2057,7 +2453,7 @@ def _align_table_once(
             alignment = "custom"
         norm: dict[str, Any] = {
             "column": col_name,
-            "ref_class": str(ca.get("ref_class", ref_class) or ref_class),
+            "ref_class": col_ref_class,
             "ref_property": ref_property,
             "alignment": alignment,
             "confidence": _clamp_confidence(ca.get("confidence", 0.0)),
@@ -2077,6 +2473,20 @@ def _align_table_once(
         if ref_module:
             norm["ref_module"] = ref_module
         alignments.append(norm)
+
+    # Issue #520: the deterministic backstop. A no-op when the qualified enum was in
+    # force; the whole guarantee when it was not (budget overflow, or the provider
+    # rejecting the schema and falling back to plain JSON mode).
+    repaired, rejected = enforce_class_property_pairs(alignments, ref_classes)
+    if repaired or rejected:
+        logger.warning(
+            "Alignment for %s: %d wrong-class propert%s reassigned to their owning "
+            "class, %d rejected as unmatched (no single owner in the candidate pool).",
+            table_name,
+            repaired,
+            "y" if repaired == 1 else "ies",
+            rejected,
+        )
 
     return {
         "ref_class": ref_class,
@@ -3712,6 +4122,8 @@ def _propose_alignments(
             "algorithm_version": ALIGNMENT_ALGORITHM_VERSION,
             "model": model,
             "custom_confidence_floor": round(float(custom_confidence_floor), 4),
+            # Issues #517/#520 — a pre-fix alignment answers a narrower question.
+            "pool_contract": ALIGNMENT_POOL_CONTRACT,
         }
         if cross_module:
             # DD-070: cross-module results must not be reused for a home-only run.
@@ -3817,6 +4229,8 @@ def _propose_alignments(
             "algorithm_version": ALIGNMENT_ALGORITHM_VERSION,
             "model": model,
             "custom_confidence_floor": round(float(custom_confidence_floor), 4),
+            # Issues #517/#520 — see ALIGNMENT_POOL_CONTRACT.
+            "pool_contract": ALIGNMENT_POOL_CONTRACT,
             "max_prompt_classes": max_prompt_classes,
             "retry_min_confidence": retry_min_confidence,
             "retry_min_mapped_ratio": retry_min_mapped_ratio,
@@ -4005,6 +4419,18 @@ def _propose_alignments(
                 indicative_columns=indicative_columns,
                 max_classes=max_prompt_classes,
             )
+            # Issue #517: the class a measurement belongs on is usually not the
+            # anchor but a value object hanging off it, and the flat lexical
+            # shortlist does not reach it. Expand from the anchor first so it gets
+            # first claim on the budget.
+            anchor_class_name = anchor_override or next(
+                (
+                    str(c.get("name") or "")
+                    for c in shortlist_classes
+                    if str(c.get("name") or "").lower() == str(likely_entity).lower()
+                ),
+                "",
+            )
             try:
                 if cross_module:
                     # DD-070: STEP 1 stays home-scoped; STEP 2 uses the widened
@@ -4015,6 +4441,11 @@ def _propose_alignments(
                         property_ref_classes,
                         shortlist_classes,
                         indicative_columns=indicative_columns,
+                    )
+                    prop_pool = prop_pool + expand_value_object_pool(
+                        prop_pool,
+                        property_ref_classes,
+                        anchor_class=anchor_class_name,
                     )
                     result = align_table(
                         client,
@@ -4032,13 +4463,22 @@ def _propose_alignments(
                         trace_session_id=trace_session_id,
                     )
                 else:
+                    value_objects = expand_value_object_pool(
+                        shortlist_classes,
+                        property_ref_classes,
+                        anchor_class=anchor_class_name,
+                    )
                     result = align_table(
                         client,
                         model,
                         table,
                         columns,
-                        shortlist_classes,
+                        shortlist_classes + value_objects,
                         likely_entity=likely_entity,
+                        # Value objects widen STEP 2 only: a tonnage class is a home
+                        # for a column, never a home for a table. Left None when
+                        # nothing was added, so those prompts are unchanged.
+                        table_ref_classes=shortlist_classes if value_objects else None,
                         anchor_override=anchor_override,
                         anchor_status=anchor_status,
                         anchor_confidence=anchor_confidence,

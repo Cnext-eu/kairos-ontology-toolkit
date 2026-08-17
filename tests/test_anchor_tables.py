@@ -127,7 +127,9 @@ class TestRunAndArtifact:
 
         vocab = tmp_path / "sources" / "qargo" / "vocabulary"
         vocab.mkdir(parents=True)
-        (vocab / "stops.vocabulary.ttl").write_text("placeholder", encoding="utf-8")
+        # Parseable-but-empty: the outline is patched below, but the
+        # schema-catalogue screen reads the vocabularies for real.
+        (vocab / "stops.vocabulary.ttl").write_text("# no triples\n", encoding="utf-8")
 
         client = MagicMock()
         message = MagicMock()
@@ -263,6 +265,308 @@ class TestDuplicateNameDerivation:
         domain, basis, owners, _ = derive_domain("Consignment", catalog())
         assert (domain, basis) == ("consignment", "owner")
         assert owners == ["consignment"]
+
+
+def collision_catalog():
+    """Two ``Booking`` copies, both owned by ``booking`` — the live #519 shape.
+
+    The property-free copy is FIRST, because that is what made the live defect:
+    ownership could not separate the copies, so read order decided and
+    ``onerecord/cargo#Booking`` (zero properties in closure) won over
+    ``dcsa/booking#Booking`` (23).
+    """
+    return ClassCatalog(
+        text="- Booking [owned by domain 'booking']: A booking.",
+        index={
+            "Booking": [
+                {"module": "https://onerecord/cargo", "uri": "https://onerecord/cargo#Booking",
+                 "properties": []},
+                {"module": "https://dcsa/booking", "uri": "https://dcsa/booking#Booking",
+                 "properties": ["bookingStatus", "carrierBookingReference", "vesselName"]},
+            ],
+            "Widget": [
+                {"module": "https://ex.org/w", "uri": "https://ex.org/w#Widget",
+                 "properties": ["carrierBookingReference", "vesselName", "bookingStatus"]},
+            ],
+        },
+        owners={"https://onerecord/cargo": ["booking"], "https://dcsa/booking": ["booking"]},
+    )
+
+
+BOOKING_COLUMNS = ["booking_id", "booking_status", "carrier_booking_reference", "vessel_name"]
+
+
+class TestClassCopySelection:
+    """#519 part 1: a name collision must not be decided by catalog read order."""
+
+    def test_property_overlap_breaks_a_name_collision(self):
+        """Both copies owned by 'booking'; only one can carry the table's columns."""
+        from kairos_ontology.core.anchor_tables import choose_class_copy
+
+        cat = collision_catalog()
+        chosen = choose_class_copy(cat.index["Booking"], cat, "booking", BOOKING_COLUMNS)
+        assert chosen["uri"] == "https://dcsa/booking#Booking"
+
+    def test_ownership_still_outranks_overlap(self):
+        """A perfect-overlap class in a module no domain owns must not win: the
+        ownership mark is what took the tested call from 5/6 to 6/6."""
+        from kairos_ontology.core.anchor_tables import choose_class_copy
+
+        cat = collision_catalog()
+        copies = cat.index["Booking"] + cat.index["Widget"]
+        chosen = choose_class_copy(copies, cat, "booking", BOOKING_COLUMNS)
+        assert chosen["uri"] == "https://dcsa/booking#Booking"
+
+    def test_property_count_breaks_a_zero_overlap_tie(self):
+        from kairos_ontology.core.anchor_tables import choose_class_copy
+
+        cat = collision_catalog()
+        chosen = choose_class_copy(cat.index["Booking"], cat, "booking", ["unrelated_field"])
+        assert chosen["uri"] == "https://dcsa/booking#Booking"
+
+    def test_overlap_ignores_generic_tokens(self):
+        """'id'/'name'/'code' match nearly every class and must not score."""
+        from kairos_ontology.core.anchor_tables import column_property_overlap
+
+        copy = {"properties": ["orderName", "orderCode"]}
+        assert column_property_overlap(["shipment_name", "shipment_code"], copy) == 0
+        assert column_property_overlap(["order_reference"], copy) == 1
+
+    def test_no_properties_means_no_overlap(self):
+        from kairos_ontology.core.anchor_tables import column_property_overlap
+
+        assert column_property_overlap(BOOKING_COLUMNS, {"properties": []}) == 0
+
+
+class TestPropertylessAnchorWarning:
+    """#519 part 1, the floor: a 90-column table pinned to a class with no
+    properties produced no class at all, silently."""
+
+    def _run(self, tmp_path, cat, columns, anchor):
+        import json
+
+        from kairos_ontology.core import anchor_tables as at
+
+        vocab = tmp_path / "sources" / "qargo" / "vocabulary"
+        vocab.mkdir(parents=True)
+        (vocab / "bookings.vocabulary.ttl").write_text("# no triples\n", encoding="utf-8")
+
+        client = MagicMock()
+        message = MagicMock()
+        message.content = json.dumps(
+            {"anchors": {"qargo.bookings": {
+                "anchor": anchor, "alternate": None, "confidence": 0.98,
+                "grain_columns": ["booking_id"], "natural_key": ["booking_id"],
+                "load_hint": "scd"}}}
+        )
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=message)]
+        )
+        lines: list[str] = []
+        with patch.object(at, "build_class_catalog", return_value=cat), patch.object(
+            at, "build_source_outline", return_value=[("qargo", "bookings", columns)]
+        ):
+            out = at.run_anchor_tables(
+                client=client, model="m",
+                sources_dir=tmp_path / "sources",
+                catalog_path=tmp_path / "catalog.xml",
+                ref_models_dir=None, accelerator=None,
+                analysis_dir=tmp_path / "_analysis",
+                report=lines.append,
+            )
+        return yaml.safe_load(out.read_text(encoding="utf-8")), lines
+
+    def test_the_artifact_records_the_property_bearing_copy(self, tmp_path):
+        doc, _ = self._run(tmp_path, collision_catalog(), BOOKING_COLUMNS, "Booking")
+        entry = doc["tables"][0]
+        assert entry["anchor_uri"] == "https://dcsa/booking#Booking"
+        assert entry["anchor_properties"] == 3
+        assert entry["anchor_column_overlap"] >= 1
+        assert "warning" not in entry
+
+    def test_a_propertyless_anchor_is_flagged_loudly(self, tmp_path):
+        cat = collision_catalog()
+        cat.index["Booking"] = [cat.index["Booking"][0]]  # only the empty copy resolves
+        doc, lines = self._run(tmp_path, cat, BOOKING_COLUMNS, "Booking")
+        entry = doc["tables"][0]
+        assert entry["anchor_properties"] == 0
+        assert "no properties in the resolved closure" in entry["warning"]
+        assert any("WARNING" in line and "NO properties" in line for line in lines)
+
+    def test_a_columnless_table_is_not_warned_about(self, tmp_path):
+        """Only a table WITH columns makes a propertyless anchor wrong."""
+        cat = collision_catalog()
+        cat.index["Booking"] = [cat.index["Booking"][0]]
+        doc, lines = self._run(tmp_path, cat, [], "Booking")
+        assert "warning" not in doc["tables"][0]
+        assert not any("WARNING" in line for line in lines)
+
+
+def _cols(*specs):
+    """``("name", "sample|sample")`` pairs into profiler column dicts."""
+    return [
+        {"name": name, "samples": samples.split("|") if samples else []}
+        for name, samples in specs
+    ]
+
+
+class TestSchemaCatalogueScreen:
+    """#519 part 2: the source's description of its own schema is not business data.
+
+    A false positive here silently deletes a real business table before anyone
+    sees it, so every rule is deliberately steep and every exclusion carries its
+    evidence. Validated against the live 75-table hub: exactly the four
+    "Qargo Tables Columns Info" sheets, nothing else.
+    """
+
+    def _detect(self, tables, decided=None):
+        from kairos_ontology.core.anchor_tables import detect_schema_catalogue_tables
+
+        return {e["table"]: e for e in detect_schema_catalogue_tables(tables, decided)}
+
+    ALL_TABLE_COLUMN = ("qargo", "Qargo Tables Columns Info__AllTableColumn", _cols(
+        ("table_name", ""), ("column_name", ""), ("data_type", ""),
+        ("ordinal_position", ""), ("is_nullable", ""), ("column_default", ""),
+    ))
+    ALL_TABLES = ("qargo", "Qargo Tables Columns Info__AllTables", _cols(
+        ("table_name", "bookings|orders|stops|companies|contacts|goods"),
+    ))
+    ORDERS = ("qargo", "orders", _cols(("order_id", "1|2"), ("customer_name", "Acme")))
+    BOOKINGS = ("qargo", "bookings", _cols(("booking_id", "1")))
+    STOPS = ("qargo", "stops", _cols(("stop_id", "1")))
+    COMPANIES = ("qargo", "companies", _cols(("company_id", "1")))
+    CONTACTS = ("qargo", "contacts", _cols(("contact_id", "1")))
+    GOODS = ("qargo", "goods", _cols(("goods_id", "1")))
+    BUSINESS = [ORDERS, BOOKINGS, STOPS, COMPANIES, CONTACTS, GOODS]
+
+    def test_an_information_schema_table_is_excluded(self):
+        found = self._detect([self.ALL_TABLE_COLUMN, *self.BUSINESS])
+        assert "information-schema fields" in found[self.ALL_TABLE_COLUMN[1]]["reason"]
+        assert found[self.ALL_TABLE_COLUMN[1]]["disposition"] == "not-business-data"
+
+    def test_a_table_whose_rows_name_other_tables_is_excluded(self):
+        found = self._detect([self.ALL_TABLES, *self.BUSINESS])
+        assert "names of 6 other tables" in found[self.ALL_TABLES[1]]["reason"]
+
+    def test_business_tables_are_never_touched(self):
+        found = self._detect([self.ALL_TABLE_COLUMN, self.ALL_TABLES, *self.BUSINESS])
+        assert set(found) == {self.ALL_TABLE_COLUMN[1], self.ALL_TABLES[1]}
+
+    def test_a_business_table_with_a_name_column_is_kept(self):
+        """The stated false positive to avoid: 'name' is not evidence of anything."""
+        lookup = ("qargo", "order_types", _cols(("name", "standard|express"), ("code", "S|E")))
+        assert self._detect([lookup, *self.BUSINESS]) == {}
+
+    def test_a_wide_table_holding_table_names_is_kept(self):
+        """A polymorphic audit/comment table legitimately records entity names;
+        only a table whose ENTIRE content is a list of tables is a catalogue."""
+        audit = ("qargo", "audit_log", _cols(
+            ("entity", "bookings|orders|stops|companies|contacts|goods"),
+            ("actor", "ada"), ("action", "update"), ("at", "2026-01-01"),
+            ("before", "{}"), ("after", "{}"),
+        ))
+        assert self._detect([audit, *self.BUSINESS]) == {}
+
+    def test_two_catalogue_columns_are_not_enough(self):
+        """A shipping table recording a data_type and a column_name is not a catalogue."""
+        near = ("qargo", "field_overrides", _cols(
+            ("column_name", ""), ("data_type", ""), ("order_id", ""), ("override", ""),
+        ))
+        assert self._detect([near, *self.BUSINESS]) == {}
+
+    def test_a_sibling_sheet_of_a_proven_catalogue_workbook_is_excluded(self):
+        """The __orders_table case: its own columns look exactly like business
+        data — nothing is suspicious about it except the company it keeps."""
+        sheet = ("qargo", "Qargo Tables Columns Info__orders_table", _cols(
+            ("order_id", "1"), ("customer_name", "Acme"), ("total_price", "10"),
+        ))
+        found = self._detect([self.ALL_TABLE_COLUMN, sheet, *self.BUSINESS])
+        assert "shown to be a schema catalogue by sibling sheet" in found[sheet[1]]["reason"]
+
+    def test_a_sheet_of_a_business_workbook_is_kept(self):
+        """Same shape, workbook name that claims nothing about schemas."""
+        proven = ("qlik", "Margins 2025__AllTableColumn", self.ALL_TABLE_COLUMN[2])
+        sheet = ("qlik", "Margins 2025__Containers", _cols(("unit", "40ft"), ("margin", "3")))
+        found = self._detect([proven, sheet])
+        assert sheet[1] not in found
+        assert proven[1] in found, "the catalogue sheet itself still goes"
+
+    def test_the_sibling_rule_does_not_chain(self):
+        """A sheet excluded BY the sibling rule is not evidence for anything else."""
+        sheet_a = ("qargo", "Tables And Columns__extract_a", _cols(("a", "1")))
+        sheet_b = ("qargo", "Tables And Columns__extract_b", _cols(("b", "1")))
+        assert self._detect([sheet_a, sheet_b]) == {}
+
+    def test_a_recorded_disposition_overrules_the_heuristic(self):
+        """Someone already decided this table is in scope; a heuristic does not
+        get to overturn a ledger entry."""
+        found = self._detect(
+            [self.ALL_TABLES, *self.BUSINESS],
+            {("qargo", self.ALL_TABLES[1]): "bound"},
+        )
+        assert found == {}
+
+    def test_a_matching_not_business_data_disposition_still_excludes(self):
+        found = self._detect(
+            [self.ALL_TABLES, *self.BUSINESS],
+            {("qargo", self.ALL_TABLES[1]): "not-business-data"},
+        )
+        assert self.ALL_TABLES[1] in found
+
+    def test_table_names_are_matched_per_system(self):
+        """Another system's table names are not evidence about this one."""
+        listing = ("qargo", "Tables Columns__list", _cols(
+            ("table_name", "bookings|orders|stops|companies|contacts|goods"),
+        ))
+        elsewhere = [("qlik", t, c) for _, t, c in self.BUSINESS]
+        assert self._detect([listing, *elsewhere]) == {}
+
+
+class TestSchemaCatalogueIsRoutedBeforeAnchoring:
+    def test_excluded_tables_are_reported_and_never_anchored(self, tmp_path):
+        import json
+
+        from kairos_ontology.core import anchor_tables as at
+
+        (tmp_path / "sources").mkdir()
+        catalogue = ("qargo", "Qargo Tables Columns Info__AllTables", _cols(
+            ("table_name", "bookings|orders|stops|companies|contacts|goods"),
+        ))
+        business = [
+            ("qargo", "orders", _cols(("order_id", "1"))),
+            ("qargo", "bookings", _cols(("booking_id", "1"))),
+            ("qargo", "stops", _cols(("stop_id", "1"))),
+            ("qargo", "companies", _cols(("company_id", "1"))),
+            ("qargo", "contacts", _cols(("contact_id", "1"))),
+            ("qargo", "goods", _cols(("goods_id", "1"))),
+        ]
+        client = MagicMock()
+        message = MagicMock()
+        message.content = json.dumps({"anchors": {}})
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=message)]
+        )
+        lines: list[str] = []
+        with patch.object(at, "build_class_catalog", return_value=catalog()), patch.object(
+            at, "read_source_tables", return_value=[catalogue, *business]
+        ):
+            out = at.run_anchor_tables(
+                client=client, model="m",
+                sources_dir=tmp_path / "sources",
+                catalog_path=tmp_path / "catalog.xml",
+                ref_models_dir=None, accelerator=None,
+                analysis_dir=tmp_path / "_analysis",
+                report=lines.append,
+            )
+        doc = yaml.safe_load(out.read_text(encoding="utf-8"))
+        assert [e["table"] for e in doc["excluded"]] == [catalogue[1]]
+        assert doc["excluded"][0]["reason"]
+        assert doc["table_count"] == len(business), "screened out before anchoring"
+        assert catalogue[1] not in {t["table"] for t in doc["unanchored"]}
+        assert any("schema-catalogue" in line for line in lines)
+
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert catalogue[1] not in prompt, "a screened table must not reach the model"
 
 
 class TestRegroupByAnchor:

@@ -21,6 +21,16 @@ must be edited and applied deliberately. Nothing here writes a
 ``blueprint-gap``/``deferred``/``registered-extension`` disposition on its own:
 those are the answers that shape the model, and a drafting tool that quietly
 chose them would recreate the silent-omission failure the gate exists to prevent.
+
+The one disposition it *does* write is ``not-business-data``, and that is the one
+that cannot be taken back cheaply: it removes the column from the DD-169 gate
+entirely rather than deferring it, so a false positive disappears instead of
+queueing. DD-186's case for deterministic drafting rests on deterministic errors
+being cheap to re-run, which only holds while the rule is right. So before any
+auto-disposition is written it is cross-checked against what alignment said about
+the same column (:func:`find_disposition_conflicts`), and any disagreement is
+withheld and surfaced in the decision sheet rather than resolved in favour of
+whichever stage happened to run first.
 """
 
 from __future__ import annotations
@@ -37,7 +47,9 @@ import yaml
 from .alignment_report import (
     REASON_OPERATIONAL,
     REASON_VENDOR_SLOT,
+    AlignmentReport,
     GapGroup,
+    UnmappedColumn,
     build_alignment_report,
     group_gaps_by_column,
 )
@@ -57,9 +69,12 @@ DECISION_SHEET_FILENAME = "gap-decisions.yaml"
 
 #: Reason codes that are decidable by rule, and the disposition each implies.
 #:
-#: These are not judgments deferred to a human — ``classify_unmapped`` has already
-#: proved the classification from the column's own name and evidence. An audit
-#: timestamp is not business data whichever domain it sits in.
+#: An audit timestamp is not business data whichever domain it sits in — but
+#: ``classify_unmapped`` proves "audit" from the column *name*, and a name cannot
+#: tell an audit timestamp from the row's occurrence timestamp. On an append-grain
+#: ledger the latter is the central fact of the row. So a reason code here means
+#: "eligible for the rule", not "decided": every candidate must still clear
+#: :func:`find_disposition_conflicts` before it is written.
 AUTO_DISPOSITIONS: dict[str, str] = {
     REASON_OPERATIONAL: "not-business-data",
     REASON_VENDOR_SLOT: "not-business-data",
@@ -295,11 +310,287 @@ def _name_tokens(column_name: str) -> list[str]:
     return text.lower().split()
 
 
+#: Alignment confidence at or above which a mapped column counts as business data.
+#:
+#: Set to the aligner's own review floor: below it the mapping is itself flagged for
+#: review, so it cannot outrank a disposition. At or above it, alignment has made a
+#: positive claim about the column and a name-derived "no business meaning" is a
+#: contradiction, not a refinement.
+MAPPED_CONFIDENCE_FLOOR = 0.6
+
+#: Name tokens that make a column an audit *action* or audit *artifact*.
+#:
+#: This is the narrowing DD-186 needed. ``classify_unmapped`` treats the bare
+#: substring ``timestamp`` as operational, which is a shape rather than a meaning:
+#: it matches ``created_timestamp`` (audit) and ``transaction_timestamp`` (the
+#: occurrence of a packaging movement) identically. A column is safely silenced
+#: only when its name says what was done to the *row* — created, updated, ingested,
+#: loaded — or names bookkeeping the row carries (guid, hash, tenant, ETL).
+#:
+#: ``by`` is deliberately absent: matched loosely it swallows ``owned_by_subco``,
+#: which is business data. It is checked as a trailing token instead.
+_AUDIT_NAME_TOKENS = frozenset(
+    {
+        "created", "create", "creation", "updated", "update", "modified", "modify",
+        "inserted", "insert", "deleted", "delete", "archived", "archive",
+        "ingest", "ingested", "ingestion", "loaded", "etl", "dwh", "dw",
+        "rowversion", "version", "tenant", "guid", "uuid", "uid", "hash", "checksum",
+        "sys", "system", "sourcesystem", "audit", "batch", "sync", "snapshot",
+    }
+)
+
+#: Tokens that make a column time-valued. Deliberately disjoint from the audit
+#: tokens above — being a timestamp is what the name says, not what it means.
+_TIME_TOKENS = frozenset({"timestamp", "datetime", "date", "time", "ts", "dt"})
+
+#: Table names whose rows are occurrences rather than entities, and the anchor
+#: classes that say the same thing. On this grain the row's timestamp is the fact
+#: the row exists to record, so calling it metadata is not a near miss.
+_EVENT_GRAIN_RE = re.compile(
+    r"(?:^|[^a-z])(transactions?|events?|movements?|journals?|ledgers?|histor(?:y|ies)"
+    r"|logs?|entries|activit(?:y|ies)|scans?|readings?|messages?|postings?)(?:$|[^a-z])",
+    re.I,
+)
+_EVENT_GRAIN_CLASS_RE = re.compile(r"event|transaction|movement|journal|posting", re.I)
+
+
+@dataclass(frozen=True)
+class DispositionConflict:
+    """One column the rule would silence that the alignment pass disagrees about.
+
+    Surfaced rather than resolved. The two stages reached different answers from
+    different evidence, and picking the one that ran first is how the packaging
+    ledger's occurrence timestamp became metadata.
+    """
+
+    system: str
+    table: str
+    column: str
+    domain: str
+    reason: str
+    would_record: str
+    conflict: str
+    evidence: tuple[str, ...] = ()
+    #: What the ledger already says, when a previous run wrote the disposition
+    #: before this check existed. The recovery path for entries already on disk.
+    recorded_disposition: str = ""
+
+    def to_entry(self) -> dict[str, Any]:
+        return {
+            "system": self.system,
+            "table": self.table,
+            "column": self.column,
+            "domain": self.domain,
+            "reason": self.reason,
+            "withheld_disposition": self.would_record,
+            "conflict": self.conflict,
+            "evidence": list(self.evidence),
+            **(
+                {"already_recorded_as": self.recorded_disposition}
+                if self.recorded_disposition
+                else {}
+            ),
+            "remediation": (
+                "Decide it explicitly: 'kairos-ontology source-disposition set --system "
+                f"{self.system} --table {self.table} --column {self.column} "
+                '--disposition <...> --rationale "..."\'.'
+            ),
+        }
+
+
+def is_audit_named(column: str) -> bool:
+    """Whether the name itself names an audit action or artifact.
+
+    ``created_at``, ``last_ingest_date``, ``row_version``, ``tenant_id`` — yes.
+    ``transaction_timestamp``, ``settled_timestamp``, ``owned_by_subco`` — no.
+    """
+    tokens = _name_tokens(column)
+    return bool(set(tokens) & _AUDIT_NAME_TOKENS) or (len(tokens) > 1 and tokens[-1] == "by")
+
+
+def _is_time_valued(column: str) -> bool:
+    """Whether any token in the name marks the column as carrying a time."""
+    return bool(set(_name_tokens(column)) & _TIME_TOKENS)
+
+
+def load_alignment_facts(
+    analysis_dir: Path,
+) -> tuple[dict[tuple[str, str, str], tuple[float, str, str]], dict[tuple[str, str], set[str]]]:
+    """Read what alignment *positively claimed*, which the report does not retain.
+
+    Returns ``({(system, table, column): (confidence, ref_property, domain)},
+    {(system, table): {anchor class}})``. :class:`AlignmentReport` counts mapped
+    columns but keeps only the unmapped ones, and the cross-check needs the mapped
+    side — a column mapped at 0.90 in one domain and called metadata in another is
+    exactly the disagreement worth catching. Read straight from the alignment files
+    rather than widening the report, whose shape serves the coverage view.
+
+    Where a column is mapped in more than one domain the strongest claim wins: the
+    ledger is keyed on ``(system, table, column)`` with no domain, so one confident
+    mapping anywhere contradicts the entry.
+    """
+    mapped: dict[tuple[str, str, str], tuple[float, str, str]] = {}
+    anchors: dict[tuple[str, str], set[str]] = {}
+    directory = Path(analysis_dir)
+    if not directory.is_dir():
+        return mapped, anchors
+    for path in sorted(directory.glob("*-alignment.yaml")):
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:  # defensive: one broken file must not disable the guard
+            logger.warning("Could not read %s for the disposition cross-check", path.name)
+            continue
+        if not isinstance(document, dict):
+            continue
+        domain = str(document.get("domain") or path.stem)
+        for table in document.get("tables") or ():
+            if not isinstance(table, dict):
+                continue
+            system = str(table.get("system") or "")
+            name = str(table.get("table") or "")
+            if table.get("ref_class"):
+                anchors.setdefault((system, name), set()).add(str(table["ref_class"]))
+            for column in table.get("columns") or ():
+                if not isinstance(column, dict) or not column.get("ref_property"):
+                    continue
+                try:
+                    confidence = float(column.get("confidence") or 0.0)
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                key = (system, name, str(column.get("column") or ""))
+                if key not in mapped or confidence > mapped[key][0]:
+                    mapped[key] = (confidence, str(column["ref_property"]), domain)
+    return mapped, anchors
+
+
+def _auto_disposition_conflict(
+    column: UnmappedColumn,
+    *,
+    mapped: dict[tuple[str, str, str], tuple[float, str, str]],
+    anchors: dict[tuple[str, str], set[str]],
+) -> tuple[str, tuple[str, ...]]:
+    """Return ``(why this must not be auto-silenced, evidence)``, or ``("", ())``.
+
+    Three disagreements, in descending strength. A confident reference mapping is
+    checked whatever the column is called — if alignment mapped ``created_at`` to a
+    real property, that is still a contradiction worth a reader. The other two only
+    apply to columns that are *not* audit-named, because for those the reason code
+    rests on the name alone and the name is the thing being doubted.
+    """
+    key = (column.system, column.table, column.column)
+    reasons: list[str] = []
+    evidence: list[str] = []
+
+    scored = mapped.get(key)
+    if scored is not None and scored[0] >= MAPPED_CONFIDENCE_FLOOR:
+        confidence, ref_property, domain = scored
+        reasons.append(
+            f"alignment mapped it to '{ref_property}' at {confidence:.2f} in the "
+            f"{domain} domain"
+        )
+        evidence.append(f"mapped:{domain}/{ref_property}@{confidence:.2f}")
+
+    if not is_audit_named(column.column):
+        if column.proposal:
+            proposed = (
+                f"{column.proposal.get('on_class', '')}.{column.proposal.get('name', '')}"
+            ).strip(".")
+            reasons.append(
+                f"the aligner proposed a hub-local property '{proposed}' for it, which "
+                "asserts real business data with no reference home"
+            )
+            evidence.append(f"proposed-local-property:{proposed}")
+        if _is_time_valued(column.column):
+            grain = _event_grain(column.system, column.table, anchors)
+            reasons.append(
+                (
+                    "it is the occurrence timestamp of a row on an event/transaction-grain "
+                    f"table ({grain}), not an audit stamp"
+                )
+                if grain
+                else (
+                    "it is time-valued but its name states no audit action "
+                    "(created/updated/ingested/loaded), so 'audit timestamp' is unproven"
+                )
+            )
+            evidence.append(f"occurrence-timestamp:{grain or 'name-states-no-audit-action'}")
+
+    if not reasons:
+        return "", ()
+    return (
+        f"Reason code '{column.reason}' would silence this as not-business-data, but "
+        + "; ".join(reasons)
+        + ".",
+        tuple(evidence),
+    )
+
+
+def _event_grain(system: str, table: str, anchors: dict[tuple[str, str], set[str]]) -> str:
+    """Describe why this table's rows are occurrences, or ``""`` if they are not."""
+    if _EVENT_GRAIN_RE.search(table):
+        return f"table name '{table}'"
+    matched = sorted(c for c in anchors.get((system, table), ()) if _EVENT_GRAIN_CLASS_RE.search(c))
+    return f"anchored to {', '.join(matched)}" if matched else ""
+
+
+def find_disposition_conflicts(
+    hub_root: Path, *, report: AlignmentReport | None = None
+) -> list[DispositionConflict]:
+    """Every column the auto-disposition rule and the alignment pass disagree about.
+
+    Reports on the whole corpus, not just what a run is about to write, so entries a
+    previous run already recorded come back with ``recorded_disposition`` set. That
+    matters because ``not-business-data`` drops the column out of the DD-169 gate:
+    once written, nothing else would ever ask about it again.
+
+    Deduplicated on ``(system, table, column)`` — the ledger has no domain in its
+    key, so one conflict anywhere is one conflict.
+    """
+    hub_root = Path(hub_root)
+    analysis = hub_root / "integration" / "sources" / "_analysis"
+    if report is None:
+        report = build_alignment_report(analysis, hub_root=hub_root)
+    mapped, anchors = load_alignment_facts(analysis)
+    recorded = load_dispositions(hub_root)
+
+    conflicts: dict[tuple[str, str, str], DispositionConflict] = {}
+    for domain in report.domains:
+        for column in domain.unmapped:
+            would_record = AUTO_DISPOSITIONS.get(column.reason)
+            if not would_record:
+                continue
+            why, evidence = _auto_disposition_conflict(column, mapped=mapped, anchors=anchors)
+            if not why:
+                continue
+            key = (column.system, column.table, column.column)
+            if key in conflicts:
+                continue
+            entry = recorded.get(key) or recorded.get((column.system, column.table, "")) or {}
+            conflicts[key] = DispositionConflict(
+                system=column.system,
+                table=column.table,
+                column=column.column,
+                domain=column.domain,
+                reason=column.reason,
+                would_record=would_record,
+                conflict=why,
+                evidence=evidence,
+                recorded_disposition=str(entry.get("disposition") or ""),
+            )
+    return sorted(conflicts.values(), key=lambda c: (c.system, c.table, c.column))
+
+
 def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
     """Record the rule-decidable dispositions, skipping anything already decided.
 
     Idempotent and never overwrites: a column a human has already dispositioned is
     left exactly as it is, whatever this would have proposed.
+
+    A candidate the alignment pass contradicts is withheld rather than written, and
+    returned under ``conflicts`` for the decision sheet to carry. ``not-business-data``
+    is the one disposition that removes a column from the DD-169 gate instead of
+    deferring it, so the cost of the two errors is not symmetric: a withheld column
+    stays on the reviewer's list, a wrongly written one disappears.
     """
     report = build_alignment_report(
         Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
@@ -307,9 +598,12 @@ def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[st
     already = load_dispositions(Path(hub_root))
     decided_keys = {(k[0], k[1], k[2]) for k in already}
     table_level = {(k[0], k[1]) for k in already if not k[2]}
+    conflicts = find_disposition_conflicts(Path(hub_root), report=report)
+    conflicted = {(c.system, c.table, c.column) for c in conflicts}
 
     written = 0
     skipped = 0
+    withheld = 0
     by_reason: dict[str, int] = {}
     for domain in report.domains:
         for column in domain.unmapped:
@@ -319,6 +613,9 @@ def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[st
             key = (column.system, column.table, column.column)
             if key in decided_keys or (column.system, column.table) in table_level:
                 skipped += 1
+                continue
+            if key in conflicted:
+                withheld += 1
                 continue
             by_reason[column.reason] = by_reason.get(column.reason, 0) + 1
             written += 1
@@ -334,13 +631,26 @@ def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[st
                 decided_by="autopilot",
                 evidence=(f"reason-code:{column.reason}", f"data-type:{column.data_type}"),
             )
-    return {"written": written, "skipped_already_decided": skipped, "by_reason": by_reason}
+    return {
+        "written": written,
+        "skipped_already_decided": skipped,
+        "by_reason": by_reason,
+        "withheld_conflicting": withheld,
+        "conflicts": [c.to_entry() for c in conflicts],
+    }
 
 
 def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[str, Any]:
-    """Draft the reviewable sheet for gap columns that still need a human."""
+    """Draft the reviewable sheet for gap columns that still need a human.
+
+    Also carries a ``conflicts`` block: columns the auto-disposition rule would have
+    silenced as ``not-business-data`` while alignment claimed the opposite. They are
+    listed, never proposed — the sheet's job is to put the disagreement in front of
+    someone, and a stage that resolves it by itself is the defect, not the fix.
+    """
     analysis = Path(hub_root) / "integration" / "sources" / "_analysis"
     report = build_alignment_report(analysis, hub_root=Path(hub_root))
+    conflicts = find_disposition_conflicts(Path(hub_root), report=report)
     already = load_dispositions(Path(hub_root))
     decided_columns = {(k[0], k[1], k[2]) for k in already}
     table_level = {(k[0], k[1]) for k in already if not k[2]}
@@ -382,6 +692,8 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             "families": len(families),
             "loose_names": len(loose),
             "with_a_proposal": sum(1 for p in loose if p.proposed_disposition),
+            "auto_disposition_conflicts": len(conflicts),
+            "conflicts_already_recorded": sum(1 for c in conflicts if c.recorded_disposition),
         },
         "how_to_use": (
             "Set 'decision' to one of "
@@ -390,10 +702,16 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             "'kairos-ontology draft-gap-decisions --apply'. Leave blank to decide "
             "later. 'proposed_disposition' is a draft and is never applied on its own; "
             "note that 'blueprint-gap' asserts a reference-model defect to file "
-            "upstream, so it is proposed sparingly and never assumed."
+            "upstream, so it is proposed sparingly and never assumed. The 'conflicts' "
+            "block is not part of this workflow: those columns were withheld from the "
+            "auto-disposition rule because alignment disagreed with it, and each needs "
+            "a per-column answer via 'kairos-ontology source-disposition set'. Any "
+            "carrying 'already_recorded_as' was written by an earlier run before the "
+            "cross-check existed — re-read those against the raw profile."
         ),
         "families": families,
         "decisions": [p.to_entry() for p in loose],
+        "conflicts": [c.to_entry() for c in conflicts],
     }
 
 
