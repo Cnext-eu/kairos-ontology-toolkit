@@ -5506,6 +5506,11 @@ verbatim:
 
 ## DD-084: Deterministic address relationship candidates surfaced as advisory metadata (issue #192)
 
+> **Superseded in part by DD-188 (2026-08-17).** The detector described here survives, but its vocabulary no longer lives in the toolkit: the address part
+> kinds, role qualifiers and weak/context rules now come from the accelerator pack's `client-hub-blueprint/entity-projections.yaml`, and the six
+> `_ADDRESS_*` constants have been deleted. The candidate shape below is also out of date — it is now `type: entity_projection_candidate` with
+> `projection_id`, `part_kinds`, and a resolved `target_class_uri` / `target_resolved` (the Phase A2 deferral noted below is closed). See DD-188.
+
 **Status:** Accepted
 **Date:** 2026-06-20
 **Affects:** `src/kairos_ontology/propose_alignment.py`,
@@ -9081,6 +9086,11 @@ a previously-registered domain from the managed block.
 ---
 
 ## DD-127: Domain-Ownership Handoffs and Generalized, Stable-Cluster Relationship Candidates
+
+> **Superseded in part by DD-188 (2026-08-17).** The detector described here survives, but its vocabulary no longer lives in the toolkit: the address part
+> kinds, role qualifiers and weak/context rules now come from the accelerator pack's `client-hub-blueprint/entity-projections.yaml`, and the six
+> `_ADDRESS_*` constants have been deleted. The candidate shape below is also out of date — it is now `type: entity_projection_candidate` with
+> `projection_id`, `part_kinds`, and a resolved `target_class_uri` / `target_resolved` (the Phase A2 deferral noted below is closed). See DD-188.
 
 **Status:** Accepted
 **Date:** 2026-08-09

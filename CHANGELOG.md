@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.9.0] — 2026-08-17
+
+### Changed
+- **The address detector in `propose-alignment` is now driven by pack data, not by constants compiled into the toolkit (#531, DD-188).** `propose_alignment.py` carried postal-address semantics across six `_ADDRESS_*` vocabularies, including an *e-commerce* role list — `billing`, `shipping`, `mailing`, `home`, `work`, `delivery` — with no `pickup`, `origin` or `destination`. On a live logistics hub that asymmetry was the whole defect: `delivery_location_city` clustered and `pickup_location_city` did not. All six are deleted. The detection *logic* stays in the toolkit (cluster a table's columns by role, require `min_complementary_parts` distinct kinds, resolve the target class in the domain's import closure, emit an advisory candidate); every token now comes from the accelerator pack's `client-hub-blueprint/entity-projections.yaml`, read by the new `core/entity_projections.py` alongside the `data-domains.yaml` precedent.
+
+  Measured on the 75-table hub with the logistics pack's file: `stops` 1 candidate / 5 columns → **3 / 18**; `orders` 0 → **3 / 13**; `shipments` 0 → **2 / 10**; `bookings` 0 → **1 / 24**; `consignments` 1 / 5 → **2 / 12**; hub-wide 10 clusters → **29**. No new cluster appeared on a party or person table: `contacts` still emits none and `companies` is unchanged, because the `weak: true` guard on `city`/`country` and the stricter `requires: context` guard on `state`/`region` were carried over intact.
+
+- **BREAKING for hubs pinned to reference-models < 1.31.0: no `entity-projections.yaml` means no relationship candidates.** There is deliberately no built-in fallback vocabulary — a silent fallback is exactly what DD-188 forbids and would have made this change cosmetic. A pack that ships no such file (which `financial-services` does on purpose) produces no candidates, and `propose-alignment` says so in its run output rather than letting the absence look like a hub with no address columns. These candidates are advisory (`requires_human_confirmation: true`) and have never altered a disposition, so nothing downstream breaks; upgrade the pack to get them back.
+
+- **Candidate shape.** The emitted candidate is now `type: entity_projection_candidate` (was `address_relationship_candidate`), gains `projection_id`, `target_class_uri` and `target_resolved`, and renames `address_parts` → `part_kinds`. A candidate whose `target_candidates` do not resolve in the domain's closure is still emitted with `target_resolved: false` and the reason in its rationale — never guessed at, never dropped.
+
+- `_FINANCIAL_COLUMN_TOKENS` and `hasportof` in `_LOCATION_ROLE_PREFIXES` are the same class of debt with different call sites and are explicitly out of scope here; DD-188 records them.
+
 ## [5.8.0] — 2026-08-17
 
 ### Fixed
