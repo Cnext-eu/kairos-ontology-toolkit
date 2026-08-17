@@ -141,3 +141,50 @@ class TestHelpTextDocumentsWhatTheCommandsDo:
         assert "WITHHELD" in out
         assert "conflicts:" in out
         assert "DD-169" in out
+
+class TestProposeAlignmentEscapeHatch:
+    """#528 follow-up: the escape hatch is only real if the flag reaches the core.
+
+    ``run_propose_alignment`` takes ``**kwargs``, so a misspelled or unforwarded
+    parameter fails at run time, not import time, and a --help assertion would
+    still pass. These pin the wiring itself.
+    """
+
+    def _forwarded(self, monkeypatch, argv):
+        seen = {}
+
+        def _fake(analysis_dir, sources_dir, catalog_path, output_dir, **kwargs):
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr(
+            "kairos_ontology.core.propose_alignment.run_propose_alignment", _fake
+        )
+        monkeypatch.setattr(
+            "kairos_ontology.cli.sources.run_propose_alignment", _fake, raising=False
+        )
+        CliRunner().invoke(cli, argv)
+        return seen
+
+    def test_the_flag_is_forwarded_as_honour_table_exclusions(self, monkeypatch, tmp_path):
+        seen = self._forwarded(
+            monkeypatch,
+            ["propose-alignment", "--no-schema-catalogue-screen",
+             "--analysis", str(tmp_path), "--sources", str(tmp_path)],
+        )
+        assert seen, "monkeypatch never intercepted"
+        assert seen.get("honour_table_exclusions") is False
+
+    def test_honouring_the_screen_is_the_default(self, monkeypatch, tmp_path):
+        seen = self._forwarded(
+            monkeypatch,
+            ["propose-alignment", "--analysis", str(tmp_path), "--sources", str(tmp_path)],
+        )
+        assert seen, "monkeypatch never intercepted"
+        assert seen.get("honour_table_exclusions") is True
+
+    def test_the_flag_is_documented(self):
+        result = CliRunner().invoke(cli, ["propose-alignment", "--help"])
+        assert result.exit_code == 0
+        assert "--no-schema-catalogue-screen" in result.output
+        assert "excluded_tables" in result.output, "say where the record lands"

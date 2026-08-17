@@ -72,7 +72,12 @@ from .ai_provider import (
     sanitize_provider_error,
 )
 from ._provenance import ai_attribution, provenance_comment
-from .anchor_tables import ANCHOR_CONFIDENCE_FLOOR, load_table_anchors, regroup_by_anchor
+from .anchor_tables import (
+    ANCHOR_CONFIDENCE_FLOOR,
+    load_excluded_tables,
+    load_table_anchors,
+    regroup_by_anchor,
+)
 from .tracing import call_metadata, flush_tracing, new_session_id
 from .ai_preflight import require_ai_provider
 from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
@@ -525,6 +530,13 @@ class DomainAlignment:
     #: ``unresolved_anchors.py``) so the decision survives re-runs and isn't
     #: silently overwritten by a "nearest class" guess.
     unresolved_anchors: list[dict[str, Any]] = field(default_factory=list)
+    #: #528 follow-up — tables this domain's affinity claimed but which the
+    #: schema-catalogue screen had already routed to not-business-data, each with
+    #: the evidence that excluded it. Kept on the artifact rather than dropped
+    #: silently: the screen is a heuristic, so a table that vanishes from a
+    #: domain has to be answerable ("why is my orders sheet not aligned?")
+    #: without re-running anything.
+    excluded_tables: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -3808,6 +3820,7 @@ def _propose_alignments(
     allow_fallback_output: bool = False,
     generation_stats: dict[str, int] | None = None,
     conformance_artifact_path: Path | None = None,
+    honour_table_exclusions: bool = True,
 ) -> tuple[list[Path], list[DomainAlignment]]:
     """Run alignment for all domains found in affinity reports.
 
@@ -3861,6 +3874,16 @@ def _propose_alignments(
             ``unresolved_anchors.py``) and no property/custom-column claims are
             generated for it. Default ``None`` (or a missing/unreadable file)
             leaves this run's output byte-identical to before this feature.
+        honour_table_exclusions: #528 follow-up — when True (default), tables the
+            schema-catalogue screen recorded under ``excluded`` in
+            ``table-anchors.yaml`` are not aligned. They describe another table's
+            columns, so every claim made about them is a claim about metadata.
+            Each one is reported with its evidence and recorded in the owning
+            domain's ``excluded_tables`` block rather than silently dropped. Set
+            False to align every affinity table regardless (the counterpart of
+            ``anchor-tables --no-schema-catalogue-screen``, for when the screen
+            has a false positive). A hub with no ``table-anchors.yaml`` has no
+            exclusions to honour and is unaffected either way.
 
     Returns ``(written_paths, built_alignments)``. When *emit_output* is False the
     pipeline only builds and returns the in-memory :class:`DomainAlignment` objects
@@ -3975,6 +3998,62 @@ def _propose_alignments(
                 f"No domains matched filter: {domains_filter}. "
                 f"Available: {list(load_affinity_reports(analysis_dir).keys())}"
             )
+
+    # #528 follow-up: honour the schema-catalogue screen. Alignment discovers its
+    # work from the affinity reports, which are written before anchoring and know
+    # nothing about it, so a table already judged "not business data at all" was
+    # still aligned and its columns still landed in the registry as claims about
+    # a reference class. That verdict lives in table-anchors.yaml; read it here,
+    # once, so the exclusion is honoured at the point work is enumerated instead
+    # of being filtered out again by every downstream stage.
+    #
+    # Removing a table changes this domain's affinity hash, so the domain-level
+    # freshness skip below correctly rebuilds a registry written before the fix
+    # rather than serving the stale one that still contains the excluded table.
+    excluded_by_domain: dict[str, list[dict[str, str]]] = {}
+    table_exclusions = load_excluded_tables(analysis_dir) if honour_table_exclusions else {}
+    if table_exclusions:
+        kept_tables: dict[str, list[dict[str, Any]]] = {}
+        for domain_id, tables in domain_tables.items():
+            keep: list[dict[str, Any]] = []
+            for entry in tables:
+                system = str(entry.get("system") or "")
+                table = str(entry.get("table") or "")
+                reason = table_exclusions.get((system, table))
+                if reason is None:
+                    keep.append(entry)
+                    continue
+                excluded_by_domain.setdefault(domain_id, []).append(
+                    {"system": system, "table": table, "reason": reason}
+                )
+            if keep:
+                kept_tables[domain_id] = keep
+        domain_tables = kept_tables
+    dropped = [(d, e) for d, entries in sorted(excluded_by_domain.items()) for e in entries]
+    if dropped:
+        # Reported the way anchoring reports its own screen: the count, then every
+        # table with the evidence that excluded it. A table that simply stopped
+        # appearing in an alignment file would be indistinguishable from a bug.
+        report(
+            f"  🚫 {len(dropped)} table(s) excluded from alignment by the "
+            "schema-catalogue screen (they describe another table's columns, not "
+            "business data):"
+        )
+        for domain_id, entry in dropped:
+            report(f"       {entry['system']}.{entry['table']} [{domain_id}] — {entry['reason']}")
+        report(
+            "       recorded under 'excluded_tables' in each domain's alignment "
+            "file; if one of these is real business data, re-run anchor-tables "
+            "with --no-schema-catalogue-screen or record a table-grain "
+            "disposition for it"
+        )
+    if not domain_tables:
+        raise ValueError(
+            "Every affinity table was excluded by the schema-catalogue screen "
+            f"({len(dropped)} table(s)). Nothing was aligned and no file was "
+            "written. Re-run 'anchor-tables --no-schema-catalogue-screen' if the "
+            "screen is wrong about them."
+        )
 
     # Build source vocab cache: system → vocab_path
     vocab_cache: dict[str, Path] = {}
@@ -4257,6 +4336,7 @@ def _propose_alignments(
             model_used=model,
             affinity_sha256=affinity_hash,
             alignment_params_sha256=params_hash or None,
+            excluded_tables=excluded_by_domain.get(domain_id, []),
         )
 
         # uri-anchor-contract: a previously-persisted "resolved" unresolved_anchor
@@ -5313,6 +5393,11 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         data["alignment_params_sha256"] = alignment.alignment_params_sha256
     if alignment.cross_module_matches:
         data["cross_module_matches"] = alignment.cross_module_matches
+    # #528 follow-up: an excluded table has to be auditable after the run, not
+    # only in the console scrollback — emitted only when the screen actually
+    # dropped something, so an unaffected domain's file is byte-identical.
+    if alignment.excluded_tables:
+        data["excluded_tables"] = alignment.excluded_tables
 
     return data
 

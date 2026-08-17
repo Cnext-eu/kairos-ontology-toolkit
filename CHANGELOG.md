@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.0] — 2026-08-17
+
+### Fixed
+- **Tables the schema-catalogue screen excluded were still aligned (#528, alignment stage).** `_propose_alignments` enumerates its work from the affinity reports, which are written before anchoring and know nothing about the screen; it read `table-anchors.yaml` only for anchor overrides. So a table already judged not business data was aligned anyway and its columns entered the registry as claims about a reference class. This is the single-point fix — nothing excluded now reaches any alignment file, which makes the filters in the conflict detector and the report defence against stale artifacts rather than load-bearing.
+
+  Measured on a live hub: `booking` 79 → 70 mapped columns, `consignment` 45 → 25 — exactly the 9 and 20 columns belonging to the two excluded sheets, with no over-removal. The DD-169 gate falls from **1,097 undecided columns to 922**, the full 175 that belonged to those two tables. No gate was weakened: those columns are simply no longer enumerated, because the table they belong to is no longer aligned.
+
+### Added
+- **`propose-alignment --no-schema-catalogue-screen`** — overrules the screen for a false positive, matching the flag `anchor-tables` already carries.
+- **`excluded_tables` in each domain's alignment file** — the skipped table with the evidence string that excluded it, emitted only when non-empty so unaffected domains are byte-identical. An excluded table is reported in the progress output too: it must be auditable, not silently absent, so a false positive in the screen is questioned rather than invisible.
+
+### Notes
+- A domain left with no tables at all is dropped rather than written as an empty registry over a good one; if that empties every domain the run raises instead of reporting success over nothing.
+- `build_decision_sheet`'s `gap_columns_in_excluded_tables` counter is now structurally zero on any hub re-aligned after this fix (measured 177 → 0). It stays meaningful for hubs whose alignment predates it, so it is left in place.
+
 ## [5.7.0] — 2026-08-17
 
 ### Added
