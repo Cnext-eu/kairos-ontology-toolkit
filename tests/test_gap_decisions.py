@@ -278,3 +278,111 @@ class TestFamilies:
         assert family_of("pickup_location_city") == "pickup"
         assert family_of("PickupLocationCity") == "pickup"
         assert family_of("") == ""
+
+
+class TestAcceptProposals:
+    """The explicit override: proposals become decisions, attributed honestly."""
+
+    def _sheet(self):
+        return {
+            "families": [
+                {"family": "pickup", "domain": "consignment", "decision": "",
+                 "proposed_disposition": "deferred", "members": ["pickup_city"]},
+                {"family": "notes", "domain": "party", "decision": "already-set",
+                 "proposed_disposition": "deferred", "members": ["notes_text"]},
+            ],
+            "decisions": [
+                {"column": "OrderNo", "domain": "booking", "decision": "",
+                 "proposed_disposition": "blueprint-gap"},
+                {"column": "mystery", "domain": "booking", "decision": "",
+                 "proposed_disposition": ""},
+            ],
+        }
+
+    def test_proposals_become_decisions(self):
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = self._sheet()
+        accept_proposals(sheet)
+        assert sheet["families"][0]["decision"] == "deferred"
+        assert sheet["decisions"][0]["decision"] == "blueprint-gap"
+
+    def test_entries_without_a_proposal_default_to_deferred(self):
+        """The only defensible blanket answer: visible, reversible, non-dismissive."""
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = self._sheet()
+        accept_proposals(sheet)
+        assert sheet["decisions"][1]["decision"] == "deferred"
+
+    def test_a_human_decision_is_never_overwritten(self):
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = self._sheet()
+        accept_proposals(sheet)
+        assert sheet["families"][1]["decision"] == "already-set"
+        assert "decided_by" not in sheet["families"][1]
+
+    def test_accepted_entries_are_attributed_to_autopilot(self):
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = self._sheet()
+        accept_proposals(sheet)
+        assert sheet["families"][0]["decided_by"] == "autopilot"
+
+    def test_apply_records_the_given_attribution(self, tmp_path):
+        """An agent accepting drafts must not be recorded as a human decision."""
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        write_alignment(analysis, "party", "companies",
+                        [{"column": "OrderNo", "data_type": "int"}])
+        sheet = build_decision_sheet(tmp_path)
+        for entry in sheet["decisions"]:
+            entry["decision"] = "deferred"
+        write_decision_sheet(tmp_path, sheet)
+        apply_decision_sheet(tmp_path, decided_by="autopilot")
+        recorded = load_dispositions(tmp_path)
+        assert all(e["decided_by"] == "autopilot" for e in recorded.values())
+
+
+class TestBlueprintGapIsFramedAsPotential:
+    """blueprint-gap means 'a reference-model defect to file upstream'. Recorded
+    from a drafted proposal it is weaker: nobody has confirmed the model ought to
+    have had the concept. The entry must say so."""
+
+    def test_the_proposal_says_potential(self):
+        p = propose_for_group(group("OrderNo", count=19, data_type="int"))
+        assert p.proposed_disposition == "blueprint-gap"
+        assert "POTENTIAL" in p.reasoning
+        assert "not mapped yet" in p.reasoning or "no reference-model property" in p.reasoning
+
+    def test_the_recorded_rationale_says_potential_and_not_confirmed(self, tmp_path):
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "booking-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "booking", "tables": [
+                {"system": "qargo", "table": f"t{i}", "ref_class": "C", "columns": [],
+                 "custom_columns": [{"column": "OrderNo", "data_type": "int"}]}
+                for i in range(3)]}),
+            encoding="utf-8")
+        sheet = build_decision_sheet(tmp_path)
+        for entry in sheet["decisions"]:
+            entry["decision"] = "blueprint-gap"
+        write_decision_sheet(tmp_path, sheet)
+        apply_decision_sheet(tmp_path, decided_by="autopilot")
+
+        rationale = load_dispositions(tmp_path)[("qargo", "t0", "OrderNo")]["rationale"]
+        assert "POTENTIAL blueprint gap" in rationale
+        assert "not as a confirmed reference-model defect" in rationale
+
+    def test_deferred_records_that_the_data_is_real_and_unmapped(self, tmp_path):
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        write_alignment(analysis, "party", "companies",
+                        [{"column": "some_field", "data_type": "varchar(max)"}])
+        sheet = build_decision_sheet(tmp_path)
+        for entry in sheet["decisions"]:
+            entry["decision"] = "deferred"
+        write_decision_sheet(tmp_path, sheet)
+        apply_decision_sheet(tmp_path, decided_by="autopilot")
+        rationale = load_dispositions(tmp_path)[("qargo", "companies", "some_field")]["rationale"]
+        assert "not mapped yet" in rationale
+        assert "known gap" in rationale

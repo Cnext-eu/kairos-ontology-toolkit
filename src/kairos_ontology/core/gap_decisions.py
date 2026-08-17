@@ -78,6 +78,25 @@ _AUTO_RATIONALE = {
     ),
 }
 
+#: Framing appended to a recorded rationale, per disposition.
+#:
+#: ``blueprint-gap`` is defined as "a reference-model defect to file upstream".
+#: Recorded from a drafted proposal it is weaker than that: nobody has confirmed
+#: the reference model *ought* to have had the concept. The entry says so, so a
+#: later reader does not mistake a candidate for a filed defect.
+_DISPOSITION_FRAMING: dict[str, str] = {
+    "blueprint-gap": (
+        "POTENTIAL blueprint gap — real business data that is not mapped yet and has "
+        "no reference-model property. Recorded as a candidate for upstream review, "
+        "not as a confirmed reference-model defect: confirm the concept genuinely "
+        "belongs in the accelerator before filing it."
+    ),
+    "deferred": (
+        "Real business data, in scope, not mapped yet. Stays visible as a known gap "
+        "for a later modelling pass."
+    ),
+}
+
 #: Hints that shape a *proposed* disposition for a recurring name. Advisory only:
 #: every proposal lands in the sheet for review, never in the ledger.
 _IDENTIFIER_RE = re.compile(r"(?:^|_)(id|no|nr|code|key|ref|uuid|guid)$", re.I)
@@ -147,17 +166,19 @@ def propose_for_group(group: GapGroup, domain: str = "") -> GapProposal:
     if _IDENTIFIER_RE.search(name) and group.count >= 3:
         return GapProposal(
             name, domain, group.count, group.tables, types, "blueprint-gap", "medium",
-            f"Identifier-shaped name recurring across {group.count} tables — a shared "
-            "business key the reference model does not express. Likely a governed "
-            "identifier concept (scheme + value) rather than a bare string property.",
+            f"POTENTIAL blueprint gap: identifier-shaped name recurring across "
+            f"{group.count} tables — real business data with no reference-model "
+            "property, likely a governed identifier concept (scheme + value) rather "
+            "than a bare string. Confirm before treating it as an upstream defect.",
             suggested,
         )
     if group.count >= 5:
         return GapProposal(
             name, domain, group.count, group.tables, types, "blueprint-gap", "low",
-            f"Appears in {group.count} tables with no reference property — recurrence "
-            "this wide suggests a real shared concept missing from the model, but the "
-            "concept itself needs naming by a human.",
+            f"POTENTIAL blueprint gap: appears in {group.count} tables with no "
+            "reference property — real business data not mapped yet. Recurrence this "
+            "wide suggests a shared concept the model lacks, but the concept needs "
+            "naming by a human before it counts as an upstream defect.",
             suggested,
         )
     return GapProposal(
@@ -520,6 +541,33 @@ FAMILIES ({len(families)}):
     return {"families_described": described, "flagged_incoherent": incoherent}
 
 
+def accept_proposals(sheet: dict[str, Any], *, fallback: str = "deferred") -> dict[str, int]:
+    """Fill every empty ``decision`` from its drafted proposal (DD-186).
+
+    The escape hatch for a hub owner who has read the drafts and wants them taken
+    as decided, rather than typing 526 answers. Only ever called on explicit
+    instruction, and the resulting ledger entries are attributed to ``autopilot``,
+    never to a human.
+
+    Entries with no proposal fall back to *deferred*: "in scope and modelled
+    later; carries a reason and stays visible as a known gap". That is the only
+    defensible blanket answer — it neither dismisses the column as worthless
+    (``not-business-data``) nor asserts a reference-model defect to file upstream
+    (``blueprint-gap``), and it leaves the column visible for a later pass.
+
+    A decision a human already typed is never overwritten.
+    """
+    counts: dict[str, int] = {}
+    for entry in list(sheet.get("families") or []) + list(sheet.get("decisions") or []):
+        if str(entry.get("decision") or "").strip():
+            continue
+        decision = str(entry.get("proposed_disposition") or "").strip() or fallback
+        entry["decision"] = decision
+        entry["decided_by"] = "autopilot"
+        counts[decision] = counts.get(decision, 0) + 1
+    return counts
+
+
 def write_decision_sheet(hub_root: Path, sheet: dict[str, Any]) -> Path:
     """Write the sheet, preserving any 'decision' values already filled in."""
     path = Path(hub_root) / "integration" / "sources" / "_analysis" / DECISION_SHEET_FILENAME
@@ -553,21 +601,31 @@ def write_decision_sheet(hub_root: Path, sheet: dict[str, Any]) -> Path:
     return path
 
 
-def apply_decision_sheet(hub_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+def apply_decision_sheet(
+    hub_root: Path, *, dry_run: bool = False, decided_by: str = "user"
+) -> dict[str, Any]:
     """Apply every filled-in ``decision`` to the ledger, for all its occurrences.
 
     One name-level decision fans out to each column it covers, which is the whole
     point: the reviewer decided ``OrderNo`` once, not nineteen times.
+
+    *decided_by* must describe who actually decided. ``user`` means a human filled
+    the sheet in; an agent accepting drafted proposals on a human's instruction is
+    ``autopilot``, and recording that as ``user`` would put a false attribution in
+    a ledger whose whole value is being auditable.
     """
     path = Path(hub_root) / "integration" / "sources" / "_analysis" / DECISION_SHEET_FILENAME
     if not path.is_file():
         raise FileNotFoundError(f"No decision sheet at {path}. Draft one first.")
     sheet = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    filled = {
-        (str(e.get("domain") or ""), str(e["column"])): str(e["decision"]).strip()
-        for e in sheet.get("decisions") or []
-        if isinstance(e, dict) and str(e.get("decision") or "").strip()
-    }
+    filled: dict[tuple[str, str], str] = {}
+    why: dict[tuple[str, str], str] = {}
+    for e in sheet.get("decisions") or []:
+        if not (isinstance(e, dict) and str(e.get("decision") or "").strip()):
+            continue
+        key = (str(e.get("domain") or ""), str(e["column"]))
+        filled[key] = str(e["decision"]).strip()
+        why[key] = str(e.get("reasoning") or "")
     # A family decision expands to each of its member names. An explicit
     # per-name decision wins over its family's, so a reviewer can rule on the
     # family and carve out one exception without unpicking the family.
@@ -578,7 +636,12 @@ def apply_decision_sheet(hub_root: Path, *, dry_run: bool = False) -> dict[str, 
             continue
         families_applied += 1
         for member in family.get("members") or []:
-            filled.setdefault((str(family.get("domain") or ""), str(member)), decision)
+            key = (str(family.get("domain") or ""), str(member))
+            if filled.setdefault(key, decision) is decision:
+                why.setdefault(
+                    key,
+                    f"Family '{family.get('family')}': {family.get('reasoning') or ''}".strip(),
+                )
 
     invalid = {k: d for k, d in filled.items() if d not in DISPOSITIONS}
     if invalid:
@@ -605,11 +668,17 @@ def apply_decision_sheet(hub_root: Path, *, dry_run: bool = False) -> dict[str, 
                 table=occurrence.table,
                 column=occurrence.column,
                 disposition=decision,
-                rationale=(
-                    f"Reviewed decision for column name '{group.column}', applied to all "
-                    f"{group.count} occurrence(s) via the gap decision sheet."
+                rationale=" ".join(
+                    part
+                    for part in (
+                        _DISPOSITION_FRAMING.get(decision, ""),
+                        why.get((occurrence.domain, group.column), ""),
+                        f"Decision recorded for column name '{group.column}' and applied "
+                        f"to all {group.count} occurrence(s) via the gap decision sheet.",
+                    )
+                    if part
                 ),
-                decided_by="user",
+                decided_by=decided_by,
                 evidence=(f"gap-reason:{occurrence.reason}", f"occurrences:{group.count}"),
             )
     return {
