@@ -28,8 +28,10 @@ import logging
 import hashlib
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +86,11 @@ from ._concurrency import call_with_backoff, map_concurrent, DEFAULT_MAX_WORKERS
 from ._cache import compute_entry_hash, open_cache
 from ._samples import example_values as _render_example_values
 from ._samples import is_pii_column
+from .entity_projections import (
+    EntityProjection,
+    ProjectionConfig,
+    load_entity_projections,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -457,9 +464,11 @@ class TableAlignment:
     ref_class_status: str = "matched"
     #: The original invalid class the model proposed, when it was rejected/fell back.
     rejected_ref_class: str | None = None
-    #: Issue #192 (Phase A1) — deterministic, additive relationship candidates
-    #: (e.g. clustered address columns). Populated only when a detector fires, so
-    #: default output stays unchanged.
+    #: Issue #192 (Phase A1) / DD-188 — deterministic, additive relationship
+    #: candidates (clustered entity-projection columns, downgraded object
+    #: properties). Populated only when a detector fires, so default output stays
+    #: unchanged; the projection detector fires only when the accelerator pack
+    #: ships an ``entity-projections.yaml``.
     relationship_candidates: list[dict[str, Any]] = field(default_factory=list)
     #: DD-179 — relational consistency warnings across the table's whole mapping
     #: (e.g. two distinct role groups collapsing onto one property). Advisory: a
@@ -3366,55 +3375,6 @@ def _object_relationship_downgrade_reason(
 #: Below this LLM confidence a name-mismatched map is considered review-worthy.
 REVIEW_MIN_CONFIDENCE = 0.6
 
-#: Unambiguous address-part tokens — strong enough to flag on their own.
-_ADDRESS_PART_TOKENS = frozenset(
-    {
-        "street",
-        "postalcode",
-        "postcode",
-        "zipcode",
-        "addressline",
-        "housenumber",
-        "houseno",
-    }
-)
-
-#: Address qualifier tokens that, combined with a weak token, confirm an
-#: address-part column (e.g. ``shipper_city``, ``billing_zip``).
-_ADDRESS_QUALIFIER_TOKENS = frozenset(
-    {
-        "shipper",
-        "consignee",
-        "billing",
-        "shipping",
-        "delivery",
-        "invoice",
-        "mailing",
-        "registered",
-        "home",
-        "work",
-        "contact",
-    }
-)
-
-#: Ambiguous address tokens — only treated as address parts together with a
-#: qualifier (bare ``country``/``city`` are too easily citizenship/name fields).
-_ADDRESS_WEAK_TOKENS = frozenset({"city", "country", "zip", "postal", "address"})
-
-#: Property name fragments that mark a property as ADDRESS-flavoured (so an
-#: address-part column mapped here is plausible and must NOT be flagged).
-_ADDRESS_PROPERTY_TOKENS = frozenset(
-    {
-        "address",
-        "street",
-        "city",
-        "country",
-        "postal",
-        "zip",
-        "location",
-    }
-)
-
 #: Generic identity / name properties a weakly-evidenced or address/financial
 #: column should not silently land on. Specific identifiers (taxIdentifier,
 #: vatNumber, bankAccountIdentifier, ...) are deliberately excluded.
@@ -3473,103 +3433,149 @@ def _compact_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
-def _detect_address_part(column_name: str) -> bool:
-    """Return True when *column_name* is strong evidence of an address part."""
-    tokens = _tokenize_text(column_name)
-    if not tokens:
-        return False
-    # Compact form so address_line_1 / postal_code / house_number also match.
-    compact = _compact_name(column_name)
-    if any(tok in tokens or tok in compact for tok in _ADDRESS_PART_TOKENS):
-        return True
-    # Weak tokens require an address qualifier to confirm (shipper_city, ...).
-    if (tokens & _ADDRESS_WEAK_TOKENS) and (tokens & _ADDRESS_QUALIFIER_TOKENS):
-        return True
+def _is_projection_part_column(column_name: str, projections: Sequence[EntityProjection]) -> bool:
+    """Return True when *column_name* is a part of any configured projection.
+
+    DD-188: the toolkit no longer carries the token list this used to test against.
+    With no configured projections there is no vocabulary, so nothing is a part —
+    that is the intended no-config behaviour, not a degraded one.
+    """
+    return any(_projection_column_match(column_name, p) is not None for p in projections)
+
+
+@lru_cache(maxsize=None)
+def _projection_property_tokens(projection: EntityProjection) -> frozenset[str]:
+    """Tokens that mark a reference *property* as belonging to this projection.
+
+    Derived entirely from the pack's own part-kind, context and target-concept
+    vocabulary rather than a second hand-maintained list: a property whose name
+    carries any word the projection uses to recognise its parts is, by the pack's
+    own definition, a plausible home for one of those parts.
+    """
+    tokens: set[str] = set()
+    for part in projection.part_kinds:
+        tokens |= set(part.tokens)
+        tokens |= set(part.compact)
+    tokens |= set(projection.context_tokens)
+    if projection.target_concept:
+        tokens.add(_compact_name(projection.target_concept))
+    return frozenset(t for t in tokens if t)
+
+
+def _is_projection_target_property(
+    ref_property: str, projections: Sequence[EntityProjection]
+) -> bool:
+    """Return True when *ref_property* is flavoured like one of the projections."""
+    tokens = _tokenize_text(ref_property)
+    compact = _compact_name(ref_property)
+    for projection in projections:
+        vocab = _projection_property_tokens(projection)
+        if any(t in tokens or t in compact for t in vocab):
+            return True
     return False
 
 
-def _is_address_property(ref_property: str) -> bool:
-    """Return True when *ref_property* is an address-flavoured property."""
-    tokens = _tokenize_text(ref_property)
-    compact = _compact_name(ref_property)
-    return any(t in tokens or t in compact for t in _ADDRESS_PROPERTY_TOKENS)
-
-
 # ---------------------------------------------------------------------------
-# Relationship-candidate detection (issue #192, Phase A1; generalized —
-# proposal-quality)
+# Entity-projection relationship-candidate detection
+# (issue #192 Phase A1 → issue #531 / DD-188)
 # ---------------------------------------------------------------------------
 #
-# Deterministic, no-LLM, no-cross-module-widening detector that PROMOTES the
-# DD-069 address-part prose into a machine-readable, table-level relationship
-# candidate. It groups address-part columns by role (qualifier prefix) and emits
-# a candidate only when a role has >=2 *complementary* address parts (e.g.
-# street + city), so single columns (``country_of_origin``) and non-address
-# columns (``billing_email``) never fire. Candidates are ADDITIVE (the scalar
-# column dispositions are untouched), carry ``requires_human_confirmation``, and
-# deliberately omit a target URI — naming/binding to a concrete shared ``Address``
-# class is deferred (issue #192 Phase A2). Emitted only when a cluster is found,
-# so tables without an address cluster keep byte-identical output.
+# Deterministic, no-LLM, no-cross-module-widening detector for *entity
+# projections*: scalar columns on one source table that together evidence a
+# separate entity the source system flattened away. It clusters a table's columns
+# by role and emits a candidate only when a role carries at least
+# ``min_complementary_parts`` DISTINCT part kinds, so a single column never fires.
+# Candidates are ADDITIVE (the scalar column dispositions are untouched) and carry
+# ``requires_human_confirmation``.
 #
-# proposal-quality generalizes the *cluster identity* beyond address parts: each
-# candidate now carries a stable, content-addressed ``cluster_id`` derived only
-# from (domain, source table, semantic role/prefix, target concept, cardinality)
-# — never from column membership. That is what lets a re-run refresh which
-# columns contribute to a cluster (membership can change) while the cluster's
-# identity — and any human decision recorded against it — survives (see
-# ``claim_registry._merge_relationship_candidates``).
-
-#: Address-part KINDS keyed on exact source tokens (safe; no substring matching).
-#: Ordered most-specific first so a column lands on a single kind.
-_ADDRESS_PART_TOKEN_KINDS: tuple[tuple[str, frozenset[str]], ...] = (
-    ("street", frozenset({"street"})),
-    ("house_number", frozenset({"house"})),
-    ("postal", frozenset({"zip", "postal", "postcode"})),
-    ("city", frozenset({"city", "town"})),
-    ("state", frozenset({"state", "province", "region"})),
-    ("country", frozenset({"country"})),
-    ("address_line", frozenset({"addressline", "address"})),
-)
-
-#: Compound address-part KINDS matched against the compacted name only. Limited
-#: to long, unambiguous concatenations so e.g. ``email_address`` is unaffected.
-_ADDRESS_PART_COMPACT_KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("house_number", ("housenumber", "houseno")),
-    ("postal", ("postalcode", "zipcode")),
-    ("address_line", ("addressline",)),
-)
+# DD-188 splits this into logic and data. Everything in this section is the logic
+# — cluster by role, require complementary kinds, resolve the target class in the
+# domain's import closure, emit an advisory candidate — and it is as true for a
+# bank as for a carrier. Every token it matches on comes from the accelerator
+# pack's ``entity-projections.yaml`` (:mod:`kairos_ontology.core.entity_projections`).
+# There is deliberately **no built-in vocabulary**: a pack that ships no projection
+# config produces no candidates, and the absence is logged. A silent fallback would
+# keep shipping one industry's tokens to every other industry, which is exactly
+# what DD-188 forbids.
+#
+# Cluster *identity* is content-addressed and independent of membership: the
+# ``cluster_id`` derives only from (domain, source table, role, target concept,
+# cardinality). That is what lets a re-run refresh which columns contribute to a
+# cluster while the cluster — and any human decision recorded against it —
+# survives.
 
 
-def _address_part_kind(column_name: str) -> str | None:
-    """Classify *column_name* into a canonical address part kind, or ``None``."""
+def _projection_column_match(
+    column_name: str, projection: EntityProjection
+) -> tuple[str, str] | None:
+    """Return ``(part_kind, role)`` when *column_name* is a part of *projection*.
+
+    The three rules the pack's data drives, and nothing else:
+
+    * **role** — the first (sorted) ``role_qualifier`` token in the name, else
+      ``"default"``. A qualifier such as ``billing`` / ``pickup`` separates
+      role-specific clusters so ``billing_*`` and ``pickup_*`` become two distinct
+      relationships rather than one merged entity.
+    * **kind** — the first declared ``part_kind`` whose ``tokens`` intersect the
+      column's token set, or whose ``compact`` entries appear in its compacted
+      name. Kinds are matched in declaration order, most specific first, and a
+      column lands on exactly one.
+    * **confirmation** — a ``weak`` kind counts only alongside a role qualifier or
+      a context token; a ``requires: context`` kind counts only alongside a context
+      token, a role qualifier being explicitly insufficient. When the matched kind's
+      gate is not satisfied the column is not a part at all: kinds are ordered so
+      the first match is the right one, and falling through to a later, vaguer kind
+      would defeat the gate rather than honour it.
+    """
     tokens = _tokenize_text(column_name)
-    for kind, kws in _ADDRESS_PART_TOKEN_KINDS:
-        if tokens & kws:
-            return kind
+    if not tokens:
+        return None
     compact = _compact_name(column_name)
-    for kind, kws in _ADDRESS_PART_COMPACT_KINDS:
-        if any(kw in compact for kw in kws):
-            return kind
+    roles = sorted(tokens & projection.role_qualifiers)
+    role = roles[0] if roles else "default"
+    has_context = bool(tokens & projection.context_tokens)
+
+    for part in projection.part_kinds:
+        if not (tokens & part.tokens or any(kw in compact for kw in part.compact)):
+            continue
+        if part.needs_context:
+            return (part.kind, role) if has_context else None
+        if part.weak:
+            return (part.kind, role) if (roles or has_context) else None
+        return part.kind, role
     return None
 
 
-def _address_role(column_name: str) -> str:
-    """Return the address role (qualifier prefix) of *column_name*.
+def _projection_relationship_name(role: str, projection: EntityProjection) -> str:
+    """Suggest the object-property name for one role group of *projection*.
 
-    A qualifier such as ``billing`` / ``shipping`` separates role-specific
-    address clusters so ``billing_*`` and ``shipping_*`` become two distinct
-    relationships rather than one merged Address. Unqualified parts (e.g. a bare
-    ``street`` / ``postal_code``) group under ``default``.
+    ``default_relationship`` when the role is ``default``, otherwise
+    ``relationship_naming`` with ``{Role}`` title-cased (``pickup`` →
+    ``hasPickupAddress``). Both strings come from the pack; when it authors
+    neither, the projection id is used rather than a name invented here.
     """
-    roles = sorted(_tokenize_text(column_name) & _ADDRESS_QUALIFIER_TOKENS)
-    return roles[0] if roles else "default"
-
-
-def _address_relationship_name(role: str) -> str:
-    """Suggest a ``has<Role>Address`` object-property name for a role group."""
     if role == "default":
-        return "hasAddress"
-    return f"has{role[:1].upper()}{role[1:]}Address"
+        return projection.default_relationship or projection.id
+    pattern = projection.relationship_naming
+    if not pattern:
+        return projection.default_relationship or projection.id
+    return pattern.replace("{Role}", f"{role[:1].upper()}{role[1:]}")
+
+
+def _resolve_projection_target(
+    projection: EntityProjection, closure_uris: frozenset[str]
+) -> str | None:
+    """Return the first ``target_candidates`` URI present in the domain's closure.
+
+    ``None`` when none of them resolve — the candidate is still emitted, flagged
+    ``target_resolved: false``, because a projection the columns clearly evidence
+    is a real finding even where the pack's preferred class is not imported here.
+    Never guess a substitute, never drop the candidate.
+    """
+    for uri in projection.target_candidates:
+        if uri in closure_uris:
+            return uri
+    return None
 
 
 def _relationship_cluster_id(
@@ -3602,67 +3608,98 @@ def _relationship_cluster_id(
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
-def _detect_address_relationship_candidates(
+def _detect_projection_relationship_candidates(
     table_name: str,
     columns: list[dict[str, Any]],
     *,
+    projections: Sequence[EntityProjection] = (),
+    closure_uris: frozenset[str] = frozenset(),
     domain: str = "",
 ) -> list[dict[str, Any]]:
-    """Detect clustered address columns and emit relationship candidates.
+    """Detect projected-entity column clusters and emit relationship candidates.
 
-    Deterministic and additive (issue #192 Phase A1). Groups address-part columns
-    by role, and emits one candidate per role that has >=2 distinct part kinds.
-    ``domain`` (proposal-quality, optional/backward-compatible) qualifies the
-    stable ``cluster_id`` so identically-named tables in different domains never
-    collide.
+    Deterministic and additive. For each configured projection, groups its part
+    columns by role and emits one candidate per role carrying at least
+    ``min_complementary_parts`` distinct part kinds.
+
+    DD-188: *projections* is pack data. With none configured this returns nothing —
+    the toolkit has no address (or cargo, or party) vocabulary of its own to fall
+    back to, by design. ``closure_uris`` is the set of class URIs the domain can
+    actually see, used to resolve the target class; a candidate whose target does
+    not resolve is still emitted, flagged ``target_resolved: false``.
+
+    ``domain`` qualifies the stable ``cluster_id`` so identically-named tables in
+    different domains never collide.
     """
-    by_role: dict[str, dict[str, list[str]]] = {}
-    for col in columns:
-        name = str(col.get("name", "") or "")
-        if not name or not _detect_address_part(name):
-            continue
-        kind = _address_part_kind(name)
-        if kind is None:
-            continue
-        by_role.setdefault(_address_role(name), {}).setdefault(kind, []).append(name)
-
     candidates: list[dict[str, Any]] = []
-    for role in sorted(by_role):
-        kinds = by_role[role]
-        if len(kinds) < 2:  # require >=2 complementary address parts
-            continue
-        source_columns = sorted({c for cols in kinds.values() for c in cols})
-        part_kinds = sorted(kinds)
-        rel = _address_relationship_name(role)
-        role_phrase = "" if role == "default" else f" under role '{role}'"
-        cardinality = "1:n"
-        candidates.append(
-            {
-                "type": "address_relationship_candidate",
-                "source_table": table_name,
-                "role": None if role == "default" else role,
-                "suggested_relationship": rel,
-                "target_concept": "Address",
-                "source_columns": source_columns,
-                "address_parts": part_kinds,
-                "cardinality": cardinality,
-                "cluster_id": _relationship_cluster_id(
-                    domain,
-                    table_name,
-                    role,
-                    "Address",
-                    cardinality,
-                ),
-                "requires_human_confirmation": True,
-                "rationale": (
-                    f"{len(part_kinds)} complementary address parts "
-                    f"({', '.join(part_kinds)}){role_phrase}; consider modelling a "
-                    f"'{rel}' 1:n relationship to a shared Address concept IN ADDITION "
-                    f"to the scalar column mappings, rather than only scalar "
-                    f"passthroughs. Target class/URI to be confirmed during modeling."
-                ),
-            }
-        )
+    for projection in projections:
+        by_role: dict[str, dict[str, list[str]]] = {}
+        for col in columns:
+            name = str(col.get("name", "") or "")
+            if not name:
+                continue
+            match = _projection_column_match(name, projection)
+            if match is None:
+                continue
+            kind, role = match
+            by_role.setdefault(role, {}).setdefault(kind, []).append(name)
+
+        target_uri = _resolve_projection_target(projection, closure_uris)
+        concept = projection.target_concept or projection.id
+        cardinality = projection.cardinality or "1:n"
+        minimum = projection.min_complementary_parts
+
+        for role in sorted(by_role):
+            kinds = by_role[role]
+            if len(kinds) < minimum:
+                continue
+            source_columns = sorted({c for cols in kinds.values() for c in cols})
+            part_kinds = sorted(kinds)
+            rel = _projection_relationship_name(role, projection)
+            role_phrase = "" if role == "default" else f" under role '{role}'"
+            if target_uri:
+                target_phrase = f"Target class resolves to <{target_uri}> in this domain's closure."
+            elif projection.target_candidates:
+                target_phrase = (
+                    "None of the projection's target candidates "
+                    f"({', '.join(projection.target_candidates)}) are present in this "
+                    "domain's import closure — confirm the target class during modeling."
+                )
+            else:
+                target_phrase = (
+                    "The projection declares no target candidates — confirm the target "
+                    "class during modeling."
+                )
+            candidates.append(
+                {
+                    "type": "entity_projection_candidate",
+                    "projection_id": projection.id,
+                    "source_table": table_name,
+                    "role": None if role == "default" else role,
+                    "suggested_relationship": rel,
+                    "target_concept": concept,
+                    "target_class_uri": target_uri,
+                    "target_resolved": target_uri is not None,
+                    "source_columns": source_columns,
+                    "part_kinds": part_kinds,
+                    "cardinality": cardinality,
+                    "cluster_id": _relationship_cluster_id(
+                        domain,
+                        table_name,
+                        role,
+                        concept,
+                        cardinality,
+                    ),
+                    "requires_human_confirmation": True,
+                    "rationale": (
+                        f"{len(part_kinds)} complementary {concept} parts "
+                        f"({', '.join(part_kinds)}){role_phrase}; consider modelling a "
+                        f"'{rel}' {cardinality} relationship to a shared {concept} concept "
+                        f"IN ADDITION to the scalar column mappings, rather than only "
+                        f"scalar passthroughs. {target_phrase}"
+                    ),
+                }
+            )
     return candidates
 
 
@@ -3737,12 +3774,17 @@ def _review_column_alignment(
     ref_property: str,
     confidence: float,
     label_index: dict[tuple[str | None, str], str],
+    projections: Sequence[EntityProjection] = (),
 ) -> str | None:
     """Return a review reason when a column map is implausible, else ``None``.
 
     Deterministic; FLAGS (never changes) the mapping. Covers issue #167
-    (address-part columns force-fit onto non-address scalars) and issue #168
+    (projected-entity part columns force-fit onto unrelated scalars) and issue #168
     (boolean→identity, financial→identity, and weak-name + low-confidence maps).
+
+    DD-188: the #167 rule needs to know what a part column looks like, which is
+    pack vocabulary. *projections* supplies it; with none configured that rule is
+    simply inert (the remaining #168 rules are structural and always apply).
     """
     if not ref_property:
         return None
@@ -3753,15 +3795,21 @@ def _review_column_alignment(
     shared = col_tokens & prop_tokens
     is_identity = ref_property.lower() in _GENERIC_IDENTITY_PROPERTIES
 
-    # #167 — address-part columns. Mapping to a non-address scalar is implausible;
-    # mapping to an address-flavoured property is plausible (and exempt from the
-    # generic low-confidence rule below, since street↔address share no token).
-    if _detect_address_part(column_name):
-        if _is_address_property(ref_property):
+    # #167 — projected-entity part columns. Mapping one to an unrelated scalar is
+    # implausible; mapping it to a property flavoured like the projection is
+    # plausible (and exempt from the generic low-confidence rule below, since
+    # street↔address share no token).
+    part_projection = next(
+        (p for p in projections if _projection_column_match(column_name, p) is not None),
+        None,
+    )
+    if part_projection is not None:
+        if _is_projection_target_property(ref_property, [part_projection]):
             return None
+        concept = part_projection.target_concept or part_projection.id
         return (
-            f"address-part column '{column_name}' mapped to non-address property "
-            f"'{ref_property}'; model an address relationship / shared Address concept"
+            f"{concept}-part column '{column_name}' mapped to unrelated property "
+            f"'{ref_property}'; model a {concept} relationship / shared {concept} concept"
         )
 
     logical = _normalize_logical_type(data_type)
@@ -3854,7 +3902,11 @@ def _propose_alignments(
         accelerator: Accelerator pack name whose ``data-domains.yaml`` defines the
             cross-module property pool (required when *cross_module* is True).
         ref_models_dir: Reference-models directory containing ``accelerator-packs/``
-            (required when *cross_module* is True).
+            (required when *cross_module* is True). DD-188 (issue #531): also where
+            the pack's ``entity-projections.yaml`` is read from. Without it — or
+            with a pack that ships no such file — the entity-projection detector
+            emits no relationship candidates and says so in the run output. There
+            is no built-in vocabulary to fall back to, on purpose.
         allow_fallback_output: Alignment-reliability — a domain where *every*
             table produced ``fallback_only`` (no reference model to align
             against — the LLM was never even called) is skipped by default so a
@@ -3931,6 +3983,29 @@ def _propose_alignments(
                 f"  🌉 {len(cross_domain_bridges)} declared cross-domain "
                 f"relationship(s) from '{bridge_accelerator}'"
             )
+
+    # DD-188 (issue #531): the entity-projection vocabulary is pack data, loaded
+    # once here. When the pack ships none, the detector emits no candidates — the
+    # toolkit carries no address/cargo/party token list to fall back to. Say so
+    # out loud: a hub pinned to an older reference-models release loses these
+    # advisory candidates until it upgrades, and that must be visible rather than
+    # look like "this hub simply has no address columns".
+    projection_config: ProjectionConfig = load_entity_projections(
+        Path(ref_models_dir) if ref_models_dir is not None else None,
+        bridge_accelerator,
+    )
+    projections = projection_config.projections
+    if projections:
+        report(
+            f"  🧩 {len(projections)} entity projection(s) from "
+            f"'{bridge_accelerator or '*'}': {', '.join(p.id for p in projections)}"
+        )
+    else:
+        report(
+            "  🧩 No entity-projections.yaml in the reference models — projection "
+            "relationship candidates are disabled for this run (DD-188: the toolkit "
+            "ships no built-in projection vocabulary)."
+        )
 
     accelerator_uri_modules: dict[str, dict[str, Any]] = {}
     if cross_module:
@@ -4290,6 +4365,11 @@ def _propose_alignments(
         # F3: governed class name → URI, so the object-property resolver can tell a
         # resolvable target entity from an ungoverned/absent one.
         class_uri_by_name = _build_class_uri_index(ref_classes)
+
+        # DD-188: the class URIs this domain can actually see, so an entity
+        # projection's target_candidates resolve against the domain's own import
+        # closure rather than against whatever the pack would prefer globally.
+        projection_closure_uris = frozenset(class_uri_by_name.values())
 
         # DD-069: property-label index for the deterministic review pass (always
         # built — cheap, and the review flags are an always-on quality guard).
@@ -4746,11 +4826,14 @@ def _propose_alignments(
                         ref_property=ca["ref_property"],
                         confidence=ca["confidence"],
                         label_index=review_label_index,
+                        projections=projections,
                     )
                     if review_reason:
                         column_alignment.review = True
                         column_alignment.review_reason = review_reason
-                        if include_mapping_hints and _detect_address_part(ca["column"]):
+                        if include_mapping_hints and _is_projection_part_column(
+                            ca["column"], projections
+                        ):
                             address_hints.append(
                                 {
                                     "type": "address_candidate",
@@ -4925,8 +5008,10 @@ def _propose_alignments(
                 ta.structural_hints = (
                     _detect_structural_hints(table, columns, ref_classes) + address_hints
                 )
-            # Issue #192 (Phase A1): deterministic, always-on, additive
-            # relationship-candidate detection (no LLM, no cross-module widening).
+            # Issue #192 (Phase A1) → DD-188: deterministic, additive
+            # relationship-candidate detection (no LLM, no cross-module widening),
+            # driven entirely by the pack's entity-projection vocabulary — no pack
+            # config, no candidates.
             # uri-anchor-contract / proposal-quality: an "unresolved" table has no
             # resolved class anchor — it must emit neither claims (already the
             # case above) nor relationship clusters, so URI-first resolution
@@ -4934,9 +5019,11 @@ def _propose_alignments(
             if is_unresolved_anchor:
                 rel_candidates: list[dict[str, Any]] = []
             else:
-                rel_candidates = _detect_address_relationship_candidates(
+                rel_candidates = _detect_projection_relationship_candidates(
                     table,
                     columns,
+                    projections=projections,
+                    closure_uris=projection_closure_uris,
                     domain=domain_id,
                 )
                 # F3, generalized (proposal-quality): cluster object-property

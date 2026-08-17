@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest import mock
 
@@ -26,7 +27,7 @@ from kairos_ontology.core.propose_alignment import (
     _build_reconciled_passthrough,
     _build_reference_rollup,
     _cluster_object_property_candidates,
-    _detect_address_relationship_candidates,
+    _detect_projection_relationship_candidates,
     _downgrade_catch_all_suggestions,
     _has_typed_role_evidence,
     _is_location_object_property,
@@ -36,7 +37,7 @@ from kairos_ontology.core.propose_alignment import (
     _object_relationship_downgrade_reason,
     _clamp_confidence,
     _compact_prompt_samples,
-    _detect_address_part,
+    _is_projection_part_column,
     _format_source_columns,
     _module_tag,
     _normalize_property_token,
@@ -57,10 +58,22 @@ from kairos_ontology.core.propose_alignment import (
     load_affinity_reports,
     run_propose_alignment,
 )
+from entity_projection_fixtures import (
+    ADDRESS_URI,
+    POSTAL_ADDRESS_YAML,
+    load_fixture_projections,
+    write_projection_pack,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def projections():
+    """The DD-188 contract's worked example, parsed — never the installed pack."""
+    return load_fixture_projections()
 
 
 @pytest.fixture
@@ -733,7 +746,9 @@ class TestAlignmentToDict:
 # ---------------------------------------------------------------------------
 
 
-class TestDetectAddressPart:
+class TestIsProjectionPartColumn:
+    """DD-188 — the same #167 signal, now driven by the pack's vocabulary."""
+
     @pytest.mark.parametrize(
         "name",
         [
@@ -745,15 +760,19 @@ class TestDetectAddressPart:
             "consignee_city",
         ],
     )
-    def test_detects_strong_address_parts(self, name):
-        assert _detect_address_part(name) is True
+    def test_detects_configured_parts(self, name, projections):
+        assert _is_projection_part_column(name, projections) is True
 
     @pytest.mark.parametrize(
         "name",
-        ["country", "city", "clearingHouse", "warehouse", "countryOfBirth", "PartyName", ""],
+        ["country", "city", "warehouse", "countryOfBirth", "PartyName", ""],
     )
-    def test_ignores_ambiguous_or_non_address(self, name):
-        assert _detect_address_part(name) is False
+    def test_ignores_ambiguous_or_unconfigured(self, name, projections):
+        assert _is_projection_part_column(name, projections) is False
+
+    def test_nothing_is_a_part_without_a_configured_projection(self):
+        """The no-config path: no vocabulary means no parts, not a built-in list."""
+        assert _is_projection_part_column("SHIPPER_STREET", ()) is False
 
 
 class TestReviewColumnAlignment:
@@ -772,7 +791,7 @@ class TestReviewColumnAlignment:
         ]
         return _build_property_label_index(ref_classes)
 
-    def test_address_part_to_non_address_scalar_flagged(self, label_index):
+    def test_address_part_to_non_address_scalar_flagged(self, label_index, projections):
         reason = _review_column_alignment(
             column_name="SHIPPER_STREET",
             data_type="nvarchar(100)",
@@ -780,16 +799,34 @@ class TestReviewColumnAlignment:
             ref_property="partyName",
             confidence=0.5,
             label_index=label_index,
+            projections=projections,
         )
-        assert reason and "address-part" in reason
+        assert reason and "Address-part" in reason
 
-    def test_address_part_to_address_property_not_flagged(self, label_index):
+    def test_address_part_to_address_property_not_flagged(self, label_index, projections):
         reason = _review_column_alignment(
             column_name="SHIPPER_STREET",
             data_type="nvarchar(100)",
             ref_class="TradeParty",
             ref_property="address",
             confidence=0.5,
+            label_index=label_index,
+            projections=projections,
+        )
+        assert reason is None
+
+    def test_address_rule_is_inert_without_pack_config(self, label_index):
+        """DD-188 — with no projection vocabulary there is no such thing as a part.
+
+        The remaining #168 rules are structural and still apply; only the #167
+        rule, which needs to know what an address part looks like, goes quiet.
+        """
+        reason = _review_column_alignment(
+            column_name="SHIPPER_STREET",
+            data_type="nvarchar(100)",
+            ref_class="TradeParty",
+            ref_property="partyName",
+            confidence=0.9,
             label_index=label_index,
         )
         assert reason is None
@@ -1151,7 +1188,14 @@ class TestRunProposeAlignment:
         assert tbl["custom_columns"][0]["disposition"] is None
 
     def test_review_flag_end_to_end(self, analysis_dir, tmp_path):
-        """DD-069: an address-part column force-fit onto a party scalar is flagged."""
+        """DD-069/DD-188: a part column force-fit onto a party scalar is flagged.
+
+        The vocabulary now arrives from the pack, so the run needs a
+        ``ref_models_dir`` pointing at one — without it the #167 rule is inert (see
+        ``test_no_projection_config_emits_no_candidates``).
+        """
+        refmodels = tmp_path / "refmodels"
+        write_projection_pack(refmodels)
         sources = tmp_path / "sources" / "adminpulse"
         sources.mkdir(parents=True)
         vocab = """\
@@ -1204,13 +1248,15 @@ class TestRunProposeAlignment:
                 sources_dir=tmp_path / "sources",
                 catalog_path=None,
                 domains_filter=["party"],
+                accelerator="logistics",
+                ref_models_dir=refmodels,
             )
 
         data = alignment_to_dict(alignments[0])
         col = data["tables"][0]["columns"][0]
         assert col["column"] == "SHIPPER_STREET"
         assert col["review"] is True
-        assert "address-part" in col["review_reason"]
+        assert "Address-part" in col["review_reason"]
 
     def test_no_affinity_reports_raises(self, tmp_path):
         with pytest.raises(ValueError, match="No affinity reports"):
@@ -3295,10 +3341,11 @@ class TestRelationshipClusterId:
         b = _relationship_cluster_id("customs", "t", "default", "Address", "1:n")
         assert a != b
 
-    def test_address_candidates_carry_cluster_id(self):
-        out = _detect_address_relationship_candidates(
+    def test_address_candidates_carry_cluster_id(self, projections):
+        out = _detect_projection_relationship_candidates(
             "companies",
             [{"name": n} for n in ("billing_street", "billing_city", "billing_postal_code")],
+            projections=projections,
             domain="party",
         )
         assert len(out) == 1
@@ -4021,3 +4068,330 @@ class TestSchemaCatalogueExclusionsInAlignment:
         honoured = self._run(analysis, sources)[0].affinity_sha256
         ignored = self._run(analysis, sources, honour_table_exclusions=False)[0].affinity_sha256
         assert honoured and ignored and honoured != ignored
+
+
+# ---------------------------------------------------------------------------
+# DD-188 / issue #531 - entity-projection detector: generic logic, pack data
+# ---------------------------------------------------------------------------
+#
+# Every case below is driven from tests/entity_projection_fixtures.py, never from
+# the installed accelerator pack: these pin the CONTRACT, so a vocabulary change
+# shipped in reference-models cannot silently rewrite what the toolkit promises.
+
+
+class TestEntityProjectionDetector:
+    def _candidates(self, table, names, projections, **kwargs):
+        return _detect_projection_relationship_candidates(
+            table,
+            [{"name": n} for n in names],
+            projections=projections,
+            **kwargs,
+        )
+
+    # -- the defect the issue was filed for --------------------------------
+
+    def test_role_absent_from_the_old_hardcoded_list_now_clusters(self, projections):
+        """`pickup` was the whole defect: the old `_ADDRESS_QUALIFIER_TOKENS` had
+        `delivery` but not `pickup`, so `pickup_location_*` never clustered."""
+        out = self._candidates(
+            "stops",
+            ["pickup_location_street", "pickup_location_city", "pickup_location_postal_code"],
+            projections,
+        )
+        assert len(out) == 1
+        assert out[0]["role"] == "pickup"
+        assert out[0]["suggested_relationship"] == "hasPickupAddress"
+        assert out[0]["source_columns"] == [
+            "pickup_location_city",
+            "pickup_location_postal_code",
+            "pickup_location_street",
+        ]
+
+    def test_unprefixed_location_cluster_lands_under_default_role(self, projections):
+        """`location_*` carries a context token but no role qualifier, so it is one
+        cluster under `default` - not three unclustered columns."""
+        out = self._candidates(
+            "stops",
+            ["location_street", "location_city", "location_country"],
+            projections,
+        )
+        assert len(out) == 1
+        assert out[0]["role"] is None
+        assert out[0]["suggested_relationship"] == "hasAddress"
+        assert out[0]["part_kinds"] == ["city", "country", "street"]
+
+    def test_three_role_clusters_on_one_table_stay_separate(self, projections):
+        out = self._candidates(
+            "stops",
+            [
+                "location_street",
+                "location_city",
+                "pickup_location_street",
+                "pickup_location_city",
+                "delivery_location_street",
+                "delivery_location_city",
+            ],
+            projections,
+        )
+        assert [c["role"] for c in out] == [None, "delivery", "pickup"]
+        assert len({c["cluster_id"] for c in out}) == 3
+
+    # -- the guards that must not weaken -----------------------------------
+
+    def test_weak_kind_alone_is_not_a_part(self, projections):
+        """`weak: true` - a bare `country` with no qualifier and no context is a
+        citizenship/nationality field far more often than an address part. This is
+        the guard that stops the detector eating those columns."""
+        assert _is_projection_part_column("country", projections) is False
+        assert _is_projection_part_column("country_of_birth", projections) is False
+        assert _is_projection_part_column("city", projections) is False
+        out = self._candidates("contacts", ["country", "city"], projections)
+        assert out == []
+
+    def test_weak_kind_is_confirmed_by_a_role_qualifier_or_a_context_token(self, projections):
+        assert _is_projection_part_column("billing_country", projections) is True
+        assert _is_projection_part_column("location_country", projections) is True
+
+    def test_requires_context_is_stricter_than_weak(self, projections):
+        """`state`/`province`/`region` need a CONTEXT token. A role qualifier is
+        explicitly not enough - `billing_region` is a sales region as readily as a
+        subdivision, while `billing_location_region` is not."""
+        assert _is_projection_part_column("billing_region", projections) is False
+        assert _is_projection_part_column("sales_region", projections) is False
+        assert _is_projection_part_column("billing_location_region", projections) is True
+        assert _is_projection_part_column("location_state", projections) is True
+
+    def test_requires_context_column_does_not_join_a_cluster_on_role_alone(self, projections):
+        """The contrast in one table: `billing_city` (weak, role-confirmed) counts,
+        `billing_region` (requires context) does not."""
+        out = self._candidates(
+            "invoices",
+            ["billing_city", "billing_street", "billing_region"],
+            projections,
+        )
+        assert len(out) == 1
+        assert out[0]["part_kinds"] == ["city", "street"]
+        assert "billing_region" not in out[0]["source_columns"]
+
+    def test_min_complementary_parts_respected(self, projections):
+        """One kind never fires, however many columns carry it."""
+        out = self._candidates(
+            "shipments",
+            ["origin_city", "destination_city", "shipper_city"],
+            projections,
+        )
+        assert out == []
+
+    def test_min_complementary_parts_is_read_from_the_pack(self):
+        """Three distinct kinds are required when the pack says three."""
+        raised = POSTAL_ADDRESS_YAML.replace(
+            "min_complementary_parts: 2", "min_complementary_parts: 3"
+        )
+        projections = load_fixture_projections(raised)
+        two = self._candidates("stops", ["billing_street", "billing_city"], projections)
+        three = self._candidates(
+            "stops", ["billing_street", "billing_city", "billing_zip"], projections
+        )
+        assert two == []
+        assert len(three) == 1
+
+    # -- target resolution --------------------------------------------------
+
+    def test_target_resolves_to_the_first_candidate_present_in_the_closure(self):
+        preferred = "https://example.invalid/ont/preferred#Address"
+        yaml_text = POSTAL_ADDRESS_YAML.replace(
+            "      - " + ADDRESS_URI,
+            "      - " + preferred + "\n      - " + ADDRESS_URI,
+        )
+        projections = load_fixture_projections(yaml_text)
+        assert projections[0].target_candidates == (preferred, ADDRESS_URI)
+
+        # Only the second candidate is in this domain's closure.
+        out = self._candidates(
+            "stops",
+            ["billing_street", "billing_city"],
+            projections,
+            closure_uris=frozenset({ADDRESS_URI}),
+        )
+        assert out[0]["target_resolved"] is True
+        assert out[0]["target_class_uri"] == ADDRESS_URI
+
+        # Both present - order in the pack decides, not set iteration order.
+        out = self._candidates(
+            "stops",
+            ["billing_street", "billing_city"],
+            projections,
+            closure_uris=frozenset({ADDRESS_URI, preferred}),
+        )
+        assert out[0]["target_class_uri"] == preferred
+
+    def test_unresolved_target_still_emits_the_candidate_with_a_rationale(self, projections):
+        out = self._candidates(
+            "stops",
+            ["billing_street", "billing_city"],
+            projections,
+            closure_uris=frozenset({"https://example.invalid/ont/other#Consignment"}),
+        )
+        assert len(out) == 1, "an unresolved target must never drop the candidate"
+        assert out[0]["target_resolved"] is False
+        assert out[0]["target_class_uri"] is None
+        assert "None of the projection's target candidates" in out[0]["rationale"]
+        assert "import closure" in out[0]["rationale"]
+        assert ADDRESS_URI in out[0]["rationale"]
+
+    # -- no config, no candidates ------------------------------------------
+
+    def test_no_projection_config_means_no_candidates(self):
+        """DD-188 - the toolkit keeps no vocabulary of its own to fall back to."""
+        out = self._candidates(
+            "stops",
+            ["billing_street", "billing_city", "billing_postal_code", "shipper_street"],
+            (),
+        )
+        assert out == []
+
+    # -- shape --------------------------------------------------------------
+
+    def test_candidate_shape_is_advisory_and_carries_its_projection(self, projections):
+        out = self._candidates(
+            "companies",
+            ["billing_street", "billing_city"],
+            projections,
+            domain="party",
+            closure_uris=frozenset({ADDRESS_URI}),
+        )
+        candidate = out[0]
+        assert candidate["type"] == "entity_projection_candidate"
+        assert candidate["projection_id"] == "postal-address"
+        assert candidate["target_concept"] == "Address"
+        assert candidate["cardinality"] == "1:n"
+        assert candidate["requires_human_confirmation"] is True
+        assert candidate["cluster_id"] == _relationship_cluster_id(
+            "party", "companies", "billing", "Address", "1:n"
+        )
+
+    def test_cluster_id_survives_a_membership_change(self, projections):
+        before = self._candidates("companies", ["billing_street", "billing_city"], projections)
+        after = self._candidates(
+            "companies",
+            ["billing_street", "billing_city", "billing_country"],
+            projections,
+        )
+        assert before[0]["cluster_id"] == after[0]["cluster_id"]
+        assert before[0]["source_columns"] != after[0]["source_columns"]
+
+
+class TestEntityProjectionEndToEnd(TestRunProposeAlignment):
+    """The pack-config and no-config paths through the full pipeline."""
+
+    def _stops_hub(self, tmp_path):
+        sources = tmp_path / "sources" / "adminpulse"
+        sources.mkdir(parents=True)
+        columns = ["pickup_location_street", "pickup_location_city", "pickup_location_country"]
+        lines = [
+            "@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .",
+            "<#tblParties> a kairos-bronze:SourceTable ;",
+            '    kairos-bronze:tableName "tblParties" .',
+        ]
+        for col in columns:
+            lines += [
+                "<#tblParties_" + col + "> a kairos-bronze:SourceColumn ;",
+                '    kairos-bronze:columnName "' + col + '" ;',
+                '    kairos-bronze:dataType "nvarchar(100)" ;',
+                "    kairos-bronze:belongsToTable <#tblParties> .",
+            ]
+        (sources / "adminpulse.vocabulary.ttl").write_text("\n".join(lines), encoding="utf-8")
+        return sources.parent, columns
+
+    def _align(self, analysis_dir, sources_dir, columns, **kwargs):
+        responses = {
+            "tblParties": {
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.88,
+                "column_alignments": [
+                    {
+                        "column": col,
+                        "ref_class": "TradeParty",
+                        "ref_property": "partyName",
+                        "alignment": "semantic",
+                        "confidence": 0.5,
+                        "rationale": "Best available",
+                    }
+                    for col in columns
+                ],
+            },
+        }
+        client = self._mock_client(responses)
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=[
+                    {
+                        "name": "TradeParty",
+                        "label": "Trade Party",
+                        "comment": "",
+                        "uri": "https://example.invalid/ont#TradeParty",
+                        "properties": [
+                            {"name": "partyName", "label": "Party Name", "range": "string"},
+                        ],
+                    },
+                ],
+            ),
+        ):
+            return build_domain_alignments(
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                domains_filter=["party"],
+                **kwargs,
+            )
+
+    @staticmethod
+    def _projection_candidates(alignments):
+        table = alignment_to_dict(alignments[0])["tables"][0]
+        return [
+            c
+            for c in table.get("relationship_candidates", [])
+            if c["type"] == "entity_projection_candidate"
+        ]
+
+    def test_pack_config_produces_the_candidate(self, analysis_dir, tmp_path):
+        refmodels = tmp_path / "refmodels"
+        write_projection_pack(refmodels)
+        sources_dir, columns = self._stops_hub(tmp_path)
+        alignments = self._align(
+            analysis_dir,
+            sources_dir,
+            columns,
+            accelerator="logistics",
+            ref_models_dir=refmodels,
+        )
+        candidates = self._projection_candidates(alignments)
+        assert len(candidates) == 1
+        assert candidates[0]["role"] == "pickup"
+        assert candidates[0]["target_resolved"] is False
+
+    def test_no_projection_config_emits_no_candidates_and_logs_the_absence(
+        self, analysis_dir, tmp_path, caplog
+    ):
+        """A hub pinned to a reference-models release without the pack file gets no
+        candidates - and is told so, rather than looking like a hub with no address
+        columns."""
+        empty_refmodels = tmp_path / "refmodels-without-the-file"
+        (empty_refmodels / "accelerator-packs" / "logistics" / "client-hub-blueprint").mkdir(
+            parents=True
+        )
+        sources_dir, columns = self._stops_hub(tmp_path)
+        with caplog.at_level(logging.INFO, logger="kairos_ontology.core.entity_projections"):
+            alignments = self._align(
+                analysis_dir,
+                sources_dir,
+                columns,
+                accelerator="logistics",
+                ref_models_dir=empty_refmodels,
+            )
+        assert self._projection_candidates(alignments) == []
+        assert "No entity-projections.yaml found" in caplog.text
+        assert "no built-in projection vocabulary" in caplog.text
