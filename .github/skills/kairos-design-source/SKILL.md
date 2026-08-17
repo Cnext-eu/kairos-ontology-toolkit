@@ -65,6 +65,47 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
       --rationale "<why this belongs, with row counts / report usage>"
     ```
 
+13. Once affinity is settled, **anchor every table globally before aligning** (DD-185):
+
+    ```powershell
+    kairos-ontology anchor-tables
+    ```
+
+    One model call decides what each table's rows *are*, against the full class catalog
+    rather than one domain's shortlist, and derives each table's domain from the
+    blueprint owner of its anchor. Read the reported counts: tables anchored to an
+    **unowned** class are the extension worklist, and tables left unanchored are the
+    ones no reference class fits. `propose-alignment` consumes the anchors and regroups
+    tables into their derived domains, so run this *before* alignment, not after.
+
+14. After `propose-alignment`, close the DD-169 gap gate before entity binding. Do not
+    review the raw column list — on a real hub that is well over a thousand rows, which
+    is attrition rather than review. Instead (DD-186):
+
+    ```powershell
+    kairos-ontology draft-gap-decisions --auto          # record the rule-decidable ones
+    kairos-ontology draft-gap-decisions --suggest       # draft the rest for review
+    ```
+
+    `--auto` records only the two reason codes that were never judgment calls
+    (`operational` audit columns, `vendor-slot` placeholders). `--suggest` groups the
+    remainder into domain-scoped families and asks the model to name the concept each
+    family represents and flag families whose members do not belong together — it fills
+    the reasoning, never the decision.
+
+    Then open `integration/sources/_analysis/gap-decisions.yaml`, set `decision` on each
+    family or single name to one of `bound | registered-extension | deferred |
+    not-business-data | blueprint-gap`, and apply:
+
+    ```powershell
+    kairos-ontology draft-gap-decisions --apply
+    ```
+
+    Two cautions worth stating to the user. `blueprint-gap` asserts a **reference-model
+    defect to file upstream** — it is not the neutral default; `deferred` is the honest
+    choice for "in scope, not modelled yet". And a family whose `coherent` flag is
+    `false` should be split into its member names rather than ruled on as a unit.
+
     Both `--source-evidence` and `--rationale` are mandatory: registration is a claim about
     source data, and an unevidenced or unexplained claim is a guess the next reader cannot
     check. Registered concepts always carry tier `optional` — the source data argued them into

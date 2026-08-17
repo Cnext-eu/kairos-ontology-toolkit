@@ -349,11 +349,20 @@ def record_disposition(
     if evidence:
         entry["evidence"] = list(evidence)
 
+    # Replace only the entry at the SAME grain. The column must be part of the
+    # identity: matching on (system, table) alone made every column-grain write
+    # delete the table's previously recorded columns, so a run recording 224
+    # column dispositions kept roughly one per table and silently lost the rest.
+    # ``load_dispositions`` already keys on (system, table, column); this is the
+    # writer catching up with it.
     rows = [
         item
         for item in payload.get("tables") or []
         if not (
-            isinstance(item, dict) and item.get("system") == system and item.get("table") == table
+            isinstance(item, dict)
+            and item.get("system") == system
+            and item.get("table") == table
+            and str(item.get("column") or "") == column
         )
     ]
     rows.append(entry)
