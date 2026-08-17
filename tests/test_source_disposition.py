@@ -191,3 +191,65 @@ def test_hub_without_sources_is_not_blocking(tmp_path: Path) -> None:
     report = audit_source_dispositions(hub_root=tmp_path)
     assert report.is_blocking is False
     assert report.notices
+
+
+class TestColumnGrainIsNotClobbered:
+    """A column-grain write must not delete the table's other columns.
+
+    The replace filter matched on (system, table) only, so each column-grain
+    record wiped the previous ones — a run recording 224 column dispositions
+    kept about one per table and lost the rest silently. load_dispositions
+    already keyed on (system, table, column); the writer did not.
+    """
+
+    def test_several_columns_on_one_table_all_persist(self, tmp_path):
+        from kairos_ontology.core.source_disposition import (
+            load_dispositions,
+            record_disposition,
+        )
+
+        for column in ("created_at", "updated_at", "row_hash"):
+            record_disposition(
+                hub_root=tmp_path, system="qargo", table="stops", column=column,
+                disposition="not-business-data", rationale="audit column",
+            )
+        recorded = load_dispositions(tmp_path)
+        assert {k[2] for k in recorded} == {"created_at", "updated_at", "row_hash"}
+
+    def test_rewriting_one_column_replaces_only_that_column(self, tmp_path):
+        from kairos_ontology.core.source_disposition import (
+            load_dispositions,
+            record_disposition,
+        )
+
+        for column in ("a", "b"):
+            record_disposition(
+                hub_root=tmp_path, system="s", table="t", column=column,
+                disposition="deferred", rationale="first pass",
+            )
+        record_disposition(
+            hub_root=tmp_path, system="s", table="t", column="a",
+            disposition="not-business-data", rationale="revised",
+        )
+        recorded = load_dispositions(tmp_path)
+        assert recorded[("s", "t", "a")]["disposition"] == "not-business-data"
+        assert recorded[("s", "t", "b")]["disposition"] == "deferred"
+
+    def test_table_grain_and_column_grain_coexist(self, tmp_path):
+        """A table-level scope decision and a column note are different grains."""
+        from kairos_ontology.core.source_disposition import (
+            load_dispositions,
+            record_disposition,
+        )
+
+        record_disposition(
+            hub_root=tmp_path, system="s", table="t",
+            disposition="not-business-data", rationale="staging table",
+        )
+        record_disposition(
+            hub_root=tmp_path, system="s", table="t", column="c",
+            disposition="deferred", rationale="column note",
+        )
+        recorded = load_dispositions(tmp_path)
+        assert ("s", "t", "") in recorded
+        assert ("s", "t", "c") in recorded

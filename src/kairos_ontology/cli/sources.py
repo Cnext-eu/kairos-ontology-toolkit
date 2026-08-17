@@ -3736,3 +3736,117 @@ def anchor_tables_cmd(sources_opt, analysis_opt, catalog_opt, accelerator, llm_m
         report=report,
     )
     report(f"✅ Anchors written: {out}")
+
+
+@click.command(name="draft-gap-decisions")
+@click.option(
+    "--auto",
+    is_flag=True,
+    default=False,
+    help="Record the rule-decidable dispositions (operational / vendor-slot columns).",
+)
+@click.option(
+    "--apply",
+    "apply_sheet",
+    is_flag=True,
+    default=False,
+    help="Apply every filled-in 'decision' in the sheet to the disposition ledger.",
+)
+@click.option(
+    "--min-occurrences",
+    type=int,
+    default=1,
+    help="Only draft column names appearing in at least this many tables (default: 1).",
+)
+@click.option(
+    "--suggest",
+    is_flag=True,
+    default=False,
+    help="One model call to characterise each family: names the concept, drafts a "
+    "disposition, and flags families whose members do not belong together.",
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would change.")
+def draft_gap_decisions_cmd(auto, apply_sheet, min_occurrences, suggest, dry_run):
+    """Draft the DD-169 gap-gate decisions, grouped by column name (DD-186).
+
+    Without flags: writes gap-decisions.yaml — one reviewable entry per distinct
+    unmapped column name, with a proposed disposition, the reasoning, and the
+    tables it appears in. Fill in 'decision' on each entry, then re-run with
+    --apply.
+
+    With --auto: records the dispositions that are decidable by rule (audit/system
+    columns and vendor placeholders), which no human needs to adjudicate.
+
+    Proposals are never applied on their own: blueprint-gap, deferred and
+    registered-extension shape the model, and choosing them is the reviewer's.
+    """
+    from pathlib import Path as _Path
+
+    from ..core.gap_decisions import (
+        apply_auto_dispositions,
+        apply_decision_sheet,
+        build_decision_sheet,
+        write_decision_sheet,
+    )
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(_Path.cwd(), require_model=True)
+    if hub is None:
+        click.echo("❌ Not inside an ontology hub.", err=True)
+        raise SystemExit(1)
+
+    if auto:
+        stats = apply_auto_dispositions(hub, dry_run=dry_run)
+        verb = "would record" if dry_run else "recorded"
+        click.echo(
+            f"🤖 {verb} {stats['written']} rule-decidable disposition(s): "
+            + ", ".join(f"{n} {r}" for r, n in sorted(stats["by_reason"].items()))
+        )
+        if stats["skipped_already_decided"]:
+            click.echo(
+                f"   ↪ {stats['skipped_already_decided']} left alone (already decided)"
+            )
+
+    if apply_sheet:
+        stats = apply_decision_sheet(hub, dry_run=dry_run)
+        verb = "would apply" if dry_run else "applied"
+        click.echo(
+            f"✅ {verb} {stats['families_applied']} family + "
+            f"{stats['names_applied']} name-level decision(s) to "
+            f"{stats['columns_written']} source column(s)"
+        )
+        return
+
+    if not auto:
+        sheet = build_decision_sheet(hub, min_occurrences=min_occurrences)
+        if suggest:
+            from ..core.ai_preflight import require_ai_provider
+            from ..core.ai_provider import ROLE_JUDGMENT, get_ai_client, resolve_role_model
+            from ..core.anchor_tables import load_table_anchors
+            from ..core.gap_decisions import suggest_family_dispositions
+
+            model = resolve_role_model(ROLE_JUDGMENT)
+            require_ai_provider(ROLE_JUDGMENT, model=model, probe=False)
+            stats = suggest_family_dispositions(
+                sheet,
+                client=get_ai_client(model, role=ROLE_JUDGMENT),
+                model=model,
+                anchors=load_table_anchors(
+                    hub / "integration" / "sources" / "_analysis"
+                ),
+            )
+            click.echo(
+                f"🧠 described {stats['families_described']} family/families "
+                f"({stats['flagged_incoherent']} flagged as not one concept)"
+            )
+        s = sheet["summary"]
+        if not dry_run:
+            path = write_decision_sheet(hub, sheet)
+            click.echo(f"📝 Decision sheet: {path}")
+        click.echo(
+            f"   {s['decisions_to_make']} decision(s) to make "
+            f"({s['families']} families + {s['loose_names']} single names), "
+            f"covering {s['source_columns_covered']} source column(s) "
+            f"across {s['column_names']} distinct names"
+        )
+        click.echo(f"   {s['with_a_proposal']} loose name(s) carry a proposed disposition")

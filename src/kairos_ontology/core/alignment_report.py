@@ -89,6 +89,10 @@ class UnmappedColumn:
     reason: str
     suggestion: str = ""
     recommended_disposition: str = ""
+    #: DD-186: the domain this column's table was aligned in. A disposition
+    #: decision is domain-scoped — the same column name can be a modelled fact in
+    #: one domain and a gap in another — so grouping must not cross the boundary.
+    domain: str = ""
     #: DD-170 hub-local property the aligner proposes for this column, when it could
     #: state one. Never a reference IRI — the hub mints that at design time.
     proposal: dict[str, str] = field(default_factory=dict)
@@ -559,6 +563,7 @@ def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) 
                         system=system,
                         table=name,
                         column=column_name,
+                        domain=coverage.domain,
                         data_type=str(entry.get("data_type") or ""),
                         reason=reason,
                         suggestion=str(entry.get("suggested_property") or ""),
