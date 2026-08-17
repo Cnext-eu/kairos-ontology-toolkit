@@ -21,6 +21,8 @@ from kairos_ontology.core.ontology_integrity import (
     check_cross_domain_duplicates,
     check_declared_exclusions,
     check_external_terms_resolve,
+    check_reference_model_shadowing,
+    check_unanchored_classes,
     check_unused_imports,
     class_named_in_prose,
     extract_header_exclusions,
@@ -479,3 +481,58 @@ def test_the_code_is_degradable_not_hard_blocking(tmp_path: Path) -> None:
     assert "integrity.external-term-unresolved" in DEGRADABLE_CODES
     assert "integrity.external-term-unresolved" not in NON_DEGRADABLE_CODES
     assert "integrity.external-term-unresolved" in BLOCKING_CODES
+
+
+# ---------------------------------------------------------------------------
+# Anchor resolution (#537)
+# ---------------------------------------------------------------------------
+
+
+def _typo_hub(tmp_path: Path, parent_local: str) -> dict:
+    path = _write_domain(tmp_path, "cargo", classes=("CargoItem",), imports=(_MODULE,))
+    _with_extra(path, f"\n:CargoItem rdfs:subClassOf <{_MODULE}#{parent_local}> .\n")
+    return scan_hub_ontologies(tmp_path, _TERMS)
+
+
+def test_a_resolvable_parent_still_anchors(tmp_path: Path) -> None:
+    onts = _typo_hub(tmp_path, "CargoItem")
+    assert onts["cargo"].anchored_classes == frozenset({"CargoItem"})
+
+
+def test_an_unresolvable_parent_no_longer_counts_as_an_anchor(tmp_path: Path) -> None:
+    """A typo'd parent used to register as anchored, which was worse than unreported."""
+    onts = _typo_hub(tmp_path, "CargoIteem")
+    assert onts["cargo"].anchored_classes == frozenset()
+
+
+def test_the_typo_stops_silencing_the_unanchored_check(tmp_path: Path) -> None:
+    onts = _typo_hub(tmp_path, "CargoIteem")
+    assert [d.code for d in check_unanchored_classes(onts)] == ["integrity.class-unanchored"]
+
+
+def test_the_typo_stops_silencing_the_shadowing_check(tmp_path: Path) -> None:
+    """':CargoItem' duplicates a class in an imported module with no working link --
+    exactly what the shadowing check exists to catch, and the typo suppressed it."""
+    onts = _typo_hub(tmp_path, "CargoIteem")
+    codes = [d.code for d in check_reference_model_shadowing(onts, _TERMS)]
+    assert "integrity.local-class-shadows-reference-model" in codes
+
+
+def test_without_a_catalog_anchoring_is_unchanged(tmp_path: Path) -> None:
+    """compile passes no catalog. Declaring every anchor broken there would be worse
+    than the bug: it would turn an unresolved catalog into a hub-wide regression."""
+    path = _write_domain(tmp_path, "cargo", classes=("CargoItem",), imports=(_MODULE,))
+    _with_extra(path, f"\n:CargoItem rdfs:subClassOf <{_MODULE}#CargoIteem> .\n")
+
+    assert scan_hub_ontologies(tmp_path).get("cargo").anchored_classes == frozenset({"CargoItem"})
+
+
+def test_an_unmanaged_module_still_anchors(tmp_path: Path) -> None:
+    """A module the catalog never resolved cannot be judged; missing_managed_import owns it."""
+    other = "https://example.org/not-managed"
+    path = _write_domain(tmp_path, "cargo", classes=("CargoItem",), imports=(other,))
+    _with_extra(path, f"\n:CargoItem rdfs:subClassOf <{other}#Whatever> .\n")
+
+    assert scan_hub_ontologies(tmp_path, _TERMS)["cargo"].anchored_classes == frozenset(
+        {"CargoItem"}
+    )

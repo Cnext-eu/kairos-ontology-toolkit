@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.10.1] — 2026-08-17
+
+### Fixed
+- **A typo'd anchor counted as an anchor, silencing two checks and inflating the anchoring score (#537).** `scan_domain_ontology` treated *any* non-local `rdfs:subClassOf` / `owl:equivalentClass` / `rdfs:subPropertyOf` parent as an anchor without resolving it. A parent in a correctly imported module but with a misspelled local name therefore registered as anchored, which suppressed `integrity.class-unanchored` and `integrity.local-class-shadows-reference-model` and raised `class_anchoring` / `property_anchoring` in the report score. A correctly spelled dangling reference was an error; a misspelled one was rewarded.
+
+  Anchoring is now resolution-aware: `audit_ontology_integrity` resolves the reference modules before the scan rather than after, and a parent absent from the module it names no longer anchors. Behaviour is unchanged when no catalog resolves (`compile` passes none) and for modules the catalog does not manage — declaring every anchor broken in those cases would be worse than the bug.
+
+  Patch rather than minor: both checks that resume firing are advisory, so no build that passed before fails now. 5.10.0's `integrity.external-term-unresolved` already reported the typo itself; this restores the three signals it was suppressing.
+
 ## [5.10.0] — 2026-08-17
 
 ### Added
