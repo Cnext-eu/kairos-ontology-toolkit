@@ -29,3 +29,43 @@ jobs:
 
       - name: Test
         run: uv run pytest tests/ -v --tb=short
+
+  # Separate job on purpose: this is the only check here that depends on another repo's
+  # release feed, so it must not be able to mask (or be masked by) a test failure.
+  #
+  # The reciprocal of scripts/check_toolkit_pin.py in the reference-models repo, which
+  # has failed *that* build on pin drift for some time. Nothing enforced the other
+  # direction, and the pin sat thirteen minor versions behind while the cross-repo
+  # contract suite reported green against a 1.20-era bundle (#541).
+  #
+  # No release-time exemption is wired here, unlike the sibling repo's
+  # skip-toolkit-pin-check input: release.yml triggers on tags and declares its own
+  # jobs, so it never calls this workflow and a time-dependent check cannot block a
+  # release. If release.yml is ever changed to reuse this workflow, add the skip input
+  # then — and phrase it as skip-rather-than-require, because on push/PR the `inputs`
+  # context is null and GitHub coerces null and false alike, so a `!= false` guard
+  # would silently skip the check on ordinary CI.
+  refmodels-pin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      # Both repos are public, so the default token can read the release feed. The
+      # script degrades to a pass when the feed is unreachable — a network outage is
+      # not pin drift — which is why it needs an authenticated run to mean anything.
+      - name: Check the reference-models pin is current for its channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run python scripts/check_refmodels_pin.py --check

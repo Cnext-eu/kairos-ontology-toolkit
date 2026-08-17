@@ -547,7 +547,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
     "version_tag",
     type=str,
     default=None,
-    help="Specific version tag to pin (e.g. v1.19.0). Default: latest release.",
+    help="Specific version tag to pin (e.g. v1.33.1). Default: latest release.",
 )
 def update_refmodels(version_tag):
     """Update the reference-models package to the latest (or a specific) release.
@@ -559,7 +559,7 @@ def update_refmodels(version_tag):
     \b
     Examples:
         kairos-ontology update-refmodels
-        kairos-ontology update-refmodels --version v1.19.0
+        kairos-ontology update-refmodels --version v1.33.1
     """
     repo_dir = Path.cwd()
     pyproject = repo_dir / "pyproject.toml"

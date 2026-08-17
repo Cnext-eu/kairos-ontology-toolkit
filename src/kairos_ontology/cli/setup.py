@@ -179,7 +179,8 @@ def _registration_import_gate(
     "ref_models_version",
     type=str,
     default=None,
-    help="Specific version of kairos-ontology-referencemodels to pin (e.g. v1.19.0).",
+    help="Pin a specific kairos-ontology-referencemodels release (e.g. v1.33.1). "
+    "Default: the latest published stable release.",
 )
 @click.option(
     "--degraded",
@@ -880,7 +881,8 @@ def migrate(check, dry_run, hub_path):
     "ref_models_version",
     type=str,
     default=None,
-    help="Specific version of kairos-ontology-referencemodels to pin (e.g. v1.19.0).",
+    help="Pin a specific kairos-ontology-referencemodels release (e.g. v1.33.1). "
+    "Default: the latest published stable release.",
 )
 @click.option(
     "--company-domain",
