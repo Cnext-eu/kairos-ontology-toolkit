@@ -568,6 +568,72 @@ class TestSchemaCatalogueIsRoutedBeforeAnchoring:
         prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         assert catalogue[1] not in prompt, "a screened table must not reach the model"
 
+    def _run_screen(self, tmp_path, **kwargs):
+        """Anchor one catalogue table plus six business tables; return the artifact."""
+        import json
+
+        from kairos_ontology.core import anchor_tables as at
+
+        (tmp_path / "sources").mkdir()
+        catalogue = ("qargo", "Qargo Tables Columns Info__AllTables", _cols(
+            ("table_name", "bookings|orders|stops|companies|contacts|goods"),
+        ))
+        business = [
+            ("qargo", "orders", _cols(("order_id", "1"))),
+            ("qargo", "bookings", _cols(("booking_id", "1"))),
+            ("qargo", "stops", _cols(("stop_id", "1"))),
+            ("qargo", "companies", _cols(("company_id", "1"))),
+            ("qargo", "contacts", _cols(("contact_id", "1"))),
+            ("qargo", "goods", _cols(("goods_id", "1"))),
+        ]
+        client = MagicMock()
+        message = MagicMock()
+        message.content = json.dumps({"anchors": {}})
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=message)]
+        )
+        with patch.object(at, "build_class_catalog", return_value=catalog()), patch.object(
+            at, "read_source_tables", return_value=[catalogue, *business]
+        ):
+            out = at.run_anchor_tables(
+                client=client, model="m",
+                sources_dir=tmp_path / "sources",
+                catalog_path=tmp_path / "catalog.xml",
+                ref_models_dir=None, accelerator=None,
+                analysis_dir=tmp_path / "_analysis",
+                **kwargs,
+            )
+        return catalogue[1], out, len(business)
+
+    def test_the_exclusion_is_readable_back_with_its_evidence(self, tmp_path):
+        """#528: the block was write-only. A downstream stage must be able to ask
+        'is this table business data at all?' without re-running the screen."""
+        from kairos_ontology.core.anchor_tables import load_excluded_tables
+
+        table, _out, _n = self._run_screen(tmp_path)
+        excluded = load_excluded_tables(tmp_path / "_analysis")
+        assert set(excluded) == {("qargo", table)}
+        assert "names of 6 other tables" in excluded[("qargo", table)], (
+            "the evidence travels with the exclusion, so a stage that honours it "
+            "can say what it dropped and why"
+        )
+
+    def test_the_loader_is_empty_without_an_artifact(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import load_excluded_tables
+
+        assert load_excluded_tables(tmp_path) == {}
+
+    def test_the_screen_can_be_switched_off(self, tmp_path):
+        """A false positive must be answerable without a code change (#525)."""
+        from kairos_ontology.core.anchor_tables import load_excluded_tables
+
+        table, out, n_business = self._run_screen(tmp_path, screen_schema_catalogues=False)
+        doc = yaml.safe_load(out.read_text(encoding="utf-8"))
+        assert doc["excluded"] == []
+        assert doc["table_count"] == n_business + 1
+        assert table in {t["table"] for t in doc["unanchored"]}
+        assert load_excluded_tables(tmp_path / "_analysis") == {}
+
 
 class TestRegroupByAnchor:
     """The half of the inversion that makes affinity derived (DD-185)."""

@@ -3664,14 +3664,36 @@ def _emit_pattern_coverage(root, ledger, output_format):
     "(default: resolved from [tool.kairos].accelerator).",
 )
 @click.option("--model", "llm_model", default=None, help="Override the anchoring model.")
+@click.option(
+    "--no-schema-catalogue-screen",
+    "no_screen",
+    is_flag=True,
+    default=False,
+    help="Anchor every profiled table, including ones that look like a catalogue of "
+    "the source's own schema. Use when the screen has excluded a real business table.",
+)
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress progress output.")
-def anchor_tables_cmd(sources_opt, analysis_opt, catalog_opt, accelerator, llm_model, quiet):
+def anchor_tables_cmd(
+    sources_opt, analysis_opt, catalog_opt, accelerator, llm_model, no_screen, quiet
+):
     """Anchor every source table against the full reference class catalog (DD-185).
 
     One global model call: all tables' column names against a one-line-per-class
     catalog marked with blueprint ownership. Writes table-anchors.yaml — anchor
     class, alternate, confidence, derived domain, grain columns, natural key and
-    load hint per table. propose-alignment consumes the anchors as overrides.
+    load hint per table, plus anchor_properties and anchor_column_overlap (how the
+    duplicate copy of a class name was chosen) and a warning on any anchor whose
+    class has no properties in the resolved closure, which no column can map to.
+    propose-alignment consumes the anchors as overrides.
+
+    Tables that describe the source's own schema rather than its business — a
+    "Tables Columns Info" workbook, a sheet whose values are the names of other
+    tables — are screened out BEFORE anchoring and recorded under 'excluded' with
+    the evidence that excluded them, each with disposition not-business-data. They
+    are dropped from the pipeline, not merely left unanchored, and downstream stages
+    honour the block, so the exclusions are echoed table by table on every run. A
+    recorded table-grain disposition other than not-business-data overrules the
+    screen; --no-schema-catalogue-screen disables it outright.
 
     Run after analyse-sources (affinity is used as a tie-break between legitimate
     domain candidates) and before propose-alignment.
@@ -3734,6 +3756,7 @@ def anchor_tables_cmd(sources_opt, analysis_opt, catalog_opt, accelerator, llm_m
         accelerator=accelerator,
         analysis_dir=analysis_path,
         report=report,
+        screen_schema_catalogues=not no_screen,
     )
     report(f"✅ Anchors written: {out}")
 
@@ -3785,7 +3808,12 @@ def draft_gap_decisions_cmd(
     --apply.
 
     With --auto: records the dispositions that are decidable by rule (audit/system
-    columns and vendor placeholders), which no human needs to adjudicate.
+    columns and vendor placeholders), which no human needs to adjudicate. A
+    candidate the alignment pass contradicts is WITHHELD rather than written and
+    reported as a count — not-business-data drops a column out of the DD-169 gate
+    for good, so a disagreement between the two stages is answered by a human, not
+    by whichever ran first. The withheld columns land in the 'conflicts:' block of
+    gap-decisions.yaml; settle each with 'source-disposition set'.
 
     Proposals are never applied on their own: blueprint-gap, deferred and
     registered-extension shape the model, and choosing them is the reviewer's.
@@ -3815,6 +3843,35 @@ def draft_gap_decisions_cmd(
         if stats["skipped_already_decided"]:
             click.echo(
                 f"   ↪ {stats['skipped_already_decided']} left alone (already decided)"
+            )
+        # A withheld conflict is a column the rule was about to silence permanently
+        # and did not. Printing only 'written' reported that as silence: on the live
+        # hub, 114 of them (#525).
+        if stats["withheld_conflicting"]:
+            click.echo(
+                f"   ⚠ {stats['withheld_conflicting']} WITHHELD — the alignment pass "
+                "contradicts the rule on these column(s), so nothing was recorded. "
+                "Each is a column that would otherwise have been silenced as "
+                "not-business-data and dropped from the DD-169 gate."
+            )
+            click.echo(
+                "     Read them under 'conflicts:' in "
+                "integration/sources/_analysis/gap-decisions.yaml (run "
+                "'kairos-ontology draft-gap-decisions' to refresh it), then decide "
+                "each with 'kairos-ontology source-disposition set --system <s> "
+                '--table <t> --column <c> --disposition <d> --rationale "..."\'.'
+            )
+        already_recorded = sum(
+            1 for c in stats["conflicts"] if c.get("already_recorded_as")
+        )
+        if already_recorded:
+            click.echo(
+                f"   ⚠ {already_recorded} further contradicted column(s) were "
+                "already written by an earlier run, before this cross-check "
+                "existed. They are recorded as not-business-data today and are "
+                "NOT withheld — re-read each against the raw profile, and "
+                "withdraw it with 'source-disposition clear' if the rule was "
+                "wrong."
             )
 
     if accept_proposals:
@@ -3886,3 +3943,20 @@ def draft_gap_decisions_cmd(
             f"across {s['column_names']} distinct names"
         )
         click.echo(f"   {s['with_a_proposal']} loose name(s) carry a proposed disposition")
+        if s["auto_disposition_conflicts"]:
+            click.echo(
+                f"   ⚠ {s['auto_disposition_conflicts']} auto-disposition conflict(s) "
+                f"in the 'conflicts:' block ({s['conflicts_already_recorded']} already "
+                "written by an earlier run) — columns the rule would silence as "
+                "not-business-data while alignment says otherwise. They are listed, "
+                "never proposed: settle each with 'kairos-ontology source-disposition "
+                "set'."
+            )
+        if s["gap_columns_in_excluded_tables"]:
+            click.echo(
+                f"   ↪ {s['gap_columns_in_excluded_tables']} of the covered column(s) "
+                f"belong to {s['schema_catalogue_tables_excluded']} table(s) the "
+                "anchoring screen ruled not business data ('excluded' in "
+                "table-anchors.yaml). Clear them per table with 'source-disposition "
+                "set --system <s> --table <t> --disposition not-business-data'."
+            )

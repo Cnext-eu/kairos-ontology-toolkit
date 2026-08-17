@@ -437,6 +437,42 @@ def load_table_dispositions(analysis_dir: Path) -> dict[tuple[str, str], str]:
     return decided
 
 
+def load_excluded_tables(analysis_dir: Path) -> dict[tuple[str, str], str]:
+    """``(system, table) -> evidence`` for tables the anchoring screen routed out.
+
+    Reads back the ``excluded`` block :func:`run_anchor_tables` writes into
+    ``table-anchors.yaml``. The companion to :func:`load_excluded_columns` one
+    grain up: that one reads a human-governed ledger, this one reads what the
+    schema-catalogue screen decided on the last anchoring run.
+
+    An entry here is a pipeline-level fact — "this table is not business data at
+    all" — so a stage that enumerates source columns and does not consult it is
+    reporting on rows that describe another table's columns. Nothing read the key
+    between #519 writing it and #528: 24% of the disposition conflicts on the live
+    hub were columns of two sheets of a "Tables Columns Info" workbook.
+
+    The evidence string is kept rather than reduced to a set of keys, because the
+    screen is a heuristic: a stage that honours an exclusion should be able to say
+    which table it dropped and on what grounds instead of making rows vanish.
+    """
+    path = Path(analysis_dir) / ANCHORS_FILENAME
+    if not path.is_file():
+        return {}
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001 - advisory input, never fatal to a report
+        logger.warning("Could not parse %s; ignoring the schema-catalogue screen.", path)
+        return {}
+    excluded: dict[tuple[str, str], str] = {}
+    for entry in payload.get("excluded") or []:
+        if not isinstance(entry, dict) or not entry.get("table"):
+            continue
+        excluded[(str(entry.get("system") or ""), str(entry["table"]))] = str(
+            entry.get("reason") or ""
+        )
+    return excluded
+
+
 def _is_catalogue_container(container: str) -> bool:
     """Does this workbook name claim to describe a schema rather than hold data?"""
     tokens = set(_normalise(container).split("_"))
@@ -775,6 +811,7 @@ def run_anchor_tables(
     accelerator: str | None,
     analysis_dir: Path,
     report=None,
+    screen_schema_catalogues: bool = True,
 ) -> Path:
     """Run the global anchor call(s) and write ``table-anchors.yaml``.
 
@@ -782,6 +819,13 @@ def run_anchor_tables(
     recorded under ``excluded`` with the evidence that excluded them; anchored
     tables carry ``anchor_properties`` and ``anchor_column_overlap``, and one with
     no properties in the closure carries a ``warning`` and is reported (#519).
+
+    Set *screen_schema_catalogues* false to anchor every profiled table. The screen
+    is a heuristic and a false positive drops a real business table out of the
+    pipeline, so there has to be a way to say "no, that one is real" without
+    waiting for a code change; the durable answer is a table-grain ledger entry
+    (``source-disposition set --table ... --disposition deferred``), which the
+    screen already respects.
     """
     say = report or (lambda *_a, **_k: None)
     catalog = build_class_catalog(catalog_path, ref_models_dir, accelerator)
@@ -790,9 +834,13 @@ def run_anchor_tables(
         say(f"  ⚓ {len(excluded)} column exclusion(s) from the disposition ledger")
 
     source_tables = read_source_tables(sources_dir)
-    catalogue = detect_schema_catalogue_tables(
-        source_tables, load_table_dispositions(analysis_dir)
+    catalogue = (
+        detect_schema_catalogue_tables(source_tables, load_table_dispositions(analysis_dir))
+        if screen_schema_catalogues
+        else []
     )
+    if not screen_schema_catalogues:
+        say("  ⚓ Schema-catalogue screen disabled — every profiled table is anchored")
     skip = {(e["system"], e["table"]) for e in catalogue}
     if catalogue:
         say(
@@ -802,6 +850,12 @@ def run_anchor_tables(
         )
         for entry in catalogue:
             say(f"       {entry['system']}.{entry['table']} — {entry['reason']}")
+        say(
+            "       recorded under 'excluded' in table-anchors.yaml and honoured by "
+            "the disposition-conflict check; if one of these is real business data, "
+            "re-run with --no-schema-catalogue-screen or record a table-grain "
+            "disposition for it"
+        )
     outline = build_source_outline(
         sources_dir,
         excluded_columns=excluded,

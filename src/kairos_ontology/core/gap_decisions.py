@@ -59,6 +59,7 @@ from .ai_provider import (
     resolve_ai_seed,
     resolve_reasoning_effort,
 )
+from .anchor_tables import load_excluded_tables
 from .source_disposition import DISPOSITIONS, load_dispositions, record_disposition
 from .tracing import call_metadata, flush_tracing, new_session_id
 
@@ -534,7 +535,10 @@ def _event_grain(system: str, table: str, anchors: dict[tuple[str, str], set[str
 
 
 def find_disposition_conflicts(
-    hub_root: Path, *, report: AlignmentReport | None = None
+    hub_root: Path,
+    *,
+    report: AlignmentReport | None = None,
+    excluded_tables: dict[tuple[str, str], str] | None = None,
 ) -> list[DispositionConflict]:
     """Every column the auto-disposition rule and the alignment pass disagree about.
 
@@ -545,19 +549,33 @@ def find_disposition_conflicts(
 
     Deduplicated on ``(system, table, column)`` — the ledger has no domain in its
     key, so one conflict anywhere is one conflict.
+
+    Tables the anchoring screen routed out as schema catalogues (#519) are skipped:
+    a row of a table that lists another table's columns is not a column of a
+    business entity, so the two stages cannot meaningfully disagree about it. On the
+    live hub this was 26 of 109 reported conflicts, and both offending tables sat at
+    the top of the list — enough noise to make a reviewer stop reading the block
+    (#528). *excluded_tables* defaults to :func:`load_excluded_tables` over the hub's
+    analysis directory; pass ``{}`` to see the unscreened set.
     """
     hub_root = Path(hub_root)
     analysis = hub_root / "integration" / "sources" / "_analysis"
     if report is None:
         report = build_alignment_report(analysis, hub_root=hub_root)
+    if excluded_tables is None:
+        excluded_tables = load_excluded_tables(analysis)
     mapped, anchors = load_alignment_facts(analysis)
     recorded = load_dispositions(hub_root)
 
     conflicts: dict[tuple[str, str, str], DispositionConflict] = {}
+    suppressed: set[tuple[str, str, str]] = set()
     for domain in report.domains:
         for column in domain.unmapped:
             would_record = AUTO_DISPOSITIONS.get(column.reason)
             if not would_record:
+                continue
+            if (column.system, column.table) in excluded_tables:
+                suppressed.add((column.system, column.table, column.column))
                 continue
             why, evidence = _auto_disposition_conflict(column, mapped=mapped, anchors=anchors)
             if not why:
@@ -577,6 +595,15 @@ def find_disposition_conflicts(
                 evidence=evidence,
                 recorded_disposition=str(entry.get("disposition") or ""),
             )
+    if suppressed:
+        # Never silent: if the screen is wrong about a table, this line is the only
+        # place the suppression is visible from a stage that reads conflicts alone.
+        logger.info(
+            "%d candidate conflict(s) across %d table(s) skipped: the anchoring screen "
+            "excluded them as schema catalogues; see 'excluded' in table-anchors.yaml.",
+            len(suppressed),
+            len({(system, table) for system, table, _ in suppressed}),
+        )
     return sorted(conflicts.values(), key=lambda c: (c.system, c.table, c.column))
 
 
@@ -587,7 +614,8 @@ def apply_auto_dispositions(hub_root: Path, *, dry_run: bool = False) -> dict[st
     left exactly as it is, whatever this would have proposed.
 
     A candidate the alignment pass contradicts is withheld rather than written, and
-    returned under ``conflicts`` for the decision sheet to carry. ``not-business-data``
+    returned under ``conflicts`` for the decision sheet and the CLI to carry — screened
+    of tables the anchoring run excluded as schema catalogues. ``not-business-data``
     is the one disposition that removes a column from the DD-169 gate instead of
     deferring it, so the cost of the two errors is not symmetric: a withheld column
     stays on the reviewer's list, a wrongly written one disappears.
@@ -647,10 +675,27 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
     silenced as ``not-business-data`` while alignment claimed the opposite. They are
     listed, never proposed — the sheet's job is to put the disagreement in front of
     someone, and a stage that resolves it by itself is the defect, not the fix.
+
+    Gap columns belonging to a table the anchoring screen excluded as a schema
+    catalogue are *counted, not dropped* (#528). Dropping them would be wrong in
+    both directions: the DD-169 gate still counts them undecided, so removing them
+    from the sheet strands them with no bulk route to a decision, and the sheet is
+    read as the complete worklist, so a false positive in the screen would vanish
+    instead of being questioned. ``summary.gap_columns_in_excluded_tables`` says how
+    many there are and ``how_to_use`` says how to clear them in one command each.
     """
     analysis = Path(hub_root) / "integration" / "sources" / "_analysis"
     report = build_alignment_report(analysis, hub_root=Path(hub_root))
-    conflicts = find_disposition_conflicts(Path(hub_root), report=report)
+    excluded_tables = load_excluded_tables(analysis)
+    conflicts = find_disposition_conflicts(
+        Path(hub_root), report=report, excluded_tables=excluded_tables
+    )
+    in_excluded = sum(
+        1
+        for domain in report.domains
+        for column in domain.gap_columns
+        if (column.system, column.table) in excluded_tables
+    )
     already = load_dispositions(Path(hub_root))
     decided_columns = {(k[0], k[1], k[2]) for k in already}
     table_level = {(k[0], k[1]) for k in already if not k[2]}
@@ -694,6 +739,8 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             "with_a_proposal": sum(1 for p in loose if p.proposed_disposition),
             "auto_disposition_conflicts": len(conflicts),
             "conflicts_already_recorded": sum(1 for c in conflicts if c.recorded_disposition),
+            "schema_catalogue_tables_excluded": len(excluded_tables),
+            "gap_columns_in_excluded_tables": in_excluded,
         },
         "how_to_use": (
             "Set 'decision' to one of "
@@ -707,7 +754,13 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
             "auto-disposition rule because alignment disagreed with it, and each needs "
             "a per-column answer via 'kairos-ontology source-disposition set'. Any "
             "carrying 'already_recorded_as' was written by an earlier run before the "
-            "cross-check existed — re-read those against the raw profile."
+            "cross-check existed — re-read those against the raw profile. "
+            "'gap_columns_in_excluded_tables' counts entries below that belong to a "
+            "table the anchoring screen already ruled not business data (listed under "
+            "'excluded' in table-anchors.yaml): decide each such table in one command "
+            "with 'kairos-ontology source-disposition set --system <s> --table <t> "
+            "--disposition not-business-data', or, if the screen is wrong about it, "
+            "give the table any other disposition and re-run anchor-tables."
         ),
         "families": families,
         "decisions": [p.to_entry() for p in loose],
