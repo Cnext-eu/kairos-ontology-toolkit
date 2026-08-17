@@ -3765,8 +3765,18 @@ def anchor_tables_cmd(sources_opt, analysis_opt, catalog_opt, accelerator, llm_m
     help="One model call to characterise each family: names the concept, drafts a "
     "disposition, and flags families whose members do not belong together.",
 )
+@click.option(
+    "--accept-proposals",
+    is_flag=True,
+    default=False,
+    help="Fill every empty 'decision' from its drafted proposal (empty ones default to "
+    "'deferred'), then apply. Recorded as decided_by=autopilot, never as a human "
+    "decision. Use only when you have read the drafts and accept them.",
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would change.")
-def draft_gap_decisions_cmd(auto, apply_sheet, min_occurrences, suggest, dry_run):
+def draft_gap_decisions_cmd(
+    auto, apply_sheet, min_occurrences, suggest, accept_proposals, dry_run
+):
     """Draft the DD-169 gap-gate decisions, grouped by column name (DD-186).
 
     Without flags: writes gap-decisions.yaml — one reviewable entry per distinct
@@ -3806,6 +3816,32 @@ def draft_gap_decisions_cmd(auto, apply_sheet, min_occurrences, suggest, dry_run
             click.echo(
                 f"   ↪ {stats['skipped_already_decided']} left alone (already decided)"
             )
+
+    if accept_proposals:
+        from ..core.gap_decisions import accept_proposals as _accept
+
+        sheet = build_decision_sheet(hub, min_occurrences=min_occurrences)
+        # Preserve anything already decided, then fill the rest from the drafts.
+        write_decision_sheet(hub, sheet)
+        import yaml as _yaml
+
+        path = hub / "integration" / "sources" / "_analysis" / "gap-decisions.yaml"
+        sheet = _yaml.safe_load(path.read_text(encoding="utf-8"))
+        counts = _accept(sheet)
+        if not dry_run:
+            path.write_text(
+                _yaml.safe_dump(sheet, sort_keys=False, allow_unicode=True), encoding="utf-8"
+            )
+        click.echo(
+            "🤖 accepted drafted proposals as decisions (decided_by=autopilot): "
+            + ", ".join(f"{n} {d}" for d, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+        )
+        stats = apply_decision_sheet(hub, dry_run=dry_run, decided_by="autopilot")
+        click.echo(
+            f"✅ applied {stats['families_applied']} family + {stats['names_applied']} "
+            f"name-level decision(s) to {stats['columns_written']} source column(s)"
+        )
+        return
 
     if apply_sheet:
         stats = apply_decision_sheet(hub, dry_run=dry_run)

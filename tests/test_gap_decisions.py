@@ -278,3 +278,273 @@ class TestFamilies:
         assert family_of("pickup_location_city") == "pickup"
         assert family_of("PickupLocationCity") == "pickup"
         assert family_of("") == ""
+
+
+class TestAcceptProposals:
+    """The explicit override: proposals become decisions, attributed honestly."""
+
+    def _sheet(self):
+        return {
+            "families": [
+                {"family": "pickup", "domain": "consignment", "decision": "",
+                 "proposed_disposition": "deferred", "members": ["pickup_city"]},
+                {"family": "notes", "domain": "party", "decision": "already-set",
+                 "proposed_disposition": "deferred", "members": ["notes_text"]},
+            ],
+            "decisions": [
+                {"column": "OrderNo", "domain": "booking", "decision": "",
+                 "proposed_disposition": "blueprint-gap"},
+                {"column": "mystery", "domain": "booking", "decision": "",
+                 "proposed_disposition": ""},
+            ],
+        }
+
+    def test_proposals_become_decisions(self):
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = self._sheet()
+        accept_proposals(sheet)
+        assert sheet["families"][0]["decision"] == "deferred"
+        assert sheet["decisions"][0]["decision"] == "blueprint-gap"
+
+    def test_entries_without_a_proposal_default_to_deferred(self):
+        """The only defensible blanket answer: visible, reversible, non-dismissive."""
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = self._sheet()
+        accept_proposals(sheet)
+        assert sheet["decisions"][1]["decision"] == "deferred"
+
+    def test_a_human_decision_is_never_overwritten(self):
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = self._sheet()
+        accept_proposals(sheet)
+        assert sheet["families"][1]["decision"] == "already-set"
+        assert "decided_by" not in sheet["families"][1]
+
+    def test_accepted_entries_are_attributed_to_autopilot(self):
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = self._sheet()
+        accept_proposals(sheet)
+        assert sheet["families"][0]["decided_by"] == "autopilot"
+
+    def test_apply_records_the_given_attribution(self, tmp_path):
+        """An agent accepting drafts must not be recorded as a human decision."""
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        write_alignment(analysis, "party", "companies",
+                        [{"column": "OrderNo", "data_type": "int"}])
+        sheet = build_decision_sheet(tmp_path)
+        for entry in sheet["decisions"]:
+            entry["decision"] = "deferred"
+        write_decision_sheet(tmp_path, sheet)
+        apply_decision_sheet(tmp_path, decided_by="autopilot")
+        recorded = load_dispositions(tmp_path)
+        assert all(e["decided_by"] == "autopilot" for e in recorded.values())
+
+
+class TestBlueprintGapIsFramedAsPotential:
+    """blueprint-gap means 'a reference-model defect to file upstream'. Recorded
+    from a drafted proposal it is weaker: nobody has confirmed the model ought to
+    have had the concept. The entry must say so."""
+
+    def test_the_proposal_says_potential(self):
+        p = propose_for_group(group("OrderNo", count=19, data_type="int"))
+        assert p.proposed_disposition == "blueprint-gap"
+        assert "POTENTIAL" in p.reasoning
+        assert "not mapped yet" in p.reasoning or "no reference-model property" in p.reasoning
+
+    def test_the_recorded_rationale_says_potential_and_not_confirmed(self, tmp_path):
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "booking-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "booking", "tables": [
+                {"system": "qargo", "table": f"t{i}", "ref_class": "C", "columns": [],
+                 "custom_columns": [{"column": "OrderNo", "data_type": "int"}]}
+                for i in range(3)]}),
+            encoding="utf-8")
+        sheet = build_decision_sheet(tmp_path)
+        for entry in sheet["decisions"]:
+            entry["decision"] = "blueprint-gap"
+        write_decision_sheet(tmp_path, sheet)
+        apply_decision_sheet(tmp_path, decided_by="autopilot")
+
+        rationale = load_dispositions(tmp_path)[("qargo", "t0", "OrderNo")]["rationale"]
+        assert "POTENTIAL blueprint gap" in rationale
+        assert "not as a confirmed reference-model defect" in rationale
+
+    def test_deferred_records_that_the_data_is_real_and_unmapped(self, tmp_path):
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        write_alignment(analysis, "party", "companies",
+                        [{"column": "some_field", "data_type": "varchar(max)"}])
+        sheet = build_decision_sheet(tmp_path)
+        for entry in sheet["decisions"]:
+            entry["decision"] = "deferred"
+        write_decision_sheet(tmp_path, sheet)
+        apply_decision_sheet(tmp_path, decided_by="autopilot")
+        rationale = load_dispositions(tmp_path)[("qargo", "companies", "some_field")]["rationale"]
+        assert "not mapped yet" in rationale
+        assert "known gap" in rationale
+
+
+class TestAutoDispositionConflicts:
+    """Issue #521. ``not-business-data`` is the one disposition that removes a
+    column from the DD-169 gate instead of deferring it, so a false positive
+    disappears rather than queueing. On the live hub the name rule silenced
+    ``qargo.packaging_transactions.transaction_timestamp`` — the occurrence
+    timestamp of a packaging movement — as 'created/updated/guid/hash/ingest
+    metadata', while the alignment pass had independently mapped it at 0.90.
+    The auto-disposition won because it ran first."""
+
+    def _packaging_hub(self, tmp_path):
+        """One domain maps the ledger's occurrence timestamp; another does not."""
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "commercial-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "commercial", "tables": [{
+                "system": "qargo", "table": "packaging_transactions",
+                "ref_class": "CommercialTransaction",
+                "columns": [{
+                    "column": "transaction_timestamp", "data_type": "datetime",
+                    "alignment": "semantic", "confidence": 0.9,
+                    "ref_property": "eventDateTime",
+                }],
+                "custom_columns": [],
+            }]}),
+            encoding="utf-8")
+        (analysis / "customs-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "customs", "tables": [{
+                "system": "qargo", "table": "packaging_transactions", "ref_class": "C",
+                "columns": [],
+                "custom_columns": [
+                    {"column": "transaction_timestamp", "data_type": "datetime",
+                     "recommended_disposition": "skip"},
+                    {"column": "last_ingest_date", "data_type": "varchar(max)",
+                     "recommended_disposition": "skip"},
+                ],
+            }]}),
+            encoding="utf-8")
+        return tmp_path
+
+    def test_an_occurrence_timestamp_is_withheld_not_silenced(self, tmp_path):
+        hub = self._packaging_hub(tmp_path)
+        stats = apply_auto_dispositions(hub)
+        recorded = load_dispositions(hub)
+        assert ("qargo", "packaging_transactions", "transaction_timestamp") not in recorded
+        assert stats["withheld_conflicting"] == 1
+        assert stats["written"] == 1, "the audit column is still decided by rule"
+
+    def test_a_genuine_audit_column_is_still_recorded(self, tmp_path):
+        """The narrowing must not disarm the rule: ingest metadata stays automatic."""
+        hub = self._packaging_hub(tmp_path)
+        apply_auto_dispositions(hub)
+        entry = load_dispositions(hub)[("qargo", "packaging_transactions", "last_ingest_date")]
+        assert entry["disposition"] == "not-business-data"
+        assert entry["decided_by"] == "autopilot"
+
+    def test_the_conflict_names_the_score_that_contradicts_it(self, tmp_path):
+        from kairos_ontology.core.gap_decisions import find_disposition_conflicts
+
+        conflicts = find_disposition_conflicts(self._packaging_hub(tmp_path))
+        assert len(conflicts) == 1
+        conflict = conflicts[0]
+        assert conflict.column == "transaction_timestamp"
+        assert "0.90" in conflict.conflict and "eventDateTime" in conflict.conflict
+        assert "packaging_transactions" in conflict.conflict, "the grain is the argument"
+        assert conflict.would_record == "not-business-data"
+
+    def test_a_confident_mapping_outranks_even_an_audit_name(self, tmp_path):
+        """Whatever the column is called, two stages disagreeing is worth a reader."""
+        from kairos_ontology.core.gap_decisions import find_disposition_conflicts
+
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "party-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "party", "tables": [{
+                "system": "qargo", "table": "companies", "ref_class": "TradeParty",
+                "columns": [{"column": "created_at", "data_type": "datetime",
+                             "confidence": 0.91, "ref_property": "registeredOn"}],
+                "custom_columns": [{"column": "created_at", "data_type": "datetime"}],
+            }]}),
+            encoding="utf-8")
+        assert [c.column for c in find_disposition_conflicts(tmp_path)] == ["created_at"]
+
+    def test_a_mapping_below_the_floor_does_not_block_the_rule(self, tmp_path):
+        """Under review itself, so it cannot outrank a disposition."""
+        from kairos_ontology.core.gap_decisions import (
+            MAPPED_CONFIDENCE_FLOOR,
+            find_disposition_conflicts,
+        )
+
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True)
+        (analysis / "party-alignment.yaml").write_text(
+            yaml.safe_dump({"domain": "party", "tables": [{
+                "system": "qargo", "table": "companies", "ref_class": "TradeParty",
+                "columns": [{"column": "created_at", "data_type": "datetime",
+                             "confidence": MAPPED_CONFIDENCE_FLOOR - 0.1,
+                             "ref_property": "registeredOn"}],
+                "custom_columns": [{"column": "created_at", "data_type": "datetime"}],
+            }]}),
+            encoding="utf-8")
+        assert find_disposition_conflicts(tmp_path) == []
+        apply_auto_dispositions(tmp_path)
+        assert ("qargo", "companies", "created_at") in load_dispositions(tmp_path)
+
+    def test_a_proposed_local_property_contradicts_no_business_meaning(self, tmp_path):
+        """The aligner asking for a property is a claim that the data is real."""
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        write_alignment(analysis, "financial", "revenue_and_costs", [
+            {"column": "owned_by_subco", "data_type": "bit",
+             "proposed_local_property": {"name": "ownedBySubcontractor",
+                                         "on_class": "ResourceAllocation"}},
+            {"column": "created_by", "data_type": "varchar(max)"},
+        ])
+        stats = apply_auto_dispositions(tmp_path)
+        recorded = load_dispositions(tmp_path)
+        assert ("qargo", "revenue_and_costs", "owned_by_subco") not in recorded
+        assert ("qargo", "revenue_and_costs", "created_by") in recorded
+        assert stats["withheld_conflicting"] == 1
+
+    def test_the_conflict_is_surfaced_in_the_decision_sheet(self, tmp_path):
+        """Surfaced, not resolved in favour of whichever stage ran first."""
+        sheet = build_decision_sheet(self._packaging_hub(tmp_path))
+        assert sheet["summary"]["auto_disposition_conflicts"] == 1
+        entry = sheet["conflicts"][0]
+        assert entry["column"] == "transaction_timestamp"
+        assert entry["withheld_disposition"] == "not-business-data"
+        assert "source-disposition set" in entry["remediation"]
+        assert "decision" not in entry, "a conflict is evidence, never a draft answer"
+
+    def test_a_conflict_already_on_disk_is_flagged_for_re_reading(self, tmp_path):
+        """224 entries were written before this check existed; they must be findable."""
+        from kairos_ontology.core.source_disposition import record_disposition
+
+        hub = self._packaging_hub(tmp_path)
+        record_disposition(
+            hub_root=hub, system="qargo", table="packaging_transactions",
+            column="transaction_timestamp", disposition="not-business-data",
+            rationale="created/updated/guid/hash/ingest metadata", decided_by="autopilot",
+        )
+        sheet = build_decision_sheet(hub)
+        assert sheet["summary"]["conflicts_already_recorded"] == 1
+        assert sheet["conflicts"][0]["already_recorded_as"] == "not-business-data"
+
+    def test_conflicts_are_never_turned_into_decisions(self, tmp_path):
+        """--accept-proposals fills drafts. A conflict is not a draft."""
+        from kairos_ontology.core.gap_decisions import accept_proposals
+
+        sheet = build_decision_sheet(self._packaging_hub(tmp_path))
+        accept_proposals(sheet)
+        assert all("decision" not in c for c in sheet["conflicts"])
+
+    def test_audit_names_are_separated_from_occurrence_names(self):
+        from kairos_ontology.core.gap_decisions import is_audit_named
+
+        for audit in ("created_at", "updated_at", "last_ingest_date", "data_loaded_ts",
+                      "row_version", "tenant_id", "record_hash", "created_by"):
+            assert is_audit_named(audit), audit
+        for business in ("transaction_timestamp", "settled_timestamp",
+                         "pickup_start_timestamp", "owned_by_subco", "origin_timestamp"):
+            assert not is_audit_named(business), business

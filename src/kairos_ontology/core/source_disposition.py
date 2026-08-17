@@ -298,6 +298,59 @@ def audit_source_dispositions(
     return report
 
 
+def clear_dispositions(
+    hub_root: Path,
+    *,
+    tables: set[tuple[str, str]] | None = None,
+    disposition: str | None = None,
+    decided_by: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Remove matching disposition entries, returning what was (or would be) removed.
+
+    Deferring a column is a decision, and so is undeferring it. A blanket
+    ``deferred`` applied to a core operational table does clear the DD-169 gate,
+    but it parks the very columns the hub exists to model — so there has to be a
+    way to take it back that is as auditable as recording it was.
+
+    Filters are conjunctive and all optional; ``decided_by`` is the important one
+    in practice, because it lets an agent's blanket answers be withdrawn without
+    touching a decision a human actually made.
+    """
+    path = Path(hub_root) / DISPOSITIONS_RELPATH
+    if not path.is_file():
+        return {"removed": 0, "kept": 0, "by_table": {}}
+
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    rows = payload.get("tables") or []
+
+    def matches(entry: dict[str, Any]) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if tables is not None:
+            if (str(entry.get("system") or ""), str(entry.get("table") or "")) not in tables:
+                return False
+        if disposition is not None and str(entry.get("disposition") or "") != disposition:
+            return False
+        if decided_by is not None and str(entry.get("decided_by") or "") != decided_by:
+            return False
+        return True
+
+    removed = [e for e in rows if matches(e)]
+    kept = [e for e in rows if not matches(e)]
+    by_table: dict[str, int] = {}
+    for entry in removed:
+        key = f"{entry.get('system')}.{entry.get('table')}"
+        by_table[key] = by_table.get(key, 0) + 1
+
+    if removed and not dry_run:
+        payload["tables"] = kept
+        path.write_text(
+            yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        )
+    return {"removed": len(removed), "kept": len(kept), "by_table": by_table}
+
+
 def record_disposition(
     *,
     hub_root: Path,

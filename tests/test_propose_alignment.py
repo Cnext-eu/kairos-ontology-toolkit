@@ -1560,10 +1560,15 @@ class TestUriAnchorContractIntegration:
             payload = {
                 "ref_class": "TradeTerms",
                 "ref_class_confidence": 0.8,
+                # No per-column ``ref_class``: the column must inherit the table's
+                # anchor. The property is one ``SalesContract`` actually declares,
+                # so the inheritance being tested here is not confounded with the
+                # wrong-class pair issue #520 rejects (covered separately in
+                # ``TestClassPropertyPairValidation``).
                 "column_alignments": [
                     {
                         "column": "ContractNo",
-                        "ref_property": "incoterm",
+                        "ref_property": "contractIdentifier",
                         "alignment": "semantic",
                         "confidence": 0.7,
                         "rationale": "model's own guess",
