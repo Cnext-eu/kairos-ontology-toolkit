@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -462,6 +463,10 @@ def _reference_summary_from_index(
         "semantic_profile": index.profile.value,
         "closure_hash": index.closure_hash,
         "import_complete": index.import_complete,
+        # Carried alongside import_complete because it is the same kind of signal and
+        # the two disagree: a module can resolve its whole closure and still lose
+        # properties whose rdfs:domain names a class it never imports.
+        "unattached_property_domains": list(index.unattached_property_domains),
     }
 
 
@@ -654,6 +659,11 @@ def resolve_reference_models(
     # Load each grouped root through the canonical closure API and merge summaries
     # by full URI. This also covers packages whose modules do not import each other.
     domains: list[dict[str, Any]] = []
+    #: module IRI -> {(property_uri, unreachable_domain_class_uri)}. Accumulated across
+    #: every module resolved in this call and reported once at the end, rather than per
+    #: module: the same bundle is re-resolved many times in a run, so a per-parse warning
+    #: would repeat the same finding until it became unreadable.
+    unattached: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
 
     for domain_key, ttl_files in domain_groups.items():
         display_name = _domain_display_name(domain_key)
@@ -675,6 +685,10 @@ def resolve_reference_models(
                 if result.get("closure_hash"):
                     closure_hashes.add(result["closure_hash"])
                 complete = complete and bool(result.get("import_complete", True))
+                # Keyed on the *property's* module, not the domain class's: that is the
+                # module missing an owl:imports, so that is where the fix goes.
+                for prop_uri, cls_uri in result.get("unattached_property_domains") or ():
+                    unattached[_module_of_uri(prop_uri)].add((prop_uri, cls_uri))
             except Exception as e:
                 logger.warning(
                     "Canonical reference-model loading failed for %s: %s",
@@ -700,7 +714,48 @@ def resolve_reference_models(
         len(all_ttls),
         ref_models_dir,
     )
+    _warn_unattached_property_domains(unattached)
     return domains
+
+
+def _module_of_uri(uri: str) -> str:
+    """Return the module IRI part of a term URI (everything before the fragment)."""
+    return uri.split("#", 1)[0]
+
+
+def _warn_unattached_property_domains(
+    unattached: "defaultdict[str, set[tuple[str, str]]] | dict[str, set[tuple[str, str]]]",
+) -> None:
+    """Report properties that resolved to no class, once per resolution pass.
+
+    A property whose ``rdfs:domain`` names a class its module never ``owl:imports``
+    attaches to nothing, so every consumer sees the class as lacking a property it
+    actually has. That silence is the whole defect: it makes a real reference term
+    indistinguishable from a missing one, and a coverage report will then propose adding
+    a term the model already defines.
+
+    Advisory only. The toolkit consumes bundles it does not own, so a malformed vendor
+    module must not stop a run -- but it must not pass unremarked either.
+    """
+    if not unattached:
+        return
+    total = sum(len(pairs) for pairs in unattached.values())
+    by_module = ", ".join(
+        f"{module.rsplit('/ont/', 1)[-1]} ({len(pairs)})"
+        for module, pairs in sorted(unattached.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    )
+    logger.warning(
+        "%d property-domain assertion(s) could not be attached to any class while "
+        "resolving reference models: %s. Those properties are invisible to alignment, "
+        "so a class will look like it is missing a term it actually has. The cause is "
+        "usually a missing owl:imports in the source module -- adding the module to a "
+        "hub's data-domains.yaml does NOT resolve it.",
+        total,
+        by_module,
+    )
+    for module, pairs in sorted(unattached.items()):
+        for prop_uri, cls_uri in sorted(pairs):
+            logger.debug("  %s declares rdfs:domain %s, which is absent", prop_uri, cls_uri)
 
 
 def load_data_domains(

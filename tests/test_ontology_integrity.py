@@ -20,6 +20,7 @@ from kairos_ontology.core.ontology_integrity import (
     check_collapsed_value_objects,
     check_cross_domain_duplicates,
     check_declared_exclusions,
+    check_external_terms_resolve,
     check_unused_imports,
     class_named_in_prose,
     extract_header_exclusions,
@@ -393,3 +394,88 @@ def test_degradable_and_non_degradable_codes_partition_the_blocking_set() -> Non
     # clears the whole defect class with one flag.
     assert "integrity.class-redeclared-across-domains" in NON_DEGRADABLE_CODES
     assert "integrity.class-violates-declared-exclusion" in NON_DEGRADABLE_CODES
+
+
+# ---------------------------------------------------------------------------
+# External term resolution
+# ---------------------------------------------------------------------------
+
+_MODULE = "https://www.kairosflow.ai/ont/mmt/cargo"
+_TERMS = {_MODULE: {"classes": {"CargoItem"}, "properties": {"cargoDescription"}}}
+
+
+def _with_extra(path: Path, extra: str) -> Path:
+    path.write_text(path.read_text(encoding="utf-8") + extra, encoding="utf-8")
+    return path
+
+
+def test_a_typod_term_in_an_imported_module_is_flagged(tmp_path: Path) -> None:
+    """The mistake nothing else catches.
+
+    The namespace IS imported, so missing_managed_import is satisfied and silent; the
+    term simply does not exist. Before this check the file validated clean.
+    """
+    path = _write_domain(tmp_path, "cargo", classes=("Item",), imports=(_MODULE,))
+    _with_extra(path, f"\n:Item rdfs:subClassOf <{_MODULE}#CargoIteem> .\n")
+
+    diagnostics = check_external_terms_resolve(scan_hub_ontologies(tmp_path), _TERMS)
+
+    assert len(diagnostics) == 1
+    assert diagnostics[0].code == "integrity.external-term-unresolved"
+    assert diagnostics[0].level == "error"
+    assert "CargoIteem" in diagnostics[0].message
+
+
+def test_a_term_that_exists_is_not_flagged(tmp_path: Path) -> None:
+    path = _write_domain(tmp_path, "cargo", classes=("Item",), imports=(_MODULE,))
+    _with_extra(path, f"\n:Item rdfs:subClassOf <{_MODULE}#CargoItem> .\n")
+
+    assert check_external_terms_resolve(scan_hub_ontologies(tmp_path), _TERMS) == []
+
+
+def test_a_property_name_counts_as_a_term(tmp_path: Path) -> None:
+    """subPropertyOf resolves against the module's properties, not only its classes."""
+    path = _write_domain(tmp_path, "cargo", classes=("Item",), imports=(_MODULE,))
+    _with_extra(
+        path,
+        "\n:describes a owl:DatatypeProperty ; rdfs:domain :Item ;\n"
+        f"    rdfs:subPropertyOf <{_MODULE}#cargoDescription> .\n",
+    )
+
+    assert check_external_terms_resolve(scan_hub_ontologies(tmp_path), _TERMS) == []
+
+
+def test_an_unmanaged_module_is_left_to_the_import_check(tmp_path: Path) -> None:
+    """A module the catalog never resolved is missing_managed_import's business.
+
+    Reporting it here too would produce two errors for one mistake.
+    """
+    other = "https://example.org/not-managed"
+    path = _write_domain(tmp_path, "cargo", classes=("Item",), imports=(other,))
+    _with_extra(path, f"\n:Item rdfs:subClassOf <{other}#Whatever> .\n")
+
+    assert check_external_terms_resolve(scan_hub_ontologies(tmp_path), _TERMS) == []
+
+
+def test_no_catalog_means_no_judgement(tmp_path: Path) -> None:
+    """Empty module_terms is 'no basis to judge', matching the shadowing check."""
+    path = _write_domain(tmp_path, "cargo", classes=("Item",), imports=(_MODULE,))
+    _with_extra(path, f"\n:Item rdfs:subClassOf <{_MODULE}#CargoIteem> .\n")
+
+    assert check_external_terms_resolve(scan_hub_ontologies(tmp_path), {}) == []
+
+
+def test_the_code_is_degradable_not_hard_blocking(tmp_path: Path) -> None:
+    """Same defect class as missing_managed_import, which is deliberately degradable.
+
+    A stricter sibling for the same mistake would also newly block `compile`, which
+    consults NON_DEGRADABLE_CODES only.
+    """
+    from kairos_ontology.core.ontology_integrity import (
+        DEGRADABLE_CODES,
+        NON_DEGRADABLE_CODES,
+    )
+
+    assert "integrity.external-term-unresolved" in DEGRADABLE_CODES
+    assert "integrity.external-term-unresolved" not in NON_DEGRADABLE_CODES
+    assert "integrity.external-term-unresolved" in BLOCKING_CODES

@@ -72,6 +72,10 @@ NON_DEGRADABLE_CODES: frozenset[str] = frozenset(
 DEGRADABLE_CODES: frozenset[str] = frozenset(
     {
         "integrity.class-outside-blueprint-boundary",
+        # Same defect class as missing_managed_import, which validator.py:1470
+        # deliberately makes degradable. A stricter sibling for the same kind of
+        # mistake would be incoherent, and would newly block compile.
+        "integrity.external-term-unresolved",
     }
 )
 
@@ -88,6 +92,7 @@ ALL_CODES: tuple[str, ...] = (
     "integrity.managed-import-unused",
     "integrity.value-object-collapsed",
     "integrity.class-unanchored",
+    "integrity.external-term-unresolved",
 )
 
 # Header block a domain .ttl uses to record what it deliberately leaves to other
@@ -149,6 +154,11 @@ class DomainOntology:
     anchored_properties: frozenset[str] = frozenset()
     referenced_external: frozenset[str] = frozenset()
     property_domains: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: ``(subject_local_name, predicate_local_name, target_uri)`` for every external term
+    #: this file names via subClassOf / subPropertyOf / equivalentClass / domain / range.
+    #: Full URIs, unlike :attr:`referenced_external`, so a target can be checked for
+    #: existence rather than only its module for import.
+    external_term_refs: frozenset[tuple[str, str, str]] = frozenset()
 
     @property
     def properties(self) -> dict[str, str]:
@@ -432,6 +442,24 @@ def scan_domain_ontology(path: Path, domain: str) -> Optional[DomainOntology]:
         and not str(node).startswith(_VOCAB_PREFIXES)
     }
 
+    # Full URIs of external terms this file names in a structural position, as
+    # ``(subject_local_name, predicate_local_name, target_uri)``. ``referenced_external``
+    # keeps namespaces only, which answers "is the module imported" but not "does the
+    # named term exist in it" — and a typo'd local name in a correctly imported module
+    # is invisible to every other check here.
+    external_term_refs: set[tuple[str, str, str]] = set()
+    for predicate in (RDFS.subClassOf, RDFS.subPropertyOf, OWL.equivalentClass, RDFS.domain, RDFS.range):
+        for subject, target in graph.subject_objects(predicate):
+            if not isinstance(subject, URIRef) or not isinstance(target, URIRef):
+                continue
+            if not str(subject).startswith(namespace):
+                continue
+            if str(target).startswith(namespace) or str(target).startswith(_VOCAB_PREFIXES):
+                continue
+            external_term_refs.add(
+                (_local_name(str(subject)), _local_name(str(predicate)), str(target))
+            )
+
     property_domains: dict[str, tuple[str, ...]] = {}
     for local, uri in {**object_properties, **datatype_properties}.items():
         targets = tuple(
@@ -455,6 +483,7 @@ def scan_domain_ontology(path: Path, domain: str) -> Optional[DomainOntology]:
         anchored_classes=frozenset(anchored_classes),
         anchored_properties=frozenset(anchored_properties),
         referenced_external=frozenset(referenced_external),
+        external_term_refs=frozenset(external_term_refs),
         property_domains=property_domains,
     )
 
@@ -789,6 +818,66 @@ def check_collapsed_value_objects(
     return diagnostics
 
 
+def check_external_terms_resolve(
+    ontologies: dict[str, DomainOntology],
+    module_terms: dict[str, dict[str, set[str]]],
+) -> list[IntegrityDiagnostic]:
+    """Flag a reference term this file names that does not exist in the imported module.
+
+    Distinct from ``missing_managed_import``, which asks whether the *module* is
+    imported. This asks whether the *term* is real. A typo in the local name satisfies
+    the import check completely — the namespace is imported, so nothing objects — and
+    then nothing else notices:
+
+        rdfs:subClassOf <https://www.kairosflow.ai/ont/mmt/cargo#CargoIteem>
+
+    Worse than merely unreported. ``scan_domain_ontology`` counts a class as *anchored*
+    on the strength of having any non-local parent, without resolving it, so a typo'd
+    parent actively buys silence from :func:`check_unanchored_classes` and both arms of
+    :func:`check_reference_model_shadowing`, and inflates the anchoring score. That
+    silencing is left in place here and tracked separately: fixing it changes the
+    behaviour of three existing checks and deserves its own change.
+
+    Reports nothing when *module_terms* is empty — no catalog resolved means no basis to
+    judge, which is the same stance :func:`check_reference_model_shadowing` takes.
+    """
+    diagnostics: list[IntegrityDiagnostic] = []
+    if not module_terms:
+        return diagnostics
+    for domain, onto in sorted(ontologies.items()):
+        for subject, predicate, target in sorted(onto.external_term_refs):
+            module = _namespace_of(target).rstrip("#/")
+            known = module_terms.get(module)
+            if known is None:
+                # Module is not one the catalog resolved. Either it is not managed at
+                # all, or it is not imported -- and the second is missing_managed_import's
+                # job. Saying nothing here avoids two errors for one mistake.
+                continue
+            name = _local_name(target)
+            if name in known["classes"] or name in known["properties"]:
+                continue
+            diagnostics.append(
+                IntegrityDiagnostic(
+                    level="error",
+                    code="integrity.external-term-unresolved",
+                    message=(
+                        f"'{subject}' declares {predicate} <{target}>, but module "
+                        f"<{module}> declares no term named '{name}'. The reference is "
+                        "dangling: the module is imported, so the import check passes, "
+                        "and the term does not exist."
+                    ),
+                    domain=domain,
+                    term_uri=target,
+                    remediation=(
+                        f"Correct the local name, or point {predicate} at a term "
+                        f"<{module}> actually declares. Check for a typo first — the "
+                        "namespace resolving is what makes this easy to miss."
+                    ),
+                )
+            )
+    return diagnostics
+
+
 def check_unanchored_classes(
     ontologies: dict[str, DomainOntology],
 ) -> list[IntegrityDiagnostic]:
@@ -889,6 +978,7 @@ def audit_ontology_integrity(
     diagnostics.extend(check_unused_imports(ontologies))
     diagnostics.extend(check_collapsed_value_objects(ontologies))
     diagnostics.extend(check_unanchored_classes(ontologies))
+    diagnostics.extend(check_external_terms_resolve(ontologies, module_terms))
 
     if domains is not None:
         scope = set(domains)
