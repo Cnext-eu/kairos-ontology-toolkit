@@ -323,7 +323,7 @@ def test_proposal_is_json_serializable_and_stable():
     first = json.dumps(payload, sort_keys=True)
     second = json.dumps(payload, sort_keys=True)
     assert first == second
-    assert '"schema_version": 6' in first
+    assert '"schema_version": 7' in first
 
 
 # ---------------------------------------------------------------------------

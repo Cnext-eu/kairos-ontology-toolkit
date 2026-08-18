@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0] — 2026-08-18
+
+### Added
+- **`next` now proposes recording a source-table disposition (DD-164).** This was the only gate in the flow that `validate` *enforced* without anything ever *asking for it* — no skill step, no next action. The first an operator heard of it was a red `validate` late in a run, by which point the backlog had accumulated: on the hub that prompted this, **70 tables were outstanding at once**.
+
+  New `SourceDispositionObservation` (`tables_total`, `tables_undecided`, `coverage`) and a blocking `record-source-disposition` action routed to `kairos-design-source`, the lifecycle owner. The rationale carries the counts and the coverage percentage so the work can be sized from the line alone, and names the distinction from the column-grain gap gate (DD-169/DD-186, `draft-gap-decisions`) — confusing the two sends the operator to the wrong command.
+
+  Status is `HUMAN_DECISION_REQUIRED` rather than `BLOCKING`: `validate` does block on it, but the reason it cannot be automated is that *"is this table in scope"* is a judgement, not a derivable fact. Proposed, never applied.
+
+  The observer degrades to the all-zero no-observation default on any failure, so a hub mid-import with a half-written vocabulary cannot take `next` down — and an all-zero observation reports `coverage == 1.0`, because *no imported tables* must not read as *nothing decided*.
+
+### Changed
+- **`next` proposal `SCHEMA_VERSION` 6 → 7.** Consumers pin this; every prior observation set bumped it, and the two tests that assert it were updated rather than relaxed.
+
 ## [5.12.0] — 2026-08-18
 
 ### Changed

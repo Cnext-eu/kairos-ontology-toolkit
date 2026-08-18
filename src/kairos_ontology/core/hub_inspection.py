@@ -41,6 +41,7 @@ from .next_actions import (
     DomainSnapshot,
     HubInputSnapshot,
     InputStatus,
+    SourceDispositionObservation,
     SourceDomainCoverageObservation,
     SourceSampleObservation,
     SourceSampleStatus,
@@ -238,6 +239,27 @@ def _source_domain_coverage_status(root: Path) -> SourceDomainCoverageObservatio
         not_modeled=_domains(STATUS_NOT_MODELED),
         deferred=_domains(STATUS_DEFERRED),
         unassigned_tables=len(report.unassigned_source_tables),
+    )
+
+
+def _source_disposition_status(root: Path) -> SourceDispositionObservation:
+    """Count source tables with no recorded outcome (DD-164).
+
+    Degrades to the no-observation default on any failure: a hub mid-import can have a
+    half-written vocabulary, and a crashing observer must not take `next` down with it.
+    The audit itself is the authority -- this only reads its counts.
+    """
+    try:
+        from .source_disposition import audit_source_dispositions
+
+        report = audit_source_dispositions(hub_root=root)
+    except Exception:
+        return SourceDispositionObservation()
+    if not report.tables_total:
+        return SourceDispositionObservation()
+    return SourceDispositionObservation(
+        tables_total=report.tables_total,
+        tables_undecided=report.tables_undecided,
     )
 
 
@@ -505,4 +527,5 @@ def gather_hub_input_snapshot(
         bi_concept_mappings=_bi_concept_mapping_status(root),
         source_domain_coverage=_source_domain_coverage_status(root),
         registered_concepts_unbound=_registered_concepts_unbound(root),
+        source_dispositions=_source_disposition_status(root),
     )

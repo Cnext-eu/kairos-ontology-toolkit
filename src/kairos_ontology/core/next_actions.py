@@ -39,7 +39,19 @@ from enum import Enum
 #: ``model-registered-concept`` action routed to kairos-design-domain (issue #505 Layer B,
 #: DD-162): registration records that a source-discovered concept belongs, but nothing routed
 #: anyone to actually model and bind it.
-SCHEMA_VERSION = 6
+#: v7 adds the source-disposition observation (``source_dispositions`` /
+
+#: ``SourceDispositionObservation``) and its blocking ``record-source-disposition`` action
+
+#: routed to kairos-design-source (DD-164). ``validate`` already hard-failed on an
+
+#: undecided source table, but no skill step and no next action ever proposed recording
+
+#: one -- the only gate in the flow enforced without being asked for, which is how a hub
+
+#: reached 70 outstanding decisions before anyone was told.
+
+SCHEMA_VERSION = 7
 
 
 class InputStatus(str, Enum):
@@ -105,6 +117,9 @@ ACTION_SKILLS: dict[str, str] = {
     "design-discovery": "kairos-design-discovery",
     "resolve-discovery-open-questions": "kairos-design-discovery",
     "design-source": "kairos-design-source",
+    # DD-164: the table-grain scope decision belongs to the source lifecycle owner. It is
+    # the one gate `validate` enforced with no step proposing it.
+    "record-source-disposition": "kairos-design-source",
     # #421/DD-157: worksheet triage belongs to the import-tmdl lifecycle owner
     # (kairos-design-source), NOT to kairos-design-domain, whose charter forbids
     # filling the worksheet during a design slice.
@@ -190,6 +205,35 @@ class BiConceptMappingObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceDispositionObservation:
+    """Source tables with no recorded outcome -- bound or explicitly disposed (DD-164).
+
+    ``validate`` hard-fails on these, and until now **nothing proposed recording them**:
+    DD-164 was the only gate in the flow with no skill step and no next action, so the
+    first an operator heard of it was a red validate late in a run. On the hub that
+    prompted this, 70 tables were outstanding at once.
+
+    Recording an outcome is a human decision -- "this table is not business data", "this
+    is deferred" -- so this is advisory and blocking, never auto-applied. It is distinct
+    from the *column*-grain gap gate (DD-169/DD-186, ``draft-gap-decisions``): this asks
+    whether the table is in scope at all.
+
+    All-zero is the no-observation default, so existing constructor call sites derive no
+    action -- the same precedent as ``bi_concept_mappings`` and ``source_domain_coverage``.
+    """
+
+    tables_total: int = 0
+    tables_undecided: int = 0
+
+    @property
+    def coverage(self) -> float:
+        """Fraction with any recorded outcome. 1.0 when there is nothing to decide."""
+        if self.tables_total <= 0:
+            return 1.0
+        return (self.tables_total - self.tables_undecided) / self.tables_total
+
+
+@dataclass(frozen=True, slots=True)
 class SourceDomainCoverageObservation:
     """Domains holding real source data that the hub has not modeled or bound (DD-160).
 
@@ -247,6 +291,9 @@ class HubInputSnapshot:
     #: default is the no-observation state, so existing constructor call sites derive no
     #: action -- same precedent as ``bi_concept_mappings``.
     registered_concepts_unbound: int = 0
+    #: Source tables with no recorded outcome (DD-164). All-zero is the no-observation
+    #: state; ``validate`` fails on a non-zero undecided count.
+    source_dispositions: SourceDispositionObservation = SourceDispositionObservation()
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +518,34 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 ),
                 command="kairos-ontology domain-coverage",
                 priority=24,
+            )
+        )
+    if snapshot.source_dispositions.tables_undecided:
+        obs = snapshot.source_dispositions
+        actions.append(
+            _action(
+                "record-source-disposition",
+                # HUMAN_DECISION_REQUIRED rather than BLOCKING: `validate` does block on
+                # it (hence blocking=True), but the reason it cannot be automated is that
+                # "is this table in scope" is a judgement, not a derivable fact.
+                ActionStatus.HUMAN_DECISION_REQUIRED,
+                rationale=(
+                    f"{obs.tables_undecided} of {obs.tables_total} source table(s) have no "
+                    f"recorded outcome ({obs.coverage:.0%} decided). `validate` fails on this "
+                    "(DD-164), and nothing in the flow proposed it until now — which is how a "
+                    "hub reached 70 outstanding decisions before anyone was told. Each table "
+                    "needs a human call: bound to a domain, or explicitly disposed as "
+                    "not-business-data, deferred, or a blueprint gap. This is the table-grain "
+                    "question 'is this in scope at all', not the column-grain gap gate."
+                ),
+                command=(
+                    "kairos-ontology source-disposition list --undecided   # then, per table:\n"
+                    "  kairos-ontology source-disposition set --system <s> --table <t> "
+                    "--disposition <not-business-data|deferred|blueprint-gap> "
+                    '--rationale "<why>"'
+                ),
+                priority=23,
+                blocking=True,
             )
         )
     if snapshot.registered_concepts_unbound:
