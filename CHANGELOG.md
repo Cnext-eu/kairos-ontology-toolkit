@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.11.0] — 2026-08-18
+
 ### Changed
 - **BREAKING: `propose-alignment` now refuses to run when `table-anchors.yaml` is absent.** It read the artifact and said `if global_anchors:` with **no `else` branch**, and `load_table_anchors` returns an empty mapping when the file is missing — so a hub that never ran `anchor-tables` skipped the entire DD-185 regrouping block in total silence and the run looked normal.
 
