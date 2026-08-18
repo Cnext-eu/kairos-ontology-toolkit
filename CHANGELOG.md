@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [5.11.0] — 2026-08-18
 
 ### Changed
+- **Tested against reference models 1.35.0 (was 1.33.1).** Picked up by `scripts/check_refmodels_pin.py --check`, which failed the pin within twenty minutes of the release — the reciprocal check added in 5.10.2 doing exactly what its absence had prevented for thirteen minor versions. `_REFMODELS_FALLBACK_TAG` follows to `v1.35.0`, which the tether test in `test_scaffold_refmodels_pin.py` required rather than merely suggested: that test was the only failure in the run against the new bundle.
+
+  1.35.0 closes reference-models gh#104, filed from this repo: `freight-forwarder` goes **13 → 36 modules and 52 → 203 core concepts**, gaining `bsp/financial`, `bsp/cost-accounting`, `bsp/revenue-yield` and `bsp/commercial`, and with them 38 money concepts where it previously had **zero**. One of the new labels — `Charge (cost and/or sell line on a job)` — is the concept the issue's evidence was built on. Full suite green against it: 4415 passed, 4 skipped.
 - **BREAKING: `propose-alignment` now refuses to run when `table-anchors.yaml` is absent.** It read the artifact and said `if global_anchors:` with **no `else` branch**, and `load_table_anchors` returns an empty mapping when the file is missing — so a hub that never ran `anchor-tables` skipped the entire DD-185 regrouping block in total silence and the run looked normal.
 
   What that costs is stated in the code's own comment at that line: *"this is what makes affinity a prior rather than a constraint: a misplaced table is aligned in the domain whose classes it actually needs."* Without anchors, affinity becomes a hard constraint. On the hub that prompted this guard, **18 of 68 tables ended with an empty `ref_class`, and every domain with empty anchors scored 0% mapped.**

@@ -143,7 +143,7 @@ include = [
 # Reference models resolved from the published GitHub Release wheel (DD-158).
 # Update with `kairos-ontology update-refmodels` after a new release is cut.
 [tool.uv.sources]
-kairos-ontology-referencemodels = { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.33.1/kairos_ontology_referencemodels-1.33.1-py3-none-any.whl" }
+kairos-ontology-referencemodels = { url = "https://github.com/Cnext-eu/kairos-ontology-referencemodels/releases/download/v1.35.0/kairos_ontology_referencemodels-1.35.0-py3-none-any.whl" }
 
 [tool.ruff]
 line-length = 100
