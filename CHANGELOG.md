@@ -5,6 +5,16 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **Release status.** The last published GA release is **5.10.1**. Sections **5.10.2 through
+> 5.13.0** all landed on `main` on 2026-08-17/18 and carry no tags of their own — they are the
+> per-change record, not five separate releases. They are published together for the first time
+> as the **`v5.13.0rc1`** pre-release, and a GA tag will follow once the pre-release is
+> exercised. The dates on those headings are when the change landed, not when it shipped.
+>
+> Read **5.11.0** before upgrading: `propose-alignment` now refuses to run without
+> `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop. `--without-anchors`
+> is the escape hatch and `anchor-tables` is the one-command fix.
+
 ## [Unreleased]
 
 ## [5.13.0] — 2026-08-18
