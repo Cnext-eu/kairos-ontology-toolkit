@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 import hashlib
 import re
 import time
@@ -1264,6 +1265,81 @@ def _score_ref_class(
         score += len(prop_tokens & indicative_tokens) * 1.2
 
     return score
+
+
+def _class_key(cls: dict[str, Any]) -> str:
+    """Identity for pool membership: URI when present, else the local name."""
+    return str(cls.get("uri") or cls.get("name") or "")
+
+
+def anchor_derived_class_pool(
+    anchor_name: str,
+    ref_classes: list[dict[str, Any]],
+    *,
+    max_classes: int = MAX_REF_CLASSES_PER_PROMPT,
+) -> list[dict[str, Any]]:
+    """The class pool for a table whose anchor is already decided (DD-185).
+
+    Replaces the lexical shortlist on the anchored path. ``_score_ref_class`` ranks
+    classes by how many of their properties match the table's columns, which answers
+    *"which class holds columns like mine"* -- not *"what is this table"*. Those are
+    different questions, and conflating them inverts the answer whenever a table is
+    full of some other class's properties: measured on a live hub, ``Address`` scored
+    44 against ``TradeParty``'s 20 for a **companies** table, because a companies table
+    is largely address columns.
+
+    When the anchor is known that question is already settled, so the pool is *derived*
+    rather than re-guessed:
+
+    * the anchor class itself, always present and always first;
+    * its specializations, which are refinements of the same thing;
+    * classes reachable through blueprint-declared bridges (DD-181), which the hub has
+      already authorised this domain to reference.
+
+    Value objects one hop out are added downstream by :func:`expand_value_object_pool`
+    (#517) and are deliberately not duplicated here.
+
+    The pool still matters after STEP 1 is decided: the prompt permits a column to map
+    to a property of the anchor *or of any other listed class*, so this is the STEP 2
+    property surface. Deriving it is what stops a lexically-similar but unrelated class
+    from contributing properties.
+
+    Returns ``[]`` when the anchor is not among *ref_classes* -- the caller then falls
+    back to the lexical shortlist rather than sending a pool with no anchor in it.
+    """
+    target = str(anchor_name or "").strip().lower()
+    if not target:
+        return []
+
+    by_name: dict[str, dict[str, Any]] = {}
+    for cls in ref_classes:
+        by_name.setdefault(str(cls.get("name") or "").strip().lower(), cls)
+
+    anchor = by_name.get(target)
+    if anchor is None:
+        return []
+
+    pool = [anchor]
+    seen = {_class_key(anchor)}
+
+    def _add(cls: dict[str, Any] | None) -> None:
+        if cls is None:
+            return
+        key = _class_key(cls)
+        if key and key not in seen:
+            seen.add(key)
+            pool.append(cls)
+
+    for spec in anchor.get("specializations") or []:
+        name = spec.get("name") if isinstance(spec, dict) else spec
+        _add(by_name.get(str(name or "").strip().lower()))
+
+    # DD-181 bridge anchors are already merged into ref_classes and carry the marker.
+    for cls in ref_classes:
+        if cls.get("bridge_target_domain"):
+            _add(cls)
+
+    return pool[:max_classes] if max_classes and max_classes > 0 else pool
 
 
 def _select_ref_classes_for_table(
@@ -4708,14 +4784,27 @@ def _propose_alignments(
                     "anchor_resolution": anchor_res,
                 }
 
-            shortlist_classes = _select_ref_classes_for_table(
-                table,
-                columns,
-                ref_classes,
-                likely_entity=likely_entity,
-                indicative_columns=indicative_columns,
-                max_classes=max_prompt_classes,
+            # Stage B: when an anchor already decided the class, derive the pool from
+            # it instead of re-running the lexical scorer that answers a different
+            # question. Falls back to the scorer when there is no anchor, or when the
+            # anchor names a class this domain cannot resolve.
+            shortlist_classes = (
+                anchor_derived_class_pool(
+                    anchor_override, ref_classes, max_classes=max_prompt_classes
+                )
+                if anchor_override
+                else []
             )
+            pool_origin = "anchor" if shortlist_classes else "lexical"
+            if not shortlist_classes:
+                shortlist_classes = _select_ref_classes_for_table(
+                    table,
+                    columns,
+                    ref_classes,
+                    likely_entity=likely_entity,
+                    indicative_columns=indicative_columns,
+                    max_classes=max_prompt_classes,
+                )
             # Issue #517: the class a measurement belongs on is usually not the
             # anchor but a value object hanging off it, and the flat lexical
             # shortlist does not reach it. Expand from the anchor first so it gets
@@ -4783,7 +4872,12 @@ def _propose_alignments(
                         glossary_terms=glossary_terms,
                         trace_session_id=trace_session_id,
                     )
-                    if len(shortlist_classes) < len(
+                    # An anchored table is never widened to the full inventory. The
+                    # retry exists because a lexical shortlist is unreliable; when the
+                    # class is already decided, widening cannot improve STEP 1 and
+                    # floods STEP 2 with ~1200 classes the model must read past. A weak
+                    # result on an anchored table is a gap signal, not a cue to widen.
+                    if not anchor_override and len(shortlist_classes) < len(
                         ref_classes
                     ) and _should_retry_with_full_inventory(
                         result,
@@ -4827,6 +4921,8 @@ def _propose_alignments(
                 "from_cache": False,
                 "likely_entity": likely_entity,
                 "anchor_resolution": anchor_res,
+                "pool_origin": pool_origin,
+                "pool_size": len(shortlist_classes),
             }
 
         # Live progress. A full run is tens of minutes of silence otherwise, with no way
@@ -4868,6 +4964,20 @@ def _propose_alignments(
             f"({tables_done}/{total_tables} tables, "
             f"{time.monotonic() - run_started:.0f}s elapsed)"
         )
+        # Which question decided each table's class pool. Reported per domain
+        # rather than per table: on a 70-table hub the per-table line is noise,
+        # but a domain where every pool came from the lexical scorer means the
+        # anchors did not resolve, and that is worth seeing without --verbose.
+        origins = Counter(
+            str(e.get("pool_origin") or "cached")
+            for e in processed
+            if e is not None
+        )
+        if origins:
+            report(
+                "       class pool: "
+                + ", ".join(f"{n} from {o}" for o, n in sorted(origins.items()))
+            )
 
         # DD-070: accumulate cross-module matches across the domain's tables.
         cross_module_acc: dict[tuple[str, str], dict[str, Any]] = {}

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.12.0] — 2026-08-18
+
+### Changed
+- **An anchored table's class pool is now derived from its anchor instead of lexically scored.** `_score_ref_class` ranks classes by how many of their *properties* match the table's columns, which answers *"which class holds columns like mine"* — not *"what is this table"*. Conflating the two inverts the answer whenever a table is largely built from some other class's properties: measured on a live hub, `Address` scored **44** against `TradeParty`'s **20** for a *companies* table, because a companies table is mostly address columns. Denoising cannot fix that — `Address` genuinely does hold those properties. The question was wrong.
+
+  DD-185 already answers the identity question globally against the full catalog, and `anchor_override` already pins the result in the prompt. What was missing is that the *pool* was still built by the scorer, so a lexically-similar but unrelated class kept contributing properties to STEP 2. The prompt permits a column to map to a property of the anchor *or of any other listed class*, so that pool is the STEP 2 property surface, not decoration.
+
+  New `anchor_derived_class_pool` offers the anchor (always first, always present), its specializations, and classes reachable through blueprint-declared bridges (DD-181). Value objects one hop out continue to come from `expand_value_object_pool` (#517) downstream. It returns empty — and the run falls back to the lexical shortlist — when the anchor is blank, unresolvable in the domain, below `ANCHOR_CONFIDENCE_FLOOR`, or outside the domain's pool, so nothing is ever sent a pool that lacks its own anchor.
+
+  **The lexical path is untouched for un-anchored tables and `--without-anchors` runs.** This is additive, not a swap.
+- **The full-inventory retry no longer fires on an anchored table.** The retry existed because a lexical shortlist is unreliable; when the class is already decided, widening cannot improve STEP 1 and floods STEP 2 with ~1200 classes the model must read past. A weak result on an anchored table is a gap signal, not a cue to widen. This was previously ungated: `anchor_override` pinned the class in the prompt but did nothing to stop the retry.
+- **Each domain reports which question decided its pools** (`class pool: 9 from anchor, 2 from lexical`). Per domain rather than per table — on a 70-table hub the per-table line is noise, but a domain where every pool came from the scorer means the anchors did not resolve, and that should be visible without `--verbose`.
+
+### Notes
+- **Not measured end-to-end.** This ships on unit and integration evidence plus the mechanism argument; there is no before/after run on a real hub, because the labelled oracle that would have scored anchor accuracy was dropped by decision. The integration tests assert the *wiring* (an anchored table is not offered the lexically dominant class; an un-anchored one still is), which is weaker than a measured improvement in mapped columns. Treat the 44:20 figure as the motivation, not as a result reproduced here.
+
 ## [5.11.1] — 2026-08-18
 
 ### Changed
