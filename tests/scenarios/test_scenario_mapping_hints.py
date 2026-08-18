@@ -157,6 +157,7 @@ def _run(tmp_path, include_mapping_hints):
             sources_dir=SOURCES_DIR,
             catalog_path=None,
             include_mapping_hints=include_mapping_hints,
+            without_anchors=True,
         )
     client = next(a for a in alignments if a.domain == "client")
     return alignment_to_dict(client)["tables"][0]

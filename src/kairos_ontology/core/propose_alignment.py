@@ -76,7 +76,10 @@ from .ai_provider import (
 from ._provenance import ai_attribution, provenance_comment
 from .anchor_tables import (
     ANCHOR_CONFIDENCE_FLOOR,
+    ANCHORS_FILENAME,
+    ArtifactState,
     load_excluded_tables,
+    probe_anchors,
     load_table_anchors,
     regroup_by_anchor,
 )
@@ -630,6 +633,46 @@ def _sorted_terms(terms: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(terms, key=lambda t: (str(t.get("name") or ""), str(t.get("uri") or "")))
 
 
+def _spec_key(spec: Any) -> str:
+    """Identity for a specialization entry, whether it is a dict or a bare string."""
+    if isinstance(spec, dict):
+        return str(spec.get("uri") or spec.get("name") or "")
+    return str(spec)
+
+
+def _merge_prop_groups(
+    target: dict[str, dict[str, dict[str, Any]]],
+    incoming: dict[str, dict[str, dict[str, Any]]],
+) -> None:
+    """Union *incoming* property groups into *target*, keeping the first metadata seen.
+
+    First-wins for an individual property (the metadata for one property URI is the same
+    wherever it is declared), but a property *absent* from *target* is added rather than
+    dropped. That addition is the whole of issue #540.
+    """
+    for group in ("properties", "inherited_properties"):
+        for key, prop in incoming.get(group, {}).items():
+            target.setdefault(group, {}).setdefault(key, prop)
+
+
+def _flatten_prop_groups(
+    grouped: dict[str, dict[str, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Own properties first, then inherited, each group sorted (DD-175).
+
+    A property declared on the class in one module and merely inherited in another counts
+    as own: the more specific statement wins, and it must not be listed twice.
+    """
+    own = _sorted_terms(list(grouped.get("properties", {}).values()))
+    own_keys = {str(p.get("uri") or p.get("name") or "") for p in own}
+    inherited = [
+        p
+        for p in _sorted_terms(list(grouped.get("inherited_properties", {}).values()))
+        if str(p.get("uri") or p.get("name") or "") not in own_keys
+    ]
+    return own + inherited
+
+
 def extract_ref_model_inventory(
     domain_uris: list[str],
     catalog_path: Path | None,
@@ -668,7 +711,16 @@ def extract_ref_model_inventory(
         return []
 
     all_classes: list[dict[str, Any]] = []
-    seen_classes: set[str] = set()
+    # Issue #540: an index, not a set. A class URI reachable from two modules used to be
+    # taken first-wins, so a later module's richer view of the SAME class was discarded --
+    # ``bsp:TradeParty`` resolved to 13 properties or 17 depending purely on which module
+    # the catalog happened to resolve first. That silently truncated the property set every
+    # consumer scores and prompts on, and made the result order-dependent, so no seed could
+    # make a run reproducible (defeating the point of DD-175 two functions up).
+    # Identity is still the URI; only the property sets are unioned.
+    seen_classes: dict[str, int] = {}
+    prop_groups: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
+    contributing: dict[str, list[str]] = {}
 
     for uri in domain_uris:
         try:
@@ -691,9 +743,6 @@ def extract_ref_model_inventory(
         for cls in _sorted_terms(ref.get("classes", [])):
             cls_name = cls.get("name", "")
             dedup_key = str(cls.get("uri") or f"{uri}#{cls_name}")
-            if dedup_key in seen_classes:
-                continue
-            seen_classes.add(dedup_key)
 
             # Enrich properties with full metadata from the parsed graph.
             #
@@ -703,10 +752,13 @@ def extract_ref_model_inventory(
             # a *different* prompt and no seed can make the answer reproducible.
             # Own and inherited stay in separate groups (the distinction is real
             # and the prompt relies on it); each group is ordered within itself.
-            props = []
+            grouped: dict[str, dict[str, dict[str, Any]]] = {
+                "properties": {},
+                "inherited_properties": {},
+            }
             for group in ("properties", "inherited_properties"):
                 for p in _sorted_terms(cls.get(group, [])):
-                    props.append(
+                    grouped[group][str(p.get("uri") or p.get("name") or "")] = (
                         {
                             "uri": p.get("uri", ""),
                             "name": p.get("name", ""),
@@ -724,6 +776,28 @@ def extract_ref_model_inventory(
                             "type": p.get("type", ""),
                         }
                     )
+
+            # Merge into an already-seen class instead of dropping this view of it (#540).
+            if dedup_key in seen_classes:
+                existing = all_classes[seen_classes[dedup_key]]
+                _merge_prop_groups(prop_groups[dedup_key], grouped)
+                existing["properties"] = _flatten_prop_groups(prop_groups[dedup_key])
+                if uri not in contributing[dedup_key]:
+                    contributing[dedup_key].append(uri)
+                existing["_semantic"]["contributing_uris"] = list(contributing[dedup_key])
+                if cls.get("specializations"):
+                    merged_spec = list(existing.get("specializations") or [])
+                    known = {_spec_key(s) for s in merged_spec}
+                    for spec in cls["specializations"]:
+                        if _spec_key(spec) not in known:
+                            merged_spec.append(spec)
+                            known.add(_spec_key(spec))
+                    existing["specializations"] = merged_spec
+                continue
+
+            prop_groups[dedup_key] = grouped
+            contributing[dedup_key] = [uri]
+            props = _flatten_prop_groups(grouped)
 
             cls_dict: dict[str, Any] = {
                 "uri": cls.get("uri", ""),
@@ -745,6 +819,7 @@ def extract_ref_model_inventory(
                 cls_dict["source_uri"] = uri
                 cls_dict["ref_class_id"] = f"{module}:{cls_name}" if module else cls_name
                 cls_dict["belongs_to_domains"] = list(module_info.get("domains", []))
+            seen_classes[dedup_key] = len(all_classes)
             all_classes.append(cls_dict)
 
     return all_classes
@@ -3844,6 +3919,41 @@ def _review_column_alignment(
 # ---------------------------------------------------------------------------
 
 
+def _missing_anchors_message(analysis_dir: Path, state: ArtifactState) -> str:
+    """Explain a refusal to align without anchors, and say exactly what to run.
+
+    The state matters to the remediation: a missing artifact means run
+    ``anchor-tables``; an unparseable one means fix or delete the file, because
+    re-running would overwrite whatever it holds.
+    """
+    detail = {
+        ArtifactState.MISSING: (
+f"{ANCHORS_FILENAME} was never written in {analysis_dir}."
+        ),
+        ArtifactState.UNPARSEABLE: (
+f"{ANCHORS_FILENAME} in {analysis_dir} exists but could not be parsed, so no "
+            "anchor in it is being applied."
+        ),
+        ArtifactState.EMPTY: (
+f"{ANCHORS_FILENAME} in {analysis_dir} holds no anchored tables."
+        ),
+    }.get(state, str(state.value))
+    return (
+f"Refusing to align without global table anchors: {detail}\n"
+        "\n"
+        "Anchoring decides what each table's rows ARE against the full class "
+        "catalog (DD-185); alignment then maps columns to that class's properties. "
+        "Skipping it makes affinity a hard constraint rather than a prior, so a "
+        "table grouped into the wrong domain can never reach the classes it needs "
+        "— on the hub that prompted this guard, every domain with empty anchors "
+        "scored 0% mapped.\n"
+        "\n"
+        "  Run:  kairos-ontology anchor-tables\n"
+        "\n"
+        "Or pass --without-anchors to proceed anyway (it will say so, loudly)."
+    )
+
+
 def _propose_alignments(
     analysis_dir: Path,
     sources_dir: Path,
@@ -3869,6 +3979,7 @@ def _propose_alignments(
     generation_stats: dict[str, int] | None = None,
     conformance_artifact_path: Path | None = None,
     honour_table_exclusions: bool = True,
+    without_anchors: bool = False,
 ) -> tuple[list[Path], list[DomainAlignment]]:
     """Run alignment for all domains found in affinity reports.
 
@@ -3936,6 +4047,14 @@ def _propose_alignments(
             ``anchor-tables --no-schema-catalogue-screen``, for when the screen
             has a false positive). A hub with no ``table-anchors.yaml`` has no
             exclusions to honour and is unaffected either way.
+        without_anchors: proceed even though ``table-anchors.yaml`` is absent.
+            Anchoring is a precondition, not a nicety: without it the DD-185
+            regrouping below is skipped, affinity becomes a hard constraint rather
+            than a prior, and the schema-catalogue screen has nothing to read
+            either. On the hub that prompted this guard, 18 of 68 tables ended
+            with an empty ``ref_class`` and every domain with empty anchors scored
+            0% mapped. Modelled on ``--without-discovery``: refuse by default,
+            proceed loudly when the operator insists.
 
     Returns ``(written_paths, built_alignments)``. When *emit_output* is False the
     pipeline only builds and returns the in-memory :class:`DomainAlignment` objects
@@ -4041,6 +4160,11 @@ def _propose_alignments(
     # filter, so a table moving into a filtered-in domain is included. This is
     # what makes affinity a prior rather than a constraint: a misplaced table is
     # aligned in the domain whose classes it actually needs.
+    anchor_state, anchor_count = probe_anchors(analysis_dir)
+    if anchor_state is not ArtifactState.PRESENT and not without_anchors:
+        raise ValueError(
+            _missing_anchors_message(analysis_dir, anchor_state)
+        )
     global_anchors = load_table_anchors(analysis_dir)
     anchor_counters = {"applied": 0, "low_confidence": 0, "outside_pool": 0}
     if global_anchors:
@@ -4061,6 +4185,19 @@ def _propose_alignments(
                 f"  ⚓ {move['system']}.{move['table']}: {move['from'] or '(none)'} → "
                 f"{move['to']} (anchored to {move['anchor']})"
             )
+    else:
+        # The defect this guard exists for: there was no else branch here, so a
+        # hub with no anchors skipped the whole DD-185 block in total silence and
+        # the run looked normal. Reached only under --without-anchors now.
+        report(
+            f"  ⚠ No global table anchors ({anchor_state.value}) — proceeding "
+            f"without them because --without-anchors was passed."
+        )
+        report(
+            "    Affinity is now a hard constraint, not a prior: a table grouped "
+            "into the wrong domain cannot reach the classes it needs, and the "
+            "schema-catalogue screen has no exclusions to read."
+        )
 
     # Apply domain filter
     if domains_filter:

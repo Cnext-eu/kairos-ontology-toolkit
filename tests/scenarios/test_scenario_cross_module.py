@@ -189,6 +189,7 @@ def _run(tmp_path, *, cross_module):
             sources_dir=SOURCES_DIR,
             catalog_path=None,
             **kw,
+            without_anchors=True,
         )
     client = next(a for a in alignments if a.domain == "client")
     return alignment_to_dict(client)

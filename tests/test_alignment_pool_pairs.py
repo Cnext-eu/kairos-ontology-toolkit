@@ -453,6 +453,7 @@ class TestValueObjectReachesTheModel:
                 catalog_path=None,
                 domains_filter=["vessel-maritime"],
                 max_prompt_classes=1,
+                without_anchors=True,
             )
         assert "grossTonnageValue" in prompts[0]
         table = alignments[0].tables[0]

@@ -46,6 +46,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +71,74 @@ logger = logging.getLogger(__name__)
 
 #: Output artifact, alongside the affinity and alignment files.
 ANCHORS_FILENAME = "table-anchors.yaml"
+
+#: The human-governed table/column ledger (DD-164).
+DISPOSITIONS_FILENAME = "table-dispositions.yaml"
+
+
+class MalformedLedgerError(RuntimeError):
+    """A human-governed ledger exists but cannot be read.
+
+    Distinct from an absent ledger, which is the normal case. This one is fatal on
+    purpose: :func:`load_table_dispositions` is what stops the schema-catalogue
+    heuristic from overruling a recorded decision, so returning an empty mapping for a
+    file the operator believes is in force lets the heuristic quietly overrule them.
+    Erasing human governance while reporting success is worse than refusing to run --
+    the same reasoning ``registered_concepts`` already applies to a malformed
+    registration file.
+    """
+
+
+class ArtifactState(str, Enum):
+    """Why a pipeline artifact yielded nothing -- absence is not emptiness.
+
+    Every loader below collapsed three distinguishable situations into an empty
+    result: the file was never written, it exists but cannot be parsed, or it parsed
+    and genuinely holds no entries. Callers could not tell "you have not run
+    ``anchor-tables``" from "anchoring found nothing", which is why
+    ``propose-alignment`` skipped the whole DD-185 regrouping block in silence.
+    """
+
+    MISSING = "missing"
+    UNPARSEABLE = "unparseable"
+    EMPTY = "empty"
+    PRESENT = "present"
+
+
+def _read_yaml_artifact(path: Path, *, what: str) -> tuple[ArtifactState, dict[str, Any]]:
+    """Read a YAML artifact, reporting *why* it is empty rather than only that it is.
+
+    A parse failure always warns. Three of these loaders used to swallow it in total
+    silence -- not even a log line -- so a corrupt artifact was indistinguishable from
+    a clean run.
+    """
+    if not path.is_file():
+        return ArtifactState.MISSING, {}
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001 - the caller decides whether this is fatal
+        logger.warning("Could not parse %s (%s); ignoring %s.", path, exc, what)
+        return ArtifactState.UNPARSEABLE, {}
+    if not isinstance(payload, dict):
+        logger.warning("%s is not a YAML mapping; ignoring %s.", path, what)
+        return ArtifactState.UNPARSEABLE, {}
+    return (ArtifactState.PRESENT if payload else ArtifactState.EMPTY), payload
+
+
+def probe_anchors(analysis_dir: Path) -> tuple[ArtifactState, int]:
+    """Return ``(state, anchored_table_count)`` for the anchors artifact.
+
+    The precondition ``propose-alignment`` needs: it must be able to say "run
+    ``anchor-tables`` first" instead of silently aligning without anchors.
+    """
+    state, payload = _read_yaml_artifact(
+        Path(analysis_dir) / ANCHORS_FILENAME, what="global anchors"
+    )
+    tables = payload.get("tables") or []
+    count = sum(1 for t in tables if isinstance(t, dict))
+    if state is ArtifactState.PRESENT and count == 0:
+        return ArtifactState.EMPTY, 0
+    return state, count
 
 #: Below this confidence an anchor is advisory only: it is recorded but never
 #: applied as an alignment override, so a hesitant guess cannot silently pin a
@@ -337,13 +406,15 @@ def load_excluded_columns(analysis_dir: Path) -> set[tuple[str, str, str]]:
     The ledger is the governed home for this knowledge: durable, reviewed, and
     now consumed by the prompt builders rather than living in someone's memory.
     """
-    path = Path(analysis_dir) / "table-dispositions.yaml"
-    if not path.is_file():
-        return set()
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:  # noqa: BLE001 - advisory input
-        return set()
+    path = Path(analysis_dir) / DISPOSITIONS_FILENAME
+    state, payload = _read_yaml_artifact(path, what="the column exclusions")
+    if state is ArtifactState.UNPARSEABLE:
+        raise MalformedLedgerError(
+            f"{path} exists but could not be parsed. It is the governed home for "
+            "column exclusions (DD-164), so continuing would silently ignore every "
+            "exclusion recorded in it. Fix the YAML, or move the file aside to run "
+            "without it."
+        )
     excluded: set[tuple[str, str, str]] = set()
     for entry in payload.get("tables") or []:
         if not isinstance(entry, dict) or not entry.get("column"):
@@ -420,13 +491,16 @@ def load_table_dispositions(analysis_dir: Path) -> dict[tuple[str, str], str]:
     than ``not-business-data`` is someone having already decided the table IS in
     scope, and a heuristic must not overrule that.
     """
-    path = Path(analysis_dir) / "table-dispositions.yaml"
-    if not path.is_file():
-        return {}
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:  # noqa: BLE001 - advisory input
-        return {}
+    path = Path(analysis_dir) / DISPOSITIONS_FILENAME
+    state, payload = _read_yaml_artifact(path, what="the table dispositions")
+    if state is ArtifactState.UNPARSEABLE:
+        raise MalformedLedgerError(
+            f"{path} exists but could not be parsed. Every disposition other than "
+            "not-business-data is someone having decided the table IS in scope, and "
+            "this function is what stops the schema-catalogue heuristic overruling "
+            "them -- so continuing would let a heuristic silently overrule a recorded "
+            "human decision. Fix the YAML, or move the file aside to run without it."
+        )
     decided: dict[tuple[str, str], str] = {}
     for entry in payload.get("tables") or []:
         if not isinstance(entry, dict) or entry.get("column") or not entry.get("table"):
@@ -456,13 +530,7 @@ def load_excluded_tables(analysis_dir: Path) -> dict[tuple[str, str], str]:
     which table it dropped and on what grounds instead of making rows vanish.
     """
     path = Path(analysis_dir) / ANCHORS_FILENAME
-    if not path.is_file():
-        return {}
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:  # noqa: BLE001 - advisory input, never fatal to a report
-        logger.warning("Could not parse %s; ignoring the schema-catalogue screen.", path)
-        return {}
+    _state, payload = _read_yaml_artifact(path, what="the schema-catalogue screen")
     excluded: dict[tuple[str, str], str] = {}
     for entry in payload.get("excluded") or []:
         if not isinstance(entry, dict) or not entry.get("table"):
@@ -790,10 +858,7 @@ def load_affinity_domains(analysis_dir: Path) -> dict[tuple[str, str], str]:
     """Read ``(system, table) -> primary_domain`` from the affinity artifacts."""
     out: dict[tuple[str, str], str] = {}
     for path in sorted(Path(analysis_dir).glob("*-affinity.yaml")):
-        try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:  # noqa: BLE001 - advisory prior only
-            continue
+        _state, doc = _read_yaml_artifact(path, what="this affinity prior")
         system = str(doc.get("system") or path.stem.removesuffix("-affinity"))
         for table in doc.get("tables") or []:
             if isinstance(table, dict) and table.get("table"):
@@ -1041,13 +1106,7 @@ def regroup_by_anchor(
 def load_table_anchors(analysis_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
     """Read the anchors artifact, keyed ``(system, table)``. Empty when absent."""
     path = Path(analysis_dir) / ANCHORS_FILENAME
-    if not path.is_file():
-        return {}
-    try:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:  # noqa: BLE001 - a broken artifact must not fail alignment
-        logger.warning("Could not parse %s; ignoring global anchors.", path)
-        return {}
+    _state, doc = _read_yaml_artifact(path, what="global anchors")
     return {
         (str(t.get("system") or ""), str(t.get("table") or "")): t
         for t in doc.get("tables") or []

@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for propose_alignment module."""
+"""Tests for propose_alignment module.
+
+Most tests here pass ``without_anchors=True``. Alignment now refuses to run when
+``table-anchors.yaml`` is absent (DD-185 is a precondition, not a nicety), and these
+tests exercise other features on fixtures that never wrote an anchors artifact. The
+flag is inert when anchors *are* present, so it is safe on the anchor-aware tests too.
+"""
 
 from __future__ import annotations
 
@@ -1165,6 +1171,7 @@ class TestRunProposeAlignment:
                 analysis_dir=analysis_dir,
                 sources_dir=sources_dir,
                 catalog_path=None,
+                without_anchors=True,
             )
 
         assert len(alignments) == 2  # commercial + party
@@ -1250,6 +1257,7 @@ class TestRunProposeAlignment:
                 domains_filter=["party"],
                 accelerator="logistics",
                 ref_models_dir=refmodels,
+                without_anchors=True,
             )
 
         data = alignment_to_dict(alignments[0])
@@ -1265,6 +1273,7 @@ class TestRunProposeAlignment:
                 sources_dir=tmp_path,
                 catalog_path=None,
                 output_dir=tmp_path,
+                without_anchors=True,
             )
 
     def test_invalid_domain_filter_raises(self, analysis_dir, sources_dir, tmp_path):
@@ -1275,6 +1284,7 @@ class TestRunProposeAlignment:
                 catalog_path=None,
                 output_dir=tmp_path,
                 domains_filter=["nonexistent"],
+                without_anchors=True,
             )
 
     def test_retries_with_full_inventory_on_weak_shortlist(
@@ -1344,6 +1354,7 @@ class TestRunProposeAlignment:
                 output_dir=tmp_path,
                 domains_filter=["commercial"],
                 max_prompt_classes=1,
+                without_anchors=True,
             )
 
         assert len(files) == 1
@@ -1414,6 +1425,7 @@ class TestAlignmentConcurrencyAndCaching:
                 catalog_path=None,
                 output_dir=output_dir,
                 **kw,
+                without_anchors=True,
             )
 
     def test_domain_skip_on_unchanged_affinity(self, analysis_dir, sources_dir, tmp_path):
@@ -1568,6 +1580,7 @@ class TestAlignmentReliability:
                 None,
                 tmp_path / "out",
                 generation_stats=stats,
+                without_anchors=True,
             )
         assert stats == {"attempted": 2, "semantic_success": 2, "provider_failure": 0}
 
@@ -1671,6 +1684,7 @@ class TestUriAnchorContractIntegration:
                 catalog_path=None,
                 domains_filter=["commercial"],
                 conformance_artifact_path=conformance,
+                without_anchors=True,
             )
         commercial = next(a for a in alignments if a.domain == "commercial")
         ta = next(t for t in commercial.tables if t.table == "tblContracts")
@@ -1706,6 +1720,7 @@ class TestUriAnchorContractIntegration:
                 sources_dir=sources_dir,
                 catalog_path=None,
                 domains_filter=["commercial"],
+                without_anchors=True,
             )
         ta = next(t for t in alignments[0].tables if t.table == "tblContracts")
         assert ta.ref_class == "TradeTerms"
@@ -1959,12 +1974,14 @@ class TestTotalFailureNoWriteGuarantee:
                 sources_dir=sources_dir,
                 catalog_path=None,
                 output_dir=out,
+                without_anchors=True,
             )
             second = run_propose_alignment(
                 analysis_dir=analysis_dir,
                 sources_dir=sources_dir,
                 catalog_path=None,
                 output_dir=out,
+                without_anchors=True,
             )
         assert [f.name for f in second] == [f.name for f in first]
         assert [f.name for f in second] == sorted(f.name for f in second)
@@ -2025,6 +2042,7 @@ class TestModelPrecedence:
                 catalog_path=None,
                 model=model,
                 domains_filter=["commercial"],
+                without_anchors=True,
             )
         return seen, alignments
 
@@ -2625,6 +2643,7 @@ class TestRunProposeAlignmentCrossModule:
                 output_dir=output,
                 domains_filter=["party"],
                 **kw,
+                without_anchors=True,
             )
 
     def _build(self, analysis_dir, party_sources, calls=None, **kw):
@@ -2652,6 +2671,7 @@ class TestRunProposeAlignmentCrossModule:
                 catalog_path=None,
                 domains_filter=["party"],
                 **kw,
+                without_anchors=True,
             )
 
     def test_column_matches_sibling_module(self, analysis_dir, party_sources, tmp_path):
@@ -2699,6 +2719,7 @@ class TestRunProposeAlignmentCrossModule:
                 output_dir=tmp_path / "out",
                 domains_filter=["party"],
                 cross_module=True,
+                without_anchors=True,
             )
 
 
@@ -2886,6 +2907,7 @@ class TestSampleEvidenceIntegration:
                 catalog_path=None,
                 domains_filter=["party"],
                 **kw,
+                without_anchors=True,
             )
 
     def test_examples_on_by_default_pii_masked(self, analysis_dir, tmp_path):
@@ -3949,6 +3971,9 @@ class TestSchemaCatalogueExclusionsInAlignment:
         return client
 
     def _run(self, analysis, sources, **kwargs):
+        # setdefault, not a fixed argument: these fixtures write no anchors artifact, so
+        # they need the opt-out -- but one test below overrides it to prove the refusal.
+        kwargs.setdefault("without_anchors", True)
         with (
             mock.patch(
                 "kairos_ontology.core.propose_alignment.get_ai_client",
@@ -4010,10 +4035,23 @@ class TestSchemaCatalogueExclusionsInAlignment:
         assert ("alpha", self.CATALOGUE) in keys
         assert len(keys) == 3
 
-    def test_a_hub_with_no_anchors_artifact_is_unaffected(self, tmp_path):
-        """Anchoring is an optional stage: no artifact, no filter."""
+    def test_a_hub_with_no_anchors_artifact_needs_the_opt_out(self, tmp_path):
+        """Anchoring is no longer optional, and the exclusion screen is why.
+
+        This test used to assert "no artifact, no filter" -- that anchoring was an
+        optional stage. It is not: the ``excluded`` block the screen writes lives in
+        ``table-anchors.yaml``, so a hub without that file silently gets no screening
+        *and* no DD-185 regrouping. Alignment now refuses rather than proceeding as if
+        both had been considered. ``--without-anchors`` restores the old behaviour, and
+        the count below is unchanged under it -- the escape hatch really is an escape
+        hatch, not a different code path.
+        """
         analysis, sources = self._hub(tmp_path, excluded=None)
         assert not (analysis / "table-anchors.yaml").exists()
+
+        with pytest.raises(ValueError, match="Refusing to align without global table anchors"):
+            self._run(analysis, sources, without_anchors=False)
+
         assert len(self._keys(self._run(analysis, sources))) == 3
 
     def test_an_empty_excluded_block_changes_nothing(self, tmp_path):
@@ -4346,6 +4384,7 @@ class TestEntityProjectionEndToEnd(TestRunProposeAlignment):
                 catalog_path=None,
                 domains_filter=["party"],
                 **kwargs,
+                without_anchors=True,
             )
 
     @staticmethod
