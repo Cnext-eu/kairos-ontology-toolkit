@@ -179,7 +179,8 @@ def _registration_import_gate(
     "ref_models_version",
     type=str,
     default=None,
-    help="Specific version of kairos-ontology-referencemodels to pin (e.g. v1.19.0).",
+    help="Pin a specific kairos-ontology-referencemodels release (e.g. v1.33.1). "
+    "Default: the latest published stable release.",
 )
 @click.option(
     "--degraded",
@@ -450,7 +451,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
         else:
             ref, tk_channel = _resolve_scaffold_toolkit_pin(channel=channel)
             version = _tag_to_version(ref)
-            rm_ref, rm_version = _resolve_scaffold_refmodels_pin()
+            rm_ref, rm_version = _resolve_scaffold_refmodels_pin(version_tag=ref_models_version)
             repo_name = cwd.name
             content = pyproject_src.read_text(encoding="utf-8")
             content = (
@@ -464,6 +465,7 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
             )
             pyproject_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created pyproject.toml")
+            print(f"    toolkit {ref} (channel '{tk_channel}'), reference models {rm_ref}")
 
     # 6. Generate hub README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
@@ -879,7 +881,8 @@ def migrate(check, dry_run, hub_path):
     "ref_models_version",
     type=str,
     default=None,
-    help="Specific version of kairos-ontology-referencemodels to pin (e.g. v1.19.0).",
+    help="Pin a specific kairos-ontology-referencemodels release (e.g. v1.33.1). "
+    "Default: the latest published stable release.",
 )
 @click.option(
     "--company-domain",
@@ -1159,7 +1162,7 @@ def new_repo(
     if pyproject_src.is_file():
         # Same pin policy as `init` — never the running (possibly unpublished) version.
         ref, tk_channel = _resolve_scaffold_toolkit_pin(channel=channel)
-        rm_ref, rm_version = _resolve_scaffold_refmodels_pin()
+        rm_ref, rm_version = _resolve_scaffold_refmodels_pin(version_tag=ref_models_version)
         content = pyproject_src.read_text(encoding="utf-8")
         content = (
             content.replace("{repo_name}", repo_slug)
@@ -1172,6 +1175,7 @@ def new_repo(
         )
         (repo_dir / "pyproject.toml").write_text(content, encoding="utf-8")
         print("  ✓ pyproject.toml")
+        print(f"    toolkit {ref} (channel '{tk_channel}'), reference models {rm_ref}")
 
     # .gitignore
     gitignore_src = _SCAFFOLD_DIR / "gitignore.template"

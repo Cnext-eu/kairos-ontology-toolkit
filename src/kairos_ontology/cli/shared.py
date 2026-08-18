@@ -312,6 +312,71 @@ def _resolve_import_dir(cwd: Path, hub_root: Path | None) -> Path:
 _TOOLKIT_REPO = "Cnext-eu/kairos-ontology-toolkit"
 
 
+def _sort_tags_by_version(tags: list[str]) -> list[str]:
+    """Sort release tags by PEP 440 version, highest first (never lexicographically)."""
+    from packaging.version import InvalidVersion, Version
+
+    def _parse_version(tag: str) -> Version:
+        try:
+            return Version(_tag_to_version(tag))
+        except InvalidVersion:
+            return Version("0.0.0")
+
+    return sorted(tags, key=_parse_version, reverse=True)
+
+
+def _list_published_release_tags(repo: str) -> list[str] | None:
+    """Return every *published* release tag of ``repo``, highest version first.
+
+    Two properties this guarantees, both of which the naive ``.[0].tag_name`` read of
+    ``/releases`` lacks (issue #542):
+
+    1. **Drafts are excluded.** A draft has no downloadable asset, so pinning its tag
+       yields a hub whose first ``uv sync`` 404s — or, far worse, one that silently
+       resolves to a same-named published release from an older line. That is exactly
+       how a client hub was born on reference models v1.28.1 while v1.33.1 was current.
+    2. **Order is by version, not by creation date.** GitHub lists releases newest-created
+       first and puts drafts ahead of published ones, so element zero is neither the
+       newest version nor necessarily published at all. A backport patch cut after a
+       higher minor would mispin for the same reason.
+
+    Returns ``None`` when the release list cannot be fetched, which callers must keep
+    distinct from an empty list: unreachable is a degraded scaffold, empty is a repo
+    that has genuinely never released.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"/repos/{repo}/releases?per_page=100",
+                "--jq",
+                ".[] | select(.draft == false) | .tag_name",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if result.returncode != 0 or not isinstance(result.stdout, str):
+        return None
+    return _sort_tags_by_version([t.strip() for t in result.stdout.splitlines() if t.strip()])
+
+
+def _latest_stable_tag(tags: list[str]) -> str | None:
+    """Highest non-pre-release tag, falling back to the highest tag if all are pre-releases."""
+    from packaging.version import InvalidVersion, Version
+
+    for tag in tags:
+        try:
+            if not Version(_tag_to_version(tag)).is_prerelease:
+                return tag
+        except InvalidVersion:
+            continue
+    return tags[0] if tags else None
+
+
 def _resolve_channel(channel: str) -> str | None:
     """Resolve a channel name to a git ref (tag) using GitHub releases.
 
@@ -320,47 +385,18 @@ def _resolve_channel(channel: str) -> str | None:
       - "stable"  → latest non-prerelease tag
       - "preview" → latest tag (including pre-releases)
       - anything else → treated as an explicit ref (returned as-is)
+
+    Only published releases are considered, so the pin always has a wheel to download.
     """
     if channel not in ("stable", "preview"):
         return channel  # explicit ref like "v2.16.0" or "main"
 
-    try:
-        result = subprocess.run(
-            ["gh", "api", f"/repos/{_TOOLKIT_REPO}/releases", "--jq", ".[].tag_name"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            return None
-        tags = [t.strip() for t in result.stdout.strip().splitlines() if t.strip()]
-        if not tags:
-            return None
-
-        # Sort tags by PEP 440 version (numeric comparison, not lexicographic)
-        from packaging.version import Version, InvalidVersion
-
-        def _parse_version(tag: str) -> Version:
-            try:
-                return Version(_tag_to_version(tag))
-            except InvalidVersion:
-                return Version("0.0.0")
-
-        sorted_tags = sorted(tags, key=_parse_version, reverse=True)
-
-        if channel == "preview":
-            return sorted_tags[0]  # highest version (may be pre-release)
-        # stable: skip pre-release tags
-        for tag in sorted_tags:
-            try:
-                v = Version(_tag_to_version(tag))
-                if not v.is_prerelease:
-                    return tag
-            except InvalidVersion:
-                continue
-        return sorted_tags[0]  # fallback if all are pre-releases
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    tags = _list_published_release_tags(_TOOLKIT_REPO)
+    if not tags:
         return None
+    if channel == "preview":
+        return tags[0]  # highest version (may be pre-release)
+    return _latest_stable_tag(tags)
 
 
 def _resolve_scaffold_toolkit_pin(channel: str | None = None) -> tuple[str, str]:
@@ -466,32 +502,41 @@ def _refmodels_whl_url(tag: str) -> str:
 
 _REFMODELS_REPO = "Cnext-eu/kairos-ontology-referencemodels"
 
-# Pin for a freshly scaffolded hub that has not yet published its own release.
-_REFMODELS_FALLBACK_TAG = "v1.20.0"
+# Last-resort pin, used only when the release list is unreachable (no `gh`, no network).
+# Kept at or above the reference-models version this toolkit is tested against — see
+# `tests/test_scaffold_refmodels_pin.py`, which fails when the two drift apart, so a
+# degraded scaffold still lands on a bundle the toolkit has actually seen.
+_REFMODELS_FALLBACK_TAG = "v1.33.1"
 
 
-def _resolve_scaffold_refmodels_pin() -> tuple[str, str]:
+def _resolve_scaffold_refmodels_pin(version_tag: str | None = None) -> tuple[str, str]:
     """Return ``(tag, version)`` for the referencemodels wheel URL in scaffold templates.
 
-    Uses ``gh api`` to find the latest release of the referencemodels repo.
-    Falls back to a hardcoded safe default when releases cannot be listed.
+    One policy, shared with the toolkit pin (:func:`_resolve_scaffold_toolkit_pin`): a
+    freshly scaffolded hub follows the **latest published stable release**, chosen by
+    version order over the draft-filtered release list. It must never be born on a
+    stale bundle — the ontology semantics live in the reference models (DD-188), so a
+    hub pinned behind them is running different semantics from the toolkit that
+    scaffolded it.
+
+    *version_tag* pins an explicit release instead (``--ref-models-version``), for the
+    rare hub that must reproduce a known-good bundle.
+
+    Falls back to a hardcoded default only when releases cannot be listed at all.
     """
-    try:
-        result = subprocess.run(
-            ["gh", "api", f"/repos/{_REFMODELS_REPO}/releases", "--jq", ".[0].tag_name"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode == 0 and isinstance(result.stdout, str):
-            tag = result.stdout.strip()
-            if tag:
-                return tag, _tag_to_version(tag)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    if version_tag:
+        tag = version_tag if version_tag.startswith("v") else f"v{version_tag}"
+        return tag, _tag_to_version(tag)
+
+    tags = _list_published_release_tags(_REFMODELS_REPO)
+    if tags:
+        tag = _latest_stable_tag(tags)
+        if tag:
+            return tag, _tag_to_version(tag)
     print(
-        f"  ⚠ Could not list referencemodels releases; "
-        f"pinning {_REFMODELS_FALLBACK_TAG}, which may need updating."
+        f"  ⚠ Could not list referencemodels releases (is 'gh' installed and "
+        f"authenticated?); pinning {_REFMODELS_FALLBACK_TAG}, which is stale.\n"
+        f"    Run `uv run kairos-ontology update-refmodels` once releases are reachable."
     )
     return _REFMODELS_FALLBACK_TAG, _tag_to_version(_REFMODELS_FALLBACK_TAG)
 
