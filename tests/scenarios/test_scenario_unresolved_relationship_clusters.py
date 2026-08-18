@@ -153,6 +153,7 @@ class TestUnresolvedAnchorEmitsNoRelationshipClusters:
                 catalog_path=None,
                 domains_filter=["commercial"],
                 conformance_artifact_path=conformance,
+                without_anchors=True,
             )
         return alignment_to_dict(alignments[0])["tables"][0]
 

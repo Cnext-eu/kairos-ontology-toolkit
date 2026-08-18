@@ -137,6 +137,7 @@ class TestObjectPropertyTargetScenario:
                 sources_dir=sources,
                 catalog_path=None,
                 domains_filter=["logistics"],
+                without_anchors=True,
             )
         return alignment_to_dict(alignments[0])
 

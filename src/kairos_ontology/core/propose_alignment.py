@@ -76,7 +76,10 @@ from .ai_provider import (
 from ._provenance import ai_attribution, provenance_comment
 from .anchor_tables import (
     ANCHOR_CONFIDENCE_FLOOR,
+    ANCHORS_FILENAME,
+    ArtifactState,
     load_excluded_tables,
+    probe_anchors,
     load_table_anchors,
     regroup_by_anchor,
 )
@@ -3916,6 +3919,41 @@ def _review_column_alignment(
 # ---------------------------------------------------------------------------
 
 
+def _missing_anchors_message(analysis_dir: Path, state: ArtifactState) -> str:
+    """Explain a refusal to align without anchors, and say exactly what to run.
+
+    The state matters to the remediation: a missing artifact means run
+    ``anchor-tables``; an unparseable one means fix or delete the file, because
+    re-running would overwrite whatever it holds.
+    """
+    detail = {
+        ArtifactState.MISSING: (
+f"{ANCHORS_FILENAME} was never written in {analysis_dir}."
+        ),
+        ArtifactState.UNPARSEABLE: (
+f"{ANCHORS_FILENAME} in {analysis_dir} exists but could not be parsed, so no "
+            "anchor in it is being applied."
+        ),
+        ArtifactState.EMPTY: (
+f"{ANCHORS_FILENAME} in {analysis_dir} holds no anchored tables."
+        ),
+    }.get(state, str(state.value))
+    return (
+f"Refusing to align without global table anchors: {detail}\n"
+        "\n"
+        "Anchoring decides what each table's rows ARE against the full class "
+        "catalog (DD-185); alignment then maps columns to that class's properties. "
+        "Skipping it makes affinity a hard constraint rather than a prior, so a "
+        "table grouped into the wrong domain can never reach the classes it needs "
+        "— on the hub that prompted this guard, every domain with empty anchors "
+        "scored 0% mapped.\n"
+        "\n"
+        "  Run:  kairos-ontology anchor-tables\n"
+        "\n"
+        "Or pass --without-anchors to proceed anyway (it will say so, loudly)."
+    )
+
+
 def _propose_alignments(
     analysis_dir: Path,
     sources_dir: Path,
@@ -3941,6 +3979,7 @@ def _propose_alignments(
     generation_stats: dict[str, int] | None = None,
     conformance_artifact_path: Path | None = None,
     honour_table_exclusions: bool = True,
+    without_anchors: bool = False,
 ) -> tuple[list[Path], list[DomainAlignment]]:
     """Run alignment for all domains found in affinity reports.
 
@@ -4008,6 +4047,14 @@ def _propose_alignments(
             ``anchor-tables --no-schema-catalogue-screen``, for when the screen
             has a false positive). A hub with no ``table-anchors.yaml`` has no
             exclusions to honour and is unaffected either way.
+        without_anchors: proceed even though ``table-anchors.yaml`` is absent.
+            Anchoring is a precondition, not a nicety: without it the DD-185
+            regrouping below is skipped, affinity becomes a hard constraint rather
+            than a prior, and the schema-catalogue screen has nothing to read
+            either. On the hub that prompted this guard, 18 of 68 tables ended
+            with an empty ``ref_class`` and every domain with empty anchors scored
+            0% mapped. Modelled on ``--without-discovery``: refuse by default,
+            proceed loudly when the operator insists.
 
     Returns ``(written_paths, built_alignments)``. When *emit_output* is False the
     pipeline only builds and returns the in-memory :class:`DomainAlignment` objects
@@ -4113,6 +4160,11 @@ def _propose_alignments(
     # filter, so a table moving into a filtered-in domain is included. This is
     # what makes affinity a prior rather than a constraint: a misplaced table is
     # aligned in the domain whose classes it actually needs.
+    anchor_state, anchor_count = probe_anchors(analysis_dir)
+    if anchor_state is not ArtifactState.PRESENT and not without_anchors:
+        raise ValueError(
+            _missing_anchors_message(analysis_dir, anchor_state)
+        )
     global_anchors = load_table_anchors(analysis_dir)
     anchor_counters = {"applied": 0, "low_confidence": 0, "outside_pool": 0}
     if global_anchors:
@@ -4133,6 +4185,19 @@ def _propose_alignments(
                 f"  ⚓ {move['system']}.{move['table']}: {move['from'] or '(none)'} → "
                 f"{move['to']} (anchored to {move['anchor']})"
             )
+    else:
+        # The defect this guard exists for: there was no else branch here, so a
+        # hub with no anchors skipped the whole DD-185 block in total silence and
+        # the run looked normal. Reached only under --without-anchors now.
+        report(
+            f"  ⚠ No global table anchors ({anchor_state.value}) — proceeding "
+            f"without them because --without-anchors was passed."
+        )
+        report(
+            "    Affinity is now a hard constraint, not a prior: a table grouped "
+            "into the wrong domain cannot reach the classes it needs, and the "
+            "schema-catalogue screen has no exclusions to read."
+        )
 
     # Apply domain filter
     if domains_filter:

@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING: `propose-alignment` now refuses to run when `table-anchors.yaml` is absent.** It read the artifact and said `if global_anchors:` with **no `else` branch**, and `load_table_anchors` returns an empty mapping when the file is missing — so a hub that never ran `anchor-tables` skipped the entire DD-185 regrouping block in total silence and the run looked normal.
+
+  What that costs is stated in the code's own comment at that line: *"this is what makes affinity a prior rather than a constraint: a misplaced table is aligned in the domain whose classes it actually needs."* Without anchors, affinity becomes a hard constraint. On the hub that prompted this guard, **18 of 68 tables ended with an empty `ref_class`, and every domain with empty anchors scored 0% mapped.**
+
+  The same file carries the `excluded` block, so its absence *also* silently disabled the schema-catalogue screen — one missing file, two features quietly inert, which means the 5.7.0 and 5.8.0 exclusion fixes never took effect on any hub that skipped anchoring.
+
+  Pass `--without-anchors` to proceed anyway; it says so loudly, twice. Modelled on `--without-discovery`: refuse by default, proceed when the operator insists. **Existing hubs that never ran `anchor-tables` will now stop** — that is the point, and `anchor-tables` is the one-command fix.
+
+### Added
+- **A three-way signal for pipeline artifacts: absent / unparseable / present-but-empty (`ArtifactState`, `probe_anchors`).** Every loader in `anchor_tables.py` collapsed those into one empty result, so callers could not tell "you have not run `anchor-tables`" from "anchoring found nothing". The refusal message differs accordingly: a missing artifact says run `anchor-tables`, an unparseable one does *not* — re-running would overwrite whatever it holds.
+- **A malformed disposition ledger is now fatal (`MalformedLedgerError`).** `load_table_dispositions` and `load_excluded_columns` returned an empty result on a parse failure **with no log line at all**. The first exists precisely so the schema-catalogue heuristic cannot overrule a recorded decision, so degrading to empty let a heuristic quietly overrule human governance while reporting success. An *absent* ledger stays the normal case; only a present-but-unreadable one raises. This follows the distinction `registered_concepts` already draws for a malformed registration file.
+
 ### Fixed
+- **Three loaders swallowed a parse failure in complete silence** (`load_excluded_columns`, `load_table_dispositions`, and the per-file `continue` in `load_affinity_domains`). All artifact reads now go through one helper that always warns on corruption and never warns on absence.
 - **`extract_ref_model_inventory` discarded a class's properties depending on module order (#540).** A class URI reachable from two modules was deduped first-wins, so the *later* module's view of the same class was thrown away. Measured against the shipped reference models, `bsp:TradeParty` resolved to **13 properties or 17 purely on module order** — 13 forward, 17 reversed.
 
   Identity is still the URI; only the property sets are now unioned, own-before-inherited and sorted within each group so DD-175 reproducibility holds. A merged class records `contributing_uris` in its `_semantic` block. That block is read only for `source_identity` (the prompt's module list), so no closure hash, prompt, or determinism baseline moves.

@@ -1388,6 +1388,18 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
     "alignment file with the evidence that excluded it. Use this to overrule a "
     "false positive in the screen.",
 )
+@click.option(
+    "--without-anchors",
+    "without_anchors",
+    is_flag=True,
+    default=False,
+    help="Align even though anchor-tables has not been run. Anchoring decides what "
+    "each table's rows ARE against the full class catalog (DD-185); without it "
+    "affinity becomes a hard constraint rather than a prior, so a table grouped "
+    "into the wrong domain can never reach the classes it needs, and the "
+    "schema-catalogue screen has nothing to read. Refused by default for that "
+    "reason — pass this to proceed anyway.",
+)
 def propose_alignment_cmd(
     analysis,
     sources,
@@ -1411,6 +1423,7 @@ def propose_alignment_cmd(
     high_accuracy,
     allow_fallback_output,
     no_schema_catalogue_screen,
+    without_anchors,
 ):
     """Propose source-column → reference-model-property alignment (LLM-powered).
 
@@ -1600,6 +1613,7 @@ def propose_alignment_cmd(
             custom_confidence_floor=custom_confidence_floor,
             allow_fallback_output=allow_fallback_output,
             honour_table_exclusions=not no_schema_catalogue_screen,
+            without_anchors=without_anchors,
             generation_stats=generation_stats,
             conformance_artifact_path=conformance_artifact_path,
         )
