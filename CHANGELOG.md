@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`extract_ref_model_inventory` discarded a class's properties depending on module order (#540).** A class URI reachable from two modules was deduped first-wins, so the *later* module's view of the same class was thrown away. Measured against the shipped reference models, `bsp:TradeParty` resolved to **13 properties or 17 purely on module order** — 13 forward, 17 reversed.
+
+  Identity is still the URI; only the property sets are now unioned, own-before-inherited and sorted within each group so DD-175 reproducibility holds. A merged class records `contributing_uris` in its `_semantic` block. That block is read only for `source_identity` (the prompt's module list), so no closure hash, prompt, or determinism baseline moves.
+
+  This is one function with six consumers — the class candidates `_score_ref_class` ranks, the cross-module property pool, `resolve_bridge_anchor_classes`, the `anchor-tables` tie-break, `class_anchoring` and `scaffold_system`. A truncated property set silently depresses a class's score against a class that kept its full set, which is a candidate contributor to the measured `Address` 44 : `TradeParty` 20 inversion on a `companies` table. Because the truncation was *order-dependent*, no seed could make a run reproducible — so this is a prerequisite for measuring any alignment change, not just an undercount.
+
 ## [5.10.2] — 2026-08-17
 
 ### Added
