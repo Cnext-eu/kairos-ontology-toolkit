@@ -152,7 +152,6 @@ class TestEndpointWithoutKey:
         assert result.status == STATUS_UNPROBED
         assert not result.is_blocking
 
-
     class TestProbeClientFoundryDispatch:
         """_probe_client routes through _create_client_from_config (issue #463)."""
 
@@ -194,6 +193,7 @@ class TestEndpointWithoutKey:
             # Since we can't call the real _probe_client (conftest patched it),
             # we verify the import-and-call path works:
             from kairos_ontology.core.ai_provider import _create_client_from_config
+
             client = _create_client_from_config(config)
             client.models.list()
 
@@ -223,7 +223,6 @@ class TestProbeFallsBackFromModelListing:
 
     def test_404_on_listing_falls_back_to_inference_and_passes(self):
         from unittest.mock import MagicMock, patch
-
 
         class NotFoundError(Exception):
             status_code = 404
@@ -256,6 +255,61 @@ class TestProbeFallsBackFromModelListing:
             "kairos_ontology.core.ai_provider._create_client_from_config", return_value=client
         ):
             with _pytest.raises(ai_preflight.Unreachable, match="deployment name"):
+                _real_probe_client(self._config())
+
+    def test_output_limit_from_inference_proves_the_model_is_reachable(self):
+        from unittest.mock import MagicMock, patch
+
+        class NotFoundError(Exception):
+            status_code = 404
+
+        class BadRequestError(Exception):
+            status_code = 400
+            body = {
+                "error": {
+                    "message": (
+                        "Could not finish the message because max_tokens or model output "
+                        "limit was reached."
+                    )
+                }
+            }
+
+        client = MagicMock()
+        client.models.list.side_effect = NotFoundError("no /models here")
+        client.chat.completions.create.side_effect = BadRequestError("output limit reached")
+
+        with patch(
+            "kairos_ontology.core.ai_provider._create_client_from_config", return_value=client
+        ):
+            _real_probe_client(self._config())
+
+        client.chat.completions.create.assert_called_once_with(
+            model="gpt-5.4-mini",
+            messages=[{"role": "user", "content": "ping"}],
+            max_completion_tokens=1,
+        )
+
+    def test_other_bad_request_from_inference_remains_unreachable(self):
+        from unittest.mock import MagicMock, patch
+
+        import pytest as _pytest
+
+        from kairos_ontology.core import ai_preflight
+
+        class NotFoundError(Exception):
+            status_code = 404
+
+        class BadRequestError(Exception):
+            status_code = 400
+
+        client = MagicMock()
+        client.models.list.side_effect = NotFoundError("no /models here")
+        client.chat.completions.create.side_effect = BadRequestError("invalid request")
+
+        with patch(
+            "kairos_ontology.core.ai_provider._create_client_from_config", return_value=client
+        ):
+            with _pytest.raises(ai_preflight.Unreachable):
                 _real_probe_client(self._config())
 
     def test_a_non_404_error_still_fails_immediately(self):

@@ -145,6 +145,19 @@ def _is_not_found(exc: Exception) -> bool:
     return type(exc).__name__ in {"NotFoundError", "ResourceNotFoundError"}
 
 
+def _is_output_limit_reached(exc: Exception) -> bool:
+    """True when inference reached the model but exhausted the probe's tiny output budget."""
+    body = getattr(exc, "body", None)
+    body_message = ""
+    if isinstance(body, dict):
+        error = body.get("error", body)
+        if isinstance(error, dict):
+            body_message = str(error.get("message", ""))
+    message = f"{body_message} {exc}".lower()
+    limit_named = "max_tokens" in message or "model output limit" in message
+    return limit_named and ("reached" in message or "exceeded" in message)
+
+
 def _probe_client(config, *, timeout_s: float = 10.0) -> None:
     """Attempt a lightweight reachability probe against the provider endpoint.
 
@@ -172,8 +185,7 @@ def _probe_client(config, *, timeout_s: float = 10.0) -> None:
         client = _create_client_from_config(config)
     except Exception as exc:
         raise Unreachable(
-            f"Provider endpoint '{config.endpoint}' is unreachable: "
-            f"{type(exc).__name__}: {exc}"
+            f"Provider endpoint '{config.endpoint}' is unreachable: {type(exc).__name__}: {exc}"
         ) from exc
 
     try:
@@ -182,8 +194,7 @@ def _probe_client(config, *, timeout_s: float = 10.0) -> None:
     except Exception as exc:
         if not _is_not_found(exc):
             raise Unreachable(
-                f"Provider endpoint '{config.endpoint}' is unreachable: "
-                f"{type(exc).__name__}: {exc}"
+                f"Provider endpoint '{config.endpoint}' is unreachable: {type(exc).__name__}: {exc}"
             ) from exc
         listing_error = exc
 
@@ -194,6 +205,8 @@ def _probe_client(config, *, timeout_s: float = 10.0) -> None:
             max_completion_tokens=1,
         )
     except Exception as exc:
+        if _is_output_limit_reached(exc):
+            return
         raise Unreachable(
             f"Provider endpoint '{config.endpoint}' did not answer a model listing "
             f"({type(listing_error).__name__}: 404) and a minimal inference call to "
@@ -280,8 +293,7 @@ def preflight_all_roles(
 ) -> AIPreflightReport:
     """Preflight-check all configured roles and return an aggregate report."""
     results = tuple(
-        preflight_ai_provider(role, model=model, probe=probe, timeout_s=timeout_s)
-        for role in roles
+        preflight_ai_provider(role, model=model, probe=probe, timeout_s=timeout_s) for role in roles
     )
     return AIPreflightReport(roles=results)
 
