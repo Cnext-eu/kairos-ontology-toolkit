@@ -23,7 +23,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "check_refmodels_pin.py"
-_CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "refmodels-pin.yml"
 
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 
