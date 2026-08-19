@@ -12,6 +12,7 @@ import pyarrow.parquet as pq  # noqa: E402
 from kairos_ontology.core.profile_sources import (  # noqa: E402
     annotate_outline,
     load_profile,
+    profile_table,
     read_data_maturity,
     run_profile_sources,
 )
@@ -101,6 +102,34 @@ def test_test_maturity_never_excludes(import_dir, tmp_path):
     assert any(c.startswith("notes[") for c in annotated[0][2]), (
         "under test maturity the empty tag is advisory — nothing excluded"
     )
+
+
+def test_unique_timezone_aware_timestamp_column_does_not_crash(tmp_path):
+    """Regression: frachtv5 CargoWise extract, a unique tz-aware timestamp
+    column. `to_pylist()` on a tz-aware timestamp needs a tz database, which
+    is not guaranteed present (ArrowInvalid on a bare Windows Python without
+    `tzdata`) -- and a timestamp was never a useful FK key-set candidate
+    regardless, so it must be excluded from key-set construction, not merely
+    have the crash suppressed."""
+    import datetime as dt
+
+    n = 5
+    table = pa.table({
+        "id": list(range(n)),
+        "created_utc": pa.array(
+            [dt.datetime(2026, 1, i + 1, tzinfo=dt.timezone.utc) for i in range(n)],
+            type=pa.timestamp("us", tz="UTC"),
+        ),
+    })
+    d = tmp_path / ".import" / "sources" / "tz"
+    d.mkdir(parents=True)
+    pq.write_table(table, d / "events.parquet")
+    prof, key_sets = profile_table(d / "events.parquet")
+    assert "unique" in prof["columns"]["created_utc"]["tags"]
+    assert "created_utc" not in key_sets, (
+        "a unique temporal column must never enter key-set candidacy"
+    )
+    assert "id" in key_sets
 
 
 def test_read_data_maturity(tmp_path):

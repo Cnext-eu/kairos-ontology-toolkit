@@ -178,7 +178,15 @@ def profile_table(path: Path) -> tuple[dict[str, Any], dict[str, set[str]]]:
                 tags.append(f"low-card({distinct})")
             tags += _shape_tags(name, arr, distinct, non_null)
 
-        if "unique" in tags and non_null and distinct <= KEY_SET_CAP:
+        # Temporal columns are excluded from key-set candidacy on two grounds:
+        # containment-matching a timestamp against another table's timestamp
+        # is never a meaningful join (unlike an identifier), and a tz-aware
+        # timestamp's `to_pylist()` needs a tz database Windows does not ship
+        # by default (ArrowInvalid without the `tzdata` package) -- a crash
+        # on real data (frachtv5 CargoWise) that a temporal value could never
+        # have usefully produced a key set for anyway.
+        if ("unique" in tags and non_null and distinct <= KEY_SET_CAP
+                and not pa.types.is_temporal(arr.type)):
             key_sets[name] = {str(v) for v in arr.drop_null().to_pylist()}
 
         columns[name] = {
