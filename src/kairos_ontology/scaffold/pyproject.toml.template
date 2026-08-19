@@ -64,3 +64,9 @@ channel = "{toolkit_channel}"
 # Optional accelerator pack selected for scoped validation and projection. When omitted,
 # Kairos infers a single installed pack and requires an explicit choice if several exist.
 # accelerator = "logistics"
+
+# Default concurrency for the LLM-powered pre-modeling steps (analyse-sources,
+# propose-alignment). --max-workers on the command line always overrides this.
+# Omitted here, both commands default to 16 (network-bound calls; the useful
+# ceiling is the provider's rate limit, not the core count).
+# max_workers = 16
