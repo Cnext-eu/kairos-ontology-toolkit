@@ -191,8 +191,12 @@ def _module_of(uri: str) -> str:
     return uri.rstrip("/").rsplit("/", 1)[0]
 
 
-def read_reference_terms(catalog_path: Optional[Path]) -> list[ReferenceTerm]:
-    """Resolve every reference-model class and property, live from the catalog (DD-173).
+def read_reference_terms(
+    catalog_path: Optional[Path],
+    *,
+    module_scope: Optional[Iterable[str]] = None,
+) -> list[ReferenceTerm]:
+    """Resolve reference-model classes and properties, live from the catalog (DD-173).
 
     Reads through ``parse_reference_model`` — the same canonical DD-103 loader path the
     aligner uses, resolving ``owl:imports`` and honouring the DD-131 domain authority —
@@ -206,6 +210,21 @@ def read_reference_terms(catalog_path: Optional[Path]) -> list[ReferenceTerm]:
     class appeared with 9 or 13 properties depending on which snapshot a caller happened
     to read. Resolving live costs ~60ms for two modules, which is nothing against the
     LLM stages this feeds, and it cannot go stale.
+
+    *module_scope* (DD-193): when given, restrict the seed module set to these
+    module URIs (matched with a trailing ``#``/``/`` stripped, the same
+    normalization ``build_class_catalog`` uses for ownership) instead of every
+    module the whole installed reference-models catalog happens to map.
+    ``None`` (the default) keeps the unrestricted behaviour every existing
+    caller relies on — only ``build_class_catalog`` opts in, seeded with the
+    resolved accelerator's own declared imports. Each seed module's
+    ``owl:imports`` closure is still resolved in full through the canonical
+    loader (unchanged): scoping restricts *which modules seed the walk*, not
+    how far each seed's own closure reaches, so a foundation module reached
+    only via ``owl:imports`` from an accelerator-declared module remains
+    visible. A module the accelerator never imports, directly or
+    transitively — FIBO in a logistics hub with no financial-services domain
+    — is excluded outright rather than merely marked ``UNOWNED``.
 
     Returns ``[]`` when no catalog resolves; callers report that as a notice.
     """
@@ -243,6 +262,9 @@ def read_reference_terms(catalog_path: Optional[Path]) -> list[ReferenceTerm]:
             if uri.startswith("http") and _is_reference(Path(target))
         }
     )
+    if module_scope is not None:
+        normalized_scope = {str(u).rstrip("#/") for u in module_scope}
+        module_uris = [u for u in module_uris if u.rstrip("#/") in normalized_scope]
     if not module_uris:
         return terms
 

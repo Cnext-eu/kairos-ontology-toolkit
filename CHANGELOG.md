@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc8] — 2026-08-19
+
+### Fixed
+- **Source profiling's class catalog is scoped to the resolved accelerator (DD-193, issue #558).** `build_class_catalog` (and thus `anchor-tables`) previously offered every module the whole installed reference-models package maps as an anchor candidate — on a logistics hub this put ~400 FIBO classes in front of the model as `UNOWNED` noise, with a real risk of a table falling back to an unrelated vendor class instead of being flagged for review. `read_reference_terms` gains an optional `module_scope` parameter (defaulting to the unrestricted legacy behaviour every other caller keeps); `build_class_catalog` seeds it with the resolved accelerator's own declared domain imports. A module the accelerator never reaches, directly or transitively, is excluded outright; a module reached only via `owl:imports` from an accelerator-declared module remains visible (transitivity is unaffected — only the seed set narrows). An unresolved accelerator keeps today's unrestricted behaviour rather than emptying the catalog.
+
+
 ## [5.13.0rc7] — 2026-08-19
 
 ### Added
