@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc14] — 2026-08-20
+
+### Fixed
+- **`update-refmodels` silently did nothing, then reported success (DD-200, issue #551).** Reference models ship only as a GitHub Release wheel, never to a package index, so `uv pip install --upgrade kairos-ontology-referencemodels` (the default, no-`--version` path) had no package to find and installed nothing — this is how a real hub's pin sat thirteen minor versions behind (#541). The command now resolves the latest published release the same draft-filtered, version-ordered way scaffolding does, and always installs that exact wheel. Also fixed: an unprefixed `--version 1.33.1` produced a 404 pin (no `v`-prefix normalization) — now normalized like every other caller.
+
+### Added
+- **`update --upgrade` also upgrades reference models (DD-200, issue #551).** Previously it only ever moved the toolkit pin; a hub's reference-models pin drifted independently with nothing to catch it. A hub that pins reference models (a dataplatform repo never does) now gets both upgraded in one `--upgrade` run — non-atomically (the toolkit half was never transactional either), but a refmodels-side failure is now named and exits 1 rather than silently leaving the hub on a new toolkit with a stale reference-models pin.
+
 ## [5.13.0rc13] — 2026-08-20
 
 ### Fixed

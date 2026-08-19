@@ -35,6 +35,7 @@ from kairos_ontology.cli.shared import (
     _latest_stable_tag,
     _list_published_release_tags,
     _resolve_channel,
+    _resolve_refmodels_tag,
     _resolve_scaffold_refmodels_pin,
     _tag_to_version,
 )
@@ -142,6 +143,32 @@ class TestRefmodelsScaffoldPin:
         out = capsys.readouterr().out
         assert "stale" in out
         assert "update-refmodels" in out
+
+
+class TestResolveRefmodelsTag:
+    """`update-refmodels`'s own resolver (issue #551) — same policy as scaffolding
+    (latest published *stable* release, draft-filtered, version-ordered), but with
+    no hardcoded fallback: an upgrade protects an existing pin, so an unreachable
+    release list must refuse rather than silently reuse a stale hardcoded tag."""
+
+    def test_resolves_latest_stable_not_the_draft(self):
+        with mock.patch("subprocess.run", side_effect=_fake_gh(REAL_RELEASES)):
+            assert _resolve_refmodels_tag() == "v1.33.1"
+
+    def test_explicit_version_tag_wins_and_is_v_normalized(self):
+        assert _resolve_refmodels_tag(version_tag="v1.29.0") == "v1.29.0"
+        assert _resolve_refmodels_tag(version_tag="1.29.0") == "v1.29.0"
+
+    def test_unreachable_returns_none_with_no_hardcoded_fallback(self):
+        """Unlike the scaffold-time resolver, this must not fall back to
+        _REFMODELS_FALLBACK_TAG -- that would silently move a real pin to a
+        stale tag instead of refusing."""
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError):
+            assert _resolve_refmodels_tag() is None
+
+    def test_empty_release_list_returns_none(self):
+        with mock.patch("subprocess.run", side_effect=_fake_gh([])):
+            assert _resolve_refmodels_tag() is None
 
 
 class TestToolkitChannelExcludesDrafts:

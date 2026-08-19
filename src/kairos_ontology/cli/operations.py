@@ -42,6 +42,7 @@ from .shared import (
     _refresh_with_installed_toolkit,
     _remove_toolkit_test_ref_state,
     _resolve_channel,
+    _resolve_refmodels_tag,
     _resolve_toolkit_ref_sha,
     _restore_dependency_files,
     _resync_restored_dependency,
@@ -294,6 +295,25 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
                 raise SystemExit(1)
             print(f"   ✓ Upgraded to {ref}")
 
+        # Upgrading the toolkit only ever moved the toolkit pin -- reference models
+        # drifted independently (issue #551), sometimes for over a dozen minor
+        # versions, because nothing upgraded that pin in the same pass. A hub that
+        # actually pins one (an ontology hub; a dataplatform repo never does) gets
+        # it upgraded here too, non-atomically with the toolkit upgrade above (that
+        # upgrade was never transactional either) but never silently left behind.
+        if pyproject.is_file() and "kairos-ontology-referencemodels" in pyproject.read_text(
+            encoding="utf-8"
+        ):
+            try:
+                _upgrade_refmodels(None)
+            except click.ClickException as exc:
+                print(
+                    f"⚠  Toolkit upgraded to {ref}, but the reference-models upgrade failed:\n"
+                    f"   {exc}\n"
+                    "   Run `kairos-ontology update-refmodels` to retry."
+                )
+                raise SystemExit(1)
+
         # The managed-file refresh below runs in THIS process, which still has the
         # OLD toolkit loaded in memory (_toolkit_version / _SCAFFOLD_DIR are bound
         # to the previously-imported module).  If the version actually changed,
@@ -541,44 +561,36 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
             print("  ✓ Created .devcontainer/ (VS Code Dev Container with Node.js)")
 
 
-@click.command(name="update-refmodels")
-@click.option(
-    "--version",
-    "version_tag",
-    type=str,
-    default=None,
-    help="Specific version tag to pin (e.g. v1.33.1). Default: latest release.",
-)
-def update_refmodels(version_tag):
-    """Update the reference-models package to the latest (or a specific) release.
+def _upgrade_refmodels(version_tag: str | None) -> str:
+    """Upgrade the hub's pinned reference-models release, and return the new tag.
 
-    Runs ``uv pip install --upgrade kairos-ontology-referencemodels`` in the hub
-    virtualenv, rewrites the pin in ``pyproject.toml`` to match the installed
-    version, and refreshes the lockfile.
-
-    \b
-    Examples:
-        kairos-ontology update-refmodels
-        kairos-ontology update-refmodels --version v1.33.1
+    Shared by the standalone ``update-refmodels`` command and ``update --upgrade``
+    (issue #551), so both install the exact same resolved wheel rather than one of
+    them trusting the pip index. Raises :class:`click.ClickException` on any
+    failure — a caller that wants to treat this as a non-fatal partial failure
+    (as ``update --upgrade`` does) must catch it itself.
     """
     repo_dir = Path.cwd()
     pyproject = repo_dir / "pyproject.toml"
 
-    # 1. Install (upgrade) the referencemodels package
-    if version_tag:
-        whl_url = _refmodels_whl_url(version_tag)
-        print(f"   Installing kairos-ontology-referencemodels {version_tag} …")
-        install_cmd = ["uv", "pip", "install", whl_url]
-    else:
-        print("   Upgrading kairos-ontology-referencemodels …")
-        install_cmd = ["uv", "pip", "install", "--upgrade", "kairos-ontology-referencemodels"]
+    tag = _resolve_refmodels_tag(version_tag)
+    if tag is None:
+        raise click.ClickException(
+            "Could not resolve a reference-models release "
+            "(is 'gh' installed and authenticated?). Pin left unchanged."
+        )
 
-    result = subprocess.run(install_cmd, capture_output=True, text=True)
+    # Install the exact resolved wheel — never the pip index, which has no
+    # kairos-ontology-referencemodels package to find at all (it ships only as a
+    # GitHub Release wheel, DD-158), so "uv pip install --upgrade <name>" without
+    # --version silently did nothing while still reporting success.
+    whl_url = _refmodels_whl_url(tag)
+    print(f"   Installing kairos-ontology-referencemodels {tag} …")
+    result = subprocess.run(["uv", "pip", "install", whl_url], capture_output=True, text=True)
     if result.returncode != 0:
         raise click.ClickException(f"uv pip install failed:\n{result.stderr.strip()}")
     print("   ✓ Package installed")
 
-    # 2. Read installed version
     try:
         installed_version = importlib.metadata.version("kairos-ontology-referencemodels")
     except importlib.metadata.PackageNotFoundError:
@@ -586,16 +598,8 @@ def update_refmodels(version_tag):
             "kairos-ontology-referencemodels not found after install — check uv environment."
         )
 
-    # 3. Determine the release tag for the pin
-    if version_tag:
-        pin_tag = version_tag
-    else:
-        pin_tag = f"v{installed_version}"
-
-    # 4. Rewrite the pin in pyproject.toml
     if pyproject.is_file():
         content = pyproject.read_text(encoding="utf-8")
-        whl_url = _refmodels_whl_url(pin_tag)
         new_content = re.sub(
             r"kairos-ontology-referencemodels\s*@\s*(?:"
             r"git\+https://github\.com/Cnext-eu/kairos-ontology-referencemodels\.git@[^\s\"]*"
@@ -606,14 +610,38 @@ def update_refmodels(version_tag):
         )
         if new_content != content:
             pyproject.write_text(new_content, encoding="utf-8")
-            print(f"   ✓ Updated pyproject.toml pin to {pin_tag} (.whl)")
+            print(f"   ✓ Updated pyproject.toml pin to {tag} (.whl)")
         else:
-            print(f"   ℹ  pyproject.toml already pinned to {pin_tag}")
+            print(f"   ℹ  pyproject.toml already pinned to {tag}")
 
-    # 5. Lock
     print("   Syncing lockfile with uv ...")
     result = subprocess.run(["uv", "lock"], capture_output=True, text=True)
     if result.returncode != 0:
         raise click.ClickException(f"uv lock failed:\n{result.stderr.strip()}")
 
-    click.echo(f"  ✓ Reference models updated: v{installed_version} (pip)")
+    click.echo(f"  ✓ Reference models updated: v{installed_version} ({tag})")
+    return tag
+
+
+@click.command(name="update-refmodels")
+@click.option(
+    "--version",
+    "version_tag",
+    type=str,
+    default=None,
+    help="Specific version tag to pin (e.g. v1.33.1). Default: latest published release.",
+)
+def update_refmodels(version_tag):
+    """Update the reference-models package to the latest (or a specific) release.
+
+    Resolves the latest published GitHub release the same way scaffolding does
+    (draft-filtered, version-ordered — not the pip index, which has no
+    kairos-ontology-referencemodels package to find), installs that exact wheel,
+    rewrites the pin in ``pyproject.toml``, and refreshes the lockfile.
+
+    \b
+    Examples:
+        kairos-ontology update-refmodels
+        kairos-ontology update-refmodels --version v1.33.1
+    """
+    _upgrade_refmodels(version_tag)
