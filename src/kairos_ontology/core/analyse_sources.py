@@ -621,15 +621,36 @@ def resolve_reference_models(
     the nearest ancestor package directory.  Falls back to immediate parent
     directory when no ontology declarations are found.
 
+    Any path with an ``archive`` segment is always excluded (issue #566),
+    regardless of *exclude_patterns* -- there is no way to opt back in, by
+    design: an archived TTL is a frozen pre-fix snapshot the maintaining repo
+    itself keeps only for history, never for resolution.
+
     Args:
         ref_models_dir: Directory containing reference model TTL files.
         catalog_path: Optional XML catalog for resolving owl:imports URIs.
-        exclude_patterns: Glob patterns to exclude (e.g. ``["archive/**"]``).
+        exclude_patterns: Additional glob patterns to exclude.
         include_specializations: Walk subClassOf downward per class (DD-044).
 
     Returns list of domain summaries (same format as parse_reference_model).
     """
     all_ttls = sorted(ref_models_dir.glob("**/*.ttl"))
+    if not all_ttls:
+        return []
+
+    # Archived snapshots are excluded unconditionally, not only when a caller
+    # opts in (issue #566). An archived file shares its permanent module
+    # IRI/namespace with the live file it was frozen from (archiving happens
+    # before a fix lands, by that repo's own documented convention), so a
+    # defect already resolved in the live file still resolves here too unless
+    # the archive copy is dropped -- misattributing a historical defect as a
+    # live one. Matched on a literal path *segment*, not a caller-supplied
+    # glob, so it is robust regardless of vendor folder layout -- the same
+    # check kairos-ontology-referencemodels' own validate_structure.py check 10
+    # already applies for the identical reason.
+    all_ttls = [
+        t for t in all_ttls if "archive" not in t.relative_to(ref_models_dir).parts
+    ]
     if not all_ttls:
         return []
 

@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc11] — 2026-08-20
+
+### Fixed
+- **`coverage-report` (and every caller of `resolve_reference_models`) scanned archived reference-model snapshots and misattributed their pre-fix content to live modules (DD-196, issue #566).** An archived `.ttl` under `derived-ontologies/<vendor>/archive/**` shares its live module's permanent IRI, so a defect already resolved in the live file (e.g. a missing `owl:imports`, fixed upstream in referencemodels v1.32.0) still resolved from the frozen pre-fix snapshot and got reported as if it were live. Archived paths are now excluded unconditionally, matched on path segment rather than a caller-supplied glob — this was originally filed against the reference-models repo (#108) before the real cause (this toolkit's resolver, not the reference data) was identified.
+
 ## [5.13.0rc10] — 2026-08-20
 
 ### Added
