@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc6] — 2026-08-19
+
+### Added
+- **`generate-bindings`: first-draft EntityBindings from the design sheet (DD-191, no LLM).** One draft per anchored, non-rejected sheet row with a `propose-alignment` result: reuse-first `target.class` from the sheet's anchor URI, fields from scalar alignment mappings (module-scoped resolution, duplicate claims deduped by confidence), object-property and sheet-relationship columns as `technicalFields purpose: relationship`, grain/natural-key columns materialized `purpose: identity` with profile-derived canonical types, and quality tests only where the DD-189 profile proved them. Every draft is validated against the closed v5 contract BEFORE writing — invalid drafts are reported, never written — and existing bindings are never overwritten without `--force`. Secondary entities are echoed as a worklist, never auto-generated.
+
+
 ## [5.13.0rc5] — 2026-08-19
 
 ### Changed

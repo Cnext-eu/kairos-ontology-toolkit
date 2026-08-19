@@ -326,6 +326,13 @@ def _binding_evidence(
 # --------------------------------------------------------------------------------------
 # propose-alignment evidence.
 # --------------------------------------------------------------------------------------
+def find_source_alignment(
+    analysis_dir: Path, system: str, table: str
+) -> tuple[Path, dict[str, Any]] | None:
+    """Locate one table's persisted ``propose-alignment`` entry, if any."""
+    return _find_source_alignment(analysis_dir, system, table)
+
+
 def _find_source_alignment(
     analysis_dir: Path, system: str, table: str
 ) -> tuple[Path, dict[str, Any]] | None:
