@@ -40,6 +40,15 @@ STATUS_OK = "ok"
 STATUS_NOT_CONFIGURED = "not_configured"
 STATUS_MISCONFIGURED = "misconfigured"
 STATUS_UNREACHABLE = "unreachable"
+#: A required SDK package is missing (issue #553) -- distinct from
+#: STATUS_NOT_CONFIGURED (no env vars set) and STATUS_UNREACHABLE (a reachable
+#: endpoint that failed for a network/auth reason). Before this status existed,
+#: _probe_client caught the NotConfigured a missing package raises under a
+#: generic except Exception and rewrapped it as Unreachable, so a missing
+#: dependency was reported with "verify network connectivity" -- the real,
+#: actionable "uv sync --extra <name>" hint only survived buried in the
+#: wrapped error text.
+STATUS_MISSING_DEPENDENCY = "missing_dependency"
 STATUS_UNPROBED = "unprobed"
 
 #: The one-line next command a user should run for a given role.
@@ -50,6 +59,9 @@ _REMEDIATION = {
     "configured provider, or run: kairos-ontology check-ai-config --role {role}",
     STATUS_UNREACHABLE: "Verify network connectivity and the endpoint URL, or "
     "run: kairos-ontology check-ai-config --role {role} --probe",
+    # STATUS_MISSING_DEPENDENCY has no template here: the raised exception's own
+    # message already IS the actionable line (e.g. "...Install with: uv sync
+    # --extra foundry"), so preflight_ai_provider uses it directly instead.
 }
 
 
@@ -76,7 +88,12 @@ class AIRolePreflight:
 
     @property
     def is_blocking(self) -> bool:
-        return self.status in (STATUS_NOT_CONFIGURED, STATUS_MISCONFIGURED, STATUS_UNREACHABLE)
+        return self.status in (
+            STATUS_NOT_CONFIGURED,
+            STATUS_MISCONFIGURED,
+            STATUS_UNREACHABLE,
+            STATUS_MISSING_DEPENDENCY,
+        )
 
     @property
     def has_warnings(self) -> bool:
@@ -183,6 +200,11 @@ def _probe_client(config, *, timeout_s: float = 10.0) -> None:
 
     try:
         client = _create_client_from_config(config)
+    except NotConfigured:
+        # A missing SDK package (issue #553) is not an unreachable endpoint --
+        # let it propagate with its own actionable message intact rather than
+        # rewrapping it under the generic "verify network connectivity" text.
+        raise
     except Exception as exc:
         raise Unreachable(
             f"Provider endpoint '{config.endpoint}' is unreachable: {type(exc).__name__}: {exc}"
@@ -264,6 +286,19 @@ def preflight_ai_provider(
 
     try:
         _probe_client(config, timeout_s=timeout_s)
+    except NotConfigured as exc:
+        # remediation == error deliberately: the exception message already IS
+        # the actionable line (e.g. "...Install with: uv sync --extra foundry"),
+        # so there is nothing a template would add.
+        return AIRolePreflight(
+            role=role,
+            status=STATUS_MISSING_DEPENDENCY,
+            provider=config.provider,
+            model=config.model,
+            endpoint=_safe_endpoint(config.endpoint),
+            error=str(exc),
+            remediation=str(exc),
+        )
     except Unreachable as exc:
         return AIRolePreflight(
             role=role,
