@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc12] — 2026-08-20
+
+### Added
+- **`[tool.kairos].max_workers` sets a hub-level default for `--max-workers` (DD-197, issue #562).** `analyse-sources` and `propose-alignment` both bound their per-table LLM call concurrency via `--max-workers`, but a hub had no way to set its own default the way `accelerator`/`channel` already can — every invocation needed the flag retyped. Precedence: explicit `--max-workers` > `[tool.kairos].max_workers` > the existing default of 16.
+
 ## [5.13.0rc11] — 2026-08-20
 
 ### Fixed

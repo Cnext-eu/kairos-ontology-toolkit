@@ -911,6 +911,53 @@ def _resync_restored_dependency() -> str | None:
     return None
 
 
+#: The CLI-visible default for --max-workers on analyse-sources/propose-alignment,
+#: used only when neither an explicit flag nor a hub config value is given. Kept
+#: separate from core._concurrency.DEFAULT_MAX_WORKERS (8, the library default for
+#: direct callers bypassing the CLI) -- both CLI commands have always hardcoded 16
+#: here, so DEFAULT_MAX_WORKERS is already dead for CLI users; this issue is about
+#: giving a hub a config-level override, not reconciling that pre-existing split.
+_CLI_DEFAULT_MAX_WORKERS = 16
+
+
+def _read_hub_max_workers(hub_root: Path | None) -> int | None:
+    """Read ``[tool.kairos].max_workers`` from the hub's pyproject.toml.
+
+    Same dual-candidate lookup ``resolve_hub_accelerator_detailed`` (DD-125)
+    uses -- ``hub_root/pyproject.toml`` then ``hub_root.parent/pyproject.toml``
+    -- since the caller's own ``hub_root`` may already point at the
+    ``ontology-hub`` subdirectory rather than the repo root that holds
+    ``pyproject.toml``.
+
+    Returns ``None`` when *hub_root* is ``None``, no pyproject is found, or
+    the key is absent -- callers then keep their own CLI default exactly as
+    before this setting existed (DD-1XX, issue #562 Problem 1). A present but
+    invalid value (non-integer, boolean, zero, or negative) is a
+    configuration error and raises rather than silently falling back --
+    unlike an absent key, a wrong one must not be indistinguishable from "not
+    set".
+    """
+    if hub_root is None:
+        return None
+    for candidate in (Path(hub_root) / "pyproject.toml", Path(hub_root).parent / "pyproject.toml"):
+        if not candidate.is_file():
+            continue
+        try:
+            document = tomllib.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            continue
+        value = document.get("tool", {}).get("kairos", {}).get("max_workers")
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise click.ClickException(
+                f"{candidate}: [tool.kairos].max_workers must be a positive integer, "
+                f"got {value!r}"
+            )
+        return value
+    return None
+
+
 def _read_hub_channel() -> str:
     """Read the [tool.kairos] channel from the current directory's pyproject.toml.
 

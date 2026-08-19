@@ -709,10 +709,10 @@ def import_flatfile(
 @click.option(
     "--max-workers",
     type=int,
-    default=16,
-    help="Max concurrent per-table LLM calls (default: 16; use 1 for serial). These "
-    "calls are network-bound, so the useful ceiling is the provider's rate limit "
-    "rather than the core count.",
+    default=None,
+    help="Max concurrent per-table LLM calls (default: 16, or [tool.kairos].max_workers "
+    "if set; use 1 for serial). These calls are network-bound, so the useful ceiling is "
+    "the provider's rate limit rather than the core count.",
 )
 @click.option(
     "--force",
@@ -785,6 +785,7 @@ def analyse_sources_cmd(
     )
     from ..core.ai_provider import DEFAULT_MODEL, ROLE_AFFINITY, resolve_role_model
     from ..core.hub_utils import find_hub_root
+    from .shared import _CLI_DEFAULT_MAX_WORKERS, _read_hub_max_workers
 
     # Issue #182: a per-role model override (KAIROS_AI_AFFINITY_MODEL) acts as the
     # default for this step unless the operator pinned --model explicitly.
@@ -794,6 +795,10 @@ def analyse_sources_cmd(
     # Auto-detect hub paths
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
+
+    # Issue #562 Problem 1: explicit --max-workers > [tool.kairos].max_workers > default.
+    if max_workers is None:
+        max_workers = _read_hub_max_workers(hub_root) or _CLI_DEFAULT_MAX_WORKERS
 
     if sources is None:
         if hub_root:
@@ -1314,10 +1319,10 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
 @click.option(
     "--max-workers",
     type=int,
-    default=16,
-    help="Max concurrent per-table LLM calls (default: 16; use 1 for serial). These "
-    "calls are network-bound, so the useful ceiling is the provider's rate limit "
-    "rather than the core count.",
+    default=None,
+    help="Max concurrent per-table LLM calls (default: 16, or [tool.kairos].max_workers "
+    "if set; use 1 for serial). These calls are network-bound, so the useful ceiling is "
+    "the provider's rate limit rather than the core count.",
 )
 @click.option(
     "--without-discovery",
@@ -1476,6 +1481,12 @@ def propose_alignment_cmd(
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
+
+    # Issue #562 Problem 1: explicit --max-workers > [tool.kairos].max_workers > default.
+    from .shared import _CLI_DEFAULT_MAX_WORKERS, _read_hub_max_workers
+
+    if max_workers is None:
+        max_workers = _read_hub_max_workers(hub_root) or _CLI_DEFAULT_MAX_WORKERS
 
     # Issue #182: the opt-in high-accuracy preset bumps the model tier for this
     # accuracy-sensitive step, unless the operator pinned a model explicitly. When
