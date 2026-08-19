@@ -674,6 +674,32 @@ def _flatten_prop_groups(
     return own + inherited
 
 
+def resolve_global_anchor(
+    ga: dict[str, Any], pool_class_names: set[str]
+) -> tuple[str | None, str, str]:
+    """Decide whether a global-anchor sheet entry applies (DD-185 / DD-190).
+
+    Returns ``(override, status, counter)``. A human-confirmed/edited sheet
+    entry is a decision, not a model score — the confidence floor does not
+    apply to it. An out-of-pool anchor is never applied regardless of status:
+    alignment has no properties to offer for a class outside the domain pool,
+    so forcing it would produce a plausible-empty mapping (counted
+    ``outside_pool`` instead, human-confirmed or not).
+    """
+    anchor = str(ga.get("anchor") or "")
+    if not anchor:
+        return None, "", ""
+    if str(ga.get("status") or "") in ("confirmed", "edited"):
+        if anchor in pool_class_names:
+            return anchor, "sheet-confirmed", "applied"
+        return None, "", "outside_pool"
+    if float(ga.get("confidence") or 0.0) < ANCHOR_CONFIDENCE_FLOOR:
+        return None, "", "low_confidence"
+    if anchor not in pool_class_names:
+        return None, "", "outside_pool"
+    return anchor, "anchored", "applied"
+
+
 def extract_ref_model_inventory(
     domain_uris: list[str],
     catalog_path: Path | None,
@@ -4733,21 +4759,19 @@ def _propose_alignments(
             anchor_confidence: float | None = None
             if anchor_override is None and global_anchors:
                 ga = global_anchors.get((system, table)) or {}
-                ga_anchor = str(ga.get("anchor") or "")
-                ga_conf = float(ga.get("confidence") or 0.0)
-                if ga_anchor and ga_conf < ANCHOR_CONFIDENCE_FLOOR:
-                    anchor_counters["low_confidence"] += 1
-                elif ga_anchor and ga_anchor not in pool_class_names:
-                    anchor_counters["outside_pool"] += 1
+                applied, ga_status, counter = resolve_global_anchor(ga, pool_class_names)
+                if counter:
+                    anchor_counters[counter] += 1
+                if counter == "outside_pool":
                     logger.info(
                         "Global anchor %s for %s.%s is outside domain '%s' pool; "
-                        "not applied.", ga_anchor, system, table, domain_id,
+                        "not applied.", str(ga.get("anchor") or ""), system, table,
+                        domain_id,
                     )
-                elif ga_anchor:
-                    anchor_override = ga_anchor
-                    anchor_status = "anchored"
-                    anchor_confidence = ga_conf
-                    anchor_counters["applied"] += 1
+                if applied:
+                    anchor_override = applied
+                    anchor_status = ga_status
+                    anchor_confidence = float(ga.get("confidence") or 0.0)
 
             cache_key = compute_entry_hash(
                 {
