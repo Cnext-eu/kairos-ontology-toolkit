@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc9] — 2026-08-19
+
+### Fixed
+- **`profile-sources` no longer crashes on a unique timezone-aware timestamp column (DD-194).** Found on a real CargoWise extract: key-set construction ran `to_pylist()` on any `unique`-tagged column regardless of type, and a tz-aware timestamp needs a timezone database (`ArrowInvalid` on a bare Windows Python without `tzdata`). Temporal columns are now excluded from key-set candidacy outright — a timestamp was never a meaningful FK join signal — while keeping their `unique`/`date-like` profile tags unaffected.
+
+
 ## [5.13.0rc8] — 2026-08-19
 
 ### Fixed
