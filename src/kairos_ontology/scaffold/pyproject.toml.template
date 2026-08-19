@@ -44,6 +44,9 @@ parquet = [
 otel = [
     "kairos-ontology-toolkit[otel]",
 ]
+langfuse = [
+    "kairos-ontology-toolkit[langfuse]",
+]
 
 [tool.kairos]
 # Channel controls which toolkit version is installed on `kairos-ontology update --upgrade`.

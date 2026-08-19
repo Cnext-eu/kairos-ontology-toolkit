@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc10] — 2026-08-20
+
+### Added
+- **Scaffolded hubs never had a way to install the `langfuse` extra (DD-195, issue #563).** The scaffold template only passed through `azure`/`foundry`/`flatfile`/`parquet`/`otel`; `langfuse` is now offered the same way, so a hub with real Langfuse credentials in `.env` can `uv sync --extra langfuse` instead of tracing silently no-oping.
+
 ## [5.13.0rc9] — 2026-08-19
 
 ### Fixed
