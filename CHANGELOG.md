@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc5] — 2026-08-19
+
+### Changed
+- **`propose-relationships` gains two evidence sources it was blind to.** Tier-2 join matching consumes DD-189 `fk?->table.col` profile tags: measured value containment resolves joins exact name equality cannot see (a child `parent_ref` column proven contained in the parent's key), labelled `[join from measured fk-inclusion evidence]` and carried as `join_evidence` in the JSON output; same-system only, tier-1 name equality still wins when it applies. And `owl:inverseOf` is now entailed: a property declared parent→child whose inverse asserts no domain/range of its own yields the swapped edge, so the side that actually carries the FK can receive a proposal (the TransportOrder `coversConsignment` / consignment-side FK gap).
+
+
 ## [5.13.0rc4] — 2026-08-19
 
 ### Changed

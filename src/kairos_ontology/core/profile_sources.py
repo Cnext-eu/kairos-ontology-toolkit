@@ -353,6 +353,43 @@ def load_profile(sources_dir: Path, system: str) -> dict[str, Any] | None:
     return doc if isinstance(doc, dict) and doc.get("tables") else None
 
 
+def load_fk_evidence(
+    sources_dir: Path,
+) -> dict[tuple[str, str], dict[str, set[tuple[str, str]]]]:
+    """DD-189 ``fk?->table.col`` tags as join evidence for relationship proposal.
+
+    Keyed ``(system_lower, table)`` → ``{column: {(target_table, target_column)}}``.
+    This is the tier-2 join matcher's input: measured value containment where
+    exact name equality has nothing to say (``goods.consignment_id ⊆
+    consignments.consignment_id`` was known here while the name matcher
+    returned a sentinel). Empty when no profiles exist — purely additive.
+    """
+    evidence: dict[tuple[str, str], dict[str, set[tuple[str, str]]]] = {}
+    directory = Path(sources_dir)
+    if not directory.is_dir():
+        return evidence
+    for sysdir in sorted(p for p in directory.iterdir() if p.is_dir()):
+        profile = load_profile(directory, sysdir.name)
+        if not profile:
+            continue
+        system = sysdir.name.lower()
+        for table, prof in (profile.get("tables") or {}).items():
+            columns: dict[str, set[tuple[str, str]]] = {}
+            for col, meta in (prof.get("columns") or {}).items():
+                targets = {
+                    (parts[0], parts[1])
+                    for tag in (meta.get("tags") or [])
+                    if isinstance(tag, str) and tag.startswith("fk?->")
+                    for parts in [tag[len("fk?->"):].split(".", 1)]
+                    if len(parts) == 2
+                }
+                if targets:
+                    columns[col] = targets
+            if columns:
+                evidence[(system, table)] = columns
+    return evidence
+
+
 PROFILE_LEGEND = """
 Column annotations in [brackets] are DETERMINISTIC data-profile facts computed from the
 import extracts — trust them over name impressions:

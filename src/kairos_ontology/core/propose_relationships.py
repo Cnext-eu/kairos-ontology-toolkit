@@ -291,6 +291,36 @@ def load_ontology_edges(ontologies_dir: Path) -> tuple[tuple[str, str, str], ...
             for domain_link in prop.domains:
                 for range_link in prop.ranges:
                     edges.append((prop.uri, domain_link.uri, range_link.uri))
+        # DD-190 follow-up: derive the edge an owl:inverseOf entails when the
+        # inverse property declares no domain/range of its own. Data FKs run
+        # child→parent while blueprint properties are often declared
+        # parent→child (TransportOrder coversConsignment); without the
+        # entailed inverse edge, the FK side can never receive a proposal.
+        # Read from the merged graph directly: the RDFS semantic profile this
+        # loader uses deliberately does not surface inverse links (they are a
+        # design-profile concern), but the assertion itself is in the closure.
+        from rdflib import OWL
+
+        inverse_pairs: set[tuple[str, str]] = set()
+        for subject, obj in result.graph.subject_objects(OWL.inverseOf):
+            inverse_pairs.add((str(subject), str(obj)))
+            inverse_pairs.add((str(obj), str(subject)))
+        own_edges = {
+            p.uri for p in index.properties
+            if p.property_type == "object" and p.domains and p.ranges
+        }
+        inverses_of: dict[str, list[str]] = {}
+        for a, b in sorted(inverse_pairs):
+            inverses_of.setdefault(a, []).append(b)
+        for prop in index.properties:
+            if prop.property_type != "object" or not (prop.domains and prop.ranges):
+                continue
+            for inverse_uri in inverses_of.get(prop.uri, ()):
+                if inverse_uri in own_edges:
+                    continue  # the inverse asserts its own endpoints; already emitted
+                for domain_link in prop.domains:
+                    for range_link in prop.ranges:
+                        edges.append((inverse_uri, range_link.uri, domain_link.uri))
     return tuple(dict.fromkeys(edges))
 
 
@@ -320,6 +350,10 @@ class RelationshipProposal:
     #: True when the join columns were matched deterministically rather than sentinelled.
     join_resolved: bool
     external_reference: Optional[dict[str, Any]]
+    #: How the join columns were matched: ``name`` (tier-1 equality),
+    #: ``fk-inclusion`` (tier-2 measured containment, DD-189), or ``""`` when
+    #: unresolved.
+    join_evidence: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -334,6 +368,7 @@ class RelationshipProposal:
             "endpoint_match": self.endpoint_match,
             "join": [{"local": self.local_column, "foreign": self.foreign_column}],
             "join_resolved": self.join_resolved,
+            "join_evidence": self.join_evidence,
             "external_reference": self.external_reference,
             "yaml": self.to_yaml(),
         }
@@ -377,19 +412,52 @@ class RelationshipProposalReport:
         }
 
 
-def _match_join(child: BoundEntity, parent: BoundEntity) -> tuple[str, str, bool]:
-    """Match a child column to a parent key column by exact normalized name equality.
+def _relation_parts(entity: BoundEntity) -> Optional[tuple[str, str]]:
+    """``(system_lower, table)`` from a ``source.relation`` binding, else ``None``."""
+    relation = entity.source_relation or ""
+    if "." not in relation:
+        return None
+    system, table = relation.split(".", 1)
+    return system.lower(), table
 
-    Deliberately the same high-precision rule as ``scan_cross_source_fks``: prefix-stripped
-    or fuzzy matches are a weaker signal and would manufacture false joins in a proposal a
-    human is meant to trust.
+
+def _match_join(
+    child: BoundEntity,
+    parent: BoundEntity,
+    fk_evidence: dict[tuple[str, str], dict[str, set[tuple[str, str]]]],
+) -> tuple[str, str, bool, str]:
+    """Match a child column to a parent key column. Returns
+    ``(local, foreign, resolved, join_evidence)``.
+
+    Tier 1 — exact normalized name equality, deliberately the same
+    high-precision rule as ``scan_cross_source_fks``: prefix-stripped or fuzzy
+    matches would manufacture false joins in a proposal a human is meant to
+    trust.
+
+    Tier 2 (DD-189) — measured value containment from the source profile: a
+    child column tagged ``fk?-><parent table>.<key column>`` where that key
+    column is in the parent's ``identity.sourceKey``. This is data evidence,
+    not name similarity, so it resolves exactly the joins tier 1 cannot see
+    (``goods.consignment_id → consignments``) without weakening tier 1's
+    precision. Applies only within one source system — profiles are
+    per-system and cross-system containment was never measured.
     """
     parent_keys = {_normalize(col): col for col in parent.source_key}
     for column in child.referenced_columns:
         match = parent_keys.get(_normalize(column))
         if match is not None:
-            return column, match, True
-    return SENTINEL_JOIN_COLUMN, SENTINEL_JOIN_COLUMN, False
+            return column, match, True, "name"
+
+    child_parts, parent_parts = _relation_parts(child), _relation_parts(parent)
+    if child_parts and parent_parts and child_parts[0] == parent_parts[0]:
+        for column in sorted(fk_evidence.get(child_parts, {})):
+            for target_table, target_column in sorted(fk_evidence[child_parts][column]):
+                if target_table != parent_parts[1]:
+                    continue
+                match = parent_keys.get(_normalize(target_column))
+                if match is not None:
+                    return column, match, True, "fk-inclusion"
+    return SENTINEL_JOIN_COLUMN, SENTINEL_JOIN_COLUMN, False, ""
 
 
 def _external_reference(child: BoundEntity, parent: BoundEntity, foreign: str) -> Optional[dict]:
@@ -421,7 +489,10 @@ def build_relationship_proposals(
     domain: Optional[str] = None,
 ) -> RelationshipProposalReport:
     """Propose ``relationships:`` entries for every authored binding in a hub."""
+    from .profile_sources import load_fk_evidence
+
     bindings = index_bindings(Path(hub_root) / "integration" / "bindings")
+    fk_evidence = load_fk_evidence(Path(hub_root) / "integration" / "sources")
     by_class: dict[str, list[BoundEntity]] = {}
     by_local_name: dict[str, list[BoundEntity]] = {}
     for entity in bindings:
@@ -476,7 +547,9 @@ def build_relationship_proposals(
                 if key in seen:
                     continue
                 seen.add(key)
-                local, foreign, resolved = _match_join(child, parent)
+                local, foreign, resolved, join_evidence = _match_join(
+                    child, parent, fk_evidence
+                )
                 proposals.append(
                     RelationshipProposal(
                         child_binding=child.name,
@@ -495,6 +568,7 @@ def build_relationship_proposals(
                         foreign_column=foreign,
                         join_resolved=resolved,
                         external_reference=_external_reference(child, parent, foreign),
+                        join_evidence=join_evidence,
                     )
                 )
 
