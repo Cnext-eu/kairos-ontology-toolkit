@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc4] — 2026-08-19
+
+### Changed
+- **`anchor-tables` output is now a reviewable design sheet (DD-190, artifact schema_version 2).** The global call additionally returns per-table `relationships`, `secondary_entities`, and `flags` — each validated deterministically (unknown/self relationship targets, non-column join inputs, invented secondary classes and same-grain clusters are dropped and counted, never kept silently). Entries carry `status` and `schema_hash`: a human-`confirmed`/`edited` entry with an unchanged schema is pinned — preserved verbatim and excluded from the model call — and a pinned entry whose schema changed releases to `stale-confirmed` with the previous values kept for review. `propose-alignment` applies confirmed sheet anchors without the confidence floor (`sheet-confirmed`); out-of-pool anchors are still never applied. All new fields are additive; v1 artifacts keep working unchanged.
+
+
 ## [5.13.0rc3] — 2026-08-19
 
 ### Added

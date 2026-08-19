@@ -72,6 +72,30 @@ logger = logging.getLogger(__name__)
 #: Output artifact, alongside the affinity and alignment files.
 ANCHORS_FILENAME = "table-anchors.yaml"
 
+#: Sheet review statuses (DD-190). ``proposed`` is machine-written; humans move
+#: an entry to ``confirmed``/``edited`` (both pin it) or ``rejected`` (re-anchor
+#: next run). ``stale-confirmed`` is machine-written when a pinned entry's
+#: source schema changed underneath it: values kept, pin released.
+SHEET_PINNED_STATUSES = frozenset({"confirmed", "edited"})
+
+#: Flags the model may set on a sheet entry; anything else is dropped.
+ALLOWED_SHEET_FLAGS = frozenset(
+    {"unowned-anchor", "extension-candidate", "code-list", "no-data-evidence", "versioned"}
+)
+
+
+def sheet_schema_hash(columns: list[str]) -> str:
+    """Stable identity of a table's schema for sticky-entry comparison (DD-190).
+
+    Sorted raw column names only — the same inputs the anchoring outline is
+    built from. A confirmed entry pins exactly as long as this matches; any
+    column change releases the pin (``stale-confirmed``) because human
+    stickiness must be bounded by evidence identity.
+    """
+    import hashlib
+
+    return hashlib.sha256("\n".join(sorted(columns)).encode("utf-8")).hexdigest()[:16]
+
 #: The human-governed table/column ledger (DD-164).
 DISPOSITIONS_FILENAME = "table-dispositions.yaml"
 
@@ -705,6 +729,24 @@ Rules:
 - grain_columns: the column(s) that make one row unique. natural_key: the business
   key a target system would merge on. load_hint: "event-append" if rows are immutable
   occurrences, "scd" if rows are mutable master/transactional data.
+- relationships: for each column that references another table's rows (prefer fk?->
+  profile evidence, then matching key names), emit {{"to_table", "local_column",
+  "evidence": "fk-inclusion"|"name"}}. Only tables in THIS estate. Empty array if none.
+  A const or low-card column WITH fk?-> evidence is still a relationship (e.g. a tenant
+  or status dimension FK) — record it, but NEVER use it as a grain or key member.
+- secondary_entities: if the table embeds a DIFFERENT canonical entity at its OWN grain,
+  emit {{"class": <catalog class name>, "grain_columns": [...], "columns": [...]}} per
+  embedded entity. HARD RULE: the secondary entity's grain_columns must be DIFFERENT
+  from the table's primary grain_columns and must identify the embedded entity itself
+  (e.g. customer_id for an embedded customer on an orders table). A column cluster at
+  the SAME grain as the primary (measures, addresses, descriptions of the primary row)
+  is properties of the primary, NOT a secondary entity. Empty array if none.
+- flags: any of ["unowned-anchor","extension-candidate","code-list","no-data-evidence",
+  "versioned"] that apply; empty array if none. Also flag "extension-candidate" when the
+  best anchor is a GENERIC class but the table's columns or name clearly indicate a
+  consistent specialization the catalog lacks (e.g. a purchase_invoices table anchored
+  to a generic Invoice: the purchase/sales split is real in the source but missing in
+  the catalog).
 {_PATTERN_RULES}
 {profile_legend}
 SOURCE TABLES ({len(chunk)}):
@@ -721,6 +763,26 @@ def anchor_response_schema(keys: list[str]) -> dict[str, Any]:
     happen. Class names are free strings — 1,275 candidates exceed the provider's
     1,000-value enum budget (DD-177) — and are validated after the fact instead.
     """
+    relationship = {
+        "type": "object",
+        "properties": {
+            "to_table": {"type": "string"},
+            "local_column": {"type": "string"},
+            "evidence": {"type": "string", "enum": ["fk-inclusion", "name"]},
+        },
+        "required": ["to_table", "local_column", "evidence"],
+        "additionalProperties": False,
+    }
+    secondary = {
+        "type": "object",
+        "properties": {
+            "class": {"type": "string"},
+            "grain_columns": {"type": "array", "items": {"type": "string"}},
+            "columns": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["class", "grain_columns", "columns"],
+        "additionalProperties": False,
+    }
     verdict = {
         "type": "object",
         "properties": {
@@ -730,6 +792,9 @@ def anchor_response_schema(keys: list[str]) -> dict[str, Any]:
             "grain_columns": {"type": "array", "items": {"type": "string"}},
             "natural_key": {"type": "array", "items": {"type": "string"}},
             "load_hint": {"type": ["string", "null"], "enum": ["event-append", "scd", None]},
+            "relationships": {"type": "array", "items": relationship},
+            "secondary_entities": {"type": "array", "items": secondary},
+            "flags": {"type": "array", "items": {"type": "string"}},
         },
         "required": [
             "anchor",
@@ -738,6 +803,9 @@ def anchor_response_schema(keys: list[str]) -> dict[str, Any]:
             "grain_columns",
             "natural_key",
             "load_hint",
+            "relationships",
+            "secondary_entities",
+            "flags",
         ],
         "additionalProperties": False,
     }
@@ -933,6 +1001,39 @@ def run_anchor_tables(
         excluded_columns=excluded,
         tables=[t for t in source_tables if (t[0], t[1]) not in skip],
     )
+    # DD-190 sticky sheet semantics: a human-confirmed/edited entry whose
+    # source schema is unchanged is PINNED — preserved verbatim and excluded
+    # from the model call (true delta mode). A pinned entry whose schema
+    # changed releases its pin: the old values are kept under `previous`, the
+    # fresh proposal is recorded, and status becomes `stale-confirmed` so it
+    # re-enters review. Stickiness is bounded by evidence identity, never by
+    # table name alone.
+    existing = load_table_anchors(analysis_dir)
+    hashes = {(s, t): sheet_schema_hash(cols) for s, t, cols in outline}
+    pinned: dict[tuple[str, str], dict[str, Any]] = {}
+    stale_prev: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, old in existing.items():
+        if str(old.get("status") or "") not in SHEET_PINNED_STATUSES:
+            continue
+        if key not in hashes:
+            continue  # table gone from the estate; entry simply ages out
+        if old.get("schema_hash") == hashes[key]:
+            pinned[key] = old
+        else:
+            stale_prev[key] = old
+    estate_keys = {f"{s}.{t}" for s, t, _ in outline}
+    call_outline = [item for item in outline if (item[0], item[1]) not in pinned]
+    if pinned:
+        say(
+            f"  ⚓ {len(pinned)} confirmed sheet entr{'y' if len(pinned) == 1 else 'ies'} "
+            "pinned (schema unchanged) — excluded from the model call"
+        )
+    if stale_prev:
+        say(
+            f"  ⚓ {len(stale_prev)} confirmed entr{'y' if len(stale_prev) == 1 else 'ies'} "
+            "have a CHANGED schema — pin released, re-proposed as stale-confirmed"
+        )
+
     # DD-189: annotate with deterministic profile tags where a profile
     # artifact exists. Additive evidence — systems without a profile pass
     # through untouched, and empty-column omission applies only under a
@@ -941,17 +1042,17 @@ def run_anchor_tables(
     # tag text never pollutes `column_property_overlap` word matching.
     from .profile_sources import PROFILE_LEGEND, annotate_outline
 
-    prompt_outline, profiled = annotate_outline(outline, sources_dir, report=say)
+    prompt_outline, profiled = annotate_outline(call_outline, sources_dir, report=say)
     profile_legend = PROFILE_LEGEND if profiled else ""
     if profiled:
         say("  ⚓ Profile annotations applied to the anchoring outline (DD-189)")
     affinity = load_affinity_domains(analysis_dir)
     n_classes = catalog.text.count("\n") + 1 if catalog.text else 0
-    say(f"  ⚓ Anchoring {len(outline)} table(s) against {n_classes} class(es)")
+    say(f"  ⚓ Anchoring {len(call_outline)} table(s) against {n_classes} class(es)")
 
     session = new_session_id("anchor")
     raw: dict[str, dict[str, Any]] = {}
-    for start in range(0, len(outline), MAX_TABLES_PER_ANCHOR_CALL):
+    for start in range(0, len(call_outline), MAX_TABLES_PER_ANCHOR_CALL):
         chunk = prompt_outline[start : start + MAX_TABLES_PER_ANCHOR_CALL]
         keys = [f"{s}.{t}" for s, t, _ in chunk]
         response = create_chat_completion(
@@ -980,7 +1081,12 @@ def run_anchor_tables(
     unanchored: list[dict[str, Any]] = []
     propertyless: list[dict[str, Any]] = []
     invented = 0
+    dropped_rels = dropped_secondary = 0
     for system, table, cols in outline:
+        key = (system, table)
+        if key in pinned:
+            tables.append(pinned[key])
+            continue
         verdict = raw.get(f"{system}.{table}") or {}
         anchor = verdict.get("anchor")
         note = ""
@@ -990,6 +1096,18 @@ def run_anchor_tables(
             note = f"model proposed unknown class '{anchor}'"
             anchor = None
         if not anchor:
+            if key in stale_prev:
+                # The confirmed values survive the failed re-proposal; only the
+                # pin is released. A human decision never silently evaporates.
+                entry = dict(stale_prev[key])
+                entry["status"] = "stale-confirmed"
+                entry["schema_hash"] = hashes[key]
+                entry["note"] = (
+                    "schema changed and the re-proposal produced no anchor; "
+                    "previous confirmed values kept for review"
+                )
+                tables.append(entry)
+                continue
             unanchored.append(
                 {"system": system, "table": table, "columns": len(cols), "note": note}
             )
@@ -1018,7 +1136,62 @@ def run_anchor_tables(
             "grain_columns": list(verdict.get("grain_columns") or []),
             "natural_key": list(verdict.get("natural_key") or []),
             "load_hint": verdict.get("load_hint"),
+            "schema_hash": hashes[key],
+            "status": "proposed",
         }
+        # DD-190 sheet outputs, validated deterministically — the model
+        # proposes, the estate/catalog decide what is even representable.
+        col_set = set(cols)
+        relationships = []
+        for rel in verdict.get("relationships") or []:
+            if (
+                isinstance(rel, dict)
+                and rel.get("to_table") in estate_keys
+                and rel.get("to_table") != f"{system}.{table}"
+                and rel.get("local_column") in col_set
+            ):
+                relationships.append(
+                    {
+                        "to_table": rel["to_table"],
+                        "local_column": rel["local_column"],
+                        "evidence": rel.get("evidence") or "name",
+                    }
+                )
+            else:
+                dropped_rels += 1
+        grain_set = set(entry["grain_columns"])
+        secondary = []
+        for sec in verdict.get("secondary_entities") or []:
+            sec_grain = list((sec or {}).get("grain_columns") or [])
+            if (
+                isinstance(sec, dict)
+                and sec.get("class") in catalog.index
+                and sec_grain
+                and set(sec_grain) != grain_set
+                and set(sec_grain) <= col_set
+            ):
+                secondary.append(
+                    {
+                        "class": sec["class"],
+                        "grain_columns": sec_grain,
+                        "columns": [c for c in sec.get("columns") or [] if c in col_set],
+                    }
+                )
+            else:
+                # Same-grain clusters are properties of the primary, invented
+                # classes are not representable — both dropped, both counted.
+                dropped_secondary += 1
+        entry["relationships"] = relationships
+        entry["secondary_entities"] = secondary
+        entry["flags"] = sorted(set(verdict.get("flags") or []) & ALLOWED_SHEET_FLAGS)
+        if key in stale_prev:
+            entry["status"] = "stale-confirmed"
+            prev = stale_prev[key]
+            entry["previous"] = {
+                f: prev.get(f)
+                for f in ("anchor", "anchor_uri", "domain", "grain_columns",
+                          "natural_key", "status", "schema_hash")
+            }
         if cols and not n_properties:
             entry["warning"] = (
                 f"{chosen['uri']} has no properties in the resolved closure, so no "
@@ -1027,12 +1200,19 @@ def run_anchor_tables(
             propertyless.append(entry)
         tables.append(entry)
 
-    unowned = sum(1 for t in tables if t["domain_basis"] == "unowned")
+    unowned = sum(1 for t in tables if t.get("domain_basis") == "unowned")
     say(
         f"  ⚓ Anchored {len(tables)}/{len(outline)} — "
         f"{unowned} on unowned classes (blueprint gaps), "
         f"{len(unanchored)} unanchored, {invented} invented name(s) rejected"
     )
+    if dropped_rels or dropped_secondary:
+        say(
+            f"  ⚓ Sheet validation dropped {dropped_rels} relationship(s) "
+            "(unknown table / self / non-column) and "
+            f"{dropped_secondary} secondary entit{'y' if dropped_secondary == 1 else 'ies'} "
+            "(invented class or same-grain-as-primary)"
+        )
     if propertyless:
         # Almost never right for a table with columns: alignment has nothing to
         # propose against the anchor, so the entity is lost rather than mismapped.
@@ -1050,7 +1230,9 @@ def run_anchor_tables(
             )
 
     payload = {
-        "schema_version": 1,
+        # v2 (DD-190): entries carry schema_hash, status, relationships,
+        # secondary_entities, flags; pinned entries survive re-runs verbatim.
+        "schema_version": 2,
         "generated_by": "anchor-tables",
         "table_count": len(outline),
         "tables": tables,
