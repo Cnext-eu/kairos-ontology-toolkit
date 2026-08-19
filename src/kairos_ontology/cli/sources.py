@@ -3987,3 +3987,71 @@ def draft_gap_decisions_cmd(
                 "table-anchors.yaml). Clear them per table with 'source-disposition "
                 "set --system <s> --table <t> --disposition not-business-data'."
             )
+
+
+@click.command(name="profile-sources")
+@click.option(
+    "--import-dir",
+    "import_dir_opt",
+    default=None,
+    help="Directory of raw extracts for ONE system (default: .import/sources/<system>).",
+)
+@click.option("--system", required=True, help="Source system name (e.g. qargo).")
+@click.option(
+    "--out",
+    "out_opt",
+    default=None,
+    help="Output directory (default: integration/sources/<system>/ in the hub).",
+)
+@click.option(
+    "--data-maturity",
+    type=click.Choice(["production", "test"]),
+    default=None,
+    help="Override the hub's kairos.yaml data_maturity declaration for this run.",
+)
+@click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress progress output.")
+def profile_sources_cmd(import_dir_opt, system, out_opt, data_maturity, quiet):
+    """Profile raw .import/ extracts deterministically (DD-189, no LLM).
+
+    Computes per-column statistics and signal tags — null/empty ratio,
+    cardinality (unique / const / low-card), value shape, cross-table
+    fk?-inclusion evidence, and versioned?/code-list? table tags — and writes
+    <system>.profile.yaml with a basis marker (import-extract(full)).
+    Statistics only: no data value is ever written.
+
+    Downstream, anchor-tables annotates its outline from this artifact
+    automatically, and always-empty columns are omitted from model context —
+    but ONLY when data_maturity is declared 'production' (kairos.yaml or
+    --data-maturity); otherwise all tags are advisory. Run before
+    analyse-sources / anchor-tables; re-run when fresher extracts arrive.
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.profile_sources import read_data_maturity, run_profile_sources
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd)
+    import_dir = Path(import_dir_opt) if import_dir_opt else (
+        cwd / ".import" / "sources" / system
+    )
+    if not import_dir.is_dir():
+        click.echo(f"❌ No import directory at {import_dir}. Pass --import-dir.", err=True)
+        raise SystemExit(1)
+    out_dir = Path(out_opt) if out_opt else (
+        (hub_root / "integration" / "sources" / system) if hub_root
+        else cwd / "integration" / "sources" / system
+    )
+    maturity = data_maturity or read_data_maturity(hub_root)
+
+    def report(message: str, level: str = "info") -> None:
+        if not quiet or level != "info":
+            click.echo(message)
+
+    try:
+        out = run_profile_sources(
+            import_dir, system, out_dir, data_maturity=maturity, report=report
+        )
+    except FileNotFoundError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(1)
+    click.echo(f"✅ Profile written: {out} (basis import-extract(full), "
+               f"data_maturity {maturity})")

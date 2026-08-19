@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc3] — 2026-08-19
+
+### Added
+- **`profile-sources`: deterministic Stage-0 profiling of raw `.import/` extracts (DD-189).** Per-column statistics and signal tags — null/empty ratio (blank strings count), cardinality (`unique`/`const`/`low-card(n)`), value shape, sampled cross-table `fk?->table.col` inclusion evidence, and `versioned?`/`code-list?`/`empty-table` table tags — written to `integration/sources/<system>/<system>.profile.yaml` with an evidence-basis marker. Statistics only: no data value is ever persisted. `anchor-tables` consumes the profile automatically (outline annotations + legend); always-empty columns are omitted from model context only under a declared `data_maturity: production` (`kairos.yaml`, `--data-maturity` override) — otherwise every tag is advisory. Measured on the validation corpus: grain 9/9 with profile tags vs 0/9 without (every unprofiled miss keyed on the SaaS tenant discriminator).
+
+
 ## [5.13.0] — 2026-08-18
 
 ### Added
