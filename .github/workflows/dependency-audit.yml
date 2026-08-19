@@ -41,6 +41,13 @@ jobs:
         # PYSEC-2026-1845 is a dev/test-only pytest advisory whose fix (9.0.3)
         # requires a major-version bump that conflicts with the `<9` pin; it is
         # not shipped to users. Tracked for removal when the pin is widened.
+        #
+        # Non-blocking on pull_request: a newly disclosed CVE can fail this
+        # check with zero code change in the PR's own diff, which isn't a
+        # reason to block that PR's merge. It still runs and reports on every
+        # PR for visibility; push-to-main and the weekly schedule stay
+        # blocking, so a real vulnerability is still enforced before release.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: >
           uvx pip-audit --requirement requirements-audit.txt --strict
           --ignore-vuln PYSEC-2026-1845

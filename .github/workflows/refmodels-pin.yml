@@ -1,0 +1,79 @@
+name: Reference-models pin
+
+on:
+  schedule:
+    # Daily (05:17 UTC) — checks the pin against another repo's release feed,
+    # independent of any code change here. See ci.yml for why this moved off
+    # per-PR gating: an unrelated upstream release used to fail every open
+    # PR's CI at once.
+    - cron: "17 5 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refmodels-pin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Check the reference-models pin is current for its channel
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if uv run python scripts/check_refmodels_pin.py --check; then
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update the pin
+        if: steps.check.outputs.behind == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uv run python scripts/check_refmodels_pin.py --update
+          uv lock
+
+      - name: Verify the updated bundle against the full suite
+        if: steps.check.outputs.behind == 'true'
+        run: |
+          uv sync --all-groups
+          uv run ruff check src/ tests/
+          uv run pytest tests/ -q
+
+      - name: Open a pull request with the bump
+        if: steps.check.outputs.behind == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep '^kairos-ontology-referencemodels' pyproject.toml | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+          BRANCH="chore/refmodels-pin-${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add pyproject.toml uv.lock
+          git commit -m "chore: bump reference-models pin to ${VERSION}
+          Automated: the pinned release fell behind the channel's latest.
+          Co-Authored-By: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          git push origin "$BRANCH" --force
+          if ! gh pr view "$BRANCH" &>/dev/null; then
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore: bump reference-models pin to ${VERSION}" \
+              --body "Automated daily check found the reference-models pin behind its channel. Full test suite and ruff pass against the new bundle (see this PR's own CI). Merge to pick it up on \`main\`."
+          fi
