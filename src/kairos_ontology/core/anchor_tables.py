@@ -681,8 +681,14 @@ def build_anchor_prompt(
     chunk: list[tuple[str, str, list[str]]],
     catalog: ClassCatalog,
     n_classes: int,
+    profile_legend: str = "",
 ) -> str:
-    """One prompt: every table in *chunk* against the whole catalog."""
+    """One prompt: every table in *chunk* against the whole catalog.
+
+    *profile_legend* is non-empty when the outline carries DD-189 profile
+    annotations (``name[unique,id-like,fk?->…]``); it explains the tag
+    vocabulary so the model weighs measured data facts over name impressions.
+    """
     tables_text = "\n".join(
         f"TABLE {system}.{table} ({len(cols)} columns): {', '.join(cols)}"
         for system, table, cols in chunk
@@ -700,6 +706,7 @@ Rules:
   key a target system would merge on. load_hint: "event-append" if rows are immutable
   occurrences, "scd" if rows are mutable master/transactional data.
 {_PATTERN_RULES}
+{profile_legend}
 SOURCE TABLES ({len(chunk)}):
 {tables_text}
 
@@ -926,6 +933,18 @@ def run_anchor_tables(
         excluded_columns=excluded,
         tables=[t for t in source_tables if (t[0], t[1]) not in skip],
     )
+    # DD-189: annotate with deterministic profile tags where a profile
+    # artifact exists. Additive evidence — systems without a profile pass
+    # through untouched, and empty-column omission applies only under a
+    # declared production-maturity profile. The annotated outline feeds the
+    # PROMPT only; anchor resolution below keeps the raw column names, so
+    # tag text never pollutes `column_property_overlap` word matching.
+    from .profile_sources import PROFILE_LEGEND, annotate_outline
+
+    prompt_outline, profiled = annotate_outline(outline, sources_dir, report=say)
+    profile_legend = PROFILE_LEGEND if profiled else ""
+    if profiled:
+        say("  ⚓ Profile annotations applied to the anchoring outline (DD-189)")
     affinity = load_affinity_domains(analysis_dir)
     n_classes = catalog.text.count("\n") + 1 if catalog.text else 0
     say(f"  ⚓ Anchoring {len(outline)} table(s) against {n_classes} class(es)")
@@ -933,12 +952,19 @@ def run_anchor_tables(
     session = new_session_id("anchor")
     raw: dict[str, dict[str, Any]] = {}
     for start in range(0, len(outline), MAX_TABLES_PER_ANCHOR_CALL):
-        chunk = outline[start : start + MAX_TABLES_PER_ANCHOR_CALL]
+        chunk = prompt_outline[start : start + MAX_TABLES_PER_ANCHOR_CALL]
         keys = [f"{s}.{t}" for s, t, _ in chunk]
         response = create_chat_completion(
             client,
             model=model,
-            messages=[{"role": "user", "content": build_anchor_prompt(chunk, catalog, n_classes)}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": build_anchor_prompt(
+                        chunk, catalog, n_classes, profile_legend=profile_legend
+                    ),
+                }
+            ],
             seed=resolve_ai_seed(ROLE_ALIGNMENT),
             reasoning_effort=resolve_reasoning_effort(ROLE_ALIGNMENT),
             response_format=anchor_response_schema(keys),
