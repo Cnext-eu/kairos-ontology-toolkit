@@ -189,18 +189,31 @@ def generate_binding_doc(
     catalog_path: Path,
     profile: dict | None,
     report: GenerateBindingsReport,
-) -> Optional[dict[str, Any]]:
+) -> tuple[Optional[dict[str, Any]], str]:
     """Assemble one closed EntityBinding document from sheet + alignment + profile.
 
-    Returns ``None`` (with the reason on the report) when the row cannot be
-    generated — no anchor URI, no domain, or an unresolvable class module.
+    Returns ``(doc, reason)``: ``doc`` is ``None`` and ``reason`` explains why when
+    the row cannot be generated at all — no anchor URI/domain, no grain, or zero
+    scalar fields mapped. ``reason`` is ``""`` when ``doc`` is not ``None``.
+
+    Recognizing these cases here, before ever building a document, is what keeps
+    them ``skipped`` rather than ``invalid`` (issue #565): this generator never
+    emits a ``relationships:`` block (deferred to ``propose-relationships``, see
+    ``run_generate_bindings``'s own docstring), so an empty ``grain`` or an empty
+    ``fields`` is unconditionally unwritable under the v5 contract regardless of
+    what else is true about the row — that is a property of *this table*, not a
+    defect in the draft, and must not be reported as one.
     """
     system = str(entry.get("system") or "")
     table = str(entry.get("table") or "")
     class_uri = str(entry.get("anchor_uri") or "")
     domain = str(entry.get("domain") or "")
     if not (system and table and class_uri and domain):
-        return None
+        return None, "no anchor URI or derived domain on the sheet"
+
+    grain = [str(c) for c in entry.get("grain_columns") or []]
+    if not grain:
+        return None, "no grain identified on the sheet row"
 
     scalar_uri, object_names = _class_pools(catalog_path, class_uri)
     align_types = {
@@ -245,6 +258,17 @@ def generate_binding_doc(
                  "kept": column, "dropped": dropped}
             )
 
+    if not fields:
+        # A carrier's presence changes the reason text, never the outcome: this
+        # generator never emits relationships: (deferred to propose-relationships),
+        # so an empty fields: is unwritable under the v5 contract either way.
+        if relationship_cols or entry.get("relationships"):
+            return None, (
+                "no scalar fields mapped for this table (relationship wiring is "
+                "deferred to propose-relationships)"
+            )
+        return None, "no scalar fields mapped for this table"
+
     def _column_type(column: str) -> tuple[str, bool]:
         meta = _profile_column(profile, table, column)
         if meta:
@@ -253,7 +277,6 @@ def generate_binding_doc(
             )
         return _canonical_type(align_types.get(column, "")), True
 
-    grain = [str(c) for c in entry.get("grain_columns") or []]
     source_key = [str(c) for c in entry.get("natural_key") or []] or grain
     technical: list[dict[str, Any]] = []
     for column in dict.fromkeys([*grain, *source_key]):
@@ -309,7 +332,7 @@ def generate_binding_doc(
         doc["technicalFields"] = technical
     if quality:
         doc["quality"] = quality
-    return doc
+    return doc, ""
 
 
 def run_generate_bindings(
@@ -371,14 +394,14 @@ def run_generate_bindings(
             continue
         if system not in profiles:
             profiles[system] = load_profile(sources_dir, system)
-        doc = generate_binding_doc(
+        doc, skip_reason = generate_binding_doc(
             entry, found[1], catalog_path=catalog,
             profile=profiles[system], report=report,
         )
         if doc is None:
             report.generated.append(GeneratedBinding(
                 system, table, "", str(entry.get("domain") or ""),
-                "skipped", note="row not generatable"))
+                "skipped", note=skip_reason))
             continue
 
         name = doc["metadata"]["name"]
