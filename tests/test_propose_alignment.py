@@ -1727,6 +1727,53 @@ class TestUriAnchorContractIntegration:
         assert ta.ref_class_status == "matched"
         assert ta.likely_entity_uri == ""
 
+    def test_global_anchor_uri_populates_likely_entity_uri(
+        self, analysis_dir, sources_dir, tmp_path
+    ):
+        """#564: the DD-185/190 global-anchor path (no confirmed uri-anchor-contract
+        evidence at all) must also populate likely_entity_uri, from the anchor_uri
+        the sheet's own class-copy disambiguation already resolved -- both existing
+        consumers (design_landscape, conformance_evidence) already prefer this URI
+        over the bare ref_class local name when it's present."""
+        anchors = {
+            "schema_version": 2,
+            "generated_by": "anchor-tables",
+            "table_count": 1,
+            "tables": [
+                {
+                    "system": "adminpulse",
+                    "table": "tblContracts",
+                    "anchor": "SalesContract",
+                    "anchor_uri": "https://example.com/ont/commercial#SalesContract",
+                    "confidence": 0.95,
+                    "domain": "commercial",
+                }
+            ],
+            "unanchored": [],
+        }
+        with open(analysis_dir / "table-anchors.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(anchors, f)
+
+        client = self._model_prefers_trade_terms_client()
+        with (
+            mock.patch("kairos_ontology.core.propose_alignment.get_ai_client", return_value=client),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=self.REF_CLASSES,
+            ),
+        ):
+            alignments = build_domain_alignments(
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                domains_filter=["commercial"],
+            )
+        ta = next(t for t in alignments[0].tables if t.table == "tblContracts")
+        assert ta.ref_class == "SalesContract"
+        assert ta.ref_class_status == "anchored"
+        assert ta.likely_entity_uri == "https://example.com/ont/commercial#SalesContract"
+
 
 class TestProposeAlignmentCLIReliability:
     """Alignment-reliability wiring through the `propose-alignment` CLI command:

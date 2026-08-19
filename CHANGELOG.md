@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc15] — 2026-08-20
+
+### Fixed
+- **A class-name collision across two DIFFERENT domains was resolved by ownership, not richness (DD-201, issue #564).** `choose_class_copy` hard-filtered candidate copies into a same-domain-owned tier before any richness scoring ran, so a richer copy owned by a different domain (e.g. BSP's `Person`) was discarded in favor of a bare same-domain copy (IATA's `Person`) purely because of catalog read order — the sibling of the #519 defect one level out. Same-domain ownership is now a tie-break inside the ranking, after column-property overlap and property count, not a filter ahead of them. A deterministic `property-less-anchor` sheet flag now also survives into `table-anchors.yaml` whenever a resolved anchor has zero properties (previously console-only).
+- **The global-anchor path's resolved URI never reached `likely_entity_uri` (DD-201, issue #564).** `TableAlignment.likely_entity_uri` was only populated on the older uri-anchor-contract "confirmed" path; the newer global-anchor/design-sheet path (DD-185/190) never carried its own resolved `anchor_uri` forward, even though both existing consumers (`design_landscape`, `conformance_evidence`) already prefer it over the bare `ref_class` name. `design_landscape` also gains a defensive fallback to `table-anchors.yaml` for already-generated alignment artifacts that predate this fix, guarded to only apply on an exact anchor-name match.
+
 ## [5.13.0rc14] — 2026-08-20
 
 ### Fixed

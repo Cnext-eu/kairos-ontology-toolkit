@@ -44,6 +44,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .anchor_tables import load_table_anchors
 from .compiler.kernel import _binding_domain, _binding_target_class, _binding_tier
 from .conformance_artifact import ARTIFACT_RELPATH, ConformanceArtifactError, read_artifact
 from .evidence_loaders import scan_concept_mapping_worksheets
@@ -299,11 +300,15 @@ def _resolve_alignment_class(
     class_record: dict[str, Any],
     name_to_uris: dict[str, set[str]],
     gaps: list[str],
+    *,
+    system: str = "",
+    table: str = "",
+    sheet_anchors: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> str | None:
     """Resolve one ``propose-alignment`` table entry to an in-scope accelerator class URI.
 
-    Prefers ``likely_entity_uri`` (the uri-anchor-contract's already-disambiguated,
-    discovery-confirmed anchor) over the bare ``ref_class`` name, which may be ambiguous
+    Prefers ``likely_entity_uri`` (the uri-anchor-contract's / global-anchor path's
+    already-disambiguated URI) over the bare ``ref_class`` name, which may be ambiguous
     across activated modules.
     """
     likely_uri = str(table_dict.get("likely_entity_uri") or "").strip()
@@ -323,6 +328,21 @@ def _resolve_alignment_class(
     candidates = name_to_uris.get(ref_class, set())
     if len(candidates) == 1:
         return next(iter(candidates))
+
+    # #564: an alignment artifact generated before likely_entity_uri carried the
+    # global-anchor URI forward has no way to disambiguate here on its own — but
+    # table-anchors.yaml's own class-copy disambiguation already resolved this
+    # exact table to a URI. Fall back to it, but ONLY when the sheet's own anchor
+    # name matches this ref_class exactly: a mismatch (stale sheet, edited
+    # alignment, different table) must never silently substitute a different
+    # class than the one the alignment artifact itself names.
+    if sheet_anchors:
+        ga = sheet_anchors.get((system, table)) or {}
+        if str(ga.get("anchor") or "").strip() == ref_class:
+            sheet_uri = str(ga.get("anchor_uri") or "").strip()
+            if sheet_uri and sheet_uri in class_record:
+                return sheet_uri
+
     if len(candidates) > 1:
         gaps.append(
             f"alignment ref_class {ref_class!r} is ambiguous across {len(candidates)} "
@@ -566,6 +586,7 @@ def run_design_landscape(
     analysis_dir = hub_root / _ANALYSIS_SUBDIR
     tables_by_class: dict[str, set[tuple[str, str]]] = {}
     if analysis_dir.is_dir():
+        sheet_anchors = load_table_anchors(analysis_dir)
         alignment_files = sorted(analysis_dir.glob("*-alignment.yaml"))
         if not alignment_files:
             gaps.append(
@@ -587,7 +608,8 @@ def run_design_landscape(
                 if not system or not table:
                     continue
                 resolved_uri = _resolve_alignment_class(
-                    table_dict, class_record, name_to_uris, gaps
+                    table_dict, class_record, name_to_uris, gaps,
+                    system=system, table=table, sheet_anchors=sheet_anchors,
                 )
                 if resolved_uri is None:
                     continue

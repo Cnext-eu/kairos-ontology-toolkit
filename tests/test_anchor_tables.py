@@ -338,6 +338,73 @@ class TestClassCopySelection:
         assert column_property_overlap(BOOKING_COLUMNS, {"properties": []}) == 0
 
 
+def cross_domain_person_catalog():
+    """A name collides across copies owned by two DIFFERENT domains — the #564
+    shape. A bare IATA ``Person`` (owned only by ``party``, no properties) vs. a
+    richer BSP ``Person`` (owned only by ``financial``, several properties).
+    Neither domain owns the other's copy at all."""
+    return ClassCatalog(
+        text="- Person [owned by domain 'party']: A person.",
+        index={
+            "Person": [
+                {"module": "https://iata/party", "uri": "https://iata/party#Person",
+                 "properties": []},
+                {"module": "https://bsp/financial", "uri": "https://bsp/financial#Person",
+                 "properties": ["firstName", "lastName", "taxId"]},
+            ],
+        },
+        owners={"https://iata/party": ["party"], "https://bsp/financial": ["financial"]},
+    )
+
+
+PERSON_COLUMNS = ["first_name", "last_name", "tax_id"]
+
+
+class TestClassCopySelectionAcrossDomains:
+    """#564: a same-domain hard pre-filter must not discard a richer copy owned
+    by a DIFFERENT domain before richness is ever compared."""
+
+    def test_a_richer_copy_owned_by_a_different_domain_still_wins_on_overlap(self):
+        """Anchoring domain is 'party' (owns only the empty copy); the richer BSP
+        copy, owned only by 'financial', must still win because its properties
+        actually overlap the table's columns."""
+        from kairos_ontology.core.anchor_tables import choose_class_copy
+
+        cat = cross_domain_person_catalog()
+        chosen = choose_class_copy(cat.index["Person"], cat, "party", PERSON_COLUMNS)
+        assert chosen["uri"] == "https://bsp/financial#Person"
+
+    def test_a_richer_copy_owned_by_a_different_domain_still_wins_on_property_count(self):
+        """Even with zero column overlap, the richer copy wins on property count
+        -- same-domain ownership only breaks a tie on both of those, it never
+        pre-filters the richer copy out."""
+        from kairos_ontology.core.anchor_tables import choose_class_copy
+
+        cat = cross_domain_person_catalog()
+        chosen = choose_class_copy(cat.index["Person"], cat, "party", ["unrelated_field"])
+        assert chosen["uri"] == "https://bsp/financial#Person"
+
+    def test_same_domain_ownership_breaks_a_genuine_tie(self):
+        """Equal overlap AND equal property count: same-domain ownership is the
+        deciding tie-break, not irrelevant."""
+        from kairos_ontology.core.anchor_tables import choose_class_copy
+
+        cat = ClassCatalog(
+            text="- Person [owned by domain 'party']: A person.",
+            index={
+                "Person": [
+                    {"module": "https://iata/party", "uri": "https://iata/party#Person",
+                     "properties": ["firstName", "lastName"]},
+                    {"module": "https://bsp/financial", "uri": "https://bsp/financial#Person",
+                     "properties": ["firstName", "lastName"]},
+                ],
+            },
+            owners={"https://iata/party": ["party"], "https://bsp/financial": ["financial"]},
+        )
+        chosen = choose_class_copy(cat.index["Person"], cat, "party", ["unrelated_field"])
+        assert chosen["uri"] == "https://iata/party#Person"
+
+
 class TestPropertylessAnchorWarning:
     """#519 part 1, the floor: a 90-column table pinned to a class with no
     properties produced no class at all, silently."""
@@ -392,6 +459,24 @@ class TestPropertylessAnchorWarning:
         assert entry["anchor_properties"] == 0
         assert "no properties in the resolved closure" in entry["warning"]
         assert any("WARNING" in line and "NO properties" in line for line in lines)
+
+    def test_a_propertyless_anchor_carries_a_deterministic_sheet_flag(self, tmp_path):
+        """#564: the console-only warning must also survive into the reviewable
+        table-anchors.yaml artifact as a flag, not just a printed line."""
+        from kairos_ontology.core.anchor_tables import PROPERTY_LESS_ANCHOR_FLAG
+
+        cat = collision_catalog()
+        cat.index["Booking"] = [cat.index["Booking"][0]]
+        doc, _ = self._run(tmp_path, cat, BOOKING_COLUMNS, "Booking")
+        entry = doc["tables"][0]
+        assert PROPERTY_LESS_ANCHOR_FLAG in entry["flags"]
+
+    def test_a_property_bearing_anchor_carries_no_such_flag(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import PROPERTY_LESS_ANCHOR_FLAG
+
+        doc, _ = self._run(tmp_path, collision_catalog(), BOOKING_COLUMNS, "Booking")
+        entry = doc["tables"][0]
+        assert PROPERTY_LESS_ANCHOR_FLAG not in entry["flags"]
 
     def test_a_columnless_table_is_not_warned_about(self, tmp_path):
         """Only a table WITH columns makes a propertyless anchor wrong."""
