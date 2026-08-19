@@ -140,7 +140,10 @@ class TestValidation:
         }})
         entry = anchors[("qargo", "stops")]
         assert [s["class"] for s in entry["secondary_entities"]] == ["Consignment"]
-        assert entry["flags"] == ["versioned"], "unknown flags dropped"
+        # "not-a-flag" (unknown, model-proposed) is dropped; "property-less-anchor"
+        # is added deterministically because this fixture's anchor (TransportCall)
+        # has no properties in the resolved closure (issue #564).
+        assert entry["flags"] == ["property-less-anchor", "versioned"]
         assert entry["status"] == "proposed"
         assert entry["schema_hash"] == sheet_schema_hash(STOPS_COLS)
 

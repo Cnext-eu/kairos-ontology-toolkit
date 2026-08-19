@@ -4757,6 +4757,12 @@ def _propose_alignments(
             # domain's pool — recorded as status "anchored", never "confirmed".
             anchor_status = "confirmed"
             anchor_confidence: float | None = None
+            # #564: the sheet's own class-copy disambiguation (choose_class_copy)
+            # already resolved a name collision to a specific URI -- carry it
+            # forward here so likely_entity_uri isn't left empty for every table
+            # this newer anchoring path decides, the way the uri-anchor-contract
+            # path already does for its own "confirmed" case below.
+            global_anchor_uri: str | None = None
             if anchor_override is None and global_anchors:
                 ga = global_anchors.get((system, table)) or {}
                 applied, ga_status, counter = resolve_global_anchor(ga, pool_class_names)
@@ -4772,6 +4778,7 @@ def _propose_alignments(
                     anchor_override = applied
                     anchor_status = ga_status
                     anchor_confidence = float(ga.get("confidence") or 0.0)
+                    global_anchor_uri = str(ga.get("anchor_uri") or "") or None
 
             cache_key = compute_entry_hash(
                 {
@@ -4806,6 +4813,7 @@ def _propose_alignments(
                     "from_cache": True,
                     "likely_entity": likely_entity,
                     "anchor_resolution": anchor_res,
+                    "global_anchor_uri": global_anchor_uri,
                 }
 
             # Stage B: when an anchor already decided the class, derive the pool from
@@ -4945,6 +4953,7 @@ def _propose_alignments(
                 "from_cache": False,
                 "likely_entity": likely_entity,
                 "anchor_resolution": anchor_res,
+                "global_anchor_uri": global_anchor_uri,
                 "pool_origin": pool_origin,
                 "pool_size": len(shortlist_classes),
             }
@@ -5260,6 +5269,15 @@ def _propose_alignments(
             anchor_res_entry: AnchorResolution | None = entry.get("anchor_resolution")
             if anchor_res_entry is not None and anchor_res_entry.status == "confirmed":
                 ta.likely_entity_uri = anchor_res_entry.resolved_uri or ""
+            elif entry.get("global_anchor_uri"):
+                # #564: the global-anchor/design-sheet path (DD-185/190) never fed
+                # likely_entity_uri before -- both existing consumers of this field
+                # (design_landscape._resolve_alignment_class, conformance_evidence.py)
+                # already prefer it over the bare ref_class local name when present,
+                # so a class-copy disambiguation this sheet already resolved to a
+                # specific URI now actually reaches them, instead of only a name
+                # that can collide across modules.
+                ta.likely_entity_uri = str(entry["global_anchor_uri"])
             elif anchor_res_entry is not None and anchor_res_entry.status == "ambiguous":
                 ta.anchor_candidate_uris = list(anchor_res_entry.candidate_uris)
                 unresolved_records.append(

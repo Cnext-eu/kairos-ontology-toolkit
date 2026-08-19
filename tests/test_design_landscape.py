@@ -609,6 +609,92 @@ def test_a_registration_never_overwrites_a_real_catalog_judgment(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# #564: a stale alignment artifact falls back to table-anchors.yaml's own
+# class-copy disambiguation, but only on an exact anchor-name match.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAlignmentClassSheetFallback:
+    def _resolve(self, ref_class, *, class_record, sheet_anchors=None):
+        from kairos_ontology.core.design_landscape import _resolve_alignment_class
+
+        gaps: list[str] = []
+        resolved = _resolve_alignment_class(
+            {"ref_class": ref_class},
+            class_record,
+            {},  # name_to_uris: empty -- the local name is deliberately ambiguous/unresolved
+            gaps,
+            system="alpha",
+            table="tblPersons",
+            sheet_anchors=sheet_anchors,
+        )
+        return resolved, gaps
+
+    def test_no_sheet_anchors_gives_up_as_before(self):
+        resolved, gaps = self._resolve(
+            "Person", class_record={"https://bsp/financial#Person": object()}
+        )
+        assert resolved is None
+        assert gaps == []  # zero candidates in name_to_uris never appended a gap before either
+
+    def test_matching_anchor_name_resolves_via_the_sheet(self):
+        sheet_anchors = {
+            ("alpha", "tblPersons"): {
+                "anchor": "Person",
+                "anchor_uri": "https://bsp/financial#Person",
+            }
+        }
+        resolved, gaps = self._resolve(
+            "Person",
+            class_record={"https://bsp/financial#Person": object()},
+            sheet_anchors=sheet_anchors,
+        )
+        assert resolved == "https://bsp/financial#Person"
+        assert gaps == []
+
+    def test_mismatched_anchor_name_never_substitutes_a_different_class(self):
+        """The sheet's anchor for this exact table names a DIFFERENT class than
+        the alignment artifact's own ref_class -- must refuse, not guess."""
+        sheet_anchors = {
+            ("alpha", "tblPersons"): {
+                "anchor": "Organization",
+                "anchor_uri": "https://bsp/financial#Organization",
+            }
+        }
+        resolved, _ = self._resolve(
+            "Person",
+            class_record={
+                "https://bsp/financial#Person": object(),
+                "https://bsp/financial#Organization": object(),
+            },
+            sheet_anchors=sheet_anchors,
+        )
+        assert resolved is None
+
+    def test_sheet_uri_outside_activated_scope_is_not_used(self):
+        sheet_anchors = {
+            ("alpha", "tblPersons"): {
+                "anchor": "Person",
+                "anchor_uri": "https://not-activated/party#Person",
+            }
+        }
+        resolved, _ = self._resolve(
+            "Person",
+            class_record={"https://bsp/financial#Person": object()},
+            sheet_anchors=sheet_anchors,
+        )
+        assert resolved is None
+
+    def test_no_sheet_entry_for_this_table_falls_through(self):
+        resolved, _ = self._resolve(
+            "Person",
+            class_record={"https://bsp/financial#Person": object()},
+            sheet_anchors={("beta", "other_table"): {"anchor": "Person"}},
+        )
+        assert resolved is None
+
+
+# ---------------------------------------------------------------------------
 # DD-103 boundary: no raw TTL reads in this module.
 # ---------------------------------------------------------------------------
 

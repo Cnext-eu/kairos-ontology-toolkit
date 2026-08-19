@@ -83,6 +83,12 @@ ALLOWED_SHEET_FLAGS = frozenset(
     {"unowned-anchor", "extension-candidate", "code-list", "no-data-evidence", "versioned"}
 )
 
+#: Deterministic flag ``run_anchor_tables`` itself sets (never model-proposed,
+#: so not in ALLOWED_SHEET_FLAGS' model-facing set) when a table's anchor has no
+#: properties in the resolved closure — the same condition that already produces
+#: a console warning, now surviving into the reviewable artifact (issue #564).
+PROPERTY_LESS_ANCHOR_FLAG = "property-less-anchor"
+
 
 def sheet_schema_hash(columns: list[str]) -> str:
     """Stable identity of a table's schema for sticky-entry comparison (DD-190).
@@ -918,29 +924,43 @@ def choose_class_copy(
 ) -> dict[str, Any]:
     """Pick which copy of a duplicate class name the anchor URI points at.
 
-    Ownership decides the tier — a name match in a foreign vocabulary must not
-    outrank the class the blueprint governs — and *within* the tier the copy whose
-    properties actually overlap the table's columns wins, with the richer class
-    breaking a remaining tie.
+    Ownership decides the outer tier — a name match in a foreign vocabulary must
+    not outrank a class *some* domain governs — and *within* that tier, richness
+    decides: the copy whose properties actually overlap the table's columns wins,
+    the richer class breaks a remaining tie, and only a tie on both of those falls
+    back to preferring a copy owned by *this specific* domain.
 
-    That second key is the #519 fix. ``shipments`` (90 columns, 0.98 confidence)
-    resolved to ``onerecord/cargo#Shipment``, which the closure gives zero
-    properties, over ``dcsa/booking#Shipment``, which carries the 13 alignment
-    then proposed. Both modules are owned by ``booking``, so the ownership tier
-    could not separate them and the first copy the catalog read won. No proposed
-    property survived against the anchor, and a large, clean entity produced no
-    class at all.
+    The overlap/property-count ordering is the #519 fix. ``shipments`` (90
+    columns, 0.98 confidence) resolved to ``onerecord/cargo#Shipment``, which the
+    closure gives zero properties, over ``dcsa/booking#Shipment``, which carries
+    the 13 alignment then proposed. Both modules are owned by ``booking``, so an
+    ownership *tier* could not separate them and the first copy the catalog read
+    won. No proposed property survived against the anchor, and a large, clean
+    entity produced no class at all.
+
+    Same-domain ownership used to be a *hard pre-filter tier*, ahead of richness
+    — the #564 fix. When a name collides across copies owned by two DIFFERENT
+    domains (e.g. a bare IATA ``Person`` owned by ``party`` vs. a richer BSP
+    ``Person`` owned only by ``financial``), the hard filter discarded the richer
+    copy before richness was ever compared, purely because the *other* domain
+    happened to own it — the domain a table's own catalog-read-order landed on
+    decided the outcome, the same "read order decides" defect #519 fixed one
+    level up. Same-domain ownership is now a tie-break inside the ranking, after
+    overlap and property count, not a filter ahead of them.
     """
     if not copies:
         return {}
-    owned_by_domain = [c for c in copies if domain in catalog.owners.get(c.get("module", ""), [])]
     owned = [c for c in copies if catalog.owners.get(c.get("module", ""))]
-    tier = owned_by_domain or owned or list(copies)
+    tier = owned or list(copies)
     # max() keeps the first maximal element, so an all-zero tier preserves the
     # existing order and this stays a tie-break rather than a re-ranking.
     return max(
         tier,
-        key=lambda c: (column_property_overlap(columns, c), len(c.get("properties") or ())),
+        key=lambda c: (
+            column_property_overlap(columns, c),
+            len(c.get("properties") or ()),
+            domain in catalog.owners.get(c.get("module", ""), []),
+        ),
     )
 
 
@@ -1239,6 +1259,8 @@ def run_anchor_tables(
                 f"{chosen['uri']} has no properties in the resolved closure, so no "
                 f"column of this {len(cols)}-column table can map to it"
             )
+            if PROPERTY_LESS_ANCHOR_FLAG not in entry["flags"]:
+                entry["flags"] = sorted({*entry["flags"], PROPERTY_LESS_ANCHOR_FLAG})
             propertyless.append(entry)
         tables.append(entry)
 
