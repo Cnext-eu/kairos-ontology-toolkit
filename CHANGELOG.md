@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc16] — 2026-08-20
+
+### Fixed
+- **`generate-bindings` failed 27/59 tables (46%) with a generic schema error instead of skipping them (DD-202, issue #565).** This generator never emits `relationships:` (deferred to `propose-relationships`), so any table with zero mapped scalar fields was always going to fail the v5 contract's conditional-`relationships:` requirement — and a table with `grain_columns: []`/`natural_key: []` failed the same way. Both are now recognized as non-generatable *before* a draft is built, and report `skipped` with a specific reason (e.g. "no grain identified on the sheet row", or "no scalar fields mapped for this table" with a note when relationship wiring was deferred) instead of `invalid` with a generic validator message.
+
 ## [5.13.0rc15] — 2026-08-20
 
 ### Fixed

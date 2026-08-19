@@ -176,14 +176,53 @@ class TestGuards:
         assert report.generated[0].outcome == "skipped"
         assert "propose-alignment" in report.generated[0].note
 
-    def test_invalid_draft_is_reported_and_never_written(self, hub):
+    def test_empty_grain_is_skipped_not_reported_invalid(self, hub):
+        """#565: an empty grain is a property of the row (nothing to identify a
+        record by), not a defect in the draft -- must never reach the validator
+        and come back as 'invalid'."""
         analysis = hub / "integration" / "sources" / "_analysis"
         doc = yaml.safe_load((analysis / "table-anchors.yaml").read_text("utf-8"))
-        doc["tables"][0]["grain_columns"] = []      # violates the closed contract
+        doc["tables"][0]["grain_columns"] = []      # would violate the closed contract
         doc["tables"][0]["natural_key"] = []
         (analysis / "table-anchors.yaml").write_text(yaml.safe_dump(doc), "utf-8")
         report = _run(hub)
-        assert report.generated[0].outcome == "invalid"
+        assert report.generated[0].outcome == "skipped"
+        assert "no grain identified" in report.generated[0].note
+
+    def test_zero_scalar_fields_with_fk_carrier_is_skipped(self, hub):
+        """#565: this generator never emits relationships:, so a table with zero
+        scalar field mappings is unconditionally unwritable -- must be skipped,
+        never sent to the validator to fail with a generic schema error. An FK
+        carrier's presence only changes the reason text, never the outcome."""
+        analysis = hub / "integration" / "sources" / "_analysis"
+        alignment_path = analysis / "consignment-alignment.yaml"
+        doc = yaml.safe_load(alignment_path.read_text("utf-8"))
+        for table_dict in doc.get("tables", []):
+            table_dict["columns"] = []
+        alignment_path.write_text(yaml.safe_dump(doc), "utf-8")
+        report = _run(hub)
+        assert report.generated[0].outcome == "skipped"
+        assert "no scalar fields mapped" in report.generated[0].note
+        assert "deferred to propose-relationships" in report.generated[0].note
+
+    def test_zero_scalar_fields_with_no_fk_carrier_at_all_is_skipped(self, hub):
+        """Same outcome with no FK carrier evidence anywhere -- just a plainer
+        reason, since there's no relationship wiring to defer to begin with."""
+        analysis = hub / "integration" / "sources" / "_analysis"
+        alignment_path = analysis / "consignment-alignment.yaml"
+        align_doc = yaml.safe_load(alignment_path.read_text("utf-8"))
+        for table_dict in align_doc.get("tables", []):
+            table_dict["columns"] = []
+        alignment_path.write_text(yaml.safe_dump(align_doc), "utf-8")
+
+        anchors_path = analysis / "table-anchors.yaml"
+        anchors_doc = yaml.safe_load(anchors_path.read_text("utf-8"))
+        anchors_doc["tables"][0]["relationships"] = []
+        anchors_path.write_text(yaml.safe_dump(anchors_doc), "utf-8")
+
+        report = _run(hub)
+        assert report.generated[0].outcome == "skipped"
+        assert report.generated[0].note == "no scalar fields mapped for this table"
         assert not (hub / "integration" / "bindings").exists()
 
     def test_missing_sheet_is_a_hard_error_naming_the_fix(self, tmp_path):
