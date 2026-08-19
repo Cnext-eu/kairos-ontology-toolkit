@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for the update-refmodels CLI command (package mode, DD-158).
+"""Tests for the update-refmodels CLI command (package mode, DD-158, DD-200).
 
-The command runs ``uv pip install --upgrade kairos-ontology-referencemodels``, reads
-the installed version via ``importlib.metadata``, rewrites the pin in ``pyproject.toml``,
-and runs ``uv lock``.
+The command resolves the latest published release tag the same way scaffolding
+does (issue #551), installs that exact wheel via ``uv pip install <url>``, reads
+the installed version via ``importlib.metadata``, rewrites the pin in
+``pyproject.toml``, and runs ``uv lock``.
 """
 
 from __future__ import annotations
@@ -48,12 +49,18 @@ class TestUpdateRefmodelsHelp:
 
 
 class TestUpdateRefmodelsUpgrade:
-    """Default (no --version): uv pip install --upgrade + pin rewrite + uv lock."""
+    """Default (no --version): resolve the latest release tag, install that exact
+    wheel (never the pip index, which has no kairos-ontology-referencemodels
+    package to find — issue #551), rewrite the pin, and uv lock."""
 
     def test_successful_upgrade(self, runner, hub_with_pyproject, monkeypatch):
-        """Happy path: install succeeds, pin rewritten, lock called."""
+        """Happy path: tag resolved, install succeeds, pin rewritten, lock called."""
         monkeypatch.chdir(hub_with_pyproject)
         with (
+            patch(
+                "kairos_ontology.cli.operations._resolve_refmodels_tag",
+                return_value="v1.20.0",
+            ),
             patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
             patch("kairos_ontology.cli.operations.importlib.metadata") as mock_meta,
         ):
@@ -69,12 +76,12 @@ class TestUpdateRefmodelsUpgrade:
         assert "Reference models updated" in result.output
         assert "1.20.0" in result.output
 
-        # Verify uv pip install --upgrade was called
+        # Verify the exact resolved wheel was installed, not --upgrade by bare name
         install_args = mock_run.call_args_list[0].args[0]
         assert "pip" in install_args
         assert "install" in install_args
-        assert "--upgrade" in install_args
-        assert "kairos-ontology-referencemodels" in install_args
+        assert "--upgrade" not in install_args
+        assert any("v1.20.0" in str(a) for a in install_args)
 
         # Verify uv lock was called
         assert mock_run.call_args_list[1].args[0] == ["uv", "lock"]
@@ -84,10 +91,27 @@ class TestUpdateRefmodelsUpgrade:
         assert "v1.20.0" in content
         assert "v1.18.0" not in content
 
+    def test_unresolvable_tag_raises(self, runner, hub_with_pyproject, monkeypatch):
+        """No published release could be listed at all -- refuse, pin unchanged."""
+        monkeypatch.chdir(hub_with_pyproject)
+        with patch(
+            "kairos_ontology.cli.operations._resolve_refmodels_tag", return_value=None
+        ):
+            result = runner.invoke(cli, ["update-refmodels"])
+            assert result.exit_code != 0
+            assert "Could not resolve a reference-models release" in result.output
+
+        content = (hub_with_pyproject / "pyproject.toml").read_text(encoding="utf-8")
+        assert "v1.18.0" in content
+
     def test_install_failure_raises(self, runner, hub_with_pyproject, monkeypatch):
         """uv pip install failure should raise a ClickException."""
         monkeypatch.chdir(hub_with_pyproject)
         with (
+            patch(
+                "kairos_ontology.cli.operations._resolve_refmodels_tag",
+                return_value="v1.20.0",
+            ),
             patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
             patch("kairos_ontology.cli.operations.importlib.metadata"),
         ):
@@ -103,6 +127,10 @@ class TestUpdateRefmodelsUpgrade:
         """uv lock failure should raise a ClickException."""
         monkeypatch.chdir(hub_with_pyproject)
         with (
+            patch(
+                "kairos_ontology.cli.operations._resolve_refmodels_tag",
+                return_value="v1.20.0",
+            ),
             patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
             patch("kairos_ontology.cli.operations.importlib.metadata") as mock_meta,
         ):
@@ -121,6 +149,10 @@ class TestUpdateRefmodelsUpgrade:
         import importlib.metadata as md
         monkeypatch.chdir(hub_with_pyproject)
         with (
+            patch(
+                "kairos_ontology.cli.operations._resolve_refmodels_tag",
+                return_value="v1.20.0",
+            ),
             patch("kairos_ontology.cli.operations.subprocess.run") as mock_run,
             patch("kairos_ontology.cli.operations.importlib.metadata") as mock_meta,
         ):

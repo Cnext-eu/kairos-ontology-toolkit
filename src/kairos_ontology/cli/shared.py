@@ -541,6 +541,34 @@ def _resolve_scaffold_refmodels_pin(version_tag: str | None = None) -> tuple[str
     return _REFMODELS_FALLBACK_TAG, _tag_to_version(_REFMODELS_FALLBACK_TAG)
 
 
+def _resolve_refmodels_tag(version_tag: str | None = None) -> str | None:
+    """Resolve the reference-models release tag an upgrade should install.
+
+    Same policy as :func:`_resolve_scaffold_refmodels_pin` — the latest published
+    **stable** release, routed through the same draft-filtering, version-ordered
+    resolver (:func:`_list_published_release_tags` / :func:`_latest_stable_tag`)
+    every other caller uses, rather than a second implementation of "what's
+    latest" (issue #542 was caused by exactly that kind of second copy).
+
+    *version_tag* pins an explicit release instead, normalized to the ``v``-prefixed
+    form GitHub release tags and wheel URLs both require (``1.33.1`` and ``v1.33.1``
+    are the same release, but only the latter is a valid tag/URL segment).
+
+    Unlike the scaffold-time resolver, there is **no fallback to a hardcoded tag**
+    when the release list cannot be fetched: scaffolding with no evidence at all
+    still needs *something* to pin, but an upgrade is protecting an existing,
+    working pin — returning ``None`` and refusing is correct; silently reusing a
+    stale hardcoded tag would move the pin backwards without saying so.
+    """
+    if version_tag:
+        return version_tag if version_tag.startswith("v") else f"v{version_tag}"
+
+    tags = _list_published_release_tags(_REFMODELS_REPO)
+    if not tags:
+        return None
+    return _latest_stable_tag(tags)
+
+
 _COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 

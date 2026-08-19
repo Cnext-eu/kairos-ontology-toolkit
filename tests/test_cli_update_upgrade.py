@@ -443,13 +443,17 @@ class TestUpdateUpgradeLegacyExtrasPins:
 class TestUpdateUpgradeSingleUrlHub:
     """A hub scaffolded today carries the toolkit URL once (issue #297)."""
 
+    @patch("kairos_ontology.cli.operations._upgrade_refmodels")
     @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
     @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
     @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
     @patch("subprocess.run")
     def test_upgrade_rewrites_the_single_url_and_leaves_bare_extras(
-        self, mock_run, mock_scaffold, mock_channel, mock_resolve, runner, tmp_path
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_upgrade_refmodels,
+        runner, tmp_path
     ):
+        """The reference-models upgrade (DD-200) is exercised in its own test class
+        below; mocked out to a no-op here so this stays scoped to the toolkit pin."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("sys.platform", "linux"):
@@ -463,6 +467,81 @@ class TestUpdateUpgradeSingleUrlHub:
         assert text.count("3.9.0rc2-py3-none-any.whl") == 1
         assert text.count("0.1.0-py3-none-any.whl") == 1
         assert '"kairos-ontology-toolkit[flatfile]"' in text
+        mock_upgrade_refmodels.assert_called_once_with(None)
+
+
+class TestUpdateUpgradeAlsoUpgradesRefmodels:
+    """`update --upgrade` also upgrades the reference-models pin, non-atomically
+    with the toolkit upgrade, but never silently (issue #551, DD-200)."""
+
+    @patch("kairos_ontology.cli.operations._upgrade_refmodels")
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_hub_with_a_refmodels_pin_gets_it_upgraded_too(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_upgrade_refmodels,
+        runner, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_scaffolded_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0, result.output
+        mock_upgrade_refmodels.assert_called_once_with(None)
+
+    @patch("kairos_ontology.cli.operations._upgrade_refmodels")
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_hub_with_no_refmodels_pin_is_never_touched(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_upgrade_refmodels,
+        runner, tmp_path
+    ):
+        """A dataplatform repo (dbt only) never pins reference-models at all --
+        the upgrade must not be attempted, let alone fail, on its behalf."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 0, result.output
+        mock_upgrade_refmodels.assert_not_called()
+
+    @patch("kairos_ontology.cli.operations._upgrade_refmodels")
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("kairos_ontology.cli.operations._managed_scaffold_map", return_value={})
+    @patch("subprocess.run")
+    def test_refmodels_upgrade_failure_is_reported_and_exits_nonzero(
+        self, mock_run, mock_scaffold, mock_channel, mock_resolve, mock_upgrade_refmodels,
+        runner, tmp_path
+    ):
+        """The toolkit half already succeeded (its own pin is rewritten on disk);
+        a refmodels failure must be named, not silently swallowed or conflated
+        with the (unrelated) managed-file-refresh failure path."""
+        import click
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_upgrade_refmodels.side_effect = click.ClickException("uv pip install failed: 404")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_scaffolded_hub_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+                text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+        assert result.exit_code != 0
+        assert "reference-models upgrade failed" in result.output
+        assert "uv pip install failed: 404" in result.output
+        # The toolkit pin rewrite that already happened is not rolled back.
+        assert "3.9.0rc2-py3-none-any.whl" in text
 
 
 class TestUpdateUpgradeDowngradeGuard:
