@@ -276,7 +276,7 @@ class TestResolveProviderConfig:
             patch.dict(os.environ, env, clear=True),
             patch.dict("sys.modules", {"azure": None, "azure.identity": None}),
         ):
-            with pytest.raises(EnvironmentError):
+            with pytest.raises(EnvironmentError, match="uv sync --extra azure"):
                 resolve_provider_config()
 
 
@@ -415,8 +415,9 @@ class TestCreateFoundryClient:
             return real_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=fail_import):
-            with pytest.raises(EnvironmentError, match="azure-ai-projects"):
+            with pytest.raises(EnvironmentError, match="azure-ai-projects") as exc_info:
                 _create_foundry_client(config)
+        assert "uv sync --extra foundry" in str(exc_info.value)
 
     def test_foundry_with_api_key_uses_the_openai_surface_directly(self):
         """An API key must NOT go through AIProjectClient.
@@ -508,8 +509,9 @@ class TestCreateFoundryClient:
 
         with patch.dict("sys.modules", {"azure.ai.projects": mock_projects_module}):
             with patch("builtins.__import__", side_effect=selective_import):
-                with pytest.raises(EnvironmentError, match="azure-identity"):
+                with pytest.raises(EnvironmentError, match="azure-identity") as exc_info:
                     _create_foundry_client(config)
+        assert "uv sync --extra foundry" in str(exc_info.value)
 
 
 class TestDefaultModel:

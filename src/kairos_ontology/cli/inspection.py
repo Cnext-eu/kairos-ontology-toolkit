@@ -1059,6 +1059,7 @@ _STATUS_ICONS = {
     "not_configured": "❌",
     "misconfigured": "❌",
     "unreachable": "❌",
+    "missing_dependency": "❌",
     "unprobed": "⚠ ",
 }
 
@@ -1144,8 +1145,8 @@ def check_ai_config_cmd(role, model, probe, timeout_s, strict, warn_only, output
     only — never values. No api_key appears in any output format.
 
     Exit 0 when all requested roles are ok (or warn-only).
-    Exit 1 when any role is not_configured / misconfigured / unreachable,
-    or when --strict and any role is unprobed.
+    Exit 1 when any role is not_configured / misconfigured / unreachable /
+    missing_dependency, or when --strict and any role is unprobed.
     """
     from kairos_ontology.core.ai_preflight import (
         preflight_all_roles,

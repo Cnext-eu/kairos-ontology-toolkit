@@ -45,6 +45,34 @@ class TestCheckAIConfigNoConfig:
         assert "alignment" not in result.output.split("\n")[1]
 
 
+class TestCheckAIConfigMissingDependency:
+    """A missing SDK package (issue #553) reports as missing_dependency with
+    the actionable uv-native install hint, not as a generic network failure."""
+
+    def test_text_output_shows_the_uv_install_hint(self, monkeypatch):
+        import kairos_ontology.core.ai_preflight as ap
+        from kairos_ontology.core.ai_provider import NotConfigured
+
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://res.services.ai.azure.com")
+
+        def fake_probe(config, *, timeout_s=10.0):
+            raise NotConfigured(
+                "The azure-ai-projects package is required for the Foundry provider. "
+                "Install with: uv sync --extra foundry"
+            )
+
+        monkeypatch.setattr(ap, "_probe_client", fake_probe)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            check_ai_config_cmd, ["--role", "alignment", "--probe"]
+        )
+        assert result.exit_code == 1
+        assert "missing_dependency" in result.output
+        assert "uv sync --extra foundry" in result.output
+        assert "verify network connectivity" not in result.output.lower()
+
+
 class TestCheckAIConfigWithProvider:
     """With a configured provider (no probe), check-ai-config exits 0."""
 

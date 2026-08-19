@@ -14,6 +14,7 @@ from kairos_ontology.core.ai_preflight import (
     STATUS_NOT_CONFIGURED,
     STATUS_MISCONFIGURED,
     STATUS_UNREACHABLE,
+    STATUS_MISSING_DEPENDENCY,
     STATUS_UNPROBED,
 )
 from kairos_ontology.core.ai_provider import (
@@ -201,6 +202,52 @@ class TestEndpointWithoutKey:
 
 
 from kairos_ontology.core.ai_preflight import _probe_client as _real_probe_client
+
+
+class TestMissingDependencyIsNotUnreachable:
+    """A missing SDK package (issue #553) must not be reported as an
+    unreachable endpoint -- the real, actionable install hint would be
+    buried inside the generic "verify network connectivity" remediation."""
+
+    def _config(self):
+        from kairos_ontology.core.ai_provider import AIProviderConfig
+
+        return AIProviderConfig(
+            provider="foundry",
+            endpoint="https://res.services.ai.azure.com/api/projects/proj",
+            api_key="k",
+            model="gpt-5.4-mini",
+        )
+
+    def test_probe_client_lets_not_configured_propagate(self):
+        from unittest.mock import patch
+
+        with patch(
+            "kairos_ontology.core.ai_provider._create_client_from_config",
+            side_effect=NotConfigured("...Install with: uv sync --extra foundry"),
+        ):
+            with pytest.raises(NotConfigured, match="uv sync --extra foundry"):
+                _real_probe_client(self._config())
+
+    def test_preflight_ai_provider_reports_missing_dependency(self, monkeypatch):
+        from kairos_ontology.core import ai_preflight
+
+        monkeypatch.setenv("KAIROS_AI_PROVIDER", "foundry")
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://res.services.ai.azure.com")
+
+        def fake_probe(config, *, timeout_s=10.0):
+            raise NotConfigured(
+                "The azure-ai-projects package is required for the Foundry provider. "
+                "Install with: uv sync --extra foundry"
+            )
+
+        monkeypatch.setattr(ai_preflight, "_probe_client", fake_probe)
+
+        result = preflight_ai_provider(ROLE_ALIGNMENT, probe=True)
+
+        assert result.status == STATUS_MISSING_DEPENDENCY
+        assert result.is_blocking
+        assert "uv sync --extra foundry" in result.remediation
 
 
 class TestProbeFallsBackFromModelListing:

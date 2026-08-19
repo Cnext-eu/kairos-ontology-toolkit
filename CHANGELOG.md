@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc13] — 2026-08-20
+
+### Fixed
+- **AI preflight surfaces a missing SDK as a missing dependency, with a uv-native fix (DD-198, issue #553).** `check-ai-config --probe` against a hub with `KAIROS_AI_PROVIDER` configured but the matching SDK not installed previously reported `unreachable` with a "verify network connectivity" remediation — misleading, since no network call was attempted, and it buried the real install hint. `_probe_client` now lets the underlying `NotConfigured` propagate instead of rewrapping it, and `preflight_ai_provider` reports a new `missing_dependency` status with the exact fix as remediation. The Foundry (×2) and Azure `NotConfigured` messages themselves, and the scaffolded `.env.example`'s install comments, now say `uv sync --extra foundry/azure` instead of `pip install kairos-ontology-toolkit[foundry/azure]`.
+
 ## [5.13.0rc12] — 2026-08-20
 
 ### Added
@@ -36,7 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`profile-sources` no longer crashes on a unique timezone-aware timestamp column (DD-194).** Found on a real CargoWise extract: key-set construction ran `to_pylist()` on any `unique`-tagged column regardless of type, and a tz-aware timestamp needs a timezone database (`ArrowInvalid` on a bare Windows Python without `tzdata`). Temporal columns are now excluded from key-set candidacy outright — a timestamp was never a meaningful FK join signal — while keeping their `unique`/`date-like` profile tags unaffected.
-
 
 ## [5.13.0rc8] — 2026-08-19
 

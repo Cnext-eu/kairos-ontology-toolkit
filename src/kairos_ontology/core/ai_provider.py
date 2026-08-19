@@ -440,6 +440,18 @@ def foundry_openai_base_url(endpoint: str) -> str:
     return f"{base}/openai/v1"
 
 
+def _extra_install_hint(extra: str) -> str:
+    """Uv-native remediation text for a missing optional-dependency extra (issue #553).
+
+    Every hub this toolkit scaffolds is uv-managed and already declares each
+    extra under ``[project.optional-dependencies]``, so ``uv sync --extra
+    <name>`` installs it without hand-editing anything. ``pip install
+    kairos-ontology-toolkit[...]`` only works when the toolkit itself is
+    pip-installed, which no scaffolded hub is.
+    """
+    return f"uv sync --extra {extra}"
+
+
 def _resolve_azure(model: str) -> AIProviderConfig:
     """Resolve Azure AI Foundry configuration."""
     endpoint = os.environ.get(ENV_AZURE_ENDPOINT)
@@ -473,7 +485,7 @@ def _get_azure_managed_identity_token() -> str:
     except ImportError:
         raise NotConfigured(
             f"Neither {ENV_AZURE_KEY} is set nor azure-identity is installed. "
-            f"Install with: pip install kairos-ontology-toolkit[azure]"
+            f"Install with: {_extra_install_hint('azure')}"
         )
     except Exception as e:
         raise Misconfigured(
@@ -599,7 +611,7 @@ def _create_foundry_client(config: AIProviderConfig):
     except ImportError:
         raise NotConfigured(
             "The azure-ai-projects package is required for the Foundry provider. "
-            "Install with: pip install kairos-ontology-toolkit[foundry]"
+            f"Install with: {_extra_install_hint('foundry')}"
         )
 
     def _build_token_credential():
@@ -641,7 +653,7 @@ def _create_foundry_client(config: AIProviderConfig):
     if token_credential is None:
         raise NotConfigured(
             f"Neither {ENV_FOUNDRY_API_KEY} is set nor azure-identity is installed. "
-            "Install with: pip install kairos-ontology-toolkit[foundry]"
+            f"Install with: {_extra_install_hint('foundry')}"
         )
     return _openai_from_credential(token_credential)
 
