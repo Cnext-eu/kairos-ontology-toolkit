@@ -514,7 +514,13 @@ def propose_relationships_cmd(domain, accelerator, ref_models_dir, unresolved, o
         return
 
     for proposal in proposals:
-        marker = "" if proposal.join_resolved else "  [join columns UNRESOLVED]"
+        if not proposal.join_resolved:
+            marker = "  [join columns UNRESOLVED]"
+        elif proposal.join_evidence == "fk-inclusion":
+            # DD-189 tier-2: measured value containment, not name similarity.
+            marker = "  [join from measured fk-inclusion evidence]"
+        else:
+            marker = ""
         click.echo(f"   {proposal.child_binding} → {proposal.parent_binding}{marker}")
         click.echo(
             f"     evidence: {proposal.evidence} ({proposal.evidence_id}); "
