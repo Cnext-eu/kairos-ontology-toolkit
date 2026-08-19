@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Packaging parity tests for user-facing extras.
 
-The user-facing extras (``azure``, ``foundry``, ``flatfile``, ``parquet``, ``otel``)
+The user-facing extras (``azure``, ``foundry``, ``flatfile``, ``parquet``, ``otel``, ``langfuse``)
 are declared twice on purpose:
 
 * ``[project.optional-dependencies]`` — what ships in the wheel metadata, so the
@@ -26,7 +26,7 @@ SCAFFOLD_TEMPLATE = (
     / "pyproject.toml.template"
 )
 
-USER_FACING_EXTRAS = ["azure", "foundry", "flatfile", "parquet", "otel"]
+USER_FACING_EXTRAS = ["azure", "foundry", "flatfile", "parquet", "otel", "langfuse"]
 
 
 def _load_pyproject() -> dict:
