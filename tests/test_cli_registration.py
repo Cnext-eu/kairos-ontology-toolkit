@@ -11,6 +11,7 @@ from kairos_ontology.cli.main import cli
 RETAINED_COMMANDS = {
     "analyse-sources",
     "profile-sources",
+    "generate-bindings",
     "anchor-tables",
     "draft-gap-decisions",
     "audit-silver-samples",

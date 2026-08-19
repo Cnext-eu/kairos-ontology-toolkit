@@ -4055,3 +4055,83 @@ def profile_sources_cmd(import_dir_opt, system, out_opt, data_maturity, quiet):
         raise SystemExit(1)
     click.echo(f"✅ Profile written: {out} (basis import-extract(full), "
                f"data_maturity {maturity})")
+
+
+@click.command(name="generate-bindings")
+@click.option("--table", "tables", multiple=True,
+              help="Limit to these tables (system.table). Repeatable.")
+@click.option("--domain", default=None, help="Limit to sheet rows in this domain.")
+@click.option("--analysis", "analysis_opt", default=None,
+              help="Path to the _analysis/ directory (default: auto-detect).")
+@click.option("--catalog", "catalog_opt", default=None,
+              help="Path to the hub's catalog-v001.xml (default: auto-detect).")
+@click.option("--force", is_flag=True, default=False,
+              help="Overwrite an existing binding file.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Validate and report without writing any binding.")
+@click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress progress output.")
+def generate_bindings_cmd(tables, domain, analysis_opt, catalog_opt, force, dry_run, quiet):
+    """Generate first-draft EntityBindings from the design sheet (DD-191, no LLM).
+
+    For every anchored, non-rejected sheet row with a propose-alignment
+    result: target.class = the sheet's anchor URI (reuse-first, DD-144),
+    fields from the alignment's scalar property mappings (module-scoped
+    resolution; duplicate claims deduped), object-property and sheet-
+    relationship columns carried as technicalFields purpose: relationship,
+    grain/natural-key columns materialized purpose: identity, and quality
+    tests only where the DD-189 profile proved them. Every draft is validated
+    against the closed v5 contract BEFORE writing; invalid drafts are
+    reported, never written. Existing bindings are never overwritten without
+    --force. Review is the git diff; propose-relationships upgrades the FK
+    carriers as parents get bound.
+    """
+    from ..core.generate_bindings import run_generate_bindings
+    from ..core.hub_utils import find_hub_root
+
+    cwd = Path.cwd()
+    hub_root = find_hub_root(cwd) or cwd
+    analysis = Path(analysis_opt) if analysis_opt else None
+    catalog = Path(catalog_opt) if catalog_opt else None
+    if catalog is None:
+        candidate = hub_root / "catalog-v001.xml"
+        if not candidate.is_file():
+            click.echo(f"❌ No catalog at {candidate}. Pass --catalog.", err=True)
+            raise SystemExit(1)
+
+    def report(message: str, level: str = "info") -> None:
+        if not quiet or level != "info":
+            click.echo(message)
+
+    try:
+        result = run_generate_bindings(
+            hub_root, analysis_dir=analysis, catalog_path=catalog,
+            tables=list(tables) or None, domain=domain,
+            force=force, dry_run=dry_run, report_fn=report,
+        )
+    except FileNotFoundError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        raise SystemExit(1)
+
+    written = sum(1 for g in result.generated if g.outcome == "written")
+    would = sum(1 for g in result.generated if g.outcome == "would-write")
+    exists = sum(1 for g in result.generated if g.outcome == "exists")
+    invalid = sum(1 for g in result.generated if g.outcome == "invalid")
+    skipped = sum(1 for g in result.generated if g.outcome == "skipped")
+    click.echo(
+        f"✅ generate-bindings: {written} written, {would} validated (dry-run), "
+        f"{exists} left untouched, {invalid} invalid, {skipped} skipped"
+    )
+    if result.unresolved_properties:
+        click.echo(
+            f"   ℹ {len(result.unresolved_properties)} mapped propert"
+            f"{'y' if len(result.unresolved_properties) == 1 else 'ies'} did not "
+            "resolve in the anchor's module inventory — reported, not guessed"
+        )
+    if result.secondary_entity_worklist:
+        click.echo(
+            f"   ℹ {len(result.secondary_entity_worklist)} secondary-entity "
+            "candidate(s) on the sheet — separate bindings at their own grain; "
+            "not generated here"
+        )
+    if invalid:
+        raise SystemExit(1)
