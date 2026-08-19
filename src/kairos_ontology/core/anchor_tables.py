@@ -376,6 +376,7 @@ def build_class_catalog(
     """
     owners: dict[str, list[str]] = {}
     bridged: dict[str, list[str]] = {}
+    module_scope: set[str] | None = None
     if ref_models_dir is not None and accelerator:
         domains = load_data_domains(Path(ref_models_dir), accelerator=accelerator)
         for dom_id, meta in sorted(domains.items()):
@@ -386,10 +387,19 @@ def build_class_catalog(
             src = str(bridge.get("source_domain") or "")
             if rng and src:
                 bridged.setdefault(rng, []).append(src)
+        # DD-193: scope the catalog to the resolved accelerator's own declared
+        # imports (each module's owl:imports closure still resolves in full —
+        # see read_reference_terms). Without this, every module the whole
+        # installed reference-models package maps was offered as an anchor
+        # candidate — ~400 FIBO classes as UNOWNED noise in a logistics run,
+        # with no accelerator relationship to logistics at all. Only scoped
+        # when an accelerator actually resolved; an unresolved accelerator
+        # keeps today's unrestricted behaviour rather than returning nothing.
+        module_scope = set(owners) if domains else None
 
     index: dict[str, list[dict[str, Any]]] = {}
     comments: dict[str, str] = {}
-    for term in read_reference_terms(Path(catalog_path)):
+    for term in read_reference_terms(Path(catalog_path), module_scope=module_scope):
         if term.kind != "class":
             continue
         module = str(term.module).rstrip("#")
