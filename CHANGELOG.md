@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc7] — 2026-08-19
+
+### Added
+- **Design rulings: durable human modeling decisions that outrank model judgment (DD-192).** `integration/discovery/design-rulings.yaml` records contested-space resolutions once, by condition (`applies_when`), and `anchor-tables` renders them into the global prompt with `rulings_applied` provenance in the artifact. Boundaries: only human-decided entries feed the prompt (model proposals are inert and reported); a ruling never introduces a class (unresolvable targets skipped with reasons; `rejection` rulings exempt); a ruling never maps columns. Absent file is a silent no-op. Validated live: ruled tables converge to the ruled answer (0.91–0.95, rejected candidate kept as alternate) with collateral movement confined to already-unstable rows.
+
+
 ## [5.13.0rc6] — 2026-08-19
 
 ### Added

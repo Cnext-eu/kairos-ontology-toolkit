@@ -706,12 +706,16 @@ def build_anchor_prompt(
     catalog: ClassCatalog,
     n_classes: int,
     profile_legend: str = "",
+    rulings_text: str = "",
 ) -> str:
     """One prompt: every table in *chunk* against the whole catalog.
 
     *profile_legend* is non-empty when the outline carries DD-189 profile
     annotations (``name[unique,id-like,fk?->…]``); it explains the tag
     vocabulary so the model weighs measured data facts over name impressions.
+    *rulings_text* is the rendered DD-192 human-rulings section — accumulated
+    decisions that outrank the model's own reading wherever their condition
+    matches.
     """
     tables_text = "\n".join(
         f"TABLE {system}.{table} ({len(cols)} columns): {', '.join(cols)}"
@@ -749,6 +753,7 @@ Rules:
   the catalog).
 {_PATTERN_RULES}
 {profile_legend}
+{rulings_text}
 SOURCE TABLES ({len(chunk)}):
 {tables_text}
 
@@ -1046,6 +1051,32 @@ def run_anchor_tables(
     profile_legend = PROFILE_LEGEND if profiled else ""
     if profiled:
         say("  ⚓ Profile annotations applied to the anchoring outline (DD-189)")
+
+    # DD-192: human design rulings render into the prompt and outrank the
+    # model's own catalog reading wherever their condition matches. Only
+    # human-decided rulings feed anything; a ruling whose target the catalog
+    # cannot resolve is skipped and reported — a ruling never introduces a
+    # class.
+    from .design_rulings import (
+        load_design_rulings,
+        partition_resolvable,
+        render_rulings_prompt,
+        rulings_path,
+    )
+
+    rulings_result = load_design_rulings(rulings_path(Path(sources_dir)))
+    applicable, unresolvable = partition_resolvable(
+        rulings_result.rulings, set(catalog.index)
+    )
+    rulings_text = render_rulings_prompt(applicable)
+    if applicable:
+        say(
+            f"  ⚖ {len(applicable)} human design ruling(s) applied to the prompt "
+            f"({', '.join(r.id for r in applicable)})"
+        )
+    for skipped_entry in [*rulings_result.skipped, *unresolvable]:
+        say(f"  ⚖ ruling {skipped_entry['id']} skipped: {skipped_entry['reason']}",
+            "warning")
     affinity = load_affinity_domains(analysis_dir)
     n_classes = catalog.text.count("\n") + 1 if catalog.text else 0
     say(f"  ⚓ Anchoring {len(call_outline)} table(s) against {n_classes} class(es)")
@@ -1062,7 +1093,8 @@ def run_anchor_tables(
                 {
                     "role": "user",
                     "content": build_anchor_prompt(
-                        chunk, catalog, n_classes, profile_legend=profile_legend
+                        chunk, catalog, n_classes,
+                        profile_legend=profile_legend, rulings_text=rulings_text,
                     ),
                 }
             ],
@@ -1234,6 +1266,8 @@ def run_anchor_tables(
         # secondary_entities, flags; pinned entries survive re-runs verbatim.
         "schema_version": 2,
         "generated_by": "anchor-tables",
+        # DD-192 provenance: which human rulings shaped this run's prompt.
+        "rulings_applied": [r.id for r in applicable],
         "table_count": len(outline),
         "tables": tables,
         "unanchored": unanchored,
