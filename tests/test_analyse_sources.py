@@ -332,14 +332,40 @@ class TestDomainGrouping:
     def test_exclude_patterns_filters_files(self, tmp_path):
         """--exclude patterns remove files from discovery."""
         self._write_ontology(tmp_path / "active" / "party.ttl", "party", "Party", "Party")
-        self._write_ontology(tmp_path / "archive" / "old.ttl", "old", "Archived", "OldClass")
+        self._write_ontology(tmp_path / "legacy" / "old.ttl", "old", "Legacy", "OldClass")
 
         domains_all = resolve_reference_models(tmp_path)
-        domains_filtered = resolve_reference_models(tmp_path, exclude_patterns=["archive/**"])
+        domains_filtered = resolve_reference_models(tmp_path, exclude_patterns=["legacy/**"])
 
         assert len(domains_all) == 2
         assert len(domains_filtered) == 1
         assert domains_filtered[0]["domain_name"] == "Party"
+
+    def test_archive_is_always_excluded_even_without_exclude_patterns(self, tmp_path):
+        """Issue #566: an archived pre-fix snapshot must never resolve, by
+        default, regardless of caller-supplied exclude_patterns -- it shares
+        its live module's permanent IRI, so including it misattributes a
+        resolved historical defect as a live one."""
+        self._write_ontology(tmp_path / "active" / "party.ttl", "party", "Party", "Party")
+        self._write_ontology(
+            tmp_path / "derived-ontologies" / "wco" / "archive" / "v1" / "documents.ttl",
+            "old-docs", "Archived", "OldDoc",
+        )
+
+        domains = resolve_reference_models(tmp_path)
+
+        assert len(domains) == 1
+        assert domains[0]["domain_name"] == "Party"
+
+    def test_archive_exclusion_matches_any_depth_and_platform_separator(self, tmp_path):
+        """The exclusion is a path-segment check, not a glob -- it must catch
+        `archive` at any depth without a caller having to know the depth."""
+        self._write_ontology(
+            tmp_path / "a" / "b" / "c" / "archive" / "d" / "old.ttl",
+            "old", "DeepArchived", "OldClass",
+        )
+        domains = resolve_reference_models(tmp_path)
+        assert domains == []
 
     def test_display_name_extracts_leaf(self):
         assert _domain_display_name("derived-ontologies/BSP") == "BSP"
