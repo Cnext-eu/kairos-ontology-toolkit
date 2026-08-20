@@ -1094,7 +1094,7 @@ def _render_ai_config_text(report) -> None:
 @click.command(name="check-ai-config")
 @click.option(
     "--role",
-    type=click.Choice(["affinity", "alignment", "all"]),
+    type=click.Choice(["alignment", "all"]),
     default="all",
     help="Which AI role to check (default: all).",
 )
@@ -1140,9 +1140,10 @@ def check_ai_config_cmd(role, model, probe, timeout_s, strict, warn_only, output
     """Check AI provider configuration and optional reachability (DD-159).
 
     Inspects environment-variable configuration for the AI provider(s) used by
-    affinity analysis and alignment proposal. By default probes the endpoint
-    with a lightweight authenticated call. Prints environment variable NAMES
-    only — never values. No api_key appears in any output format.
+    source analysis and alignment proposal (one "alignment" role covers both
+    since issue #562). By default probes the endpoint with a lightweight
+    authenticated call. Prints environment variable NAMES only — never
+    values. No api_key appears in any output format.
 
     Exit 0 when all requested roles are ok (or warn-only).
     Exit 1 when any role is not_configured / misconfigured / unreachable /
@@ -1151,14 +1152,15 @@ def check_ai_config_cmd(role, model, probe, timeout_s, strict, warn_only, output
     from kairos_ontology.core.ai_preflight import (
         preflight_all_roles,
         preflight_ai_provider,
-        ROLE_AFFINITY as _AFF,
         ROLE_ALIGNMENT as _ALN,
     )
 
     if role == "all":
+        # Only "alignment" remains here since issue #562 collapsed the
+        # separate "affinity" role into it.
         report = preflight_all_roles(
             model=model, probe=probe, timeout_s=timeout_s,
-            roles=(_AFF, _ALN),
+            roles=(_ALN,),
         )
     else:
         single = preflight_ai_provider(

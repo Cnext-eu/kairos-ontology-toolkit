@@ -783,14 +783,15 @@ def analyse_sources_cmd(
         make_reporter,
         AffinityTotalFailureError,
     )
-    from ..core.ai_provider import DEFAULT_MODEL, ROLE_AFFINITY, resolve_role_model
+    from ..core.ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
     from ..core.hub_utils import find_hub_root
     from .shared import _CLI_DEFAULT_MAX_WORKERS, _read_hub_max_workers
 
-    # Issue #182: a per-role model override (KAIROS_AI_AFFINITY_MODEL) acts as the
-    # default for this step unless the operator pinned --model explicitly.
+    # Issue #182 (role collapsed into alignment by issue #562): a per-role
+    # model override (KAIROS_AI_ALIGNMENT_MODEL) acts as the default for this
+    # step unless the operator pinned --model explicitly.
     if llm_model == DEFAULT_MODEL:
-        llm_model = resolve_role_model(ROLE_AFFINITY, DEFAULT_MODEL)
+        llm_model = resolve_role_model(ROLE_ALIGNMENT, DEFAULT_MODEL)
 
     # Auto-detect hub paths
     cwd = Path.cwd()

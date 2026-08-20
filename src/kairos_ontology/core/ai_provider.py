@@ -8,9 +8,11 @@ Supports multiple AI backends via environment variable configuration:
 - Microsoft Foundry: uses AZURE_FOUNDRY_ENDPOINT + azure-ai-projects SDK
 
 Additionally supports per-role endpoint/model overrides (issue #182) so the
-``affinity`` (analyse-sources) and ``alignment`` (propose-alignment) steps can use
-independent endpoints/models via ``KAIROS_AI_{ROLE}_ENDPOINT`` / ``_KEY`` /
-``_MODEL``.
+``alignment`` (propose-alignment) and ``judgment`` (archetype conformance)
+steps can use independent endpoints/models via ``KAIROS_AI_{ROLE}_ENDPOINT`` /
+``_KEY`` / ``_MODEL``. ``analyse-sources`` used to have its own ``affinity``
+role; issue #562 collapsed it into ``alignment`` — one configured provider,
+the strongest one, for every pre-modeling LLM call (see ``ROLE_ALIGNMENT``).
 
 Both providers return an OpenAI-compatible client instance.
 Automatically loads .env from the hub root (or CWD) if present.
@@ -156,28 +158,32 @@ AI_ENV_VAR_NAMES: frozenset[str] = frozenset(
     }
     | {
         f"KAIROS_AI_{role.upper()}_{suffix}"
-        for role in ("affinity", "alignment", "judgment")
+        for role in ("alignment", "judgment")
         for suffix in ("ENDPOINT", "KEY", "MODEL", "SEED", "REASONING_EFFORT")
     }
 )
 
 # ---------------------------------------------------------------------------
-# Per-role endpoint overrides (issue #182)
+# Per-role endpoint overrides (issue #182; role collapse issue #562)
 # ---------------------------------------------------------------------------
-# The two LLM-powered pre-modeling steps have different accuracy/cost profiles:
+# There used to be a separate "affinity" role for analyse-sources (coarse
+# table -> domain classification), reasoned as high-volume-so-cheap-model-is-
+# fine. Issue #562 collapsed it into "alignment": running two configured
+# providers/models for what is, on every real hub measured, the same
+# closed-vocabulary reasoning problem at two different granularities added
+# operational surface (two things to configure, two things that can silently
+# drift apart) for a savings that never showed up as a real accuracy or cost
+# win worth defending. One role, the strongest configured model, for every
+# pre-modeling LLM call. This is a deliberate behavior change, not a rename:
+# analyse-sources now inherits alignment's reasoning-effort default (medium,
+# up from affinity's low) and any KAIROS_AI_ALIGNMENT_* tuning also governs
+# it — cost and latency for that high-volume call go up by design.
 #
-#   * "affinity"  (analyse-sources)   — coarse table → domain classification; the
-#     high-volume call (one per table × every source system). A small model
-#     (gpt-5.4-mini) is fine.
-#   * "alignment" (propose-alignment) — closed-vocabulary reasoning (pick the right
-#     ref_class, map every column). Accuracy-sensitive; benefits from a stronger
-#     model and may live on a separate deployment/endpoint.
-#
-# Each role may point at its own OpenAI-compatible endpoint via
-# ``KAIROS_AI_{ROLE}_ENDPOINT`` (+ ``_KEY`` + ``_MODEL``). When a role endpoint is
-# not set the role falls back to the global provider configuration above, with an
-# optional ``KAIROS_AI_{ROLE}_MODEL`` model override.
-ROLE_AFFINITY = "affinity"
+# "alignment" (propose-alignment, and now analyse-sources too) may point at
+# its own OpenAI-compatible endpoint via ``KAIROS_AI_ALIGNMENT_ENDPOINT``
+# (+ ``_KEY`` + ``_MODEL``). When not set, it falls back to the global
+# provider configuration above, with an optional
+# ``KAIROS_AI_ALIGNMENT_MODEL`` model override.
 ROLE_ALIGNMENT = "alignment"
 #: Archetype-conformance judgment (DD-167). A third role because the work differs
 #: again: ~174 one-shot judgments against a closed outcome vocabulary, where a
@@ -252,17 +258,18 @@ REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 
 #: Default reasoning effort per role (DD-176).
 #:
-#: Affinity is a one-of-N pick over a short candidate list, made once per source
-#: table — the highest-volume call in the pipeline and the one least helped by
-#: extended reasoning. Alignment and judgment are closed-vocabulary reasoning
-#: over a large candidate set, where a wrong answer is silently wrong, so they
-#: get the middle tier rather than the cheapest.
+#: Alignment and judgment are closed-vocabulary reasoning over a large
+#: candidate set, where a wrong answer is silently wrong, so both get the
+#: middle tier rather than the cheapest. Analyse-sources's table-classification
+#: call used to run under its own "affinity" role at the cheapest tier
+#: (high-volume, one call per table, judged least helped by extended
+#: reasoning); issue #562 collapsed that role into alignment, so that call now
+#: inherits alignment's tier too — deliberately, not an oversight.
 #:
 #: These are defaults, not findings: effort trades latency against recall, and
 #: recall is the weak axis here (a quarter of source columns map). Change them
 #: from measurement, not from intuition.
 DEFAULT_REASONING_EFFORT: dict[str, str] = {
-    ROLE_AFFINITY: "low",
     ROLE_ALIGNMENT: "medium",
     ROLE_JUDGMENT: "medium",
 }
@@ -326,10 +333,10 @@ def resolve_provider_config(
 ) -> AIProviderConfig:
     """Resolve AI provider configuration from environment variables.
 
-    When ``role`` is given (``"affinity"`` / ``"alignment"``) and a per-role
+    When ``role`` is given (``"alignment"`` / ``"judgment"``) and a per-role
     endpoint is configured (``KAIROS_AI_{ROLE}_ENDPOINT``), that OpenAI-compatible
-    endpoint wins, letting the two pre-modeling steps use independent endpoints/
-    models (issue #182). Otherwise the global provider is resolved and, if set, the
+    endpoint wins, letting each role use independent endpoints/models (issue
+    #182). Otherwise the global provider is resolved and, if set, the
     per-role model override (``KAIROS_AI_{ROLE}_MODEL``) is applied.
 
     ``config.model`` is the per-role *default*, not an authority: a caller that
@@ -523,8 +530,8 @@ def get_ai_client(model: str = DEFAULT_MODEL, *, role: str | None = None):
 
     Args:
         model: The model name to use. Stored in config for reference.
-        role: Optional pre-modeling role (``"affinity"`` / ``"alignment"``) selecting
-            a per-role endpoint override when configured (issue #182).
+        role: Optional role (``"alignment"`` / ``"judgment"``) selecting a
+            per-role endpoint override when configured (issue #182).
 
     Returns:
         An OpenAI client instance configured for the resolved provider.

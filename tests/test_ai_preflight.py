@@ -18,7 +18,7 @@ from kairos_ontology.core.ai_preflight import (
     STATUS_UNPROBED,
 )
 from kairos_ontology.core.ai_provider import (
-    ROLE_AFFINITY,
+    ROLE_JUDGMENT,
     ROLE_ALIGNMENT,
     NotConfigured,
     Unreachable,
@@ -29,7 +29,7 @@ class TestPreflightNoConfig:
     """When no provider is configured, preflight reports not_configured."""
 
     def test_single_role_not_configured(self):
-        result = preflight_ai_provider(ROLE_AFFINITY, probe=False)
+        result = preflight_ai_provider(ROLE_JUDGMENT, probe=False)
         assert result.status == STATUS_NOT_CONFIGURED
         assert result.is_blocking
         assert not result.is_ok
@@ -37,8 +37,9 @@ class TestPreflightNoConfig:
         assert result.remediation
 
     def test_all_roles_not_configured(self):
+        """Only alignment remains after the affinity role collapsed into it (#562)."""
         report = preflight_all_roles(probe=False)
-        assert len(report.roles) == 2
+        assert len(report.roles) == 1
         assert all(r.status == STATUS_NOT_CONFIGURED for r in report.roles)
         assert report.is_blocking
 
@@ -55,7 +56,7 @@ class TestPreflightWithConfig:
     """When a provider is configured, preflight reports unprobed (no probe) or ok (probe)."""
 
     def test_unprobed_with_github_token(self, github_provider_env):
-        result = preflight_ai_provider(ROLE_AFFINITY, probe=False)
+        result = preflight_ai_provider(ROLE_JUDGMENT, probe=False)
         assert result.status == STATUS_UNPROBED
         assert result.provider == "github"
         assert result.model
@@ -77,7 +78,7 @@ class TestPreflightWithConfig:
             return None
 
         monkeypatch.setattr(ap, "_probe_client", fake_probe)
-        result = preflight_ai_provider(ROLE_AFFINITY, probe=True)
+        result = preflight_ai_provider(ROLE_JUDGMENT, probe=True)
         assert result.status == STATUS_OK
         assert result.is_ok
         assert not result.is_blocking
@@ -90,7 +91,7 @@ class TestPreflightWithConfig:
             raise Unreachable("connection refused")
 
         monkeypatch.setattr(ap, "_probe_client", fake_probe)
-        result = preflight_ai_provider(ROLE_AFFINITY, probe=True)
+        result = preflight_ai_provider(ROLE_JUDGMENT, probe=True)
         assert result.status == STATUS_UNREACHABLE
         assert result.is_blocking
         assert "connection refused" in result.error
@@ -101,7 +102,7 @@ class TestRequireAIProvider:
 
     def test_raises_not_configured(self):
         with pytest.raises(NotConfigured):
-            require_ai_provider(ROLE_AFFINITY)
+            require_ai_provider(ROLE_JUDGMENT)
 
     def test_raises_not_configured_alignment(self):
         with pytest.raises(NotConfigured):
@@ -109,7 +110,7 @@ class TestRequireAIProvider:
 
     def test_no_op_when_configured(self, github_provider_env):
         """When configured (unprobed), require_ai_provider does not raise."""
-        require_ai_provider(ROLE_AFFINITY, probe=False)
+        require_ai_provider(ROLE_JUDGMENT, probe=False)
 
     def test_raises_unreachable(self, github_provider_env, monkeypatch):
         import kairos_ontology.core.ai_preflight as ap
@@ -119,7 +120,7 @@ class TestRequireAIProvider:
 
         monkeypatch.setattr(ap, "_probe_client", fake_probe)
         with pytest.raises(Unreachable):
-            require_ai_provider(ROLE_AFFINITY, probe=True)
+            require_ai_provider(ROLE_JUDGMENT, probe=True)
 
 
 class TestAIRolePreflightDataclass:
@@ -141,15 +142,15 @@ class TestEndpointWithoutKey:
     """Per-role endpoint set without key → misconfigured (DD-159 / A1 fix)."""
 
     def test_misconfigured(self, monkeypatch):
-        monkeypatch.setenv("KAIROS_AI_AFFINITY_ENDPOINT", "http://localhost:8080/v1")
-        result = preflight_ai_provider(ROLE_AFFINITY, probe=False)
+        monkeypatch.setenv("KAIROS_AI_JUDGMENT_ENDPOINT", "http://localhost:8080/v1")
+        result = preflight_ai_provider(ROLE_JUDGMENT, probe=False)
         assert result.status == STATUS_MISCONFIGURED
         assert result.is_blocking
 
     def test_key_none_opt_in(self, monkeypatch):
-        monkeypatch.setenv("KAIROS_AI_AFFINITY_ENDPOINT", "http://localhost:8080/v1")
-        monkeypatch.setenv("KAIROS_AI_AFFINITY_KEY", "none")
-        result = preflight_ai_provider(ROLE_AFFINITY, probe=False)
+        monkeypatch.setenv("KAIROS_AI_JUDGMENT_ENDPOINT", "http://localhost:8080/v1")
+        monkeypatch.setenv("KAIROS_AI_JUDGMENT_KEY", "none")
+        result = preflight_ai_provider(ROLE_JUDGMENT, probe=False)
         assert result.status == STATUS_UNPROBED
         assert not result.is_blocking
 

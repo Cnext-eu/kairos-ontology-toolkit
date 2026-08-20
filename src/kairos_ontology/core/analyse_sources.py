@@ -28,7 +28,7 @@ from .ontology_loader import stable_value
 from ._cache import SidecarCache, compute_entry_hash, open_cache
 from .source_catalog import build_source_catalog
 from .ai_provider import (
-    ROLE_AFFINITY,
+    ROLE_ALIGNMENT,
     create_chat_completion,
     resolve_ai_seed,
     resolve_reasoning_effort,
@@ -1183,7 +1183,9 @@ def _as_str_list(val: Any) -> list[str]:
 def _get_openai_client(model: str = DEFAULT_MODEL):
     """Create an OpenAI client configured for the active AI provider.
 
-    Uses the ``affinity`` role so a per-role endpoint/model override applies to the
+    Uses the ``alignment`` role (issue #562 collapsed the separate ``affinity``
+    role into it: one configured provider, the strongest one, for every
+    pre-modeling LLM call) so a per-role endpoint/model override applies to the
     high-volume table → domain classification call (issue #182).
 
     Calls :func:`require_ai_provider` first so a missing/misconfigured provider
@@ -1192,10 +1194,10 @@ def _get_openai_client(model: str = DEFAULT_MODEL):
     """
     from kairos_ontology.core.ai_preflight import require_ai_provider
 
-    require_ai_provider(ROLE_AFFINITY, model=model, probe=False)
+    require_ai_provider(ROLE_ALIGNMENT, model=model, probe=False)
     from kairos_ontology.core.ai_provider import get_ai_client
 
-    return get_ai_client(model=model, role=ROLE_AFFINITY)
+    return get_ai_client(model=model, role=ROLE_ALIGNMENT)
 
 
 #: Sample values per column sent to the affinity model (DD-166).
@@ -1307,8 +1309,8 @@ def analyse_table_single_call(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            seed=resolve_ai_seed(ROLE_AFFINITY),
-            reasoning_effort=resolve_reasoning_effort(ROLE_AFFINITY),
+            seed=resolve_ai_seed(ROLE_ALIGNMENT),
+            reasoning_effort=resolve_reasoning_effort(ROLE_ALIGNMENT),
             response_format={"type": "json_object"},
         )
     )
@@ -1919,7 +1921,7 @@ def run_analyse_sources(
     # so a missing/misconfigured provider fails fast instead of silently
     # failing every table and caching fabricated fallbacks.
     from .ai_preflight import require_ai_provider
-    require_ai_provider(ROLE_AFFINITY, model=model, probe=False)
+    require_ai_provider(ROLE_ALIGNMENT, model=model, probe=False)
 
     # Per-table sidecar cache; disabled with --force.
     cache = open_cache(output_dir, "analyse-sources", enabled=not force)

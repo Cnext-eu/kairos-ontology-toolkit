@@ -31,7 +31,8 @@ _CORE = Path(__file__).resolve().parent.parent / "src" / "kairos_ontology" / "co
 #: the seed role each must use.  Extend this when a stage is added.
 _SEEDED_STAGES = {
     "propose_alignment.py": "ROLE_ALIGNMENT",
-    "analyse_sources.py": "ROLE_AFFINITY",
+    # Issue #562 collapsed the separate "affinity" role into "alignment".
+    "analyse_sources.py": "ROLE_ALIGNMENT",
     "conformance_judge.py": "ROLE_JUDGMENT",
     # DD-185: global anchoring reuses the alignment role's model/seed/effort —
     # it is STEP 1 of alignment, extracted to where it can see the whole corpus.
