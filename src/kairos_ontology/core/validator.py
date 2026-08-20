@@ -825,6 +825,12 @@ def validate_naming_conventions(
         subclass-identity-by-role anti-pattern by the back door. Silent, not a
         downgraded warning — this is a permanent, intentional end state, not a
         transitional one with a future action item.
+      - a property whose ``rdfs:domain`` *is* ``owl:Thing`` (warning, DD-204,
+        issue #328): ``owl:Thing`` is never declared ``owl:Class``/
+        ``rdfs:Class`` in any real ontology file, so it never enters the
+        semantic index's class set and the property attaches to nothing —
+        invisible to the compiler and every projector, the domain-side twin
+        of the ``rdfs:range owl:Thing`` warning below.
       - every ``owl:DatatypeProperty`` has ``rdfs:range`` (error). For an
         ``owl:ObjectProperty`` an absent ``rdfs:range`` is only a **warning**:
         DD-133 §7 states that a ``relationships:`` entry does not require the
@@ -988,6 +994,32 @@ def validate_naming_conventions(
                         term_uri=property_uri,
                     )
                 )
+        elif OWL.Thing in set(graph.objects(subject, RDFS.domain)):
+            # Same failure family as property_range_owl_thing, opposite direction
+            # (DD-133 §7 warned the range case; DD-204/#328 is the domain case): a
+            # property whose rdfs:domain resolves to owl:Thing attaches to no class in
+            # the semantic index (_class_uris never contains owl:Thing -- it is the
+            # OWL spec's implicit universal class, not something any real ontology
+            # file declares owl:Class), so it is invisible to the compiler and every
+            # projector. Warning, not error: this is the only escape a cross-cutting
+            # property currently has, so it must not block a build while that design
+            # question is open -- but it must not be silent either.
+            warnings.append(
+                NamingDiagnostic(
+                    level="warning",
+                    code="property_domain_owl_thing",
+                    message=(
+                        f"Property {property_uri} declares rdfs:domain owl:Thing, which "
+                        "attaches to no class in the semantic index and is silently invisible "
+                        "to the compiler and every projector (issue #328). This is often an "
+                        "attempt to model a cross-cutting property with no fixed domain; "
+                        "consider schema:domainIncludes naming each consuming class instead, "
+                        "which does not require an owl:imports cycle. Otherwise declare the "
+                        "real rdfs:domain class."
+                    ),
+                    term_uri=property_uri,
+                )
+            )
         # An object property that is *also* declared a datatype property is not a
         # trustworthy "object property" — keep the strict datatype rules for it.
         is_object_property = (

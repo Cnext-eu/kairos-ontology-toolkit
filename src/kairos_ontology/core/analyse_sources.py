@@ -749,31 +749,63 @@ def _warn_unattached_property_domains(
 ) -> None:
     """Report properties that resolved to no class, once per resolution pass.
 
-    A property whose ``rdfs:domain`` names a class its module never ``owl:imports``
-    attaches to nothing, so every consumer sees the class as lacking a property it
-    actually has. That silence is the whole defect: it makes a real reference term
-    indistinguishable from a missing one, and a coverage report will then propose adding
-    a term the model already defines.
+    Two unrelated causes produce the same symptom -- a property that attaches to no
+    class and is therefore invisible to alignment -- so they get two separate messages
+    (DD-204, #328):
+
+    * **Missing owl:imports.** A property whose ``rdfs:domain`` names a class its
+      module never ``owl:imports`` attaches to nothing, so every consumer sees the
+      class as lacking a property it actually has. That silence is the defect: it
+      makes a real reference term indistinguishable from a missing one, and a
+      coverage report will then propose adding a term the model already defines.
+    * **``rdfs:domain owl:Thing``.** ``owl:Thing`` is the OWL spec's implicit
+      universal class -- no real ontology file ever declares it ``owl:Class`` /
+      ``rdfs:Class``, so it never enters ``_class_uris`` (semantic_index.py) and the
+      property is unattached no matter how complete the module's imports are. Adding
+      an ``owl:imports`` fixes nothing here, so telling an author to add one is wrong.
 
     Advisory only. The toolkit consumes bundles it does not own, so a malformed vendor
     module must not stop a run -- but it must not pass unremarked either.
     """
     if not unattached:
         return
-    total = sum(len(pairs) for pairs in unattached.values())
-    by_module = ", ".join(
-        f"{module.rsplit('/ont/', 1)[-1]} ({len(pairs)})"
-        for module, pairs in sorted(unattached.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    )
-    logger.warning(
-        "%d property-domain assertion(s) could not be attached to any class while "
-        "resolving reference models: %s. Those properties are invisible to alignment, "
-        "so a class will look like it is missing a term it actually has. The cause is "
-        "usually a missing owl:imports in the source module -- adding the module to a "
-        "hub's data-domains.yaml does NOT resolve it.",
-        total,
-        by_module,
-    )
+    owl_thing = str(OWL.Thing)
+    missing_import: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
+    owl_thing_domain: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
+    for module, pairs in unattached.items():
+        for prop_uri, cls_uri in pairs:
+            bucket = owl_thing_domain if cls_uri == owl_thing else missing_import
+            bucket[module].add((prop_uri, cls_uri))
+
+    def _by_module(groups: "dict[str, set[tuple[str, str]]]") -> str:
+        return ", ".join(
+            f"{module.rsplit('/ont/', 1)[-1]} ({len(pairs)})"
+            for module, pairs in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        )
+
+    if missing_import:
+        total = sum(len(pairs) for pairs in missing_import.values())
+        logger.warning(
+            "%d property-domain assertion(s) could not be attached to any class while "
+            "resolving reference models: %s. Those properties are invisible to alignment, "
+            "so a class will look like it is missing a term it actually has. The cause is "
+            "usually a missing owl:imports in the source module -- adding the module to a "
+            "hub's data-domains.yaml does NOT resolve it.",
+            total,
+            _by_module(missing_import),
+        )
+    if owl_thing_domain:
+        total = sum(len(pairs) for pairs in owl_thing_domain.values())
+        logger.warning(
+            "%d property-domain assertion(s) declare rdfs:domain owl:Thing (a "
+            "cross-cutting/no-fixed-domain pattern, see issue #328): %s. These are NOT a "
+            "missing owl:imports -- owl:Thing is never declared a class in any real "
+            "ontology file, so it can never be resolved by importing more of the graph. "
+            "They are invisible to alignment by design of that pattern, until the "
+            "toolkit decides how to support it.",
+            total,
+            _by_module(owl_thing_domain),
+        )
     for module, pairs in sorted(unattached.items()):
         for prop_uri, cls_uri in sorted(pairs):
             logger.debug("  %s declares rdfs:domain %s, which is absent", prop_uri, cls_uri)
