@@ -13,15 +13,18 @@ they happen.
 Langfuse credentials are absent or the package is not installed, so a hub that
 has not opted in behaves exactly as before and never pays an import cost.
 
-**Source values are masked by default.** The alignment prompt carries real
-sample values from client tables. They already pass the ``source-privacy`` gate,
-which strips what it classifies as personal — but "not personal" is not the same
-as "safe to send to a third party", and Langfuse may be someone else's cloud.
-The default mask removes the sample block and keeps everything else: column
-names, types, the reference classes offered, the instructions and the model's
-full response. That is nearly all of the diagnostic value at none of the egress
-risk. Set ``KAIROS_LANGFUSE_SEND_SAMPLES=1`` to send them anyway — appropriate
-for a self-hosted Langfuse, and a deliberate act either way.
+**Source values are sent by default (issue #562).** The alignment prompt
+carries real sample values from client tables, already passed through the
+``source-privacy`` gate. That signal is what a reviewer needs to diagnose a
+bad mapping, and losing it by default was costing real diagnostic value on
+every hub that never noticed the mask existed. Langfuse tracing itself is
+still off unless a hub configures credentials at all (see above) — this
+default only governs what a hub that *has* opted into tracing also sends.
+Set ``KAIROS_LANGFUSE_SEND_SAMPLES=0`` to mask the sample block instead
+(column names, types, the reference classes offered, the instructions and
+the model's full response still send either way) — appropriate when Langfuse
+is a third party's cloud rather than self-hosted. This is a deliberate,
+maintainer-authorized default flip, not an oversight: see DD-205.
 """
 
 from __future__ import annotations
@@ -53,14 +56,15 @@ LANGFUSE_ENV_VAR_NAMES: frozenset[str] = frozenset(
 #: silently stop matching if surrounding prose changes.
 _SAMPLE_BLOCK_RE = re.compile(r"(\| samples: ).*?(?=\n|$)")
 
-_MASKED = "<masked: source sample values — set KAIROS_LANGFUSE_SEND_SAMPLES=1 to include>"
+_MASKED = "<masked: source sample values — set KAIROS_LANGFUSE_SEND_SAMPLES=0 to mask, unset/1 to include>"
 
 _client: Any | None = None
 _resolved = False
 
 
 def _send_samples() -> bool:
-    return os.environ.get(ENV_SEND_SAMPLES, "").strip().lower() in {"1", "true", "yes"}
+    """Default on (issue #562, DD-205): set KAIROS_LANGFUSE_SEND_SAMPLES=0 to mask."""
+    return os.environ.get(ENV_SEND_SAMPLES, "1").strip().lower() not in {"0", "false", "no"}
 
 
 def mask_source_samples(*, data: Any, **_kwargs: Any) -> Any:

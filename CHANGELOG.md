@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc19] — 2026-08-20
+
+### Changed (BREAKING, privacy-relevant — see DD-205)
+- **Source sample values now reach Langfuse, the alignment review artifact, and the alignment LLM prompt itself by default (DD-205, issue #562, maintainer-authorized).** Three independent masks previously starved the pipeline of the sample evidence that most helps diagnose a bad mapping: Langfuse tracing masked the `| samples: ...` block (`KAIROS_LANGFUSE_SEND_SAMPLES` now defaults to `1`; set `0` to mask); `example_values` in `*-alignment.yaml` always masked PII-shaped values (now gated by the same setting as below; set `KAIROS_ALIGNMENT_SEND_RAW_SAMPLES=0` to restore masking); and the alignment prompt itself only ever saw the committed vocabulary's *permanently* redacted values, since there was no other on-disk copy to read from.
+
+### Added
+- **A new raw-sample channel feeds the alignment LLM prompt itself (DD-205, issue #562).** `import_source.py`/`import_flatfile.py` now also write pre-redaction sample values to a new gitignored sidecar (`.import/raw-samples/<system>.json`, alongside the existing `.import/businessdiscovery/` convention) at the same import step that has always redacted the committed artifacts. `propose_alignment.py` overlays these values onto the prompt when available; the per-table cache key picks up the change automatically since it already hashes the (now-overlaid) samples. `KAIROS_ALIGNMENT_SEND_RAW_SAMPLES` (default on) governs the channel end to end — off means the writer never creates the file, not just "the reader ignores it". The committed vocabulary/source-dir artifacts remain permanently redacted regardless of this setting. `kairos-design-domain`/`kairos-design-mapping` SKILL.md Gates updated: `example_values` can no longer be assumed pre-redacted.
+
 ## [5.13.0rc18] — 2026-08-20
 
 ### Fixed

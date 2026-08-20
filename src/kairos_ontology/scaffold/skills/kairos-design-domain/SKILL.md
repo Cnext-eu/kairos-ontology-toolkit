@@ -155,6 +155,15 @@ Never reveal or persist raw names, emails, addresses, identifiers, free text, or
 other sensitive values. Treat an unredacted sample as blocking and route it back
 through the source privacy/redaction workflow.
 
+**`example_values` in `*-alignment.yaml` is not pre-redacted by default
+(issue #562, DD-205).** It used to always mask PII-shaped values; that
+masking is now itself gated by `KAIROS_ALIGNMENT_SEND_RAW_SAMPLES` (default
+on), so a fresh alignment run's `example_values` can carry real names,
+emails, or identifiers. Do not trust this field as already safe — apply the
+same masked/redacted/synthetic treatment to it yourself before it reaches
+any generated artifact, diagram, or conversation, exactly as you would for a
+raw source column.
+
 Every proposed class/property must cite one or more of:
 
 - confirmed business context or user statement;

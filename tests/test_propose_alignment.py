@@ -1585,6 +1585,180 @@ class TestAlignmentReliability:
         assert stats == {"attempted": 2, "semantic_success": 2, "provider_failure": 0}
 
 
+class TestRawSamplesOverlayIntegration:
+    """Issue #562, DD-205: the alignment prompt overlays raw (pre-redaction)
+    sample values from the .import/raw-samples/ sidecar, when present and
+    enabled, instead of the committed vocabulary's redacted values."""
+
+    def _hub(self, tmp_path):
+        """A hub_root with sources_dir at the conventional integration/sources
+        path, so hub_root = sources_dir.parent.parent resolves correctly."""
+        hub_root = tmp_path / "hub"
+        sources_dir = hub_root / "integration" / "sources"
+        admin = sources_dir / "adminpulse"
+        admin.mkdir(parents=True)
+        vocab = """\
+@prefix kairos-bronze: <https://kairos.cnext.eu/bronze#> .
+
+<#tblParties> a kairos-bronze:SourceTable ;
+    kairos-bronze:tableName "tblParties" .
+
+<#tblParties_Email> a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "Email" ;
+    kairos-bronze:dataType "nvarchar(200)" ;
+    kairos-bronze:sampleValues "<redacted:email> | <redacted:email>" ;
+    kairos-bronze:belongsToTable <#tblParties> .
+"""
+        (admin / "adminpulse.vocabulary.ttl").write_text(vocab, encoding="utf-8")
+
+        analysis_dir = sources_dir / "_analysis"
+        analysis_dir.mkdir()
+        import yaml as _yaml
+
+        affinity = {
+            "system": "adminpulse",
+            "schema_version": 2,
+            "analysed_at": "2026-08-20T00:00:00Z",
+            "model_used": "test-model",
+            "tables": [
+                {
+                    "table": "tblParties",
+                    "total_columns": 1,
+                    "domain": "party",
+                    "domain_uris": ["https://example.com/ont/party#"],
+                    "confidence": 0.9,
+                    "likely_entity": "TradeParty",
+                    "indicative_columns": ["Email"],
+                }
+            ],
+        }
+        (analysis_dir / "adminpulse-affinity.yaml").write_text(
+            _yaml.dump(affinity), encoding="utf-8"
+        )
+        return hub_root, sources_dir, analysis_dir
+
+    REF_CLASSES = [
+        {
+            "name": "TradeParty",
+            "label": "Trade Party",
+            "comment": "",
+            "uri": "https://example.com/ont/party#TradeParty",
+            "properties": [
+                {"name": "contactEmail", "label": "Contact Email", "range": "string"},
+            ],
+        },
+    ]
+
+    def _client(self, call_log):
+        def create_completion(**kwargs):
+            call_log.append(kwargs["messages"][1]["content"])
+            payload = {
+                "ref_class": "TradeParty",
+                "ref_class_confidence": 0.9,
+                "column_alignments": [
+                    {
+                        "column": "Email",
+                        "ref_class": "TradeParty",
+                        "ref_property": "contactEmail",
+                        "alignment": "exact",
+                        "confidence": 0.9,
+                        "rationale": "email",
+                    },
+                ],
+            }
+            return mock.MagicMock(
+                choices=[mock.MagicMock(message=mock.MagicMock(content=json.dumps(payload)))]
+            )
+
+        client = mock.MagicMock()
+        client.chat.completions.create = create_completion
+        return client
+
+    def _run(self, sources_dir, analysis_dir, tmp_path, call_log):
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=self._client(call_log),
+            ),
+            mock.patch("kairos_ontology.core.propose_alignment.require_ai_provider"),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=self.REF_CLASSES,
+            ),
+        ):
+            return build_domain_alignments(
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                domains_filter=["party"],
+                without_anchors=True,
+            )
+
+    def test_raw_sample_overlays_the_redacted_prompt_value(self, tmp_path):
+        from kairos_ontology.core.raw_samples import write_raw_samples
+
+        hub_root, sources_dir, analysis_dir = self._hub(tmp_path)
+        write_raw_samples(
+            hub_root, "adminpulse", {"tblParties": {"Email": ["jane.doe@acme.com"]}}
+        )
+
+        call_log: list[str] = []
+        self._run(sources_dir, analysis_dir, tmp_path, call_log)
+
+        assert any("jane.doe@acme.com" in msg for msg in call_log)
+        assert not any("<redacted:email>" in msg for msg in call_log)
+
+    def test_no_sidecar_falls_back_to_the_redacted_value(self, tmp_path):
+        hub_root, sources_dir, analysis_dir = self._hub(tmp_path)
+
+        call_log: list[str] = []
+        self._run(sources_dir, analysis_dir, tmp_path, call_log)
+
+        assert any("<redacted:email>" in msg for msg in call_log)
+
+    def test_disabled_channel_falls_back_even_with_a_sidecar_present(
+        self, tmp_path, monkeypatch
+    ):
+        from kairos_ontology.core.raw_samples import write_raw_samples
+
+        hub_root, sources_dir, analysis_dir = self._hub(tmp_path)
+        write_raw_samples(
+            hub_root, "adminpulse", {"tblParties": {"Email": ["jane.doe@acme.com"]}}
+        )
+        monkeypatch.setenv("KAIROS_ALIGNMENT_SEND_RAW_SAMPLES", "0")
+
+        call_log: list[str] = []
+        self._run(sources_dir, analysis_dir, tmp_path, call_log)
+
+        assert not any("jane.doe@acme.com" in msg for msg in call_log)
+        assert any("<redacted:email>" in msg for msg in call_log)
+
+    def test_toggling_the_setting_invalidates_the_per_table_cache(self, tmp_path, monkeypatch):
+        """The per-table cache key is derived from the (possibly overlaid)
+        columns list, so switching the setting must re-call the LLM instead of
+        silently reusing the other setting's cached entry."""
+        from kairos_ontology.core.raw_samples import write_raw_samples
+
+        hub_root, sources_dir, analysis_dir = self._hub(tmp_path)
+        write_raw_samples(
+            hub_root, "adminpulse", {"tblParties": {"Email": ["jane.doe@acme.com"]}}
+        )
+
+        # First run, raw samples on (default): populates the sidecar cache
+        # under analysis_dir, keyed on a cache_key that includes the raw value.
+        call_log_1: list[str] = []
+        self._run(sources_dir, analysis_dir, tmp_path, call_log_1)
+        assert len(call_log_1) == 1
+
+        # Second run, same analysis_dir (same cache directory), setting flipped
+        # off: if the cache key ignored the raw-samples setting, this would be
+        # a cache HIT and the LLM would never be called again.
+        monkeypatch.setenv("KAIROS_ALIGNMENT_SEND_RAW_SAMPLES", "0")
+        call_log_2: list[str] = []
+        self._run(sources_dir, analysis_dir, tmp_path, call_log_2)
+        assert len(call_log_2) == 1, "toggling the setting must invalidate the cache entry"
+
+
 class TestUriAnchorContractIntegration:
     """uri-anchor-contract end-to-end: confirmed anchors override the model's own
     class pick, ambiguous confirmed anchors never silently pick the nearest
@@ -2957,12 +3131,26 @@ class TestSampleEvidenceIntegration:
                 without_anchors=True,
             )
 
-    def test_examples_on_by_default_pii_masked(self, analysis_dir, tmp_path):
+    def test_examples_on_by_default_pii_unmasked(self, analysis_dir, tmp_path):
+        """DD-205 (issue #562): PII masking on example_values is itself gated by
+        KAIROS_ALIGNMENT_SEND_RAW_SAMPLES, default on -- a maintainer-authorized
+        default flip. Both columns show raw values with the setting untouched."""
         sources = self._vocab_with_samples(tmp_path)
         alignments = self._build(analysis_dir, sources)
         data = alignment_to_dict(alignments[0])
         cols = {c["column"]: c for c in data["tables"][0]["columns"]}
-        # Non-PII column shows raw values by default.
+        assert cols["PartyName"]["example_values"] == ["Acme NV", "Globex Corp"]
+        assert cols["Email"]["example_values"] == ["jane.doe@acme.com", "bob@globex.com"]
+
+    def test_opt_out_restores_pii_masking(self, analysis_dir, tmp_path, monkeypatch):
+        """KAIROS_ALIGNMENT_SEND_RAW_SAMPLES=0 restores the original always-masked
+        behavior for example_values."""
+        monkeypatch.setenv("KAIROS_ALIGNMENT_SEND_RAW_SAMPLES", "0")
+        sources = self._vocab_with_samples(tmp_path)
+        alignments = self._build(analysis_dir, sources)
+        data = alignment_to_dict(alignments[0])
+        cols = {c["column"]: c for c in data["tables"][0]["columns"]}
+        # Non-PII column still shows raw values.
         assert cols["PartyName"]["example_values"] == ["Acme NV", "Globex Corp"]
         # PII (email) column is masked — raw address must never appear.
         email_examples = cols["Email"]["example_values"]

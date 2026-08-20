@@ -4379,6 +4379,30 @@ def _propose_alignments(
     # Parse source vocabularies (cached)
     parsed_vocabs: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
+    # Issue #562: overlay raw (pre-redaction) sample values onto the alignment
+    # prompt, when the hub has them and the channel is enabled. sources_dir is
+    # conventionally hub_root/integration/sources; an explicit --sources override
+    # pointing elsewhere just means the sidecar is never found, which safely
+    # falls back to the already-redacted vocabulary values below.
+    from .raw_samples import get_raw_columns, raw_samples_enabled
+
+    _raw_samples_hub_root = sources_dir.parent.parent
+    _raw_samples_on = raw_samples_enabled()
+
+    def _overlay_raw_samples(
+        system: str, table: str, columns: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not _raw_samples_on:
+            return columns
+        raw = get_raw_columns(_raw_samples_hub_root, system, table)
+        if not raw:
+            return columns
+        overlaid = []
+        for col in columns:
+            raw_values = raw.get(str(col.get("name") or ""))
+            overlaid.append({**col, "samples": raw_values} if raw_values else col)
+        return overlaid
+
     def get_columns(system: str, table: str) -> list[dict[str, Any]]:
         if system not in parsed_vocabs:
             vocab_path = vocab_cache.get(system)
@@ -4687,7 +4711,7 @@ def _propose_alignments(
             """
             system = tbl_info["system"]
             table = tbl_info["table"]
-            columns = get_columns(system, table)
+            columns = _overlay_raw_samples(system, table, get_columns(system, table))
             if not columns:
                 return {
                     "system": system,
@@ -5069,12 +5093,19 @@ def _propose_alignments(
                         confidence=ca["confidence"],
                         rationale=ca.get("rationale", ""),
                     )
-                    # DD-075: masked, default-on sample evidence for the mapper.
+                    # DD-075/DD-205: default-on sample evidence for the mapper.
+                    # Issue #562: PII masking on this human-facing artifact field
+                    # is itself gated by KAIROS_ALIGNMENT_SEND_RAW_SAMPLES (default
+                    # on) -- a maintainer-authorized default flip, not an
+                    # oversight. Off restores the original always-masked behavior.
                     if col_obj is not None:
-                        col_is_pii = is_pii_column(
-                            col_obj.get("name"),
-                            target_property=ca["ref_property"],
-                            sample_values=col_obj.get("samples"),
+                        col_is_pii = (
+                            not _raw_samples_on
+                            and is_pii_column(
+                                col_obj.get("name"),
+                                target_property=ca["ref_property"],
+                                sample_values=col_obj.get("samples"),
+                            )
                         )
                         evidence = _render_example_values(
                             col_obj.get("samples"),

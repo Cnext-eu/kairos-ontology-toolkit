@@ -1287,8 +1287,20 @@ def run_import_source(
 
         enrich_source_schema(data, enum_threshold=enum_threshold)
 
+    # Issue #562: capture raw (pre-redaction) sample values for the alignment
+    # LLM prompt, before sanitize_source_data's deep copy is redacted below.
+    # This is a separate, gitignored channel -- it never changes what gets
+    # committed to the vocabulary TTL.
+    from .hub_utils import find_hub_root
+    from .raw_samples import extract_raw_samples_from_schema, write_raw_samples
+
+    _raw_table_columns = extract_raw_samples_from_schema(data)
+
     data, _ = sanitize_source_data(data)
     sys_name = data["system"]
+
+    if not dry_run:
+        write_raw_samples(find_hub_root(), sys_name, _raw_table_columns)
 
     if output_dir is None:
         from .hub_utils import resolve_hub_output_dir

@@ -90,6 +90,25 @@ def _no_langfuse_in_tests():
 
 
 @pytest.fixture(autouse=True)
+def _clean_raw_samples_env():
+    """Isolate KAIROS_ALIGNMENT_SEND_RAW_SAMPLES from a developer's real .env (DD-205).
+
+    Same class of leak DD-159/DD-184 guard against: a real dotfile at the repo
+    root would otherwise silently override this default for every test.
+    """
+    try:
+        from kairos_ontology.core.raw_samples import ENV_SEND_RAW_SAMPLES
+    except ImportError:  # pragma: no cover — raw_samples module must be importable
+        yield
+        return
+    saved = _os.environ.pop(ENV_SEND_RAW_SAMPLES, None)
+    yield
+    _os.environ.pop(ENV_SEND_RAW_SAMPLES, None)
+    if saved is not None:
+        _os.environ[ENV_SEND_RAW_SAMPLES] = saved
+
+
+@pytest.fixture(autouse=True)
 def _reset_unsupported_param_cache():
     """Clear the per-model parameter-rejection cache between tests (DD-174).
 

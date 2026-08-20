@@ -713,6 +713,88 @@ class TestRunImportSource:
         assert not (output_dir / "testapp.vocabulary.ttl").exists()
 
 
+class TestRunImportSourceRawSamplesSidecar:
+    """Issue #562, DD-205: run_import_source writes a raw (pre-redaction)
+    sample-values sidecar under .import/raw-samples/, separate from the
+    always-redacted committed vocabulary TTL."""
+
+    def _yaml_with_samples(self, tmp_path):
+        import yaml
+
+        data = copy.deepcopy(VALID_YAML_DATA)
+        data["tables"][0]["columns"][1]["samples"] = ["Acme NV", "Globex Corp"]
+        yaml_path = tmp_path / "testapp-schema.yaml"
+        yaml_path.write_text(yaml.dump(data), encoding="utf-8")
+        return yaml_path
+
+    def test_sidecar_written_alongside_the_vocabulary(self, tmp_path, monkeypatch):
+        from kairos_ontology.core.raw_samples import get_raw_columns
+
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: tmp_path
+        )
+        yaml_path = self._yaml_with_samples(tmp_path)
+        output_dir = tmp_path / "output"
+
+        run_import_source(yaml_path, output_dir=output_dir, enrich=False)
+
+        columns = get_raw_columns(tmp_path, "testapp", "tblClient")
+        assert columns.get("ClientName") == ["Acme NV", "Globex Corp"]
+
+    def test_dry_run_writes_no_sidecar(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: tmp_path
+        )
+        yaml_path = self._yaml_with_samples(tmp_path)
+        output_dir = tmp_path / "output"
+
+        run_import_source(yaml_path, output_dir=output_dir, dry_run=True, enrich=False)
+
+        assert not (tmp_path / ".import").exists()
+
+    def test_disabled_channel_writes_no_sidecar(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KAIROS_ALIGNMENT_SEND_RAW_SAMPLES", "0")
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: tmp_path
+        )
+        yaml_path = self._yaml_with_samples(tmp_path)
+        output_dir = tmp_path / "output"
+
+        run_import_source(yaml_path, output_dir=output_dir, enrich=False)
+
+        assert not (tmp_path / ".import").exists()
+
+    def test_no_hub_root_is_a_safe_no_op(self, tmp_path, monkeypatch):
+        """A caller running outside any detected hub must not raise or fabricate
+        a hub-relative path -- the vocabulary TTL still writes normally."""
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: None
+        )
+        yaml_path = self._yaml_with_samples(tmp_path)
+        output_dir = tmp_path / "output"
+
+        result_path, _ = run_import_source(yaml_path, output_dir=output_dir, enrich=False)
+        assert result_path is not None and result_path.exists()
+
+    def test_redacted_vocabulary_ttl_is_unaffected_by_the_sidecar(self, tmp_path, monkeypatch):
+        """The committed TTL still carries only redacted values -- the sidecar
+        is a strictly additive, separate channel."""
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: tmp_path
+        )
+        data = copy.deepcopy(VALID_YAML_DATA)
+        data["tables"][0]["columns"][2]["samples"] = ["jane.doe@acme.com"]
+        import yaml as _yaml
+
+        yaml_path = tmp_path / "testapp-schema.yaml"
+        yaml_path.write_text(_yaml.dump(data), encoding="utf-8")
+        output_dir = tmp_path / "output"
+
+        result_path, _ = run_import_source(yaml_path, output_dir=output_dir, enrich=False)
+        ttl_text = result_path.read_text(encoding="utf-8")
+        assert "jane.doe@acme.com" not in ttl_text
+
+
 # --------------------------------------------------------------------------- #
 # Change Report Tests
 # --------------------------------------------------------------------------- #

@@ -996,6 +996,14 @@ def run_import_flatfile(
                 output_dir,
             )
 
+    # Issue #562: capture raw (pre-redaction) sample values for the alignment
+    # LLM prompt, before write_source_dir's deep copy is redacted. A separate,
+    # gitignored channel -- never changes what gets committed to the source dir.
+    from .hub_utils import find_hub_root
+    from .raw_samples import extract_raw_samples_from_tables, write_raw_samples
+
+    write_raw_samples(find_hub_root(), system_name, extract_raw_samples_from_tables(tables))
+
     result_dir = write_source_dir(tables, system_name, output_dir)
     if return_count:
         sample_count = sum(1 for table in tables if table.get("sample_rows"))

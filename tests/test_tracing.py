@@ -77,34 +77,47 @@ class TestOffUnlessConfigured:
 
 
 class TestMasking:
-    def test_sample_values_are_removed_by_default(self):
-        masked = mask_source_samples(data=PROMPT)
+    """DD-205 (issue #562): sample values send by default; KAIROS_LANGFUSE_SEND_SAMPLES=0 masks."""
+
+    def test_sample_values_are_sent_by_default(self):
+        sent = mask_source_samples(data=PROMPT)
+        assert "Dusseldorf" in sent
+        assert "12500" in sent
+
+    def test_everything_else_survives_when_masked(self):
+        """Column names, types and structure are the diagnostic value; keep them."""
+        with patch.dict(os.environ, {ENV_SEND_SAMPLES: "0"}, clear=False):
+            masked = mask_source_samples(data=PROMPT)
+        for keep in ("COLUMNS:", "billing_city", "varchar(max)", "credit_limit", "active (bit)"):
+            assert keep in masked, keep
+
+    def test_line_structure_is_preserved_when_masked(self):
+        with patch.dict(os.environ, {ENV_SEND_SAMPLES: "0"}, clear=False):
+            masked = mask_source_samples(data=PROMPT)
+        assert len(masked.splitlines()) == len(PROMPT.splitlines())
+
+    def test_opt_out_masks_the_values(self):
+        with patch.dict(os.environ, {ENV_SEND_SAMPLES: "0"}, clear=False):
+            masked = mask_source_samples(data=PROMPT)
         assert "Dusseldorf" not in masked
         assert "12500" not in masked
         assert "masked" in masked
 
-    def test_everything_else_survives(self):
-        """Column names, types and structure are the diagnostic value; keep them."""
-        masked = mask_source_samples(data=PROMPT)
-        for keep in ("COLUMNS:", "billing_city", "varchar(max)", "credit_limit", "active (bit)"):
-            assert keep in masked, keep
-
-    def test_line_structure_is_preserved(self):
-        assert len(mask_source_samples(data=PROMPT).splitlines()) == len(PROMPT.splitlines())
-
-    def test_opt_in_sends_the_real_values(self):
+    def test_explicit_opt_in_still_sends_the_real_values(self):
         with patch.dict(os.environ, {ENV_SEND_SAMPLES: "1"}, clear=False):
             assert "Dusseldorf" in mask_source_samples(data=PROMPT)
 
-    def test_masks_inside_a_chat_payload(self):
+    def test_masks_inside_a_chat_payload_when_opted_out(self):
         """The SDK hands over a list of message dicts, not a bare string."""
         messages = [{"role": "user", "content": PROMPT}]
-        masked = mask_source_samples(data=messages)
+        with patch.dict(os.environ, {ENV_SEND_SAMPLES: "0"}, clear=False):
+            masked = mask_source_samples(data=messages)
         assert "Dusseldorf" not in masked[0]["content"]
         assert masked[0]["role"] == "user"
 
-    def test_nested_structures_are_walked(self):
-        masked = mask_source_samples(data={"a": [{"b": PROMPT}]})
+    def test_nested_structures_are_walked_when_opted_out(self):
+        with patch.dict(os.environ, {ENV_SEND_SAMPLES: "0"}, clear=False):
+            masked = mask_source_samples(data={"a": [{"b": PROMPT}]})
         assert "Dusseldorf" not in masked["a"][0]["b"]
 
     @pytest.mark.parametrize("value", [None, 42, 3.5, True])

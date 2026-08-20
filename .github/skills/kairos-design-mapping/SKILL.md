@@ -138,6 +138,13 @@ Never expose or persist raw PII, sensitive free text, proprietary samples, or
 credentials. An unredacted sample blocks the workflow and must return to the
 source privacy/redaction process.
 
+**`example_values` in `*-alignment.yaml` is not pre-redacted by default
+(issue #562, DD-205).** It used to always mask PII-shaped values; that
+masking is now itself gated by `KAIROS_ALIGNMENT_SEND_RAW_SAMPLES` (default
+on), so step 5's "already-redacted" examples cannot be assumed safe just
+because they came from this field. Apply your own masked/redacted/synthetic
+treatment before any such value reaches a generated artifact or conversation.
+
 If step 4 finds more than one plausible source for the same canonical class,
 do not bind `source.relation` directly to a single source, even if only one
 source is being wired up in this pass. Route straight to the
