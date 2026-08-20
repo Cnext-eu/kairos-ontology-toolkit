@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc20] — 2026-08-20
+
 ### Fixed
 - **`compile --emit` now includes the contracted dbt dependency closure selected by each
   immutable `CompilePlan` (issue #580).** Authored SQL, transitive authored `ref()`
