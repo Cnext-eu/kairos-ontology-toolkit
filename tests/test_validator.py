@@ -920,6 +920,50 @@ class TestPhaseDAuthoringLints:
         assert result["passed"] is True, result["errors"]
         assert result["warnings"] == []
 
+    def test_property_domained_owl_thing_warns(self):
+        """``rdfs:domain owl:Thing`` (issue #328, DD-204): a property whose domain
+        resolves to owl:Thing attaches to no class in the semantic index, so it is
+        invisible to the compiler and every projector -- the domain-side twin of
+        ``property_range_owl_thing``. This catches it at author time for a hub's own
+        domain files (reference-model files are never validated, DD-188)."""
+        content = (
+            self._HEADER
+            + """
+:preferredCarrierCode a owl:DatatypeProperty ;
+    rdfs:label "Preferred Carrier Code" ;
+    rdfs:domain owl:Thing ;
+    rdfs:range xsd:string .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert result["passed"] is True, result["errors"]
+        warnings = [w for w in result["warnings"] if w["code"] == "property_domain_owl_thing"]
+        assert len(warnings) == 1, result["warnings"]
+        assert warnings[0]["level"] == "warning"
+        assert warnings[0]["term_uri"] == "http://kairos.example/ontology/preferredCarrierCode"
+        message = warnings[0]["message"]
+        assert "owl:Thing" in message
+        assert "#328" in message
+        # It is a *different* finding from the missing-domain error, not a relabelling.
+        assert not [e for e in result["errors"] if e["code"] == "property_missing_domain"]
+
+    def test_named_class_domain_produces_no_domain_finding(self):
+        """Guard against the warning firing on every property."""
+        content = (
+            self._HEADER
+            + """
+:customerName a owl:DatatypeProperty ;
+    rdfs:label "Customer Name" ;
+    rdfs:domain :Customer ;
+    rdfs:range xsd:string .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert result["passed"] is True, result["errors"]
+        assert not [w for w in result["warnings"] if w["code"] == "property_domain_owl_thing"]
+
     def test_deferred_range_does_not_fail_run_validation(self, temp_dir, capsys):
         """Integration: the shape ``compile`` supports no longer trips the exit code, and
         the warning is carried into the JSON report."""

@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc18] — 2026-08-20
+
+### Fixed
+- **`rdfs:domain owl:Thing` silently produced dead properties, invisible to the compiler and every projector, with no diagnostic anywhere (DD-204, issue #328).** Issue #328 was closed by #330, but #330's own diff explicitly left this half — the domain side — "deliberately unchanged"; only the sibling `rdfs:range owl:Thing` case got a warning. Reopened with fresh evidence: a real client hub's `coverage-report` found 49 property-domain assertions in the reference-models package's own `onerecord.iata.org/ns/cargo` module, all declaring `rdfs:domain owl:Thing`, none of them attached to any class. `_warn_unattached_property_domains` now tells the two causes apart instead of blaming every unattached property on a missing `owl:imports`: an `owl:Thing` domain gets its own message pointing at issue #328, since no amount of importing fixes it.
+
+### Added
+- **`validate_naming_conventions` gains `property_domain_owl_thing` (DD-204, issue #328).** Mirrors the `property_range_owl_thing` warning #330 shipped for the range side: an `owl:DatatypeProperty`/`owl:ObjectProperty` in a hub's own authored file whose `rdfs:domain` includes `owl:Thing` now gets a warning at author time, suggesting `schema:domainIncludes` as the alternative that avoids an `owl:imports` cycle. Reference-model files are still never validated (DD-188) — this only ever fires on a hub's own domain files.
+
 ## [5.13.0rc17] — 2026-08-20
 
 ### Removed (BREAKING)

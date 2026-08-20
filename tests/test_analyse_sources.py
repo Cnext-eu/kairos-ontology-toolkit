@@ -2142,3 +2142,43 @@ ex:fine a owl:DatatypeProperty ; rdfs:domain ex:Thing ; rdfs:range xsd:string .
     def test_a_clean_module_is_silent(self, tmp_path, caplog):
         text = self._resolve(tmp_path, self.CLEAN, "clean", caplog)
         assert "could not be attached" not in text
+
+    OWL_THING_DOMAIN = """\
+@prefix ex: <https://example.org/crosscutting#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.org/crosscutting> a owl:Ontology ; owl:versionInfo "1.0" .
+ex:Thing a owl:Class .
+ex:fine a owl:DatatypeProperty ; rdfs:domain ex:Thing ; rdfs:range xsd:string .
+ex:crossCutting a owl:DatatypeProperty ; rdfs:domain owl:Thing ; rdfs:range xsd:string .
+"""
+
+    def test_owl_thing_domain_gets_its_own_message_not_the_missing_import_wording(
+        self, tmp_path, caplog
+    ):
+        """DD-204/#328: ``rdfs:domain owl:Thing`` is unattached for a different reason
+        than a genuinely missing ``owl:imports`` -- owl:Thing is never declared a class
+        in any real ontology file, so no amount of importing fixes it. The old
+        undifferentiated wording told an author to add an owl:imports, which is wrong
+        for this case, so it must not appear for this pair."""
+        text = self._resolve(tmp_path, self.OWL_THING_DOMAIN, "crosscutting", caplog)
+        assert "declare rdfs:domain owl:Thing" in text
+        assert "#328" in text
+        assert "data-domains.yaml does NOT resolve it" not in text
+
+    def test_a_mix_of_both_causes_produces_both_messages(self, tmp_path, caplog):
+        """A module with one owl:Thing-domain property and one genuinely orphaned
+        property (missing owl:imports) gets both messages, each counting only its
+        own pair -- the two causes must not be blended into one count."""
+        mixed = (
+            self.ORPHAN.rstrip("\n")
+            + "\nex:crossCutting a owl:DatatypeProperty ; rdfs:domain owl:Thing ; "
+            "rdfs:range xsd:string .\n"
+        )
+        text = self._resolve(tmp_path, mixed, "mixed", caplog)
+        assert "1 property-domain assertion(s) could not be attached" in text
+        assert "data-domains.yaml does NOT resolve it" in text
+        assert "1 property-domain assertion(s) declare rdfs:domain owl:Thing" in text
+        assert "#328" in text
