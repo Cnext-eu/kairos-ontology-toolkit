@@ -128,6 +128,7 @@ default).
 | `dbt-source.columns-invalid` | error | DD-133 (default) | |
 | `dbt-source.contract-invalid` | error | DD-133 (default) | |
 | `dbt-source.contract-not-enforced` | error | DD-133 (default) | |
+| `dbt-source.dependency-unresolved` | error | DD-133 (default) | A selected model's transitive `ref()` target is missing or ambiguous under `integration/transforms/dbt/models/`; projection cannot emit a self-contained project. |
 | `dbt-source.grain-invalid` | error | DD-133 (default) | |
 | `dbt-source.grain-mismatch` | error | DD-133 (default) | |
 | `dbt-source.identity-mismatch` | error | DD-133 (default) | |

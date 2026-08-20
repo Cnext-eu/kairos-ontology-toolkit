@@ -16,7 +16,7 @@ from rdflib import Graph, Namespace, RDF, RDFS
 from .compiler import CompileError, adapt_binding, load_entity_binding, resolve_scope
 from .compiler.dbt_lineage import resolve_dbt_model_contributing_sources
 from .compiler.kernel import _binding_dbt_paths, _binding_domain, _binding_source_ref
-from .projections.dbt.mapping_bind import mapping_context
+from .projections.dbt.mapping_bind import expression_input_uris, mapping_context
 from .projections.dbt.mapping_specs import ColumnMappingFact, SourceMappings
 from .projections.medallion_dbt_projector import _parse_skos_mappings
 from .projections.uri_utils import camel_to_snake, extract_local_name
@@ -66,6 +66,19 @@ class AuditFinding:
     column: str | None = None
     target: str | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ContractedDbtOutput:
+    """Contract and source-lineage metadata for one virtual dbt output column."""
+
+    uri: str
+    output_column: str
+    model_name: str
+    sql_path: str
+    contract_path: str
+    contributing_sources: tuple[str, ...]
+    lineage_fully_traceable: bool
 
 
 @dataclass
@@ -404,9 +417,7 @@ def _diagnostics_message(exc: CompileError) -> str:
     return "; ".join(diagnostic.message for diagnostic in exc.diagnostics)
 
 
-def _binding_matches_system(
-    text: str, source_system: str, *, hub_root: Path | None = None
-) -> bool:
+def _binding_matches_system(text: str, source_system: str, *, hub_root: Path | None = None) -> bool:
     """True when *text*'s declared source belongs to *source_system*.
 
     A ``source.relation`` binding matches on the relation's first dot-segment (e.g.
@@ -434,9 +445,13 @@ def _binding_matches_system(
     return source_system.lower() in {system.lower() for system in sources}
 
 
-def resolve_v5_column_facts(
+def _resolve_v5_column_facts(
     hub_root: Path, bindings_dir: Path, *, source_system: str | None = None
-) -> tuple[list[ColumnMappingFact], list[AuditFinding]]:
+) -> tuple[
+    list[ColumnMappingFact],
+    list[AuditFinding],
+    dict[str, ContractedDbtOutput],
+]:
     """Resolve every v5 EntityBinding's column mappings via the compiler's own resolution.
 
     Reuses the compiler's own binding resolution (``resolve_scope`` + ``adapt_binding``)
@@ -455,9 +470,10 @@ def resolve_v5_column_facts(
     """
     findings: list[AuditFinding] = []
     if not bindings_dir.is_dir() or not any(bindings_dir.glob("*.binding.yaml")):
-        return [], findings
+        return [], findings, {}
 
     columns: list[ColumnMappingFact] = []
+    virtual_outputs: dict[str, ContractedDbtOutput] = {}
     for domain in _discover_binding_domains(bindings_dir):
         try:
             scope, context = resolve_scope(hub_root, domain)
@@ -529,8 +545,57 @@ def resolve_v5_column_facts(
                 )
                 continue
             columns.extend(bound.mappings.columns)
+            model = binding.source.dbt_model
+            if model is not None:
+                sources, fully_traceable = resolve_dbt_model_contributing_sources(
+                    hub_root, model.sql_path
+                )
+                for fact in bound.mappings.columns:
+                    source_uris = expression_input_uris(fact.expression) or (
+                        fact.source_column_uri,
+                    )
+                    for source_uri in source_uris:
+                        virtual_outputs.setdefault(
+                            source_uri,
+                            ContractedDbtOutput(
+                                uri=source_uri,
+                                output_column=source_uri.rpartition("/")[2],
+                                model_name=model.name,
+                                sql_path=model.sql_path,
+                                contract_path=model.contract_path,
+                                contributing_sources=tuple(sorted(sources)),
+                                lineage_fully_traceable=fully_traceable,
+                            ),
+                        )
 
+    return columns, findings, virtual_outputs
+
+
+def resolve_v5_column_facts(
+    hub_root: Path, bindings_dir: Path, *, source_system: str | None = None
+) -> tuple[list[ColumnMappingFact], list[AuditFinding]]:
+    """Return compiler-resolved v5 mappings while retaining the established public shape."""
+    columns, findings, _virtual_outputs = _resolve_v5_column_facts(
+        hub_root, bindings_dir, source_system=source_system
+    )
     return columns, findings
+
+
+def _load_binding_mapping_context(
+    hub_root: Path, bindings_dir: Path
+) -> tuple[
+    dict[str, Any],
+    dict[str, str],
+    list[AuditFinding],
+    dict[str, ContractedDbtOutput],
+]:
+    empty: dict[str, Any] = {"table_maps": {}, "column_maps": {}}
+    if not bindings_dir.is_dir() or not any(bindings_dir.glob("*.binding.yaml")):
+        return empty, {}, [], {}
+
+    columns, findings, virtual_outputs = _resolve_v5_column_facts(hub_root, bindings_dir)
+    mappings, namespaces = mapping_context(SourceMappings(tables=(), columns=tuple(columns)))
+    return mappings, namespaces, findings, virtual_outputs
 
 
 def load_binding_mappings(
@@ -541,8 +606,9 @@ def load_binding_mappings(
     if not bindings_dir.is_dir() or not any(bindings_dir.glob("*.binding.yaml")):
         return empty, {}, []
 
-    columns, findings = resolve_v5_column_facts(hub_root, bindings_dir)
-    mappings, namespaces = mapping_context(SourceMappings(tables=(), columns=tuple(columns)))
+    mappings, namespaces, findings, _virtual_outputs = _load_binding_mapping_context(
+        hub_root, bindings_dir
+    )
     return mappings, namespaces, findings
 
 
@@ -596,8 +662,9 @@ def run_silver_sample_audit(
     v5_findings: list[AuditFinding] = []
     v5_mappings: dict[str, Any] = {"table_maps": {}, "column_maps": {}}
     v5_ns: dict[str, str] = {}
+    virtual_outputs: dict[str, ContractedDbtOutput] = {}
     if bindings_dir is not None:
-        v5_mappings, v5_ns, v5_findings = load_binding_mappings(
+        v5_mappings, v5_ns, v5_findings, virtual_outputs = _load_binding_mapping_context(
             hub_root or bindings_dir.parent.parent, bindings_dir
         )
     mapping_ns = {**mapping_ns, **v5_ns}
@@ -629,11 +696,39 @@ def run_silver_sample_audit(
                 seen_mapping_triples.add(triple)
             mapped_columns += 1
             if column is None:
+                virtual_output = virtual_outputs.get(col_uri)
+                if virtual_output is not None:
+                    findings.append(
+                        AuditFinding(
+                            severity=SEVERITY_INFO,
+                            code="contracted_output_not_evaluated",
+                            message=(
+                                "The mapped column is a contracted dbt virtual output. Its "
+                                "contract was resolved, but arbitrary SQL cannot be evaluated "
+                                "from physical source samples offline."
+                            ),
+                            source=", ".join(virtual_output.contributing_sources),
+                            table=virtual_output.model_name,
+                            column=virtual_output.output_column,
+                            target=target,
+                            evidence={
+                                "contract_path": virtual_output.contract_path,
+                                "lineage_fully_traceable": (virtual_output.lineage_fully_traceable),
+                                "source_systems": list(virtual_output.contributing_sources),
+                                "sql_path": virtual_output.sql_path,
+                                "virtual_source_column_uri": virtual_output.uri,
+                            },
+                        )
+                    )
+                    continue
                 findings.append(
                     AuditFinding(
                         severity=SEVERITY_ERROR,
                         code="missing_source_column",
-                        message="Mapping references a source column that is not present in source vocabularies.",
+                        message=(
+                            "Mapping references a source column that is not present in "
+                            "source vocabularies."
+                        ),
                         target=target,
                         evidence={"source_column_uri": col_uri},
                     )

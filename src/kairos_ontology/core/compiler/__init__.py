@@ -86,7 +86,7 @@ from .kernel import (
     render_compile_plan,
     resolve_scope,
 )
-from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact
+from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact, PlannedDbtDependency
 from .quality import SAFETY_RULE_CODES, run_safety_kernel
 from .result import (
     CompileDiagnostic,
@@ -172,6 +172,7 @@ __all__ = [
     "ProvenanceInput",
     "PlannedArtifact",
     "PlannedCompileArtifact",
+    "PlannedDbtDependency",
     "QualityCheck",
     "RelationshipJoin",
     "RelationshipSpec",

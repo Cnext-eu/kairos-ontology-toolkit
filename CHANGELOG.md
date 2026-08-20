@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`compile --emit` now includes the contracted dbt dependency closure selected by each
+  immutable `CompilePlan` (issue #580).** Authored SQL, transitive authored `ref()`
+  dependencies, and the selected properties YAML are copied to their stable paths in the unified
+  dbt project. Per-domain dependency ownership is reconciled across sequential emits, stale files
+  are removed only after their final owner drops them, and conflicting paths, bytes, or dbt model
+  names fail closed.
+- **`audit-silver-samples` no longer reports contracted dbt virtual outputs as missing Bronze
+  columns (issue #581).** Contracted output columns now produce an informational offline-evaluation
+  limitation with contract paths and traceable contributing source systems. Genuine missing
+  physical source columns remain errors, so `--fail-on error` retains its intended meaning.
+
 ## [5.13.0rc19] — 2026-08-20
 
 ### Changed (BREAKING, privacy-relevant — see DD-205)

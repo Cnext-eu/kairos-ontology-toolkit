@@ -18,6 +18,7 @@ from kairos_ontology.cli.main import cli
 from kairos_ontology.core.compiler import CompileMode, compile_domain
 from kairos_ontology.core.compiler.emit import emit_artifacts
 from kairos_ontology.core.compiler.quality import SAFETY_RULE_CODES
+from kairos_ontology.core.dbt_validation import validate_dbt_project
 
 _HUB = Path(__file__).parent / "v5-hub"
 
@@ -74,6 +75,70 @@ billing:account_name a owl:DatatypeProperty ;
             ],
         },
     )
+
+
+def _add_contracted_multi_domain_fixture(hub: Path) -> tuple[Path, dict, Path, str]:
+    _add_billing_domain(hub)
+    party_binding, party_document = _binding(hub, "customer")
+    party_document["source"] = {
+        "dbtModel": {
+            "name": "customer_stage",
+            "sqlPath": "integration/transforms/dbt/models/customer_stage.sql",
+            "contractPath": "integration/transforms/dbt/models/schema.yml",
+        }
+    }
+    _write_binding(party_binding, party_document)
+
+    models = hub / "integration" / "transforms" / "dbt" / "models"
+    shared = models / "intermediate" / "shared" / "stg_shared.sql"
+    shared.parent.mkdir(parents=True)
+    shared_sql = (
+        "select customer_id, customer_name, country_code from {{ source('erp', 'customers') }}\n"
+    )
+    shared.write_text(shared_sql, encoding="utf-8")
+    (models / "customer_stage.sql").write_text(
+        "select customer_id, customer_name, country_code from {{ ref('stg_shared') }}\n",
+        encoding="utf-8",
+    )
+
+    billing_binding, billing_document = _binding(hub, "account")
+    billing_document["source"] = {
+        "dbtModel": {
+            "name": "account_stage",
+            "sqlPath": ("integration/transforms/dbt/models/intermediate/billing/account_stage.sql"),
+            "contractPath": (
+                "integration/transforms/dbt/models/intermediate/billing/account_stage.yml"
+            ),
+        }
+    }
+    _write_binding(billing_binding, billing_document)
+    billing_models = models / "intermediate" / "billing"
+    billing_models.mkdir(parents=True)
+    (billing_models / "account_stage.sql").write_text(
+        "select customer_id, customer_name from {{ ref('stg_shared') }}\n",
+        encoding="utf-8",
+    )
+    (billing_models / "account_stage.yml").write_text(
+        """version: 2
+models:
+  - name: account_stage
+    config:
+      contract:
+        enforced: true
+    meta:
+      kairos:
+        target_class: https://example.test/ontology/billing#Account
+        virtual_source_iri: https://example.test/source/dbt#account-stage
+        grain: one row per account
+        grain_key: [customer_id]
+        supported_adapters: [fabric]
+    columns:
+      - {name: customer_id, data_type: string, data_tests: [not_null]}
+      - {name: customer_name, data_type: string}
+""",
+        encoding="utf-8",
+    )
+    return party_binding, party_document, shared, shared_sql
 
 
 def _add_external_reference_fixture(hub: Path, *, composite: bool = False) -> None:
@@ -452,9 +517,9 @@ def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
     monkeypatch,
 ):
     hub_ab = _copy_hub(tmp_path / "ab")
-    _add_billing_domain(hub_ab)
+    _add_contracted_multi_domain_fixture(hub_ab)
     hub_ba = _copy_hub(tmp_path / "ba")
-    _add_billing_domain(hub_ba)
+    _add_contracted_multi_domain_fixture(hub_ba)
     target_ab = hub_ab.parent / "ontology-hub-publish" / "medallion" / "dbt"
     target_ba = hub_ba.parent / "ontology-hub-publish" / "medallion" / "dbt"
     runner = CliRunner()
@@ -478,6 +543,9 @@ def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
 
     assert (target_ab / "models/silver/party/customer.sql").is_file()
     assert (target_ab / "models/silver/billing/account.sql").is_file()
+    assert (target_ab / "models/customer_stage.sql").is_file()
+    assert (target_ab / "models/intermediate/billing/account_stage.sql").is_file()
+    assert (target_ab / "models/intermediate/shared/stg_shared.sql").is_file()
     assert not (target_ab / "party").exists()
     assert not (target_ab / "billing").exists()
     # Emit is a sibling of the hub, never nested inside it.
@@ -672,7 +740,68 @@ def test_stage2_contracted_dbt_model_uses_sql_yaml_and_provenance(tmp_path):
     assert customer.source_kind == "dbt-model"
     inputs = {item.name for item in result.ir.scope.inputs}
     assert "integration/transforms/dbt/models/customer_stage.sql" in inputs
+    assert "integration/transforms/dbt/models/stg_customer.sql" in inputs
     assert "integration/transforms/dbt/models/schema.yml" in inputs
+    dependencies = {item.path: item for item in result.plan.dbt_dependencies}
+    assert set(dependencies) == {
+        "models/customer_stage.sql",
+        "models/schema.yml",
+        "models/stg_customer.sql",
+    }
+    assert dependencies["models/customer_stage.sql"].binding_names == ("crm-customer",)
+    assert dependencies["models/schema.yml"].kind == "properties"
+
+
+def test_stage5_emit_reconciles_contracted_dependencies_across_domains(tmp_path, monkeypatch):
+    hub = _copy_hub(tmp_path)
+    party_binding, party_document, shared, shared_sql = _add_contracted_multi_domain_fixture(hub)
+
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    for domain in ("party", "billing"):
+        emitted = runner.invoke(
+            cli,
+            ["compile", domain, "--emit", "--confirm-emit"],
+            env={"KAIROS_SKILL_CONTEXT": "1"},
+        )
+        assert emitted.exit_code == 0, emitted.output
+
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    expected_dependencies = {
+        "models/customer_stage.sql",
+        "models/schema.yml",
+        "models/intermediate/billing/account_stage.sql",
+        "models/intermediate/billing/account_stage.yml",
+        "models/intermediate/shared/stg_shared.sql",
+    }
+    assert all(target.joinpath(*path.split("/")).is_file() for path in expected_dependencies)
+    validate_dbt_project(target, "fabric", structural_only=True)
+
+    shared.write_text(
+        shared_sql.replace("customer_name", "customer_name as name"), encoding="utf-8"
+    )
+    conflict = runner.invoke(
+        cli,
+        ["compile", "party", "--emit", "--confirm-emit"],
+        env={"KAIROS_SKILL_CONTEXT": "1"},
+    )
+    assert conflict.exit_code != 0
+    assert "conflicting bytes" in conflict.output
+    shared.write_text(shared_sql, encoding="utf-8")
+
+    party_document["source"] = {"relation": "crm.customers"}
+    _write_binding(party_binding, party_document)
+    reemitted = runner.invoke(
+        cli,
+        ["compile", "party", "--emit", "--confirm-emit"],
+        env={"KAIROS_SKILL_CONTEXT": "1"},
+    )
+    assert reemitted.exit_code == 0, reemitted.output
+    assert not (target / "models" / "customer_stage.sql").exists()
+    assert not (target / "models" / "schema.yml").exists()
+    assert (target / "models" / "intermediate" / "shared" / "stg_shared.sql").is_file()
+    assert (target / "models" / "intermediate" / "billing" / "account_stage.sql").is_file()
+    validate_dbt_project(target, "fabric", structural_only=True)
 
 
 @pytest.mark.parametrize(
