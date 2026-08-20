@@ -464,6 +464,69 @@ class TestRunImportFlatfile:
         assert sorted(manifest["tables"]) == ["items", "orders"]
 
 
+class TestRunImportFlatfileRawSamplesSidecar:
+    """Issue #562, DD-205: run_import_flatfile writes a raw (pre-redaction)
+    sample-values sidecar under .import/raw-samples/, separate from the
+    always-redacted committed source-dir samples files."""
+
+    def _csv(self, tmp_path):
+        csv_file = tmp_path / "input" / "clients.csv"
+        csv_file.parent.mkdir()
+        csv_file.write_text(
+            "id,contact_email\n1,jane.doe@acme.com\n2,bob@globex.com\n", encoding="utf-8"
+        )
+        return csv_file
+
+    def test_sidecar_written_alongside_the_source_dir(self, tmp_path, monkeypatch):
+        from kairos_ontology.core.raw_samples import get_raw_columns
+
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: tmp_path
+        )
+        csv_file = self._csv(tmp_path)
+        output_dir = tmp_path / "output" / "clients"
+
+        run_import_flatfile(csv_file, output_dir=output_dir)
+
+        columns = get_raw_columns(tmp_path, "clients", "clients")
+        assert columns.get("contact_email") == ["jane.doe@acme.com", "bob@globex.com"]
+
+    def test_disabled_channel_writes_no_sidecar(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KAIROS_ALIGNMENT_SEND_RAW_SAMPLES", "0")
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: tmp_path
+        )
+        csv_file = self._csv(tmp_path)
+        output_dir = tmp_path / "output" / "clients"
+
+        run_import_flatfile(csv_file, output_dir=output_dir)
+
+        assert not (tmp_path / ".import").exists()
+
+    def test_no_hub_root_is_a_safe_no_op(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: None
+        )
+        csv_file = self._csv(tmp_path)
+        output_dir = tmp_path / "output" / "clients"
+
+        result = run_import_flatfile(csv_file, output_dir=output_dir)
+        assert (result / "clients.samples.yaml").exists()
+
+    def test_committed_samples_yaml_is_unaffected_by_the_sidecar(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "kairos_ontology.core.hub_utils.find_hub_root", lambda *a, **k: tmp_path
+        )
+        csv_file = self._csv(tmp_path)
+        output_dir = tmp_path / "output" / "clients"
+
+        run_import_flatfile(csv_file, output_dir=output_dir)
+
+        samples_text = (output_dir / "clients.samples.yaml").read_text(encoding="utf-8")
+        assert "jane.doe@acme.com" not in samples_text
+        assert "bob@globex.com" not in samples_text
+
+
 # --------------------------------------------------------------------------- #
 # Regression Tests — Bug Fixes (fix3)
 # --------------------------------------------------------------------------- #
