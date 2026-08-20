@@ -5906,6 +5906,17 @@ instead of a `✅` success line, and adds a `no_mapping_surface_found` warning f
 "a command that checked nothing must not emit the success string of a command that checked
 something" rule raised by #309 and #332.
 
+### Amendment (2026-08-20): contracted virtual outputs are not physical Bronze columns (#581)
+
+An EntityBinding selecting `source.dbtModel` maps the model contract's virtual output columns.
+Those symbols are intentionally absent from the physical Bronze source vocabularies, so treating
+their absence as `missing_source_column` was a category error. The audit now retains contracted
+output metadata while adapting each binding and emits `contracted_output_not_evaluated` at info
+severity when no persisted sample exists for that virtual output. Evidence names only the model,
+SQL/contract paths, output column, contributing source-system identifiers, and whether transitive
+`source()`/`ref()` lineage was fully traceable; it never includes SQL text or sample values.
+Arbitrary SQL still is not executed offline, and real missing physical columns remain errors.
+
 ---
 
 ## DD-090: Core Concepts Conformance — toolkit runtime for the archetype + discovery contract (v0.2)
@@ -10138,6 +10149,20 @@ relationships package-management concerns rather than local compiler refs.
   placeholders.
 - The chosen dbt topology constrains whether ISSUE-7 can produce physical cross-domain dbt refs or
   only declared external-reference contracts.
+
+### Amendment (2026-08-20): CompilePlan-owned contracted dependencies (#580)
+
+The unified project must be self-contained when generated Silver models call `ref()` for an
+authored contracted model. Resolution now closes the selected model's authored SQL dependency
+graph during compilation, fails when a transitive `ref()` is missing or ambiguous, and stores the
+stable project path plus exact UTF-8 content for selected SQL/properties files on the immutable,
+graph-free `CompilePlan`. Projection never searches the authored hub for these files.
+
+Sequential domain emits reconcile compiler-owned per-domain dependency selections into one
+dependency manifest. Identical shared dependencies may have multiple domain owners; re-emitting
+one domain removes a stale dependency only when no other emitted domain still selects it.
+Conflicting bytes, case-insensitive paths, or dbt model names fail closed rather than overwriting
+another domain's contract.
 
 ---
 

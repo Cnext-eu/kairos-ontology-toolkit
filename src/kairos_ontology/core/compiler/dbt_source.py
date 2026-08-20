@@ -18,6 +18,7 @@ from .bindings import EntityBinding
 from .result import CompileDiagnostic, CompileError, SourceLocation
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
 _TRANSFORMS_PARTS = ("integration", "transforms", "dbt")
 
 
@@ -112,6 +113,80 @@ def _load_contract(binding: EntityBinding, path: Path) -> dict[str, Any]:
             "contractPath",
         )
     return document
+
+
+def _dependency_sql_paths(
+    binding: EntityBinding,
+    hub_root: Path,
+    selected_path: Path,
+) -> tuple[Path, ...]:
+    """Resolve the selected model's transitive authored ``ref()`` SQL closure."""
+    models_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "models")
+    resolved: dict[str, Path] = {}
+    pending = [selected_path]
+    while pending:
+        path = pending.pop()
+        model_name = path.stem
+        previous = resolved.get(model_name.casefold())
+        if previous is not None:
+            if previous != path:
+                raise _failure(
+                    binding,
+                    "dbt-source.dependency-unresolved",
+                    (
+                        f"dbt model name {model_name!r} resolves to more than one authored "
+                        "SQL dependency"
+                    ),
+                    "sqlPath",
+                )
+            continue
+        resolved[model_name.casefold()] = path
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise _failure(
+                binding,
+                "dbt-source.dependency-unresolved",
+                f"could not read dbt SQL dependency {path}: {exc}",
+                "sqlPath",
+            ) from exc
+        for ref_name in sorted(set(_REF_RE.findall(text))):
+            matches = tuple(sorted(models_dir.rglob(f"{ref_name}.sql")))
+            if len(matches) != 1:
+                raise _failure(
+                    binding,
+                    "dbt-source.dependency-unresolved",
+                    (
+                        f"dbt ref({ref_name!r}) must resolve to exactly one authored SQL file "
+                        "under integration/transforms/dbt/models"
+                    ),
+                    "sqlPath",
+                )
+            pending.append(matches[0].resolve())
+    return tuple(sorted(resolved.values(), key=lambda path: path.as_posix()))
+
+
+def resolve_dbt_model_dependency_paths(
+    binding: EntityBinding, hub_root: str | Path
+) -> tuple[Path, ...]:
+    """Return the selected contracted model's validated transitive SQL closure."""
+    model_ref = binding.source.dbt_model
+    if model_ref is None:
+        raise _failure(
+            binding,
+            "dbt-source.missing",
+            "binding does not select source.dbtModel",
+            "name",
+        )
+    root = Path(hub_root).resolve()
+    selected_path = _resolve_authored_path(
+        binding,
+        root,
+        model_ref.sql_path,
+        suffixes=frozenset({".sql"}),
+        pointer="sqlPath",
+    )
+    return _dependency_sql_paths(binding, root, selected_path)
 
 
 def _selected_model(binding: EntityBinding, document: dict[str, Any]) -> dict[str, Any]:
@@ -248,6 +323,7 @@ def resolve_dbt_model_source(binding: EntityBinding, hub_root: str | Path) -> Re
         suffixes=frozenset({".sql"}),
         pointer="sqlPath",
     )
+    _dependency_sql_paths(binding, root, sql_path)
     contract_path = _resolve_authored_path(
         binding,
         root,

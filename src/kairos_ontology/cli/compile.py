@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import asdict, replace
@@ -19,6 +20,9 @@ from ..core.observability import current_operation_id
 #: dbt project sub-path under the publish root (``<publish_root>/medallion/dbt``).
 _DBT_EMIT_SUBPATH = Path("medallion") / "dbt"
 _SHARED_MANIFEST_NAME = ".kairos-compile-manifest.shared.json"
+_DEPENDENCY_MANIFEST_NAME = ".kairos-compile-manifest.dependencies.json"
+_DEPENDENCY_STATE_SCHEMA = "kairos.eu/compiler-dbt-dependencies/v1"
+_DEPENDENCY_STATE_PREFIX = ".kairos-compile-dependencies."
 _PACKAGE_ARTIFACTS = frozenset({"README.md", "dbt_project.yml", "packages.yml"})
 
 
@@ -62,6 +66,24 @@ def _domain_manifest_name(domain: str) -> str:
     if not safe_domain:
         safe_domain = "domain"
     return f".kairos-compile-manifest.{safe_domain}.json"
+
+
+def _dependency_state_name(domain: str) -> str:
+    safe_domain = re.sub(r"[^A-Za-z0-9_.-]", "_", domain) or "domain"
+    return f"{_DEPENDENCY_STATE_PREFIX}{safe_domain}.json"
+
+
+def _content_sha256(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _dependency_state_text(domain: str, files: list[dict[str, str]]) -> str:
+    document = {
+        "domain": domain,
+        "files": sorted(files, key=lambda item: item["path"]),
+        "schema": _DEPENDENCY_STATE_SCHEMA,
+    }
+    return json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def _is_source_catalog_artifact(path: str) -> bool:
@@ -134,6 +156,223 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
     return shared
 
 
+def _load_dependency_states(
+    target: Path,
+) -> tuple[dict[str, list[dict[str, str]]], dict[str, str]]:
+    """Load compiler-owned dependency selections and verify their emitted bytes."""
+    manifest_path = target / _DEPENDENCY_MANIFEST_NAME
+    if not manifest_path.exists() and not manifest_path.is_symlink():
+        return {}, {}
+
+    from ..core.compiler.emit import ManifestError, _parse_manifest
+
+    owned = _parse_manifest(target, _DEPENDENCY_MANIFEST_NAME)
+    content_by_path: dict[str, str] = {}
+    for path, expected_sha in owned.items():
+        emitted = target.joinpath(*path.split("/"))
+        try:
+            content = emitted.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ManifestError(
+                f"cannot read manifest-owned dbt dependency artifact {emitted}: {exc}"
+            ) from exc
+        if _content_sha256(content) != expected_sha:
+            raise ManifestError(
+                f"manifest-owned dbt dependency artifact has changed bytes: {path!r}"
+            )
+        content_by_path[path] = content
+
+    state_paths = {
+        path
+        for path in owned
+        if path.startswith(_DEPENDENCY_STATE_PREFIX) and path.endswith(".json")
+    }
+    states: dict[str, list[dict[str, str]]] = {}
+    referenced_paths: set[str] = set()
+    for state_path in sorted(state_paths):
+        try:
+            document = json.loads(content_by_path[state_path])
+        except json.JSONDecodeError as exc:
+            raise ManifestError(f"malformed dbt dependency state {state_path!r}") from exc
+        if (
+            not isinstance(document, dict)
+            or set(document) != {"domain", "files", "schema"}
+            or document.get("schema") != _DEPENDENCY_STATE_SCHEMA
+            or not isinstance(document.get("domain"), str)
+            or not isinstance(document.get("files"), list)
+        ):
+            raise ManifestError(f"malformed dbt dependency state {state_path!r}")
+        domain = document["domain"]
+        if _dependency_state_name(domain) != state_path or domain in states:
+            raise ManifestError(f"inconsistent dbt dependency state owner in {state_path!r}")
+
+        entries: list[dict[str, str]] = []
+        for item in document["files"]:
+            if not isinstance(item, dict) or set(item) != {
+                "kind",
+                "model_name",
+                "path",
+                "sha256",
+            }:
+                raise ManifestError(f"malformed file entry in dbt dependency state {state_path!r}")
+            entry = {key: str(value) for key, value in item.items()}
+            path = entry["path"]
+            kind = entry["kind"]
+            digest = entry["sha256"]
+            model_name = entry["model_name"]
+            suffix = Path(path).suffix.lower()
+            valid_kind = (
+                kind == "sql" and suffix == ".sql" and model_name and Path(path).stem == model_name
+            ) or (kind == "properties" and suffix in {".yml", ".yaml"} and not model_name)
+            if (
+                not path.startswith("models/")
+                or not valid_kind
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or owned.get(path) != digest
+            ):
+                raise ManifestError(
+                    f"unsafe or inconsistent file entry in dbt dependency state {state_path!r}"
+                )
+            entries.append(entry)
+            referenced_paths.add(path)
+        states[domain] = entries
+
+    dependency_paths = set(owned) - state_paths
+    if referenced_paths != dependency_paths:
+        raise ManifestError(
+            "dbt dependency manifest and per-domain ownership states do not describe the same files"
+        )
+    return states, content_by_path
+
+
+def _existing_generated_model_paths(result, target: Path) -> dict[str, str]:
+    """Return manifest-authorized generated model names for collision checks."""
+    from ..core.compiler.emit import _parse_manifest
+
+    model_paths = {
+        Path(path).stem.casefold(): path
+        for path in result.artifact_dict()
+        if path.startswith("models/") and path.endswith(".sql")
+    }
+    if not target.is_dir():
+        return model_paths
+    excluded = {
+        _DEPENDENCY_MANIFEST_NAME,
+        _SHARED_MANIFEST_NAME,
+        _domain_manifest_name(result.domain),
+    }
+    for manifest in sorted(target.glob(".kairos-compile-manifest.*.json")):
+        if manifest.name in excluded:
+            continue
+        for path in _parse_manifest(target, manifest.name):
+            if not path.startswith("models/") or not path.endswith(".sql"):
+                continue
+            model_paths.setdefault(Path(path).stem.casefold(), path)
+    return model_paths
+
+
+def _reconciled_dbt_dependencies(result, target: Path) -> dict[str, str] | None:
+    """Reconcile plan-selected contracted dbt files across sequential domain emits."""
+    from ..core.compiler.emit import ArtifactCollisionError
+
+    plan_dependencies = result.plan.dbt_dependencies if result.plan is not None else ()
+    manifest_path = target / _DEPENDENCY_MANIFEST_NAME
+    manifest_exists = manifest_path.exists() or manifest_path.is_symlink()
+    if not plan_dependencies and not manifest_exists:
+        return None
+
+    states, prior_content = _load_dependency_states(target)
+    states.pop(result.domain, None)
+    current_content: dict[str, str] = {}
+    if plan_dependencies:
+        current_entries: list[dict[str, str]] = []
+        for dependency in plan_dependencies:
+            current_entries.append(
+                {
+                    "kind": dependency.kind,
+                    "model_name": dependency.model_name,
+                    "path": dependency.path,
+                    "sha256": _content_sha256(dependency.content),
+                }
+            )
+            current_content[dependency.path] = dependency.content
+        states[result.domain] = current_entries
+
+    artifacts: dict[str, str] = {}
+    selected_paths: dict[str, tuple[str, str]] = {}
+    selected_models: dict[str, str] = {}
+    generated_models = _existing_generated_model_paths(result, target)
+    for domain in sorted(states):
+        entries = states[domain]
+        artifacts[_dependency_state_name(domain)] = _dependency_state_text(domain, entries)
+        for entry in sorted(entries, key=lambda item: item["path"]):
+            path = entry["path"]
+            content = current_content[path] if domain == result.domain else prior_content[path]
+            if _content_sha256(content) != entry["sha256"]:
+                raise ArtifactCollisionError(
+                    f"contracted dbt dependency {path!r} no longer matches domain {domain!r}"
+                )
+            path_key = path.casefold()
+            previous = selected_paths.get(path_key)
+            if previous is not None and (previous[0] != path or previous[1] != content):
+                raise ArtifactCollisionError(
+                    f"contracted dbt dependency path {path!r} has conflicting bytes or casing"
+                )
+            selected_paths[path_key] = (path, content)
+
+            model_name = entry["model_name"]
+            if model_name:
+                model_key = model_name.casefold()
+                previous_model = selected_models.get(model_key)
+                generated_model = generated_models.get(model_key)
+                if previous_model is not None and previous_model != path:
+                    raise ArtifactCollisionError(
+                        f"contracted dbt model name {model_name!r} resolves to both "
+                        f"{previous_model!r} and {path!r}"
+                    )
+                if generated_model is not None:
+                    raise ArtifactCollisionError(
+                        f"contracted dbt model name {model_name!r} collides with generated "
+                        f"model {generated_model!r}"
+                    )
+                selected_models[model_key] = path
+            artifacts[path] = content
+    return artifacts
+
+
+def _preflight_emit(
+    artifacts: dict[str, str],
+    target: Path,
+    *,
+    manifest_name: str,
+    replace_unowned_paths: tuple[str, ...] = (),
+) -> None:
+    """Validate every planned write before any unified-project manifest is mutated."""
+    from ..core.compiler.emit import (
+        ArtifactCollisionError,
+        EmissionError,
+        _parse_manifest,
+        _validate_target_collisions,
+        plan_emission,
+    )
+
+    if target.exists() and not target.is_dir():
+        raise EmissionError(f"emission target must be a directory: {target}")
+    plan = plan_emission(artifacts)
+    if any(artifact.path == manifest_name for artifact in plan.artifacts):
+        raise ArtifactCollisionError(
+            f"artifact path {manifest_name!r} is reserved for the compiler manifest"
+        )
+    previously_owned = _parse_manifest(target, manifest_name) if target.exists() else {}
+    _validate_target_collisions(
+        target,
+        plan.artifacts,
+        previously_owned,
+        replace_unowned_paths,
+    )
+
+
 def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     from ..core.compiler.emit import emit_artifacts
 
@@ -142,18 +381,42 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     domain_artifacts = {
         path: content for path, content in artifacts.items() if not _is_shared_artifact(path)
     }
+    shared_artifacts = _reconciled_shared_artifacts(result, target)
+    dependency_artifacts = _reconciled_dbt_dependencies(result, target)
+    _preflight_emit(
+        domain_artifacts,
+        target,
+        manifest_name=_domain_manifest_name(result.domain),
+    )
+    _preflight_emit(
+        shared_artifacts,
+        target,
+        manifest_name=_SHARED_MANIFEST_NAME,
+        replace_unowned_paths=tuple(shared_artifacts),
+    )
+    if dependency_artifacts is not None:
+        _preflight_emit(
+            dependency_artifacts,
+            target,
+            manifest_name=_DEPENDENCY_MANIFEST_NAME,
+        )
     emit_artifacts(
         domain_artifacts,
         target,
         manifest_name=_domain_manifest_name(result.domain),
     )
-    shared_artifacts = _reconciled_shared_artifacts(result, target)
     emit_artifacts(
         shared_artifacts,
         target,
         manifest_name=_SHARED_MANIFEST_NAME,
         replace_unowned_paths=tuple(shared_artifacts),
     )
+    if dependency_artifacts is not None:
+        emit_artifacts(
+            dependency_artifacts,
+            target,
+            manifest_name=_DEPENDENCY_MANIFEST_NAME,
+        )
     return target
 
 

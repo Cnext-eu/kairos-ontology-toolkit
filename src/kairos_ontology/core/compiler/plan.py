@@ -24,6 +24,18 @@ class PlannedCompileArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class PlannedDbtDependency:
+    """One authored contracted dbt file selected into the emitted project."""
+
+    path: str
+    source_path: str
+    content: str
+    kind: str
+    model_name: str = ""
+    binding_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class CompileEntityPlan:
     """Plan and blocking outcome for one parsed entity binding."""
 
@@ -50,6 +62,7 @@ class CompilePlan:
     silver_registry: SilverRegistry | None
     materialization_plan: MaterializationPlan | None
     planned_artifacts: tuple[PlannedCompileArtifact, ...]
+    dbt_dependencies: tuple[PlannedDbtDependency, ...]
     entities: tuple[CompileEntityPlan, ...]
     project_diagnostics: tuple[CompileDiagnostic, ...]
     diagnostics: CompileDiagnostics

@@ -5,11 +5,15 @@
 from __future__ import annotations
 
 import json
+import shutil
+import textwrap
 
 import pytest
 from click.testing import CliRunner
 
+from kairos_ontology.cli.compile import _emit_compile_artifacts
 from kairos_ontology.cli.main import cli
+from kairos_ontology.core.compiler import CompileMode, compile_domain
 from kairos_ontology.core.observability import reset_logging
 
 from .test_compiler_kernel import _hub
@@ -28,6 +32,51 @@ def _clean_logging():
     reset_logging()
     yield
     reset_logging()
+
+
+def _contracted_hub(root):
+    hub = _hub(root)
+    models = hub / "integration" / "transforms" / "dbt" / "models"
+    models.mkdir(parents=True)
+    (models / "customer_stage.sql").write_text(
+        "select customer_id, customer_name from {{ source('crm', 'customers') }}\n",
+        encoding="utf-8",
+    )
+    (models / "schema.yml").write_text(
+        textwrap.dedent("""\
+        version: 2
+        models:
+          - name: customer_stage
+            config:
+              contract:
+                enforced: true
+            meta:
+              kairos:
+                grain: one row per customer
+                grain_key: [customer_id]
+                target_class: https://example.test/party#Customer
+                virtual_source_iri: https://example.test/virtual/customer-stage
+                supported_adapters: [fabric]
+            columns:
+              - {name: customer_id, data_type: string, data_tests: [not_null]}
+              - {name: customer_name, data_type: string}
+        """),
+        encoding="utf-8",
+    )
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace(
+            "source:\n  relation: crm.customers",
+            textwrap.dedent("""\
+            source:
+              dbtModel:
+                name: customer_stage
+                sqlPath: integration/transforms/dbt/models/customer_stage.sql
+                contractPath: integration/transforms/dbt/models/schema.yml"""),
+        ),
+        encoding="utf-8",
+    )
+    return hub
 
 
 def test_compile_requires_exactly_one_mode(tmp_path):
@@ -75,9 +124,7 @@ def test_compile_json_payload_includes_operation_id(tmp_path, monkeypatch):
     hub = _hub(tmp_path)
     monkeypatch.chdir(hub)
 
-    result = CliRunner().invoke(
-        cli, ["compile", "party", "--check", "--format", "json"]
-    )
+    result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
@@ -138,6 +185,38 @@ def test_compile_emit_with_confirm_emit_succeeds(tmp_path, monkeypatch):
     monkeypatch.chdir(hub)
     result = CliRunner().invoke(cli, ["compile", "party", "--emit", "--confirm-emit"])
     assert result.exit_code == 0, result.output
+
+
+def test_emit_reads_contracted_dependencies_only_from_compile_plan(tmp_path):
+    hub = _contracted_hub(tmp_path / "hub")
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+    shutil.rmtree(hub / "integration" / "transforms")
+
+    target = tmp_path / "publish" / "medallion" / "dbt"
+    _emit_compile_artifacts(result, target)
+
+    assert (target / "models" / "customer_stage.sql").is_file()
+    assert (target / "models" / "schema.yml").is_file()
+
+
+def test_compile_emit_preflights_unowned_dependency_collision(tmp_path, monkeypatch):
+    hub = _contracted_hub(tmp_path / "hub")
+    output = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    collision = output / "models" / "customer_stage.sql"
+    collision.parent.mkdir(parents=True)
+    collision.write_text("select 'unowned'\n", encoding="utf-8")
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        ["compile", "party", "--emit", "--confirm-emit"],
+        env={"KAIROS_SKILL_CONTEXT": "1"},
+    )
+
+    assert result.exit_code != 0
+    assert "collides with an unowned path" in result.output
+    assert collision.read_text(encoding="utf-8") == "select 'unowned'\n"
+    assert not (output / "models" / "silver" / "party" / "customer.sql").exists()
 
 
 def test_compile_returns_nonzero_for_diagnostics(tmp_path, monkeypatch):

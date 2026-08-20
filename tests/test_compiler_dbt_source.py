@@ -78,6 +78,10 @@ def _hub(tmp_path: Path, model: dict | None = None) -> Path:
         "select customer_id, customer_name from {{ ref('stg_customer') }}\n",
         encoding="utf-8",
     )
+    (models / "stg_customer.sql").write_text(
+        "select customer_id, customer_name from {{ source('crm', 'customers') }}\n",
+        encoding="utf-8",
+    )
     (models / "schema.yml").write_text(
         yaml.safe_dump({"version": 2, "models": [model or _model()]}, sort_keys=False),
         encoding="utf-8",
@@ -157,9 +161,7 @@ def test_relation_binding_is_rejected_with_stable_missing_model_code(tmp_path: P
             "dbt-source.contract-invalid",
         ),
         (
-            lambda model: model["meta"]["kairos"].update(
-                supported_adapters=["fabric", "fabric"]
-            ),
+            lambda model: model["meta"]["kairos"].update(supported_adapters=["fabric", "fabric"]),
             "dbt-source.contract-invalid",
         ),
         # #503: target_class was declared by the contract and written as a sentinel by
@@ -254,6 +256,26 @@ def test_requires_exact_selected_sql_and_contract_paths(tmp_path: Path) -> None:
         resolve_dbt_model_source(binding, hub)
 
     assert {item.code for item in excinfo.value.diagnostics} == {"dbt-source.path-unresolved"}
+
+
+def test_rejects_unresolved_transitive_dbt_ref_dependency(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text(
+        "select * from {{ ref('missing_support_model') }}\n",
+        encoding="utf-8",
+    )
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.dependency-unresolved"
+    assert diagnostic.location.pointer == "/source/dbtModel/sqlPath"
+    assert "missing_support_model" in diagnostic.message
 
 
 def test_rejects_unsafe_dbt_source_path_with_stable_location(tmp_path: Path) -> None:

@@ -392,6 +392,49 @@ def _write_v5_hub(hub_root, *, with_sample_on_name: bool = False):
     return source_dir.parent, ontology_dir, binding_dir
 
 
+def _add_contracted_v5_binding(hub_root, binding_dir, *, replace_direct: bool) -> None:
+    models = hub_root / "integration" / "transforms" / "dbt" / "models" / "intermediate"
+    models.mkdir(parents=True)
+    (models / "int_customer.sql").write_text(
+        "select customer_id, customer_name from {{ source('crm', 'customers') }}\n",
+        encoding="utf-8",
+    )
+    (models / "int_customer.yml").write_text(
+        textwrap.dedent("""
+            version: 2
+            models:
+              - name: int_customer
+                config:
+                  contract:
+                    enforced: true
+                meta:
+                  kairos:
+                    target_class: https://example.test/party#Customer
+                    virtual_source_iri: https://example.test/virtual/int-customer
+                    grain: one row per customer
+                    grain_key: [customer_id]
+                    supported_adapters: [fabric]
+                columns:
+                  - {name: customer_id, data_type: string, data_tests: [not_null]}
+                  - {name: customer_name, data_type: string}
+            """).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    direct_path = binding_dir / "customer.binding.yaml"
+    document = yaml.safe_load(direct_path.read_text(encoding="utf-8"))
+    document["metadata"]["name"] = "dbt-customer"
+    document["source"] = {
+        "dbtModel": {
+            "name": "int_customer",
+            "sqlPath": "integration/transforms/dbt/models/intermediate/int_customer.sql",
+            "contractPath": "integration/transforms/dbt/models/intermediate/int_customer.yml",
+        }
+    }
+    output = direct_path if replace_direct else binding_dir / "dbt-customer.binding.yaml"
+    output.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
 def test_load_binding_mappings_resolves_v5_entity_bindings(tmp_path):
     sources, _, bindings = _write_v5_hub(tmp_path)
 
@@ -510,6 +553,83 @@ def test_run_silver_sample_audit_flags_v5_column_missing_samples(tmp_path):
     assert report.sample_coverage_ratio == 0.5
     codes = {f.code for f in report.findings}
     assert "missing_mapped_samples" in codes
+
+
+def test_audit_reports_contracted_virtual_outputs_as_unevaluated_info(tmp_path):
+    sources, _, bindings = _write_v5_hub(tmp_path, with_sample_on_name=True)
+    _add_contracted_v5_binding(tmp_path, bindings, replace_direct=True)
+    dbt = tmp_path / "dbt-output"
+    dbt.mkdir()
+
+    report = run_silver_sample_audit(
+        sources_dir=sources,
+        mappings_dir=tmp_path / "model" / "mappings",
+        dbt_output_dir=dbt,
+        bindings_dir=bindings,
+        hub_root=tmp_path,
+    )
+
+    limitations = [
+        finding for finding in report.findings if finding.code == "contracted_output_not_evaluated"
+    ]
+    assert report.mapped_columns == 2
+    assert report.sampled_mapped_columns == 0
+    assert len(limitations) == 2
+    assert not [finding for finding in report.findings if finding.code == "missing_source_column"]
+    assert all(finding.severity == "info" for finding in limitations)
+    assert all(finding.evidence["source_systems"] == ["crm"] for finding in limitations)
+    assert all(finding.evidence["lineage_fully_traceable"] is True for finding in limitations)
+
+
+def test_audit_preserves_real_missing_physical_column_errors(tmp_path):
+    sources, mappings, dbt = _write_fixture(tmp_path)
+    mapping_path = mappings / "app-to-domain.ttl"
+    mapping_path.write_text(
+        mapping_path.read_text(encoding="utf-8")
+        + """
+
+app:Customer_Missing skos:exactMatch ex:missingValue .
+map:missing a kairos-map:ColumnMapping ;
+    kairos-map:sourceColumn app:Customer_Missing ;
+    kairos-map:targetProperty ex:missingValue ;
+    kairos-map:matchType "exactMatch" .
+""",
+        encoding="utf-8",
+    )
+
+    report = run_silver_sample_audit(
+        sources_dir=sources,
+        mappings_dir=mappings,
+        dbt_output_dir=dbt,
+    )
+
+    missing = [finding for finding in report.findings if finding.code == "missing_source_column"]
+    assert len(missing) == 1
+    assert missing[0].severity == "error"
+    assert missing[0].evidence["source_column_uri"].endswith("Customer_Missing")
+
+
+def test_cli_fail_on_error_accepts_direct_and_contracted_bindings(tmp_path, monkeypatch):
+    hub_root = tmp_path / "hub"
+    hub_root.mkdir()
+    _sources, _ontologies, bindings = _write_v5_hub(hub_root, with_sample_on_name=True)
+    _add_contracted_v5_binding(hub_root, bindings, replace_direct=False)
+    monkeypatch.chdir(hub_root)
+
+    result = CliRunner().invoke(cli, ["audit-silver-samples", "--fail-on", "error"])
+
+    assert result.exit_code == 0, result.output
+    report_path = (
+        hub_root.parent
+        / "ontology-hub-publish"
+        / "reports"
+        / "silver-sample-audit"
+        / "silver-sample-audit.yaml"
+    )
+    document = yaml.safe_load(report_path.read_text(encoding="utf-8"))
+    assert document["summary"]["mapped_columns"] == 4
+    assert document["summary"]["findings"]["error"] == 0
+    assert document["summary"]["findings"]["info"] == 2
 
 
 def test_run_silver_sample_audit_zero_mappings_is_not_reported_as_success(tmp_path):

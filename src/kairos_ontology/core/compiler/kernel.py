@@ -73,9 +73,13 @@ from .bindings import (
 )
 from .compile import CompileMode
 from .conformance import ConformancePlan, ConformanceTypeContract, build_conformance_plan
-from .dbt_source import resolve_dbt_model_source, validate_contract_target_class
+from .dbt_source import (
+    resolve_dbt_model_dependency_paths,
+    resolve_dbt_model_source,
+    validate_contract_target_class,
+)
 from .ir import CanonicalProjectIR, EntityBindingSpec
-from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact
+from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact, PlannedDbtDependency
 from .quality import run_safety_kernel
 from .result import (
     CompileDiagnostic,
@@ -689,8 +693,9 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
             binding = load_entity_binding(text, path=str(path))
             relation = resolve_dbt_model_source(binding, root)
             relations.append(relation)
-            for authored_path in (sql_path, contract_path):
-                resolved_path = (root / authored_path).resolve()
+            dependency_paths = resolve_dbt_model_dependency_paths(binding, root)
+            authored_paths = (*dependency_paths, (root / contract_path).resolve())
+            for resolved_path in authored_paths:
                 inputs.append(
                     ProvenanceInput(
                         str(resolved_path.relative_to(root)).replace("\\", "/"),
@@ -2847,6 +2852,193 @@ def _planned_artifact_paths(
     return tuple(sorted(path for path in paths if path))
 
 
+def _planned_dbt_dependencies(
+    bindings: tuple[EntityBinding, ...],
+    scope: BuildScope,
+    generated_paths: tuple[str, ...],
+) -> tuple[tuple[PlannedDbtDependency, ...], tuple[CompileDiagnostic, ...]]:
+    """Select contracted SQL/properties bytes from the immutable compile input closure."""
+    inputs = {item.name.replace("\\", "/"): item.content for item in scope.inputs}
+    sql_inputs: dict[str, list[str]] = {}
+    for path in inputs:
+        if path.startswith("integration/transforms/dbt/models/") and path.endswith(".sql"):
+            sql_inputs.setdefault(Path(path).stem.casefold(), []).append(path)
+    selected: dict[str, dict[str, object]] = {}
+    model_paths: dict[str, str] = {}
+    diagnostics: list[CompileDiagnostic] = []
+    generated_by_path = {path.casefold(): path for path in generated_paths}
+    generated_models = {
+        Path(path).stem.casefold(): path
+        for path in generated_paths
+        if path.startswith("models/") and path.endswith(".sql")
+    }
+
+    def select_dependency(
+        binding: EntityBinding,
+        source_path: str,
+        *,
+        kind: str,
+        model_name: str = "",
+    ) -> None:
+        normalized_source = source_path.replace("\\", "/")
+        prefix = "integration/transforms/dbt/"
+        content = inputs.get(normalized_source)
+        if content is None or not normalized_source.startswith(prefix):
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="dbt-source.path-unresolved",
+                    message=(
+                        f"selected dbt {kind} file {normalized_source!r} is absent from "
+                        "the immutable CompilePlan input closure"
+                    ),
+                    location=SourceLocation(
+                        path=binding.source_path,
+                        pointer=(
+                            "/source/dbtModel/sqlPath"
+                            if kind == "sql"
+                            else "/source/dbtModel/contractPath"
+                        ),
+                    ),
+                )
+            )
+            return
+
+        emit_path = normalized_source.removeprefix(prefix)
+        collision_key = emit_path.casefold()
+        generated_path = generated_by_path.get(collision_key)
+        if generated_path is not None:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="safety.artifact-collision",
+                    message=(
+                        f"contracted dbt dependency {emit_path!r} collides with generated "
+                        f"artifact {generated_path!r}"
+                    ),
+                    location=SourceLocation(path=binding.source_path),
+                )
+            )
+            return
+
+        previous = selected.get(collision_key)
+        if previous is not None:
+            if previous["path"] != emit_path or previous["content"] != content:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.artifact-collision",
+                        message=(
+                            "contracted dbt dependency paths collide with conflicting "
+                            f"bytes: {previous['path']!r} and {emit_path!r}"
+                        ),
+                        location=SourceLocation(path=binding.source_path),
+                    )
+                )
+                return
+            previous_names = set(previous["binding_names"])
+            previous_names.add(binding.name)
+            previous["binding_names"] = tuple(sorted(previous_names))
+            return
+
+        if model_name:
+            model_key = model_name.casefold()
+            previous_model_path = model_paths.get(model_key)
+            generated_model_path = generated_models.get(model_key)
+            if previous_model_path is not None and previous_model_path != emit_path:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.artifact-collision",
+                        message=(
+                            f"contracted dbt model name {model_name!r} resolves to both "
+                            f"{previous_model_path!r} and {emit_path!r}"
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path,
+                            pointer="/source/dbtModel/name",
+                        ),
+                    )
+                )
+                return
+            if generated_model_path is not None:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="safety.artifact-collision",
+                        message=(
+                            f"contracted dbt model name {model_name!r} collides with "
+                            f"generated model {generated_model_path!r}"
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path,
+                            pointer="/source/dbtModel/name",
+                        ),
+                    )
+                )
+                return
+            model_paths[model_key] = emit_path
+
+        selected[collision_key] = {
+            "path": emit_path,
+            "source_path": normalized_source,
+            "content": content,
+            "kind": kind,
+            "model_name": model_name,
+            "binding_names": (binding.name,),
+        }
+
+    for binding in bindings:
+        model = binding.source.dbt_model
+        if model is None:
+            continue
+        pending = [model.sql_path.replace("\\", "/")]
+        visited: set[str] = set()
+        while pending:
+            sql_path = pending.pop()
+            if sql_path in visited:
+                continue
+            visited.add(sql_path)
+            select_dependency(
+                binding,
+                sql_path,
+                kind="sql",
+                model_name=Path(sql_path).stem,
+            )
+            sql_content = inputs.get(sql_path)
+            if sql_content is None:
+                continue
+            for ref_name in sorted(
+                set(re.findall(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", sql_content))
+            ):
+                candidates = sql_inputs.get(ref_name.casefold(), [])
+                if len(candidates) != 1:
+                    diagnostics.append(
+                        CompileDiagnostic(
+                            code="dbt-source.dependency-unresolved",
+                            message=(
+                                f"dbt ref({ref_name!r}) is absent or ambiguous in the "
+                                "immutable CompilePlan input closure"
+                            ),
+                            location=SourceLocation(
+                                path=binding.source_path,
+                                pointer="/source/dbtModel/sqlPath",
+                            ),
+                        )
+                    )
+                    continue
+                pending.append(candidates[0])
+        select_dependency(binding, model.contract_path, kind="properties")
+
+    dependencies = tuple(
+        PlannedDbtDependency(
+            path=str(item["path"]),
+            source_path=str(item["source_path"]),
+            content=str(item["content"]),
+            kind=str(item["kind"]),
+            model_name=str(item["model_name"]),
+            binding_names=tuple(item["binding_names"]),
+        )
+        for item in sorted(selected.values(), key=lambda item: str(item["path"]))
+    )
+    return dependencies, tuple(diagnostics)
+
+
 def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     """Build the canonical graph-free plan without rendering or writing artifacts."""
     scope, context = resolve_scope(Path(hub_root), domain)
@@ -3049,6 +3241,10 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 )
             )
     artifact_paths = _planned_artifact_paths(shaped, materialized, tuple(valid_bindings), context)
+    dbt_dependencies, dependency_diagnostics = _planned_dbt_dependencies(
+        tuple(valid_bindings), scope, artifact_paths
+    )
+    diagnostics.extend(dependency_diagnostics)
     conformance_owner = {
         group.target_class: group.sources[0].binding_name
         for plan in conformance_plans
@@ -3125,6 +3321,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             )
             for path in artifact_paths
         ),
+        dbt_dependencies=dbt_dependencies,
         entities=entity_plans,
         project_diagnostics=project_diagnostics,
         diagnostics=CompileDiagnostics(ordered),

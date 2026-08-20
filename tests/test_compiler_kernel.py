@@ -493,6 +493,67 @@ def test_contracted_dbt_model_compiles_as_virtual_ref_source(tmp_path):
     assert not [path for path in artifacts if "__from_" in path]
     # The managed virtual source is never re-declared as a raw dbt source.
     assert "models/silver/_dbt__sources.yml" not in artifacts
+    dependencies = {item.path: item for item in result.plan.dbt_dependencies}
+    assert set(dependencies) == {"models/customer_stage.sql", "models/schema.yml"}
+    assert dependencies["models/customer_stage.sql"].content == (
+        "select customer_id, customer_name from source_rows\n"
+    )
+    assert dependencies["models/customer_stage.sql"].model_name == "customer_stage"
+    assert dependencies["models/schema.yml"].kind == "properties"
+
+
+def test_contracted_dbt_model_name_collision_with_generated_model_blocks_emit(tmp_path):
+    hub = _hub(tmp_path)
+    models = hub / "integration" / "transforms" / "dbt" / "models"
+    models.mkdir(parents=True)
+    (models / "customer.sql").write_text(
+        "select customer_id, customer_name from {{ source('crm', 'customers') }}\n",
+        encoding="utf-8",
+    )
+    (models / "schema.yml").write_text(
+        textwrap.dedent("""\
+        version: 2
+        models:
+          - name: customer
+            config:
+              contract:
+                enforced: true
+            meta:
+              kairos:
+                grain: one row per customer
+                grain_key: [customer_id]
+                target_class: https://example.test/party#Customer
+                virtual_source_iri: https://example.test/virtual/customer
+                supported_adapters: [fabric]
+            columns:
+              - {name: customer_id, data_type: string, data_tests: [not_null]}
+              - {name: customer_name, data_type: string}
+        """),
+        encoding="utf-8",
+    )
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace(
+            "source:\n  relation: crm.customers",
+            textwrap.dedent("""\
+            source:
+              dbtModel:
+                name: customer
+                sqlPath: integration/transforms/dbt/models/customer.sql
+                contractPath: integration/transforms/dbt/models/schema.yml"""),
+        ),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    assert not result.can_emit
+    collision = next(
+        item for item in result.diagnostics.items if item.code == "safety.artifact-collision"
+    )
+    assert "model name 'customer'" in collision.message
+    assert "models/silver/party/customer.sql" in collision.message
 
 
 def _write_contracted_models(hub: Path, names: list[str]) -> None:
@@ -817,8 +878,7 @@ def test_fields_entries_with_colliding_output_columns_are_rejected(tmp_path):
     hub = _hub(tmp_path)
     ontology = hub / "model" / "ontologies" / "party.ttl"
     ontology.write_text(
-        ontology.read_text(encoding="utf-8")
-        + "\nparty:customer_name a owl:DatatypeProperty ;\n"
+        ontology.read_text(encoding="utf-8") + "\nparty:customer_name a owl:DatatypeProperty ;\n"
         "  rdfs:domain party:Customer ; rdfs:range xsd:string .\n",
         encoding="utf-8",
     )
