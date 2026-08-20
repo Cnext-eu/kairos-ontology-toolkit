@@ -124,6 +124,9 @@ class ResolvedRelation:
     schema: str = "dbo"
     connection_type: str = "jdbc"
     system_uri: str = ""
+    # Contracted dbt models carry meta.kairos.target_class here so build_compile_plan can
+    # validate it without re-reading the contract a binding already resolved once.
+    target_class: str = ""
 
     def column_uri(self, name: str) -> str:
         """Return the stable URI used for one column of this relation."""

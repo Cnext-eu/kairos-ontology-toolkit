@@ -17,6 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc21] — 2026-08-20
+
+### Added
+- **`compile --no-cache` bypasses the new ontology-closure parse cache.** Use after
+  manually editing a hub's `.cache/ontology-parse/` directory, or when debugging a
+  suspected stale-cache result.
+
+### Fixed
+- **`compile <domain> --emit` was slow because the compile path reparsed and
+  re-resolved the same inputs repeatedly, with no caching anywhere.** Three fixes:
+  (1) `resolve_scope` parsed every hub-wide source `.ttl` file up to twice just to test
+  which ones a domain's bindings reference; it now parses each candidate at most once,
+  gated by a cheap byte-level pre-filter that skips files that provably cannot match.
+  (2) A dbt-sourced binding's contract and SQL dependency closure were read up to three
+  times per compile (`resolve_scope`'s pre-pass, its duplicate-virtual-source check, and
+  `build_compile_plan`'s main loop); they are now resolved once and reused via
+  `ResolutionContext`. (3) `load_ontology` now caches the parsed `owl:imports` closure:
+  in-process for the lifetime of one compile (content-hash verified before every reuse,
+  so a hub file changing mid-process is never served stale), and on disk per source file
+  (content-hash keyed, so it survives across the separate `compile --emit` processes a
+  hub-wide release job runs one per domain). The on-disk cache only ever gets written
+  during `--emit`, never during `--check`/`--explain`, and lives in a gitignored
+  `.cache/` directory scoped to one call so it can never leak into another command.
+
 ## [5.13.0rc20] — 2026-08-20
 
 ### Fixed

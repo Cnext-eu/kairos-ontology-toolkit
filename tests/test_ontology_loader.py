@@ -7,12 +7,35 @@ from pathlib import Path
 import pytest
 from rdflib import RDF, URIRef
 
+from kairos_ontology.core import ontology_loader
 from kairos_ontology.core.ontology_loader import (
     OntologyLoadError,
     load_ontology,
 )
 
 OWL_CLASS = URIRef("http://www.w3.org/2002/07/owl#Class")
+
+
+@pytest.fixture(autouse=True)
+def _reset_ontology_cache():
+    """Tier A (in-process) memoization is module-global state; isolate every test."""
+    ontology_loader._IN_PROCESS_CACHE.clear()
+    yield
+    ontology_loader._IN_PROCESS_CACHE.clear()
+
+
+def _count_turtle_parses(monkeypatch) -> list:
+    """Patch Graph.parse to record every *Turtle* (not cached N-Triples) parse call."""
+    parsed = []
+    original_parse = ontology_loader.Graph.parse
+
+    def counting_parse(self, source=None, **kwargs):
+        if kwargs.get("format") == "turtle":
+            parsed.append(source)
+        return original_parse(self, source, **kwargs)
+
+    monkeypatch.setattr(ontology_loader.Graph, "parse", counting_parse)
+    return parsed
 
 
 def _ttl(ontology: str, *, imports: tuple[str, ...] = (), cls: str | None = None) -> str:
@@ -211,3 +234,110 @@ def test_closure_hash_is_machine_root_independent_and_dependency_sensitive(tmp_p
     child_b.write_text(_ttl("urn:child", cls="urn:Changed"), encoding="utf-8")
     changed = load_ontology(root_b, catalog_path=catalog_b)
     assert changed.closure_hash != first.closure_hash
+
+
+def test_repeated_load_within_one_process_reuses_the_cached_result(tmp_path, monkeypatch):
+    root = tmp_path / "a.ttl"
+    root.write_text(_ttl("urn:a", cls="urn:A"), encoding="utf-8")
+    parsed = _count_turtle_parses(monkeypatch)
+
+    first = load_ontology(root, identity_root=tmp_path)
+    assert len(parsed) == 1
+
+    second = load_ontology(root, identity_root=tmp_path)
+    assert len(parsed) == 1  # Tier A hit: no reparse
+    assert second is first
+
+
+def test_cached_result_is_not_reused_across_a_different_profile(tmp_path, monkeypatch):
+    from kairos_ontology.core.ontology_loader import SemanticProfile
+
+    root = tmp_path / "a.ttl"
+    root.write_text(_ttl("urn:a", cls="urn:A"), encoding="utf-8")
+    parsed = _count_turtle_parses(monkeypatch)
+
+    load_ontology(root, identity_root=tmp_path, profile=SemanticProfile.ASSERTED)
+    assert len(parsed) == 1
+
+    load_ontology(root, identity_root=tmp_path, profile=SemanticProfile.RDFS)
+    assert len(parsed) == 2  # different profile is a different cache key, not a hit
+
+
+def test_repeated_load_reparses_when_a_transitively_imported_file_changes(tmp_path, monkeypatch):
+    root = tmp_path / "a.ttl"
+    child = tmp_path / "b.ttl"
+    root.write_text(_ttl("urn:a", imports=("urn:b",), cls="urn:A"), encoding="utf-8")
+    child.write_text(_ttl("urn:b", cls="urn:B"), encoding="utf-8")
+    catalog = _catalog(tmp_path / "catalog.xml", {"urn:b": "b.ttl"})
+    parsed = _count_turtle_parses(monkeypatch)
+
+    first = load_ontology(root, catalog_path=catalog)
+    assert len(parsed) == 2  # root + child
+
+    child.write_text(_ttl("urn:b", cls="urn:Changed"), encoding="utf-8")
+    second = load_ontology(root, catalog_path=catalog)
+
+    assert second is not first
+    assert second.closure_hash != first.closure_hash
+    assert (URIRef("urn:Changed"), RDF.type, OWL_CLASS) in second.graph
+    assert len(parsed) == 4  # the stale Tier A entry was rejected; both files reparsed
+
+
+def test_on_disk_cache_survives_a_simulated_new_process_without_reparsing_turtle(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "a.ttl"
+    root.write_text(_ttl("urn:a", cls="urn:A"), encoding="utf-8")
+
+    with ontology_loader.cache_write_scope(True):
+        load_ontology(root, identity_root=tmp_path)
+
+    # Simulate a fresh process: Tier A (in-process memoization) does not survive this,
+    # only Tier B (the on-disk, per-file parse cache) does.
+    ontology_loader._IN_PROCESS_CACHE.clear()
+    parsed = _count_turtle_parses(monkeypatch)
+
+    result = load_ontology(root, identity_root=tmp_path)
+
+    assert not parsed  # served entirely from the on-disk N-Triples cache
+    assert (URIRef("urn:A"), RDF.type, OWL_CLASS) in result.graph
+
+
+def test_on_disk_cache_invalidates_only_the_file_that_actually_changed(tmp_path, monkeypatch):
+    root = tmp_path / "a.ttl"
+    child = tmp_path / "b.ttl"
+    root.write_text(_ttl("urn:a", imports=("urn:b",), cls="urn:A"), encoding="utf-8")
+    child.write_text(_ttl("urn:b", cls="urn:B"), encoding="utf-8")
+    catalog = _catalog(tmp_path / "catalog.xml", {"urn:b": "b.ttl"})
+
+    with ontology_loader.cache_write_scope(True):
+        load_ontology(root, catalog_path=catalog)
+
+    ontology_loader._IN_PROCESS_CACHE.clear()
+    child.write_text(_ttl("urn:b", cls="urn:Changed"), encoding="utf-8")
+    parsed = _count_turtle_parses(monkeypatch)
+
+    with ontology_loader.cache_write_scope(True):
+        result = load_ontology(root, catalog_path=catalog)
+
+    assert parsed == [child.resolve()]  # only the changed file forced a Turtle reparse
+    assert (URIRef("urn:Changed"), RDF.type, OWL_CLASS) in result.graph
+
+
+def test_no_cache_write_scope_leaves_no_files_when_disabled(tmp_path):
+    root = tmp_path / "a.ttl"
+    root.write_text(_ttl("urn:a", cls="urn:A"), encoding="utf-8")
+
+    with ontology_loader.cache_write_scope(False):
+        load_ontology(root, identity_root=tmp_path)
+
+    assert not (tmp_path / ".cache").exists()
+
+
+def test_cache_write_scope_restores_previous_value_on_exception(tmp_path):
+    ontology_loader.CACHE_WRITE_ENABLED = False
+    with pytest.raises(RuntimeError):
+        with ontology_loader.cache_write_scope(True):
+            assert ontology_loader.CACHE_WRITE_ENABLED is True
+            raise RuntimeError("boom")
+    assert ontology_loader.CACHE_WRITE_ENABLED is False

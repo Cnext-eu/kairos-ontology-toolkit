@@ -12,6 +12,7 @@ from pathlib import Path
 
 import click
 
+from ..core import ontology_loader
 from ..core.compiler import CompileMode, compile_domain
 from ..core.conformance_artifact import check_discovery_gate
 from ..core.hub_utils import find_hub_root, publish_root
@@ -447,6 +448,14 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     default="text",
     show_default=True,
 )
+@click.option(
+    "--no-cache",
+    "no_cache",
+    is_flag=True,
+    help="Bypass the ontology-closure parse cache and force a clean reparse. Use after "
+    "manually editing a hub's .cache/ontology-parse/ directory, or when debugging a "
+    "suspected stale-cache result.",
+)
 def compile_cmd(
     domain: str,
     check_mode: bool,
@@ -454,6 +463,7 @@ def compile_cmd(
     emit_mode: bool,
     confirm_emit: bool,
     output_format: str,
+    no_cache: bool,
 ) -> None:
     """Check, explain, or emit one v5 DOMAIN from the current hub.
 
@@ -478,6 +488,9 @@ def compile_cmd(
     mode = (
         CompileMode.EMIT if emit_mode else CompileMode.CHECK if check_mode else CompileMode.EXPLAIN
     )
+    # Reading an already-warm ontology-parse cache is never a write, so it is safe to
+    # leave enabled process-wide for every mode; only --no-cache turns it off.
+    ontology_loader.CACHE_ENABLED = not no_cache
     hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
     # Domain-scoped (issue #389/#390): compile is inherently single-domain (domain is a
     # required positional argument here), so an unresolved DD-148 judgment tagged to a
@@ -564,7 +577,12 @@ def compile_cmd(
         )
         raise click.exceptions.Exit(1)
 
-    result = compile_domain(hub, domain, mode)
+    # DD-133/140: --check/--explain must write nothing to the hub; only --emit may
+    # populate the on-disk ontology-parse cache, and only for the duration of this one
+    # call (see cache_write_scope) so the flag never leaks into unrelated later
+    # load_ontology calls sharing this process.
+    with ontology_loader.cache_write_scope(not no_cache and mode is CompileMode.EMIT):
+        result = compile_domain(hub, domain, mode)
     if check_mode and explain_mode:
         # Both diagnostics and the explain report are already computed as part of the
         # same plan (CompileResult always carries both), so this is a free relabel —

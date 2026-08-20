@@ -19,6 +19,7 @@ from kairos_ontology.core.compiler import (
     compile_domain,
     compile_plan_result,
     render_compile_plan,
+    resolve_scope,
 )
 
 from discovery_fixtures import write_minimal_discovery_artifact
@@ -184,6 +185,46 @@ def test_missing_scope_is_a_diagnostic(tmp_path):
     result = compile_domain(tmp_path, "missing")
     assert not result.succeeded
     assert result.diagnostics.items[0].code == "scope.no-bindings-authored"
+
+
+def test_resolve_scope_parses_each_source_file_at_most_once(tmp_path, monkeypatch):
+    """DD perf fix: resolve_scope used to parse every hub source file twice (once for
+    the requested-ref membership test, once again for the matched subset), and parsed
+    every hub-wide source file even when only one domain's binding could match it. A
+    file with no possible matching ref should now never be RDF-parsed at all, and a
+    matching file should be parsed exactly once."""
+    hub = _hub(tmp_path)
+    unrelated_dir = hub / "integration" / "sources" / "billing"
+    unrelated_dir.mkdir(parents=True)
+    (unrelated_dir / "billing.vocabulary.ttl").write_text(
+        textwrap.dedent("""
+            @prefix src: <https://example.test/source#> .
+            @prefix kb: <https://kairos.cnext.eu/bronze#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            src:billing a kb:SourceSystem ; rdfs:label "billing" .
+            src:invoices a kb:SourceTable ; kb:sourceSystem src:billing ;
+              kb:tableName "invoices" ; kb:primaryKeyColumns "invoice_id" .
+            """).strip(),
+        encoding="utf-8",
+    )
+
+    parsed_paths: list[Path] = []
+    original_parse = Graph.parse
+
+    def counting_parse(self, source=None, **kwargs):
+        if kwargs.get("format") == "turtle":
+            parsed_paths.append(Path(source))
+        return original_parse(self, source, **kwargs)
+
+    monkeypatch.setattr(Graph, "parse", counting_parse)
+
+    scope, context = resolve_scope(hub, "party")
+
+    matching_parses = [path for path in parsed_paths if path.name == "crm.vocabulary.ttl"]
+    unrelated_parses = [path for path in parsed_paths if path.name == "billing.vocabulary.ttl"]
+    assert len(matching_parses) == 1
+    assert not unrelated_parses
+    assert context.relation("crm.customers") is not None
 
 
 def test_invalid_entity_is_blocked_while_safe_entity_still_plans(tmp_path):
