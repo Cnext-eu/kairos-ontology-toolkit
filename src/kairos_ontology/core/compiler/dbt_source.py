@@ -299,12 +299,21 @@ def _kairos_meta(binding: EntityBinding, model: dict[str, Any]) -> dict[str, Any
     return kairos
 
 
-def resolve_dbt_model_source(binding: EntityBinding, hub_root: str | Path) -> ResolvedRelation:
+def resolve_dbt_model_source(
+    binding: EntityBinding,
+    hub_root: str | Path,
+    *,
+    dependency_paths: tuple[Path, ...] | None = None,
+) -> ResolvedRelation:
     """Resolve one ``source.dbtModel`` to an adapter-compatible source relation.
 
     Resolution is intentionally independent of transformation candidate, synchronization, and
     execution-evidence registries. The binding's explicit SQL/YAML paths select one ordinary dbt
     model and its enforced physical output contract.
+
+    *dependency_paths*, when the caller has already resolved the model's transitive SQL
+    closure via :func:`resolve_dbt_model_dependency_paths`, skips repeating that walk here
+    purely for its validation side effect.
     """
 
     model_ref = binding.source.dbt_model
@@ -323,7 +332,8 @@ def resolve_dbt_model_source(binding: EntityBinding, hub_root: str | Path) -> Re
         suffixes=frozenset({".sql"}),
         pointer="sqlPath",
     )
-    _dependency_sql_paths(binding, root, sql_path)
+    if dependency_paths is None:
+        _dependency_sql_paths(binding, root, sql_path)
     contract_path = _resolve_authored_path(
         binding,
         root,
@@ -421,13 +431,15 @@ def resolve_dbt_model_source(binding: EntityBinding, hub_root: str | Path) -> Re
     # unconfirmed sentinel (or a plain typo) sailed through `compile --check`. Shape is
     # enforced here; the binding-vs-contract *identity* comparison needs a resolved class
     # URI and therefore lives in `validate_contract_target_class` below.
-    if not _is_absolute_http_iri(kairos.get("target_class")):
+    target_class = kairos.get("target_class")
+    if not _is_absolute_http_iri(target_class):
         raise _failure(
             binding,
             "dbt-source.contract-invalid",
             "selected dbt model must declare an absolute HTTP(S) meta.kairos.target_class",
             "contractPath",
         )
+    assert isinstance(target_class, str)
     return ResolvedRelation(
         ref=model_ref.name,
         uri=virtual_iri,
@@ -438,6 +450,7 @@ def resolve_dbt_model_source(binding: EntityBinding, hub_root: str | Path) -> Re
         schema="",
         connection_type="dbt",
         system_uri=f"{virtual_iri}/source-system",
+        target_class=target_class,
     )
 
 
@@ -480,29 +493,41 @@ def contract_target_class(binding: EntityBinding, hub_root: str | Path) -> str:
     return target_class
 
 
-def validate_contract_target_class(
-    binding: EntityBinding, hub_root: str | Path, resolved_class_uri: str
+def check_target_class_match(
+    binding: EntityBinding, declared_target_class: str, resolved_class_uri: str
 ) -> None:
-    """Raise when the binding's resolved target class disagrees with the dbt contract.
+    """Raise when *declared_target_class* disagrees with the binding's resolved class.
 
     Issue #503: the binding's ``target.class`` token and the contract's
     ``meta.kairos.target_class`` IRI are two independent declarations of the same fact, and
     nothing compared them -- a contracted model could claim to produce ``bsp_fin:RevenueLine``
     while the binding mapped its columns onto ``bsp_fin:InvoiceLine``, and the drift only
-    surfaced as wrong data. *resolved_class_uri* is the binding's ``target.class`` after
-    prefix/scope resolution, which is why this cannot live inside
-    :func:`resolve_dbt_model_source` -- that runs before the compiler has a
-    ``ResolutionContext``.
+    surfaced as wrong data. Split out of :func:`validate_contract_target_class` so a caller
+    that already has ``declared_target_class`` (e.g. from a ``ResolvedRelation`` computed
+    earlier in the same compile) can compare without re-reading the contract file.
     """
 
-    declared = contract_target_class(binding, hub_root)
-    if declared != resolved_class_uri:
+    if declared_target_class != resolved_class_uri:
         raise _failure(
             binding,
             "dbt-source.target-mismatch",
             (
                 f"EntityBinding target class {resolved_class_uri!r} does not match the "
-                f"contracted dbt meta.kairos.target_class {declared!r}"
+                f"contracted dbt meta.kairos.target_class {declared_target_class!r}"
             ),
             "contractPath",
         )
+
+
+def validate_contract_target_class(
+    binding: EntityBinding, hub_root: str | Path, resolved_class_uri: str
+) -> None:
+    """Raise when the binding's resolved target class disagrees with the dbt contract.
+
+    *resolved_class_uri* is the binding's ``target.class`` after prefix/scope resolution,
+    which is why this cannot live inside :func:`resolve_dbt_model_source` -- that runs before
+    the compiler has a ``ResolutionContext``.
+    """
+
+    declared = contract_target_class(binding, hub_root)
+    check_target_class_match(binding, declared, resolved_class_uri)

@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import logging
 from collections import deque
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -15,6 +17,49 @@ from typing import Any, Iterable
 from rdflib import Graph, Literal, OWL, RDF, URIRef
 
 from .catalog_utils import CatalogResolver, _get_rdf_format
+
+logger = logging.getLogger(__name__)
+
+# Perf caching for load_ontology (see below). Purely a build cache: keys are content
+# hashes or exact input tuples, so a hit can never serve semantically stale data -- a
+# miss just falls back to the always-correct full parse. Never treat this as the
+# lifecycle/decision state DD-133 forbids persisting; it holds no compile decisions,
+# only reparseable RDF and derived diagnostics. --no-cache (compile_cmd) flips this off.
+CACHE_ENABLED = True
+
+# Separate from CACHE_ENABLED (which also gates cache *reads*, always safe -- a read
+# is passive and never mutates the hub). Writing Tier B's on-disk cache is opt-in and
+# defaults to OFF: load_ontology is called from ~35 places, many outside compile_cmd
+# (tests, other CLI commands, direct library use) with no business writing into
+# whatever directory happens to be passed as identity_root. Only compile_cmd's --emit
+# path (the one place DD-133/140 already allow hub writes) turns this on explicitly.
+CACHE_WRITE_ENABLED = False
+
+
+@contextlib.contextmanager
+def cache_write_scope(enabled: bool):
+    """Temporarily set ``CACHE_WRITE_ENABLED``, restoring the previous value on exit.
+
+    A bare module-level assignment (``ontology_loader.CACHE_WRITE_ENABLED = True``)
+    would stay set for every later ``load_ontology`` call in the same process once one
+    ``compile --emit`` runs -- including unrelated direct ``compile_domain(...)`` calls
+    made by other tests or callers sharing that process, which then write into whatever
+    directory they happen to pass, never expecting a write. Scoping the flag to exactly
+    the call this context manager wraps, and restoring it afterwards no matter how the
+    block exits, is what keeps it safe as global state.
+    """
+    global CACHE_WRITE_ENABLED
+    previous = CACHE_WRITE_ENABLED
+    CACHE_WRITE_ENABLED = enabled
+    try:
+        yield
+    finally:
+        CACHE_WRITE_ENABLED = previous
+
+# Tier A: in-process memoization of full OntologyLoadResult objects, keyed on every
+# load_ontology argument that can change the result. Lives only for this process's
+# lifetime -- cleared implicitly on exit, never persisted.
+_IN_PROCESS_CACHE: dict[tuple[Any, ...], "OntologyLoadResult"] = {}
 
 
 class SemanticProfile(str, Enum):
@@ -120,6 +165,69 @@ class _PendingSource:
 
 def _source_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _parse_cache_path(identity_root: Path, digest: str, rdf_format: str) -> Path:
+    return identity_root / ".cache" / "ontology-parse" / f"{digest}-{rdf_format}.nt"
+
+
+def _load_cached_source_graph(identity_root: Path, digest: str, rdf_format: str) -> Graph | None:
+    """Return a previously parsed source file's triples, or ``None`` on any miss.
+
+    Tier B: keyed on the file's own content hash (*digest*), so it is airtight by
+    construction -- any change to that file's bytes changes the key and guarantees a
+    miss, independent of every other file in the closure. Content-addressed filenames
+    also make concurrent writers safe without locking: two processes racing to cache the
+    same file content write identical bytes to the same path.
+    """
+    if not CACHE_ENABLED:
+        return None
+    cache_file = _parse_cache_path(identity_root, digest, rdf_format)
+    if not cache_file.is_file():
+        return None
+    try:
+        serialized = cache_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Ignoring unreadable ontology parse cache %s: %s", cache_file, exc)
+        return None
+    graph = Graph()
+    try:
+        graph.parse(data=serialized, format="nt")
+    except Exception as exc:  # noqa: BLE001 - a corrupt cache entry must never break loading
+        logger.warning("Ignoring corrupt ontology parse cache %s: %s", cache_file, exc)
+        return None
+    return graph
+
+
+def _store_cached_source_graph(
+    identity_root: Path, digest: str, rdf_format: str, graph: Graph
+) -> None:
+    if not CACHE_ENABLED or not CACHE_WRITE_ENABLED:
+        return
+    cache_file = _parse_cache_path(identity_root, digest, rdf_format)
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(graph.serialize(format="nt"), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write ontology parse cache %s: %s", cache_file, exc)
+
+
+def _manifest_still_fresh(manifest: tuple["ImportManifestEntry", ...]) -> bool:
+    """Return whether every manifest member's recorded content hash still matches disk.
+
+    Re-hashing (not re-parsing) every closure file is what makes a Tier A cache hit
+    safe: any edit that adds, removes, or changes an import necessarily changes the
+    bytes of at least one already-visited file (you cannot add an ``owl:imports``
+    triple without editing that file's text), so this check also catches closure
+    membership changes, not just in-place content edits.
+    """
+    for entry in manifest:
+        try:
+            if _source_hash(Path(entry.source_path)) != entry.source_sha256:
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def _ontology_metadata(graph: Graph) -> tuple[str | None, str | None]:
@@ -262,6 +370,55 @@ def load_ontology(
     optional_imports: Iterable[str] = (),
     identity_root: Path | None = None,
 ) -> OntologyLoadResult:
+    """Load a complete ontology import closure through one deterministic API.
+
+    Tier A of the compile-perf cache (see module docstring-level comment near
+    ``CACHE_ENABLED``): memoizes the full result in-process, keyed on every argument
+    that can change it. This is what lets two calls for the same domain ontology within
+    one compile invocation (``resolve_scope``'s ``_ontology_symbols`` and
+    ``_relationship_target_class`` helpers) share one parse instead of two. A cache hit
+    is only trusted after re-hashing every file the cached manifest recorded
+    (``_manifest_still_fresh``) -- cheap relative to a Turtle parse, and what makes this
+    safe even if a hub file changes between two calls within the same process. Tier B,
+    the on-disk per-source-file parse cache, lives inside the uncached implementation
+    below.
+    """
+    optional_materialized = tuple(str(uri) for uri in optional_imports)
+    cache_key = None
+    if CACHE_ENABLED:
+        cache_key = (
+            str(Path(ontology_path).resolve()),
+            str(Path(catalog_path).resolve()) if catalog_path is not None else None,
+            SemanticProfile(profile).value,
+            degraded,
+            tuple(sorted(optional_materialized)),
+            str(Path(identity_root).resolve()) if identity_root is not None else None,
+        )
+        cached = _IN_PROCESS_CACHE.get(cache_key)
+        if cached is not None and _manifest_still_fresh(cached.manifest):
+            return cached
+    result = _load_ontology_uncached(
+        ontology_path,
+        catalog_path=catalog_path,
+        profile=profile,
+        degraded=degraded,
+        optional_imports=optional_materialized,
+        identity_root=identity_root,
+    )
+    if cache_key is not None:
+        _IN_PROCESS_CACHE[cache_key] = result
+    return result
+
+
+def _load_ontology_uncached(
+    ontology_path: Path,
+    *,
+    catalog_path: Path | None = None,
+    profile: SemanticProfile | str = SemanticProfile.ASSERTED,
+    degraded: bool = False,
+    optional_imports: Iterable[str] = (),
+    identity_root: Path | None = None,
+) -> OntologyLoadResult:
     """Load a complete ontology import closure through one deterministic API."""
     root_path = Path(ontology_path).resolve()
     if catalog_path is None:
@@ -321,35 +478,39 @@ def load_ontology(
             continue
         visited_paths.add(path)
 
-        source_graph = Graph()
         rdf_format = _get_rdf_format(path)
-        try:
-            source_graph.parse(path, format=rdf_format)
-        except Exception as exc:
-            complete = False
-            code = "root_parse_error" if pending.depth == 0 else "import_parse_error"
-            diagnostics.append(
-                OntologyDiagnostic(
-                    level="error",
-                    code=code,
-                    message=f"Error loading {path}: {exc}",
-                    import_uri=pending.import_uri,
-                    source_path=str(path),
+        digest = _source_hash(path)
+        source_graph = _load_cached_source_graph(stable_root, digest, rdf_format)
+        parsed_fresh = source_graph is None
+        if source_graph is None:
+            source_graph = Graph()
+            try:
+                source_graph.parse(path, format=rdf_format)
+            except Exception as exc:
+                complete = False
+                code = "root_parse_error" if pending.depth == 0 else "import_parse_error"
+                diagnostics.append(
+                    OntologyDiagnostic(
+                        level="error",
+                        code=code,
+                        message=f"Error loading {path}: {exc}",
+                        import_uri=pending.import_uri,
+                        source_path=str(path),
+                    )
                 )
-            )
-            if pending.depth == 0 or (
-                pending.requirement is ImportRequirement.REQUIRED and not degraded
-            ):
-                result = _empty_result(
-                    graph=graph,
-                    manifest=manifest,
-                    diagnostics=diagnostics,
-                    complete=False,
-                    profile=selected_profile,
-                    sources=sources,
-                )
-                raise OntologyLoadError(diagnostics[-1].message, result) from exc
-            continue
+                if pending.depth == 0 or (
+                    pending.requirement is ImportRequirement.REQUIRED and not degraded
+                ):
+                    result = _empty_result(
+                        graph=graph,
+                        manifest=manifest,
+                        diagnostics=diagnostics,
+                        complete=False,
+                        profile=selected_profile,
+                        sources=sources,
+                    )
+                    raise OntologyLoadError(diagnostics[-1].message, result) from exc
+                continue
 
         graph += source_graph
         ontology_iri, ontology_version = _ontology_metadata(source_graph)
@@ -364,7 +525,7 @@ def load_ontology(
             import_uri=pending.import_uri,
             import_depth=pending.depth,
             ontology_version=ontology_version,
-            source_sha256=_source_hash(path),
+            source_sha256=digest,
             rdf_format=rdf_format,
             requirement=pending.requirement,
         )
@@ -375,6 +536,8 @@ def load_ontology(
                 graph=source_graph,
             )
         )
+        if parsed_fresh:
+            _store_cached_source_graph(stable_root, digest, rdf_format, source_graph)
 
         imports = sorted({str(value) for value in source_graph.objects(predicate=OWL.imports)})
         for import_uri in imports:

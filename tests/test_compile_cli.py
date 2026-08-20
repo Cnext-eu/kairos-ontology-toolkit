@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import shutil
 import textwrap
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -157,6 +158,66 @@ def test_compile_check_and_json_explain_are_write_free(tmp_path, monkeypatch):
     assert payload["succeeded"] is True
     assert payload["explain"]["entities"][0]["name"] == "crm-customer"
     assert before == after
+
+
+def test_dbt_contract_and_dependency_resolution_run_once_per_binding(tmp_path, monkeypatch):
+    """DD perf fix: a dbt-sourced binding's contract used to be read up to three times
+    and its SQL dependency closure walked up to three times per compile (once in
+    resolve_scope, once again in build_compile_plan's main loop, once more for target-
+    class validation). Both should now run exactly once."""
+    hub = _contracted_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    from kairos_ontology.core.compiler import dbt_source
+
+    load_contract_calls: list[Path] = []
+    dependency_calls: list[Path] = []
+    original_load_contract = dbt_source._load_contract
+    original_dependency_paths = dbt_source._dependency_sql_paths
+
+    def counting_load_contract(binding, path):
+        load_contract_calls.append(path)
+        return original_load_contract(binding, path)
+
+    def counting_dependency_paths(binding, hub_root, selected_path):
+        dependency_calls.append(selected_path)
+        return original_dependency_paths(binding, hub_root, selected_path)
+
+    monkeypatch.setattr(dbt_source, "_load_contract", counting_load_contract)
+    monkeypatch.setattr(dbt_source, "_dependency_sql_paths", counting_dependency_paths)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+    assert result.exit_code == 0, result.output
+    assert "compile check passed" in result.output
+    assert len(load_contract_calls) == 1
+    assert len(dependency_calls) == 1
+
+
+def test_no_cache_flag_forces_fresh_ontology_reparse(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    warm = CliRunner().invoke(cli, ["compile", "party", "--emit", "--confirm-emit"])
+    assert warm.exit_code == 0, warm.output
+    assert (hub / ".cache" / "ontology-parse").is_dir()
+
+    from kairos_ontology.core import ontology_loader
+
+    turtle_parses: list[object] = []
+    original_parse = ontology_loader.Graph.parse
+
+    def counting_parse(self, source=None, **kwargs):
+        if kwargs.get("format") == "turtle":
+            turtle_parses.append(source)
+        return original_parse(self, source, **kwargs)
+
+    monkeypatch.setattr(ontology_loader.Graph, "parse", counting_parse)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check", "--no-cache"])
+
+    assert result.exit_code == 0, result.output
+    assert turtle_parses  # --no-cache bypassed the warm on-disk cache
 
 
 def test_compile_resolves_nested_hub_from_repository_root(tmp_path, monkeypatch):

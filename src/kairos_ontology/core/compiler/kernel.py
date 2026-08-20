@@ -74,9 +74,9 @@ from .bindings import (
 from .compile import CompileMode
 from .conformance import ConformancePlan, ConformanceTypeContract, build_conformance_plan
 from .dbt_source import (
+    check_target_class_match,
     resolve_dbt_model_dependency_paths,
     resolve_dbt_model_source,
-    validate_contract_target_class,
 )
 from .ir import CanonicalProjectIR, EntityBindingSpec
 from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact, PlannedDbtDependency
@@ -275,54 +275,88 @@ def _compute_declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple
     return tuple(sorted(aliases))
 
 
+def _source_relations_for_path(path: Path) -> tuple[ResolvedRelation, ...]:
+    """Parse one bronze source file exactly once into its ``ResolvedRelation`` set."""
+    relations: list[ResolvedRelation] = []
+    graph = Graph()
+    graph.parse(path, format="turtle")
+    for table in sorted(graph.subjects(RDF.type, _BRONZE.SourceTable), key=str):
+        system = graph.value(table, _BRONZE.sourceSystem)
+        system_uri = str(system or f"{table}#system")
+        system_ref = URIRef(system_uri)
+        system_label = _literal(graph, system_ref, RDFS.label) or system_ref.split("#")[-1]
+        table_name = _literal(graph, table, _BRONZE.tableName) or str(table).split("#")[-1]
+        primary_keys = {
+            item.strip()
+            for item in _literal(graph, table, _BRONZE.primaryKeyColumns).split(",")
+            if item.strip()
+        }
+        columns: list[ResolvedColumn] = []
+        column_nodes = set(graph.subjects(_BRONZE.sourceTable, table))
+        column_nodes.update(graph.subjects(_BRONZE.belongsToTable, table))
+        for column in sorted(column_nodes, key=str):
+            name = _literal(graph, column, _BRONZE.columnName) or str(column).split("#")[-1]
+            nullable_value = graph.value(column, _BRONZE.nullable)
+            columns.append(
+                ResolvedColumn(
+                    name=name,
+                    data_type=_literal(graph, column, _BRONZE.dataType, "string"),
+                    nullable=bool(nullable_value.toPython()) if nullable_value else True,
+                    is_primary_key=name in primary_keys,
+                )
+            )
+        refs = {table_name, f"{system_label}.{table_name}"}
+        refs.update(_qnames(graph, table))
+        for ref in sorted(refs):
+            relations.append(
+                ResolvedRelation(
+                    ref=ref,
+                    uri=str(table),
+                    system_label=system_label,
+                    table_name=table_name,
+                    columns=tuple(columns),
+                    database=_literal(graph, system_ref, _BRONZE.database, "raw_db"),
+                    schema=_literal(graph, system_ref, _BRONZE.schema, "dbo"),
+                    connection_type=_literal(graph, system_ref, _BRONZE.connectionType, "jdbc"),
+                    system_uri=system_uri,
+                )
+            )
+    return tuple(relations)
+
+
+def _dedupe_relations(relations: list[ResolvedRelation]) -> tuple[ResolvedRelation, ...]:
+    unique = {(item.ref, item.uri): item for item in relations}
+    return tuple(unique[key] for key in sorted(unique))
+
+
 def _source_relations(paths: tuple[Path, ...]) -> tuple[ResolvedRelation, ...]:
     relations: list[ResolvedRelation] = []
     for path in paths:
-        graph = Graph()
-        graph.parse(path, format="turtle")
-        for table in sorted(graph.subjects(RDF.type, _BRONZE.SourceTable), key=str):
-            system = graph.value(table, _BRONZE.sourceSystem)
-            system_uri = str(system or f"{table}#system")
-            system_ref = URIRef(system_uri)
-            system_label = _literal(graph, system_ref, RDFS.label) or system_ref.split("#")[-1]
-            table_name = _literal(graph, table, _BRONZE.tableName) or str(table).split("#")[-1]
-            primary_keys = {
-                item.strip()
-                for item in _literal(graph, table, _BRONZE.primaryKeyColumns).split(",")
-                if item.strip()
-            }
-            columns: list[ResolvedColumn] = []
-            column_nodes = set(graph.subjects(_BRONZE.sourceTable, table))
-            column_nodes.update(graph.subjects(_BRONZE.belongsToTable, table))
-            for column in sorted(column_nodes, key=str):
-                name = _literal(graph, column, _BRONZE.columnName) or str(column).split("#")[-1]
-                nullable_value = graph.value(column, _BRONZE.nullable)
-                columns.append(
-                    ResolvedColumn(
-                        name=name,
-                        data_type=_literal(graph, column, _BRONZE.dataType, "string"),
-                        nullable=bool(nullable_value.toPython()) if nullable_value else True,
-                        is_primary_key=name in primary_keys,
-                    )
-                )
-            refs = {table_name, f"{system_label}.{table_name}"}
-            refs.update(_qnames(graph, table))
-            for ref in sorted(refs):
-                relations.append(
-                    ResolvedRelation(
-                        ref=ref,
-                        uri=str(table),
-                        system_label=system_label,
-                        table_name=table_name,
-                        columns=tuple(columns),
-                        database=_literal(graph, system_ref, _BRONZE.database, "raw_db"),
-                        schema=_literal(graph, system_ref, _BRONZE.schema, "dbo"),
-                        connection_type=_literal(graph, system_ref, _BRONZE.connectionType, "jdbc"),
-                        system_uri=system_uri,
-                    )
-                )
-    unique = {(item.ref, item.uri): item for item in relations}
-    return tuple(unique[key] for key in sorted(unique))
+        relations.extend(_source_relations_for_path(path))
+    return _dedupe_relations(relations)
+
+
+def _could_match_any_ref(path: Path, requested_sources: frozenset[str]) -> bool:
+    """Cheap byte-level pre-filter: can *path* possibly contribute a requested ref?
+
+    Every ``ResolvedRelation.ref`` is built only from bytes physically present in that
+    same file: a ``bronze:tableName``/``rdfs:label`` literal (or its URI fragment
+    fallback), or a qname whose local segment equals that fragment and is resolved only
+    against this file's own ``@prefix`` declarations -- each source file gets its own
+    fresh ``Graph()`` (see ``_source_relations_for_path``), so there is no cross-file
+    state a match could hide in. So if none of the requested refs' local segments appear
+    as a raw substring of the file's text, a full RDF parse of this file cannot produce a
+    match. A false positive (the substring appears without a real match) only costs one
+    otherwise-unavoidable parse; a false negative is impossible.
+    """
+    if not requested_sources:
+        return False
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for ref in requested_sources:
+        local = ref.rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+        if local and local in text:
+            return True
+    return False
 
 
 def _binding_source_ref(text: str) -> str:
@@ -609,14 +643,23 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         if _binding_domain(path.read_text(encoding="utf-8")) in {None, domain}
     )
     ontology_path = root / "model" / "ontologies" / f"{domain}.ttl"
-    requested_sources = {
+    requested_sources = frozenset(
         _binding_source_ref(path.read_text(encoding="utf-8")) for path in binding_paths
-    }
-    source_paths = tuple(
-        path
-        for path in sorted((root / "integration" / "sources").glob("**/*.ttl"))
-        if requested_sources & {relation.ref for relation in _source_relations((path,))}
     )
+    # Parse each hub source file at most once: a cheap byte-level pre-filter
+    # (_could_match_any_ref) skips a full RDF parse for files that provably cannot
+    # contribute a requested ref, and the parse result for files that do match is kept
+    # (parsed_source_relations) so the final relation list below doesn't re-parse them.
+    parsed_source_relations: dict[Path, tuple[ResolvedRelation, ...]] = {}
+    source_paths_list: list[Path] = []
+    for candidate_path in sorted((root / "integration" / "sources").glob("**/*.ttl")):
+        if not _could_match_any_ref(candidate_path, requested_sources):
+            continue
+        file_relations = _source_relations_for_path(candidate_path)
+        if requested_sources & {relation.ref for relation in file_relations}:
+            parsed_source_relations[candidate_path] = file_relations
+            source_paths_list.append(candidate_path)
+    source_paths = tuple(source_paths_list)
     if not binding_paths or not ontology_path.is_file():
         if not binding_paths:
             # Ontology-only waypoint: the hub has a valid ontology slice but no
@@ -670,7 +713,11 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         ontology_paths,
         prefix_warnings,
     ) = _ontology_symbols(ontology_path, root, referenced_tokens)
-    relations = list(_source_relations(source_paths))
+    relations = list(
+        _dedupe_relations(
+            [relation for path in source_paths for relation in parsed_source_relations[path]]
+        )
+    )
     template_root = Path(__file__).resolve().parents[2] / "templates" / "dbt"
     inputs = [
         ProvenanceInput(str(path.relative_to(root)), path.read_text(encoding="utf-8"))
@@ -691,9 +738,9 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
             continue
         try:
             binding = load_entity_binding(text, path=str(path))
-            relation = resolve_dbt_model_source(binding, root)
-            relations.append(relation)
             dependency_paths = resolve_dbt_model_dependency_paths(binding, root)
+            relation = resolve_dbt_model_source(binding, root, dependency_paths=dependency_paths)
+            relations.append(relation)
             authored_paths = (*dependency_paths, (root / contract_path).resolve())
             for resolved_path in authored_paths:
                 inputs.append(
@@ -2185,7 +2232,7 @@ def _unrealized_relationship_diagnostics(
 
 
 def _duplicate_virtual_sources(
-    bindings: list[EntityBinding], hub_root: str
+    bindings: list[EntityBinding], hub_root: str, context: ResolutionContext
 ) -> dict[str, tuple[str, ...]]:
     """Map each ``meta.kairos.virtual_source_iri`` claimed twice to the binding names claiming it.
 
@@ -2194,11 +2241,13 @@ def _duplicate_virtual_sources(
     keys on it (provenance, the emitted ``system_uri``) silently conflates two different
     grains. Nothing checked it; only the IRI's *shape* was validated.
 
-    This is a **pre-pass**: it resolves every selected dbt-model binding up front so a
-    duplicate is attributable to both participants, rather than only to whichever binding the
-    per-binding loop happens to reach second. Resolution failures are swallowed here on
-    purpose -- that same binding is resolved again inside the loop, where the failure is
-    reported once with its precise pointer.
+    This is a **pre-pass** so a duplicate is attributable to both participants, rather than
+    only to whichever binding the per-binding loop happens to reach second. It reuses each
+    binding's ``ResolvedRelation`` from ``context`` (already computed once by
+    ``resolve_scope``) instead of re-reading the contract and re-walking the SQL dependency
+    closure here; resolution failures are swallowed on purpose -- that same binding is
+    resolved again inside the loop, where the failure is reported once with its precise
+    pointer.
 
     Scope is the **selected domain only**. A per-domain compile cannot see peer domains'
     bindings, so hub-wide uniqueness is `validate-dbt-contracts`' job; the diagnostic says so.
@@ -2208,10 +2257,12 @@ def _duplicate_virtual_sources(
     for binding in bindings:
         if binding.source.dbt_model is None:
             continue
-        try:
-            relation = resolve_dbt_model_source(binding, hub_root)
-        except CompileError:
-            continue
+        relation = context.relation(binding.source.dbt_model.name)
+        if relation is None or relation.connection_type != "dbt":
+            try:
+                relation = resolve_dbt_model_source(binding, hub_root)
+            except CompileError:
+                continue
         claimants.setdefault(relation.uri, []).append(binding.name)
     return {uri: tuple(sorted(names)) for uri, names in claimants.items() if len(set(names)) > 1}
 
@@ -3089,7 +3140,9 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     )
     diagnostics.extend(conformance_diagnostics)
     selected_by_name = {binding.name: binding for binding in selected_bindings}
-    duplicate_virtual_sources = _duplicate_virtual_sources(selected_bindings, scope.hub_root)
+    duplicate_virtual_sources = _duplicate_virtual_sources(
+        selected_bindings, scope.hub_root, context
+    )
     for binding in selected_bindings:
         if binding.name in conformance_blocked:
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
@@ -3110,7 +3163,16 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 continue
         if binding.source.dbt_model is not None:
             try:
-                relation = resolve_dbt_model_source(binding, scope.hub_root)
+                # resolve_scope already resolved this binding's dbt model once (for
+                # provenance hashing) and its ResolvedRelation is carried on
+                # context.relations -- reuse it instead of re-reading the contract and
+                # re-walking the SQL dependency closure. Only trust the lookup when it is
+                # unambiguously the dbt-resolved relation (connection_type == "dbt"); fall
+                # back to a fresh resolution otherwise (binding failed in resolve_scope, or
+                # an implausible ref collision with a bronze source relation).
+                relation = context.relation(binding.source.dbt_model.name)
+                if relation is None or relation.connection_type != "dbt":
+                    relation = resolve_dbt_model_source(binding, scope.hub_root)
                 # #503: the binding's target.class and the contract's meta.kairos.target_class
                 # are two independent declarations of one fact. Compared here, not inside
                 # resolve_dbt_model_source, because the comparison needs the *resolved* class
@@ -3121,7 +3183,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 # AttributeError.
                 target = context.klass(binding.target_class)
                 if target is not None:
-                    validate_contract_target_class(binding, scope.hub_root, target.uri)
+                    check_target_class_match(binding, relation.target_class, target.uri)
             except CompileError as exc:
                 diagnostics.extend(exc.diagnostics)
                 specs.append(EntityBindingSpec(binding=binding, blocked=True))
