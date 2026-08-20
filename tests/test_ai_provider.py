@@ -298,13 +298,13 @@ class TestPerRoleEndpoints:
         assert config.model == "gpt-5.5"
 
     def test_other_role_unaffected_by_role_endpoint(self):
-        # Alignment has a dedicated endpoint; affinity falls back to global github.
+        # Alignment has a dedicated endpoint; judgment falls back to global github.
         env = {
             "GITHUB_TOKEN": "global-token",
             "KAIROS_AI_ALIGNMENT_ENDPOINT": "https://strong.example.com/v1",
         }
         with patch.dict(os.environ, env, clear=True):
-            config = resolve_provider_config(role="affinity")
+            config = resolve_provider_config(role="judgment")
         assert config.provider == "github"
         assert config.endpoint == GITHUB_MODELS_ENDPOINT
 
@@ -326,8 +326,8 @@ class TestPerRoleEndpoints:
     def test_resolve_role_model_helper(self):
         from kairos_ontology.core.ai_provider import resolve_role_model
 
-        with patch.dict(os.environ, {"KAIROS_AI_AFFINITY_MODEL": "mini-x"}, clear=True):
-            assert resolve_role_model("affinity", "fallback") == "mini-x"
+        with patch.dict(os.environ, {"KAIROS_AI_JUDGMENT_MODEL": "mini-x"}, clear=True):
+            assert resolve_role_model("judgment", "fallback") == "mini-x"
             assert resolve_role_model("alignment", "fallback") == "fallback"
             assert resolve_role_model(None, "fallback") == "fallback"
 
@@ -758,7 +758,7 @@ class TestResolveAISeed:
             os.environ, {"KAIROS_AI_SEED": "99", "KAIROS_AI_ALIGNMENT_SEED": "7"}
         ):
             assert resolve_ai_seed("alignment") == 7
-            assert resolve_ai_seed("affinity") == 99
+            assert resolve_ai_seed("judgment") == 99
 
     @pytest.mark.parametrize("value", ["off", "none", "random", "", "  "])
     def test_seeding_can_be_disabled(self, value):
@@ -810,7 +810,9 @@ class TestResolveReasoningEffort:
     def test_per_role_defaults(self):
         from kairos_ontology.core.ai_provider import resolve_reasoning_effort
 
-        assert resolve_reasoning_effort("affinity") == "low"
+        # "affinity" is no longer a registered role (#562 collapsed it into
+        # "alignment") -- it now behaves like any other unrecognized role.
+        assert resolve_reasoning_effort("affinity") is None
         assert resolve_reasoning_effort("alignment") == "medium"
         assert resolve_reasoning_effort("judgment") == "medium"
 
@@ -830,7 +832,7 @@ class TestResolveReasoningEffort:
             },
         ):
             assert resolve_reasoning_effort("alignment") == "low"
-            assert resolve_reasoning_effort("affinity") == "high"
+            assert resolve_reasoning_effort("judgment") == "high"
 
     @pytest.mark.parametrize("value", ["off", "default", "none", ""])
     def test_can_be_disabled(self, value):

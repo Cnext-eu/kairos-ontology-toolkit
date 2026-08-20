@@ -10,7 +10,7 @@ Public surface:
     - :class:`AIRolePreflight`  — per-role status and remediation.
     - :class:`AIPreflightReport` — aggregate over one or more roles.
     - :func:`preflight_ai_provider` — config + optional probe for one role.
-    - :func:`preflight_all_roles`   — convenience over both roles.
+    - :func:`preflight_all_roles`   — convenience over the configured pre-modeling role(s).
     - :func:`require_ai_provider`    — raising wrapper commands call.
 """
 
@@ -26,7 +26,6 @@ from kairos_ontology.core.ai_provider import (
     NotConfigured,
     Misconfigured,
     Unreachable,
-    ROLE_AFFINITY,
     ROLE_ALIGNMENT,
     resolve_provider_config,
 )
@@ -321,12 +320,16 @@ def preflight_ai_provider(
 
 def preflight_all_roles(
     *,
-    roles: tuple[str, ...] = (ROLE_AFFINITY, ROLE_ALIGNMENT),
+    roles: tuple[str, ...] = (ROLE_ALIGNMENT,),
     model: str | None = None,
     probe: bool = False,
     timeout_s: float = 10.0,
 ) -> AIPreflightReport:
-    """Preflight-check all configured roles and return an aggregate report."""
+    """Preflight-check all configured roles and return an aggregate report.
+
+    Default is the single pre-modeling role left after issue #562 collapsed
+    the separate ``affinity`` role into ``alignment``.
+    """
     results = tuple(
         preflight_ai_provider(role, model=model, probe=probe, timeout_s=timeout_s) for role in roles
     )

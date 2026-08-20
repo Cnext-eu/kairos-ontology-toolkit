@@ -17,7 +17,6 @@ class TestCheckAIConfigNoConfig:
         result = runner.invoke(check_ai_config_cmd, ["--no-probe"])
         assert result.exit_code == 1
         assert "not_configured" in result.output
-        assert "affinity" in result.output
         assert "alignment" in result.output
 
     def test_json_output_not_configured(self):
@@ -37,12 +36,19 @@ class TestCheckAIConfigNoConfig:
         result = runner.invoke(check_ai_config_cmd, ["--no-probe", "--warn-only"])
         assert result.exit_code == 0
 
-    def test_single_role_affinity(self):
+    def test_role_choice_no_longer_offers_affinity(self):
+        """#562 collapsed the separate affinity role into alignment."""
         runner = CliRunner()
         result = runner.invoke(check_ai_config_cmd, ["--no-probe", "--role", "affinity"])
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "affinity" in result.output
-        assert "alignment" not in result.output.split("\n")[1]
+        assert "not one of" in result.output.lower()
+
+    def test_single_role_alignment(self):
+        runner = CliRunner()
+        result = runner.invoke(check_ai_config_cmd, ["--no-probe", "--role", "alignment"])
+        assert result.exit_code == 1
+        assert "alignment" in result.output
 
 
 class TestCheckAIConfigMissingDependency:

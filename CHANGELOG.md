@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc17] — 2026-08-20
+
+### Removed (BREAKING)
+- **The `affinity` AI-provider role collapses into `alignment` (DD-203, issue #562).** `analyse-sources` and `propose-alignment` used to have separate, independently-configurable AI-provider roles; issue #562 asked for one role, the strongest configured provider, for every pre-modeling LLM call. `ROLE_AFFINITY` is removed outright (a hard removal, not a shim): `KAIROS_AI_AFFINITY_*` env vars (`_ENDPOINT`/`_KEY`/`_MODEL`/`_SEED`/`_REASONING_EFFORT`) are no longer read at all — rename them to `KAIROS_AI_ALIGNMENT_*`. `check-ai-config --role` drops the `affinity` choice. This is a deliberate behavior change, not a rename: `analyse-sources`'s default reasoning effort rises from `low` to `medium` (alignment's tier), and any `KAIROS_AI_ALIGNMENT_*` tuning now also governs the high-volume table-classification call.
+
 ## [5.13.0rc16] — 2026-08-20
 
 ### Fixed
