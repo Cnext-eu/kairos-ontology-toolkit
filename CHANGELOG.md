@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc21] — 2026-08-20
+
 ### Added
 - **`compile --no-cache` bypasses the new ontology-closure parse cache.** Use after
   manually editing a hub's `.cache/ontology-parse/` directory, or when debugging a
