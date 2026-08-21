@@ -35,7 +35,7 @@ jobs:
           cd ontology-hub
           DOMAINS=$(uv run python -c "from pathlib import Path; import yaml; print(' '.join(sorted({str(yaml.safe_load(p.read_text())['metadata']['domain']) for p in Path('integration/bindings').glob('*.binding.yaml')})))")
           for domain in $DOMAINS; do
-            uv run kairos-ontology compile "$domain" --emit
+            uv run kairos-ontology compile "$domain" --emit --confirm-emit
           done
 
       # Each domain's --emit is stateless and per-domain (DD-133/140); a cross-domain
