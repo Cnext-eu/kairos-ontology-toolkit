@@ -56,7 +56,12 @@ def _warn_if_outside_venv() -> None:
     if managed_root is not None:
         hub_venv = managed_root / ".venv"
         if hub_venv.is_dir():
-            if Path(sys.prefix).resolve() == hub_venv.resolve():
+            # normcase: on Windows the drive-letter case can vary between
+            # invocations (c: vs C:), and a case-sensitive compare would emit
+            # a false warning on every legitimate `uv run`.
+            running = os.path.normcase(str(Path(sys.prefix).resolve()))
+            expected = os.path.normcase(str(hub_venv.resolve()))
+            if running == expected:
                 return  # running this hub's own uv-managed environment
             click.echo(
                 "⚠️  Running an interpreter that is not this hub's uv-managed environment\n"

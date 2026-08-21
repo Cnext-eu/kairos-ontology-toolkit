@@ -14,7 +14,10 @@ pytest's own cwd is the toolkit repo, which is itself a managed root with a
 from pathlib import Path
 from unittest.mock import patch
 
+import os
 import sys
+
+import pytest
 
 from kairos_ontology.cli.main import _warn_if_outside_venv
 
@@ -35,6 +38,28 @@ def test_no_warning_when_running_the_hubs_own_venv(capsys, tmp_path, monkeypatch
     monkeypatch.chdir(hub)
     with (
         patch.object(sys, "prefix", str(hub / ".venv")),
+        patch.object(sys, "base_prefix", "/usr"),
+    ):
+        _warn_if_outside_venv()
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.skipif(os.name != "nt", reason="drive-letter case is a Windows-only concern")
+def test_no_warning_when_only_the_drive_letter_case_differs(capsys, tmp_path, monkeypatch):
+    """Same venv path with swapped drive-letter case (c: vs C:) is the same identity.
+
+    The comparison goes through ``os.path.normcase``: on Windows the drive-letter
+    case can vary between invocations, and a case-sensitive compare would warn on
+    every legitimate ``uv run``.
+    """
+    hub = _make_managed_hub(tmp_path / "hub")
+    venv_path = str(hub / ".venv")
+    assert venv_path[1] == ":", venv_path  # sanity: expected a drive-letter path
+    drive = venv_path[0]
+    swapped = (drive.lower() if drive.isupper() else drive.upper()) + venv_path[1:]
+    monkeypatch.chdir(hub)
+    with (
+        patch.object(sys, "prefix", swapped),
         patch.object(sys, "base_prefix", "/usr"),
     ):
         _warn_if_outside_venv()
