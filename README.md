@@ -101,7 +101,8 @@ evidence, and Silver-extension authority are not v5 inputs.
 │       ├── sources/
 │       ├── bindings/
 │       ├── discovery/                  # Confirmed context only
-│       └── transforms/dbt/models/      # Optional ordinary SQL/YAML
+│       ├── transforms/dbt/models/      # Optional ordinary SQL/YAML
+│       └── transforms/dbt/seeds/       # Optional static reference CSV
 └── ontology-hub-publish/               # Derived output; never hand-edit
 ```
 

@@ -103,7 +103,7 @@ Two different trees, two different lifecycle stages. Neither subsumes the other.
 
 | | `validate-dbt-contracts` | `validate-dbt` |
 |---|---|---|
-| Validates | `integration/transforms/dbt/models/` — the **hand-authored** intermediate layer | `ontology-hub-publish/medallion/dbt` — the **emitted** Silver project |
+| Validates | `integration/transforms/dbt/models/` and `integration/transforms/dbt/seeds/` — the **hand-authored** intermediate layer | `ontology-hub-publish/medallion/dbt` — the **emitted** Silver project |
 | Needs dbt installed | No | Yes (except `--structural-only`) |
 | Needs an adapter | No | Yes (`--platform fabric\|databricks`) |
 | Runs at | Stage 4, while authoring `int_*` models, *before* binding them | Stage 5, after `compile --emit` |
@@ -120,6 +120,25 @@ ontology import closure, a `virtual_source_iri` claimed by more than one model, 
 unreplaced `<CONFIRM_...>` scaffold sentinel. Warnings (never blocking): a `stg_*` model
 that declares a `meta.kairos` block, an `int_*` model that lacks one, and a contracted model
 no `EntityBinding` selects yet.
+
+Seed-aware since issue #586 (stage b). A hub whose only authored transform content is a seed
+CSV is linted rather than reported as having no transforms at all — transforms count as
+present when either `models/` or an authored `seeds/*.csv` exists. Three seed findings join
+the same `findings` list:
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `dbt-contract.seed-docs-unmatched` | warning | A `seeds/<name>.yml` lists a `seeds[].name` matching no authored seed CSV stem — a typo or stale docs after a rename. |
+| `dbt-contract.seed-unreadable` | warning | A seed CSV cannot be read or is not UTF-8 (the classic cp1252 Excel export), or its header row is empty. |
+| `dbt-contract.seed-model-collision` | error | A seed stem collides with an authored model stem. |
+
+The collision is an **error**, not a warning, unlike the other two: dbt resolves `ref()` in a
+single resource namespace, so two resources with one name make the generated project fail to
+parse outright, and the dbt bundle now hard-fails the same case. A lint that called it
+advisory would disagree with the build.
+
+Seed column-docs YAML is dbt's plain `seeds:` properties form and deliberately carries no
+`meta.kairos` — a seed is not a bindable virtual source, so it is never contract-parsed.
 
 `virtual_source_iri` uniqueness is the authoritative hub-wide check. `compile --check` also
 reports `dbt-source.virtual-source-duplicate`, but only within the domain being compiled —

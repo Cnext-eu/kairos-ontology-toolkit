@@ -22,9 +22,14 @@ _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #: Single-argument ``ref('model')`` calls in authored contracted SQL. Public because the
 #: compiler's plan-time closure walk (``kernel.py``) and lineage tracing
 #: (``dbt_lineage.py``) must select dependencies with exactly the same rule this
-#: resolution-time walk uses. ``dbt_bundle.py``/``dbt_validation.py`` keep their own
-#: regexes deliberately: they accept two-argument package refs and IGNORECASE matching,
-#: which are different semantics (see DD amendment for #584/#586).
+#: resolution-time walk uses; prefer :func:`extract_refs`, which also strips Jinja
+#: comments first. ``dbt_bundle.py``/``dbt_validation.py`` keep their own regexes
+#: **permanently** (#586 stage b evaluated merging them and declined): this is a
+#: *selection* rule that must mirror dbt's own resolution -- case-sensitive, because Jinja
+#: is, and single-argument -- while theirs are deliberately over-broad *validation* rules
+#: accepting IGNORECASE spellings and two-argument package refs. See the DD amendment for
+#: #586 stage (b) for why merging in either direction loses something real. The two do
+#: share :func:`strip_jinja_comments`.
 REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
 #: Positional ``source('name', 'table')`` calls with both arguments captured;
 #: ``[^'\"]+`` admits dotted table names such as ``DtbBooking.sample``. Prefer
@@ -64,6 +69,17 @@ def strip_jinja_comments(text: str) -> str:
     never create a phantom dependency or a false blocking source diagnostic.
     """
     return _JINJA_COMMENT_RE.sub("", text)
+
+
+def extract_refs(text: str) -> frozenset[str]:
+    """Return the ``ref('<name>')`` targets *text* selects, Jinja comments stripped.
+
+    The single selection authority shared by :func:`_dependency_sql_paths`' filesystem walk
+    and ``kernel._dbt_dependency_closures``' plan walk, so the two can never disagree about
+    which dependencies a closure has (#586 stage b collapsed the two identical
+    ``REF_RE.findall(strip_jinja_comments(...))`` call sites onto this).
+    """
+    return frozenset(REF_RE.findall(strip_jinja_comments(text)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +249,49 @@ def _record_closure_member(binding: EntityBinding, resolved: dict[str, Path], pa
     return False
 
 
+#: Suffixes a seed's optional sibling column-docs document may use, in dbt's own
+#: preference order. Shared with ``kernel``'s plan walk via ``SEED_PROPERTIES_SUFFIXES``.
+SEED_PROPERTIES_SUFFIXES = (".yml", ".yaml")
+
+
+def _record_seed_docs(binding: EntityBinding, seed_docs: dict[str, Path], seed_path: Path) -> None:
+    """Record *seed_path*'s sibling ``<name>.yml``/``.yaml`` column docs, if authored.
+
+    Authoring both spellings for one seed is rejected rather than silently resolved: dbt
+    would load both documents and report a duplicate ``seeds:`` entry, and picking one here
+    would emit a project that disagrees with the hub.
+    """
+    matches = [
+        candidate
+        for suffix in SEED_PROPERTIES_SUFFIXES
+        if (candidate := seed_path.with_suffix(suffix)).is_file()
+    ]
+    if len(matches) > 1:
+        raise _failure(
+            binding,
+            "dbt-source.dependency-ambiguous",
+            (
+                f"dbt seed {seed_path.stem!r} has more than one column-docs document "
+                f"({', '.join(sorted(path.name for path in matches))}); author exactly one"
+            ),
+            "sqlPath",
+        )
+    for match in matches:
+        try:
+            match.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise _failure(
+                binding,
+                "dbt-source.dependency-unresolved",
+                (
+                    f"could not read dbt seed column-docs document {match}: {exc} "
+                    "(seed properties YAML must be UTF-8)"
+                ),
+                "sqlPath",
+            ) from exc
+        seed_docs[match.stem.casefold()] = match.resolve()
+
+
 def _dependency_sql_paths(
     binding: EntityBinding,
     hub_root: Path,
@@ -242,8 +301,11 @@ def _dependency_sql_paths(
 
     Returns model ``.sql`` paths plus any authored seed ``.csv`` leaves under
     ``integration/transforms/dbt/seeds/`` (#586): a ``ref()`` may target a dbt seed,
-    which terminates that branch of the walk (seed CSVs are never text-scanned).
-    ``ref()`` names match authored stems exactly, as dbt itself does.
+    which terminates that branch of the walk (seed CSVs are never text-scanned). A
+    selected seed also pulls in its optional sibling ``seeds/<name>.yml``/``.yaml``
+    column-docs document (#586 stage b), which is dbt's plain ``seeds:`` properties form
+    and never a ``meta.kairos`` contract. ``ref()`` names match authored stems exactly, as
+    dbt itself does.
     """
     models_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "models")
     seeds_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "seeds")
@@ -260,6 +322,11 @@ def _dependency_sql_paths(
         for seed_path in sorted(seeds_dir.rglob("*.csv")):
             seed_index[seed_path.stem] = (*seed_index.get(seed_path.stem, ()), seed_path)
     resolved: dict[str, Path] = {}
+    # Seed column-docs YAML is kept OUT of `resolved`: it shares its seed's stem, and
+    # `resolved` is stem-keyed precisely to catch two *resources* claiming one dbt name.
+    # A properties document is not a resource -- the CSV owns the name, the YAML describes
+    # it -- so the pair must not read as a collision.
+    seed_docs: dict[str, Path] = {}
     pending = [selected_path]
     while pending:
         path = pending.pop()
@@ -287,7 +354,7 @@ def _dependency_sql_paths(
                 ),
                 "sqlPath",
             )
-        for ref_name in sorted(set(REF_RE.findall(strip_jinja_comments(text)))):
+        for ref_name in sorted(extract_refs(text)):
             sql_matches = model_index.get(ref_name, ())
             seed_matches = seed_index.get(ref_name, ())
             if sql_matches and seed_matches:
@@ -323,6 +390,7 @@ def _dependency_sql_paths(
                             ),
                             "sqlPath",
                         ) from exc
+                    _record_seed_docs(binding, seed_docs, seed_path)
                 continue
             raise _failure(
                 binding,
@@ -335,7 +403,12 @@ def _dependency_sql_paths(
                 ),
                 "sqlPath",
             )
-    return tuple(sorted(resolved.values(), key=lambda path: path.as_posix()))
+    return tuple(
+        sorted(
+            (*resolved.values(), *seed_docs.values()),
+            key=lambda path: path.as_posix(),
+        )
+    )
 
 
 def resolve_dbt_model_dependency_paths(

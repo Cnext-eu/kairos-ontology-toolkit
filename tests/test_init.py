@@ -39,6 +39,7 @@ V5_SCAFFOLD_DIRECTORIES = {
     "integration/transforms/dbt/models",
     "integration/transforms/dbt/macros",
     "integration/transforms/dbt/tests",
+    "integration/transforms/dbt/seeds",
 }
 
 # Derived/emitted output lives under the sibling publish root, not the hub.

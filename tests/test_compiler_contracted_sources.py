@@ -504,3 +504,58 @@ def test_inputs_walk_reports_unreadable_source_calls_too():
     assert [item.code for item in diagnostics] == ["dbt-source.source-unparsed"]
     (closure,) = closures
     assert closure.source_pairs == ()
+
+
+def test_inputs_walk_selects_seed_column_docs_siblings():
+    """#586b: the plan walk carries `seeds/<name>.yml` alongside the CSV it documents."""
+    binding = _contracted_binding()
+    scope = _scope_with_inputs(
+        ProvenanceInput(
+            "integration/transforms/dbt/models/customer_stage.sql",
+            "select 1 from {{ ref('country_codes') }}\n",
+        ),
+        ProvenanceInput("integration/transforms/dbt/seeds/country_codes.csv", "code\nBE\n"),
+        ProvenanceInput(
+            "integration/transforms/dbt/seeds/country_codes.yml",
+            "version: 2\nseeds:\n  - name: country_codes\n",
+        ),
+        # An unrelated seed's docs must not be dragged in.
+        ProvenanceInput(
+            "integration/transforms/dbt/seeds/other.yml",
+            "version: 2\nseeds:\n  - name: other\n",
+        ),
+    )
+
+    closures, diagnostics = _dbt_dependency_closures((binding,), scope)
+
+    assert diagnostics == ()
+    (closure,) = closures
+    assert closure.seed_paths == ("integration/transforms/dbt/seeds/country_codes.csv",)
+    assert closure.seed_properties_paths == (
+        "integration/transforms/dbt/seeds/country_codes.yml",
+    )
+
+
+def test_inputs_walk_flags_two_docs_spellings_for_one_seed():
+    binding = _contracted_binding()
+    scope = _scope_with_inputs(
+        ProvenanceInput(
+            "integration/transforms/dbt/models/customer_stage.sql",
+            "select 1 from {{ ref('country_codes') }}\n",
+        ),
+        ProvenanceInput("integration/transforms/dbt/seeds/country_codes.csv", "code\nBE\n"),
+        ProvenanceInput(
+            "integration/transforms/dbt/seeds/country_codes.yml",
+            "version: 2\nseeds:\n  - name: country_codes\n",
+        ),
+        ProvenanceInput(
+            "integration/transforms/dbt/seeds/country_codes.yaml",
+            "version: 2\nseeds:\n  - name: country_codes\n",
+        ),
+    )
+
+    closures, diagnostics = _dbt_dependency_closures((binding,), scope)
+
+    assert [item.code for item in diagnostics] == ["dbt-source.dependency-ambiguous"]
+    (closure,) = closures
+    assert closure.seed_properties_paths == ()

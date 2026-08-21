@@ -75,6 +75,20 @@ def _dir_status(root: Path, predicate) -> InputStatus:
 _authored_ttl = is_authored_discovery_ttl
 
 
+def _authored_dbt_transform(path: Path) -> bool:
+    """Return True when *path* is authored dbt transform content under the transforms tree.
+
+    A ``.sql`` model, or (#586 stage b) an authored seed CSV under ``seeds/``. The probe used
+    to be ``.sql``-only, so a hub whose entire authored transform layer was one reference
+    seed reported ``dbt_transforms: missing`` to ``kairos-ontology next`` and was told to go
+    author the transforms it had already written. Seed *column-docs* YAML deliberately does
+    not count on its own: docs without the CSV they describe are not authored content.
+    """
+    if path.suffix == ".sql":
+        return True
+    return path.suffix.lower() == ".csv" and "seeds" in path.parts
+
+
 def _emitted_dbt_status(root: Path) -> InputStatus:
     """Observe the unified emitted dbt project (presence only, never freshness)."""
     from .hub_utils import publish_root
@@ -451,7 +465,7 @@ def gather_hub_input_snapshot(
     sources = _dir_status(root / "integration" / "sources", _authored_ttl)
     source_samples = _source_sample_status(root / "integration" / "sources")
     dbt_transforms = _dir_status(
-        root / "integration" / "transforms" / "dbt", lambda p: p.suffix == ".sql"
+        root / "integration" / "transforms" / "dbt", _authored_dbt_transform
     )
     shapes = _dir_status(root / "model" / "shapes", _authored_ttl)
 

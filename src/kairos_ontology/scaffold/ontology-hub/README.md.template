@@ -15,6 +15,8 @@ Author:
 - one closed `EntityBinding` per source relation or contracted dbt model under
   `integration/bindings/`;
 - optional ordinary contracted dbt SQL/YAML under `integration/transforms/dbt/models/`;
+- optional dbt seed CSVs (small, static, hand-maintained reference data) with optional
+  sibling column-docs YAML under `integration/transforms/dbt/seeds/`;
 - optional Gold/MDM policy TTL under `model/extensions/`.
 
 Do not add claims, preparation or Silver-extension authority, lifecycle/readiness state,

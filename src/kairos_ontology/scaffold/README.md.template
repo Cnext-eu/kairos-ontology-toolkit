@@ -30,7 +30,8 @@ ontology-hub/                           # authored inputs
     ├── sources/                        # authoritative source-vocabulary TTL
     ├── bindings/                       # one closed EntityBinding per source
     ├── discovery/                      # confirmed business context
-    └── transforms/dbt/models/          # optional ordinary SQL/YAML
+    ├── transforms/dbt/models/          # optional ordinary SQL/YAML
+    └── transforms/dbt/seeds/           # optional static reference CSV
 ontology-hub-publish/                   # generated; do not edit (sibling of the hub)
 ```
 

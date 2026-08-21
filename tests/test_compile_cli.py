@@ -600,3 +600,65 @@ def test_emit_writes_seed_dependencies_and_fails_closed_on_tampering(tmp_path):
 
     with pytest.raises(ManifestError):
         _emit_compile_artifacts(result, target)
+
+
+def test_emit_writes_seed_column_docs_and_fails_closed_on_tampering(tmp_path):
+    """#586b: the sibling `seeds/<name>.yml` is emitted and manifest-owned too."""
+    hub = _seeded_contracted_hub(tmp_path / "hub")
+    docs_source = hub / "integration" / "transforms" / "dbt" / "seeds" / "country_codes.yml"
+    docs_text = (
+        "version: 2\nseeds:\n  - name: country_codes\n"
+        "    description: ISO country codes.\n    columns:\n      - name: code\n"
+    )
+    docs_source.write_text(docs_text, encoding="utf-8")
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    target = tmp_path / "publish" / "medallion" / "dbt"
+
+    _emit_compile_artifacts(result, target)
+
+    planned = {item.path: item for item in result.plan.dbt_dependencies}
+    assert planned["seeds/country_codes.yml"].kind == "seed_properties"
+    # A properties document is not a dbt resource, so it claims no name of its own.
+    assert planned["seeds/country_codes.yml"].model_name == ""
+    assert planned["seeds/country_codes.csv"].model_name == "country_codes"
+
+    docs_file = target / "seeds" / "country_codes.yml"
+    assert docs_file.read_text(encoding="utf-8") == docs_text
+
+    # Re-emitting round-trips the kind="seed_properties" dependency state.
+    _emit_compile_artifacts(result, target)
+    assert docs_file.read_text(encoding="utf-8") == docs_text
+
+    docs_file.write_text("version: 2\nseeds: []\n", encoding="utf-8")
+    from kairos_ontology.core.compiler.emit import ManifestError
+
+    with pytest.raises(ManifestError):
+        _emit_compile_artifacts(result, target)
+
+
+def test_dependency_kind_registry_fails_closed_on_unknown_and_misplaced_kinds():
+    """The registry replaced a boolean ladder whose prefix ternary assumed `models/`."""
+    from kairos_ontology.cli.compile import _DEPENDENCY_KINDS, _dependency_entry_is_valid
+
+    assert set(_DEPENDENCY_KINDS) == {"sql", "properties", "seed", "seed_properties"}
+
+    # Every registered kind, in its correct shape.
+    assert _dependency_entry_is_valid("sql", "models/int_a.sql", "int_a")
+    assert _dependency_entry_is_valid("properties", "models/schema.yml", "")
+    assert _dependency_entry_is_valid("seed", "seeds/regions.csv", "regions")
+    assert _dependency_entry_is_valid("seed_properties", "seeds/regions.yml", "")
+    assert _dependency_entry_is_valid("seed_properties", "seeds/regions.yaml", "")
+
+    # An unregistered kind is rejected rather than silently treated as living in models/.
+    assert not _dependency_entry_is_valid("snapshot", "snapshots/s.sql", "s")
+    # Right kind, wrong directory.
+    assert not _dependency_entry_is_valid("seed", "models/regions.csv", "regions")
+    assert not _dependency_entry_is_valid("seed_properties", "models/regions.yml", "")
+    assert not _dependency_entry_is_valid("properties", "seeds/schema.yml", "")
+    # Right directory, wrong suffix.
+    assert not _dependency_entry_is_valid("seed", "seeds/regions.yml", "regions")
+    # model_name presence must match the kind's rule in both directions.
+    assert not _dependency_entry_is_valid("seed", "seeds/regions.csv", "")
+    assert not _dependency_entry_is_valid("seed", "seeds/regions.csv", "other")
+    assert not _dependency_entry_is_valid("seed_properties", "seeds/regions.yml", "regions")
