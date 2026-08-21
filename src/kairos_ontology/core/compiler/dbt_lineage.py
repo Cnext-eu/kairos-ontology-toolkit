@@ -14,11 +14,10 @@ design/mapping review.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-_REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
-_SOURCE_RE = re.compile(r"\bsource\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"][^'\"]+['\"]\s*\)")
+from .dbt_source import REF_RE, SOURCE_RE
+
 _TRANSFORMS_MODELS_PARTS = ("integration", "transforms", "dbt", "models")
 
 
@@ -70,9 +69,9 @@ def resolve_dbt_model_contributing_sources(
     except OSError:
         return frozenset(), False
 
-    sources = {match.group(1) for match in _SOURCE_RE.finditer(text)}
+    sources = {match.group(1) for match in SOURCE_RE.finditer(text)}
     fully_traceable = True
-    for ref_name in {match.group(1) for match in _REF_RE.finditer(text)}:
+    for ref_name in {match.group(1) for match in REF_RE.finditer(text)}:
         ref_path = _find_model_sql(hub_root, ref_name)
         if ref_path is None:
             fully_traceable = False

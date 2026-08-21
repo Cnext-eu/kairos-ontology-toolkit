@@ -13,6 +13,7 @@ import yaml
 from kairos_ontology.core.compiler import CompileError, load_entity_binding
 from kairos_ontology.core.compiler.dbt_source import (
     contract_target_class,
+    resolve_dbt_model_dependency_paths,
     resolve_dbt_model_source,
     validate_contract_target_class,
 )
@@ -276,6 +277,64 @@ def test_rejects_unresolved_transitive_dbt_ref_dependency(tmp_path: Path) -> Non
     assert diagnostic.code == "dbt-source.dependency-unresolved"
     assert diagnostic.location.pointer == "/source/dbtModel/sqlPath"
     assert "missing_support_model" in diagnostic.message
+
+
+def test_resolves_seed_backed_ref_dependency_as_a_leaf(tmp_path: Path) -> None:
+    """#586a: a ref() targeting an authored seed CSV terminates that walk branch."""
+    hub = _hub(tmp_path)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    seed_path = seeds / "country_codes.csv"
+    seed_path.write_text("code,name\nBE,Belgium\n", encoding="utf-8")
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text(
+        "select customer_id, customer_name from {{ ref('stg_customer') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    paths = resolve_dbt_model_dependency_paths(binding, hub)
+
+    assert seed_path.resolve() in paths
+    assert {path.suffix for path in paths} == {".sql", ".csv"}
+    # And full model resolution still succeeds over the same closure.
+    relation = resolve_dbt_model_source(binding, hub, dependency_paths=paths)
+    assert relation.ref == "int_customer"
+
+
+def test_ref_matching_both_model_and_seed_is_ambiguous(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "stg_customer.csv").write_text("customer_id\n1\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.dependency-ambiguous"
+    assert diagnostic.location.pointer == "/source/dbtModel/sqlPath"
+    assert "stg_customer" in diagnostic.message
+
+
+def test_ref_matching_neither_model_nor_seed_mentions_seeds(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text("select * from {{ ref('missing') }}\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.dependency-unresolved"
+    assert "seeds" in diagnostic.message
 
 
 def test_rejects_unsafe_dbt_source_path_with_stable_location(tmp_path: Path) -> None:

@@ -187,6 +187,13 @@ class BoundSources:
     contracts: tuple[tuple[str, ContractFact], ...]
     virtual_table_uris: frozenset[str]
     replacement_input_uris: frozenset[str]
+    #: Physical table URIs read via ``{{ source() }}`` inside contracted dbt models'
+    #: dependency closures (#584). Deliberately NOT folded into
+    #: ``replacement_input_uris``: tables in that set lose direct-mapping authority
+    #: (``mapping.replaced-source-direct-authority``), while a contracted read must
+    #: coexist with a legal direct binding on the same table. Consumed only by
+    #: ``shape._source_catalogs`` so the shared per-system source catalogs declare them.
+    contracted_input_uris: frozenset[str]
     source_bindings: SourceBindingsFact
     binding_observations: tuple[ClassBindingObservation, ...]
     foreign_key_facts: tuple["ForeignKeyAuthoringFact", ...]
@@ -221,6 +228,8 @@ class NormalizedProjectFacts:
     contracts: tuple[str, ...]
     virtual_table_uris: frozenset[str]
     replacement_input_uris: frozenset[str]
+    #: See ``BoundSources.contracted_input_uris`` (#584).
+    contracted_input_uris: frozenset[str]
     parent_relations: tuple[tuple[str, str], ...]
     silver_models: tuple[NormalizedSilverModel, ...]
     silver_outcomes: tuple[SilverModelOutcome, ...]

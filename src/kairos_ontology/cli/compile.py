@@ -151,9 +151,16 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
             continue
         existing = target.joinpath(*path.split("/"))
         if existing.is_file():
-            from ..core.projector import _union_sources_yaml
+            from ..core.compiler.emit import ArtifactCollisionError
+            from ..core.projector import SourcesUnionError, _union_sources_yaml
 
-            shared[path] = _union_sources_yaml(existing.read_text(encoding="utf-8"), content)
+            try:
+                shared[path] = _union_sources_yaml(existing.read_text(encoding="utf-8"), content)
+            except SourcesUnionError as exc:
+                # Preflight ordering guarantees the target tree is untouched on failure.
+                raise ArtifactCollisionError(
+                    f"conflicting source metadata across domains in {path!r}: {exc}"
+                ) from exc
     return shared
 
 
@@ -223,10 +230,24 @@ def _load_dependency_states(
             model_name = entry["model_name"]
             suffix = Path(path).suffix.lower()
             valid_kind = (
-                kind == "sql" and suffix == ".sql" and model_name and Path(path).stem == model_name
-            ) or (kind == "properties" and suffix in {".yml", ".yaml"} and not model_name)
+                (
+                    kind == "sql"
+                    and suffix == ".sql"
+                    and model_name
+                    and Path(path).stem == model_name
+                )
+                or (kind == "properties" and suffix in {".yml", ".yaml"} and not model_name)
+                or (
+                    # #586: authored seed CSVs join the emitted project under seeds/.
+                    kind == "seed"
+                    and suffix == ".csv"
+                    and model_name
+                    and Path(path).stem == model_name
+                )
+            )
+            expected_prefix = "seeds/" if kind == "seed" else "models/"
             if (
-                not path.startswith("models/")
+                not path.startswith(expected_prefix)
                 or not valid_kind
                 or len(digest) != 64
                 or any(character not in "0123456789abcdef" for character in digest)

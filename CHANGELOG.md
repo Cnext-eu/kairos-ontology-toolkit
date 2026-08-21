@@ -17,6 +17,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`compile --emit` now declares the physical dbt sources a contracted model's dependency
+  closure reads (issue #584).** `{{ source('name', 'table') }}` pairs are extracted from the
+  contracted `ref()` closure at resolution time, validated against the hub's source
+  vocabularies (new `dbt-source.source-unresolved` / `dbt-source.source-ambiguous`
+  diagnostics), and declared through the same shared `models/silver/_<system>__sources.yml`
+  catalogs relation-backed bindings use — so offline `dbt parse` passes on the emitted
+  project. A purely-contracted domain now discovers and provenance-tracks the vocabularies
+  its closure reads. A direct binding and a contracted `source()` read of the same table
+  legally coexist (contracted declarations do not grant or revoke mapping authority).
+- **A `ref()` pointing at an authored dbt seed CSV no longer blocks the domain with
+  `dbt-source.dependency-unresolved` (issue #586, stage a).** `ref('<name>')` may resolve to
+  exactly one `integration/transforms/dbt/seeds/<name>.csv`; the seed joins the compile
+  closure as a leaf, is carried on the `CompilePlan` as `kind="seed"`, and is emitted under
+  `seeds/` so the generated project stays self-contained. A name matching both a model and a
+  seed fails closed with the new `dbt-source.dependency-ambiguous` diagnostic, and
+  `validate-dbt` counts emitted seed stems as valid `ref()` targets.
+
+### Changed
+- **The cross-domain union of shared `_<system>__sources.yml` catalogs now fails closed.**
+  Previously, when two domains rendered the same source with conflicting header metadata
+  (database/schema/description) or conflicting same-name table entries, the first-seen
+  variant silently won. `compile --emit` now aborts with an artifact-collision error before
+  touching the target tree; re-emit every domain after a vocabulary change that alters shared
+  source metadata. Non-conflicting unions produce byte-identical output as before.
+
 ## [5.13.0rc21] — 2026-08-20
 
 ### Added

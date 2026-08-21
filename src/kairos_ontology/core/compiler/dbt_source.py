@@ -18,7 +18,16 @@ from .bindings import EntityBinding
 from .result import CompileDiagnostic, CompileError, SourceLocation
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
+#: Single-argument ``ref('model')`` calls in authored contracted SQL. Public because the
+#: compiler's plan-time closure walk (``kernel.py``) and lineage tracing
+#: (``dbt_lineage.py``) must select dependencies with exactly the same rule this
+#: resolution-time walk uses. ``dbt_bundle.py``/``dbt_validation.py`` keep their own
+#: regexes deliberately: they accept two-argument package refs and IGNORECASE matching,
+#: which are different semantics (see DD amendment for #584/#586).
+REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
+#: ``source('name', 'table')`` calls with both arguments captured; ``[^'\"]+`` admits
+#: dotted table names such as ``DtbBooking.sample``.
+SOURCE_RE = re.compile(r"\bsource\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
 _TRANSFORMS_PARTS = ("integration", "transforms", "dbt")
 
 
@@ -120,8 +129,14 @@ def _dependency_sql_paths(
     hub_root: Path,
     selected_path: Path,
 ) -> tuple[Path, ...]:
-    """Resolve the selected model's transitive authored ``ref()`` SQL closure."""
+    """Resolve the selected model's transitive authored ``ref()`` closure.
+
+    Returns model ``.sql`` paths plus any authored seed ``.csv`` leaves under
+    ``integration/transforms/dbt/seeds/`` (#586): a ``ref()`` may target a dbt seed,
+    which terminates that branch of the walk (seed CSVs are never text-scanned).
+    """
     models_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "models")
+    seeds_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "seeds")
     resolved: dict[str, Path] = {}
     pending = [selected_path]
     while pending:
@@ -150,19 +165,50 @@ def _dependency_sql_paths(
                 f"could not read dbt SQL dependency {path}: {exc}",
                 "sqlPath",
             ) from exc
-        for ref_name in sorted(set(_REF_RE.findall(text))):
-            matches = tuple(sorted(models_dir.rglob(f"{ref_name}.sql")))
-            if len(matches) != 1:
+        for ref_name in sorted(set(REF_RE.findall(text))):
+            sql_matches = tuple(sorted(models_dir.rglob(f"{ref_name}.sql")))
+            seed_matches = (
+                tuple(sorted(seeds_dir.rglob(f"{ref_name}.csv"))) if seeds_dir.is_dir() else ()
+            )
+            if sql_matches and seed_matches:
                 raise _failure(
                     binding,
-                    "dbt-source.dependency-unresolved",
+                    "dbt-source.dependency-ambiguous",
                     (
-                        f"dbt ref({ref_name!r}) must resolve to exactly one authored SQL file "
-                        "under integration/transforms/dbt/models"
+                        f"dbt ref({ref_name!r}) resolves to both an authored model SQL file "
+                        "and an authored seed CSV file; dbt model and seed names share one "
+                        "namespace, so rename one of them"
                     ),
                     "sqlPath",
                 )
-            pending.append(matches[0].resolve())
+            if len(sql_matches) == 1:
+                pending.append(sql_matches[0].resolve())
+                continue
+            if len(seed_matches) == 1 and not sql_matches:
+                seed_path = seed_matches[0].resolve()
+                seed_previous = resolved.get(seed_path.stem.casefold())
+                if seed_previous is not None and seed_previous != seed_path:
+                    raise _failure(
+                        binding,
+                        "dbt-source.dependency-unresolved",
+                        (
+                            f"dbt model name {seed_path.stem!r} resolves to more than one "
+                            "authored SQL dependency"
+                        ),
+                        "sqlPath",
+                    )
+                resolved[seed_path.stem.casefold()] = seed_path
+                continue
+            raise _failure(
+                binding,
+                "dbt-source.dependency-unresolved",
+                (
+                    f"dbt ref({ref_name!r}) must resolve to exactly one authored SQL file "
+                    "under integration/transforms/dbt/models or exactly one authored seed "
+                    "CSV file under integration/transforms/dbt/seeds"
+                ),
+                "sqlPath",
+            )
     return tuple(sorted(resolved.values(), key=lambda path: path.as_posix()))
 
 

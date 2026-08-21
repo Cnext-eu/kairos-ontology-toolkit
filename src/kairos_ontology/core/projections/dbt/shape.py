@@ -1832,6 +1832,10 @@ def _schema_model(
 def _source_catalogs(project: NormalizedProjectFacts) -> tuple[SourceCatalogSpec, ...]:
     mapped = {mapping.source_table_uri for mapping in project.mappings.tables}
     mapped.update(project.replacement_input_uris)
+    # #584: physical tables read via {{ source() }} inside contracted dbt model closures
+    # must be declared in the same shared per-system catalogs, or the emitted project
+    # fails dbt parse offline.
+    mapped.update(project.contracted_input_uris)
     catalogs: list[SourceCatalogSpec] = []
     for system in project.systems:
         source_name = camel_to_snake(system.label).replace(" ", "_")

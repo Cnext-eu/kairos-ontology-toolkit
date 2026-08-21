@@ -555,6 +555,14 @@ def test_v5_cli_emit_builds_one_order_independent_multi_domain_dbt_project(
     assert "      billing:" in project
     assert "      party:" in project
 
+    # #584: both domains' contracted closures read source('erp', 'customers') through
+    # stg_shared; the shared catalog must declare that physical table exactly once.
+    erp_catalog = yaml.safe_load(
+        (target_ab / "models/silver/_erp__sources.yml").read_text(encoding="utf-8")
+    )
+    erp = next(source for source in erp_catalog["sources"] if source["name"] == "erp")
+    assert [table["name"] for table in erp["tables"]] == ["customers"]
+
     bytes_ab = {
         path.relative_to(target_ab).as_posix(): path.read_bytes()
         for path in target_ab.rglob("*")

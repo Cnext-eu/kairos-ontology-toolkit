@@ -635,15 +635,27 @@ def _is_shared_sources_artifact(path: str) -> bool:
     return path.startswith("models/silver/") and path.endswith("__sources.yml")
 
 
+class SourcesUnionError(ValueError):
+    """Two shared ``_sources.yml`` renderings disagree on source or table metadata.
+
+    Issues #584/#586 made the union fail closed: dbt allows exactly one definition per
+    source name, so silently keeping the first-seen header (or first-seen table entry)
+    would let one domain's stale vocabulary quietly win over another's. The caller
+    surfaces this as an artifact collision before any file is written.
+    """
+
+
 def _union_sources_yaml(existing: str, incoming: str) -> str:
     """Deterministically union the ``tables`` of two rendered ``_sources.yml`` docs.
 
     Two domains that map tables from the same source system each emit a
     ``_{system}__sources.yml`` filtered to *their* mapped tables. The package-level
     file must declare the union of those tables exactly once. The source header
-    (name/description/database/schema) is identical for a given system; only the
-    ``tables`` list differs, so the reconciliation is a stable-sorted union keyed by
-    table name.
+    (name/description/database/schema) must be identical for a given system and any
+    same-named table entries must be identical; a mismatch raises
+    :class:`SourcesUnionError` (fail closed) rather than silently keeping the
+    first-seen variant. Non-conflicting output is byte-identical to the historical
+    first-wins union.
     """
     import yaml
 
@@ -654,14 +666,29 @@ def _union_sources_yaml(existing: str, incoming: str) -> str:
     for doc in (existing_doc, incoming_doc):
         for src in doc.get("sources", []) or []:
             name = src.get("name")
+            header = {k: v for k, v in src.items() if k != "tables"}
             if name not in sources_by_name:
-                header = {k: v for k, v in src.items() if k != "tables"}
-                header["_tables"] = {}
-                sources_by_name[name] = header
+                entry = dict(header)
+                entry["_tables"] = {}
+                sources_by_name[name] = entry
                 order.append(name)
+            else:
+                existing_header = {k: v for k, v in sources_by_name[name].items() if k != "_tables"}
+                if existing_header != header:
+                    raise SourcesUnionError(
+                        f"conflicting source metadata for source {name!r}: "
+                        f"{existing_header!r} != {header!r}"
+                    )
             tables = sources_by_name[name]["_tables"]
             for tbl in src.get("tables", []) or []:
-                tables.setdefault(tbl.get("name"), tbl)
+                table_name = tbl.get("name")
+                previous = tables.get(table_name)
+                if previous is not None and previous != tbl:
+                    raise SourcesUnionError(
+                        f"conflicting table entry {table_name!r} in source {name!r}: "
+                        f"{previous!r} != {tbl!r}"
+                    )
+                tables.setdefault(table_name, tbl)
     merged_sources: list[dict] = []
     for name in order:
         entry = sources_by_name[name]
