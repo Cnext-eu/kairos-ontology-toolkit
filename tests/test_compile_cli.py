@@ -662,3 +662,217 @@ def test_dependency_kind_registry_fails_closed_on_unknown_and_misplaced_kinds():
     assert not _dependency_entry_is_valid("seed", "seeds/regions.csv", "")
     assert not _dependency_entry_is_valid("seed", "seeds/regions.csv", "other")
     assert not _dependency_entry_is_valid("seed_properties", "seeds/regions.yml", "regions")
+
+
+# ---------------------------------------------------------------------------
+# Multiple domains per invocation (#598)
+# ---------------------------------------------------------------------------
+
+
+def _second_binding(hub: Path, domain: str = "booking") -> None:
+    """Declare another domain, for discovery only — it need not compile."""
+    (hub / "integration" / "bindings" / f"{domain}.binding.yaml").write_text(
+        textwrap.dedent(f"""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: crm-{domain}
+              domain: {domain}
+            source:
+              relation: crm.customers
+            target:
+              class: party:Customer
+            grain:
+              columns: [customer_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [customer_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: party:customer_id
+                expression: customer_id
+            """).strip(),
+        encoding="utf-8",
+    )
+
+
+def _two_domain_hub(tmp_path: Path) -> Path:
+    """A hub where two domains both compile cleanly.
+
+    ``_hub`` ships one domain, which cannot show that a multi-domain invocation keeps
+    each domain's verdict separate or that one report build serves them all.
+    """
+    hub = _hub(tmp_path)
+    (hub / "model" / "ontologies" / "booking.ttl").write_text(
+        textwrap.dedent("""
+            @prefix booking: <https://example.test/booking#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            <https://example.test/booking> a owl:Ontology ; owl:versionInfo "1.0.0" .
+            booking:Order a owl:Class ; rdfs:label "Order" .
+            booking:order_id a owl:DatatypeProperty ;
+              rdfs:domain booking:Order ; rdfs:range xsd:string .
+            booking:orderName a owl:DatatypeProperty ;
+              rdfs:domain booking:Order ; rdfs:range xsd:string .
+            """).strip(),
+        encoding="utf-8",
+    )
+    (hub / "integration" / "bindings" / "order.binding.yaml").write_text(
+        textwrap.dedent("""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: crm-order
+              domain: booking
+            source:
+              relation: crm.customers
+            target:
+              class: booking:Order
+            grain:
+              columns: [customer_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [customer_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: booking:order_id
+                expression: customer_id
+              - property: booking:orderName
+                expression: customer_name
+            """).strip(),
+        encoding="utf-8",
+    )
+    return hub
+
+
+def test_hub_domains_discovers_every_declared_domain(tmp_path):
+    from kairos_ontology.cli.compile import _hub_domains
+
+    hub = _hub(tmp_path)
+    assert _hub_domains(hub) == ["party"]
+
+    _second_binding(hub)
+    assert _hub_domains(hub) == ["booking", "party"]
+
+
+def test_compile_requires_a_domain_or_all(tmp_path):
+    hub = _hub(tmp_path)
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=hub):
+        result = runner.invoke(cli, ["compile", "--check"])
+    assert result.exit_code == 2
+    assert "at least one DOMAIN" in result.output
+
+
+def test_compile_all_and_explicit_domains_are_mutually_exclusive(tmp_path):
+    hub = _hub(tmp_path)
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=hub):
+        result = runner.invoke(cli, ["compile", "--all", "party", "--check"])
+    assert result.exit_code == 2
+    assert "do not also name DOMAINS" in result.output
+
+
+def test_compile_all_compiles_every_declared_domain(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "--all", "--check"])
+
+    assert result.exit_code == 0, result.output
+    assert "party: compile check passed" in result.output
+
+
+def test_compile_repeats_a_named_domain_only_once(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "party", "--check"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("party: compile check passed") == 1
+    # One domain after dedup, so no multi-domain summary line.
+    assert "domain(s) compiled" not in result.output
+
+
+def test_one_domains_failure_does_not_skip_the_others(tmp_path, monkeypatch):
+    """A release loop must not stop at the first bad domain, nor read as success."""
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "nosuchdomain", "--check"])
+
+    assert result.exit_code == 1
+    assert "party: compile check passed" in result.output
+    assert "✗ 1/2 domain(s) compiled" in result.output
+    assert "failed: nosuchdomain" in result.output
+
+
+def test_single_domain_json_keeps_the_object_shape(tmp_path, monkeypatch):
+    """Existing consumers parse one object; only a multi-domain call returns an array."""
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert isinstance(json.loads(result.stdout), dict)
+
+
+def test_multi_domain_json_returns_one_payload_per_domain(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli, ["compile", "party", "nosuchdomain", "--check", "--format", "json"]
+    )
+
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, list)
+    assert [entry["domain"] for entry in payload] == ["party", "nosuchdomain"]
+
+
+def test_compile_all_builds_the_alignment_report_once_for_the_whole_hub(
+    tmp_path, monkeypatch
+):
+    """The #598 win: the domain-independent corpus walk is paid once, not per domain."""
+    from kairos_ontology.core import alignment_report as module
+
+    hub = _two_domain_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    calls = [0]
+    original = module._build_alignment_report_uncached
+
+    def counting(*args, **kwargs):
+        calls[0] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_build_alignment_report_uncached", counting)
+    result = CliRunner().invoke(cli, ["compile", "--all", "--check"])
+
+    assert result.exit_code == 0, result.output
+    assert "✓ 2/2 domain(s) compiled" in result.output
+    # Two domains x two gates = four asks, one build.
+    assert calls[0] == 1
+
+
+def test_multi_domain_json_stdout_stays_machine_readable(tmp_path, monkeypatch):
+    """stdout under --format json is the payload and nothing else.
+
+    The multi-domain progress summary is for a human watching a release loop; printed
+    to stdout it lands after the closing bracket and makes the whole document fail to
+    parse, which is exactly how a consumer would meet it.
+    """
+    hub = _two_domain_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "--all", "--check", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert [entry["domain"] for entry in payload] == ["booking", "party"]
+    assert "domain(s) compiled" not in result.stdout

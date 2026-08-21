@@ -426,3 +426,127 @@ class TestDecideOnceGrouping:
         rendered = render_gap_groups_markdown(self._report(tmp_path)).replace("**", "")
         assert "4 gap columns" in rendered
         assert "2 distinct names" in rendered
+
+
+# ---------------------------------------------------------------------------
+# In-process memo (#598)
+# ---------------------------------------------------------------------------
+
+
+class TestReportMemo:
+    """``build_alignment_report`` resolves the whole reference vocabulary, which is
+    domain-independent and dominates compile wall clock. ``compile`` asked for the
+    identical report twice per invocation (DD-180 anchor gate, then DD-169 column
+    gate), so the same corpus was walked twice for one command.
+    """
+
+    @staticmethod
+    def _count_builds(monkeypatch) -> list[int]:
+        from kairos_ontology.core import alignment_report as module
+
+        calls = [0]
+        original = module._build_alignment_report_uncached
+
+        def counting(*args, **kwargs):
+            calls[0] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(module, "_build_alignment_report_uncached", counting)
+        return calls
+
+    def test_two_identical_calls_build_once(self, tmp_path: Path, monkeypatch) -> None:
+        calls = self._count_builds(monkeypatch)
+        _write_domain(tmp_path, "party", [_table(custom=[{"column": "a"}])])
+
+        first = build_alignment_report(tmp_path)
+        second = build_alignment_report(tmp_path)
+
+        assert calls[0] == 1
+        assert first is second
+
+    def test_both_compile_gates_share_one_build(self, tmp_path: Path, monkeypatch) -> None:
+        """The exact #598 shape: the two gates compile runs back to back."""
+        from kairos_ontology.core.alignment_report import (
+            undecided_gap_columns,
+            undecided_unanchored_tables,
+        )
+
+        calls = self._count_builds(monkeypatch)
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        _write_domain(
+            analysis, "party", [_table(custom=[{"column": "a", "example_values": ["v"]}])]
+        )
+
+        undecided_unanchored_tables(tmp_path, domains=["party"])
+        undecided_gap_columns(tmp_path, domains=["party"])
+
+        assert calls[0] == 1
+
+    def test_an_edited_alignment_file_is_not_served_from_the_memo(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A path-keyed memo alone would answer from before the edit."""
+        calls = self._count_builds(monkeypatch)
+        _write_domain(tmp_path, "party", [_table(custom=[{"column": "a"}])])
+        assert len(build_alignment_report(tmp_path).gap_columns) == 1
+
+        _write_domain(
+            tmp_path,
+            "party",
+            [_table(custom=[{"column": "a"}, {"column": "b"}])],
+        )
+        assert len(build_alignment_report(tmp_path).gap_columns) == 2
+        assert calls[0] == 2
+
+    def test_a_new_domain_file_invalidates_the_memo(self, tmp_path: Path) -> None:
+        _write_domain(tmp_path, "party", [_table()])
+        assert {d.domain for d in build_alignment_report(tmp_path).domains} == {"party"}
+
+        _write_domain(tmp_path, "booking", [_table(table="orders")])
+        assert {d.domain for d in build_alignment_report(tmp_path).domains} == {
+            "party",
+            "booking",
+        }
+
+    def test_one_build_serves_every_domain_scope(self, tmp_path: Path, monkeypatch) -> None:
+        """``domains`` is filtered after the build, so it must stay out of the key --
+        this is what lets a multi-domain invocation pay the corpus cost once.
+        """
+        from kairos_ontology.core.alignment_report import undecided_gap_columns
+
+        calls = self._count_builds(monkeypatch)
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        _write_domain(
+            analysis, "party", [_table(custom=[{"column": "a", "example_values": ["v"]}])]
+        )
+        _write_domain(
+            analysis,
+            "booking",
+            [_table(table="orders", custom=[{"column": "b", "example_values": ["v"]}])],
+        )
+
+        assert len(undecided_gap_columns(tmp_path)) == 2
+        assert [c.column for c in undecided_gap_columns(tmp_path, domains=["party"])] == ["a"]
+        assert [c.column for c in undecided_gap_columns(tmp_path, domains=["booking"])] == ["b"]
+        assert calls[0] == 1
+
+    def test_no_cache_forces_a_rebuild(self, tmp_path: Path, monkeypatch) -> None:
+        """``compile --no-cache`` sets CACHE_ENABLED=False and must bypass this too."""
+        from kairos_ontology.core import ontology_loader
+
+        calls = self._count_builds(monkeypatch)
+        monkeypatch.setattr(ontology_loader, "CACHE_ENABLED", False)
+        _write_domain(tmp_path, "party", [_table()])
+
+        build_alignment_report(tmp_path)
+        build_alignment_report(tmp_path)
+
+        assert calls[0] == 2
+
+    def test_distinct_hubs_do_not_share_a_memo_entry(self, tmp_path: Path) -> None:
+        left, right = tmp_path / "left", tmp_path / "right"
+        _write_domain(left, "party", [_table()])
+        _write_domain(right, "booking", [_table(table="orders")])
+
+        assert {d.domain for d in build_alignment_report(left).domains} == {"party"}
+        assert {d.domain for d in build_alignment_report(right).domains} == {"booking"}

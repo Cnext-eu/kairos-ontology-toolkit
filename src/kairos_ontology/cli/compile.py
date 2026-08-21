@@ -9,6 +9,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -461,7 +462,15 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
 
 
 @click.command(name="compile")
-@click.argument("domain")
+@click.argument("domains", nargs=-1)
+@click.option(
+    "--all",
+    "all_domains",
+    is_flag=True,
+    help="Compile every domain declared by a binding in this hub. Each domain is still "
+    "compiled independently and emitted atomically; they only share this process's "
+    "read-only parse caches.",
+)
 @click.option("--check", "check_mode", is_flag=True, help="Validate without writing files.")
 @click.option("--explain", "explain_mode", is_flag=True, help="Explain the normalized plan.")
 @click.option(
@@ -496,7 +505,8 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     "suspected stale-cache result.",
 )
 def compile_cmd(
-    domain: str,
+    domains: tuple[str, ...],
+    all_domains: bool,
     check_mode: bool,
     explain_mode: bool,
     emit_mode: bool,
@@ -504,11 +514,17 @@ def compile_cmd(
     output_format: str,
     no_cache: bool,
 ) -> None:
-    """Check, explain, or emit one v5 DOMAIN from the current hub.
+    """Check, explain, or emit one or more v5 DOMAINS from the current hub.
 
     ``--check`` and ``--explain`` may be combined in a single invocation to get both
     the diagnostic stream and the structured explain report together. ``--emit`` is
     the only side-effecting mode and remains mutually exclusive with the other two.
+
+    Accepting several domains at once (#598) is a wall-clock fix, not a semantic one.
+    The alignment gates resolve the entire reference-model vocabulary — work that is
+    identical for every domain — so a release loop of N separate invocations paid that
+    cost N times. One invocation pays it once and still compiles each domain
+    independently, emitting each domain's artifacts atomically on its own.
     """
     if emit_mode and (check_mode or explain_mode):
         raise click.UsageError("--emit cannot be combined with --check or --explain")
@@ -524,6 +540,10 @@ def compile_cmd(
             "kairos-execute-project running after a successful check and explicit "
             "output-path confirmation, pass --confirm-emit."
         )
+    if all_domains and domains:
+        raise click.UsageError(
+            "--all already compiles every domain in the hub; do not also name DOMAINS."
+        )
     mode = (
         CompileMode.EMIT if emit_mode else CompileMode.CHECK if check_mode else CompileMode.EXPLAIN
     )
@@ -531,15 +551,106 @@ def compile_cmd(
     # leave enabled process-wide for every mode; only --no-cache turns it off.
     ontology_loader.CACHE_ENABLED = not no_cache
     hub = find_hub_root(Path.cwd(), require_model=True) or Path.cwd()
-    # Domain-scoped (issue #389/#390): compile is inherently single-domain (domain is a
-    # required positional argument here), so an unresolved DD-148 judgment tagged to a
-    # different domain no longer blocks this domain's compile; cross-cutting or
-    # matching-domain judgments still do.
+
+    if all_domains:
+        selected = _hub_domains(hub)
+        if not selected:
+            raise click.ClickException(
+                "--all found no domains: no integration/bindings/*.binding.yaml in this "
+                "hub declares a metadata.domain."
+            )
+    else:
+        # dict.fromkeys, not set: a caller who names the same domain twice gets it
+        # compiled once, in the order they asked for.
+        selected = list(dict.fromkeys(domains))
+        if not selected:
+            raise click.UsageError(
+                "provide at least one DOMAIN, or --all to compile every domain in the hub."
+            )
+
+    payloads: list[dict[str, Any]] = []
+    failed: list[str] = []
+    for one in selected:
+        succeeded, payload = _compile_one_domain(
+            hub,
+            one,
+            mode,
+            check_mode=check_mode,
+            explain_mode=explain_mode,
+            emit_mode=emit_mode,
+            no_cache=no_cache,
+            output_format=output_format,
+        )
+        if payload is not None:
+            payloads.append(payload)
+        if not succeeded:
+            failed.append(one)
+
+    if output_format == "json" and payloads:
+        # One domain keeps the exact single-object shape every existing consumer parses;
+        # only a genuinely multi-domain invocation returns an array.
+        document: Any = payloads[0] if len(selected) == 1 else payloads
+        click.echo(json.dumps(document, indent=2, sort_keys=True))
+
+    if len(selected) > 1:
+        # A failure must not be readable as "the loop finished", and one domain's
+        # failure must not silently skip the rest.
+        #
+        # Under --format json stdout carries the payload and nothing else, so this
+        # progress line goes to stderr there: a consumer runs the output through a JSON
+        # parser, and a trailing human summary makes the whole document unparseable.
+        click.echo(
+            f"{'✗' if failed else '✓'} {len(selected) - len(failed)}/{len(selected)} "
+            "domain(s) compiled",
+            err=bool(failed) or output_format == "json",
+        )
+        if failed:
+            click.echo(f"  failed: {', '.join(failed)}", err=True)
+    if failed:
+        raise click.exceptions.Exit(1)
+
+
+def _hub_domains(hub: Path) -> list[str]:
+    """Every domain declared by a binding in this hub, sorted.
+
+    The same discovery the scaffolded release workflow used to inline as a shell
+    one-liner over ``metadata.domain``; reuses ``hub_inspection``'s reader rather than
+    adding another glob of the bindings directory.
+    """
+    from ..core.hub_inspection import _binding_domains
+
+    counts, _ = _binding_domains(hub / "integration" / "bindings")
+    return sorted(name for name in counts if name)
+
+
+def _compile_one_domain(
+    hub: Path,
+    domain: str,
+    mode: CompileMode,
+    *,
+    check_mode: bool,
+    explain_mode: bool,
+    emit_mode: bool,
+    no_cache: bool,
+    output_format: str,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Run every gate, then compile, for exactly one domain.
+
+    Returns ``(succeeded, json payload or None)``. Gate failures report themselves and
+    return ``False`` rather than exiting the process, so a multi-domain invocation
+    reports every domain instead of stopping at the first one; the caller turns any
+    failure into the non-zero exit.
+    """
+    # Domain-scoped (issue #389/#390): every gate here is scoped to this one domain, so
+    # an unresolved DD-148 judgment tagged to a different domain no longer blocks this
+    # domain's compile; cross-cutting or matching-domain judgments still do. That scoping
+    # is also what makes a multi-domain invocation safe: one domain's gate failure is
+    # reported against that domain and leaves the others' verdicts untouched.
     discovery_errors = check_discovery_gate(hub, domains=[domain])
     if discovery_errors:
         for error in discovery_errors:
             click.echo(f"✗ {error}", err=True)
-        raise click.exceptions.Exit(1)
+        return False, None
 
     # Ontology integrity, at the stage the damage is done (DD-163). Binding authoring is
     # where an agent is under pressure to make `binding.unknown-property` go away, and
@@ -577,7 +688,7 @@ def compile_cmd(
             "  Or record a table-level disposition to accept the table as out of scope.",
             err=True,
         )
-        raise click.exceptions.Exit(1)
+        return False, None
 
     try:
         from ..core.alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
@@ -602,7 +713,7 @@ def compile_cmd(
         click.echo("  Resolve each by one of:", err=True)
         for resolution in GAP_RESOLUTIONS:
             click.echo(f"    - {resolution}", err=True)
-        raise click.exceptions.Exit(1)
+        return False, None
 
     integrity_failures = _domain_integrity_failures(hub, domain)
     if integrity_failures:
@@ -614,7 +725,7 @@ def compile_cmd(
             "run 'kairos-ontology validate --all' for the full picture",
             err=True,
         )
-        raise click.exceptions.Exit(1)
+        return False, None
 
     # DD-133/140: --check/--explain must write nothing to the hub; only --emit may
     # populate the on-disk ontology-parse cache, and only for the duration of this one
@@ -633,9 +744,8 @@ def compile_cmd(
         # always land in the sibling publish root, never inside the hub.
         requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
         emit_target = _emit_compile_artifacts(result, requested_target)
-    if output_format == "json":
-        click.echo(json.dumps(_payload(result), indent=2, sort_keys=True))
-    else:
+    payload = _payload(result) if output_format == "json" else None
+    if payload is None:
         for diagnostic in result.diagnostics.ordered:
             click.echo(diagnostic.render(), err=not result.succeeded)
         if result.succeeded:
@@ -680,5 +790,4 @@ def compile_cmd(
                 click.echo(
                     f"✓ {domain}: emitted {len(result.artifacts)} artifact(s) to {emit_target}"
                 )
-    if not result.succeeded:
-        raise click.exceptions.Exit(1)
+    return result.succeeded, payload

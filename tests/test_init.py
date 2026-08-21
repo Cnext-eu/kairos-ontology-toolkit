@@ -1039,6 +1039,37 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             assert "-type l -print -quit | grep -q ." in content
             assert "rm -f dbt-artifacts.zip" in content
             assert content.index("-type l -print -quit") < content.index("-type f -print -quit")
+            # #598: --emit has required --confirm-emit since #264. A scaffolded
+            # release workflow that omits it fails on its first domain.
+            assert "--confirm-emit" in content
+
+
+def test_scaffold_emit_invocations_pass_confirm_emit():
+    """Every scaffolded ``compile ... --emit`` must also pass ``--confirm-emit`` (#598).
+
+    ``--emit`` gained a mandatory ``--confirm-emit`` companion in #264, but the
+    scaffolded release workflow kept the bare form for three weeks: no test asserted
+    that a template's CLI invocations were ones the CLI would actually accept, so a
+    generated hub's release loop failed on its first domain. This closes that class of
+    bug for the whole scaffold tree, not just the one file that regressed.
+    """
+    import kairos_ontology.scaffold as scaffold_pkg
+
+    scaffold_root = Path(next(iter(scaffold_pkg.__path__)))
+    offenders = []
+    for path in sorted(scaffold_root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in {".yml", ".yaml", ".md", ".sh"}:
+            continue
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
+        ):
+            # Only real invocations: prose *about* the flag ("do not call `compile
+            # --emit` from a design skill") is correct as written and must not trip this.
+            if "kairos-ontology compile" not in line or "--emit" not in line:
+                continue
+            if "--confirm-emit" not in line:
+                offenders.append(f"{path.relative_to(scaffold_root)}:{lineno}: {line.strip()}")
+    assert not offenders, "scaffolded --emit without --confirm-emit:\n" + "\n".join(offenders)
 
 
 # ---------------------------------------------------------------------------

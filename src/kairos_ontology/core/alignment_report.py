@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from ._cache import compute_entry_hash
 from ._provenance import ai_attribution_note
 from .ai_provider import ROLE_ALIGNMENT
 
@@ -466,13 +467,86 @@ def find_anchor_candidates(
     return tuple((name, uri, importer) for _, _, name, uri, importer in scored[:limit])
 
 
+#: In-process memo of built reports, keyed on ``(analysis_dir, hub_root)`` ->
+#: ``(inputs_fingerprint, report)``. Mirrors Tier A of the compile-perf cache in
+#: ``ontology_loader``: process-lifetime only, never persisted, and a hit is only
+#: trusted after re-checking that the inputs on disk still look the same.
+_REPORT_CACHE: dict[tuple[str, str | None], tuple[str, "AlignmentReport"]] = {}
+
+
+def reset_alignment_report_cache() -> None:
+    """Drop the in-process report memo.
+
+    Module-global caches leak across pytest cases, so the suite clears this between
+    tests the same way it clears the per-model parameter cache (DD-174).
+    """
+    _REPORT_CACHE.clear()
+
+
+def _report_inputs_fingerprint(analysis_dir: Path, hub_root: Path | None) -> str:
+    """Fingerprint the *mutable hub* inputs a report is built from.
+
+    ``(path, mtime_ns, size)`` over the alignment files and the source vocabularies --
+    a few dozen small YAML files, stat-only, negligible against the reference-corpus
+    parse this memo exists to avoid. Same philosophy as ``_manifest_still_fresh``:
+    verify a hit rather than trust the key, so an edit between two calls in one process
+    produces a fresh report instead of a stale one.
+
+    Deliberately excludes the reference-model corpus: it ships in a pinned, immutable
+    wheel, and a report is never rebuilt after an ontology edit within one process.
+    """
+    paths: list[Path] = sorted(Path(analysis_dir).glob("*-alignment.yaml"))
+    if hub_root is not None:
+        sources = Path(hub_root) / "integration" / "sources"
+        if sources.is_dir():
+            paths.extend(sorted(sources.glob("*/*.yaml")))
+    stamped: list[list[Any]] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:  # vanished between glob and stat; a miss is always safe
+            continue
+        stamped.append([str(path), stat.st_mtime_ns, stat.st_size])
+    return compute_entry_hash(stamped)
+
+
 def build_alignment_report(analysis_dir: Path, *, hub_root: Path | None = None) -> AlignmentReport:
     """Aggregate every ``*-alignment.yaml`` into one cross-domain coverage picture.
 
     *hub_root* enables the ``no-sample-evidence`` bucket by consulting the source
     vocabularies. Without it every unmapped column defaults to the gap bucket, which
     over-reports rather than under-reports -- the safer direction for a gate.
+
+    Memoized in-process (#598). Building this resolves the whole reference-model
+    vocabulary -- domain-independent work that dominates the cost -- and ``compile``
+    alone asked for the same report twice per invocation, once for the DD-180 anchor
+    gate and once for the DD-169 column gate. ``domains`` is not part of the key
+    because callers filter by scope *after* the report is built, so one build serves
+    every scope. Honours ``ontology_loader.CACHE_ENABLED``, so ``compile --no-cache``
+    forces a clean rebuild.
     """
+    from . import ontology_loader
+
+    if not ontology_loader.CACHE_ENABLED:
+        return _build_alignment_report_uncached(analysis_dir, hub_root=hub_root)
+
+    key = (
+        str(Path(analysis_dir).resolve()),
+        str(Path(hub_root).resolve()) if hub_root is not None else None,
+    )
+    fingerprint = _report_inputs_fingerprint(Path(analysis_dir), hub_root)
+    cached = _REPORT_CACHE.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    report = _build_alignment_report_uncached(analysis_dir, hub_root=hub_root)
+    _REPORT_CACHE[key] = (fingerprint, report)
+    return report
+
+
+def _build_alignment_report_uncached(
+    analysis_dir: Path, *, hub_root: Path | None = None
+) -> AlignmentReport:
+    """Build the report from scratch. See :func:`build_alignment_report`."""
     import yaml
 
     report = AlignmentReport()
