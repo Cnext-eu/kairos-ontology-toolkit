@@ -1081,22 +1081,13 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
     )
 
 
-def _assemble_bound_sources(
-    *,
-    binding: EntityBinding,
-    context: ResolutionContext,
-    relation: ResolvedRelation,
-    klass: ResolvedClass,
-    symbols: dict[str, _Symbol],
-    model_name: str,
-    resource_base: str,
-    meta: OntologyMetadataSpec,
-    strategy_value: str,
-    natural_key_columns: tuple[str, ...],
-    column_mappings: tuple[ColumnMappingFact, ...],
-    column_specs: tuple[ColumnSpec, ...],
-) -> BoundSources:
-    class_uri = klass.uri
+def system_fact_for_relation(relation: ResolvedRelation) -> SourceSystemFact:
+    """Build the canonical single-table ``SourceSystemFact`` for one resolved relation.
+
+    Shared by binding adaptation below and by the kernel's contracted ``source()``
+    declaration path (#584) so a table declared for a contracted read is byte-identical
+    to the same table declared for a relation-backed binding.
+    """
     system_uri = relation.system_uri or f"{relation.uri}#system"
     source_columns = tuple(
         SourceColumnFact(
@@ -1110,7 +1101,7 @@ def _assemble_bound_sources(
     )
     pk_columns = tuple(column.name for column in relation.columns if column.is_primary_key)
     is_dbt_model = relation.connection_type == "dbt"
-    system = SourceSystemFact(
+    return SourceSystemFact(
         uri=system_uri,
         label=relation.system_label,
         database=relation.database,
@@ -1129,6 +1120,26 @@ def _assemble_bound_sources(
             ),
         ),
     )
+
+
+def _assemble_bound_sources(
+    *,
+    binding: EntityBinding,
+    context: ResolutionContext,
+    relation: ResolvedRelation,
+    klass: ResolvedClass,
+    symbols: dict[str, _Symbol],
+    model_name: str,
+    resource_base: str,
+    meta: OntologyMetadataSpec,
+    strategy_value: str,
+    natural_key_columns: tuple[str, ...],
+    column_mappings: tuple[ColumnMappingFact, ...],
+    column_specs: tuple[ColumnSpec, ...],
+) -> BoundSources:
+    class_uri = klass.uri
+    is_dbt_model = relation.connection_type == "dbt"
+    system = system_fact_for_relation(relation)
 
     mappings = SourceMappings(
         tables=(
@@ -1249,6 +1260,7 @@ def _assemble_bound_sources(
         contracts=(),
         virtual_table_uris=frozenset({relation.uri}) if is_dbt_model else frozenset(),
         replacement_input_uris=frozenset(),
+        contracted_input_uris=frozenset(),
         source_bindings=SourceBindingsFact(
             active_contracts=(),
             virtual_table_uris=(frozenset({relation.uri}) if is_dbt_model else frozenset()),

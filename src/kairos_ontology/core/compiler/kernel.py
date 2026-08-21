@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
@@ -18,7 +18,7 @@ from kairos_ontology import __version__
 
 from ..ontology_loader import SemanticProfile, load_ontology
 from ..ontology_ops import PropertyInfo, list_classes
-from ..projections.uri_utils import camel_to_snake
+from ..projections.uri_utils import camel_to_snake, dbt_source_name
 from ..projections.dbt import (
     BoundSources,
     normalize_contract,
@@ -57,6 +57,7 @@ from .adapter import (
     ResolvedRelation,
     adapt_binding,
     object_property_in_fields_message,
+    system_fact_for_relation,
 )
 from .bindings import (
     EntityBinding,
@@ -74,9 +75,13 @@ from .bindings import (
 from .compile import CompileMode
 from .conformance import ConformancePlan, ConformanceTypeContract, build_conformance_plan
 from .dbt_source import (
+    REF_RE,
+    SUPPORTED_SOURCE_FORMS,
     check_target_class_match,
+    extract_sources,
     resolve_dbt_model_dependency_paths,
     resolve_dbt_model_source,
+    strip_jinja_comments,
 )
 from .ir import CanonicalProjectIR, EntityBindingSpec
 from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact, PlannedDbtDependency
@@ -336,8 +341,8 @@ def _source_relations(paths: tuple[Path, ...]) -> tuple[ResolvedRelation, ...]:
     return _dedupe_relations(relations)
 
 
-def _could_match_any_ref(path: Path, requested_sources: frozenset[str]) -> bool:
-    """Cheap byte-level pre-filter: can *path* possibly contribute a requested ref?
+def _could_match_any_ref(text: str, requested_sources: frozenset[str]) -> bool:
+    """Cheap byte-level pre-filter: can a file with *text* contribute a requested ref?
 
     Every ``ResolvedRelation.ref`` is built only from bytes physically present in that
     same file: a ``bronze:tableName``/``rdfs:label`` literal (or its URI fragment
@@ -347,16 +352,35 @@ def _could_match_any_ref(path: Path, requested_sources: frozenset[str]) -> bool:
     state a match could hide in. So if none of the requested refs' local segments appear
     as a raw substring of the file's text, a full RDF parse of this file cannot produce a
     match. A false positive (the substring appears without a real match) only costs one
-    otherwise-unavoidable parse; a false negative is impossible.
+    otherwise-unavoidable parse; a false negative is impossible. The caller reads each
+    candidate file once and shares the text with ``_could_match_any_source_pair``.
     """
-    if not requested_sources:
-        return False
-    text = path.read_text(encoding="utf-8", errors="replace")
     for ref in requested_sources:
         local = ref.rsplit(".", 1)[-1].rsplit(":", 1)[-1]
         if local and local in text:
             return True
     return False
+
+
+def _relation_matches_source_pair(
+    relation: ResolvedRelation, pairs: frozenset[tuple[str, str]] | set[tuple[str, str]]
+) -> bool:
+    return any(
+        dbt_source_name(relation.system_label) == source_name and relation.table_name == table_name
+        for source_name, table_name in pairs
+    )
+
+
+def _could_match_any_source_pair(text: str, pairs: set[tuple[str, str]]) -> bool:
+    """Cheap byte-level pre-filter: can a file with *text* declare a requested table?
+
+    Same reasoning as ``_could_match_any_ref``: a relation's ``table_name`` is built only
+    from bytes physically present in the same file (a ``bronze:tableName`` literal or the
+    table URI's fragment fallback), so a file containing none of the requested table
+    names as a raw substring cannot produce a match. False positives only cost one parse;
+    false negatives are impossible.
+    """
+    return any(table_name and table_name in text for _, table_name in pairs)
 
 
 def _binding_source_ref(text: str) -> str:
@@ -646,17 +670,82 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
     requested_sources = frozenset(
         _binding_source_ref(path.read_text(encoding="utf-8")) for path in binding_paths
     )
-    # Parse each hub source file at most once: a cheap byte-level pre-filter
-    # (_could_match_any_ref) skips a full RDF parse for files that provably cannot
-    # contribute a requested ref, and the parse result for files that do match is kept
+    # #584: resolve contracted dbt bindings *before* the vocabulary scan so their
+    # dependency closures' {{ source('name', 'table') }} pairs can widen vocabulary
+    # discovery. A purely-contracted domain has no source.relation refs, so without this
+    # it would parse zero vocabularies and its physical source() reads could never be
+    # validated or declared. Seed CSV dependencies (#586) join the provenance inputs here
+    # at their hub-relative names.
+    dbt_relations: list[ResolvedRelation] = []
+    dbt_provenance: list[ProvenanceInput] = []
+    contracted_source_pairs: set[tuple[str, str]] = set()
+    for path in binding_paths:
+        text = path.read_text(encoding="utf-8")
+        sql_path, contract_path = _binding_dbt_paths(text)
+        if not sql_path and not contract_path:
+            continue
+        try:
+            binding = load_entity_binding(text, path=str(path))
+            dependency_paths = resolve_dbt_model_dependency_paths(binding, root)
+            relation = resolve_dbt_model_source(binding, root, dependency_paths=dependency_paths)
+            authored_paths = (*dependency_paths, (root / contract_path).resolve())
+            binding_provenance: list[ProvenanceInput] = []
+            binding_pairs: frozenset[tuple[str, str]] = frozenset()
+            for resolved_path in authored_paths:
+                try:
+                    content = resolved_path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    # A dependency that exists but cannot be read/decoded (e.g. a cp1252
+                    # seed CSV export) is a binding problem, not a crash: mirror
+                    # dbt_source's unreadable-dependency diagnostic so the enclosing
+                    # replay contract below applies unchanged.
+                    raise CompileError(
+                        [
+                            CompileDiagnostic(
+                                code="dbt-source.dependency-unresolved",
+                                message=(f"could not read dbt dependency {resolved_path}: {exc}"),
+                                location=SourceLocation(
+                                    path=str(path),
+                                    pointer="/source/dbtModel/sqlPath",
+                                ),
+                            )
+                        ]
+                    ) from exc
+                if resolved_path.suffix.lower() == ".sql":
+                    # resolve_dbt_model_dependency_paths above already failed closed on an
+                    # unparseable source() call, so only resolved pairs remain here.
+                    binding_pairs |= extract_sources(content).pairs
+                binding_provenance.append(
+                    ProvenanceInput(
+                        str(resolved_path.relative_to(root)).replace("\\", "/"),
+                        content,
+                    )
+                )
+        except CompileError:
+            # The entity-local compile pass replays this resolution and preserves its
+            # precise binding pointer while allowing unrelated safe entities to proceed.
+            continue
+        dbt_relations.append(relation)
+        dbt_provenance.extend(binding_provenance)
+        contracted_source_pairs.update(binding_pairs)
+    # Parse each hub source file at most once: each candidate is read once and a cheap
+    # byte-level pre-filter (_could_match_any_ref/_could_match_any_source_pair) skips a
+    # full RDF parse for files that provably cannot contribute a requested ref or
+    # contracted source() pair; the parse result for files that do match is kept
     # (parsed_source_relations) so the final relation list below doesn't re-parse them.
     parsed_source_relations: dict[Path, tuple[ResolvedRelation, ...]] = {}
     source_paths_list: list[Path] = []
     for candidate_path in sorted((root / "integration" / "sources").glob("**/*.ttl")):
-        if not _could_match_any_ref(candidate_path, requested_sources):
+        candidate_text = candidate_path.read_text(encoding="utf-8", errors="replace")
+        if not _could_match_any_ref(
+            candidate_text, requested_sources
+        ) and not _could_match_any_source_pair(candidate_text, contracted_source_pairs):
             continue
         file_relations = _source_relations_for_path(candidate_path)
-        if requested_sources & {relation.ref for relation in file_relations}:
+        if requested_sources & {relation.ref for relation in file_relations} or any(
+            _relation_matches_source_pair(relation, contracted_source_pairs)
+            for relation in file_relations
+        ):
             parsed_source_relations[candidate_path] = file_relations
             source_paths_list.append(candidate_path)
     source_paths = tuple(source_paths_list)
@@ -731,28 +820,8 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
                 gold_extension.read_text(encoding="utf-8"),
             )
         )
-    for path in binding_paths:
-        text = path.read_text(encoding="utf-8")
-        sql_path, contract_path = _binding_dbt_paths(text)
-        if not sql_path and not contract_path:
-            continue
-        try:
-            binding = load_entity_binding(text, path=str(path))
-            dependency_paths = resolve_dbt_model_dependency_paths(binding, root)
-            relation = resolve_dbt_model_source(binding, root, dependency_paths=dependency_paths)
-            relations.append(relation)
-            authored_paths = (*dependency_paths, (root / contract_path).resolve())
-            for resolved_path in authored_paths:
-                inputs.append(
-                    ProvenanceInput(
-                        str(resolved_path.relative_to(root)).replace("\\", "/"),
-                        resolved_path.read_text(encoding="utf-8"),
-                    )
-                )
-        except CompileError:
-            # The entity-local compile pass replays this resolution and preserves its
-            # precise binding pointer while allowing unrelated safe entities to proceed.
-            continue
+    relations.extend(dbt_relations)
+    inputs.extend(dbt_provenance)
     for path_text in ontology_paths:
         path = Path(path_text)
         if path.is_file():
@@ -813,24 +882,27 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
     return scope, context
 
 
-def _merge_systems(bounds: tuple[BoundSources, ...]) -> tuple[SourceSystemFact, ...]:
+def _merge_systems(
+    bounds: tuple[BoundSources, ...],
+    extra_systems: tuple[SourceSystemFact, ...] = (),
+) -> tuple[SourceSystemFact, ...]:
+    """Merge per-binding systems plus *extra_systems* (contracted source() reads, #584)."""
     systems: dict[str, SourceSystemFact] = {}
-    for bound in bounds:
-        for system in bound.systems:
-            previous = systems.get(system.uri)
-            systems[system.uri] = (
-                system
-                if previous is None
-                else replace(
-                    previous,
-                    tables=tuple(
-                        {table.uri: table for table in (*previous.tables, *system.tables)}[key]
-                        for key in sorted(
-                            {table.uri for table in (*previous.tables, *system.tables)}
-                        )
-                    ),
-                )
+    candidates = [system for bound in bounds for system in bound.systems]
+    candidates.extend(extra_systems)
+    for system in candidates:
+        previous = systems.get(system.uri)
+        systems[system.uri] = (
+            system
+            if previous is None
+            else replace(
+                previous,
+                tables=tuple(
+                    {table.uri: table for table in (*previous.tables, *system.tables)}[key]
+                    for key in sorted({table.uri for table in (*previous.tables, *system.tables)})
+                ),
             )
+        )
     return tuple(systems[key] for key in sorted(systems))
 
 
@@ -1149,8 +1221,15 @@ def merge_bound_sources(
     *,
     hub_root: str | Path,
     conformance_plans: tuple[ConformancePlan, ...] = (),
+    extra_systems: tuple[SourceSystemFact, ...] = (),
+    contracted_input_uris: frozenset[str] = frozenset(),
 ) -> BoundSources:
-    """Merge independently adapted entities into one immutable domain input."""
+    """Merge independently adapted entities into one immutable domain input.
+
+    *extra_systems*/*contracted_input_uris* carry physical tables read via
+    ``{{ source() }}`` inside contracted dbt model closures (#584) so the shared
+    per-system source catalogs declare them without granting mapping authority.
+    """
     base = bounds[0]
     policy = base.policy_facts
     gold_extension = Path(hub_root) / "model" / "extensions" / f"{context.domain}-gold-ext.ttl"
@@ -1336,8 +1415,12 @@ def merge_bound_sources(
     return replace(
         base,
         classes=tuple(classes[key] for key in sorted(classes)),
-        systems=_merge_systems(bounds),
+        systems=_merge_systems(bounds, extra_systems),
         virtual_table_uris=frozenset(uri for bound in bounds for uri in bound.virtual_table_uris),
+        contracted_input_uris=(
+            frozenset(uri for bound in bounds for uri in bound.contracted_input_uris)
+            | contracted_input_uris
+        ),
         mappings=SourceMappings(
             tables=tuple(item for bound in bounds for item in bound.mappings.tables),
             columns=tuple(item for bound in bounds for item in bound.mappings.columns),
@@ -2903,17 +2986,211 @@ def _planned_artifact_paths(
     return tuple(sorted(path for path in paths if path))
 
 
-def _planned_dbt_dependencies(
+@dataclass(frozen=True, slots=True)
+class _DbtDependencyClosure:
+    """One valid contracted binding's plan-authoritative dependency closure."""
+
+    binding: EntityBinding
+    sql_paths: tuple[str, ...]
+    seed_paths: tuple[str, ...]
+    source_pairs: tuple[tuple[str, str], ...]
+
+
+def _dbt_dependency_closures(
     bindings: tuple[EntityBinding, ...],
+    scope: BuildScope,
+) -> tuple[tuple[_DbtDependencyClosure, ...], tuple[CompileDiagnostic, ...]]:
+    """Walk each contracted binding's ``ref()`` closure over the immutable scope inputs.
+
+    Mirrors ``dbt_source._dependency_sql_paths``' filesystem walk (same regexes, same
+    seed/ambiguity rules, same exact-stem ``ref()`` matching) but consumes only
+    ``scope.inputs``, keeping the CompilePlan the single authority for emitted bytes
+    (#580). Returns each binding's SQL paths, seed CSV leaves (#586), and extracted
+    ``source()`` pairs (#584).
+    """
+    if not any(binding.source.dbt_model is not None for binding in bindings):
+        # Ordinary relation-backed domains skip the input indexing entirely.
+        return (), ()
+    inputs = {item.name.replace("\\", "/"): item.content for item in scope.inputs}
+    # Lookup is by exact stem (dbt matches ref() names exactly); the emitted-project
+    # collision checks in _planned_dbt_dependencies remain casefolded.
+    sql_inputs: dict[str, list[str]] = {}
+    seed_inputs: dict[str, list[str]] = {}
+    for path in inputs:
+        if path.startswith("integration/transforms/dbt/models/") and path.endswith(".sql"):
+            sql_inputs.setdefault(Path(path).stem, []).append(path)
+        elif path.startswith("integration/transforms/dbt/seeds/") and path.endswith(".csv"):
+            seed_inputs.setdefault(Path(path).stem, []).append(path)
+    closures: list[_DbtDependencyClosure] = []
+    diagnostics: list[CompileDiagnostic] = []
+    for binding in bindings:
+        model = binding.source.dbt_model
+        if model is None:
+            continue
+        sql_paths: list[str] = []
+        seed_paths: list[str] = []
+        pairs: set[tuple[str, str]] = set()
+        pending = [model.sql_path.replace("\\", "/")]
+        visited: set[str] = set()
+        while pending:
+            sql_path = pending.pop()
+            if sql_path in visited:
+                continue
+            visited.add(sql_path)
+            sql_paths.append(sql_path)
+            sql_content = inputs.get(sql_path)
+            if sql_content is None:
+                continue
+            extraction = extract_sources(sql_content)
+            pairs.update(extraction.pairs)
+            if extraction.unparsed:
+                # Same fail-closed verdict the filesystem walk reaches, via the one shared
+                # extraction helper: an unreadable source() call would emit a project whose
+                # source is never declared (#584).
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="dbt-source.source-unparsed",
+                        message=(
+                            f"dbt SQL dependency {sql_path!r} contains a source() call whose "
+                            f"arguments could not be resolved statically: "
+                            f"{SUPPORTED_SOURCE_FORMS}"
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path,
+                            pointer="/source/dbtModel/sqlPath",
+                        ),
+                    )
+                )
+            for ref_name in sorted(set(REF_RE.findall(strip_jinja_comments(sql_content)))):
+                sql_candidates = sql_inputs.get(ref_name, [])
+                seed_candidates = seed_inputs.get(ref_name, [])
+                if sql_candidates and seed_candidates:
+                    diagnostics.append(
+                        CompileDiagnostic(
+                            code="dbt-source.dependency-ambiguous",
+                            message=(
+                                f"dbt ref({ref_name!r}) resolves to both an authored model "
+                                "SQL file and an authored seed CSV file in the immutable "
+                                "CompilePlan input closure"
+                            ),
+                            location=SourceLocation(
+                                path=binding.source_path,
+                                pointer="/source/dbtModel/sqlPath",
+                            ),
+                        )
+                    )
+                    continue
+                if len(sql_candidates) == 1:
+                    pending.append(sql_candidates[0])
+                    continue
+                if len(seed_candidates) == 1:
+                    if seed_candidates[0] not in seed_paths:
+                        seed_paths.append(seed_candidates[0])
+                    continue
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="dbt-source.dependency-unresolved",
+                        message=(
+                            f"dbt ref({ref_name!r}) is absent or ambiguous in the "
+                            "immutable CompilePlan input closure (searched authored "
+                            "models and seeds)"
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path,
+                            pointer="/source/dbtModel/sqlPath",
+                        ),
+                    )
+                )
+        closures.append(
+            _DbtDependencyClosure(
+                binding=binding,
+                sql_paths=tuple(sql_paths),
+                seed_paths=tuple(sorted(seed_paths)),
+                source_pairs=tuple(sorted(pairs)),
+            )
+        )
+    return tuple(closures), tuple(diagnostics)
+
+
+def _contracted_source_tables(
+    closures: tuple[_DbtDependencyClosure, ...],
+    context: ResolutionContext,
+) -> tuple[tuple[SourceSystemFact, ...], frozenset[str], tuple[CompileDiagnostic, ...]]:
+    """Resolve contracted ``source()`` pairs against physical vocabulary relations (#584).
+
+    Each resolved pair yields a canonical single-table ``SourceSystemFact`` (built by the
+    same helper relation-backed bindings use, so declarations are byte-identical across
+    domains) plus its table URI for ``contracted_input_uris``. An unresolvable pair is a
+    blocking diagnostic: emitting the closure without declaring its source would fail
+    offline ``dbt parse``.
+    """
+    if not any(closure.source_pairs for closure in closures):
+        # No contracted source() reads: skip building the physical-relation index.
+        return (), frozenset(), ()
+    physical: dict[tuple[str, str], dict[str, ResolvedRelation]] = {}
+    for relation in context.relations:
+        if relation.connection_type == "dbt":
+            continue
+        key = (dbt_source_name(relation.system_label), relation.table_name)
+        physical.setdefault(key, {})[relation.uri] = relation
+    systems: list[SourceSystemFact] = []
+    uris: set[str] = set()
+    diagnostics: list[CompileDiagnostic] = []
+    for closure in closures:
+        for source_name, table_name in closure.source_pairs:
+            matches = physical.get((source_name, table_name), {})
+            if not matches:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="dbt-source.source-unresolved",
+                        message=(
+                            f"source({source_name!r}, {table_name!r}) in the contracted dbt "
+                            "dependency closure does not match any physical source "
+                            "vocabulary table; the source name must be the toolkit's "
+                            "snake_case rendering of the vocabulary system label and the "
+                            "table must match its declared tableName exactly"
+                        ),
+                        location=SourceLocation(
+                            path=closure.binding.source_path or "<binding>",
+                            pointer="/source/dbtModel/sqlPath",
+                        ),
+                    )
+                )
+                continue
+            if len(matches) > 1:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="dbt-source.source-ambiguous",
+                        message=(
+                            f"source({source_name!r}, {table_name!r}) in the contracted dbt "
+                            "dependency closure matches more than one physical source "
+                            f"vocabulary table: {', '.join(sorted(matches))}"
+                        ),
+                        location=SourceLocation(
+                            path=closure.binding.source_path or "<binding>",
+                            pointer="/source/dbtModel/sqlPath",
+                        ),
+                    )
+                )
+                continue
+            relation = next(iter(matches.values()))
+            if relation.uri in uris:
+                continue
+            uris.add(relation.uri)
+            systems.append(system_fact_for_relation(relation))
+    return tuple(systems), frozenset(uris), tuple(diagnostics)
+
+
+def _planned_dbt_dependencies(
+    closures: tuple[_DbtDependencyClosure, ...],
     scope: BuildScope,
     generated_paths: tuple[str, ...],
 ) -> tuple[tuple[PlannedDbtDependency, ...], tuple[CompileDiagnostic, ...]]:
-    """Select contracted SQL/properties bytes from the immutable compile input closure."""
+    """Select contracted SQL/seed/properties bytes from the immutable compile input closure."""
+    if not closures:
+        # Ordinary relation-backed domains skip the selection indexes entirely.
+        return (), ()
     inputs = {item.name.replace("\\", "/"): item.content for item in scope.inputs}
-    sql_inputs: dict[str, list[str]] = {}
-    for path in inputs:
-        if path.startswith("integration/transforms/dbt/models/") and path.endswith(".sql"):
-            sql_inputs.setdefault(Path(path).stem.casefold(), []).append(path)
     selected: dict[str, dict[str, object]] = {}
     model_paths: dict[str, str] = {}
     diagnostics: list[CompileDiagnostic] = []
@@ -2945,9 +3222,9 @@ def _planned_dbt_dependencies(
                     location=SourceLocation(
                         path=binding.source_path,
                         pointer=(
-                            "/source/dbtModel/sqlPath"
-                            if kind == "sql"
-                            else "/source/dbtModel/contractPath"
+                            "/source/dbtModel/contractPath"
+                            if kind == "properties"
+                            else "/source/dbtModel/sqlPath"
                         ),
                     ),
                 )
@@ -3034,47 +3311,27 @@ def _planned_dbt_dependencies(
             "binding_names": (binding.name,),
         }
 
-    for binding in bindings:
-        model = binding.source.dbt_model
+    for closure in closures:
+        model = closure.binding.source.dbt_model
         if model is None:
             continue
-        pending = [model.sql_path.replace("\\", "/")]
-        visited: set[str] = set()
-        while pending:
-            sql_path = pending.pop()
-            if sql_path in visited:
-                continue
-            visited.add(sql_path)
+        for sql_path in closure.sql_paths:
             select_dependency(
-                binding,
+                closure.binding,
                 sql_path,
                 kind="sql",
                 model_name=Path(sql_path).stem,
             )
-            sql_content = inputs.get(sql_path)
-            if sql_content is None:
-                continue
-            for ref_name in sorted(
-                set(re.findall(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", sql_content))
-            ):
-                candidates = sql_inputs.get(ref_name.casefold(), [])
-                if len(candidates) != 1:
-                    diagnostics.append(
-                        CompileDiagnostic(
-                            code="dbt-source.dependency-unresolved",
-                            message=(
-                                f"dbt ref({ref_name!r}) is absent or ambiguous in the "
-                                "immutable CompilePlan input closure"
-                            ),
-                            location=SourceLocation(
-                                path=binding.source_path,
-                                pointer="/source/dbtModel/sqlPath",
-                            ),
-                        )
-                    )
-                    continue
-                pending.append(candidates[0])
-        select_dependency(binding, model.contract_path, kind="properties")
+        for seed_path in closure.seed_paths:
+            # Seeds share dbt's ref() namespace with models, so they carry a model_name
+            # and participate in the same casefolded name-collision checks above.
+            select_dependency(
+                closure.binding,
+                seed_path,
+                kind="seed",
+                model_name=Path(seed_path).stem,
+            )
+        select_dependency(closure.binding, model.contract_path, kind="properties")
 
     dependencies = tuple(
         PlannedDbtDependency(
@@ -3273,6 +3530,14 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         len(valid_bindings),
         sum(1 for s in specs if s.blocked),
     )
+    # #584/#586: one plan-authoritative walk of every valid contracted binding's ref()
+    # closure over scope.inputs -- feeding both the shared source-catalog declarations
+    # (via merge_bound_sources) and the emitted dependency selection below.
+    dbt_closures, closure_diagnostics = _dbt_dependency_closures(tuple(valid_bindings), scope)
+    contracted_systems, contracted_input_uris, contracted_diagnostics = _contracted_source_tables(
+        dbt_closures, context
+    )
+    diagnostics.extend(contracted_diagnostics)
     contract = None
     shaped = None
     materialized = None
@@ -3288,6 +3553,8 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 context,
                 hub_root=scope.hub_root,
                 conformance_plans=conformance_plans,
+                extra_systems=contracted_systems,
+                contracted_input_uris=contracted_input_uris,
             )
             contract = normalize_contract(merged, ExecutionMode.FAIL_FAST)
             shaped = _project_relationship_match_counts(
@@ -3304,8 +3571,9 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             )
     artifact_paths = _planned_artifact_paths(shaped, materialized, tuple(valid_bindings), context)
     dbt_dependencies, dependency_diagnostics = _planned_dbt_dependencies(
-        tuple(valid_bindings), scope, artifact_paths
+        dbt_closures, scope, artifact_paths
     )
+    diagnostics.extend(closure_diagnostics)
     diagnostics.extend(dependency_diagnostics)
     conformance_owner = {
         group.target_class: group.sources[0].binding_name

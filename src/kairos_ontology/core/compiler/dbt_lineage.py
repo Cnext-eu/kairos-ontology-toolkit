@@ -14,25 +14,40 @@ design/mapping review.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-_REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
-_SOURCE_RE = re.compile(r"\bsource\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"][^'\"]+['\"]\s*\)")
+from .dbt_source import REF_RE, extract_source_pairs, strip_jinja_comments
+
 _TRANSFORMS_MODELS_PARTS = ("integration", "transforms", "dbt", "models")
+_TRANSFORMS_SEEDS_PARTS = ("integration", "transforms", "dbt", "seeds")
 
 
 def _find_model_sql(hub_root: Path, model_name: str) -> Path | None:
     """Return the unique ``<model_name>.sql`` file under the dbt models tree, if any.
 
     Mirrors ``core.compiler.dbt_source``'s own path-resolution scope (models under
-    ``integration/transforms/dbt/models/``); an ambiguous (multiple files with the same
-    stem) or missing match is reported to the caller as non-traceable rather than guessed.
+    ``integration/transforms/dbt/models/``, exact-stem match as dbt itself requires); an
+    ambiguous (multiple files with the same stem) or missing match is reported to the
+    caller as non-traceable rather than guessed.
     """
-    models_dir = hub_root.joinpath(*_TRANSFORMS_MODELS_PARTS)
-    if not models_dir.is_dir():
+    return _find_unique(hub_root.joinpath(*_TRANSFORMS_MODELS_PARTS), "*.sql", model_name)
+
+
+def _find_seed_csv(hub_root: Path, name: str) -> Path | None:
+    """Return the unique authored seed ``<name>.csv``, if any (#586)."""
+    return _find_unique(hub_root.joinpath(*_TRANSFORMS_SEEDS_PARTS), "*.csv", name)
+
+
+def _find_unique(directory: Path, pattern: str, stem: str) -> Path | None:
+    """Return the unique file under *directory* whose real on-disk stem equals *stem*.
+
+    Comparing the real on-disk stem states dbt's exact-match rule directly, rather than
+    delegating it to whatever case sensitivity the filesystem and glob implementation
+    happen to provide.
+    """
+    if not directory.is_dir():
         return None
-    matches = list(models_dir.rglob(f"{model_name}.sql"))
+    matches = [match for match in directory.rglob(pattern) if match.stem == stem]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -49,7 +64,8 @@ def resolve_dbt_model_contributing_sources(
     system directly. ``is_fully_traceable`` is ``False`` when a ``ref()`` target's ``.sql``
     file cannot be uniquely resolved (ambiguous or missing) or the file cannot be read --
     lineage through that branch is reported as ambiguous rather than silently dropped or
-    guessed, per issue #400's acceptance criteria.
+    guessed, per issue #400's acceptance criteria. A ``ref()`` resolving to a unique
+    authored seed CSV (#586) is a traceable leaf contributing no source systems.
     """
     hub_root = Path(hub_root)
     candidate = Path(sql_path)
@@ -70,11 +86,17 @@ def resolve_dbt_model_contributing_sources(
     except OSError:
         return frozenset(), False
 
-    sources = {match.group(1) for match in _SOURCE_RE.finditer(text)}
+    rendered = strip_jinja_comments(text)
+    sources = {source_name for source_name, _ in extract_source_pairs(text)}
     fully_traceable = True
-    for ref_name in {match.group(1) for match in _REF_RE.finditer(text)}:
+    for ref_name in {match.group(1) for match in REF_RE.finditer(rendered)}:
         ref_path = _find_model_sql(hub_root, ref_name)
         if ref_path is None:
+            if _find_seed_csv(hub_root, ref_name) is not None:
+                # #586: a seed-backed ref is a traceable leaf contributing no source
+                # systems -- the compiler resolves it, so lineage must not call it
+                # untraceable.
+                continue
             fully_traceable = False
             continue
         nested_sources, nested_traceable = resolve_dbt_model_contributing_sources(

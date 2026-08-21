@@ -13,6 +13,7 @@ import yaml
 from kairos_ontology.core.compiler import CompileError, load_entity_binding
 from kairos_ontology.core.compiler.dbt_source import (
     contract_target_class,
+    resolve_dbt_model_dependency_paths,
     resolve_dbt_model_source,
     validate_contract_target_class,
 )
@@ -278,6 +279,64 @@ def test_rejects_unresolved_transitive_dbt_ref_dependency(tmp_path: Path) -> Non
     assert "missing_support_model" in diagnostic.message
 
 
+def test_resolves_seed_backed_ref_dependency_as_a_leaf(tmp_path: Path) -> None:
+    """#586a: a ref() targeting an authored seed CSV terminates that walk branch."""
+    hub = _hub(tmp_path)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    seed_path = seeds / "country_codes.csv"
+    seed_path.write_text("code,name\nBE,Belgium\n", encoding="utf-8")
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text(
+        "select customer_id, customer_name from {{ ref('stg_customer') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    paths = resolve_dbt_model_dependency_paths(binding, hub)
+
+    assert seed_path.resolve() in paths
+    assert {path.suffix for path in paths} == {".sql", ".csv"}
+    # And full model resolution still succeeds over the same closure.
+    relation = resolve_dbt_model_source(binding, hub, dependency_paths=paths)
+    assert relation.ref == "int_customer"
+
+
+def test_ref_matching_both_model_and_seed_is_ambiguous(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "stg_customer.csv").write_text("customer_id\n1\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.dependency-ambiguous"
+    assert diagnostic.location.pointer == "/source/dbtModel/sqlPath"
+    assert "stg_customer" in diagnostic.message
+
+
+def test_ref_matching_neither_model_nor_seed_mentions_seeds(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text("select * from {{ ref('missing') }}\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.dependency-unresolved"
+    assert "seeds" in diagnostic.message
+
+
 def test_rejects_unsafe_dbt_source_path_with_stable_location(tmp_path: Path) -> None:
     binding = load_entity_binding(
         _binding().replace(
@@ -307,3 +366,141 @@ def test_entity_binding_expression_rejects_relational_constructs(construct: str)
         load_entity_binding(binding, path="customer.binding.yml")
 
     assert any(item.code == "expression.ambiguous" for item in excinfo.value.diagnostics)
+
+
+def test_wrong_case_ref_is_unresolved_even_on_case_insensitive_filesystems(tmp_path: Path) -> None:
+    """dbt matches ref() names exactly; Windows rglob must not resolve a wrong-case ref."""
+    hub = _hub(tmp_path)
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text("select * from {{ ref('STG_Customer') }}\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.dependency-unresolved"
+    assert "STG_Customer" in diagnostic.message
+
+
+def test_jinja_commented_ref_creates_no_dependency(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text(
+        "{# unused: {{ ref('phantom_model') }} #}\n"
+        "select customer_id, customer_name from {{ ref('stg_customer') }}\n",
+        encoding="utf-8",
+    )
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    paths = resolve_dbt_model_dependency_paths(binding, hub)
+
+    assert {path.stem for path in paths} == {"int_customer", "stg_customer"}
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ("select * from {{ source('crm', 'customers') }}", {("crm", "customers")}),
+        (
+            "select * from {{ source(source_name='crm', table_name='customers') }}",
+            {("crm", "customers")},
+        ),
+        (
+            "select * from {{ source(table_name='customers', source_name='crm') }}",
+            {("crm", "customers")},
+        ),
+        (
+            "select * from {{source( source_name = 'crm' ,  table_name = 'customers' )}}",
+            {("crm", "customers")},
+        ),
+        (
+            'select * from {{ source("dtb", "DtbBooking.sample") }}',
+            {("dtb", "DtbBooking.sample")},
+        ),
+        ("{# {{ source('ghost', 'nope') }} #}\nselect 1", set()),
+        (
+            "{# source('ghost', 'nope') #} select * from {{ source('crm', 'customers') }}",
+            {("crm", "customers")},
+        ),
+    ],
+)
+def test_extract_source_pairs_handles_positional_kwargs_and_comments(sql, expected) -> None:
+    from kairos_ontology.core.compiler.dbt_source import extract_source_pairs
+
+    assert extract_source_pairs(sql) == frozenset(expected)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Mixed positional/keyword form: dbt-valid, statically unreadable by extraction.
+        "select * from {{ source('crm', table_name='customers') }}",
+        # Dynamic arguments of every shape.
+        "select * from {{ source(var('sys'), 'customers') }}",
+        "select * from {{ source(my_system, 'customers') }}",
+        "select * from {{ source('crm' ~ suffix, 'customers') }}",
+    ],
+)
+def test_unreadable_source_call_fails_closed(tmp_path: Path, sql: str) -> None:
+    """#584: a source() call the compiler cannot read must not pass silently.
+
+    The alternative is an emitted project whose source is never declared, which fails
+    offline `dbt parse` with no compile diagnostic at all.
+    """
+    hub = _hub(tmp_path)
+    (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "stg_customer.sql"
+    ).write_text(sql + "\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.source-unparsed"
+    assert diagnostic.location.pointer == "/source/dbtModel/sqlPath"
+    assert "source_name=" in diagnostic.message
+    assert "dynamic arguments" in diagnostic.message
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select * from {{ source('crm', 'customers') }}",
+        "select * from {{ source(source_name='crm', table_name='customers') }}",
+        "select * from {{ source(table_name='customers', source_name='crm') }}",
+        # A macro whose name merely ends in `source` is not a source() call site.
+        "select * from {{ my_source('crm', anything) }} join {{ source('crm', 'customers') }}",
+        # An unreadable call inside a Jinja comment is not a call site either.
+        "{# {{ source(var('x'), 'y') }} #}\nselect * from {{ source('crm', 'customers') }}",
+        # The same identical call twice must not look like one unparsed call.
+        "select * from {{ source('crm', 'customers') }} "
+        "union all select * from {{ source('crm', 'customers') }}",
+    ],
+)
+def test_readable_source_calls_are_accepted(tmp_path: Path, sql: str) -> None:
+    hub = _hub(tmp_path)
+    (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "stg_customer.sql"
+    ).write_text(sql + "\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    relation = resolve_dbt_model_source(binding, hub)
+
+    assert relation.ref == "int_customer"
+
+
+def test_extract_sources_counts_unreadable_call_sites() -> None:
+    from kairos_ontology.core.compiler.dbt_source import extract_sources
+
+    extraction = extract_sources(
+        "{{ source('crm', 'customers') }} {{ source('crm', table_name='orders') }}"
+    )
+
+    assert extraction.pairs == frozenset({("crm", "customers")})
+    assert extraction.unparsed == 1

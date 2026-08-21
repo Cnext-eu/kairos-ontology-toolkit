@@ -647,6 +647,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
         contracts=contract_facts,
         virtual_table_uris=virtual_table_uris,
         replacement_input_uris=replacement_input_uris,
+        contracted_input_uris=frozenset(),
         source_bindings=_freeze_bindings(legacy_bindings, contracts),
         binding_observations=binding_observations,
         foreign_key_facts=foreign_key_facts,

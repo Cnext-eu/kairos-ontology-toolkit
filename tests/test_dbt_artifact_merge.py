@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from kairos_ontology.core.projector import (
+    SourcesUnionError,
     _merge_dbt_artifacts,
     _union_sources_yaml,
 )
@@ -57,6 +58,40 @@ def test_union_sources_yaml_is_deterministic_regardless_of_order():
     a = _sources_doc("qargo", ["Leg", "Booking"])
     b = _sources_doc("qargo", ["Consignment"])
     assert _union_sources_yaml(a, b) == _union_sources_yaml(b, a)
+
+
+def test_union_sources_yaml_raises_on_conflicting_source_header():
+    """#584/#586: dbt allows one definition per source name — first-wins would let one
+    domain's stale vocabulary silently override another's, so the union fails closed."""
+    a = _sources_doc("qargo", ["Booking"])
+    b = a.replace("database: acme", "database: other")
+
+    with pytest.raises(SourcesUnionError, match="conflicting source metadata"):
+        _union_sources_yaml(a, b)
+
+
+def test_union_sources_yaml_raises_on_conflicting_table_entry():
+    a = _sources_doc("qargo", ["Booking"])
+    b = a.replace("description: Booking", "description: Changed")
+
+    with pytest.raises(SourcesUnionError, match="conflicting table entry"):
+        _union_sources_yaml(a, b)
+
+
+def test_merge_dbt_artifacts_reports_sources_union_conflict_as_collision():
+    """The legacy generate path must fail closed in its documented collision style."""
+    path = "models/silver/_qargo__sources.yml"
+    dest = {path: _sources_doc("qargo", ["Booking"])}
+
+    with pytest.raises(
+        RuntimeError,
+        match="Generated dbt artifact collisions.*_qargo__sources.*conflicting source metadata",
+    ):
+        _merge_dbt_artifacts(
+            dest,
+            {path: _sources_doc("qargo", ["Booking"]).replace("schema: bronze", "schema: other")},
+            context="Generated dbt artifact collisions",
+        )
 
 
 def test_merge_dbt_artifacts_package_level_last_wins():

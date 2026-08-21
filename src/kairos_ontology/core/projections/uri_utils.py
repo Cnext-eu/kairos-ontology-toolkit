@@ -11,6 +11,19 @@ def camel_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
+def dbt_source_name(system_label: str) -> str:
+    """Return the dbt source name a vocabulary system is declared under (#584).
+
+    The single naming authority shared by catalog rendering
+    (``dbt.shape._source_catalogs`` names ``models/silver/_<name>__sources.yml``) and by
+    the compiler's contracted ``{{ source() }}`` validation, so a hand-authored source
+    call matches iff dbt would resolve it against the declaration the toolkit emits.
+    (``medallion_dbt_projector`` still carries two local copies of this rule; unifying
+    them is deferred to the #586 stage-(b) follow-up.)
+    """
+    return camel_to_snake(system_label).replace(" ", "_")
+
+
 def local_name(uri: str) -> str:
     """Extract local name from a URI (after ``#`` or last ``/``)."""
     if "#" in uri:

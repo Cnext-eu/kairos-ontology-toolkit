@@ -433,6 +433,7 @@ def normalize_contract(
             contracts=tuple(name for name, _ in bound.contracts),
             virtual_table_uris=bound.virtual_table_uris,
             replacement_input_uris=bound.replacement_input_uris,
+            contracted_input_uris=bound.contracted_input_uris,
             parent_relations=bound.parent_relations,
             silver_models=tuple(
                 NormalizedSilverModel(

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -18,8 +19,99 @@ from .bindings import EntityBinding
 from .result import CompileDiagnostic, CompileError, SourceLocation
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
+#: Single-argument ``ref('model')`` calls in authored contracted SQL. Public because the
+#: compiler's plan-time closure walk (``kernel.py``) and lineage tracing
+#: (``dbt_lineage.py``) must select dependencies with exactly the same rule this
+#: resolution-time walk uses. ``dbt_bundle.py``/``dbt_validation.py`` keep their own
+#: regexes deliberately: they accept two-argument package refs and IGNORECASE matching,
+#: which are different semantics (see DD amendment for #584/#586).
+REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
+#: Positional ``source('name', 'table')`` calls with both arguments captured;
+#: ``[^'\"]+`` admits dotted table names such as ``DtbBooking.sample``. Prefer
+#: :func:`extract_sources`, which also recognizes dbt's keyword form, strips Jinja
+#: comments first, and reports calls it could not resolve statically.
+SOURCE_RE = re.compile(r"\bsource\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
+#: dbt also accepts ``source(source_name='x', table_name='y')`` in either keyword order.
+_SOURCE_KW_NAME_FIRST_RE = re.compile(
+    r"\bsource\s*\(\s*source_name\s*=\s*['\"]([^'\"]+)['\"]\s*,"
+    r"\s*table_name\s*=\s*['\"]([^'\"]+)['\"]\s*\)"
+)
+_SOURCE_KW_TABLE_FIRST_RE = re.compile(
+    r"\bsource\s*\(\s*table_name\s*=\s*['\"]([^'\"]+)['\"]\s*,"
+    r"\s*source_name\s*=\s*['\"]([^'\"]+)['\"]\s*\)"
+)
+#: Every ``source(`` call site, whatever its argument shape. ``\b`` deliberately does not
+#: match a macro whose name merely ends in ``source`` (``my_source(``, ``foo_source(``):
+#: ``_`` is a word character, so there is no boundary before ``source`` there.
+_SOURCE_CALL_RE = re.compile(r"\bsource\s*\(")
+_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
 _TRANSFORMS_PARTS = ("integration", "transforms", "dbt")
+
+#: Author-facing description of what static ``source()`` extraction supports, used by the
+#: ``dbt-source.source-unparsed`` diagnostic in both closure walks.
+SUPPORTED_SOURCE_FORMS = (
+    "supported forms are source('name', 'table') and "
+    "source(source_name='name', table_name='table'); dynamic arguments "
+    "(var(), variables, string concatenation, macro-generated names) cannot be "
+    "resolved at compile time -- pass literal source and table names"
+)
+
+
+def strip_jinja_comments(text: str) -> str:
+    """Remove ``{# ... #}`` blocks, which dbt never renders.
+
+    Applied before every ``ref()``/``source()`` extraction so a commented-out call can
+    never create a phantom dependency or a false blocking source diagnostic.
+    """
+    return _JINJA_COMMENT_RE.sub("", text)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceExtraction:
+    """Result of scanning one authored SQL text for ``source()`` calls."""
+
+    #: Distinct ``(source_name, table_name)`` pairs resolved statically.
+    pairs: frozenset[tuple[str, str]]
+    #: Number of ``source(`` call sites whose arguments could not be resolved.
+    unparsed: int
+
+
+def extract_sources(text: str) -> SourceExtraction:
+    """Extract ``source()`` pairs and count the call sites that could not be resolved.
+
+    Recognizes the positional form and dbt's keyword form in either argument order, and
+    strips Jinja comments first. The single extraction authority shared by
+    ``resolve_scope``'s filesystem walk and the plan-time closure walk, so the two can
+    never disagree about which sources a closure reads.
+
+    #584's acceptance criteria require compilation to fail clearly when declarations are
+    missing, so this reports *unparsed* call sites rather than skipping them: a
+    ``source()`` call the compiler cannot read is exactly the case where no catalog entry
+    would be emitted and the generated project would fail offline ``dbt parse`` with no
+    compile-time diagnostic at all. Callers turn a non-zero count into
+    ``dbt-source.source-unparsed``. Counting matched *spans* (not deduplicated pairs)
+    keeps a file that legitimately repeats one identical call from looking unparsed.
+    """
+    rendered = strip_jinja_comments(text)
+    pairs = {(match.group(1), match.group(2)) for match in SOURCE_RE.finditer(rendered)}
+    matched = len(SOURCE_RE.findall(rendered))
+    for match in _SOURCE_KW_NAME_FIRST_RE.finditer(rendered):
+        pairs.add((match.group(1), match.group(2)))
+        matched += 1
+    for match in _SOURCE_KW_TABLE_FIRST_RE.finditer(rendered):
+        pairs.add((match.group(2), match.group(1)))
+        matched += 1
+    call_sites = len(_SOURCE_CALL_RE.findall(rendered))
+    return SourceExtraction(frozenset(pairs), max(call_sites - matched, 0))
+
+
+def extract_source_pairs(text: str) -> frozenset[tuple[str, str]]:
+    """Return only the statically resolvable ``source()`` pairs.
+
+    For best-effort, non-blocking consumers such as ``dbt_lineage``'s reporting walk;
+    compile-path callers use :func:`extract_sources` so unparsed calls fail closed.
+    """
+    return extract_sources(text).pairs
 
 
 def _is_absolute_http_iri(value: object) -> bool:
@@ -115,32 +207,64 @@ def _load_contract(binding: EntityBinding, path: Path) -> dict[str, Any]:
     return document
 
 
+def _record_closure_member(binding: EntityBinding, resolved: dict[str, Path], path: Path) -> bool:
+    """Record *path* in the closure under its casefolded stem for collision detection.
+
+    Returns ``False`` when exactly this path is already recorded (the walk skips it).
+    Two *different* artifacts whose stems collide case-insensitively raise: dbt models
+    and seeds share one ``ref()`` namespace and the emitted-project collision checks are
+    case-insensitive, so such a pair could never emit safely.
+    """
+    key = path.stem.casefold()
+    previous = resolved.get(key)
+    if previous is None:
+        resolved[key] = path
+        return True
+    if previous != path:
+        raise _failure(
+            binding,
+            "dbt-source.dependency-unresolved",
+            (
+                f"dbt name {path.stem!r} resolves to more than one authored dependency: "
+                f"{previous.name!r} and {path.name!r}"
+            ),
+            "sqlPath",
+        )
+    return False
+
+
 def _dependency_sql_paths(
     binding: EntityBinding,
     hub_root: Path,
     selected_path: Path,
 ) -> tuple[Path, ...]:
-    """Resolve the selected model's transitive authored ``ref()`` SQL closure."""
+    """Resolve the selected model's transitive authored ``ref()`` closure.
+
+    Returns model ``.sql`` paths plus any authored seed ``.csv`` leaves under
+    ``integration/transforms/dbt/seeds/`` (#586): a ``ref()`` may target a dbt seed,
+    which terminates that branch of the walk (seed CSVs are never text-scanned).
+    ``ref()`` names match authored stems exactly, as dbt itself does.
+    """
     models_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "models")
+    seeds_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "seeds")
+    # One directory scan per walk (not one glob per ref), indexed by the REAL on-disk
+    # stem. Keying the index this way makes the exact-match contract dbt itself applies
+    # explicit in the data structure, independent of whether the underlying filesystem or
+    # glob implementation happens to be case-sensitive.
+    model_index: dict[str, tuple[Path, ...]] = {}
+    if models_dir.is_dir():
+        for model_path in sorted(models_dir.rglob("*.sql")):
+            model_index[model_path.stem] = (*model_index.get(model_path.stem, ()), model_path)
+    seed_index: dict[str, tuple[Path, ...]] = {}
+    if seeds_dir.is_dir():
+        for seed_path in sorted(seeds_dir.rglob("*.csv")):
+            seed_index[seed_path.stem] = (*seed_index.get(seed_path.stem, ()), seed_path)
     resolved: dict[str, Path] = {}
     pending = [selected_path]
     while pending:
         path = pending.pop()
-        model_name = path.stem
-        previous = resolved.get(model_name.casefold())
-        if previous is not None:
-            if previous != path:
-                raise _failure(
-                    binding,
-                    "dbt-source.dependency-unresolved",
-                    (
-                        f"dbt model name {model_name!r} resolves to more than one authored "
-                        "SQL dependency"
-                    ),
-                    "sqlPath",
-                )
+        if not _record_closure_member(binding, resolved, path):
             continue
-        resolved[model_name.casefold()] = path
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -150,19 +274,67 @@ def _dependency_sql_paths(
                 f"could not read dbt SQL dependency {path}: {exc}",
                 "sqlPath",
             ) from exc
-        for ref_name in sorted(set(_REF_RE.findall(text))):
-            matches = tuple(sorted(models_dir.rglob(f"{ref_name}.sql")))
-            if len(matches) != 1:
+        if extract_sources(text).unparsed:
+            # #584 fails closed on a source() call it cannot read rather than emitting a
+            # project with an undeclared source. Checked here (and in the plan walk) so
+            # both closure walks share one verdict.
+            raise _failure(
+                binding,
+                "dbt-source.source-unparsed",
+                (
+                    f"dbt SQL dependency {path.name} contains a source() call whose "
+                    f"arguments could not be resolved statically: {SUPPORTED_SOURCE_FORMS}"
+                ),
+                "sqlPath",
+            )
+        for ref_name in sorted(set(REF_RE.findall(strip_jinja_comments(text)))):
+            sql_matches = model_index.get(ref_name, ())
+            seed_matches = seed_index.get(ref_name, ())
+            if sql_matches and seed_matches:
                 raise _failure(
                     binding,
-                    "dbt-source.dependency-unresolved",
+                    "dbt-source.dependency-ambiguous",
                     (
-                        f"dbt ref({ref_name!r}) must resolve to exactly one authored SQL file "
-                        "under integration/transforms/dbt/models"
+                        f"dbt ref({ref_name!r}) resolves to both an authored model SQL file "
+                        "and an authored seed CSV file; dbt model and seed names share one "
+                        "namespace, so rename one of them"
                     ),
                     "sqlPath",
                 )
-            pending.append(matches[0].resolve())
+            if len(sql_matches) == 1:
+                pending.append(sql_matches[0].resolve())
+                continue
+            if len(seed_matches) == 1:
+                seed_path = seed_matches[0].resolve()
+                if _record_closure_member(binding, resolved, seed_path):
+                    # Seed CSVs are never scanned for refs, but their bytes ARE carried
+                    # on the plan and emitted, so an unreadable/undecodable seed (e.g. a
+                    # cp1252 Excel export) must fail here as a binding diagnostic rather
+                    # than crash provenance collection later.
+                    try:
+                        seed_path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeError) as exc:
+                        raise _failure(
+                            binding,
+                            "dbt-source.dependency-unresolved",
+                            (
+                                f"could not read dbt seed dependency {seed_path}: {exc} "
+                                "(seed CSVs must be UTF-8)"
+                            ),
+                            "sqlPath",
+                        ) from exc
+                continue
+            raise _failure(
+                binding,
+                "dbt-source.dependency-unresolved",
+                (
+                    f"dbt ref({ref_name!r}) must resolve to exactly one authored SQL file "
+                    "under integration/transforms/dbt/models or exactly one authored seed "
+                    "CSV file under integration/transforms/dbt/seeds (names match "
+                    "case-exactly)"
+                ),
+                "sqlPath",
+            )
     return tuple(sorted(resolved.values(), key=lambda path: path.as_posix()))
 
 

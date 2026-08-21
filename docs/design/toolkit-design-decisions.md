@@ -10164,6 +10164,88 @@ one domain removes a stale dependency only when no other emitted domain still se
 Conflicting bytes, case-insensitive paths, or dbt model names fail closed rather than overwriting
 another domain's contract.
 
+### Amendment (2026-08-21): contracted source() declarations and seed dependencies (#584, #586)
+
+The #580 amendment carried the contracted `ref()` SQL closure onto the `CompilePlan` but never
+extracted the `{{ source('name', 'table') }}` calls inside it, so nothing declared those physical
+sources and the emitted project failed offline `dbt parse` (#584). And a `ref()` pointing at an
+authored dbt seed CSV failed `dbt-source.dependency-unresolved` outright, blocking the whole
+domain (#586, stage a).
+
+**Contracted `source()` extraction happens at resolution time, and declarations flow through the
+existing shared per-system catalogs.** `resolve_scope` resolves contracted bindings *before* the
+vocabulary scan and widens vocabulary discovery to files whose relations satisfy
+`camel_to_snake(system_label).replace(" ", "_") == source_name and tableName == table` — exactly
+the naming rule `_source_catalogs` uses — so a purely-contracted domain (which has no
+`source.relation` refs) still parses the vocabularies its closure reads, and those vocabularies
+join `scope.inputs`/provenance. During `build_compile_plan`, one plan-authoritative walk
+(`_dbt_dependency_closures`, sharing `REF_RE`/`SOURCE_RE` with `dbt_source.py` and
+`dbt_lineage.py`) extracts each valid binding's pairs; `_contracted_source_tables` validates them
+against physical vocabulary relations (`dbt-source.source-unresolved` when no relation matches,
+`dbt-source.source-ambiguous` when distinct tables match) and builds each declaration through the
+same `system_fact_for_relation` helper relation-backed bindings use, so contracted-domain
+declarations are byte-identical to relation-backed ones and dbt sees exactly one definition per
+source name. `dbt_bundle.py`/`dbt_validation.py` deliberately keep their own ref/source regexes
+(two-argument package refs, IGNORECASE — different semantics); consolidating them is deferred to
+the #586 stage-(b) follow-up.
+
+**A new `contracted_input_uris` field carries the declared table URIs** on
+`BoundSources`/`NormalizedProjectFacts`, consumed only by `_source_catalogs`.
+`replacement_input_uris` was deliberately **not** reused: tables in that set lose direct-mapping
+authority (`mapping.replaced-source-direct-authority`), which would outlaw the legal combination
+of a direct binding on a table plus a contracted model reading the same table via `source()`.
+The virtual `"dbt"` system is unaffected — its tables stay excluded via `virtual_table_uris`,
+so `models/silver/_dbt__sources.yml` is still never emitted.
+
+**The cross-domain shared-catalog union now fails closed.** `_union_sources_yaml` raises
+`SourcesUnionError` on conflicting non-`tables` source headers or conflicting same-name table
+entries (previously silent first-wins); `compile --emit` surfaces it as an
+`ArtifactCollisionError` before any file is written. Non-conflicting output is byte-identical to
+the historical union, preserving AB/BA multi-domain emit determinism.
+
+**Seed `ref()` targets are closure leaves and are emitted (#586a).** Both walks — the filesystem
+walk in `dbt_source._dependency_sql_paths` and the plan walk over `scope.inputs` — resolve
+`ref('<name>')` against `models/**/<name>.sql` *and* `integration/transforms/dbt/seeds/<name>.csv`;
+a name matching both is `dbt-source.dependency-ambiguous` (models and seeds share dbt's ref
+namespace). A seed leaf is never text-scanned. Seeds emit as
+`PlannedDbtDependency(kind="seed", path="seeds/<name>.csv", model_name=<stem>)` — no plan
+dataclass changes — because emitting a model whose `ref()` points at a non-emitted seed would
+violate this DD's self-containment rule; `validate-dbt`'s dangling-ref check accordingly counts
+`seeds/**/*.csv` stems as known ref targets. Seed authoring polish (scaffolding, bundle/lint
+awareness, docs) is #586 stage (b).
+
+**Review hardening (same PR).** Jinja `{# ... #}` comment blocks are stripped before every
+`ref()`/`source()` extraction (dbt never renders them, so a commented-out call must not create a
+phantom dependency or a false blocking source diagnostic). `source()` extraction goes through one
+shared `extract_sources` helper that also recognizes dbt's keyword form
+(`source_name=`/`table_name=`, either argument order). `ref()` names match authored stems
+**case-exactly**, as dbt itself does — both walks index authored files once per walk keyed by the
+real on-disk stem, which states the exact-match rule in the data structure instead of delegating
+it to whatever case sensitivity the filesystem and glob implementation happen to provide;
+casefolding survives only in duplicate/collision detection. Unreadable or non-UTF-8 dependency
+bytes (the cp1252 seed-export case) fail as binding-attributed
+`dbt-source.dependency-unresolved` diagnostics in both the filesystem walk and scope resolution
+instead of escaping as a `UnicodeDecodeError` crash.
+
+**Unparseable `source()` calls fail closed (`dbt-source.source-unparsed`).** Rather than
+enumerating ever more call shapes, `extract_sources` counts `source(` call sites (a `\b`-anchored
+probe, so a macro merely *ending* in `source` such as `my_source(` is not a call site) and
+compares that with the number of spans it actually matched. Any surplus means at least one call
+used a form static analysis cannot resolve — mixed positional/keyword arguments, `var()` or
+variable arguments, string concatenation, macro-generated names — and both closure walks turn
+that into a blocking, binding-attributed diagnostic naming the supported forms. This follows
+#584's own acceptance criterion that *"if arbitrary SQL source extraction is unsupported ...
+compilation must fail clearly when declarations are missing"*: a silently-unextracted `source()`
+is exactly the defect #584 exists to prevent, because the emitted project then fails offline
+`dbt parse` with no compile diagnostic at all. An explicit compile error naming the unsupported
+form is strictly more actionable than that. Matched spans (not deduplicated pairs) are counted so
+a file legitimately repeating one identical call is not mistaken for an unparsed one.
+
+Explicitly **deferred to the #586 stage-(b) follow-up**: a dependency-kind registry, a single
+parameterized closure walker shared by the filesystem and plan walks, consolidation of
+`dbt_bundle`/`dbt_validation`'s ref/source regexes, unifying `medallion_dbt_projector`'s two local
+source-name copies with `uri_utils.dbt_source_name`, and remaining perf polish.
+
 ---
 
 

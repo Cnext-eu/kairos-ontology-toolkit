@@ -443,3 +443,160 @@ def test_compile_integrity_guard_never_raises_on_a_broken_hub(tmp_path):
     from kairos_ontology.cli.compile import _domain_integrity_failures
 
     assert _domain_integrity_failures(tmp_path / "does-not-exist", "party") == []
+
+
+def _add_crm_countries_table(hub: Path) -> None:
+    source = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
+    source.write_text(
+        source.read_text(encoding="utf-8")
+        + textwrap.dedent("""
+            src:countries a kb:SourceTable ; kb:sourceSystem src:crm ;
+              kb:tableName "countries" ; kb:primaryKeyColumns "code" .
+            src:country_code a kb:SourceColumn ; kb:sourceTable src:countries ;
+              kb:columnName "code" ; kb:dataType "varchar(2)" ;
+              kb:nullable "false"^^xsd:boolean .
+            src:country_label a kb:SourceColumn ; kb:sourceTable src:countries ;
+              kb:columnName "country_name" ; kb:dataType "varchar(100)" ;
+              kb:nullable "true"^^xsd:boolean .
+            """),
+        encoding="utf-8",
+    )
+
+
+def _add_billing_domain_on_crm_countries(hub: Path) -> None:
+    (hub / "model" / "ontologies" / "billing.ttl").write_text(
+        textwrap.dedent("""
+            @prefix billing: <https://example.test/billing#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            <https://example.test/billing> a owl:Ontology ; owl:versionInfo "1.0.0" .
+            billing:Region a owl:Class ; rdfs:label "Region" .
+            billing:code a owl:DatatypeProperty ;
+              rdfs:domain billing:Region ; rdfs:range xsd:string .
+            billing:region_name a owl:DatatypeProperty ;
+              rdfs:domain billing:Region ; rdfs:range xsd:string .
+            """).strip(),
+        encoding="utf-8",
+    )
+    (hub / "integration" / "bindings" / "region.binding.yaml").write_text(
+        textwrap.dedent("""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: crm-region
+              domain: billing
+            source:
+              relation: crm.countries
+            target:
+              class: billing:Region
+            grain:
+              columns: [code]
+            identity:
+              strategy: source-natural
+              sourceKey: [code]
+            load:
+              mode: full-refresh
+            fields:
+              - property: billing:code
+                expression: code
+              - property: billing:region_name
+                expression: country_name
+            """).strip(),
+        encoding="utf-8",
+    )
+
+
+def test_sequential_emits_union_and_preserve_other_domain_source_tables(tmp_path, monkeypatch):
+    hub = _hub(tmp_path / "hub")
+    _add_crm_countries_table(hub)
+    _add_billing_domain_on_crm_countries(hub)
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    for domain in ("party", "billing"):
+        result = runner.invoke(cli, ["compile", domain, "--emit", "--confirm-emit"])
+        assert result.exit_code == 0, result.output
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    catalog_path = target / "models" / "silver" / "_crm__sources.yml"
+    catalog = catalog_path.read_text(encoding="utf-8")
+    assert "customers" in catalog and "countries" in catalog
+
+    reemitted = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"])
+
+    assert reemitted.exit_code == 0, reemitted.output
+    catalog = catalog_path.read_text(encoding="utf-8")
+    assert "countries" in catalog, "the other domain's tables must survive a re-emit"
+    assert "customers" in catalog
+
+
+def test_emit_fails_closed_on_conflicting_shared_source_metadata(tmp_path, monkeypatch):
+    """#584: the shared-catalog union must not let one domain's stale vocabulary win."""
+    hub = _hub(tmp_path / "hub")
+    _add_crm_countries_table(hub)
+    _add_billing_domain_on_crm_countries(hub)
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    first = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"])
+    assert first.exit_code == 0, first.output
+    target = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
+    vocabulary = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
+    vocabulary.write_text(
+        vocabulary.read_text(encoding="utf-8").replace('kb:database "raw"', 'kb:database "raw2"'),
+        encoding="utf-8",
+    )
+    before = {
+        path.relative_to(target).as_posix(): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    }
+
+    conflict = runner.invoke(cli, ["compile", "billing", "--emit", "--confirm-emit"])
+
+    assert conflict.exit_code != 0
+    assert "conflicting source metadata" in conflict.output
+    after = {
+        path.relative_to(target).as_posix(): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    }
+    assert before == after, "a failed emit must leave the target tree untouched"
+
+
+def _seeded_contracted_hub(root):
+    hub = _contracted_hub(root)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "country_codes.csv").write_text("code,name\nBE,Belgium\n", encoding="utf-8")
+    model = hub / "integration" / "transforms" / "dbt" / "models" / "customer_stage.sql"
+    model.write_text(
+        "select customer_id, customer_name from {{ source('crm', 'customers') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+    return hub
+
+
+def test_emit_writes_seed_dependencies_and_fails_closed_on_tampering(tmp_path):
+    hub = _seeded_contracted_hub(tmp_path / "hub")
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    target = tmp_path / "publish" / "medallion" / "dbt"
+
+    _emit_compile_artifacts(result, target)
+
+    seed_file = target / "seeds" / "country_codes.csv"
+    assert seed_file.read_text(encoding="utf-8") == "code,name\nBE,Belgium\n"
+    from kairos_ontology.core.dbt_validation import _dangling_refs
+
+    assert _dangling_refs(target) == {}
+
+    # Re-emitting round-trips the kind="seed" dependency state.
+    _emit_compile_artifacts(result, target)
+    assert seed_file.read_text(encoding="utf-8") == "code,name\nBE,Belgium\n"
+
+    # A tampered emitted seed fails closed on the next emit.
+    seed_file.write_text("code,name\nXX,Tampered\n", encoding="utf-8")
+    from kairos_ontology.core.compiler.emit import ManifestError
+
+    with pytest.raises(ManifestError):
+        _emit_compile_artifacts(result, target)

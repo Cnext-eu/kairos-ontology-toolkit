@@ -163,6 +163,11 @@ def _dangling_refs(project_dir: Path) -> dict[str, list[str]]:
         return {}
     sql_files = sorted(models_dir.rglob("*.sql"))
     known_models = {path.stem for path in sql_files}
+    # #586: ref() may target a dbt seed; emitted seed CSVs live under seeds/ and share
+    # the model ref namespace.
+    seeds_dir = project_dir / "seeds"
+    if seeds_dir.is_dir():
+        known_models.update(path.stem for path in seeds_dir.rglob("*.csv"))
     problems: dict[str, list[str]] = {}
     for path in sql_files:
         content = path.read_text(encoding="utf-8")
