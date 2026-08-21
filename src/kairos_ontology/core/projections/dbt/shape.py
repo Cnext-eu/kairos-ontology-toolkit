@@ -41,7 +41,7 @@ from .specs import (
     SourceTableSpec,
     RuntimeModelSpec,
 )
-from ..uri_utils import camel_to_snake
+from ..uri_utils import camel_to_snake, dbt_source_name
 
 _STRING = CanonicalTypeSpec(CanonicalTypeKind.STRING)
 _HASH_STRING = CanonicalTypeSpec(CanonicalTypeKind.STRING, length=64)
@@ -1722,6 +1722,7 @@ def _schema_model(
             )
             for column in columns
         ]
+
     def _generic_test(name: str, arguments: dict[str, object]) -> dict[str, object]:
         # dbt is removing top-level generic-test arguments; nest under `arguments`
         # ahead of that removal (v5 Silver path only -- the legacy v4 projector at
@@ -1838,7 +1839,7 @@ def _source_catalogs(project: NormalizedProjectFacts) -> tuple[SourceCatalogSpec
     mapped.update(project.contracted_input_uris)
     catalogs: list[SourceCatalogSpec] = []
     for system in project.systems:
-        source_name = camel_to_snake(system.label).replace(" ", "_")
+        source_name = dbt_source_name(system.label)
         tables = tuple(
             SourceTableSpec(name=table.name, label=table.label)
             for table in system.tables

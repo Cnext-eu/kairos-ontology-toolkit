@@ -371,3 +371,74 @@ def test_inputs_walk_flags_model_and_seed_name_clash():
     assert [item.code for item in diagnostics] == ["dbt-source.dependency-ambiguous"]
     (closure,) = closures
     assert closure.seed_paths == ()
+
+
+def test_undecodable_seed_bytes_are_a_diagnostic_not_a_crash(tmp_path):
+    """A cp1252 seed export (the real #586 use case) must not escape as a traceback."""
+    hub = _hub(tmp_path)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "country_codes.csv").write_bytes(b"code,name\nBE,C\xf4te\n")
+    hub = _use_contracted_customer(
+        hub,
+        "select customer_id, customer_name from {{ source('crm', 'customers') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1\n",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    codes = {item.code for item in result.diagnostics.items}
+    assert "dbt-source.dependency-unresolved" in codes
+
+
+def test_jinja_commented_source_and_ref_are_ignored(tmp_path):
+    """{# ... #} blocks are never rendered by dbt; they must not create phantom
+    dependencies or false blocking source diagnostics."""
+    hub = _use_contracted_customer(
+        _hub(tmp_path),
+        "{# scratch: {{ source('ghost', 'nope') }} and {{ ref('phantom_model') }} #}\n"
+        "select customer_id, customer_name from {{ source('crm', 'customers') }}\n",
+    )
+
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    codes = {item.code for item in result.diagnostics.items}
+    assert "dbt-source.source-unresolved" not in codes
+    assert "dbt-source.dependency-unresolved" not in codes
+    assert not any("phantom" in path for path in result.artifact_dict())
+
+
+def test_keyword_source_call_is_declared(tmp_path):
+    """dbt accepts source(source_name=..., table_name=...) in either order."""
+    hub = _use_contracted_customer(
+        _hub(tmp_path),
+        "select customer_id, customer_name from "
+        "{{ source(table_name='customers', source_name='crm') }}\n",
+    )
+
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    catalog = yaml.safe_load(result.artifact_dict()["models/silver/_crm__sources.yml"])
+    crm = next(source for source in catalog["sources"] if source["name"] == "crm")
+    assert [table["name"] for table in crm["tables"]] == ["customers"]
+
+
+def test_inputs_walk_matches_ref_names_case_exactly():
+    """dbt matches ref() names exactly; a wrong-case ref must not resolve."""
+    binding = _contracted_binding()
+    scope = _scope_with_inputs(
+        ProvenanceInput(
+            "integration/transforms/dbt/models/customer_stage.sql",
+            "select 1 from {{ ref('STG_Customer') }}\n",
+        ),
+        ProvenanceInput("integration/transforms/dbt/models/stg_customer.sql", "select 1\n"),
+    )
+
+    closures, diagnostics = _dbt_dependency_closures((binding,), scope)
+
+    assert [item.code for item in diagnostics] == ["dbt-source.dependency-unresolved"]
+    (closure,) = closures
+    assert closure.sql_paths == ("integration/transforms/dbt/models/customer_stage.sql",)

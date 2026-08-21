@@ -366,3 +366,70 @@ def test_entity_binding_expression_rejects_relational_constructs(construct: str)
         load_entity_binding(binding, path="customer.binding.yml")
 
     assert any(item.code == "expression.ambiguous" for item in excinfo.value.diagnostics)
+
+
+def test_wrong_case_ref_is_unresolved_even_on_case_insensitive_filesystems(tmp_path: Path) -> None:
+    """dbt matches ref() names exactly; Windows rglob must not resolve a wrong-case ref."""
+    hub = _hub(tmp_path)
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text("select * from {{ ref('STG_Customer') }}\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.dependency-unresolved"
+    assert "STG_Customer" in diagnostic.message
+
+
+def test_jinja_commented_ref_creates_no_dependency(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text(
+        "{# unused: {{ ref('phantom_model') }} #}\n"
+        "select customer_id, customer_name from {{ ref('stg_customer') }}\n",
+        encoding="utf-8",
+    )
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    paths = resolve_dbt_model_dependency_paths(binding, hub)
+
+    assert {path.stem for path in paths} == {"int_customer", "stg_customer"}
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ("select * from {{ source('crm', 'customers') }}", {("crm", "customers")}),
+        (
+            "select * from {{ source(source_name='crm', table_name='customers') }}",
+            {("crm", "customers")},
+        ),
+        (
+            "select * from {{ source(table_name='customers', source_name='crm') }}",
+            {("crm", "customers")},
+        ),
+        (
+            "select * from {{source( source_name = 'crm' ,  table_name = 'customers' )}}",
+            {("crm", "customers")},
+        ),
+        (
+            'select * from {{ source("dtb", "DtbBooking.sample") }}',
+            {("dtb", "DtbBooking.sample")},
+        ),
+        ("{# {{ source('ghost', 'nope') }} #}\nselect 1", set()),
+        (
+            "{# source('ghost', 'nope') #} select * from {{ source('crm', 'customers') }}",
+            {("crm", "customers")},
+        ),
+    ],
+)
+def test_extract_source_pairs_handles_positional_kwargs_and_comments(sql, expected) -> None:
+    from kairos_ontology.core.compiler.dbt_source import extract_source_pairs
+
+    assert extract_source_pairs(sql) == frozenset(expected)

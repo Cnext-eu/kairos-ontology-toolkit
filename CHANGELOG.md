@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `seeds/` so the generated project stays self-contained. A name matching both a model and a
   seed fails closed with the new `dbt-source.dependency-ambiguous` diagnostic, and
   `validate-dbt` counts emitted seed stems as valid `ref()` targets.
+- **Extraction matches dbt's own semantics.** `source()` calls are recognized in both the
+  positional and keyword (`source_name=`/`table_name=`, either order) forms; Jinja
+  `{# ... #}` comments are stripped before `ref()`/`source()` extraction so commented-out
+  calls create no phantom dependencies or false diagnostics; `ref()` names match authored
+  file stems case-exactly on every platform; and an unreadable or non-UTF-8 dependency file
+  (e.g. a cp1252 seed CSV export) is a binding-attributed
+  `dbt-source.dependency-unresolved` diagnostic instead of a crash. `field-mapping-report`
+  lineage treats a seed-backed `ref()` as a traceable leaf.
 
 ### Changed
 - **The cross-domain union of shared `_<system>__sources.yml` catalogs now fails closed.**

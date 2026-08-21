@@ -102,3 +102,38 @@ def test_dependency_cycle_does_not_infinite_loop(tmp_path):
 
     assert sources == frozenset({"crm"})
     assert traceable is True
+
+
+def test_seed_backed_ref_is_a_traceable_leaf(tmp_path):
+    """#586: the compiler resolves seed refs, so lineage must not call them untraceable."""
+    models = tmp_path / "integration" / "transforms" / "dbt" / "models" / "intermediate"
+    _write(
+        tmp_path / "integration" / "transforms" / "dbt" / "seeds" / "country_codes.csv",
+        "code,name\nBE,Belgium\n",
+    )
+    merged_path = models / "int_merged__party.sql"
+    _write(
+        merged_path,
+        "select * from {{ source('crm', 'customers') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1",
+    )
+
+    sources, traceable = resolve_dbt_model_contributing_sources(tmp_path, merged_path)
+
+    assert sources == frozenset({"crm"})
+    assert traceable is True
+
+
+def test_jinja_commented_calls_are_ignored(tmp_path):
+    models = tmp_path / "integration" / "transforms" / "dbt" / "models" / "intermediate"
+    merged_path = models / "int_merged__party.sql"
+    _write(
+        merged_path,
+        "{# {{ source('ghost', 'nope') }} and {{ ref('phantom') }} #}\n"
+        "select * from {{ source('crm', 'customers') }}",
+    )
+
+    sources, traceable = resolve_dbt_model_contributing_sources(tmp_path, merged_path)
+
+    assert sources == frozenset({"crm"})
+    assert traceable is True

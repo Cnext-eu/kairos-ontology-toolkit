@@ -668,9 +668,8 @@ def _union_sources_yaml(existing: str, incoming: str) -> str:
             name = src.get("name")
             header = {k: v for k, v in src.items() if k != "tables"}
             if name not in sources_by_name:
-                entry = dict(header)
-                entry["_tables"] = {}
-                sources_by_name[name] = entry
+                header["_tables"] = {}
+                sources_by_name[name] = header
                 order.append(name)
             else:
                 existing_header = {k: v for k, v in sources_by_name[name].items() if k != "_tables"}
@@ -688,7 +687,9 @@ def _union_sources_yaml(existing: str, incoming: str) -> str:
                         f"conflicting table entry {table_name!r} in source {name!r}: "
                         f"{previous!r} != {tbl!r}"
                     )
-                tables.setdefault(table_name, tbl)
+                # The fail-closed check above makes first-wins unreachable; assign
+                # directly rather than keeping the retired silent-merge setdefault idiom.
+                tables[table_name] = tbl
     merged_sources: list[dict] = []
     for name in order:
         entry = sources_by_name[name]
@@ -728,7 +729,13 @@ def _merge_dbt_artifacts(
             continue
         if path in destination and destination[path] != content:
             if _is_shared_sources_artifact(path):
-                destination[path] = _union_sources_yaml(destination[path], content)
+                try:
+                    destination[path] = _union_sources_yaml(destination[path], content)
+                except SourcesUnionError as exc:
+                    # Same fail-closed UX as compile --emit: report the colliding path
+                    # in this function's documented collision style instead of letting
+                    # a raw ValueError traceback escape the legacy generate path.
+                    raise RuntimeError(f"{context}: {path!r}: {exc}") from exc
                 continue
             collisions.append(path)
             continue

@@ -25,10 +25,49 @@ _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #: regexes deliberately: they accept two-argument package refs and IGNORECASE matching,
 #: which are different semantics (see DD amendment for #584/#586).
 REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
-#: ``source('name', 'table')`` calls with both arguments captured; ``[^'\"]+`` admits
-#: dotted table names such as ``DtbBooking.sample``.
+#: Positional ``source('name', 'table')`` calls with both arguments captured;
+#: ``[^'\"]+`` admits dotted table names such as ``DtbBooking.sample``. Prefer
+#: :func:`extract_source_pairs`, which also recognizes dbt's keyword form and strips
+#: Jinja comments first.
 SOURCE_RE = re.compile(r"\bsource\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
+#: dbt also accepts ``source(source_name='x', table_name='y')`` in either keyword order.
+_SOURCE_KW_NAME_FIRST_RE = re.compile(
+    r"\bsource\s*\(\s*source_name\s*=\s*['\"]([^'\"]+)['\"]\s*,"
+    r"\s*table_name\s*=\s*['\"]([^'\"]+)['\"]\s*\)"
+)
+_SOURCE_KW_TABLE_FIRST_RE = re.compile(
+    r"\bsource\s*\(\s*table_name\s*=\s*['\"]([^'\"]+)['\"]\s*,"
+    r"\s*source_name\s*=\s*['\"]([^'\"]+)['\"]\s*\)"
+)
+_JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
 _TRANSFORMS_PARTS = ("integration", "transforms", "dbt")
+
+
+def strip_jinja_comments(text: str) -> str:
+    """Remove ``{# ... #}`` blocks, which dbt never renders.
+
+    Applied before every ``ref()``/``source()`` extraction so a commented-out call can
+    never create a phantom dependency or a false blocking source diagnostic.
+    """
+    return _JINJA_COMMENT_RE.sub("", text)
+
+
+def extract_source_pairs(text: str) -> frozenset[tuple[str, str]]:
+    """Extract every ``source()`` call as a ``(source_name, table_name)`` pair.
+
+    Recognizes the positional form and dbt's keyword form in either argument order, and
+    strips Jinja comments first. The single extraction authority shared by
+    ``resolve_scope`` and the plan-time closure walk so the two can never disagree.
+    """
+    rendered = strip_jinja_comments(text)
+    pairs = {(match.group(1), match.group(2)) for match in SOURCE_RE.finditer(rendered)}
+    pairs.update(
+        (match.group(1), match.group(2)) for match in _SOURCE_KW_NAME_FIRST_RE.finditer(rendered)
+    )
+    pairs.update(
+        (match.group(2), match.group(1)) for match in _SOURCE_KW_TABLE_FIRST_RE.finditer(rendered)
+    )
+    return frozenset(pairs)
 
 
 def _is_absolute_http_iri(value: object) -> bool:
@@ -124,6 +163,32 @@ def _load_contract(binding: EntityBinding, path: Path) -> dict[str, Any]:
     return document
 
 
+def _record_closure_member(binding: EntityBinding, resolved: dict[str, Path], path: Path) -> bool:
+    """Record *path* in the closure under its casefolded stem for collision detection.
+
+    Returns ``False`` when exactly this path is already recorded (the walk skips it).
+    Two *different* artifacts whose stems collide case-insensitively raise: dbt models
+    and seeds share one ``ref()`` namespace and the emitted-project collision checks are
+    case-insensitive, so such a pair could never emit safely.
+    """
+    key = path.stem.casefold()
+    previous = resolved.get(key)
+    if previous is None:
+        resolved[key] = path
+        return True
+    if previous != path:
+        raise _failure(
+            binding,
+            "dbt-source.dependency-unresolved",
+            (
+                f"dbt name {path.stem!r} resolves to more than one authored dependency: "
+                f"{previous.name!r} and {path.name!r}"
+            ),
+            "sqlPath",
+        )
+    return False
+
+
 def _dependency_sql_paths(
     binding: EntityBinding,
     hub_root: Path,
@@ -134,28 +199,28 @@ def _dependency_sql_paths(
     Returns model ``.sql`` paths plus any authored seed ``.csv`` leaves under
     ``integration/transforms/dbt/seeds/`` (#586): a ``ref()`` may target a dbt seed,
     which terminates that branch of the walk (seed CSVs are never text-scanned).
+    ``ref()`` names match authored stems exactly, as dbt itself does.
     """
     models_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "models")
     seeds_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "seeds")
+    # Index authored models and seeds once per walk, keyed by EXACT stem: dbt matches
+    # ref() names exactly, and only a wildcard glob is guaranteed to yield real on-disk
+    # casing on a case-insensitive filesystem (rglob(f"{name}.sql") on Windows echoes the
+    # *pattern's* casing back, silently resolving a wrong-case ref dbt would reject).
+    model_index: dict[str, tuple[Path, ...]] = {}
+    if models_dir.is_dir():
+        for model_path in sorted(models_dir.rglob("*.sql")):
+            model_index[model_path.stem] = (*model_index.get(model_path.stem, ()), model_path)
+    seed_index: dict[str, tuple[Path, ...]] = {}
+    if seeds_dir.is_dir():
+        for seed_path in sorted(seeds_dir.rglob("*.csv")):
+            seed_index[seed_path.stem] = (*seed_index.get(seed_path.stem, ()), seed_path)
     resolved: dict[str, Path] = {}
     pending = [selected_path]
     while pending:
         path = pending.pop()
-        model_name = path.stem
-        previous = resolved.get(model_name.casefold())
-        if previous is not None:
-            if previous != path:
-                raise _failure(
-                    binding,
-                    "dbt-source.dependency-unresolved",
-                    (
-                        f"dbt model name {model_name!r} resolves to more than one authored "
-                        "SQL dependency"
-                    ),
-                    "sqlPath",
-                )
+        if not _record_closure_member(binding, resolved, path):
             continue
-        resolved[model_name.casefold()] = path
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -165,11 +230,9 @@ def _dependency_sql_paths(
                 f"could not read dbt SQL dependency {path}: {exc}",
                 "sqlPath",
             ) from exc
-        for ref_name in sorted(set(REF_RE.findall(text))):
-            sql_matches = tuple(sorted(models_dir.rglob(f"{ref_name}.sql")))
-            seed_matches = (
-                tuple(sorted(seeds_dir.rglob(f"{ref_name}.csv"))) if seeds_dir.is_dir() else ()
-            )
+        for ref_name in sorted(set(REF_RE.findall(strip_jinja_comments(text)))):
+            sql_matches = model_index.get(ref_name, ())
+            seed_matches = seed_index.get(ref_name, ())
             if sql_matches and seed_matches:
                 raise _failure(
                     binding,
@@ -184,20 +247,25 @@ def _dependency_sql_paths(
             if len(sql_matches) == 1:
                 pending.append(sql_matches[0].resolve())
                 continue
-            if len(seed_matches) == 1 and not sql_matches:
+            if len(seed_matches) == 1:
                 seed_path = seed_matches[0].resolve()
-                seed_previous = resolved.get(seed_path.stem.casefold())
-                if seed_previous is not None and seed_previous != seed_path:
-                    raise _failure(
-                        binding,
-                        "dbt-source.dependency-unresolved",
-                        (
-                            f"dbt model name {seed_path.stem!r} resolves to more than one "
-                            "authored SQL dependency"
-                        ),
-                        "sqlPath",
-                    )
-                resolved[seed_path.stem.casefold()] = seed_path
+                if _record_closure_member(binding, resolved, seed_path):
+                    # Seed CSVs are never scanned for refs, but their bytes ARE carried
+                    # on the plan and emitted, so an unreadable/undecodable seed (e.g. a
+                    # cp1252 Excel export) must fail here as a binding diagnostic rather
+                    # than crash provenance collection later.
+                    try:
+                        seed_path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeError) as exc:
+                        raise _failure(
+                            binding,
+                            "dbt-source.dependency-unresolved",
+                            (
+                                f"could not read dbt seed dependency {seed_path}: {exc} "
+                                "(seed CSVs must be UTF-8)"
+                            ),
+                            "sqlPath",
+                        ) from exc
                 continue
             raise _failure(
                 binding,
@@ -205,7 +273,8 @@ def _dependency_sql_paths(
                 (
                     f"dbt ref({ref_name!r}) must resolve to exactly one authored SQL file "
                     "under integration/transforms/dbt/models or exactly one authored seed "
-                    "CSV file under integration/transforms/dbt/seeds"
+                    "CSV file under integration/transforms/dbt/seeds (names match "
+                    "case-exactly)"
                 ),
                 "sqlPath",
             )

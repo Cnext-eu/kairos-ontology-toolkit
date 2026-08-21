@@ -10214,6 +10214,22 @@ violate this DD's self-containment rule; `validate-dbt`'s dangling-ref check acc
 `seeds/**/*.csv` stems as known ref targets. Seed authoring polish (scaffolding, bundle/lint
 awareness, docs) is #586 stage (b).
 
+**Review hardening (same PR).** Jinja `{# ... #}` comment blocks are stripped before every
+`ref()`/`source()` extraction (dbt never renders them, so a commented-out call must not create a
+phantom dependency or a false blocking source diagnostic). `source()` extraction goes through one
+shared `extract_source_pairs` helper that also recognizes dbt's keyword form
+(`source_name=`/`table_name=`, either argument order). `ref()` names match authored stems
+**case-exactly**, as dbt itself does — both walks index authored files by real on-disk stem
+(a name-derived `rglob` on a case-insensitive filesystem echoes the pattern's casing back and
+would silently resolve a wrong-case ref); casefolding survives only in duplicate/collision
+detection. Unreadable or non-UTF-8 dependency bytes (the cp1252 seed-export case) fail as
+binding-attributed `dbt-source.dependency-unresolved` diagnostics in both the filesystem walk and
+scope resolution instead of escaping as a `UnicodeDecodeError` crash. Explicitly **deferred to
+the #586 stage-(b) follow-up**: a dependency-kind registry, a single parameterized closure walker
+shared by the filesystem and plan walks, consolidation of `dbt_bundle`/`dbt_validation`'s
+ref/source regexes, unifying `medallion_dbt_projector`'s two local source-name copies with
+`uri_utils.dbt_source_name`, and remaining perf polish.
+
 ---
 
 

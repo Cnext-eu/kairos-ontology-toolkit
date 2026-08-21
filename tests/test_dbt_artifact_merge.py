@@ -78,12 +78,15 @@ def test_union_sources_yaml_raises_on_conflicting_table_entry():
         _union_sources_yaml(a, b)
 
 
-def test_merge_dbt_artifacts_propagates_sources_union_conflict():
-    """The legacy generate path must also fail closed rather than first-wins."""
+def test_merge_dbt_artifacts_reports_sources_union_conflict_as_collision():
+    """The legacy generate path must fail closed in its documented collision style."""
     path = "models/silver/_qargo__sources.yml"
     dest = {path: _sources_doc("qargo", ["Booking"])}
 
-    with pytest.raises(SourcesUnionError):
+    with pytest.raises(
+        RuntimeError,
+        match="Generated dbt artifact collisions.*_qargo__sources.*conflicting source metadata",
+    ):
         _merge_dbt_artifacts(
             dest,
             {path: _sources_doc("qargo", ["Booking"]).replace("schema: bronze", "schema: other")},
