@@ -39,11 +39,11 @@ def _find_seed_csv(hub_root: Path, name: str) -> Path | None:
 
 
 def _find_unique(directory: Path, pattern: str, stem: str) -> Path | None:
-    """Return the unique *stem*-named file under *directory*, exact-case.
+    """Return the unique file under *directory* whose real on-disk stem equals *stem*.
 
-    A wildcard glob filtered on the real on-disk stem is deliberate: a name-derived glob
-    (``rglob(f"{stem}.sql")``) on a case-insensitive filesystem echoes the pattern's
-    casing back and would resolve a wrong-case ref that dbt itself rejects.
+    Comparing the real on-disk stem states dbt's exact-match rule directly, rather than
+    delegating it to whatever case sensitivity the filesystem and glob implementation
+    happen to provide.
     """
     if not directory.is_dir():
         return None

@@ -433,3 +433,74 @@ def test_extract_source_pairs_handles_positional_kwargs_and_comments(sql, expect
     from kairos_ontology.core.compiler.dbt_source import extract_source_pairs
 
     assert extract_source_pairs(sql) == frozenset(expected)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Mixed positional/keyword form: dbt-valid, statically unreadable by extraction.
+        "select * from {{ source('crm', table_name='customers') }}",
+        # Dynamic arguments of every shape.
+        "select * from {{ source(var('sys'), 'customers') }}",
+        "select * from {{ source(my_system, 'customers') }}",
+        "select * from {{ source('crm' ~ suffix, 'customers') }}",
+    ],
+)
+def test_unreadable_source_call_fails_closed(tmp_path: Path, sql: str) -> None:
+    """#584: a source() call the compiler cannot read must not pass silently.
+
+    The alternative is an emitted project whose source is never declared, which fails
+    offline `dbt parse` with no compile diagnostic at all.
+    """
+    hub = _hub(tmp_path)
+    (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "stg_customer.sql"
+    ).write_text(sql + "\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_source(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.source-unparsed"
+    assert diagnostic.location.pointer == "/source/dbtModel/sqlPath"
+    assert "source_name=" in diagnostic.message
+    assert "dynamic arguments" in diagnostic.message
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select * from {{ source('crm', 'customers') }}",
+        "select * from {{ source(source_name='crm', table_name='customers') }}",
+        "select * from {{ source(table_name='customers', source_name='crm') }}",
+        # A macro whose name merely ends in `source` is not a source() call site.
+        "select * from {{ my_source('crm', anything) }} join {{ source('crm', 'customers') }}",
+        # An unreadable call inside a Jinja comment is not a call site either.
+        "{# {{ source(var('x'), 'y') }} #}\nselect * from {{ source('crm', 'customers') }}",
+        # The same identical call twice must not look like one unparsed call.
+        "select * from {{ source('crm', 'customers') }} "
+        "union all select * from {{ source('crm', 'customers') }}",
+    ],
+)
+def test_readable_source_calls_are_accepted(tmp_path: Path, sql: str) -> None:
+    hub = _hub(tmp_path)
+    (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "stg_customer.sql"
+    ).write_text(sql + "\n", encoding="utf-8")
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    relation = resolve_dbt_model_source(binding, hub)
+
+    assert relation.ref == "int_customer"
+
+
+def test_extract_sources_counts_unreadable_call_sites() -> None:
+    from kairos_ontology.core.compiler.dbt_source import extract_sources
+
+    extraction = extract_sources(
+        "{{ source('crm', 'customers') }} {{ source('crm', table_name='orders') }}"
+    )
+
+    assert extraction.pairs == frozenset({("crm", "customers")})
+    assert extraction.unparsed == 1

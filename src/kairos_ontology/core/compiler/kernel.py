@@ -76,8 +76,9 @@ from .compile import CompileMode
 from .conformance import ConformancePlan, ConformanceTypeContract, build_conformance_plan
 from .dbt_source import (
     REF_RE,
+    SUPPORTED_SOURCE_FORMS,
     check_target_class_match,
-    extract_source_pairs,
+    extract_sources,
     resolve_dbt_model_dependency_paths,
     resolve_dbt_model_source,
     strip_jinja_comments,
@@ -711,7 +712,9 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
                         ]
                     ) from exc
                 if resolved_path.suffix.lower() == ".sql":
-                    binding_pairs |= extract_source_pairs(content)
+                    # resolve_dbt_model_dependency_paths above already failed closed on an
+                    # unparseable source() call, so only resolved pairs remain here.
+                    binding_pairs |= extract_sources(content).pairs
                 binding_provenance.append(
                     ProvenanceInput(
                         str(resolved_path.relative_to(root)).replace("\\", "/"),
@@ -3038,7 +3041,26 @@ def _dbt_dependency_closures(
             sql_content = inputs.get(sql_path)
             if sql_content is None:
                 continue
-            pairs.update(extract_source_pairs(sql_content))
+            extraction = extract_sources(sql_content)
+            pairs.update(extraction.pairs)
+            if extraction.unparsed:
+                # Same fail-closed verdict the filesystem walk reaches, via the one shared
+                # extraction helper: an unreadable source() call would emit a project whose
+                # source is never declared (#584).
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="dbt-source.source-unparsed",
+                        message=(
+                            f"dbt SQL dependency {sql_path!r} contains a source() call whose "
+                            f"arguments could not be resolved statically: "
+                            f"{SUPPORTED_SOURCE_FORMS}"
+                        ),
+                        location=SourceLocation(
+                            path=binding.source_path,
+                            pointer="/source/dbtModel/sqlPath",
+                        ),
+                    )
+                )
             for ref_name in sorted(set(REF_RE.findall(strip_jinja_comments(sql_content)))):
                 sql_candidates = sql_inputs.get(ref_name, [])
                 seed_candidates = seed_inputs.get(ref_name, [])

@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. a cp1252 seed CSV export) is a binding-attributed
   `dbt-source.dependency-unresolved` diagnostic instead of a crash. `field-mapping-report`
   lineage treats a seed-backed `ref()` as a traceable leaf.
+- **A `source()` call the compiler cannot read now fails the compile instead of being
+  silently skipped (new `dbt-source.source-unparsed`).** Any `source(` call site whose
+  arguments are not statically resolvable — mixed positional/keyword arguments, `var()` or
+  other variable arguments, string concatenation, macro-generated names — is reported with
+  the supported forms named, in both closure walks. Previously such a call produced no
+  catalog entry and no diagnostic, so the failure only surfaced later as an offline
+  `dbt parse` error. Macros whose names merely end in `source` (e.g. `my_source(...)`) are
+  unaffected.
 
 ### Changed
 - **The cross-domain union of shared `_<system>__sources.yml` catalogs now fails closed.**

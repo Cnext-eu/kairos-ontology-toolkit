@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -27,8 +28,8 @@ _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 REF_RE = re.compile(r"\bref\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
 #: Positional ``source('name', 'table')`` calls with both arguments captured;
 #: ``[^'\"]+`` admits dotted table names such as ``DtbBooking.sample``. Prefer
-#: :func:`extract_source_pairs`, which also recognizes dbt's keyword form and strips
-#: Jinja comments first.
+#: :func:`extract_sources`, which also recognizes dbt's keyword form, strips Jinja
+#: comments first, and reports calls it could not resolve statically.
 SOURCE_RE = re.compile(r"\bsource\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
 #: dbt also accepts ``source(source_name='x', table_name='y')`` in either keyword order.
 _SOURCE_KW_NAME_FIRST_RE = re.compile(
@@ -39,8 +40,21 @@ _SOURCE_KW_TABLE_FIRST_RE = re.compile(
     r"\bsource\s*\(\s*table_name\s*=\s*['\"]([^'\"]+)['\"]\s*,"
     r"\s*source_name\s*=\s*['\"]([^'\"]+)['\"]\s*\)"
 )
+#: Every ``source(`` call site, whatever its argument shape. ``\b`` deliberately does not
+#: match a macro whose name merely ends in ``source`` (``my_source(``, ``foo_source(``):
+#: ``_`` is a word character, so there is no boundary before ``source`` there.
+_SOURCE_CALL_RE = re.compile(r"\bsource\s*\(")
 _JINJA_COMMENT_RE = re.compile(r"\{#.*?#\}", re.DOTALL)
 _TRANSFORMS_PARTS = ("integration", "transforms", "dbt")
+
+#: Author-facing description of what static ``source()`` extraction supports, used by the
+#: ``dbt-source.source-unparsed`` diagnostic in both closure walks.
+SUPPORTED_SOURCE_FORMS = (
+    "supported forms are source('name', 'table') and "
+    "source(source_name='name', table_name='table'); dynamic arguments "
+    "(var(), variables, string concatenation, macro-generated names) cannot be "
+    "resolved at compile time -- pass literal source and table names"
+)
 
 
 def strip_jinja_comments(text: str) -> str:
@@ -52,22 +66,52 @@ def strip_jinja_comments(text: str) -> str:
     return _JINJA_COMMENT_RE.sub("", text)
 
 
-def extract_source_pairs(text: str) -> frozenset[tuple[str, str]]:
-    """Extract every ``source()`` call as a ``(source_name, table_name)`` pair.
+@dataclass(frozen=True, slots=True)
+class SourceExtraction:
+    """Result of scanning one authored SQL text for ``source()`` calls."""
+
+    #: Distinct ``(source_name, table_name)`` pairs resolved statically.
+    pairs: frozenset[tuple[str, str]]
+    #: Number of ``source(`` call sites whose arguments could not be resolved.
+    unparsed: int
+
+
+def extract_sources(text: str) -> SourceExtraction:
+    """Extract ``source()`` pairs and count the call sites that could not be resolved.
 
     Recognizes the positional form and dbt's keyword form in either argument order, and
     strips Jinja comments first. The single extraction authority shared by
-    ``resolve_scope`` and the plan-time closure walk so the two can never disagree.
+    ``resolve_scope``'s filesystem walk and the plan-time closure walk, so the two can
+    never disagree about which sources a closure reads.
+
+    #584's acceptance criteria require compilation to fail clearly when declarations are
+    missing, so this reports *unparsed* call sites rather than skipping them: a
+    ``source()`` call the compiler cannot read is exactly the case where no catalog entry
+    would be emitted and the generated project would fail offline ``dbt parse`` with no
+    compile-time diagnostic at all. Callers turn a non-zero count into
+    ``dbt-source.source-unparsed``. Counting matched *spans* (not deduplicated pairs)
+    keeps a file that legitimately repeats one identical call from looking unparsed.
     """
     rendered = strip_jinja_comments(text)
     pairs = {(match.group(1), match.group(2)) for match in SOURCE_RE.finditer(rendered)}
-    pairs.update(
-        (match.group(1), match.group(2)) for match in _SOURCE_KW_NAME_FIRST_RE.finditer(rendered)
-    )
-    pairs.update(
-        (match.group(2), match.group(1)) for match in _SOURCE_KW_TABLE_FIRST_RE.finditer(rendered)
-    )
-    return frozenset(pairs)
+    matched = len(SOURCE_RE.findall(rendered))
+    for match in _SOURCE_KW_NAME_FIRST_RE.finditer(rendered):
+        pairs.add((match.group(1), match.group(2)))
+        matched += 1
+    for match in _SOURCE_KW_TABLE_FIRST_RE.finditer(rendered):
+        pairs.add((match.group(2), match.group(1)))
+        matched += 1
+    call_sites = len(_SOURCE_CALL_RE.findall(rendered))
+    return SourceExtraction(frozenset(pairs), max(call_sites - matched, 0))
+
+
+def extract_source_pairs(text: str) -> frozenset[tuple[str, str]]:
+    """Return only the statically resolvable ``source()`` pairs.
+
+    For best-effort, non-blocking consumers such as ``dbt_lineage``'s reporting walk;
+    compile-path callers use :func:`extract_sources` so unparsed calls fail closed.
+    """
+    return extract_sources(text).pairs
 
 
 def _is_absolute_http_iri(value: object) -> bool:
@@ -203,10 +247,10 @@ def _dependency_sql_paths(
     """
     models_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "models")
     seeds_dir = hub_root.joinpath(*_TRANSFORMS_PARTS, "seeds")
-    # Index authored models and seeds once per walk, keyed by EXACT stem: dbt matches
-    # ref() names exactly, and only a wildcard glob is guaranteed to yield real on-disk
-    # casing on a case-insensitive filesystem (rglob(f"{name}.sql") on Windows echoes the
-    # *pattern's* casing back, silently resolving a wrong-case ref dbt would reject).
+    # One directory scan per walk (not one glob per ref), indexed by the REAL on-disk
+    # stem. Keying the index this way makes the exact-match contract dbt itself applies
+    # explicit in the data structure, independent of whether the underlying filesystem or
+    # glob implementation happens to be case-sensitive.
     model_index: dict[str, tuple[Path, ...]] = {}
     if models_dir.is_dir():
         for model_path in sorted(models_dir.rglob("*.sql")):
@@ -230,6 +274,19 @@ def _dependency_sql_paths(
                 f"could not read dbt SQL dependency {path}: {exc}",
                 "sqlPath",
             ) from exc
+        if extract_sources(text).unparsed:
+            # #584 fails closed on a source() call it cannot read rather than emitting a
+            # project with an undeclared source. Checked here (and in the plan walk) so
+            # both closure walks share one verdict.
+            raise _failure(
+                binding,
+                "dbt-source.source-unparsed",
+                (
+                    f"dbt SQL dependency {path.name} contains a source() call whose "
+                    f"arguments could not be resolved statically: {SUPPORTED_SOURCE_FORMS}"
+                ),
+                "sqlPath",
+            )
         for ref_name in sorted(set(REF_RE.findall(strip_jinja_comments(text)))):
             sql_matches = model_index.get(ref_name, ())
             seed_matches = seed_index.get(ref_name, ())

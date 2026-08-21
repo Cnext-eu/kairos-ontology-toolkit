@@ -7,6 +7,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
 import yaml
 
 from kairos_ontology.core.compiler import CompileMode, compile_domain, load_entity_binding
@@ -442,3 +443,64 @@ def test_inputs_walk_matches_ref_names_case_exactly():
     assert [item.code for item in diagnostics] == ["dbt-source.dependency-unresolved"]
     (closure,) = closures
     assert closure.sql_paths == ("integration/transforms/dbt/models/customer_stage.sql",)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "{{ source('crm', table_name='customers') }}",
+        "{{ source(var('sys'), 'customers') }}",
+    ],
+)
+def test_unreadable_source_call_blocks_the_domain(tmp_path, call):
+    """#584 fails closed rather than emitting a project with an undeclared source."""
+    hub = _use_contracted_customer(
+        _hub(tmp_path), f"select customer_id, customer_name from {call}\n"
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    diagnostic = next(
+        item for item in result.diagnostics.items if item.code == "dbt-source.source-unparsed"
+    )
+    assert "source_name=" in diagnostic.message
+    # The binding is blocked, so neither its model nor an (undeclarable) source catalog
+    # is emitted -- same containment as the other dbt-source.* resolution failures.
+    assert {entity.binding.name for entity in result.plan.entities if entity.blocked} == {
+        "crm-customer"
+    }
+    artifacts = result.artifact_dict()
+    assert "models/silver/_crm__sources.yml" not in artifacts
+    assert "models/silver/party/customer.sql" not in artifacts
+
+
+def test_macro_named_like_source_is_not_treated_as_a_source_call(tmp_path):
+    """`\b` must not match a macro whose name merely ends in `source`."""
+    hub = _use_contracted_customer(
+        _hub(tmp_path),
+        "select customer_id, customer_name from {{ source('crm', 'customers') }} "
+        "where {{ my_source(anything) }}\n",
+    )
+
+    result = compile_domain(hub, "party", CompileMode.EMIT)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    assert "models/silver/_crm__sources.yml" in result.artifact_dict()
+
+
+def test_inputs_walk_reports_unreadable_source_calls_too():
+    """Both extraction sites share one verdict via the same helper."""
+    binding = _contracted_binding()
+    scope = _scope_with_inputs(
+        ProvenanceInput(
+            "integration/transforms/dbt/models/customer_stage.sql",
+            "select 1 from {{ source('crm', table_name='customers') }}\n",
+        ),
+    )
+
+    closures, diagnostics = _dbt_dependency_closures((binding,), scope)
+
+    assert [item.code for item in diagnostics] == ["dbt-source.source-unparsed"]
+    (closure,) = closures
+    assert closure.source_pairs == ()

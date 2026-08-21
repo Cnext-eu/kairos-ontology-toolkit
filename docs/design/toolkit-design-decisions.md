@@ -10217,18 +10217,34 @@ awareness, docs) is #586 stage (b).
 **Review hardening (same PR).** Jinja `{# ... #}` comment blocks are stripped before every
 `ref()`/`source()` extraction (dbt never renders them, so a commented-out call must not create a
 phantom dependency or a false blocking source diagnostic). `source()` extraction goes through one
-shared `extract_source_pairs` helper that also recognizes dbt's keyword form
+shared `extract_sources` helper that also recognizes dbt's keyword form
 (`source_name=`/`table_name=`, either argument order). `ref()` names match authored stems
-**case-exactly**, as dbt itself does — both walks index authored files by real on-disk stem
-(a name-derived `rglob` on a case-insensitive filesystem echoes the pattern's casing back and
-would silently resolve a wrong-case ref); casefolding survives only in duplicate/collision
-detection. Unreadable or non-UTF-8 dependency bytes (the cp1252 seed-export case) fail as
-binding-attributed `dbt-source.dependency-unresolved` diagnostics in both the filesystem walk and
-scope resolution instead of escaping as a `UnicodeDecodeError` crash. Explicitly **deferred to
-the #586 stage-(b) follow-up**: a dependency-kind registry, a single parameterized closure walker
-shared by the filesystem and plan walks, consolidation of `dbt_bundle`/`dbt_validation`'s
-ref/source regexes, unifying `medallion_dbt_projector`'s two local source-name copies with
-`uri_utils.dbt_source_name`, and remaining perf polish.
+**case-exactly**, as dbt itself does — both walks index authored files once per walk keyed by the
+real on-disk stem, which states the exact-match rule in the data structure instead of delegating
+it to whatever case sensitivity the filesystem and glob implementation happen to provide;
+casefolding survives only in duplicate/collision detection. Unreadable or non-UTF-8 dependency
+bytes (the cp1252 seed-export case) fail as binding-attributed
+`dbt-source.dependency-unresolved` diagnostics in both the filesystem walk and scope resolution
+instead of escaping as a `UnicodeDecodeError` crash.
+
+**Unparseable `source()` calls fail closed (`dbt-source.source-unparsed`).** Rather than
+enumerating ever more call shapes, `extract_sources` counts `source(` call sites (a `\b`-anchored
+probe, so a macro merely *ending* in `source` such as `my_source(` is not a call site) and
+compares that with the number of spans it actually matched. Any surplus means at least one call
+used a form static analysis cannot resolve — mixed positional/keyword arguments, `var()` or
+variable arguments, string concatenation, macro-generated names — and both closure walks turn
+that into a blocking, binding-attributed diagnostic naming the supported forms. This follows
+#584's own acceptance criterion that *"if arbitrary SQL source extraction is unsupported ...
+compilation must fail clearly when declarations are missing"*: a silently-unextracted `source()`
+is exactly the defect #584 exists to prevent, because the emitted project then fails offline
+`dbt parse` with no compile diagnostic at all. An explicit compile error naming the unsupported
+form is strictly more actionable than that. Matched spans (not deduplicated pairs) are counted so
+a file legitimately repeating one identical call is not mistaken for an unparsed one.
+
+Explicitly **deferred to the #586 stage-(b) follow-up**: a dependency-kind registry, a single
+parameterized closure walker shared by the filesystem and plan walks, consolidation of
+`dbt_bundle`/`dbt_validation`'s ref/source regexes, unifying `medallion_dbt_projector`'s two local
+source-name copies with `uri_utils.dbt_source_name`, and remaining perf polish.
 
 ---
 
