@@ -12,6 +12,7 @@ from typing import Mapping, Sequence
 
 import yaml
 
+from kairos_ontology.core.compiler.dbt_source import strip_jinja_comments
 from kairos_ontology.core.dbt_contracts import (
     APPROVED_DBT_PACKAGES,
     DbtContractError,
@@ -22,6 +23,17 @@ _MACRO_DEFINITION_RE = re.compile(
     r"{%-?\s*macro\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.IGNORECASE,
 )
+#: Every ``ref()`` target this bundle's fail-closed closure validation must be able to
+#: resolve. Deliberately broader than the compiler's ``dbt_source.REF_RE`` and NOT merged
+#: with it (#586 stage b): that one is a *selection* rule that must match dbt's own
+#: resolution exactly (case-sensitive, because Jinja is -- ``REF('x')`` is an
+#: undefined-function error in dbt, not a ref -- and single-argument), while this one is a
+#: *validation* rule and is intentionally over-broad, accepting IGNORECASE spellings and
+#: dbt's two-argument package form ``ref('pkg', 'model')``. Merging in either direction
+#: loses something real: IGNORECASE in the selection walk would invent phantom dependencies,
+#: the package form there would demand a cross-package target exist as an authored hub file,
+#: and dropping either here would relax a fail-closed check. What the two DO share is
+#: :func:`strip_jinja_comments`, so neither sees a commented-out call.
 _REF_RE = re.compile(
     r"\bref\s*\(\s*['\"][^'\"]+['\"]\s*,\s*['\"]([^'\"]+)['\"]"
     r"|\bref\s*\(\s*['\"]([^'\"]+)['\"]",
@@ -33,6 +45,10 @@ _SOURCE_RE = re.compile(
 )
 _GROUP_RE = re.compile(r"\bgroup\s*=\s*['\"]([^'\"]+)['\"]", re.IGNORECASE)
 _CUSTOM_MACRO_RE = re.compile(r"^(?!kairos_)[a-z][a-z0-9_]*__[a-z][a-z0-9_]*$")
+#: The only file shapes ``seeds/`` contributes: dbt seed data, plus its optional sibling
+#: column-docs properties document (#586 stage b).
+_SEED_SUFFIXES = frozenset({".csv", ".yml", ".yaml"})
+_PROPERTIES_SUFFIXES = frozenset({".yml", ".yaml"})
 _CUSTOM_MACRO_CALL_RE = re.compile(
     r"\b((?!kairos_)[a-z][a-z0-9_]*__[a-z][a-z0-9_]*)\s*\(",
     re.IGNORECASE,
@@ -47,6 +63,10 @@ class DbtBundle:
     model_names: frozenset[str]
     macro_names: frozenset[str]
     packages: tuple[str, ...]
+    #: Stems of the authored seed CSVs carried in :attr:`artifacts` (#586 stage b). These
+    #: are valid ``ref()`` targets, so they belong to the same dbt name namespace as
+    #: :attr:`model_names` -- a stem in both is rejected during assembly.
+    seed_names: frozenset[str] = frozenset()
 
 
 def _read_text(path: Path) -> str:
@@ -74,11 +94,11 @@ def _render_packages(package_names: Sequence[str]) -> str:
 
 
 def _references(content: str) -> set[str]:
-    return {first or second for first, second in _REF_RE.findall(content)}
+    return {first or second for first, second in _REF_RE.findall(strip_jinja_comments(content))}
 
 
 def _source_names(content: str) -> set[str]:
-    return set(_SOURCE_RE.findall(content))
+    return set(_SOURCE_RE.findall(strip_jinja_comments(content)))
 
 
 def _group_names(content: str) -> set[str]:
@@ -139,6 +159,7 @@ def _filter_properties(
     test_names: set[str],
     source_names: set[str] | None = None,
     group_names: set[str] | None = None,
+    seed_names: set[str] | None = None,
 ) -> str | None:
     try:
         document = yaml.safe_load(content)
@@ -168,7 +189,14 @@ def _filter_properties(
         for group in document.get("groups", [])
         if isinstance(group, dict) and group.get("name") in (group_names or set())
     ]
-    if not models and not unit_tests and not sources and not groups:
+    # #586 stage b: without `seeds` on this allow-list a scoped bundle silently dropped a
+    # seed's whole column-docs document, emitting an undocumented seed with no warning.
+    seeds = [
+        seed
+        for seed in document.get("seeds", [])
+        if isinstance(seed, dict) and seed.get("name") in (seed_names or set())
+    ]
+    if not models and not unit_tests and not sources and not groups and not seeds:
         return None
 
     filtered: dict[str, object] = {"version": document.get("version", 2)}
@@ -180,6 +208,8 @@ def _filter_properties(
         filtered["sources"] = sources
     if groups:
         filtered["groups"] = groups
+    if seeds:
+        filtered["seeds"] = seeds
     return yaml.safe_dump(filtered, sort_keys=False)
 
 
@@ -201,11 +231,25 @@ def assemble_dbt_bundle(
     if not transforms_dir.is_dir():
         raise DbtContractError(f"{transforms_dir}: transforms directory does not exist")
 
+    # #586 stage b: `seeds` joins this walk. Without it an authored seed CSV never entered
+    # `available_artifacts`, so its stem was absent from `known` below and an authored
+    # model's `{{ ref('country_codes') }}` raised "unresolved dbt ref targets" -- which
+    # projector.py turns into a fatal "dbt assembly failed" for the whole dbt target. The
+    # net effect was a hub that `compile --emit` built and `generate` refused to.
     paths = sorted(
         path
         for directory in ("models", "macros", "tests")
         for path in (transforms_dir / directory).rglob("*")
         if path.is_file()
+    )
+    # Only dbt's own seed shapes are carried: a stray README or .gitkeep beside a seed is
+    # not a dbt artifact and must not be read as UTF-8 text or emitted.
+    paths.extend(
+        sorted(
+            path
+            for path in (transforms_dir / "seeds").rglob("*")
+            if path.is_file() and path.suffix.lower() in _SEED_SUFFIXES
+        )
     )
     available_artifacts: dict[str, str] = {}
     for path in paths:
@@ -230,6 +274,27 @@ def assemble_dbt_bundle(
                 f"first declared in {sql_models[path.stem]}"
             )
         sql_models[path.stem] = path
+    # Authored seeds, indexed by the dbt resource name their stem declares. Duplicates are
+    # already rejected by the case-insensitive artifact-path check above.
+    seed_csv_keys = {
+        PurePosixPath(key).stem: key
+        for key in available_artifacts
+        if PurePosixPath(key).parts[:1] == ("seeds",) and PurePosixPath(key).suffix == ".csv"
+    }
+    seed_properties_keys = {
+        PurePosixPath(key).stem: key
+        for key in available_artifacts
+        if PurePosixPath(key).parts[:1] == ("seeds",)
+        and PurePosixPath(key).suffix in _PROPERTIES_SUFFIXES
+    }
+    # dbt resolves ref() in ONE resource namespace, so a stem claimed by both a model and a
+    # seed makes the generated project fail to parse. Fail closed here rather than emit it.
+    seed_model_collisions = sorted(set(seed_csv_keys) & set(sql_models))
+    if seed_model_collisions:
+        raise DbtContractError(
+            f"authored dbt seed names collide with custom dbt model names: "
+            f"{seed_model_collisions}; dbt models and seeds share one ref() namespace"
+        )
     contract_registry = {contract.name: contract for contract in contracts}
     if len(contract_registry) != len(contracts):
         raise DbtContractError("custom dbt contracts contain duplicate model names")
@@ -369,6 +434,36 @@ def assemble_dbt_bundle(
                 or _references(available_artifacts[key]) & selected_names
             ):
                 artifacts[key] = available_artifacts[key]
+        # A seed joins a scoped bundle exactly when something already selected refs it.
+        # Seeds are data, never Jinja, so they cannot reference anything and one pass
+        # suffices -- but macros can ref() a seed, so their bytes are consulted too.
+        scoped_references = {
+            reference
+            for content in (
+                *(
+                    content
+                    for key, content in artifacts.items()
+                    if PurePosixPath(key).suffix in {".sql", ".yml", ".yaml"}
+                ),
+                *selected_macro_artifacts.values(),
+            )
+            for reference in _references(content)
+        }
+        for name in sorted(scoped_references & set(seed_csv_keys)):
+            csv_key = seed_csv_keys[name]
+            artifacts[csv_key] = available_artifacts[csv_key]
+            properties_key = seed_properties_keys.get(name)
+            if properties_key is None:
+                continue
+            filtered = _filter_properties(
+                available_artifacts[properties_key],
+                transforms_dir / Path(properties_key),
+                set(),
+                set(),
+                seed_names={name},
+            )
+            if filtered is not None:
+                artifacts[properties_key] = filtered
 
     generated_keys = {PurePosixPath(path).as_posix().casefold() for path in generated_artifacts}
     for key in artifacts:
@@ -382,7 +477,14 @@ def assemble_dbt_bundle(
         for path in generated_artifacts
         if PurePosixPath(path).parts[:1] == ("models",) and PurePosixPath(path).suffix == ".sql"
     }
-    model_collisions = sorted(selected_names & generated_model_names)
+    # Only the seeds actually carried in this bundle are valid ref() targets: a scoped
+    # bundle must not certify a ref() to a seed it did not emit.
+    seed_names = {
+        PurePosixPath(key).stem
+        for key in artifacts
+        if PurePosixPath(key).parts[:1] == ("seeds",) and PurePosixPath(key).suffix == ".csv"
+    }
+    model_collisions = sorted((selected_names | seed_names) & generated_model_names)
     if model_collisions:
         raise DbtContractError(
             f"custom dbt model names collide with generated resources: {model_collisions}"
@@ -414,7 +516,7 @@ def assemble_dbt_bundle(
     if missing_macros:
         raise DbtContractError(f"required custom macros are not defined: {missing_macros}")
 
-    known = selected_names | generated_model_names | set(known_resources)
+    known = selected_names | generated_model_names | seed_names | set(known_resources)
     for key, content in artifacts.items():
         path = PurePosixPath(key)
         if path.suffix not in {".sql", ".yml", ".yaml"}:
@@ -440,4 +542,5 @@ def assemble_dbt_bundle(
         model_names=frozenset(selected_names),
         macro_names=frozenset(macro_names),
         packages=packages,
+        seed_names=frozenset(seed_names),
     )

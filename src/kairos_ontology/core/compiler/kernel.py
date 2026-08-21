@@ -75,13 +75,13 @@ from .bindings import (
 from .compile import CompileMode
 from .conformance import ConformancePlan, ConformanceTypeContract, build_conformance_plan
 from .dbt_source import (
-    REF_RE,
+    SEED_PROPERTIES_SUFFIXES,
     SUPPORTED_SOURCE_FORMS,
     check_target_class_match,
+    extract_refs,
     extract_sources,
     resolve_dbt_model_dependency_paths,
     resolve_dbt_model_source,
-    strip_jinja_comments,
 )
 from .ir import CanonicalProjectIR, EntityBindingSpec
 from .plan import CompileEntityPlan, CompilePlan, PlannedCompileArtifact, PlannedDbtDependency
@@ -2993,6 +2993,8 @@ class _DbtDependencyClosure:
     binding: EntityBinding
     sql_paths: tuple[str, ...]
     seed_paths: tuple[str, ...]
+    #: Optional ``seeds/<name>.yml`` column-docs siblings of ``seed_paths`` (#586 stage b).
+    seed_properties_paths: tuple[str, ...]
     source_pairs: tuple[tuple[str, str], ...]
 
 
@@ -3005,8 +3007,8 @@ def _dbt_dependency_closures(
     Mirrors ``dbt_source._dependency_sql_paths``' filesystem walk (same regexes, same
     seed/ambiguity rules, same exact-stem ``ref()`` matching) but consumes only
     ``scope.inputs``, keeping the CompilePlan the single authority for emitted bytes
-    (#580). Returns each binding's SQL paths, seed CSV leaves (#586), and extracted
-    ``source()`` pairs (#584).
+    (#580). Returns each binding's SQL paths, seed CSV leaves (#586), those seeds'
+    optional column-docs siblings (#586 stage b), and extracted ``source()`` pairs (#584).
     """
     if not any(binding.source.dbt_model is not None for binding in bindings):
         # Ordinary relation-backed domains skip the input indexing entirely.
@@ -3014,13 +3016,17 @@ def _dbt_dependency_closures(
     inputs = {item.name.replace("\\", "/"): item.content for item in scope.inputs}
     # Lookup is by exact stem (dbt matches ref() names exactly); the emitted-project
     # collision checks in _planned_dbt_dependencies remain casefolded.
+    seeds_prefix = "integration/transforms/dbt/seeds/"
     sql_inputs: dict[str, list[str]] = {}
     seed_inputs: dict[str, list[str]] = {}
+    seed_properties_inputs: dict[str, list[str]] = {}
     for path in inputs:
         if path.startswith("integration/transforms/dbt/models/") and path.endswith(".sql"):
             sql_inputs.setdefault(Path(path).stem, []).append(path)
-        elif path.startswith("integration/transforms/dbt/seeds/") and path.endswith(".csv"):
+        elif path.startswith(seeds_prefix) and path.endswith(".csv"):
             seed_inputs.setdefault(Path(path).stem, []).append(path)
+        elif path.startswith(seeds_prefix) and Path(path).suffix in SEED_PROPERTIES_SUFFIXES:
+            seed_properties_inputs.setdefault(Path(path).stem, []).append(path)
     closures: list[_DbtDependencyClosure] = []
     diagnostics: list[CompileDiagnostic] = []
     for binding in bindings:
@@ -3029,6 +3035,7 @@ def _dbt_dependency_closures(
             continue
         sql_paths: list[str] = []
         seed_paths: list[str] = []
+        seed_properties_paths: list[str] = []
         pairs: set[tuple[str, str]] = set()
         pending = [model.sql_path.replace("\\", "/")]
         visited: set[str] = set()
@@ -3061,7 +3068,7 @@ def _dbt_dependency_closures(
                         ),
                     )
                 )
-            for ref_name in sorted(set(REF_RE.findall(strip_jinja_comments(sql_content)))):
+            for ref_name in sorted(extract_refs(sql_content)):
                 sql_candidates = sql_inputs.get(ref_name, [])
                 seed_candidates = seed_inputs.get(ref_name, [])
                 if sql_candidates and seed_candidates:
@@ -3086,6 +3093,27 @@ def _dbt_dependency_closures(
                 if len(seed_candidates) == 1:
                     if seed_candidates[0] not in seed_paths:
                         seed_paths.append(seed_candidates[0])
+                        # Column docs ride along with their seed. Exactly one candidate is
+                        # required for the same reason the filesystem walk requires it:
+                        # two spellings would make dbt load duplicate seeds: entries.
+                        docs_candidates = seed_properties_inputs.get(ref_name, [])
+                        if len(docs_candidates) == 1:
+                            seed_properties_paths.append(docs_candidates[0])
+                        elif docs_candidates:
+                            diagnostics.append(
+                                CompileDiagnostic(
+                                    code="dbt-source.dependency-ambiguous",
+                                    message=(
+                                        f"dbt seed {ref_name!r} has more than one "
+                                        "column-docs document in the immutable CompilePlan "
+                                        "input closure; author exactly one"
+                                    ),
+                                    location=SourceLocation(
+                                        path=binding.source_path,
+                                        pointer="/source/dbtModel/sqlPath",
+                                    ),
+                                )
+                            )
                     continue
                 diagnostics.append(
                     CompileDiagnostic(
@@ -3106,6 +3134,7 @@ def _dbt_dependency_closures(
                 binding=binding,
                 sql_paths=tuple(sql_paths),
                 seed_paths=tuple(sorted(seed_paths)),
+                seed_properties_paths=tuple(sorted(seed_properties_paths)),
                 source_pairs=tuple(sorted(pairs)),
             )
         )
@@ -3330,6 +3359,15 @@ def _planned_dbt_dependencies(
                 seed_path,
                 kind="seed",
                 model_name=Path(seed_path).stem,
+            )
+        for seed_properties_path in closure.seed_properties_paths:
+            # Deliberately no model_name: a properties document is not a dbt resource, so
+            # claiming its seed's name here would trip the model-name collision check above
+            # against the CSV that legitimately owns it (same rule as "properties").
+            select_dependency(
+                closure.binding,
+                seed_properties_path,
+                kind="seed_properties",
             )
         select_dependency(closure.binding, model.contract_path, kind="properties")
 

@@ -529,3 +529,28 @@ def test_next_without_worksheets_reports_zero_counts_and_no_triage_action(hub, m
         "tables_unfilled": 0,
     }
     assert "triage-concept-mapping" not in {a["kind"] for a in payload["actions"]}
+
+
+def test_seed_only_transforms_tree_reports_dbt_transforms_present(tmp_path: Path) -> None:
+    """#586b: the presence probe was `.sql`-only, so a seeds-only hub read as missing."""
+    hub = tmp_path / "hub"
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "country_codes.csv").write_text("code,label\nBE,Belgium\n", encoding="utf-8")
+
+    snapshot = gather_hub_input_snapshot(hub, run_compile=False)
+
+    assert snapshot.dbt_transforms is InputStatus.PRESENT
+
+
+def test_empty_transforms_tree_still_reports_dbt_transforms_missing(tmp_path: Path) -> None:
+    hub = tmp_path / "hub"
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    # Column docs with no CSV are not authored content, and neither is a scratch note.
+    (seeds / "orphan.yml").write_text("version: 2\nseeds: []\n", encoding="utf-8")
+    (seeds / "notes.txt").write_text("todo\n", encoding="utf-8")
+
+    snapshot = gather_hub_input_snapshot(hub, run_compile=False)
+
+    assert snapshot.dbt_transforms is InputStatus.MISSING

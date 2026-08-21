@@ -504,3 +504,92 @@ def test_extract_sources_counts_unreadable_call_sites() -> None:
 
     assert extraction.pairs == frozenset({("crm", "customers")})
     assert extraction.unparsed == 1
+
+
+def test_seed_column_docs_sibling_joins_the_closure(tmp_path: Path) -> None:
+    """#586b: `seeds/<name>.yml` rides along with its CSV so it can be emitted."""
+    hub = _hub(tmp_path)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "country_codes.csv").write_text("code,name\nBE,Belgium\n", encoding="utf-8")
+    docs_path = seeds / "country_codes.yml"
+    docs_path.write_text(
+        "version: 2\nseeds:\n  - name: country_codes\n    columns:\n      - name: code\n",
+        encoding="utf-8",
+    )
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text(
+        "select customer_id, customer_name from {{ ref('stg_customer') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    paths = resolve_dbt_model_dependency_paths(binding, hub)
+
+    assert docs_path.resolve() in paths
+    # The CSV and its docs share a stem; that must NOT read as a name collision.
+    assert {path.suffix for path in paths} == {".sql", ".csv", ".yml"}
+
+
+def test_two_seed_docs_spellings_for_one_seed_are_ambiguous(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "country_codes.csv").write_text("code\nBE\n", encoding="utf-8")
+    for suffix in (".yml", ".yaml"):
+        (seeds / f"country_codes{suffix}").write_text(
+            "version: 2\nseeds:\n  - name: country_codes\n", encoding="utf-8"
+        )
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text(
+        "select customer_id, customer_name from {{ ref('stg_customer') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_dependency_paths(binding, hub)
+
+    diagnostic = excinfo.value.diagnostics[0]
+    assert diagnostic.code == "dbt-source.dependency-ambiguous"
+    assert "column-docs" in diagnostic.message
+
+
+def test_seed_docs_that_are_not_utf8_fail_as_a_binding_diagnostic(tmp_path: Path) -> None:
+    hub = _hub(tmp_path)
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "country_codes.csv").write_text("code\nBE\n", encoding="utf-8")
+    (seeds / "country_codes.yml").write_bytes(b"version: 2\nseeds:\n  - name: caf\xe9\n")
+    sql_path = (
+        hub / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "int_customer.sql"
+    )
+    sql_path.write_text(
+        "select customer_id, customer_name from {{ ref('stg_customer') }} "
+        "left join {{ ref('country_codes') }} on 1 = 1\n",
+        encoding="utf-8",
+    )
+    binding = load_entity_binding(_binding(), path="customer.binding.yml")
+
+    with pytest.raises(CompileError) as excinfo:
+        resolve_dbt_model_dependency_paths(binding, hub)
+
+    assert excinfo.value.diagnostics[0].code == "dbt-source.dependency-unresolved"
+
+
+def test_extract_refs_strips_comments_and_ignores_the_package_form() -> None:
+    """The selection rule stays exact: no IGNORECASE, no two-argument package refs."""
+    from kairos_ontology.core.compiler.dbt_source import extract_refs
+
+    text = (
+        "{# {{ ref('commented') }} #}\n"
+        "{{ ref('real') }} {{ REF('shouted') }} {{ ref('dbt_utils', 'packaged') }}\n"
+    )
+
+    assert extract_refs(text) == {"real"}

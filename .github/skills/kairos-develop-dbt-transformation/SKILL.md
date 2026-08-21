@@ -10,7 +10,9 @@ description: >
 
 Use this skill only when a direct relation plus closed scalar binding expressions
 cannot express the required result. The outputs are ordinary dbt SQL and
-properties YAML under `integration/transforms/dbt/models/`.
+properties YAML under `integration/transforms/dbt/models/`, plus — when the logic
+needs small static reference data — a seed CSV under
+`integration/transforms/dbt/seeds/`.
 
 ## Design fleet mode (DD-088)
 
@@ -105,6 +107,57 @@ Both strategies still author a single contracted `int_merged__<entity>` model
 with one output grain and one properties YAML — the choice only changes the
 SQL between the `stg_*` union and the final select.
 
+## Seeds for static reference data (issue #586)
+
+Some contracted logic needs a lookup table that has no upstream system: ISO
+country codes, currency lists, a hand-curated status or code mapping. Author
+these as a dbt **seed** instead of inventing a source vocabulary for data nobody
+extracts:
+
+```text
+integration/transforms/dbt/seeds/<name>.csv        # the data
+integration/transforms/dbt/seeds/<name>.yml        # optional column docs
+```
+
+Author a seed when the data is **small, static, hand-maintained, and belongs in
+version control** — a maintainer edits it in a pull request, not a pipeline. If
+the data comes out of a real system, or changes often enough that a human editing
+CSV is the wrong loop, it is a source, not a seed: import it and bind it normally.
+
+Rules that matter while authoring:
+
+- **The file stem is the dbt resource name.** `seeds/country_codes.csv` is reached
+  by `{{ ref('country_codes') }}` from any authored model — a seed is a `ref()`
+  target exactly like a model is, and needs no `source()` declaration.
+- **The stem must not collide with any model stem**, authored or generated. dbt
+  resolves `ref()` in one resource namespace; a collision is a hard failure in the
+  compiler, in the bundle, and in `validate-dbt-contracts`
+  (`dbt-contract.seed-model-collision`). Rename one of the two.
+- **The CSV must be UTF-8 with a non-empty header row.** A cp1252 export from
+  Excel fails the compile as an unresolved dependency.
+- **The sibling YAML is dbt's plain `seeds:` properties form and must not carry
+  `meta.kairos`.** A seed is not a bindable virtual source, so it declares no
+  output contract — the CSV owns the resource name and the YAML only describes it:
+
+  ```yaml
+  version: 2
+  seeds:
+    - name: country_codes
+      description: ISO 3166-1 alpha-2 reference list.
+      columns:
+        - name: alpha_2
+          description: Two-letter country code.
+  ```
+
+A seed reached by a selected model's `ref()` closure joins the `CompilePlan` as a
+leaf and is emitted under `seeds/` alongside its properties YAML, so the generated
+project stays self-contained. Seeds are never text-scanned for `ref()`/`source()`.
+
+**On an existing hub, create the directory first.** `update` does not backfill hub
+directories — only `init`/`new-repo` create them. Run
+`mkdir integration/transforms/dbt/seeds` before authoring the first seed; this is
+expected behavior, not a bug.
+
 ## Workflow
 
 1. Read the target ontology, source vocabulary, PII-safe samples, current binding,
@@ -132,6 +185,11 @@ SQL between the `stg_*` union and the final select.
    to a real class in the hub's import closure, that `virtual_source_iri` is unique
    hub-wide, and that no `<CONFIRM_...>` sentinel is left unreplaced. It also warns
    when a `stg_*` model declares a `meta.kairos` block or an `int_*` model lacks one.
+   It is seed-aware too (issue #586): a seeds-only transforms tree is linted rather
+   than reported as having no transforms, seed docs naming no authored CSV
+   (`dbt-contract.seed-docs-unmatched`) and unreadable or header-less CSVs
+   (`dbt-contract.seed-unreadable`) are warnings, and a seed/model name collision
+   (`dbt-contract.seed-model-collision`) is an error because dbt cannot parse it.
    Before issue #504 none of this was checkable until a binding existed and
    `compile --check` ran for its domain — which is one step too late to be useful here.
 

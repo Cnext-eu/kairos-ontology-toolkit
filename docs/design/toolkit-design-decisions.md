@@ -10205,8 +10205,8 @@ against physical vocabulary relations (`dbt-source.source-unresolved` when no re
 same `system_fact_for_relation` helper relation-backed bindings use, so contracted-domain
 declarations are byte-identical to relation-backed ones and dbt sees exactly one definition per
 source name. `dbt_bundle.py`/`dbt_validation.py` deliberately keep their own ref/source regexes
-(two-argument package refs, IGNORECASE — different semantics); consolidating them is deferred to
-the #586 stage-(b) follow-up.
+(two-argument package refs, IGNORECASE — different semantics); the stage-(b) amendment below
+settles that as permanent rather than pending, and shares only `strip_jinja_comments`.
 
 **A new `contracted_input_uris` field carries the declared table URIs** on
 `BoundSources`/`NormalizedProjectFacts`, consumed only by `_source_catalogs`.
@@ -10231,7 +10231,7 @@ namespace). A seed leaf is never text-scanned. Seeds emit as
 dataclass changes — because emitting a model whose `ref()` points at a non-emitted seed would
 violate this DD's self-containment rule; `validate-dbt`'s dangling-ref check accordingly counts
 `seeds/**/*.csv` stems as known ref targets. Seed authoring polish (scaffolding, bundle/lint
-awareness, docs) is #586 stage (b).
+awareness, docs) is #586 stage (b), settled in the amendment below.
 
 **Review hardening (same PR).** Jinja `{# ... #}` comment blocks are stripped before every
 `ref()`/`source()` extraction (dbt never renders them, so a commented-out call must not create a
@@ -10263,7 +10263,109 @@ a file legitimately repeating one identical call is not mistaken for an unparsed
 Explicitly **deferred to the #586 stage-(b) follow-up**: a dependency-kind registry, a single
 parameterized closure walker shared by the filesystem and plan walks, consolidation of
 `dbt_bundle`/`dbt_validation`'s ref/source regexes, unifying `medallion_dbt_projector`'s two local
-source-name copies with `uri_utils.dbt_source_name`, and remaining perf polish.
+source-name copies with `uri_utils.dbt_source_name`, and remaining perf polish. The amendment
+below closes the first two of those (registry: shipped; regex consolidation: resolved as a
+deliberate *non*-consolidation) and restates what still remains.
+
+### Amendment (2026-08-21): authored dbt seeds are a first-class hub input (#586 stage b)
+
+Stage (a) made a seed resolvable from an authored `ref()` and emitted it. It did not make a seed
+an input the rest of the toolkit knows about, and the gap was not cosmetic: `compile --emit`
+succeeded on a seed-backed hub while `run_projections`/`generate` hard-failed on the same hub.
+
+**Bundle assembly now scans `seeds/`, which is what actually fixes the fatal projection.**
+`core/dbt_bundle.py` only ever walked `models/`, `macros/`, and `tests/`, so an authored seed CSV
+never entered `available_artifacts` and its stem was absent from the ref-closure `known` set. An
+authored model's `{{ ref('country_codes') }}` therefore raised `DbtContractError: unresolved dbt
+ref targets`, which `core/projector.py` escalates into a fatal *"dbt assembly failed; no dbt
+artifacts were written"* for the entire dbt/silver target — one seed took down every model in the
+projection. The bundle now collects `seeds/*.csv` plus sibling `*.yml`/`*.yaml` seed docs into
+`bundle.artifacts` keyed `seeds/<name>.csv`, exposes them as a new `DbtBundle.seed_names:
+frozenset[str]` field rather than making callers re-derive stems from paths, includes those stems
+in the `known` ref-closure set, and allow-lists a `seeds:` key in `_filter_properties` for scoped
+mode. A seed stem colliding with an authored or generated model stem **fails the bundle closed**:
+dbt models and seeds share one `ref()` namespace, so the alternative is a project that does not
+parse, which is strictly worse than a build error naming the two files.
+
+**Seed column docs are a first-class artifact with a sibling-stem convention, and are
+deliberately kept out of the contract-parsing path.** `seeds/<name>.yml` (or `.yaml`) next to
+`seeds/<name>.csv` is dbt's plain `seeds: - name: ... columns: ...` properties form. It is *not*
+a `meta.kairos` contract, and cannot be one: `dbt_contracts._parse_contract` requires a paired
+SQL file and would reject the document outright. That is the right shape rather than an
+accommodation — a seed is not a bindable virtual source, so it declares no output contract for a
+binding to select. Selecting a seed into the closure selects its sibling properties document too,
+and both are emitted together, so the generated project documents its seeds exactly as the hub
+authored them.
+
+**A dependency-kind registry replaces a boolean ladder and a lying ternary.**
+`cli/compile.py::_load_dependency_states` hand-expanded per-kind validation and then computed
+`expected_prefix = "seeds/" if kind == "seed" else "models/"`, whose else-branch silently asserted
+that every kind yet to be invented lives under `models/` — a claim that stage (b)'s own new kind
+falsifies. The registry maps each kind to its allowed suffixes, whether a `model_name` is
+required, and its expected path prefix, so an unknown kind fails closed for free instead of being
+mis-validated against a default. The kinds are `sql` (`.sql`, `model_name` required, `models/`),
+`properties` (`.yml`/`.yaml`, no `model_name`, `models/`), `seed` (`.csv`, `model_name` required,
+`seeds/`), and the new `seed_properties` (`.yml`/`.yaml`, no `model_name`, `seeds/`). Seed docs
+carry no `model_name` for the same reason model properties YAML does not: the CSV owns the
+resource name and the properties document only describes it. Giving both the same `model_name`
+would trip the plan's own model-name collision check — the data model would contradict itself.
+
+**Scaffolding, hub inspection, and the contract lint all learn about seeds, and the lint's one
+error is an error on purpose.** `cli/shared.py::_V5_HUB_DIRECTORIES` now creates
+`integration/transforms/dbt/seeds`, so `init`/`new-repo` produce the slot.
+`core/hub_inspection.py`'s `dbt_transforms` presence probe was `.sql`-only, so a hub whose only
+authored transform content was a seed reported *missing* to `kairos-ontology next`; an authored
+seed CSV now counts. `core/dbt_contract_lint.py` returned early with `transforms_present=False`
+whenever `models/` was absent, making a seeds-only hub look empty; transforms now count as
+present when either `models/` or an authored seed exists. Three findings join the existing
+`findings` list: `dbt-contract.seed-docs-unmatched` (**warning**) for seed docs whose
+`seeds[].name` entries match no authored CSV stem — a typo or docs left behind by a rename;
+`dbt-contract.seed-unreadable` (**warning**) for a CSV that is unreadable, not UTF-8, or has an
+empty header row; and `dbt-contract.seed-model-collision` (**error**). The severity split is the
+substantive choice. The first two describe authored content that is merely wrong or stale and
+still leaves a buildable project. The collision does not: dbt resolves `ref()` in a single
+resource namespace, so two resources sharing a name make the generated project fail to parse, and
+`dbt_bundle` now hard-fails that exact case. A lint that called it advisory would disagree with
+the build, and a lint that disagrees with the build teaches maintainers to ignore it.
+`core/dbt_contracts.py`'s scan is unchanged; a `seeds:`-only document simply is not a contract
+and it does not choke on one.
+
+**The deferred ref/source regex consolidation is resolved as a deliberate, permanent
+non-consolidation; only `strip_jinja_comments` is shared.** The two regexes look like duplication
+but encode opposite obligations. `dbt_source.REF_RE` is a *selection* rule that builds the
+dependency closure, so it must match dbt's own resolution exactly: case-sensitive (Jinja is
+case-sensitive, and `REF('x')` is an undefined-function error in dbt, not a ref) and
+single-argument. `dbt_bundle._REF_RE` is a *fail-closed validation* rule asking "does every ref
+target resolve?", so it is deliberately over-broad: IGNORECASE, and it accepts dbt's two-argument
+package form `ref('pkg','model')`. Merging in either direction loses something real. Adding
+IGNORECASE to the selection walk would make `REF('x')` create a phantom dependency and a spurious
+blocking compile diagnostic for a call dbt never makes. Adding the package form to the selection
+walk would demand that a cross-package ref target exist as an authored hub artifact, turning a
+legal (if rare) `ref('dbt_utils','x')` into `dbt-source.dependency-unresolved`. Dropping either
+IGNORECASE or the package form from the bundle would relax a fail-closed check. What *did*
+consolidate is the one genuine defect the duplication caused: `dbt_bundle` now routes every
+extraction through the shared `dbt_source.strip_jinja_comments`, so a commented-out
+`{# ref('x') #}` is no longer read as a real dependency or as an unresolved-ref error. On the
+compiler side, the two `REF_RE.findall(strip_jinja_comments(...))` call sites — the filesystem
+walk in `dbt_source` and the plan walk in `kernel` — collapse onto one shared `extract_refs()`
+helper, mirroring what #584 did for `extract_sources`.
+
+**Open question, deliberately not answered here: seed materialization and typing.** Emitted seeds
+land in the profile's default target schema with dbt's default column-type inference, because
+this change does *not* add a `seeds:` config block to `templates/dbt/dbt_project.yml.jinja2`.
+Choosing a schema, quoting policy, and explicit `column_types` for seeds is a materialization
+design decision with its own adapter-portability consequences (Fabric and Databricks disagree on
+string and decimal defaults), and settling it as a side effect of making seeds resolvable would
+be the wrong place to decide it.
+
+**Operationally, `update` does not backfill hub directories.** Only `init`/`new-repo` create
+them, so an existing hub must `mkdir integration/transforms/dbt/seeds` itself before authoring
+its first seed. This is the scaffold's standing contract, not a seed-specific gap.
+
+Still **deferred** after stage (b): a single parameterized closure walker shared by the
+filesystem and plan walks (the two walks now share `extract_refs`/`extract_sources` and
+`strip_jinja_comments`, but not their traversal), unifying `medallion_dbt_projector`'s two local
+source-name copies with `uri_utils.dbt_source_name`, and remaining performance polish.
 
 ---
 

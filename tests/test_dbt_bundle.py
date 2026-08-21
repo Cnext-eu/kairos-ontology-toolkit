@@ -385,3 +385,156 @@ def test_scoped_bundle_rejects_dangling_supporting_artifact_ref(tmp_path: Path) 
             active_contract_names=("conformed",),
             known_resources=("stg_source",),
         )
+
+
+# ---------------------------------------------------------------------------
+# Authored seeds (#586 stage b)
+# ---------------------------------------------------------------------------
+
+
+def _seed(root: Path, name: str = "country_codes", *, docs: bool = False) -> Path:
+    seeds = root / "seeds"
+    seeds.mkdir(parents=True, exist_ok=True)
+    path = seeds / f"{name}.csv"
+    path.write_text("code,label\nBE,Belgium\n", encoding="utf-8")
+    if docs:
+        (seeds / f"{name}.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "version": 2,
+                    "seeds": [
+                        {
+                            "name": name,
+                            "description": "ISO country codes.",
+                            "columns": [{"name": "code"}, {"name": "label"}],
+                        }
+                    ],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+    return path
+
+
+def test_seed_backed_ref_resolves_without_a_known_resource_crutch(tmp_path: Path) -> None:
+    """The #586 stage-(b) bug: `generate` hard-failed where `compile --emit` succeeded.
+
+    No ``known_resources`` is passed on purpose -- the seed's own stem must be what makes
+    the ref resolvable, exactly as it is on the compile path.
+    """
+    root = _bundle(tmp_path)
+    _seed(root)
+    (root / "models/intermediate/conformed.sql").write_text(
+        "select * from {{ ref('country_codes') }}\n",
+        encoding="utf-8",
+    )
+
+    bundle = assemble_dbt_bundle(root, [_contract()])
+
+    assert bundle.seed_names == {"country_codes"}
+    assert bundle.artifacts["seeds/country_codes.csv"] == "code,label\nBE,Belgium\n"
+
+
+def test_seed_column_docs_ride_along_in_full_and_scoped_bundles(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    _seed(root, docs=True)
+    (root / "models/intermediate/conformed.sql").write_text(
+        "select * from {{ ref('country_codes') }}\n",
+        encoding="utf-8",
+    )
+
+    for active in (None, ("conformed",)):
+        bundle = assemble_dbt_bundle(root, [_contract()], active_contract_names=active)
+        assert "seeds/country_codes.csv" in bundle.artifacts, active
+        docs = yaml.safe_load(bundle.artifacts["seeds/country_codes.yml"])
+        assert [item["name"] for item in docs["seeds"]] == ["country_codes"], active
+
+
+def test_scoped_bundle_omits_an_unreferenced_seed_and_its_docs(tmp_path: Path) -> None:
+    """A scoped bundle must not certify -- or emit -- a seed nothing selected refs."""
+    root = _bundle(tmp_path)
+    _seed(root, "unused_lookup", docs=True)
+
+    bundle = assemble_dbt_bundle(
+        root,
+        [_contract()],
+        active_contract_names=("conformed",),
+        known_resources=("stg_source",),
+    )
+
+    assert bundle.seed_names == frozenset()
+    assert not any(key.startswith("seeds/") for key in bundle.artifacts)
+
+
+def test_macro_referenced_seed_joins_a_scoped_bundle(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    _seed(root)
+    (root / "macros/hub__lookup.sql").write_text(
+        "{% macro hub__lookup() %}select * from {{ ref('country_codes') }}{% endmacro %}\n",
+        encoding="utf-8",
+    )
+
+    bundle = assemble_dbt_bundle(
+        root,
+        [_contract(macros=("hub__lookup",))],
+        active_contract_names=("conformed",),
+        known_resources=("stg_source",),
+    )
+
+    assert bundle.seed_names == {"country_codes"}
+
+
+def test_seed_name_colliding_with_a_model_fails_closed(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    _seed(root, "conformed")
+
+    with pytest.raises(DbtContractError, match=r"share one ref\(\) namespace"):
+        assemble_dbt_bundle(root, [_contract()], known_resources=("stg_source",))
+
+
+def test_seed_name_colliding_with_a_generated_model_fails_closed(tmp_path: Path) -> None:
+    root = _bundle(tmp_path)
+    _seed(root)
+    (root / "models/intermediate/conformed.sql").write_text(
+        "select * from {{ ref('country_codes') }}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DbtContractError, match="collide with generated"):
+        assemble_dbt_bundle(
+            root,
+            [_contract()],
+            generated_artifacts=("models/silver/country_codes.sql",),
+        )
+
+
+def test_non_dbt_files_beside_a_seed_are_not_carried(tmp_path: Path) -> None:
+    """A binary or note file under seeds/ must not be read as UTF-8 nor emitted."""
+    root = _bundle(tmp_path)
+    _seed(root)
+    (root / "seeds/notes.txt").write_text("scratch\n", encoding="utf-8")
+    (root / "seeds/source.xlsx").write_bytes(b"\xff\xfe\x00binary")
+    (root / "models/intermediate/conformed.sql").write_text(
+        "select * from {{ ref('country_codes') }}\n",
+        encoding="utf-8",
+    )
+
+    bundle = assemble_dbt_bundle(root, [_contract()])
+
+    assert [key for key in bundle.artifacts if key.startswith("seeds/")] == [
+        "seeds/country_codes.csv"
+    ]
+
+
+def test_commented_out_ref_is_not_a_bundle_dependency(tmp_path: Path) -> None:
+    """The one defect the duplicated bundle ref regex was actually causing (#586b)."""
+    root = _bundle(tmp_path)
+    (root / "models/intermediate/conformed.sql").write_text(
+        "{# {{ ref('never_authored') }} #}\nselect * from {{ ref('stg_source') }}\n",
+        encoding="utf-8",
+    )
+
+    bundle = assemble_dbt_bundle(root, [_contract()], known_resources=("stg_source",))
+
+    assert "models/intermediate/conformed.sql" in bundle.artifacts

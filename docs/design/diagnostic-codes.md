@@ -30,6 +30,21 @@ code below is a fixed literal. If a future change introduces one, add a row here
 describing the static pattern (e.g. `technical-field.*`) and extend the AST scan in
 `tests/test_diagnostic_catalog.py` to match a pattern instead of an exact literal.
 
+### Out of scope: `dbt-contract.*` lint findings
+
+The `dbt-contract.*` codes are **not** catalogued here, and deliberately so. They are
+`DbtContractFinding` values produced by `core/dbt_contract_lint.py` — the offline
+`validate-dbt-contracts` lint of the *hand-authored* transforms tree — not
+`CompileDiagnostic` values from `core/compiler/`, so the drift guard above neither scans nor
+admits them. Their reference lives with the command, in
+[`docs/CLI_REFERENCE.md`](../CLI_REFERENCE.md#validate-dbt-contracts-vs-validate-dbt).
+Adding one here would make `test_documented_codes_are_all_still_real` fail, since no
+construction site for it exists under `core/compiler/`. As of #586 stage (b) that family
+includes the seed findings `dbt-contract.seed-docs-unmatched` (warning),
+`dbt-contract.seed-unreadable` (warning), and `dbt-contract.seed-model-collision` (error).
+The compiler's own seed codes — `dbt-source.dependency-ambiguous` and
+`dbt-source.dependency-unresolved` — *are* catalogued, under `dbt_source.py` below.
+
 ## `adapter.py` — binding/expression adapter (symbol resolution, type inference)
 
 Constructed via `CompileDiagnostic(code=...)` directly, or through the local

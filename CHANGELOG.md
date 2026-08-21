@@ -34,6 +34,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `seeds/` so the generated project stays self-contained. A name matching both a model and a
   seed fails closed with the new `dbt-source.dependency-ambiguous` diagnostic, and
   `validate-dbt` counts emitted seed stems as valid `ref()` targets.
+- **`generate` / `run_projections` no longer hard-fail on a hub that has a seed
+  (issue #586, stage b).** dbt bundle assembly only scanned `models/`, `macros/`, and
+  `tests/`, so an authored seed CSV never entered the bundle and its stem was absent from
+  the ref-closure check. An authored model's `{{ ref('country_codes') }}` therefore raised
+  `unresolved dbt ref targets`, which the projector escalates into a fatal *"dbt assembly
+  failed; no dbt artifacts were written"* for the whole dbt/silver target — one seed took
+  down every model in the projection. Since stage (a) shipped the compile path only, the
+  same hub had `compile --emit` succeeding while `generate` failed. The bundle now scans
+  `seeds/` for `*.csv` plus sibling `*.yml`/`*.yaml` seed docs, carries them as
+  `seeds/<name>.csv` artifacts, exposes `DbtBundle.seed_names`, counts seed stems as known
+  `ref()` targets, and allow-lists a `seeds:` key in scoped-mode properties filtering. A
+  seed stem colliding with an authored or generated model stem now fails the bundle closed
+  rather than emitting a project dbt cannot parse.
+- **A seeds-only transforms tree is no longer invisible to `next` and
+  `validate-dbt-contracts` (issue #586, stage b).** The hub-inspection presence probe for
+  `dbt_transforms` was `.sql`-only, so a hub whose only authored transform content was a
+  seed reported *missing* to `kairos-ontology next`. `validate-dbt-contracts` returned
+  early with `transforms_present=false` whenever `models/` was absent, so the same hub
+  looked like it had no transforms at all. Both now accept an authored seed CSV as
+  transform content.
 - **Extraction matches dbt's own semantics.** `source()` calls are recognized in both the
   positional and keyword (`source_name=`/`table_name=`, either order) forms; Jinja
   `{# ... #}` comments are stripped before `ref()`/`source()` extraction so commented-out
@@ -71,7 +91,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loop, and the SC-merge-pr skill, PR template, and CONTRIBUTING now describe the
   workflow's actual parenthetical-close behavior.
 
+### Added
+- **Seed column docs are a first-class authored artifact (issue #586, stage b).** A sibling
+  `integration/transforms/dbt/seeds/<name>.yml` (or `.yaml`) next to `<name>.csv` is dbt's
+  plain `seeds: - name: ... columns: ...` properties form. It is deliberately **not** a
+  `meta.kairos` contract — a seed is not a bindable virtual source, so it declares no output
+  contract and stays out of the contract-parsing path entirely. Selecting a seed into a
+  compile closure selects its sibling docs too, and both are emitted together under `seeds/`.
+  Carried on the plan as a new `seed_properties` dependency kind, which — like model
+  properties YAML — has no `model_name`: the CSV owns the resource name and the document only
+  describes it.
+- **`validate-dbt-contracts` gains three seed findings (issue #586, stage b).**
+  `dbt-contract.seed-docs-unmatched` (warning) for seed docs naming no authored CSV stem
+  (typo or stale docs after a rename); `dbt-contract.seed-unreadable` (warning) for a CSV
+  that is unreadable, not UTF-8, or has an empty header row; and
+  `dbt-contract.seed-model-collision` (**error**, not a warning like the other two) for a
+  seed stem colliding with an authored model stem — dbt resolves `ref()` in one resource
+  namespace, so the generated project would fail to parse, and the dbt bundle hard-fails the
+  same case. A lint that called that advisory would disagree with the build.
+- **`init` and `new-repo` now create `integration/transforms/dbt/seeds/`.** Note that
+  `update` does **not** backfill hub directories: an existing hub must `mkdir
+  integration/transforms/dbt/seeds` itself before authoring its first seed. This is the
+  scaffold's standing behavior, not a seed-specific gap.
+
 ### Changed
+- **Compiled dbt dependencies are validated through a kind registry instead of a boolean
+  ladder (issue #586, stage b).** `compile`'s dependency-state loader hand-expanded per-kind
+  checks and then computed `expected_prefix = "seeds/" if kind == "seed" else "models/"`,
+  whose else-branch silently claimed every future kind lives under `models/`. Each kind now
+  declares its allowed suffixes, whether a `model_name` is required, and its expected path
+  prefix, so an unknown kind fails closed instead of being mis-validated against a default.
+- **The deferred `dbt_bundle`/`dbt_source` ref-regex consolidation is settled as a
+  deliberate non-consolidation (issue #586, stage b).** The two regexes encode opposite
+  obligations and stay separate permanently: `dbt_source.REF_RE` is a *selection* rule that
+  must match dbt's own resolution exactly (case-sensitive, single-argument), while
+  `dbt_bundle._REF_RE` is a *fail-closed validation* rule that is deliberately over-broad
+  (IGNORECASE, accepts the two-argument package form). What did consolidate is the one real
+  defect the duplication caused: `dbt_bundle` now strips Jinja `{# ... #}` comments through
+  the shared helper, so a commented-out `ref()` is no longer read as a dependency or as an
+  unresolved-ref error. The compiler's filesystem and plan walks share one `extract_refs()`
+  helper, mirroring #584's `extract_sources`.
+- **Open question, deliberately unresolved:** emitted seeds land in the profile's default
+  target schema with dbt's default type inference, because no `seeds:` config block is added
+  to the generated `dbt_project.yml`. Seed schema, quoting, and explicit `column_types` are a
+  materialization design decision with its own adapter-portability consequences.
 - **The cross-domain union of shared `_<system>__sources.yml` catalogs now fails closed.**
   Previously, when two domains rendered the same source with conflicting header metadata
   (database/schema/description) or conflicting same-name table entries, the first-seen

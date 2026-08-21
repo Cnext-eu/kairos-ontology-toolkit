@@ -29,7 +29,8 @@ ontology-hub/
 │   ├── sources/<source>/*.ttl
 │   ├── bindings/*.binding.yaml
 │   ├── discovery/                           # confirmed context only
-│   └── transforms/dbt/models/               # optional SQL/YAML
+│   ├── transforms/dbt/models/               # optional SQL/YAML
+│   └── transforms/dbt/seeds/                # optional static reference CSV
 └── output/                                  # generated
 ```
 
@@ -39,7 +40,10 @@ The authored authorities are:
 - source relations and columns in source-vocabulary Turtle;
 - exactly one closed `EntityBinding` per source relation or contracted dbt model;
 - ordinary contracted dbt SQL and model YAML only for relational logic outside the closed
-  scalar-expression grammar; and
+  scalar-expression grammar;
+- optional dbt seed CSVs for small, static, hand-maintained reference data that belongs in
+  version control rather than a warehouse source, with optional sibling `seeds/<name>.yml`
+  column docs; and
 - optional Gold and MDM policy TTL.
 
 The binding owns source-to-canonical execution. Unknown YAML fields, duplicate keys,

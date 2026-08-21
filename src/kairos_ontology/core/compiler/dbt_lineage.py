@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .dbt_source import REF_RE, extract_source_pairs, strip_jinja_comments
+from .dbt_source import extract_refs, extract_source_pairs
 
 _TRANSFORMS_MODELS_PARTS = ("integration", "transforms", "dbt", "models")
 _TRANSFORMS_SEEDS_PARTS = ("integration", "transforms", "dbt", "seeds")
@@ -86,10 +86,9 @@ def resolve_dbt_model_contributing_sources(
     except OSError:
         return frozenset(), False
 
-    rendered = strip_jinja_comments(text)
     sources = {source_name for source_name, _ in extract_source_pairs(text)}
     fully_traceable = True
-    for ref_name in {match.group(1) for match in REF_RE.finditer(rendered)}:
+    for ref_name in extract_refs(text):
         ref_path = _find_model_sql(hub_root, ref_name)
         if ref_path is None:
             if _find_seed_csv(hub_root, ref_name) is not None:

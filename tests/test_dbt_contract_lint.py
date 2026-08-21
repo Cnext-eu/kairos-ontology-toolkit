@@ -273,3 +273,108 @@ def test_report_dict_is_json_shaped_and_versioned(tmp_path: Path) -> None:
     assert payload["passed"] is True
     assert payload["contracted_models"] == ["int_merged__customer"]
     assert all({"code", "severity", "message", "path"} <= set(f) for f in payload["findings"])
+
+
+# ---------------------------------------------------------------------------
+# Authored seeds (#586 stage b)
+# ---------------------------------------------------------------------------
+
+
+def _seeds_dir(hub: Path) -> Path:
+    seeds = hub / "integration" / "transforms" / "dbt" / "seeds"
+    seeds.mkdir(parents=True, exist_ok=True)
+    return seeds
+
+
+def test_seeds_only_hub_reports_transforms_present(tmp_path: Path) -> None:
+    """A hub whose entire authored transform layer is one reference seed HAS transforms."""
+    seeds = _seeds_dir(tmp_path)
+    (seeds / "country_codes.csv").write_text("code,label\nBE,Belgium\n", encoding="utf-8")
+
+    report = run_dbt_contract_lint(tmp_path)
+
+    assert report.transforms_present is True
+    assert report.passed is True
+    assert _codes(report) == set()
+    assert any("only authored seeds" in note for note in report.notes)
+
+
+def test_empty_transforms_tree_still_reports_nothing_authored(tmp_path: Path) -> None:
+    _seeds_dir(tmp_path)
+
+    report = run_dbt_contract_lint(tmp_path)
+
+    assert report.transforms_present is False
+
+
+def test_seed_colliding_with_a_model_name_is_an_error(tmp_path: Path) -> None:
+    """Blocking, unlike the other seed findings: dbt has ONE ref() namespace."""
+    hub = tmp_path
+    _write(hub, _contract("int_customer"))
+    (_seeds_dir(hub) / "int_customer.csv").write_text("customer_id\n1\n", encoding="utf-8")
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    collisions = [f for f in report.findings if f.code == "dbt-contract.seed-model-collision"]
+    assert [f.severity for f in collisions] == ["error"]
+    assert collisions[0].model == "int_customer"
+    assert report.passed is False
+
+
+def test_seed_that_is_not_utf8_is_an_advisory_finding(tmp_path: Path) -> None:
+    hub = tmp_path
+    _write(hub, _contract("int_customer"))
+    (_seeds_dir(hub) / "regions.csv").write_bytes(b"code,label\r\nBE,Belgi\xeb\r\n")
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    unreadable = [f for f in report.findings if f.code == "dbt-contract.seed-unreadable"]
+    assert [f.severity for f in unreadable] == ["warning"]
+    assert report.passed is True
+
+
+def test_headerless_seed_is_an_advisory_finding(tmp_path: Path) -> None:
+    hub = tmp_path
+    _write(hub, _contract("int_customer"))
+    (_seeds_dir(hub) / "regions.csv").write_text("\n\n", encoding="utf-8")
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    assert "dbt-contract.seed-unreadable" in _codes(report)
+    assert report.passed is True
+
+
+def test_seed_docs_naming_a_nonexistent_seed_is_an_advisory_finding(tmp_path: Path) -> None:
+    hub = tmp_path
+    _write(hub, _contract("int_customer"))
+    seeds = _seeds_dir(hub)
+    (seeds / "regions.csv").write_text("code,label\nBE,Belgium\n", encoding="utf-8")
+    (seeds / "regions.yml").write_text(
+        yaml.safe_dump({"version": 2, "seeds": [{"name": "reigons"}]}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    unmatched = [f for f in report.findings if f.code == "dbt-contract.seed-docs-unmatched"]
+    assert [f.severity for f in unmatched] == ["warning"]
+    assert "reigons" in unmatched[0].message
+    assert report.passed is True
+
+
+def test_matching_seed_docs_produce_no_findings(tmp_path: Path) -> None:
+    hub = tmp_path
+    _write(hub, _contract("int_customer"))
+    seeds = _seeds_dir(hub)
+    (seeds / "regions.csv").write_text("code,label\nBE,Belgium\n", encoding="utf-8")
+    (seeds / "regions.yml").write_text(
+        yaml.safe_dump(
+            {"version": 2, "seeds": [{"name": "regions", "columns": [{"name": "code"}]}]},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
+
+    assert not {code for code in _codes(report) if code.startswith("dbt-contract.seed-")}

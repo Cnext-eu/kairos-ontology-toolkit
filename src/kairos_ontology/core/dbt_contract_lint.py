@@ -49,6 +49,9 @@ _INTERMEDIATE_PREFIXES = ("int_merged__", "int_")
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
 
+#: Suffixes a seed's optional sibling column-docs document may use.
+_SEED_PROPERTIES_SUFFIXES = ("*.yml", "*.yaml")
+
 
 @dataclass(frozen=True)
 class DbtContractFinding:
@@ -78,7 +81,8 @@ class DbtContractLintReport:
     findings: tuple[DbtContractFinding, ...] = ()
     contracted_models: tuple[str, ...] = ()
     scanned_documents: int = 0
-    #: False when ``integration/transforms/dbt/models`` does not exist at all -- an empty
+    #: False when the hub has no authored dbt transform content at all -- neither an
+    #: ``integration/transforms/dbt/models`` directory nor an authored seed CSV. An empty
     #: report then means "nothing authored yet", not "everything is clean".
     transforms_present: bool = True
     notes: tuple[str, ...] = field(default_factory=tuple)
@@ -179,6 +183,153 @@ def _sentinel_fields(kairos_meta: Any) -> tuple[str, ...]:
     return tuple(unconfirmed)
 
 
+def _authored_seed_csvs(transforms_dir: Path) -> list[Path]:
+    """Return every authored seed CSV under the transforms tree, sorted."""
+    seeds_dir = transforms_dir / "seeds"
+    if not seeds_dir.is_dir():
+        return []
+    try:
+        return sorted(path for path in seeds_dir.rglob("*.csv") if path.is_file())
+    except OSError:
+        return []
+
+
+def _seed_findings(transforms_dir: Path, hub_root: Path) -> list[DbtContractFinding]:
+    """Advisory (and one blocking) checks over ``integration/transforms/dbt/seeds/``.
+
+    Seeds are hand-maintained reference data, so the checks are deliberately shallow: they
+    catch the three mistakes that silently produce a broken or undocumented emitted project
+    without trying to validate the data itself.
+    """
+
+    findings: list[DbtContractFinding] = []
+    seeds_dir = transforms_dir / "seeds"
+    seed_paths = _authored_seed_csvs(transforms_dir)
+    seed_stems = {path.stem for path in seed_paths}
+
+    # --- unreadable / headerless seed data (warning) ---------------------------------------
+    for path in seed_paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            findings.append(
+                DbtContractFinding(
+                    code="dbt-contract.seed-unreadable",
+                    severity=SEVERITY_WARNING,
+                    message=(
+                        f"seed CSV could not be read as UTF-8 ({exc}); dbt seeds must be "
+                        "UTF-8 text, and a cp1252/UTF-16 export will fail the compile that "
+                        "carries it"
+                    ),
+                    path=_relative(path, hub_root),
+                    model=path.stem,
+                )
+            )
+            continue
+        header = next((line for line in text.splitlines() if line.strip()), "")
+        if not header:
+            findings.append(
+                DbtContractFinding(
+                    code="dbt-contract.seed-unreadable",
+                    severity=SEVERITY_WARNING,
+                    message=(
+                        "seed CSV has no header row; dbt names a seed's columns from its "
+                        "first line, so an empty file materializes an unusable relation"
+                    ),
+                    path=_relative(path, hub_root),
+                    model=path.stem,
+                )
+            )
+
+    # --- seed name collides with an authored model name (ERROR) ----------------------------
+    # Not advisory, unlike the rest of this block: dbt resolves ref() in ONE resource
+    # namespace, so two resources sharing a name make the generated project fail to parse
+    # outright. dbt_bundle now hard-fails the same case, and a lint that called it a warning
+    # would disagree with the build it is meant to pre-empt.
+    models_dir = transforms_dir / "models"
+    model_stems: dict[str, Path] = {}
+    if models_dir.is_dir():
+        for path in sorted(models_dir.rglob("*.sql")):
+            model_stems.setdefault(path.stem, path)
+    for stem in sorted(seed_stems & set(model_stems)):
+        findings.append(
+            DbtContractFinding(
+                code="dbt-contract.seed-model-collision",
+                severity=SEVERITY_ERROR,
+                message=(
+                    f"seed {stem!r} has the same name as the authored model "
+                    f"{_relative(model_stems[stem], hub_root)}; dbt models and seeds share "
+                    "one ref() namespace, so rename one of them"
+                ),
+                path=_relative(seeds_dir / f"{stem}.csv", hub_root),
+                model=stem,
+            )
+        )
+
+    # --- seed docs YAML naming a seed that does not exist (warning) ------------------------
+    if seeds_dir.is_dir():
+        docs_paths = sorted(
+            path
+            for pattern in _SEED_PROPERTIES_SUFFIXES
+            for path in seeds_dir.rglob(pattern)
+            if path.is_file()
+        )
+        for path in docs_paths:
+            try:
+                document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                findings.append(
+                    DbtContractFinding(
+                        code="dbt-contract.seed-docs-unmatched",
+                        severity=SEVERITY_WARNING,
+                        message=f"seed column-docs document could not be parsed: {exc}",
+                        path=_relative(path, hub_root),
+                    )
+                )
+                continue
+            declared = (
+                [
+                    entry.get("name")
+                    for entry in document.get("seeds", [])
+                    if isinstance(entry, dict)
+                ]
+                if isinstance(document, dict)
+                else []
+            )
+            unmatched = sorted(
+                str(name)
+                for name in declared
+                if isinstance(name, str) and name.strip() and name not in seed_stems
+            )
+            if unmatched:
+                findings.append(
+                    DbtContractFinding(
+                        code="dbt-contract.seed-docs-unmatched",
+                        severity=SEVERITY_WARNING,
+                        message=(
+                            f"seed column docs describe {', '.join(repr(n) for n in unmatched)}, "
+                            "which match no authored seeds/<name>.csv; the docs are stale or the "
+                            "name is a typo, and dbt will ignore them"
+                        ),
+                        path=_relative(path, hub_root),
+                        model=unmatched[0] if len(unmatched) == 1 else None,
+                    )
+                )
+            elif not declared and path.stem not in seed_stems:
+                findings.append(
+                    DbtContractFinding(
+                        code="dbt-contract.seed-docs-unmatched",
+                        severity=SEVERITY_WARNING,
+                        message=(
+                            "seed column-docs document declares no seeds: entries and its stem "
+                            "matches no authored seeds/<name>.csv; dbt will ignore it"
+                        ),
+                        path=_relative(path, hub_root),
+                    )
+                )
+    return findings
+
+
 def run_dbt_contract_lint(
     hub_root: Path,
     *,
@@ -199,11 +350,26 @@ def run_dbt_contract_lint(
     notes: list[str] = []
 
     if not (transforms_dir / "models").is_dir():
+        # #586 stage b: a seeds-only hub *does* have authored transform content, and
+        # reporting transforms_present=False for it told the author "nothing authored yet"
+        # about a tree they had just written. `scan_dbt_contracts` still needs models/, so
+        # the seed checks run standalone here.
+        seed_findings = _seed_findings(transforms_dir, hub_root)
+        if not _authored_seed_csvs(transforms_dir):
+            return DbtContractLintReport(
+                transforms_present=False,
+                notes=(
+                    f"no hand-authored dbt models directory at "
+                    f"{_relative(transforms_dir / 'models', hub_root)}; nothing to lint.",
+                ),
+            )
+        seed_findings.sort(key=lambda item: (item.severity != SEVERITY_ERROR, item.path, item.code))
         return DbtContractLintReport(
-            transforms_present=False,
+            findings=tuple(seed_findings),
             notes=(
                 f"no hand-authored dbt models directory at "
-                f"{_relative(transforms_dir / 'models', hub_root)}; nothing to lint.",
+                f"{_relative(transforms_dir / 'models', hub_root)}; only authored seeds were "
+                "linted.",
             ),
         )
 
@@ -361,6 +527,9 @@ def run_dbt_contract_lint(
                     model=model.name,
                 )
             )
+
+    # --- authored seeds (#586 stage b) -----------------------------------------------------
+    findings.extend(_seed_findings(transforms_dir, hub_root))
 
     findings.sort(key=lambda item: (item.severity != SEVERITY_ERROR, item.path, item.code))
     return DbtContractLintReport(

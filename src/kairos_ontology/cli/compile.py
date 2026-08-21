@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import click
@@ -25,6 +25,45 @@ _DEPENDENCY_MANIFEST_NAME = ".kairos-compile-manifest.dependencies.json"
 _DEPENDENCY_STATE_SCHEMA = "kairos.eu/compiler-dbt-dependencies/v1"
 _DEPENDENCY_STATE_PREFIX = ".kairos-compile-dependencies."
 _PACKAGE_ARTIFACTS = frozenset({"README.md", "dbt_project.yml", "packages.yml"})
+
+
+@dataclass(frozen=True, slots=True)
+class _DependencyKind:
+    """What one ``PlannedDbtDependency.kind`` is allowed to look like on disk."""
+
+    #: File suffixes (lowercased, with the dot) this kind may use.
+    suffixes: frozenset[str]
+    #: True when the entry must name a dbt resource whose name equals the path stem.
+    requires_model_name: bool
+    #: Emitted-project directory prefix this kind must live under.
+    prefix: str
+
+
+#: The single registry of dependency kinds `_load_dependency_states` validates against
+#: (#586 stage b). This replaced a hand-expanded boolean ladder plus a separate
+#: ``"seeds/" if kind == "seed" else "models/"`` prefix ternary whose else-branch silently
+#: claimed every *future* kind lived under ``models/``. A kind absent from this table now
+#: fails closed for free, so adding one is a deliberate, reviewable edit here rather than an
+#: accident. ``properties`` and ``seed_properties`` carry no ``model_name`` because a
+#: properties document is not a dbt resource -- the SQL/CSV beside it owns the name.
+_DEPENDENCY_KINDS: dict[str, _DependencyKind] = {
+    "sql": _DependencyKind(frozenset({".sql"}), True, "models/"),
+    "properties": _DependencyKind(frozenset({".yml", ".yaml"}), False, "models/"),
+    "seed": _DependencyKind(frozenset({".csv"}), True, "seeds/"),
+    "seed_properties": _DependencyKind(frozenset({".yml", ".yaml"}), False, "seeds/"),
+}
+
+
+def _dependency_entry_is_valid(kind: str, path: str, model_name: str) -> bool:
+    """Return True when *path*/*model_name* match the registered rules for *kind*."""
+    rules = _DEPENDENCY_KINDS.get(kind)
+    if rules is None:
+        return False
+    if not path.startswith(rules.prefix) or Path(path).suffix.lower() not in rules.suffixes:
+        return False
+    if rules.requires_model_name:
+        return bool(model_name) and Path(path).stem == model_name
+    return not model_name
 
 
 def _domain_integrity_failures(hub: Path, domain: str) -> list:
@@ -225,30 +264,9 @@ def _load_dependency_states(
                 raise ManifestError(f"malformed file entry in dbt dependency state {state_path!r}")
             entry = {key: str(value) for key, value in item.items()}
             path = entry["path"]
-            kind = entry["kind"]
             digest = entry["sha256"]
-            model_name = entry["model_name"]
-            suffix = Path(path).suffix.lower()
-            valid_kind = (
-                (
-                    kind == "sql"
-                    and suffix == ".sql"
-                    and model_name
-                    and Path(path).stem == model_name
-                )
-                or (kind == "properties" and suffix in {".yml", ".yaml"} and not model_name)
-                or (
-                    # #586: authored seed CSVs join the emitted project under seeds/.
-                    kind == "seed"
-                    and suffix == ".csv"
-                    and model_name
-                    and Path(path).stem == model_name
-                )
-            )
-            expected_prefix = "seeds/" if kind == "seed" else "models/"
             if (
-                not path.startswith(expected_prefix)
-                or not valid_kind
+                not _dependency_entry_is_valid(entry["kind"], path, entry["model_name"])
                 or len(digest) != 64
                 or any(character not in "0123456789abcdef" for character in digest)
                 or owned.get(path) != digest
