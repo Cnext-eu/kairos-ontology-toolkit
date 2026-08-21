@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc24] — 2026-08-21
+
 ### Fixed
 - **`compile --emit` now declares the physical dbt sources a contracted model's dependency
   closure reads (issue #584).** `{{ source('name', 'table') }}` pairs are extracted from the
