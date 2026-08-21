@@ -3103,6 +3103,25 @@ Two related failure modes left hubs silently running the wrong toolkit version:
 - `packaging.version` is used for older/newer comparison (already an indirect
   dependency); a string-inequality fallback keeps it non-fatal.
 
+### Amendment (2026-08-21): the outside-venv guard is identity-based, not mechanism-based (#587)
+
+The Context above already named the gap: `_warn_if_outside_venv()` asked *"am I in
+some venv?"* (`sys.prefix != sys.base_prefix`) and returned early for **any** venv.
+A pipx / `uv tool` global install of `kairos-ontology` IS a venv, so users running a
+global toolkit inside a hub got no warning — and then hit opaque
+`OntologyLoadError` failures because hub-pinned companion packages
+(`kairos-ontology-referencemodels`) were absent from that interpreter.
+
+The guard now asks *"am I in THIS hub's venv?"*: it resolves the managed hub root
+via `find_managed_root()` and, when that root has a `.venv`, compares
+`Path(sys.prefix).resolve()` against it. Any mismatch — foreign venv or bare system
+Python — warns that commands may lack hub-pinned packages such as
+`kairos-ontology-referencemodels` and points at `uv run kairos-ontology …`. Outside
+a managed root (or when the hub has no `.venv`) the original bare-global heuristic
+(no venv at all + a local `./.venv` or `../.venv`) remains as a fallback, so
+non-hub usage stays exactly as quiet as before. Still a non-blocking stderr
+warning; the guard never changes exit codes.
+
 ---
 
 ## DD-050: Parquet Source Import
@@ -11177,6 +11196,32 @@ namespaces toolkit attributes as `kairos.*`.
   `tests/scenarios/test_scenario_v5.py` and determinism tests still pass.
 - SPDX/Apache-2.0 headers on every new .py file. 100-char ruff lines.
 - Future: real-run dbt observability in the dataplatform scaffold is a separate change.
+
+### Amendment (2026-08-21): the boundary renders `OntologyLoadError` diagnostics instead of a traceback (#587)
+
+The unhandled-exception boundary on the root group (`_KairosGroup.invoke`, issue #295,
+pinned by `tests/test_cli_exception_boundary.py`) writes one `kairos.cli.command.failed`
+record and re-raises, letting Click print the raw traceback. For `OntologyLoadError`
+that traceback was actively misleading: the exception carries an `OntologyLoadResult`
+whose structured diagnostics (`missing_import` et al.) name the real cause — typically
+`kairos-ontology-referencemodels` absent from the running interpreter — while the
+generic "closure is incomplete; rerun with degraded=True" message suggests the wrong
+remedy (DD-103 keeps fail-closed loading; degraded mode is not the fix for a broken
+environment).
+
+The boundary now has a dedicated arm for `OntologyLoadError`, ordered **after** the
+DD-151 record and teardown (converting to `click.exceptions.Exit` first would skip the
+record — Exit is on the exemption list): it renders `✗ {message}` plus each attached
+diagnostic to stderr via `cli/shared.py:render_ontology_load_failure()`
+(`missing_import` first, matched on `code` — degraded loads downgrade the *level* to
+warning — then other errors, then the rest), appends a wrong-environment hint when
+missing imports coincide with `_read_refmodels_provenance()` reporting the package
+absent, and raises `Exit(1)`. The per-diagnostic line format is shared with
+`resolve-ontology` through `format_load_diagnostic()` so the two renderings cannot
+drift; the `resolve-ontology --json-output` payload is unchanged. The arm checks
+`sys.modules` for `core.ontology_loader` instead of importing it, keeping rdflib off
+the failure path of unrelated exceptions. Exit codes for every other exception class
+are untouched.
 
 ---
 

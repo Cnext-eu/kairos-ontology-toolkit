@@ -3,6 +3,7 @@
 """Root Click group and command registration for the Kairos toolkit."""
 
 import logging
+import sys
 import traceback
 
 import click
@@ -161,6 +162,18 @@ class _KairosGroup(click.Group):
         except Exception as exc:
             _log_unhandled_exception(exc)
             _teardown_observability(ctx)
+            # OntologyLoadError carries structured diagnostics (missing_import et
+            # al.) that explain the failure far better than its generic message;
+            # render them instead of letting Click print a raw traceback (#587).
+            # The sys.modules lookup keeps core.ontology_loader (rdflib) off this
+            # path for unrelated failures: if the module was never imported, the
+            # exception cannot be an OntologyLoadError.
+            loader = sys.modules.get("kairos_ontology.core.ontology_loader")
+            if loader is not None and isinstance(exc, loader.OntologyLoadError):
+                _shared.render_ontology_load_failure(exc)
+                # The DD-151 record is already written above — Exit alone would
+                # skip it, which is why the conversion happens after the logging.
+                raise click.exceptions.Exit(1)
             raise
 
     def main(self, *args, **kwargs):

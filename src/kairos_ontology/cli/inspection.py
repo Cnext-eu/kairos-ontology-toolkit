@@ -21,6 +21,7 @@ from .shared import (
     _git_ignored_snapshot,
     _git_repo_root,
     _git_status_snapshot,
+    format_load_diagnostic,
     resolve_refmodels_dir,
     _resolve_semantic_input,
     _warn_if_no_skill_context,
@@ -71,7 +72,7 @@ def resolve_ontology_cmd(ontology, catalog, degraded, as_json):
     for entry in loaded.manifest:
         click.echo(f"  {'  ' * entry.import_depth}{entry.source_identity} [{entry.rdf_format}]")
     for diagnostic in loaded.diagnostics:
-        click.echo(f"  {diagnostic.level.upper()}: {diagnostic.message}")
+        click.echo(format_load_diagnostic(diagnostic))
 
 
 def _compute_class_tokens(loaded, ontology_path: Path, class_uri: str) -> list[str]:

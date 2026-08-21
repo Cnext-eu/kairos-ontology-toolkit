@@ -41,14 +41,35 @@ def _ensure_utf8_stdio() -> None:
 
 
 def _warn_if_outside_venv() -> None:
-    """Emit a warning if running outside the uv-managed project environment.
+    """Emit a warning if the running interpreter is not the hub's uv-managed environment.
 
-    Detects when the user invokes ``python -m kairos_ontology`` using a system
-    Python while a local ``.venv`` exists (created by ``uv``).  This avoids
-    silently running a stale toolkit version installed globally.
+    Identity-based (#587): resolve the managed hub root and compare ``sys.prefix``
+    against that hub's own ``.venv``.  This catches *any* other environment — a
+    pipx / ``uv tool`` global install is still a venv, which the old
+    mechanism-based ``sys.prefix != sys.base_prefix`` check waved through — not
+    just a bare system Python.  Outside a managed hub (or when the hub has no
+    ``.venv``) the old bare-global heuristic remains as a fallback.
     """
+    from ..core.hub_utils import find_managed_root
+
+    managed_root = find_managed_root()
+    if managed_root is not None:
+        hub_venv = managed_root / ".venv"
+        if hub_venv.is_dir():
+            if Path(sys.prefix).resolve() == hub_venv.resolve():
+                return  # running this hub's own uv-managed environment
+            click.echo(
+                "⚠️  Running an interpreter that is not this hub's uv-managed environment\n"
+                f"   ({hub_venv}).\n"
+                "   Commands may lack hub-pinned packages such as kairos-ontology-referencemodels.\n"
+                "   Run `uv run kairos-ontology …` from the hub; no manual activation is needed.\n",
+                err=True,
+            )
+            return
+
+    # Fallback (pre-#587 heuristic): bare system Python next to a local .venv.
     if sys.prefix != sys.base_prefix:
-        return  # already inside a venv — nothing to warn about
+        return  # inside some venv, and no hub .venv to compare identity against
 
     cwd = Path.cwd()
     candidates = [cwd / ".venv", cwd.parent / ".venv"]
@@ -61,6 +82,44 @@ def _warn_if_outside_venv() -> None:
         "   Run `uv run kairos-ontology`; no manual activation is needed.\n",
         err=True,
     )
+
+
+def format_load_diagnostic(diagnostic) -> str:  # noqa: ANN001 — OntologyDiagnostic, kept lazy
+    """Render one ontology-load diagnostic in the shared two-space CLI line format.
+
+    Used by both ``resolve-ontology``'s human-readable output and the DD-151
+    boundary rendering of :class:`OntologyLoadError` so the two cannot drift.
+    """
+    return f"  {diagnostic.level.upper()}: {diagnostic.message}"
+
+
+def render_ontology_load_failure(error) -> None:  # noqa: ANN001 — OntologyLoadError, kept lazy
+    """Render an ``OntologyLoadError`` and its attached diagnostics to stderr (#587).
+
+    Ordering: ``missing_import`` diagnostics first (the actionable cause), then the
+    remaining error-level diagnostics, then the rest.  Matching is on ``code``,
+    never on ``level`` — degraded loads downgrade ``missing_import`` to warning
+    level.  When missing imports coincide with an absent
+    ``kairos-ontology-referencemodels`` package, a wrong-environment hint follows.
+    """
+    click.echo(f"✗ {error}", err=True)
+    result = getattr(error, "result", None)
+    diagnostics = tuple(getattr(result, "diagnostics", ()) or ())
+    missing = [d for d in diagnostics if d.code == "missing_import"]
+    other_errors = [d for d in diagnostics if d.code != "missing_import" and d.level == "error"]
+    rest = [d for d in diagnostics if d.code != "missing_import" and d.level != "error"]
+    for diagnostic in (*missing, *other_errors, *rest):
+        click.echo(format_load_diagnostic(diagnostic), err=True)
+    if missing and _read_refmodels_provenance() is None:
+        count = len(missing)
+        noun = "import" if count == 1 else "imports"
+        click.echo(
+            f"{count} required {noun} could not be resolved because "
+            "kairos-ontology-referencemodels is not installed in this Python environment. "
+            "If you're running a globally-installed kairos-ontology, "
+            "try 'uv run kairos-ontology ...' instead.",
+            err=True,
+        )
 
 
 _SCAFFOLD_DIR = Path(__file__).resolve().parent.parent / "scaffold"

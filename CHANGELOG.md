@@ -50,6 +50,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   catalog entry and no diagnostic, so the failure only surfaced later as an offline
   `dbt parse` error. Macros whose names merely end in `source` (e.g. `my_source(...)`) are
   unaffected.
+- **Commands that hit an incomplete ontology closure no longer die with a raw
+  `OntologyLoadError` traceback (issue #587).** The CLI boundary now renders the
+  exception's attached diagnostics to stderr — `missing_import` entries first — and,
+  when those missing imports coincide with `kairos-ontology-referencemodels` being
+  absent from the running interpreter (the typical pipx / `uv tool` global-install
+  symptom), adds a hint to use `uv run kairos-ontology …`. Exit code stays 1 and the
+  DD-151 `kairos.cli.command.failed` record is still written.
+- **The outside-venv startup warning now catches pipx / `uv tool` global installs
+  (issue #587, DD-049 amendment).** The guard is identity-based: inside a managed hub
+  it compares `sys.prefix` against the hub's own `.venv` instead of asking "am I in
+  *some* venv?" — a global pipx install is a venv too, so it previously passed
+  silently and then failed with missing hub-pinned packages. Outside a managed hub
+  the old bare-global heuristic is unchanged.
 
 ### Changed
 - **The cross-domain union of shared `_<system>__sources.yml` catalogs now fails closed.**
