@@ -116,11 +116,14 @@ def render_ontology_load_failure(error) -> None:  # noqa: ANN001 — OntologyLoa
     for diagnostic in (*missing, *other_errors, *rest):
         click.echo(format_load_diagnostic(diagnostic), err=True)
     if missing and _read_refmodels_provenance() is None:
-        count = len(missing)
-        noun = "import" if count == 1 else "imports"
+        # Deliberately does not claim that every missing import above is caused by
+        # the absent package: a hub-local import can be missing for its own reason
+        # (a typo'd IRI), and #587 is itself a bug report about a diagnostic that
+        # asserted the wrong cause. State the fact; the per-import lines above
+        # already say which IRIs actually failed.
         click.echo(
-            f"{count} required {noun} could not be resolved because "
-            "kairos-ontology-referencemodels is not installed in this Python environment. "
+            "kairos-ontology-referencemodels is not installed in this Python environment, "
+            "so any reference-model bridge import listed above cannot resolve here. "
             "If you're running a globally-installed kairos-ontology, "
             "try 'uv run kairos-ontology ...' instead.",
             err=True,

@@ -404,10 +404,13 @@ def test_ontology_load_error_hints_at_missing_refmodels_package(
 
     assert result.exit_code == 1
     assert (
-        "2 required imports could not be resolved because kairos-ontology-referencemodels "
-        "is not installed in this Python environment." in result.stderr
+        "kairos-ontology-referencemodels is not installed in this Python environment, "
+        "so any reference-model bridge import listed above cannot resolve here." in result.stderr
     )
     assert "try 'uv run kairos-ontology ...' instead" in result.stderr
+    # The hint must not assert that every missing import above is caused by the
+    # absent package — a hub-local import can be missing for its own reason.
+    assert "could not be resolved because" not in result.stderr
 
 
 def test_ontology_load_error_hint_absent_when_refmodels_installed(
