@@ -8,7 +8,10 @@
 
 <!-- Use GitHub closing keywords so issues auto-close on merge.
      Example:  Closes #123   |   Fixes #456   |   Resolves #789
-     Do NOT use parenthetical references like "(#123)" — they link but do not close. -->
+     Note: this repo's auto-close-issues workflow ALSO closes any issue
+     referenced in parentheses, like "(#123)", when the PR merges.
+     Partial fix of a multi-part issue? Qualify it — "(#123 P2)" or
+     "(#123 Problem 2)" — or use "Refs #123", and the issue stays open. -->
 
 Closes #
 

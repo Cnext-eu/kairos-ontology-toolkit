@@ -12,6 +12,12 @@
 # "split out as #423" was indistinguishable from one saying it fixed them — and
 # when PR #425 merged it closed two deliberately-deferred follow-ups as
 # "completed". A reference is not a fix.
+#
+# A parenthetical reference can also be *scoped*: "(#562 P2)" or "(#562 Problem 2)"
+# means the PR fixes only part of a multi-part issue, so the issue must stay open.
+# This workflow previously ignored such qualifiers — when PR #577 merged with
+# "(DD-203, #562 P2)" it closed #562 even though Problems 3 and 4 were untouched.
+# A qualifier directly after the number (P2, P3+P4, "Problem 2") skips the close.
 name: Auto-close referenced issues
 
 on:
@@ -51,6 +57,12 @@ jobs:
             // before the parenthetical, the reference is a pointer, not a claim of work done.
             const NON_FIXING = /\b(refs?|references?|related|see|see also|deferred?|defers?|split out|splits? out|supersed(es|ed)|blocked by|blocks|part of|follows?|follow[- ]?ups?|tracked in|tracking|per|cf|context|discussion|depends on|prerequisite)\b[^.!?]{0,80}$/i;
 
+            // A qualifier directly after the number scopes the reference to part of the
+            // issue — a partial fix must not close the whole issue. This covers the
+            // spellings used in squash titles: "P2", "P3+P4", and "Problem 2"
+            // (PR #577's "(DD-203, #562 P2)" closed #562 before this check existed).
+            const PARTIAL_QUALIFIER = /^\s*(?:P\d+(?:\s*[+,]\s*P?\d+)*|Problems?\s+\d+)/i;
+
             // Only parenthetical groups containing an issue number, per the contract above.
             const groupPattern = /\(([^()]*#\d+[^()]*)\)/g;
             const toClose = new Set();
@@ -59,12 +71,18 @@ jobs:
             while ((group = groupPattern.exec(combined)) !== null) {
               const preceding = combined.slice(Math.max(0, group.index - 90), group.index);
               const isNonFixing = NON_FIXING.test(preceding);
-              const nums = group[1].match(/#(\d+)/g) || [];
-              for (const raw of nums) {
-                const num = raw.slice(1);
+              const numPattern = /#(\d+)/g;
+              let m;
+              while ((m = numPattern.exec(group[1])) !== null) {
+                const num = m[1];
                 if (num === String(prNumber)) continue;      // the PR's own squash-title suffix
                 if (closedNumbers.has(num)) continue;        // GitHub already closed it
                 if (isNonFixing) { skipped.push(`#${num}`); continue; }
+                const trailing = group[1].slice(m.index + m[0].length);
+                if (PARTIAL_QUALIFIER.test(trailing)) {
+                  skipped.push(`#${num} (partial-fix qualifier)`);
+                  continue;
+                }
                 toClose.add(num);
               }
             }
@@ -108,7 +126,8 @@ jobs:
                   issue_number: parseInt(issueNum, 10),
                   body: `Auto-closed by GitHub Action: PR #${prNumber} was merged with a parenthetical reference to this issue but did not use closing keywords.\n` +
                         `\n> **Tip:** To auto-close issues on merge, use \`Closes #${issueNum}\`, \`Fixes #${issueNum}\`, or \`Resolves #${issueNum}\` in the PR body.` +
-                        `\n>\n> If a PR only *mentions* an issue it does not fix, write it as a bare \`#${issueNum}\` (no parentheses) or prefix it with \`Refs\`/\`Related\`/\`Deferred to\` — this workflow will then leave it open.`,
+                        `\n>\n> If a PR only *mentions* an issue it does not fix, write it as a bare \`#${issueNum}\` (no parentheses) or prefix it with \`Refs\`/\`Related\`/\`Deferred to\` — this workflow will then leave it open.` +
+                        `\n>\n> If a PR fixes only *part* of a multi-part issue, add a qualifier right after the number — \`(#${issueNum} P2)\` or \`(#${issueNum} Problem 2)\` — and this workflow will leave the issue open.`,
                 });
 
                 await github.rest.issues.update({
