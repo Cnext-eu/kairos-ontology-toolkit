@@ -17,6 +17,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc25] — 2026-08-21
+
+### Fixed
+- **Every scaffolded `compile ... --emit` now passes `--confirm-emit`.** `--emit` has
+  required `--confirm-emit` since #264, but the scaffolded release workflow kept the bare
+  form from v5.0.0 onward and there is no CI bypass, so every hub scaffolded since
+  2026-08-10 shipped a release workflow that failed on its first domain. The same stale
+  invocation appeared in two "Canonical commands" listings that tell an agent to run a
+  command the CLI rejects. A new guard scans the whole scaffold tree for real
+  `kairos-ontology compile ... --emit` invocations, so this closes the class rather than
+  the instance.
+
+### Changed
+- **`compile` accepts several domains, or `--all`, and builds the alignment report once
+  per process (issue #598, fixes 1 and 5).** `build_alignment_report` resolves the entire
+  reference-model vocabulary -- domain-independent work that dominated wall clock -- and
+  `compile` asked for the identical report twice per invocation, once for the DD-180 anchor
+  gate and once for the DD-169 column gate. It is now memoized in-process on
+  `(analysis_dir, hub_root)`, excluding `domains` because callers filter by scope after the
+  build, and a hit is only trusted after re-fingerprinting the alignment files and source
+  vocabularies. On a 14-domain hub a redundant build drops from 3.86s to 0.01s, and the
+  release loop drops from 351.07s across 14 invocations to 51.38s in one (6.83x), with all
+  14 domains reporting an identical verdict either way. Each domain still compiles
+  independently and emits its own subtree atomically (DD-133/140); one domain's failure is
+  reported against that domain and does not skip the rest. The scaffolded release workflow
+  replaces its shell domain-discovery loop with a single `compile --all`.
+
+
 ## [5.13.0rc24] — 2026-08-21
 
 ### Fixed
