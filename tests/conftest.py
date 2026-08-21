@@ -127,6 +127,25 @@ def _reset_unsupported_param_cache():
     reset_unsupported_param_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_alignment_report_cache():
+    """Clear the in-process alignment-report memo between tests (#598).
+
+    ``build_alignment_report`` memoizes on ``(analysis_dir, hub_root)`` so one
+    ``compile`` stops building the same report twice. That memory is module-global:
+    without this, a test that reuses a path another test already reported on would
+    read the earlier test's answer.
+    """
+    try:
+        from kairos_ontology.core.alignment_report import reset_alignment_report_cache
+    except ImportError:  # pragma: no cover — alignment_report must be importable
+        yield
+        return
+    reset_alignment_report_cache()
+    yield
+    reset_alignment_report_cache()
+
+
 @pytest.fixture
 def github_provider_env():
     """Opt-in fixture: set a configured GitHub Models provider for tests that need one."""

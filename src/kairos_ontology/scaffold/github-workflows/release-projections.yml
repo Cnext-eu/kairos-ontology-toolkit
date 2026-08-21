@@ -33,15 +33,14 @@ jobs:
         run: |
           rm -rf ontology-hub-publish/medallion/dbt
           cd ontology-hub
-          DOMAINS=$(uv run python -c "from pathlib import Path; import yaml; print(' '.join(sorted({str(yaml.safe_load(p.read_text())['metadata']['domain']) for p in Path('integration/bindings').glob('*.binding.yaml')})))")
-          for domain in $DOMAINS; do
-            uv run kairos-ontology compile "$domain" --emit --confirm-emit
-          done
+          uv run kairos-ontology compile --all --emit --confirm-emit
 
-      # Each domain's --emit is stateless and per-domain (DD-133/140); a cross-domain
+      # Each domain's --emit is still stateless and per-domain (DD-133/140) — --all
+      # discovers the domains and emits each one's subtree atomically, sharing only
+      # this process's read-only parse caches (#598). A cross-domain
       # externalReference naming a model absent from the assembled project (#342) is
-      # only visible once every domain above has emitted. Runs unconditionally, after
-      # the full loop, before anything ships — needs no dbt install (DD-138/139 keep
+      # only visible once every domain has emitted. Runs unconditionally, after
+      # the compile step, before anything ships — needs no dbt install (DD-138/139 keep
       # dbt itself, and any peer-binding search, out of per-domain compile scope).
       - name: Check assembled dbt project for dangling cross-domain refs
         run: |
