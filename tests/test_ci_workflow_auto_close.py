@@ -154,6 +154,24 @@ def test_workflow_contains_the_pinned_regexes() -> None:
             set(),
             id="closing-keyword-pre-pass-excludes-github-native-close",
         ),
+        # The qualifier check is per *number*, not per group: one scoped
+        # reference must not spare its unqualified neighbours (nor the reverse).
+        # Without these two cases a regression to a per-group decision — the
+        # very thing the exec-with-index rewrite replaced — still passes.
+        pytest.param(
+            "fix: partial one, whole other (#562 P2, #563) (#601)",
+            "",
+            601,
+            {563},
+            id="qualifier-scopes-only-its-own-number",
+        ),
+        pytest.param(
+            "fix: whole one, partial other (#562, #563 P2) (#602)",
+            "",
+            602,
+            {562},
+            id="qualifier-scopes-only-its-own-number-reversed",
+        ),
     ],
 )
 def test_decision_loop(title: str, body: str, pr_number: int, expected: set[int]) -> None:
