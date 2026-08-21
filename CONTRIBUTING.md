@@ -172,6 +172,11 @@ contains a closing keyword: `Closes #N`, `Fixes #N`, or `Resolves #N`. A plain
 `#N` reference does **not** auto-close. One keyword per issue —
 `Closes #1, #2` does **not** close #2.
 
+On top of that, this repo's `auto-close-issues` workflow closes any issue
+referenced **in parentheses** — `(#N)` — in a merged PR's title or body. If
+the PR fixes only part of a multi-part issue, qualify the reference —
+`(#N P2)` or `(#N Problem 2)` — or write `Refs #N`, and the issue stays open.
+
 ### Testing a pre-release
 
 If you want hub-repo users to test your changes before a GA release:

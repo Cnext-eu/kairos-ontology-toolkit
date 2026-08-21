@@ -54,6 +54,20 @@ After merge, verify linked issues actually closed:
 gh issue list --state open    # fixed issues should NOT appear here
 ```
 
+### This repo's auto-close workflow (parenthetical references)
+
+On top of GitHub's native keywords, `.github/workflows/auto-close-issues.yml`
+closes any issue referenced **in parentheses** in a merged PR's title or body —
+e.g. the squash-title convention `fix: … (#286, #338) (#402)` closes #286 and
+#338 on merge.
+
+- **Partial fix?** Add a qualifier right after the number — `(#562 P2)`,
+  `(#562 P3+P4)`, or `(#562 Problem 2)` — and the workflow leaves the issue
+  open. Never bare-parenthetical a multi-part issue the PR doesn't fully fix
+  (PR #577 closed #562 that way before the qualifier rule existed).
+- **Mention without closing?** Use a bare `#N` (no parentheses) or prefix with
+  `Refs`/`Related`/`Deferred to`.
+
 ## 3. Security review before pushing
 
 Scan changed files for:

@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *some* venv?" — a global pipx install is a venv too, so it previously passed
   silently and then failed with missing hub-pinned packages. Outside a managed hub
   the old bare-global heuristic is unchanged.
+- **The auto-close-issues workflow no longer closes a multi-part issue when a merged
+  PR references it with a partial-fix qualifier (issue #578).** `(#562 P2)`,
+  `(#562 P3+P4)`, and `(#562 Problem 2)` now mark the reference as scoped to part of
+  the issue and leave it open (PR #577 closed #562 with Problems 3 and 4 untouched).
+  A Python meta-test pins the workflow's inline regexes and reimplements its decision
+  loop, and the SC-merge-pr skill, PR template, and CONTRIBUTING now describe the
+  workflow's actual parenthetical-close behavior.
 
 ### Changed
 - **The cross-domain union of shared `_<system>__sources.yml` catalogs now fails closed.**
