@@ -303,6 +303,147 @@ def test_failure_path_flushes_the_log_file_to_disk(tmp_path, raising_command):
 
 
 # --------------------------------------------------------------------------- #
+# OntologyLoadError rendering (#587)
+# --------------------------------------------------------------------------- #
+
+
+_MISSING_PARTY = "Missing required import: https://kairos.eu/ref/party"
+_MISSING_ASSET = "Missing required import: https://kairos.eu/ref/asset"
+_UNRELATED_WARNING = "Import already loaded: https://kairos.eu/ref/base"
+
+
+def _make_ontology_load_error():
+    """Build a synthetic OntologyLoadError with diagnostics attached."""
+    from rdflib import Graph
+
+    from kairos_ontology.core.ontology_loader import (
+        OntologyDiagnostic,
+        OntologyLoadError,
+        OntologyLoadResult,
+        SemanticProfile,
+    )
+
+    result = OntologyLoadResult(
+        graph=Graph(),
+        manifest=(),
+        diagnostics=(
+            # The warning first: rendering must reorder missing_import to the top.
+            OntologyDiagnostic(level="warning", code="duplicate_import", message=_UNRELATED_WARNING),
+            OntologyDiagnostic(
+                level="error",
+                code="missing_import",
+                message=_MISSING_PARTY,
+                import_uri="https://kairos.eu/ref/party",
+            ),
+            OntologyDiagnostic(
+                level="error",
+                code="missing_import",
+                message=_MISSING_ASSET,
+                import_uri="https://kairos.eu/ref/asset",
+            ),
+        ),
+        complete=False,
+        closure_hash="0" * 64,
+        profile=SemanticProfile.KAIROS_DESIGN,
+    )
+    return OntologyLoadError(
+        "Ontology closure is incomplete; rerun with degraded=True only when partial "
+        "semantics are explicitly acceptable.",
+        result,
+    )
+
+
+def _raise_load_error():
+    raise _make_ontology_load_error()
+
+
+def test_ontology_load_error_renders_diagnostics_not_a_traceback(tmp_path, raising_command):
+    raising_command("boom-closure", _raise_load_error)
+    log_file = tmp_path / "kairos.ndjson"
+
+    result = _invoke(["boom-closure"], log_file)
+
+    assert result.exit_code == 1
+    # The boundary converts to Exit, so the exception never escapes to become a
+    # raw interpreter traceback (CliRunner records what would have escaped).
+    # The DD-151 record on stderr still carries its redacted stacktrace *field*
+    # by design, which is why this asserts on the exception, not on the text.
+    assert isinstance(result.exception, SystemExit)
+    assert "✗ Ontology closure is incomplete" in result.stderr
+    assert _MISSING_PARTY in result.stderr
+    assert _MISSING_ASSET in result.stderr
+    assert _UNRELATED_WARNING in result.stderr
+    # missing_import diagnostics render before the unrelated warning
+    assert result.stderr.index(_MISSING_PARTY) < result.stderr.index(_UNRELATED_WARNING)
+    assert result.stderr.index(_MISSING_ASSET) < result.stderr.index(_UNRELATED_WARNING)
+
+
+def test_ontology_load_error_still_writes_the_dd151_record(tmp_path, raising_command):
+    """Converting to Exit must not lose the failure record — Exit alone writes none."""
+    raising_command("boom-closure-record", _raise_load_error)
+    log_file = tmp_path / "kairos.ndjson"
+
+    result = _invoke(["boom-closure-record"], log_file)
+
+    assert result.exit_code == 1
+    failures = _failure_records(log_file)
+    assert len(failures) == 1, _records(log_file)
+    assert failures[0]["exception.type"] == "OntologyLoadError"
+
+
+def test_ontology_load_error_hints_at_missing_refmodels_package(
+    tmp_path, raising_command, monkeypatch
+):
+    from kairos_ontology.cli import shared as cli_shared
+
+    monkeypatch.setattr(cli_shared, "_read_refmodels_provenance", lambda: None)
+    raising_command("boom-closure-hint", _raise_load_error)
+    log_file = tmp_path / "kairos.ndjson"
+
+    result = _invoke(["boom-closure-hint"], log_file)
+
+    assert result.exit_code == 1
+    assert (
+        "kairos-ontology-referencemodels is not installed in this Python environment, "
+        "so any reference-model bridge import listed above cannot resolve here." in result.stderr
+    )
+    assert "try 'uv run kairos-ontology ...' instead" in result.stderr
+    # The hint must not assert that every missing import above is caused by the
+    # absent package — a hub-local import can be missing for its own reason.
+    assert "could not be resolved because" not in result.stderr
+
+
+def test_ontology_load_error_hint_absent_when_refmodels_installed(
+    tmp_path, raising_command, monkeypatch
+):
+    from kairos_ontology.cli import shared as cli_shared
+
+    monkeypatch.setattr(
+        cli_shared,
+        "_read_refmodels_provenance",
+        lambda: {"ref": "1.2.3", "version": "1.2.3", "source": "pip"},
+    )
+    raising_command("boom-closure-nohint", _raise_load_error)
+    log_file = tmp_path / "kairos.ndjson"
+
+    result = _invoke(["boom-closure-nohint"], log_file)
+
+    assert result.exit_code == 1
+    assert _MISSING_PARTY in result.stderr
+    assert "is not installed in this Python environment" not in result.stderr
+
+
+def test_ontology_load_error_resets_the_operation_context(tmp_path, raising_command):
+    """The new arm runs the same teardown as the generic one."""
+    raising_command("boom-closure-teardown", _raise_load_error)
+    log_file = tmp_path / "kairos.ndjson"
+
+    _invoke(["boom-closure-teardown"], log_file)
+
+    assert current_operation_id() is None
+
+
+# --------------------------------------------------------------------------- #
 # Text format
 # --------------------------------------------------------------------------- #
 
