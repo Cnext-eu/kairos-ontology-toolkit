@@ -17,6 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc27] — 2026-08-22
+
+### Fixed
+- **The `init-dataplatform` scaffold's `dbt-fabric`/`dbt-databricks` pins had no upper bound**
+  (`dbt-fabric>=1.9.0`, `dbt-databricks>=1.9.0`), so a routine `uv sync` in a scaffolded
+  dataplatform repo could silently resolve into dbt Core 2.0 (the former Fusion engine, now in
+  beta, with a stricter codified language spec and no validated adapter support yet). Both pins
+  now read `>=1.9.0,<2.0.0`. This changes no currently-resolved version — it only prevents a
+  future silent jump into unvalidated pre-GA territory.
+
+### Added
+- **`docs/design/ontology-dbt-dataplatform-design-architecture.md`**, a standalone architecture
+  reference for how the ontology hub governs source discovery, bronze-to-canonical bindings, and
+  Silver/Gold dbt generation, and how a separate dataplatform repository consumes that output
+  safely — including repository/ownership boundaries, release-compatibility and reproducibility
+  design, extraction/profiling design, the int-layer authoring boundary, and a dbt Core 2.0
+  version-strategy note.
+
 ## [5.13.0rc26] — 2026-08-22
 
 ### Fixed
