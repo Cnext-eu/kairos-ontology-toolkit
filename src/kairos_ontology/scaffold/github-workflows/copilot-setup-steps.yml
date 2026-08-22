@@ -27,18 +27,25 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          # An unpinned version queries github.com's "latest release" API, which
+          # 404s from a GitHub Enterprise Server host (astral-sh/uv doesn't exist
+          # there). Pinning a known-good version skips that lookup entirely.
+          version: "0.12.5"
 
       - name: Install toolkit and dependencies
-        run: uv sync
+        run: uv sync --locked
 
       - name: Install Node.js (for Mermaid CLI SVG export)
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install npm dependencies
         run: |
           if [ -f "package.json" ]; then
-            npm ci
+            # No lockfile is scaffolded or generated for this project, so a
+            # lockfile-strict install here would always fail.
+            npm install
           fi
