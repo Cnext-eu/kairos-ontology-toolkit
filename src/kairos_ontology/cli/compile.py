@@ -15,6 +15,7 @@ import click
 
 from ..core import ontology_loader
 from ..core.compiler import CompileMode, compile_domain
+from ..core.compiler.result import CompileDiagnostic
 from ..core.conformance_artifact import check_discovery_gate
 from ..core.hub_utils import find_hub_root, publish_root
 from ..core.observability import current_operation_id
@@ -587,9 +588,12 @@ def compile_cmd(
             failed.append(one)
 
     if output_format == "json" and payloads:
-        # One domain keeps the exact single-object shape every existing consumer parses;
-        # only a genuinely multi-domain invocation returns an array.
-        document: Any = payloads[0] if len(selected) == 1 else payloads
+        # An explicitly named single domain keeps the exact object shape every existing
+        # consumer parses. --all always returns an array: its arity is decided by the
+        # hub, not the caller, so a shape that flips between a one-domain and a
+        # two-domain hub would break a script on hub shape alone.
+        single = len(selected) == 1 and not all_domains
+        document: Any = payloads[0] if single else payloads
         click.echo(json.dumps(document, indent=2, sort_keys=True))
 
     if len(selected) > 1:
@@ -623,6 +627,26 @@ def _hub_domains(hub: Path) -> list[str]:
     return sorted(name for name in counts if name)
 
 
+def _gate_payload(domain: str, mode: CompileMode, diagnostics: list) -> dict[str, Any]:
+    """Shape a gate refusal like any other compile result (#598 follow-up).
+
+    A gate returns before there is a ``CompileResult``, so a refused domain used to
+    contribute no JSON at all -- under ``--all`` it simply vanished from the array and
+    a consumer saw 13 of 14 entries with no machine-readable reason. Same keys as
+    :func:`_payload`, so one parser handles both.
+    """
+    return {
+        "domain": domain,
+        "mode": mode.value if hasattr(mode, "value") else str(mode),
+        "succeeded": False,
+        "provenance_hash": "",
+        "operation_id": current_operation_id(),
+        "diagnostics": [asdict(item) for item in diagnostics],
+        "explain": None,
+        "artifacts": [],
+    }
+
+
 def _compile_one_domain(
     hub: Path,
     domain: str,
@@ -650,7 +674,14 @@ def _compile_one_domain(
     if discovery_errors:
         for error in discovery_errors:
             click.echo(f"✗ {error}", err=True)
-        return False, None
+        return False, _gate_payload(
+            domain,
+            mode,
+            [
+                CompileDiagnostic(code="discovery.unresolved-judgment", message=str(error))
+                for error in discovery_errors
+            ],
+        )
 
     # Ontology integrity, at the stage the damage is done (DD-163). Binding authoring is
     # where an agent is under pressure to make `binding.unknown-property` go away, and
@@ -688,7 +719,21 @@ def _compile_one_domain(
             "  Or record a table-level disposition to accept the table as out of scope.",
             err=True,
         )
-        return False, None
+        return False, _gate_payload(
+            domain,
+            mode,
+            [
+                CompileDiagnostic(
+                    code="alignment.table-unanchored",
+                    message=(
+                        f"{table.system}.{table.table} has no reference class and no "
+                        f"recorded decision (status: {table.status})"
+                    ),
+                    rule_id="DD-180",
+                )
+                for table in unanchored
+            ],
+        )
 
     try:
         from ..core.alignment_report import GAP_RESOLUTIONS, undecided_gap_columns
@@ -713,7 +758,22 @@ def _compile_one_domain(
         click.echo("  Resolve each by one of:", err=True)
         for resolution in GAP_RESOLUTIONS:
             click.echo(f"    - {resolution}", err=True)
-        return False, None
+        return False, _gate_payload(
+            domain,
+            mode,
+            [
+                CompileDiagnostic(
+                    code="alignment.gap-column-undecided",
+                    message=(
+                        f"{column.system}.{column.table}.{column.column} "
+                        f"({column.data_type}) carries business data with no canonical "
+                        f"home and no recorded decision [{column.reason}]"
+                    ),
+                    rule_id="DD-169",
+                )
+                for column in undecided
+            ],
+        )
 
     integrity_failures = _domain_integrity_failures(hub, domain)
     if integrity_failures:
@@ -725,7 +785,18 @@ def _compile_one_domain(
             "run 'kairos-ontology validate --all' for the full picture",
             err=True,
         )
-        return False, None
+        return False, _gate_payload(
+            domain,
+            mode,
+            [
+                CompileDiagnostic(
+                    code="ontology.integrity",
+                    message=f"{finding.message} -> {finding.remediation}",
+                    rule_id="DD-163",
+                )
+                for finding in integrity_failures
+            ],
+        )
 
     # DD-133/140: --check/--explain must write nothing to the hub; only --emit may
     # populate the on-disk ontology-parse cache, and only for the duration of this one

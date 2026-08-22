@@ -876,3 +876,83 @@ def test_multi_domain_json_stdout_stays_machine_readable(tmp_path, monkeypatch):
     payload = json.loads(result.stdout)
     assert [entry["domain"] for entry in payload] == ["booking", "party"]
     assert "domain(s) compiled" not in result.stdout
+
+
+def test_all_returns_an_array_even_on_a_one_domain_hub(tmp_path, monkeypatch):
+    """--all's arity is the hub's, not the caller's.
+
+    A shape that flips between object and array depending on how many domains a hub
+    happens to have breaks a script on hub shape alone.
+    """
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "--all", "--check", "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, list)
+    assert [entry["domain"] for entry in payload] == ["party"]
+
+
+def test_an_explicit_single_domain_keeps_the_object_shape(tmp_path, monkeypatch):
+    """The documented single-domain contract must not move."""
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
+
+    assert isinstance(json.loads(result.stdout), dict)
+
+
+def _unanchored_hub(tmp_path):
+    """A hub whose DD-180 anchor gate refuses `party`."""
+    hub = _hub(tmp_path)
+    analysis = hub / "integration" / "sources" / "_analysis"
+    analysis.mkdir(parents=True, exist_ok=True)
+    (analysis / "party-alignment.yaml").write_text(
+        "domain: party\n"
+        "tables:\n"
+        "  - system: crm\n"
+        "    table: strays\n"
+        "    ref_class: ''\n"
+        "    ref_class_status: unmatched\n"
+        "    source_column_count: 7\n"
+        "    columns: []\n"
+        "    custom_columns: []\n",
+        encoding="utf-8",
+    )
+    return hub
+
+
+def test_a_gate_refusal_is_reported_in_the_json_payload(tmp_path, monkeypatch):
+    """A gate returns before there is a CompileResult, so a refused domain used to
+    contribute no JSON -- under --all it vanished from the array entirely.
+    """
+    hub = _unanchored_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["domain"] == "party"
+    assert payload["succeeded"] is False
+    codes = {d["code"] for d in payload["diagnostics"]}
+    assert "alignment.table-unanchored" in codes
+    assert any("strays" in d["message"] for d in payload["diagnostics"])
+
+
+def test_every_selected_domain_appears_even_when_one_is_refused(tmp_path, monkeypatch):
+    """The consumer must be able to account for all N domains it asked for."""
+    hub = _unanchored_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli, ["compile", "party", "nosuchdomain", "--check", "--format", "json"]
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert [entry["domain"] for entry in payload] == ["party", "nosuchdomain"]
+    assert all(entry["succeeded"] is False for entry in payload)
