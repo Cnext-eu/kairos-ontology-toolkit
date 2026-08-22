@@ -86,6 +86,10 @@ def _assert_v5_hub_contract(hub: Path) -> None:
     assert (hub / "decisions/README.md").is_file()
     assert (hub / "decisions/HUB-DD-template.md.template").is_file()
     assert (hub / "decisions/index.md").is_file()
+    insights = hub.parent / ".import" / "businessdiscovery" / "insights"
+    assert (insights / "README.md").is_file()
+    assert (insights / "FEEDBACK-template.md.template").is_file()
+    assert (insights / "index.md").is_file()
     assert (hub / "catalog-v001.xml").is_file()
     assert (hub / "kairos.yaml").is_file()
     assert not (hub / "model/shapes/kairos-prep-shapes.shacl.ttl").exists()

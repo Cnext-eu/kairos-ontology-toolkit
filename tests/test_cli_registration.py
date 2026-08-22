@@ -31,6 +31,7 @@ RETAINED_COMMANDS = {
     "draft-model-report",
     "explain-term",
     "extract-schema",
+    "feedback",
     "field-mapping-report",
     "fit-report",
     "guard-scope",

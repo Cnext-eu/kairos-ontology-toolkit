@@ -1,0 +1,37 @@
+<!--
+Copy this file to a name like HUB-FB-20260822-short-token.md, then replace the
+placeholder values. The .template suffix prevents this example from being scanned
+as a feedback record.
+
+---
+type: Modeling Feedback
+id: HUB-FB-<yyyymmdd>-<token>
+title: <title>
+area: <area>
+status: open
+generated:
+  by: kairos-ontology-toolkit/<version>
+  at: <yyyy-mm-ddThh:mm:ssZ>
+sources:
+  # Local resource paths resolve from the hub root; on a nested hub,
+  # .import/... evidence also resolves from the repository root.
+  - resource: <source-uri-or-path>
+---
+-->
+
+# Observation
+
+<What did you observe? Cite PII-safe evidence: source relations/columns, reference-model
+terms, confirmed business context.>
+
+# Design implication
+
+<What might this mean for the model, if anything?>
+
+# Resolution
+
+<Not yet resolved.>
+
+# Open follow-ups
+
+<None recorded.>

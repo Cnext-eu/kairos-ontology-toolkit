@@ -14,6 +14,7 @@ from ..core._provenance import provenance_comment
 from ..core.analyse_sources import load_data_domains
 from ..core.catalog_utils import sync_domain_catalog_entry
 from ..core.decision_records import build_index_markdown
+from ..core.feedback_records import build_index_markdown as build_feedback_index_markdown
 from ..core.hub_utils import publish_root
 from ..core.master_ontology import MasterOntologySyncError, sync_master_ontology_import
 
@@ -248,6 +249,22 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
     imports_readme_src = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "README.md"
     if imports_readme_src.is_file() and (not (imports_bd / "README.md").exists() or force):
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
+
+    # Modeling-feedback bundle (OKF-style, lighter-weight sibling of the decision
+    # log) -- lives under .import/businessdiscovery/ so it keeps being picked up
+    # as ordinary discovery input by kairos-design-discovery.
+    insights_src = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "insights"
+    insights_dst = imports_bd / "insights"
+    insights_dst.mkdir(parents=True, exist_ok=True)
+    for filename in ("README.md", "FEEDBACK-template.md.template"):
+        src = insights_src / filename
+        dst = insights_dst / filename
+        if src.is_file() and (not dst.exists() or force):
+            _copy_managed(src, dst)
+    insights_index_dst = insights_dst / "index.md"
+    if not insights_index_dst.exists() or force:
+        insights_index_dst.write_text(build_feedback_index_markdown([]), encoding="utf-8")
+        print("  ✓ Created .import/businessdiscovery/insights/index.md")
 
     # Place .gitkeep in empty publish subdirs (sibling <repo>/ontology-hub-publish/)
     # so git tracks the derived-output slots.
@@ -992,6 +1009,18 @@ def new_repo(
     imports_readme_src = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "README.md"
     if imports_readme_src.is_file():
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
+
+    # Modeling-feedback bundle.
+    insights_src = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "insights"
+    insights_dst = imports_bd / "insights"
+    insights_dst.mkdir(parents=True, exist_ok=True)
+    for filename in ("README.md", "FEEDBACK-template.md.template"):
+        src = insights_src / filename
+        dst = insights_dst / filename
+        if src.is_file():
+            _copy_managed(src, dst)
+    (insights_dst / "index.md").write_text(build_feedback_index_markdown([]), encoding="utf-8")
+    print("  ✓ .import/businessdiscovery/insights/ (modeling feedback)")
 
     # Place .gitkeep in publish subdirs (sibling <repo>/ontology-hub-publish/)
     # so git tracks the derived-output slots.
