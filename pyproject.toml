@@ -78,11 +78,11 @@ kairos-ontology = "kairos_ontology.cli.main:cli"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0.0,<9.0.0",
+    "pytest>=9.0.3,<10.0.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.5.0",
     "pytest-ruff>=0.4.0",
-    "pytest-asyncio>=0.23,<1.0",
+    "pytest-asyncio>=1.0,<2.0",
     # Parallel test execution. The suite is ~3.8k small tests whose cost is
     # dominated by per-test overhead rather than any single slow case, so
     # sharding across cores is by far the largest available speedup.
@@ -157,8 +157,10 @@ per-file-ignores = {"tests/*" = ["E741", "E402", "F841"]}
 # "strict", not "auto": the suite currently contains zero `async def` tests and
 # zero async fixtures, so "auto" only paid pytest-asyncio's per-item collection
 # wrapper on ~3.8k synchronous tests for no benefit. Under "strict" an *unmarked*
-# async test does not silently skip — pytest 8 fails it outright with "async
+# async test does not silently skip — pytest fails it outright with "async
 # functions are not natively supported" — so this cannot hide a future async test.
+# Re-verified against pytest 9 + pytest-asyncio 1.x when the pin moved: an unmarked
+# async test still fails rather than passing or skipping.
 # To add one, decorate it with `@pytest.mark.asyncio`.
 asyncio_mode = "strict"
 testpaths = ["tests"]
