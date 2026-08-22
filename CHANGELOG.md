@@ -17,6 +17,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc26] — 2026-08-22
+
+### Fixed
+- **`provenance_hash` is reproducible across processes again (issue #600).** Identical
+  inputs produced two different hashes from one run to the next. Two independent causes.
+  First, provenance inputs were sorted by `name` alone, and names are not unique — an
+  ontology outside the hub root is recorded under its bare filename and reference modules
+  share basenames — so `sorted`'s stability left colliding entries in set-iteration order.
+  Second, and the one that actually drove the reported symptom, the domain namespace came
+  from `next(graph.subjects(RDF.type, OWL.Class))`: an arbitrary member of an unordered
+  store, sometimes an anonymous restriction blank node, whose string form has no `#` or
+  `/` and so fell through to the `urn:kairos:ontology:` placeholder. That is not just a
+  hash ingredient — `list_classes` uses the namespace to decide what counts as the
+  domain's own vocabulary, so a hub could compile against two different namespaces on
+  consecutive runs. Namespace candidates are now named classes only, sorted, and preferred
+  from the root ontology's own IRI over anything the import closure drags in; the
+  `owl:Ontology` pick beside it follows the same rule. **`provenance_hash` values change
+  once as a result.** Emitted dbt artifacts are unaffected (the hash appears nowhere in
+  them); `compile --format json` payloads and `project --target gold` parity output carry
+  the new value.
+- **The reference-models catalog overlay is additive-only again (issue #602).** DD-158
+  requires that the hub catalog's entries win and the overlay only supply resolutions the
+  hub does not already provide. Because overlays loaded last and wrote every mapping
+  variant unconditionally, a packaged entry silently replaced a hub's own mapping for the
+  same IRI — so a hub that deliberately points a reference-model IRI at a local TTL was
+  overridden without a diagnostic. Overlay entries now use `setdefault`, across all
+  normalized variants, and the flag propagates through `<nextCatalog>`. **Behaviour
+  change:** a hub whose local entry was previously being shadowed now resolves to its own
+  file.
+- **`compile --all --format json` always returns an array.** The shape used to depend on
+  how many domains the hub happened to have, so a script broke on hub shape alone. An
+  explicitly named single domain keeps the object shape.
+- **A gate refusal now appears in the JSON payload.** The DD-180, DD-169, DD-163 and
+  discovery gates return before a `CompileResult` exists, so a refused domain contributed
+  no JSON at all and simply vanished from the `--all` array — a consumer saw 13 of 14
+  entries with no machine-readable reason. Each gate now returns a payload with the same
+  keys, `succeeded: false`, and real diagnostics. **Behaviour change:** a single-domain
+  gate refusal now emits JSON where it previously emitted none.
+
+### Changed
+- **The reference-class index is cached across processes (issue #598, fix 2).** Resolving
+  it walks the whole reference corpus — ~17s on a 14-domain hub — and the answer is
+  identical for every domain, yet every fresh process paid it. It is now cached at
+  `<hub>/.cache/reference-index.json`. The key is corpus *content* — every catalog mapping
+  with its target's path, mtime and size, plus rewrite rules and `KAIROS_REFMODELS_ROOT` —
+  not the reference-models version, because a hub can extend or replace the effective
+  corpus at a fixed wheel version in several ways. Read by every command, **written only
+  by `--emit`**, which is the one mode DD-133 permits to write into the hub; the honest
+  consequence is that a read-only command benefits only after some `--emit` has warmed the
+  cache. On a 14-domain hub a warm `compile <domain> --check` drops from 32.1s to 8.5s.
+  `--no-cache` bypasses it.
+
+
 ## [5.13.0rc25] — 2026-08-21
 
 ### Fixed
