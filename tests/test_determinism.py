@@ -297,3 +297,47 @@ def test_provenance_hash_is_stable_across_hash_seeds():
         )
         digests.add(out.stdout.strip())
     assert len(digests) == 1, f"provenance_hash varied across hash seeds: {digests}"
+
+
+def test_domain_namespace_is_stable_across_hash_seeds(tmp_path):
+    """The compile namespace must not depend on graph iteration order (#600).
+
+    `next(graph.subjects(RDF.type, OWL.Class))` picked an arbitrary member of an
+    unordered store. An ontology with an anonymous class (any `owl:Restriction`, or
+    the bare blank node added here) could hand back a BNode, whose str() has no '#'
+    or '/', so the namespace silently fell back to the `urn:kairos:ontology:`
+    placeholder. The same hub then compiled under two different namespaces from one
+    run to the next, and `list_classes` saw a different vocabulary each time.
+    """
+    from .test_compiler_kernel import _hub
+
+    hub = _hub(tmp_path)
+    ttl = hub / "model" / "ontologies" / "party.ttl"
+    ttl.write_text(
+        ttl.read_text(encoding="utf-8") + "\n[] a owl:Class .\n",
+        encoding="utf-8",
+    )
+
+    program = (
+        "from pathlib import Path\n"
+        "from kairos_ontology.core.compiler import build_compile_plan\n"
+        f"plan = build_compile_plan(Path(r'{hub}'), 'party')\n"
+        "print(plan.scope.namespace)\n"
+    )
+    observed = set()
+    for seed in ("0", "1", "42", "12345", "777"):
+        env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONUTF8": "1"}
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            cwd=str(Path(__file__).parent.parent),
+        )
+        assert result.returncode == 0, result.stderr
+        observed.add(result.stdout.strip())
+
+    assert observed == {"https://example.test/party#"}, (
+        f"namespace varied with the hash seed: {observed}"
+    )

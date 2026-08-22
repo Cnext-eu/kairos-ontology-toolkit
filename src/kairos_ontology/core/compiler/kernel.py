@@ -536,8 +536,32 @@ def _ontology_symbols(
         raise CompileError(prefix_errors)
     graph = loaded.graph
     index = loaded.semantic_index
-    first_class = next(graph.subjects(RDF.type, OWL.Class), None)
-    first_class_uri = str(first_class or "")
+    # The namespace decides what `list_classes` treats as this domain's own vocabulary,
+    # so picking it must not depend on graph iteration order (#600). `next(graph.subjects(
+    # ...))` returned an arbitrary member of an unordered store: usually a named class,
+    # sometimes an anonymous restriction BNode -- whose str() has no '#' or '/', which
+    # silently fell through to the `urn:kairos:ontology:` placeholder. The same hub then
+    # compiled under two different namespaces from one run to the next.
+    #
+    # Deterministic and closure-aware: only named classes are candidates (a BNode never
+    # names a namespace), they are sorted, and a class from the root ontology's own IRI
+    # wins over one dragged in by the RDFS import closure -- otherwise the "first" class
+    # could be a reference-model term and the domain would adopt FIBO's namespace.
+    named_classes = sorted(
+        (
+            subject
+            for subject in graph.subjects(RDF.type, OWL.Class)
+            if isinstance(subject, URIRef)
+        ),
+        key=str,
+    )
+    root_iri = next(
+        (entry.ontology_iri for entry in loaded.manifest if entry.import_depth == 0), None
+    )
+    first_class_uri = next(
+        (str(c) for c in named_classes if root_iri and str(c).startswith(root_iri)),
+        str(named_classes[0]) if named_classes else "",
+    )
     namespace = (
         first_class_uri.rsplit("#", 1)[0] + "#"
         if "#" in first_class_uri
@@ -547,7 +571,20 @@ def _ontology_symbols(
             else "urn:kairos:ontology:"
         )
     )
-    ontology = next(graph.subjects(RDF.type, OWL.Ontology), URIRef(namespace.rstrip("#/")))
+    # Same ordering hazard: a closure holds many owl:Ontology subjects, and `version`
+    # below is read off whichever one this picks.
+    declared_ontologies = sorted(
+        (
+            subject
+            for subject in graph.subjects(RDF.type, OWL.Ontology)
+            if isinstance(subject, URIRef)
+        ),
+        key=str,
+    )
+    ontology = next(
+        (o for o in declared_ontologies if root_iri and str(o) == root_iri),
+        declared_ontologies[0] if declared_ontologies else URIRef(namespace.rstrip("#/")),
+    )
     version = _literal(graph, ontology, OWL.versionInfo, "0.0.0")
     classes: list[ResolvedClass] = []
     properties: dict[tuple[str, str], ResolvedProperty] = {}
