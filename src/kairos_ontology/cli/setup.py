@@ -1461,10 +1461,16 @@ def init_dataplatform(name, dest, platform, org_override):
     (repo_dir / ".dbt").mkdir(parents=True)
 
     # Template substitutions
+    # Upper-bounded below dbt Core 2.0 (the former "Fusion" engine, now in beta as of
+    # 2026-08 -- see dbt-labs/dbt-core's 2026-06-announcing-v2.md roadmap doc): it ships a
+    # stricter codified language spec than v1.x, and neither adapter has a 2.0-compatible
+    # release yet, so an unbounded floor-only pin would silently let a future `uv sync`
+    # resolve into it. Revisit this ceiling once the adapters publish 2.0-line releases and
+    # the generated dbt project has been validated against the new spec.
     adapter_map = {
-        "fabric-lakehouse": "dbt-fabric>=1.9.0",
-        "fabric-warehouse": "dbt-fabric>=1.9.0",
-        "databricks": "dbt-databricks>=1.9.0",
+        "fabric-lakehouse": "dbt-fabric>=1.9.0,<2.0.0",
+        "fabric-warehouse": "dbt-fabric>=1.9.0,<2.0.0",
+        "databricks": "dbt-databricks>=1.9.0,<2.0.0",
     }
     subs = {
         "{PROJECT_NAME}": project_name,
@@ -1473,7 +1479,7 @@ def init_dataplatform(name, dest, platform, org_override):
         "{HUB_VERSION}": hub_version,
         "{DATABASE}": "your_bronze_database",
         "{SCHEMA}": "your_bronze_schema",
-        "{DBT_ADAPTER}": adapter_map.get(platform, "dbt-fabric>=1.9.0"),
+        "{DBT_ADAPTER}": adapter_map.get(platform, "dbt-fabric>=1.9.0,<2.0.0"),
     }
 
     # Copy and template scaffold files
