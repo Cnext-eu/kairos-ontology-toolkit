@@ -1338,6 +1338,15 @@ def _managed_scaffold_map() -> dict[str, Path]:
         if scaffold_file.is_file():
             result[rel_path] = scaffold_file
 
+    # Modeling-feedback bundle: scaffold source lives under "import/" but is
+    # installed to ".import/" (leading dot) in the repo, so source and
+    # destination relative paths differ -- same pattern as copilot-instructions.md
+    # above, unlike the decisions/ entries where they happen to match.
+    for filename in ("README.md", "FEEDBACK-template.md.template"):
+        scaffold_file = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "insights" / filename
+        if scaffold_file.is_file():
+            result[f".import/businessdiscovery/insights/{filename}"] = scaffold_file
+
     skills = _SCAFFOLD_DIR / "skills"
     if skills.is_dir():
         for skill_dir in sorted(skills.iterdir()):
