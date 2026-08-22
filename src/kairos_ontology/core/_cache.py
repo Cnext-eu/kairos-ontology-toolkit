@@ -73,6 +73,15 @@ class SidecarCache:
         """Record a freshly computed result under ``key_hash``."""
         self._entries[key_hash] = result
 
+    def clear(self) -> None:
+        """Drop every entry held in memory (the next ``flush`` rewrites the file).
+
+        For a cache whose key covers *all* of its inputs, a superseded entry can never
+        be read again -- keeping it only grows the file. Per-table caches want the
+        opposite and should not call this.
+        """
+        self._entries.clear()
+
     def flush(self) -> None:
         """Persist the cache to disk (creates the ``.cache`` dir as needed)."""
         if not self.enabled:

@@ -550,3 +550,155 @@ class TestReportMemo:
 
         assert {d.domain for d in build_alignment_report(left).domains} == {"party"}
         assert {d.domain for d in build_alignment_report(right).domains} == {"booking"}
+
+
+# ---------------------------------------------------------------------------
+# Reference-index disk cache (#598 fix 2)
+# ---------------------------------------------------------------------------
+
+
+class TestReferenceIndexCache:
+    """Resolving the reference-class index walks the whole corpus (~17s on a real
+    hub) and is identical for every domain, so it is cached under ``<hub>/.cache/``.
+    Read by every command; written only by ``--emit``, because DD-133 Decision 2
+    forbids ``--check``/``--explain`` writing hub files.
+    """
+
+    CACHE = Path(".cache") / "reference-index.json"
+
+    @staticmethod
+    def _hub(tmp_path: Path) -> Path:
+        (tmp_path / "model" / "ontologies").mkdir(parents=True)
+        (tmp_path / "catalog-v001.xml").write_text(
+            '<?xml version="1.0"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"/>\n',
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_a_read_only_command_never_writes_the_cache(self, tmp_path, monkeypatch):
+        """DD-133: --check/--explain must leave the hub byte-identical."""
+        from kairos_ontology.core import alignment_report as module
+        from kairos_ontology.core import ontology_loader
+
+        hub = self._hub(tmp_path)
+        monkeypatch.setattr(ontology_loader, "CACHE_WRITE_ENABLED", False)
+        monkeypatch.setattr(module, "_reference_class_modules_uncached", lambda _c: {"A": "u#"})
+
+        assert module._reference_class_modules(hub) == {"A": "u#"}
+        assert not (hub / self.CACHE).exists()
+
+    def test_emit_warms_the_cache_and_later_reads_hit_it(self, tmp_path, monkeypatch):
+        from kairos_ontology.core import alignment_report as module
+        from kairos_ontology.core import ontology_loader
+
+        hub = self._hub(tmp_path)
+        calls = [0]
+
+        def counting(_catalog):
+            calls[0] += 1
+            return {"Carrier": "https://ref.example/party#"}
+
+        monkeypatch.setattr(module, "_reference_class_modules_uncached", counting)
+
+        # --emit is the one mode DD-133/140 lets write into the hub.
+        monkeypatch.setattr(ontology_loader, "CACHE_WRITE_ENABLED", True)
+        assert module._reference_class_modules(hub) == {"Carrier": "https://ref.example/party#"}
+        assert (hub / self.CACHE).is_file()
+
+        # A later read-only command reuses it without resolving again.
+        monkeypatch.setattr(ontology_loader, "CACHE_WRITE_ENABLED", False)
+        assert module._reference_class_modules(hub) == {"Carrier": "https://ref.example/party#"}
+        assert calls[0] == 1
+
+    def test_a_changed_corpus_invalidates_the_cache(self, tmp_path, monkeypatch):
+        """The key is corpus content, not the wheel version — a hub-local reference
+        TTL is part of the corpus and must invalidate when it changes.
+        """
+        from kairos_ontology.core import alignment_report as module
+        from kairos_ontology.core import ontology_loader
+
+        hub = self._hub(tmp_path)
+        (hub / "vendor").mkdir()
+        local = hub / "vendor" / "ref.ttl"
+        local.write_text("# v1\n", encoding="utf-8")
+        (hub / "catalog-v001.xml").write_text(
+            '<?xml version="1.0"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <uri name="https://ref.example/vendor" uri="vendor/ref.ttl"/>\n'
+            "</catalog>\n",
+            encoding="utf-8",
+        )
+        calls = [0]
+
+        def counting(_catalog):
+            calls[0] += 1
+            return {f"Class{calls[0]}": "https://ref.example/vendor#"}
+
+        monkeypatch.setattr(module, "_reference_class_modules_uncached", counting)
+        monkeypatch.setattr(ontology_loader, "CACHE_WRITE_ENABLED", True)
+
+        assert module._reference_class_modules(hub) == {"Class1": "https://ref.example/vendor#"}
+        local.write_text("# v2 — materially longer, so size changes too\n", encoding="utf-8")
+        assert module._reference_class_modules(hub) == {"Class2": "https://ref.example/vendor#"}
+        assert calls[0] == 2
+
+    def test_no_cache_bypasses_the_disk_cache(self, tmp_path, monkeypatch):
+        from kairos_ontology.core import alignment_report as module
+        from kairos_ontology.core import ontology_loader
+
+        hub = self._hub(tmp_path)
+        calls = [0]
+
+        def counting(_catalog):
+            calls[0] += 1
+            return {"A": "u#"}
+
+        monkeypatch.setattr(module, "_reference_class_modules_uncached", counting)
+        monkeypatch.setattr(ontology_loader, "CACHE_WRITE_ENABLED", True)
+        module._reference_class_modules(hub)
+
+        monkeypatch.setattr(ontology_loader, "CACHE_ENABLED", False)
+        module._reference_class_modules(hub)
+        assert calls[0] == 2
+
+    def test_the_cache_file_holds_a_single_entry(self, tmp_path, monkeypatch):
+        """The key covers every input, so a superseded entry can never be read again."""
+        import json
+
+        from kairos_ontology.core import alignment_report as module
+        from kairos_ontology.core import ontology_loader
+
+        hub = self._hub(tmp_path)
+        (hub / "vendor").mkdir()
+        local = hub / "vendor" / "ref.ttl"
+        (hub / "catalog-v001.xml").write_text(
+            '<?xml version="1.0"?>\n'
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+            '  <uri name="https://ref.example/vendor" uri="vendor/ref.ttl"/>\n'
+            "</catalog>\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(module, "_reference_class_modules_uncached", lambda _c: {"A": "u#"})
+        monkeypatch.setattr(ontology_loader, "CACHE_WRITE_ENABLED", True)
+
+        for text in ("# one\n", "# two, a different length\n", "# three, longer again ---\n"):
+            local.write_text(text, encoding="utf-8")
+            module._reference_class_modules(hub)
+
+        entries = json.loads((hub / self.CACHE).read_text(encoding="utf-8"))["entries"]
+        assert len(entries) == 1
+
+    def test_an_empty_result_is_never_persisted(self, tmp_path, monkeypatch):
+        """``{}`` is the defensive answer for a broken resolver; caching it would
+        make one bad run stick until the corpus changed.
+        """
+        from kairos_ontology.core import alignment_report as module
+        from kairos_ontology.core import ontology_loader
+
+        hub = self._hub(tmp_path)
+        monkeypatch.setattr(module, "_reference_class_modules_uncached", lambda _c: {})
+        monkeypatch.setattr(ontology_loader, "CACHE_WRITE_ENABLED", True)
+
+        assert module._reference_class_modules(hub) == {}
+        assert not (hub / self.CACHE).exists()
