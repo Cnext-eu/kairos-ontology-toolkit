@@ -1000,6 +1000,11 @@ def test_new_repo_includes_workflow(tmp_path):
     assert wf.is_file()
     content = wf.read_text(encoding="utf-8")
     assert "kairos-ontology update --check" in content
+    # #589: an unpinned setup-uv version queries github.com's "latest release" API,
+    # which 404s on GitHub Enterprise Server (astral-sh/uv doesn't exist there).
+    assert "astral-sh/setup-uv@v10.0.1" in content
+    assert 'version: "0.12.5"' in content
+    assert "uv sync --locked" in content
 
 
 def test_init_includes_workflow(tmp_path):
@@ -1014,6 +1019,9 @@ def test_init_includes_workflow(tmp_path):
             assert wf.is_file()
             content = wf.read_text(encoding="utf-8")
             assert "kairos-ontology update --check" in content
+            assert "astral-sh/setup-uv@v10.0.1" in content
+            assert 'version: "0.12.5"' in content
+            assert "uv sync --locked" in content
 
 
 def test_init_release_workflow_uses_supported_project_options(tmp_path):
@@ -1042,6 +1050,36 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             # #598: --emit has required --confirm-emit since #264. A scaffolded
             # release workflow that omits it fails on its first domain.
             assert "--confirm-emit" in content
+            # #589: same GHES setup-uv/lockfile fixes as managed-check.yml.
+            assert "astral-sh/setup-uv@v10.0.1" in content
+            assert 'version: "0.12.5"' in content
+            assert "uv sync --locked" in content
+
+
+def test_init_copilot_setup_steps_workflow_avoids_ghes_and_lockfile_failures(tmp_path):
+    """#589: copilot-setup-steps.yml must not use retired/broken CI patterns.
+
+    ``setup-uv@v4`` with no pinned version 404s against GitHub Enterprise Server's
+    API when it looks up the "latest" uv release. ``npm ci`` hard-fails because the
+    scaffold never ships or generates a ``package-lock.json`` alongside the
+    scaffolded ``package.json``. Node 20 is deprecated on GitHub-hosted runners.
+    """
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0
+            wf = Path(".github/workflows/copilot-setup-steps.yml")
+            assert wf.is_file()
+            content = wf.read_text(encoding="utf-8")
+            assert "astral-sh/setup-uv@v10.0.1" in content
+            assert 'version: "0.12.5"' in content
+            assert "uv sync --locked" in content
+            assert 'node-version: "22"' in content
+            assert 'node-version: "20"' not in content
+            assert "npm install" in content
+            assert "npm ci" not in content
 
 
 def test_scaffold_emit_invocations_pass_confirm_emit():

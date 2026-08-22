@@ -22,10 +22,15 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          # An unpinned version queries github.com's "latest release" API, which
+          # 404s from a GitHub Enterprise Server host (astral-sh/uv doesn't exist
+          # there). Pinning a known-good version skips that lookup entirely.
+          version: "0.12.5"
 
       - name: Install toolkit
-        run: uv sync
+        run: uv sync --locked
 
       - name: Verify managed files
         run: uv run kairos-ontology update --check
