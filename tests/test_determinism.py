@@ -223,3 +223,77 @@ def test_reprojection_all_targets_stable_and_reports_untimestamped(tmp_path, mon
     assert first == second
     assert first.provenance_hash == second.provenance_hash
     assert render_compile_plan(first) == render_compile_plan(second)
+
+
+# ---------------------------------------------------------------------------
+# provenance_hash is order-independent (#600)
+# ---------------------------------------------------------------------------
+
+
+def _scope(inputs):
+    from kairos_ontology.core.compiler.scope import BuildScope
+
+    return BuildScope(
+        domain="party",
+        hub_root="/hub",
+        api_version="kairos.eu/v5",
+        adapter="fabric",
+        namespace="https://example.test/",
+        toolkit_version="0.0.0",
+        inputs=tuple(inputs),
+    )
+
+
+def test_provenance_hash_ignores_input_order_when_names_collide():
+    """Two ontologies can share a provenance *name* and still differ in content.
+
+    An ontology outside the hub root is recorded under its bare filename, and
+    reference-model modules from different families share basenames. Sorting on the
+    name alone left those colliding entries in insertion order — which follows the
+    closure's set iteration, so the same hub hashed differently from one process to
+    the next depending on PYTHONHASHSEED.
+    """
+    from kairos_ontology.core.compiler.scope import ProvenanceInput
+
+    a = ProvenanceInput("consignment.ttl", "# RAIL consignment\n")
+    b = ProvenanceInput("consignment.ttl", "# ROAD consignment\n")
+    c = ProvenanceInput("party.ttl", "# party\n")
+
+    assert _scope([a, b, c]).provenance_hash() == _scope([b, a, c]).provenance_hash()
+    assert _scope([c, b, a]).provenance_hash() == _scope([a, b, c]).provenance_hash()
+
+
+def test_provenance_hash_still_separates_different_content():
+    """Order-independence must not blunt the hash into ignoring a real edit."""
+    from kairos_ontology.core.compiler.scope import ProvenanceInput
+
+    before = [ProvenanceInput("x.ttl", "one"), ProvenanceInput("x.ttl", "two")]
+    after = [ProvenanceInput("x.ttl", "one"), ProvenanceInput("x.ttl", "CHANGED")]
+
+    assert _scope(before).provenance_hash() != _scope(after).provenance_hash()
+
+
+def test_provenance_hash_is_stable_across_hash_seeds():
+    """The reported symptom: same inputs, different process, different hash.
+
+    Builds the scope from a *set* (whose iteration order PYTHONHASHSEED perturbs) in
+    two subprocesses with different seeds. An in-process assertion cannot catch this —
+    one process has one seed.
+    """
+    program = (
+        "from kairos_ontology.core.compiler.scope import BuildScope, ProvenanceInput\n"
+        "names = {'a.ttl', 'b.ttl', 'c.ttl', 'd.ttl', 'e.ttl', 'f.ttl'}\n"
+        # One shared name with distinct content is what makes order observable.
+        "items = [ProvenanceInput('dup.ttl', n) for n in names]\n"
+        "print(BuildScope(domain='d', hub_root='/h', api_version='v5', adapter='fabric',\n"
+        "                 namespace='ns', toolkit_version='0', inputs=tuple(items))\n"
+        "      .provenance_hash())\n"
+    )
+    digests = set()
+    for seed in ("0", "1", "42", "12345"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        out = subprocess.run(
+            [sys.executable, "-c", program], capture_output=True, text=True, env=env, check=True
+        )
+        digests.add(out.stdout.strip())
+    assert len(digests) == 1, f"provenance_hash varied across hash seeds: {digests}"
