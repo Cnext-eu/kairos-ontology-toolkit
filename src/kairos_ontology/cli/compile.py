@@ -571,21 +571,29 @@ def compile_cmd(
 
     payloads: list[dict[str, Any]] = []
     failed: list[str] = []
-    for one in selected:
-        succeeded, payload = _compile_one_domain(
-            hub,
-            one,
-            mode,
-            check_mode=check_mode,
-            explain_mode=explain_mode,
-            emit_mode=emit_mode,
-            no_cache=no_cache,
-            output_format=output_format,
-        )
-        if payload is not None:
-            payloads.append(payload)
-        if not succeeded:
-            failed.append(one)
+    # DD-133/140: --emit is the one mode allowed to write into the hub, so it is the
+    # one mode that may populate the on-disk caches. The scope has to cover the gates,
+    # not just compile_domain: the DD-180/DD-169 gates are what resolve the reference
+    # corpus, so the reference-index cache is computed there and would never be
+    # persisted if writes only opened later. --check/--explain get scope(False) and
+    # remain write-free. Scoped, not assigned, so the flag cannot leak into unrelated
+    # later calls sharing this process.
+    with ontology_loader.cache_write_scope(not no_cache and mode is CompileMode.EMIT):
+        for one in selected:
+            succeeded, payload = _compile_one_domain(
+                hub,
+                one,
+                mode,
+                check_mode=check_mode,
+                explain_mode=explain_mode,
+                emit_mode=emit_mode,
+                no_cache=no_cache,
+                output_format=output_format,
+            )
+            if payload is not None:
+                payloads.append(payload)
+            if not succeeded:
+                failed.append(one)
 
     if output_format == "json" and payloads:
         # An explicitly named single domain keeps the exact object shape every existing
@@ -798,12 +806,9 @@ def _compile_one_domain(
             ],
         )
 
-    # DD-133/140: --check/--explain must write nothing to the hub; only --emit may
-    # populate the on-disk ontology-parse cache, and only for the duration of this one
-    # call (see cache_write_scope) so the flag never leaks into unrelated later
-    # load_ontology calls sharing this process.
-    with ontology_loader.cache_write_scope(not no_cache and mode is CompileMode.EMIT):
-        result = compile_domain(hub, domain, mode)
+    # Cache-write permission is opened by the caller, around the whole domain loop, so
+    # that it also covers the gates above (see compile_cmd).
+    result = compile_domain(hub, domain, mode)
     if check_mode and explain_mode:
         # Both diagnostics and the explain report are already computed as part of the
         # same plan (CompileResult always carries both), so this is a free relabel —
