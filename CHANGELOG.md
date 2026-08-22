@@ -17,6 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc28] — 2026-08-22
+
+### Fixed
+- **Scaffolded (and this toolkit's own) CI workflows failed on GitHub Enterprise Server
+  (issue #589).** An unpinned `astral-sh/setup-uv@v4` queries `github.com`'s "latest release"
+  API for uv's version, which 404s on GHES since `astral-sh/uv` doesn't exist there. Pinned
+  `setup-uv@v10.0.1` with an explicit uv version everywhere it's used (scaffolded
+  `managed-check.yml`/`release-projections.yml`/`copilot-setup-steps.yml`, and this toolkit's
+  own `ci.yml`/`release.yml`/`dependency-audit.yml`/`refmodels-pin.yml`). Also: scaffolded
+  workflows now use `uv sync --locked` (fails loudly on a stale lockfile instead of silently
+  re-resolving), switched the npm step from `npm ci` to `npm install` (no lockfile is ever
+  shipped alongside the scaffolded `package.json`, so `npm ci` always hard-failed), and bumped
+  scaffolded `setup-node` to Node 22 (Node 20 is deprecated on GitHub-hosted runners).
+
 ## [5.13.0rc27] — 2026-08-22
 
 ### Fixed
