@@ -150,6 +150,69 @@ class TestCatalogResolverWithReferenceModels:
                 sys.modules["kairos_ontology_referencemodels"] = original
 
 
+    # -- overlay precedence (issue #602) ----------------------------------
+
+    @staticmethod
+    def _catalog(path, entries):
+        lines = [
+            '<?xml version="1.0"?>',
+            '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">',
+        ]
+        lines += [f'  <uri name="{name}" uri="{target}"/>' for name, target in entries]
+        lines.append("</catalog>")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_hub_entry_wins_over_a_colliding_overlay_entry(self, tmp_path):
+        """DD-158: the overlay is additive-only -- the hub catalog's entries win.
+
+        A hub may deliberately map a reference-model IRI onto its own TTL (the
+        acme-hub scenario does exactly this). Loading the overlay last used to
+        overwrite that mapping, so the compile silently resolved against different
+        bytes than the author asked for, with no diagnostic.
+        """
+        from kairos_ontology.core.catalog_utils import CatalogResolver
+
+        iri = "https://refmodel.example/ontology/party"
+        (tmp_path / "hub").mkdir()
+        (tmp_path / "hub" / "mine.ttl").write_text("# hub copy\n", encoding="utf-8")
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "theirs.ttl").write_text("# package copy\n", encoding="utf-8")
+
+        hub = self._catalog(tmp_path / "hub" / "catalog-v001.xml", [(iri, "mine.ttl")])
+        pkg = self._catalog(tmp_path / "pkg" / "catalog-v001.xml", [(iri, "theirs.ttl")])
+
+        resolver = CatalogResolver(hub, extra_catalogs=[pkg])
+        mine = (tmp_path / "hub" / "mine.ttl").resolve()
+
+        assert resolver.mappings[iri] == mine
+        # Every normalized variant must agree; winning the exact lookup but losing
+        # the trailing-#/slash ones would be its own bug.
+        assert resolver.mappings[iri + "#"] == mine
+        assert resolver.mappings[iri + "/"] == mine
+
+    def test_overlay_still_supplies_iris_the_hub_does_not_declare(self, tmp_path):
+        """Additive-only must stay additive -- the overlay is the point."""
+        from kairos_ontology.core.catalog_utils import CatalogResolver
+
+        (tmp_path / "hub").mkdir()
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "fibo.ttl").write_text("# fibo\n", encoding="utf-8")
+
+        hub = self._catalog(tmp_path / "hub" / "catalog-v001.xml", [])
+        pkg = self._catalog(
+            tmp_path / "pkg" / "catalog-v001.xml", [("https://ref.example/fibo", "fibo.ttl")]
+        )
+
+        resolver = CatalogResolver(hub, extra_catalogs=[pkg])
+
+        assert (
+            resolver.mappings["https://ref.example/fibo"]
+            == (tmp_path / "pkg" / "fibo.ttl").resolve()
+        )
+
+
 class TestRelativeIdentityPackagePaths:
     def test_relative_identity_from_package_path(self, fake_refmodels_pkg):
         """_relative_identity produces ontology-reference-models/... paths from package.
