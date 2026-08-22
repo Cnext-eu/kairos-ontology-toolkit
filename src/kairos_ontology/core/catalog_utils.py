@@ -138,7 +138,10 @@ class CatalogResolver:
         self.diagnostics: List[Dict[str, str]] = []
         self._load_catalog_file(self.catalog_path)
         for extra in extra_catalogs or []:
-            self._load_catalog_file(extra)
+            # DD-158: the overlay is additive-only. The hub catalog is the root and its
+            # entries win; an overlay may only supply resolutions the hub does not
+            # already provide (issue #602).
+            self._load_catalog_file(extra, overlay=True)
         # Re-sort after loading extra catalogs' rewrite rules
         self._rewrite_rules.sort(key=lambda r: len(r[0]), reverse=True)
 
@@ -165,8 +168,14 @@ class CatalogResolver:
             pass
         return cls(catalog_path, extra_catalogs=extra)
 
-    def _load_catalog_file(self, path: Path):
-        """Parse a single catalog file, following <nextCatalog> references."""
+    def _load_catalog_file(self, path: Path, *, overlay: bool = False):
+        """Parse a single catalog file, following <nextCatalog> references.
+
+        *overlay* marks this file as an additive layer beneath the hub catalog
+        (DD-158). Overlay entries are recorded with ``setdefault``, so a hub that
+        deliberately maps a reference-model IRI to its own TTL keeps that mapping
+        instead of having the packaged catalog silently replace it (issue #602).
+        """
         path = path.resolve()
         if path in self._visited_catalogs:
             self.diagnostics.append(
@@ -208,20 +217,26 @@ class CatalogResolver:
                 # them rather than every catalog reached via <nextCatalog>.
                 self.entries.append(CatalogEntry(uri_name, local_path, path, is_absolute))
 
+                # An overlay only fills gaps; the hub catalog, loaded first, keeps
+                # whatever it already declared. Applied to every normalized variant,
+                # not just the exact name, or the hub would win the exact lookup and
+                # lose the trailing-slash/hash ones.
+                record = self.mappings.setdefault if overlay else self.mappings.__setitem__
+
                 # Store exact mapping
-                self.mappings[uri_name] = local_path
+                record(uri_name, local_path)
 
                 # Normalize URI (ensure trailing slash consistency)
                 normalized_uri = uri_name.rstrip("/#") + "/"
-                self.mappings[normalized_uri] = local_path
+                record(normalized_uri, local_path)
 
                 # Also add without trailing slash for flexibility
-                self.mappings[normalized_uri.rstrip("/")] = local_path
+                record(normalized_uri.rstrip("/"), local_path)
 
                 # Hash normalization: store both with and without trailing #
                 bare = uri_name.rstrip("#")
-                self.mappings[bare] = local_path
-                self.mappings[bare + "#"] = local_path
+                record(bare, local_path)
+                record(bare + "#", local_path)
 
         # Follow <nextCatalog> references
         for next_elem in root.findall(f"{self.CATALOG_NS}nextCatalog"):
@@ -229,7 +244,8 @@ class CatalogResolver:
             if next_catalog:
                 next_path = (catalog_dir / next_catalog).resolve()
                 if next_path.exists():
-                    self._load_catalog_file(next_path)
+                    # A catalog chained from an overlay is still overlay material.
+                    self._load_catalog_file(next_path, overlay=overlay)
                 else:
                     self.diagnostics.append(
                         {

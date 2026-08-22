@@ -29,6 +29,7 @@ the aligner declined to map for that reason.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -333,21 +334,135 @@ def source_sample_presence(hub_root: Path) -> dict[tuple[str, str, str], bool]:
     return presence
 
 
+#: Sidecar cache file name (under ``<hub>/.cache/``) for the resolved reference-class
+#: index. One entry only: the key covers every input, so a superseded entry is dead.
+_REFERENCE_INDEX_CACHE = "reference-index"
+
+
+def _hub_catalog_path(hub_root: Path) -> Path | None:
+    """Locate the hub catalog the reference corpus resolves through."""
+    catalog = Path(hub_root) / "ontology-hub" / "catalog-v001.xml"
+    if catalog.exists():
+        return catalog
+    catalog = Path(hub_root) / "catalog-v001.xml"
+    return catalog if catalog.exists() else None
+
+
+def _reference_corpus_fingerprint(catalog_path: Path) -> str | None:
+    """Fingerprint the *effective* reference corpus, or ``None`` if it cannot be read.
+
+    Deliberately not the reference-models distribution version. The corpus is not a
+    function of the wheel: a hub can point ``<uri>`` entries at its own TTLs (anything
+    resolving outside ``<hub>/model/ontologies/`` counts as reference material, see
+    ``class_anchoring._is_reference``), chain further catalogs with ``<nextCatalog>``,
+    add ``rewriteURI`` rules, or replace the corpus wholesale via
+    ``KAIROS_REFMODELS_ROOT``. A version-keyed cache would serve a stale index in every
+    one of those cases.
+
+    So the key is content: every catalog mapping with its target's ``(path, mtime, size)``,
+    the rewrite rules, the env override, and the distribution version as a backstop.
+    Building the resolver parses XML only -- negligible against the Turtle parse this
+    exists to avoid.
+    """
+    try:
+        from .catalog_utils import CatalogResolver
+
+        resolver = CatalogResolver.with_reference_models(Path(catalog_path))
+    except Exception:  # defensive: a broken catalog must not fail the report
+        return None
+
+    stamped: list[list[Any]] = []
+    for uri, target in sorted(resolver.mappings.items()):
+        try:
+            stat = Path(target).stat()
+            stamped.append([uri, str(target), stat.st_mtime_ns, stat.st_size])
+        except OSError:  # a dangling entry is itself part of the state
+            stamped.append([uri, str(target), None, None])
+
+    try:
+        from importlib.metadata import version as _distribution_version
+
+        refmodels_version = _distribution_version("kairos-ontology-referencemodels")
+    except Exception:
+        refmodels_version = ""
+
+    return compute_entry_hash(
+        {
+            "mappings": stamped,
+            "rewrites": sorted(
+                [str(prefix), str(replacement), str(base)]
+                for prefix, replacement, base in getattr(resolver, "_rewrite_rules", ())
+            ),
+            "refmodels_root": os.environ.get("KAIROS_REFMODELS_ROOT", ""),
+            "refmodels_version": refmodels_version,
+        }
+    )
+
+
 def _reference_class_modules(hub_root: Path) -> dict[str, str]:
     """Map every reference-model class name to the module URI that declares it.
 
-    Resolves live through the DD-173 canonical path, so it reflects what the hub
-    can actually reach rather than a snapshot. Returns empty on any failure: the
+    Cached on disk under ``<hub>/.cache/`` (#598). Resolving this walks the whole
+    reference corpus -- ~17s on a 14-domain hub, and identical for every domain -- so
+    the in-process memo on :func:`build_alignment_report` removes repeats within one
+    command but every fresh process still paid it.
+
+    **The cache is read by every command but written only by ``--emit``.** DD-133
+    Decision 2 is explicit that ``--check``/``--explain`` never write hub files, so
+    writes are gated on ``ontology_loader.CACHE_WRITE_ENABLED`` -- the flag
+    ``compile_cmd`` turns on solely inside ``cache_write_scope`` for ``--emit``, the one
+    place DD-133/140 already permit hub writes. The honest consequence: a read-only
+    command gets the speedup only after some ``--emit`` has warmed the cache, and a hub
+    that never emits sees no change. That is the price of not owning machine-level
+    state, which DD-158 rejected for the reference models for the same reasons.
+    """
+    from . import ontology_loader
+    from ._cache import open_cache
+
+    catalog = _hub_catalog_path(hub_root)
+    if catalog is None:
+        return {}
+    if not ontology_loader.CACHE_ENABLED:
+        return _reference_class_modules_uncached(catalog)
+
+    fingerprint = _reference_corpus_fingerprint(catalog)
+    cache = None
+    if fingerprint is not None:
+        try:
+            cache = open_cache(Path(hub_root), _REFERENCE_INDEX_CACHE)
+            hit = cache.get(fingerprint)
+            if isinstance(hit, dict):
+                return {str(name): str(module) for name, module in hit.items()}
+        except Exception:  # an unreadable cache is a miss, never an error
+            cache = None
+
+    modules = _reference_class_modules_uncached(catalog)
+
+    if (
+        cache is not None
+        and fingerprint is not None
+        and modules  # never persist the empty defensive result
+        and ontology_loader.CACHE_WRITE_ENABLED
+    ):
+        try:
+            cache.clear()
+            cache.put(fingerprint, modules)
+            cache.flush()
+        except Exception:  # a cache we cannot write is not a compile failure
+            pass
+    return modules
+
+
+def _reference_class_modules_uncached(catalog: Path) -> dict[str, str]:
+    """Resolve the reference-class index live. See :func:`_reference_class_modules`.
+
+    Resolves through the DD-173 canonical path, so it reflects what the hub can
+    actually reach rather than a snapshot. Returns empty on any failure: the
     unanchored tables are still worth reporting without the pointer.
     """
     try:
         from .class_anchoring import read_reference_terms
 
-        catalog = Path(hub_root) / "ontology-hub" / "catalog-v001.xml"
-        if not catalog.exists():
-            catalog = Path(hub_root) / "catalog-v001.xml"
-        if not catalog.exists():
-            return {}
         modules: dict[str, str] = {}
         for term in read_reference_terms(catalog):
             if getattr(term, "kind", "") != "class":

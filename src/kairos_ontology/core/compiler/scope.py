@@ -53,7 +53,16 @@ class BuildScope:
         )
         hasher.update(header.encode("utf-8"))
         hasher.update(b"\x00")
-        for item in sorted(self.inputs, key=lambda i: i.name):
+        # Sort on (name, content), not name alone (#600). Names are not unique: an
+        # ontology outside the hub root is recorded under its bare filename (see
+        # kernel.py's ontology_paths loop), and reference modules from different
+        # families share basenames. `sorted` is stable, so a name-only key left
+        # colliding inputs in *insertion* order -- which follows the closure's set
+        # iteration and therefore varies with PYTHONHASHSEED. Identical inputs then
+        # hashed differently from one process to the next. Adding content makes the
+        # order total: a tie now means same name *and* same bytes, so the two
+        # contribute identically and their relative order cannot move the digest.
+        for item in sorted(self.inputs, key=lambda i: (i.name, i.content)):
             hasher.update(item.name.encode("utf-8"))
             hasher.update(b"\x1f")
             hasher.update(item.content.encode("utf-8"))
