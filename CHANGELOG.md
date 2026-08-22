@@ -17,6 +17,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.13.0rc29] — 2026-08-22
+
+### Added
+- **`kairos-ontology feedback new/resolve/list/sync-index` (issue #588).** A lighter-weight,
+  OKF-style sibling of the Decision Log for running design/business observations captured
+  before (or instead of) they become a `kairos-ontology decision` — replacing the single
+  hand-maintained `modelingfeedback.md` scratchpad with one toolkit-managed file per
+  observation. Records (`HUB-FB-*.md`) live under `.import/businessdiscovery/insights/`,
+  deliberately kept at that existing location so they keep flowing into the glossary via
+  `kairos-design-discovery` exactly as the single-file scratchpad did, with no
+  discovery-pipeline changes. Simpler than a Decision Record by design: `open`/`resolved`
+  status only (no lifecycle/materiality state machine, no supersession graph), and evidence
+  is a warning when absent, never required. `feedback resolve <id> --note ...` is the one
+  new verb — it rejects resolving an already-resolved record rather than overwriting a
+  prior note.
+
 ## [5.13.0rc28] — 2026-08-22
 
 ### Fixed
