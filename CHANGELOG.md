@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DD-140 amendment for the deferred typed-seeds design and a forward-looking note on
   seed sourcing.
 
+## [5.13.0rc30] — 2026-08-23
+
 ### Fixed
 - **DDL nullability for FK/surrogate columns ignored `missingParent: null` (issue #609).**
   A relationship declaring `missingParent: null` correctly produced a nullable `_sk`
