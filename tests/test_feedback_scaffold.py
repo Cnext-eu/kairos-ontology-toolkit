@@ -8,7 +8,7 @@ from pathlib import Path
 from kairos_ontology.cli.shared import _SCAFFOLD_DIR, _managed_scaffold_map
 from kairos_ontology.core.feedback_records import build_index_markdown, validate_feedback_bundle
 
-FEEDBACK_SCAFFOLD = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "insights"
+FEEDBACK_SCAFFOLD = _SCAFFOLD_DIR / "import" / "modeling" / "feedback"
 
 
 def test_feedback_scaffold_source_files_exist() -> None:
@@ -21,9 +21,9 @@ def test_feedback_scaffold_source_files_exist() -> None:
 def test_feedback_scaffold_managed_registry_entries() -> None:
     managed = _managed_scaffold_map()
 
-    assert ".import/businessdiscovery/insights/README.md" in managed
-    assert ".import/businessdiscovery/insights/FEEDBACK-template.md.template" in managed
-    assert ".import/businessdiscovery/insights/index.md" not in managed
+    assert ".import/modeling/feedback/README.md" in managed
+    assert ".import/modeling/feedback/FEEDBACK-template.md.template" in managed
+    assert ".import/modeling/feedback/index.md" not in managed
 
 
 def test_empty_feedback_scaffold_validates_cleanly(tmp_path: Path) -> None:

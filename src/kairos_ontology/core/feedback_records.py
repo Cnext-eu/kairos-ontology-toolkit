@@ -9,11 +9,13 @@ resolved between alternatives, a feedback record is just an observation worth ke
 so there is no materiality/lifecycle state machine, no supersession graph, and evidence
 is never mandatory.
 
-Records live under ``.import/businessdiscovery/insights/`` (a sibling of
-``ontology-hub/``, not inside it) so they keep being picked up as ordinary
-business-discovery input by ``kairos-design-discovery`` — the same property the single
-hand-maintained ``modelingfeedback.md`` file already had, just with one file per
-observation instead of one growing file.
+Records live under ``.import/modeling/feedback/`` (a sibling of ``ontology-hub/``, not
+inside it) — a toolkit-managed, git-tracked location for OKF-style structured records
+distinct from raw client evidence under ``.import/businessdiscovery/`` (#591). Originally
+placed at ``.import/businessdiscovery/insights/`` (#608); relocated because that path
+both misdescribed the content (these are ontology-modeling observations, not
+business-discovery evidence) and sat inside a blanket-gitignored tree with no tracking
+carve-out.
 
 Source-path resolution (``_is_local_path``/``_source_citation_resolves``) and the
 provenance/timestamp helpers (``rfc3339_now``, ``producer_actor``) are reused directly
@@ -172,11 +174,11 @@ def validate_feedback_bundle(
 
     An absent bundle directory yields an empty, passing result (the capability is
     opt-in). *hub_root* is used only to resolve local ``sources[].resource`` paths
-    (feedback records live under ``.import/businessdiscovery/insights/``, a repo-root
-    sibling of the hub, not inside it, so it cannot be derived from *feedback_path*
-    itself the way the Decision Log derives it from ``<hub_root>/decisions``) --
-    callers that already know the hub root should pass it explicitly; a best-effort
-    lookup is attempted otherwise, only affecting the accuracy of source-resolution
+    (feedback records live under ``.import/modeling/feedback/``, a repo-root sibling
+    of the hub, not inside it, so it cannot be derived from *feedback_path* itself
+    the way the Decision Log derives it from ``<hub_root>/decisions``) -- callers
+    that already know the hub root should pass it explicitly; a best-effort lookup
+    is attempted otherwise, only affecting the accuracy of source-resolution
     warnings.
     """
     result = FeedbackValidationResult(feedback_path=feedback_path)

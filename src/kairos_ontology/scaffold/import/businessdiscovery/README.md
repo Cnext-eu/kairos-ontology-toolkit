@@ -29,6 +29,20 @@ company operates before any modeling or mapping begins.
 3. The glossary then helps **kairos-design-mapping** match source columns to
    domain properties.
 
+## Naming and updates
+
+Drop files as **new, dated, immutable snapshots** — recommended pattern
+`YYMMDD_<topic>.<ext>` (e.g. `260823_pricing-model.xlsx`). **Never edit a file already
+dropped here in place.** If a document needs correcting or extending, drop a new dated
+file; the original stays as the historical record.
+
+This matters because `_extractions/*.extraction.yaml` provenance (`source_sha256`,
+`source_path`) cites a specific document — mutating it in place silently invalidates
+that provenance without leaving a trace. `kairos-ontology discovery-status` reports a
+previously-`OK` document as **CHANGED** the moment its hash no longer matches; treat
+that as the signal that this convention was violated, and add a new dated file instead
+of continuing to edit the old one.
+
 ## Per-document extraction tracking
 
 Every document dropped here is processed **once** and recorded as a per-document

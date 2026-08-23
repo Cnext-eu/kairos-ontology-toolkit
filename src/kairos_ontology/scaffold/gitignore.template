@@ -24,8 +24,14 @@ ontology-hub-publish/**
 .idea/
 *.swp
 
-# Raw client evidence (toolkit-created convention)
-.import/
+# Raw client evidence (toolkit-created convention). Matched as `**/.import/*` rather
+# than `.import/` so the negation below can apply -- git never descends into a
+# directory matched by a bare `dir/` pattern, so `.import/modeling/` could not
+# otherwise be un-ignored (#591).
+**/.import/*
+# ...except toolkit-managed, structured records under .import/modeling/ (#591) --
+# these are OKF-style records with their own provenance, not disposable exports.
+!**/.import/modeling/
 
 # Toolkit performance caches (analyse-sources/propose-alignment, ontology-closure parse
 # cache) -- content-hash keyed, safe to delete anytime, never affects compiled output

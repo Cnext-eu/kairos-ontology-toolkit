@@ -376,6 +376,30 @@ def _resolve_import_dir(cwd: Path, hub_root: Path | None) -> Path:
     return cwd / rel
 
 
+def _resolve_modeling_dir(cwd: Path, hub_root: Path | None, subdir: str) -> Path:
+    """Locate a toolkit-managed OKF-style record directory under ``.import/modeling/``.
+
+    Distinct from :func:`_resolve_import_dir`: ``.import/modeling/`` holds structured,
+    git-tracked records the toolkit itself authors (e.g. modeling-feedback), not raw
+    client evidence. Both live under ``.import/`` at the repository root (a sibling of
+    ``ontology-hub/``) and resolve the same dual layout (DD-064) so a command works both
+    from the repo root and from inside ``ontology-hub/``.
+
+    Returns the first existing candidate, or ``cwd/.import/modeling/<subdir>`` as a
+    stable fallback when none exist.
+    """
+    rel = Path(".import") / "modeling" / subdir
+    candidates = [
+        cwd / rel,
+        (hub_root.parent / rel) if hub_root else None,
+        (hub_root / rel) if hub_root else None,
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_dir():
+            return candidate
+    return cwd / rel
+
+
 _TOOLKIT_REPO = "Cnext-eu/kairos-ontology-toolkit"
 
 
@@ -1338,14 +1362,19 @@ def _managed_scaffold_map() -> dict[str, Path]:
         if scaffold_file.is_file():
             result[rel_path] = scaffold_file
 
-    # Modeling-feedback bundle: scaffold source lives under "import/" but is
-    # installed to ".import/" (leading dot) in the repo, so source and
-    # destination relative paths differ -- same pattern as copilot-instructions.md
-    # above, unlike the decisions/ entries where they happen to match.
+    # Modeling — toolkit-managed, git-tracked OKF-style records. Scaffold source
+    # lives under "import/" but is installed to ".import/" (leading dot) in the
+    # repo, so source and destination relative paths differ -- same pattern as
+    # copilot-instructions.md above, unlike the decisions/ entries where they
+    # happen to match. Originally ".import/businessdiscovery/insights/" (#608);
+    # relocated to ".import/modeling/feedback/" (#591).
+    modeling_readme = _SCAFFOLD_DIR / "import" / "modeling" / "README.md"
+    if modeling_readme.is_file():
+        result[".import/modeling/README.md"] = modeling_readme
     for filename in ("README.md", "FEEDBACK-template.md.template"):
-        scaffold_file = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "insights" / filename
+        scaffold_file = _SCAFFOLD_DIR / "import" / "modeling" / "feedback" / filename
         if scaffold_file.is_file():
-            result[f".import/businessdiscovery/insights/{filename}"] = scaffold_file
+            result[f".import/modeling/feedback/{filename}"] = scaffold_file
 
     skills = _SCAFFOLD_DIR / "skills"
     if skills.is_dir():

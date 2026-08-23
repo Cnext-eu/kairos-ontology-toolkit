@@ -24,7 +24,7 @@ from ..core.feedback_records import (
     validate_feedback_bundle,
 )
 from ..core.hub_utils import find_hub_root
-from .shared import _resolve_import_dir
+from .shared import _resolve_modeling_dir
 
 _MAX_ID_ATTEMPTS = 8
 
@@ -33,17 +33,17 @@ def _feedback_dir(cwd: Path | None = None) -> tuple[Path, Path | None]:
     """Resolve and create the current hub's modeling-feedback bundle directory.
 
     Returns ``(feedback_path, hub_root)``. Feedback records live under
-    ``.import/businessdiscovery/insights/`` -- a repo-root sibling of
-    ``ontology-hub/``, not inside it -- so *hub_root* (used only for resolving
-    local ``sources[].resource`` citations) is returned separately rather than
-    derived from *feedback_path* itself; it may be ``None`` for a bare
-    ``.import/`` tree with no ``ontology-hub/`` sibling yet.
+    ``.import/modeling/feedback/`` -- a repo-root sibling of ``ontology-hub/``,
+    not inside it, and git-tracked despite living under ``.import/`` (#591) --
+    so *hub_root* (used only for resolving local ``sources[].resource``
+    citations) is returned separately rather than derived from *feedback_path*
+    itself; it may be ``None`` for a bare ``.import/`` tree with no
+    ``ontology-hub/`` sibling yet.
     """
     if cwd is None:
         cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False)
-    import_dir = _resolve_import_dir(cwd, hub_root)
-    feedback_path = import_dir / "insights"
+    feedback_path = _resolve_modeling_dir(cwd, hub_root, "feedback")
     feedback_path.mkdir(parents=True, exist_ok=True)
     return feedback_path, hub_root
 

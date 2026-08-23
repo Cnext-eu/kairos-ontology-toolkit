@@ -1776,7 +1776,10 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only, output_f
     for name in report.unprocessed:
         click.echo(f"   ➕ {name}: NEW (not yet processed)")
     for name in report.changed:
-        click.echo(f"   ♻ {name}: CHANGED since last extraction")
+        click.echo(
+            f"   ♻ {name}: CHANGED since last extraction "
+            "(if this is a correction, add a new dated file instead of editing in place)"
+        )
     for name in report.unverifiable:
         click.echo(f"   ⚠ {name}: cannot verify freshness (no stored hash — reprocess)")
     for name in report.conflict:
