@@ -10367,6 +10367,27 @@ filesystem and plan walks (the two walks now share `extract_refs`/`extract_sourc
 `strip_jinja_comments`, but not their traversal), unifying `medallion_dbt_projector`'s two local
 source-name copies with `uri_utils.dbt_source_name`, and remaining performance polish.
 
+### Amendment (2026-08-23): seed schema and quoting are declared (#596)
+
+`templates/dbt/dbt_project.yml.jinja2` now emits a `seeds:` config block:
+`+schema: 'reference'`, `+quote_columns: true`, `+tags: ['reference']`. `reference` is a
+new, dedicated hub-wide layer — seeds are business-supplied reference/lookup data, not raw
+Bronze extracts (Bronze is platform-managed and outside dbt's control in this toolkit) nor
+domain-scoped Silver/Gold models, so reusing either name would misdescribe the layer.
+Seeds are hub-wide rather than per-domain, so there is no `{{ domain.name }}`-style
+sub-block the way `models:` has one per domain.
+
+`column_types` deliberately remains on adapter-default inference for now. Deriving it from
+the optional authored `seeds/<name>.yml` column-docs (added in stage (b) above) would mean
+adding a new `data_type` property to a document this DD explicitly kept as dbt's plain,
+non-`meta.kairos` properties form — that stays a distinct, explicitly-scoped follow-up
+rather than a default chosen here.
+
+Forward-looking note, not yet built: reference-data *sourcing* is expected to evolve
+toward a separate Kairos MDM Hub platform, with the Ontology Hub retaining the semantics
+layer. This amendment does not build toward that — it only names the direction so a future
+change has context when seeds stop being purely hand-authored CSVs.
+
 ---
 
 

@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **dbt seeds now declare a `seeds:` config block (issue #596).** Previously
+  `dbt_project.yml` declared `seed-paths: ["seeds"]` with no matching `seeds:` config, so
+  emitted seeds landed in the profile's default schema with adapter-dependent type
+  inference. Seeds now get `+schema: 'reference'` (a new, dedicated hub-wide layer for
+  business-supplied reference/lookup data), `+quote_columns: true`, and
+  `+tags: ['reference']`. `column_types` remains on adapter inference for now — see the
+  DD-140 amendment for the deferred typed-seeds design and a forward-looking note on
+  seed sourcing.
+
 ### Fixed
 - **DDL nullability for FK/surrogate columns ignored `missingParent: null` (issue #609).**
   A relationship declaring `missingParent: null` correctly produced a nullable `_sk`
