@@ -19,7 +19,7 @@ def _make_hub(root: Path) -> Path:
 
 
 def _insights_dir(repo_root: Path) -> Path:
-    return repo_root / ".import" / "businessdiscovery" / "insights"
+    return repo_root / ".import" / "modeling" / "feedback"
 
 
 def _feedback_records(insights_path: Path) -> list[Path]:
@@ -226,10 +226,12 @@ def test_feedback_sync_index_picks_up_hand_edited_status(tmp_path, monkeypatch):
     assert "resolved" in index_text
 
 
-def test_feedback_records_are_picked_up_as_discovery_documents(tmp_path, monkeypatch):
-    """#588: feedback records must remain regular business-discovery input --
-    this is the whole reason they live under .import/businessdiscovery/ rather
-    than a new top-level directory."""
+def test_feedback_records_are_not_business_discovery_documents(tmp_path, monkeypatch):
+    """#591: feedback records live under .import/modeling/feedback/, not
+    .import/businessdiscovery/ -- they are toolkit-managed OKF-style records, not raw
+    client evidence, and must not surface as "unprocessed" business-discovery input
+    (they have no matching extraction.yaml and never will, since they're never
+    extracted -- they're already structured)."""
     from kairos_ontology.core.discovery_extraction import iter_discovery_documents
 
     _make_hub(tmp_path)
@@ -238,5 +240,4 @@ def test_feedback_records_are_picked_up_as_discovery_documents(tmp_path, monkeyp
 
     documents = iter_discovery_documents(tmp_path / ".import" / "businessdiscovery")
     names = {doc.name for doc in documents}
-    matching = [name for name in names if name.startswith("HUB-FB-")]
-    assert matching, f"expected a HUB-FB-*.md discovery document, got {names}"
+    assert not any(name.startswith("HUB-FB-") for name in names), names

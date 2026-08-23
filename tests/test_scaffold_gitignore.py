@@ -61,3 +61,39 @@ def test_scaffold_gitignore_ignores_import_directory(tmp_path: Path) -> None:
 
     ignored = _check_ignore(tmp_path, ".import/seed_sources.csv")
     assert ignored.returncode == 0, ignored.stderr
+
+
+def test_scaffold_gitignore_ignores_nested_import_directory(tmp_path: Path) -> None:
+    """#591: a nested ``.import/`` (e.g. a hub inside a monorepo) must also be
+    ignored -- the raw-evidence pattern is depth-agnostic, not just top-level."""
+    template = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "gitignore.template"
+    (tmp_path / ".gitignore").write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "init"], check=True, capture_output=True)
+
+    evidence = tmp_path / "ontology-hub" / ".import" / "businessdiscovery" / "report.xlsx"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("x", encoding="utf-8")
+
+    ignored = _check_ignore(tmp_path, evidence.relative_to(tmp_path).as_posix())
+    assert ignored.returncode == 0, ignored.stderr
+
+
+def test_scaffold_gitignore_tracks_import_modeling_directory(tmp_path: Path) -> None:
+    """#591: ``.import/modeling/`` holds toolkit-managed, git-tracked OKF-style
+    records (e.g. modeling-feedback) -- unlike the rest of ``.import/``, which stays
+    gitignored raw client evidence."""
+    template = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "gitignore.template"
+    (tmp_path / ".gitignore").write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "init"], check=True, capture_output=True)
+
+    feedback = tmp_path / ".import" / "modeling" / "feedback" / "HUB-FB-20260823-abc123.md"
+    feedback.parent.mkdir(parents=True)
+    feedback.write_text("x", encoding="utf-8")
+    evidence = tmp_path / ".import" / "businessdiscovery" / "report.xlsx"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text("x", encoding="utf-8")
+
+    tracked = _is_ignored(tmp_path, feedback.relative_to(tmp_path).as_posix())
+    ignored = _is_ignored(tmp_path, evidence.relative_to(tmp_path).as_posix())
+    assert tracked.returncode == 1, tracked.stdout
+    assert ignored.returncode == 0, ignored.stdout

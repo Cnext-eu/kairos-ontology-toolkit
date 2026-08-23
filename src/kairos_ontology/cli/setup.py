@@ -250,21 +250,27 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
     if imports_readme_src.is_file() and (not (imports_bd / "README.md").exists() or force):
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
-    # Modeling-feedback bundle (OKF-style, lighter-weight sibling of the decision
-    # log) -- lives under .import/businessdiscovery/ so it keeps being picked up
-    # as ordinary discovery input by kairos-design-discovery.
-    insights_src = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "insights"
-    insights_dst = imports_bd / "insights"
-    insights_dst.mkdir(parents=True, exist_ok=True)
+    # Modeling — toolkit-managed, git-tracked OKF-style records (distinct from raw
+    # client evidence in .import/businessdiscovery/, which stays gitignored).
+    imports_modeling = cwd / ".import" / "modeling"
+    imports_modeling.mkdir(parents=True, exist_ok=True)
+    modeling_readme_src = _SCAFFOLD_DIR / "import" / "modeling" / "README.md"
+    if modeling_readme_src.is_file() and (not (imports_modeling / "README.md").exists() or force):
+        shutil.copy2(modeling_readme_src, imports_modeling / "README.md")
+
+    # Modeling-feedback bundle (OKF-style, lighter-weight sibling of the decision log).
+    feedback_src = _SCAFFOLD_DIR / "import" / "modeling" / "feedback"
+    feedback_dst = imports_modeling / "feedback"
+    feedback_dst.mkdir(parents=True, exist_ok=True)
     for filename in ("README.md", "FEEDBACK-template.md.template"):
-        src = insights_src / filename
-        dst = insights_dst / filename
+        src = feedback_src / filename
+        dst = feedback_dst / filename
         if src.is_file() and (not dst.exists() or force):
             _copy_managed(src, dst)
-    insights_index_dst = insights_dst / "index.md"
-    if not insights_index_dst.exists() or force:
-        insights_index_dst.write_text(build_feedback_index_markdown([]), encoding="utf-8")
-        print("  ✓ Created .import/businessdiscovery/insights/index.md")
+    feedback_index_dst = feedback_dst / "index.md"
+    if not feedback_index_dst.exists() or force:
+        feedback_index_dst.write_text(build_feedback_index_markdown([]), encoding="utf-8")
+        print("  ✓ Created .import/modeling/feedback/index.md")
 
     # Place .gitkeep in empty publish subdirs (sibling <repo>/ontology-hub-publish/)
     # so git tracks the derived-output slots.
@@ -1010,17 +1016,24 @@ def new_repo(
     if imports_readme_src.is_file():
         shutil.copy2(imports_readme_src, imports_bd / "README.md")
 
-    # Modeling-feedback bundle.
-    insights_src = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "insights"
-    insights_dst = imports_bd / "insights"
-    insights_dst.mkdir(parents=True, exist_ok=True)
+    # Modeling — toolkit-managed, git-tracked OKF-style records (distinct from raw
+    # client evidence in .import/businessdiscovery/, which stays gitignored).
+    imports_modeling = repo_dir / ".import" / "modeling"
+    imports_modeling.mkdir(parents=True, exist_ok=True)
+    modeling_readme_src = _SCAFFOLD_DIR / "import" / "modeling" / "README.md"
+    if modeling_readme_src.is_file():
+        shutil.copy2(modeling_readme_src, imports_modeling / "README.md")
+
+    feedback_src = _SCAFFOLD_DIR / "import" / "modeling" / "feedback"
+    feedback_dst = imports_modeling / "feedback"
+    feedback_dst.mkdir(parents=True, exist_ok=True)
     for filename in ("README.md", "FEEDBACK-template.md.template"):
-        src = insights_src / filename
-        dst = insights_dst / filename
+        src = feedback_src / filename
+        dst = feedback_dst / filename
         if src.is_file():
             _copy_managed(src, dst)
-    (insights_dst / "index.md").write_text(build_feedback_index_markdown([]), encoding="utf-8")
-    print("  ✓ .import/businessdiscovery/insights/ (modeling feedback)")
+    (feedback_dst / "index.md").write_text(build_feedback_index_markdown([]), encoding="utf-8")
+    print("  ✓ .import/modeling/feedback/ (modeling feedback)")
 
     # Place .gitkeep in publish subdirs (sibling <repo>/ontology-hub-publish/)
     # so git tracks the derived-output slots.

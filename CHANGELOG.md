@@ -27,6 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DD-140 amendment for the deferred typed-seeds design and a forward-looking note on
   seed sourcing.
 
+## [5.13.0rc31] — 2026-08-23
+
+### Changed
+- **Modeling-feedback records relocated to `.import/modeling/feedback/` (issue #591).**
+  Previously at `.import/businessdiscovery/insights/` (#608), which both misdescribed
+  the content (these are ontology-modeling observations, not business-discovery
+  evidence) and sat inside a blanket-gitignored tree with no tracking carve-out, so
+  `HUB-FB-*.md` records were silently never committed by default. `.import/modeling/`
+  is a new root for toolkit-managed, git-tracked OKF-style records, reserved for future
+  record types (e.g. the OKF business-knowledge/model-input convention) alongside
+  `feedback/`. The scaffolded `.gitignore` now tracks `.import/modeling/**` while the
+  rest of `.import/` (raw client evidence) stays ignored. **If you already ran
+  `kairos-ontology feedback new`** on an existing hub, move
+  `.import/businessdiscovery/insights/` to `.import/modeling/feedback/` by hand; `update`
+  does not migrate this automatically.
+- **`.import/businessdiscovery/README.md` documents the append-only naming convention
+  (issue #591).** Dated, immutable snapshots (`YYMMDD_<topic>.<ext>`) — never edit a
+  dropped file in place; a correction is a new dated file. `discovery-status`'s
+  `CHANGED` output now says so explicitly.
+
 ## [5.13.0rc30] — 2026-08-23
 
 ### Fixed
