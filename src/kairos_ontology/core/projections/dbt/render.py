@@ -248,6 +248,8 @@ models/
 └── gold/             # Star schema: facts, dimensions, measures
     └── <domain>/
 
+seeds/                # Hub-authored reference/lookup catalogs
+
 macros/               # Platform-abstraction macros (kairos_safe_cast, etc.)
 ```
 
@@ -258,6 +260,7 @@ macros/               # Platform-abstraction macros (kairos_safe_cast, etc.)
 | Bronze | (platform-managed) | Raw source tables — outside dbt |
 | Silver | Table | Domain entities mapped from bronze via `{{{{ source() }}}}` |
 | Gold | Table | Star schema for BI (Power BI DirectLake / Databricks SQL) |
+| Reference | Seed | Hub-authored reference/lookup catalogs (`schema: reference`) |
 
 ## Platform Macros
 

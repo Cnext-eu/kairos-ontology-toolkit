@@ -680,6 +680,26 @@ class TestGenerateDbtArtifacts:
         assert "silver" in proj["models"]["client_project"]
         assert proj.get("docs-paths") == ["docs"]
 
+    def test_dbt_project_yml_has_seeds_config(
+        self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
+    ):
+        """#596: dbt_project.yml declares a seeds: config block (schema, quoting, tags)
+        instead of leaving seeds on the profile's default schema and adapter-inferred types."""
+        artifacts = generate_dbt_artifacts(
+            classes=classes,
+            graph=ontology_graph,
+            template_dir=template_dir,
+            namespace="http://kairos.example/ontology/",
+            ontology_name="client",
+            bronze_dir=bronze_dir,
+            mappings_dir=mappings_dir,
+        )
+        proj = yaml.safe_load(artifacts["dbt_project.yml"])
+        seeds_config = proj["seeds"]["client_project"]
+        assert seeds_config["+schema"] == "reference"
+        assert seeds_config["+quote_columns"] is True
+        assert seeds_config["+tags"] == ["reference"]
+
     def test_no_bronze_generates_silver_only(self, classes, ontology_graph, template_dir):
         """Without bronze dir, schema YAML is generated but no SQL models."""
         artifacts = generate_dbt_artifacts(

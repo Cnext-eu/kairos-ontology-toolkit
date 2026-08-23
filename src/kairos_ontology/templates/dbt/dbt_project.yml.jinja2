@@ -43,3 +43,9 @@ models:
         +tags: ['gold', '{{ domain.name }}']
 {%- endfor %}
 {%- endif %}
+
+seeds:
+  {{ project_name }}:
+    +schema: 'reference'
+    +quote_columns: true
+    +tags: ['reference']
