@@ -233,7 +233,7 @@ def test_range_less_object_property_is_authorable_as_a_relationship(tmp_path, ra
     assert "_match_count" in sql, f"orphan-detection window missing:\n{sql}"
     # The relationship is a foreign key in the contract, not a business attribute.
     columns = _customer_columns(artifacts)
-    assert columns.get("country_sk") == "surrogate-join-key", columns
+    assert columns.get("country_sk") == "foreign-key", columns
     assert columns.get("country_code") == "foreign-key", columns
     assert "country" not in columns, columns
     # …and the ERD still carries the edge.

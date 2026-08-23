@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **DDL nullability for FK/surrogate columns ignored `missingParent: null` (issue #609).**
+  A relationship declaring `missingParent: null` correctly produced a nullable `_sk`
+  column in the generated dbt SQL (a genuine `left join`), but the generated DDL analysis
+  file always declared the same column `NOT NULL`, contradicting runtime behavior. Root
+  cause: the Silver authority builder (`policy_normalize.py`) never recognized a wired FK
+  column as such — it matched only by local-join-column name, never the emitted `_sk`
+  column — so it fell through to `SURROGATE_JOIN_KEY`, which is unconditionally hard-coded
+  non-nullable regardless of the relationship's actual policy. Invisible for the common
+  `missingParent: error` case, since that happened to land on `NOT NULL` via the same
+  broken path anyway.
+
 ## [5.13.0rc29] — 2026-08-22
 
 ### Added
