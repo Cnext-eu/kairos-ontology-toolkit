@@ -3648,7 +3648,8 @@ def _history(
     )
 
 
-def _column_role(name: str, fk_names: frozenset[str]) -> SilverColumnRole:
+def _column_role(column: ColumnSpec, fk_names: frozenset[str]) -> SilverColumnRole:
+    name = column.name
     if name == "_source_record_key":
         return SilverColumnRole.SOURCE_IDENTITY
     if name in {"_loaded_at", "_ingested_at", "_source_updated_at", "_source_effective_at"}:
@@ -3663,7 +3664,7 @@ def _column_role(name: str, fk_names: frozenset[str]) -> SilverColumnRole:
         "_row_hash",
     }:
         return SilverColumnRole.HISTORY
-    if name in fk_names:
+    if column.role == SilverColumnRole.FOREIGN_KEY.value or name in fk_names:
         return SilverColumnRole.FOREIGN_KEY
     if name.endswith("_sk"):
         return SilverColumnRole.SURROGATE_JOIN_KEY
@@ -3792,7 +3793,12 @@ def _identity_roles(
 def _identity_column_nullable(
     role: SilverColumnRole,
     identity: EntityIdentitySpec | None,
+    column_nullable: bool | None = None,
 ) -> bool:
+    if role is SilverColumnRole.FOREIGN_KEY:
+        # DD-109: FK nullability follows the relationship's missing-parent policy,
+        # already computed at wiring time (kernel.py `_wire_relationships`).
+        return True if column_nullable is None else column_nullable
     if role in {
         SilverColumnRole.SOURCE_IDENTITY,
         SilverColumnRole.INTEGRATION_IDENTITY,
@@ -4178,6 +4184,10 @@ def _silver_authorities(
                     required_runtime_columns.add(
                         runtime_authority.history.business_valid_from_column
                     )
+        columns_with_roles = tuple(
+            (column, role_by_column.get(column.name, _column_role(column, fk_names)))
+            for column in logical_columns
+        )
         result.append(
             SilverModelAuthoritySpec(
                 identity=candidate.identity,
@@ -4185,27 +4195,18 @@ def _silver_authorities(
                     SilverColumnAuthoritySpec(
                         column=column,
                         role=_default(
-                            role_by_column.get(
-                                column.name,
-                                _column_role(column.name, fk_names),
-                            ),
+                            column_role,
                             "DD-110-silver-authority",
                             "Classified from the authoritative Silver column role.",
                         ),
                         nullable=_default(
-                            _identity_column_nullable(
-                                role_by_column.get(
-                                    column.name,
-                                    _column_role(column.name, fk_names),
-                                ),
-                                identity,
-                            )
+                            _identity_column_nullable(column_role, identity, column.nullable)
                             and column.name not in required_runtime_columns,
                             "DD-110-silver-authority",
                             "Derived from the normalized Silver column contract.",
                         ),
                     )
-                    for column in logical_columns
+                    for column, column_role in columns_with_roles
                 ),
                 entity_identity=identity,
                 audit=AuditPolicySpec(
