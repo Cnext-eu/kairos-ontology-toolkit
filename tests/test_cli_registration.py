@@ -25,6 +25,7 @@ RETAINED_COMMANDS = {
     "design-landscape",
     "discovery-conformance",
     "discovery-status",
+    "emit-gold",
     "register-concept",
     "source-disposition",
     "domain-coverage",
