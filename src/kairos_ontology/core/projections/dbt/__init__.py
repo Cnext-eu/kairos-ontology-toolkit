@@ -84,6 +84,11 @@ from .gold_render import (
     render_powerbi_artifacts,
 )
 from .gold_shape import shape_gold_product
+from .tmdl_validate import (
+    TMDL_VALIDATION_RULE_ID,
+    TmdlValidationResult,
+    validate_tmdl_artifacts,
+)
 from .gold_specs import (
     DimensionalGoldSpec,
     GoldCalendarRoleSpec,
@@ -269,8 +274,10 @@ __all__ = [
     "SilverRuntimeAuthoritySpec",
     "SilverRegistry",
     "SourceColumnExpression",
+    "TMDL_VALIDATION_RULE_ID",
     "TableMappingSpec",
     "TemporalRelationshipSpec",
+    "TmdlValidationResult",
     "TimestampSemanticSpec",
     "TimestampSourceSpec",
     "RuntimeEvent",
@@ -303,4 +310,5 @@ __all__ = [
     "range_replay",
     "shape_project",
     "shape_gold_product",
+    "validate_tmdl_artifacts",
 ]
