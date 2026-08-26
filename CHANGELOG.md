@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0rc1] — 2026-08-26
+
 ### Added
 - **`kairos-ontology emit-gold DOMAIN [--confirm-emit]` (issue #619 Bug 2).** Previously the only way to produce Gold/PowerBI artifacts (TMDL, PBIP, DAX, ERD) was the Python API (`project_downstream_compile_plan('powerbi', plan)`) — `project --target gold/powerbi` was explicitly disabled, and `compile --emit` never rendered Gold (it's not a dbt project file, so it was never wired into the fixed dbt publish target). `emit-gold` builds the same typed `CompilePlan` and atomically writes the projected Gold product to its own fixed location, `ontology-hub-publish/powerbi` (a sibling of the dbt publish target, never inside it). Without `--confirm-emit` it validates and reports what would be written, matching `compile --emit`'s safety conventions.
 - **Optional TMDL structural validation via the real Microsoft TOM SDK (issue #619 feature request).** `validate_tmdl_artifacts()` (`kairos_ontology.core.projections.dbt`) runs a bundled `dotnet`-based validator (`Microsoft.AnalysisServices.Tabular`'s `TmdlSerializer.DeserializeDatabaseFromFolder`) against generated TMDL — the same engine Power BI Desktop and Fabric use to open a model — catching a syntax/structure error at projection time with an exact file/line instead of only surfacing as a cryptic dialog in Desktop. Verified end-to-end against the real NuGet package. Opt-in and best-effort: nothing calls it by default, and it reports `status="unavailable"` rather than failing when `dotnet` isn't installed, since most toolkit installs won't have a .NET SDK.
