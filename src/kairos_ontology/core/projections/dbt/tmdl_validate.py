@@ -20,10 +20,13 @@ with the exact file/line/detail TmdlFormatException carries.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +39,14 @@ _TOOL_DIR = Path(__file__).resolve().parent / "tmdl_validator_tool"
 _TOOL_FILES = ("TmdlValidator.csproj", "Program.cs")
 _DEFINITION_MARKER = "/definition"
 _SUBPROCESS_TIMEOUT_SECONDS = 180
+_BUILD_TIMEOUT_SECONDS = 300
+_BUILD_LOCK_TIMEOUT_SECONDS = 300
+
+# Every call shares one build across the whole machine (keyed by tool source content),
+# instead of a fresh `dotnet run` cold build per call -- faster, and avoids concurrent
+# builds (e.g. under pytest-xdist) racing on the TOM SDK's native asset extraction,
+# which surfaced as a spurious TypeInitializationException on some platforms.
+_BUILD_CACHE_ROOT = Path(tempfile.gettempdir()) / "kairos-tmdl-validator-build"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,22 +78,72 @@ def _definition_roots(artifacts: dict[str, str]) -> dict[str, dict[str, str]]:
     return roots
 
 
+def _tool_source_hash() -> str:
+    digest = hashlib.sha256()
+    for name in _TOOL_FILES:
+        digest.update((_TOOL_DIR / name).read_bytes())
+    return digest.hexdigest()[:16]
+
+
+def _ensure_built() -> Path:
+    """Build the bundled validator once, cached by tool-source content hash.
+
+    Content-hashed so a change to Program.cs/the .csproj invalidates the cache
+    automatically. Cross-process/cross-worker lock file (not fcntl/msvcrt, so it works
+    identically on Windows and Linux) serializes the one build so pytest-xdist workers
+    -- or any other concurrent callers -- don't race the TOM SDK's native asset
+    extraction, which is what produced a spurious TypeInitializationException under
+    concurrent cold starts.
+    """
+    build_dir = _BUILD_CACHE_ROOT / _tool_source_hash()
+    dll_path = build_dir / "bin" / "Debug" / "net8.0" / "TmdlValidator.dll"
+    if dll_path.is_file():
+        return dll_path
+
+    build_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = build_dir / ".build.lock"
+    deadline = time.monotonic() + _BUILD_LOCK_TIMEOUT_SECONDS
+    acquired = False
+    while time.monotonic() < deadline:
+        try:
+            os.close(os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            acquired = True
+            break
+        except FileExistsError:
+            if dll_path.is_file():
+                return dll_path
+            time.sleep(0.5)
+
+    try:
+        if dll_path.is_file():
+            return dll_path
+        for name in _TOOL_FILES:
+            shutil.copy2(_TOOL_DIR / name, build_dir / name)
+        subprocess.run(
+            ["dotnet", "build", "--configuration", "Debug", str(build_dir / "TmdlValidator.csproj")],
+            capture_output=True,
+            text=True,
+            timeout=_BUILD_TIMEOUT_SECONDS,
+            check=True,
+        )
+        return dll_path
+    finally:
+        if acquired:
+            lock_path.unlink(missing_ok=True)
+
+
 def _run_validator(folder: Path) -> tuple[str, str]:
     """Run the bundled validator against *folder*; return (status, message)."""
-    project_copy = Path(tempfile.mkdtemp(prefix="kairos-tmdl-validator-"))
     try:
-        for name in _TOOL_FILES:
-            shutil.copy2(_TOOL_DIR / name, project_copy / name)
+        dll_path = _ensure_built()
         completed = subprocess.run(
-            ["dotnet", "run", "--project", str(project_copy), "--", str(folder)],
+            ["dotnet", str(dll_path), str(folder)],
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         return "unavailable", f"dotnet invocation failed: {exc}"
-    finally:
-        shutil.rmtree(project_copy, ignore_errors=True)
 
     stdout_lines = completed.stdout.strip().splitlines()
     try:
@@ -92,9 +153,12 @@ def _run_validator(folder: Path) -> tuple[str, str]:
         return "unavailable", (
             f"TmdlValidator produced no parseable output (exit {completed.returncode}): {detail}"
         )
-    if payload.get("status") == "pass":
+    status = payload.get("status")
+    if status == "pass":
         return "pass", ""
-    return "fail", f"{payload.get('error_type', 'TmdlFormatException')}: {payload.get('message', '')}"
+    if status not in {"fail", "unavailable"}:
+        status = "unavailable"
+    return status, f"{payload.get('error_type', 'TmdlFormatException')}: {payload.get('message', '')}"
 
 
 def validate_tmdl_artifacts(

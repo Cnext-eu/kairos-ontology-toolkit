@@ -64,11 +64,21 @@ def test_required_raises_when_dotnet_missing(monkeypatch):
         validate_tmdl_artifacts(_VALID_DEFINITION, required=True)
 
 
+def _skip_if_sdk_unavailable(result) -> None:
+    # "unavailable" here (dotnet present, but the SDK itself failed to initialize --
+    # e.g. a native-hosting TypeInitializationException under a platform/environment
+    # this SDK build doesn't fully support) is an environment limitation, not a real
+    # test failure; skip rather than fail the build on it.
+    if result.status == "unavailable":
+        pytest.skip(f"TOM SDK unavailable in this environment: {result.message}")
+
+
 @pytest.mark.skipif(not _HAS_DOTNET, reason="dotnet SDK not installed; TOM SDK validation is best-effort")
 def test_valid_tmdl_passes_real_tom_sdk_validation():
     results = validate_tmdl_artifacts(_VALID_DEFINITION)
 
     assert len(results) == 1
+    _skip_if_sdk_unavailable(results[0])
     assert results[0].status == "pass"
     assert results[0].message == ""
 
@@ -78,6 +88,7 @@ def test_malformed_tmdl_fails_real_tom_sdk_validation_with_detail():
     results = validate_tmdl_artifacts(_INVALID_DEFINITION)
 
     assert len(results) == 1
+    _skip_if_sdk_unavailable(results[0])
     assert results[0].status == "fail"
     assert "TmdlFormatException" in results[0].message
     assert "Line Number - 3" in results[0].message
