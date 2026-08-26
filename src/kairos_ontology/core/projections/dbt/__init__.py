@@ -67,10 +67,15 @@ from .canonical_hash import (
 )
 from .gold_connection import (
     GOLD_CONNECTION_RULE_ID,
+    GOLD_DIRECT_LAKE_RULE_ID,
     GoldConnectionEnvironmentSpec,
     GoldDatabricksConnectionSpec,
+    GoldDirectLakeConnectionSpec,
+    GoldDirectLakeEnvironmentSpec,
     load_gold_databricks_connection,
+    load_gold_direct_lake_connection,
     parse_gold_databricks_connection,
+    parse_gold_direct_lake_connection,
 )
 from .gold_materialize import materialize_gold_product
 from .gold_render import (
@@ -206,12 +211,15 @@ __all__ = [
     "DiagnosticFailure",
     "DiagnosticSeverity",
     "GOLD_CONNECTION_RULE_ID",
+    "GOLD_DIRECT_LAKE_RULE_ID",
     "GoldCalendarRoleSpec",
     "GoldCalendarSpec",
     "GoldColumnSpec",
     "GoldConnectionEnvironmentSpec",
     "GoldContractError",
     "GoldDatabricksConnectionSpec",
+    "GoldDirectLakeConnectionSpec",
+    "GoldDirectLakeEnvironmentSpec",
     "GoldMeasureSpec",
     "GoldPhysicalColumnPlan",
     "GoldPhysicalPlan",
@@ -274,7 +282,9 @@ __all__ = [
     "canonical_serialize_v1",
     "deduplicate_replay",
     "load_gold_databricks_connection",
+    "load_gold_direct_lake_connection",
     "parse_gold_databricks_connection",
+    "parse_gold_direct_lake_connection",
     "materialize_scd1",
     "materialize_scd2",
     "materialize_gold_product",

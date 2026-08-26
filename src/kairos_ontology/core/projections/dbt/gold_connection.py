@@ -34,6 +34,7 @@ never partially applied.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -185,3 +186,143 @@ def load_gold_databricks_connection(
     except (OSError, yaml.YAMLError) as exc:
         raise _invalid(f"{config_path} could not be read ({exc})") from exc
     return parse_gold_databricks_connection(config)
+
+
+#: Governance rule for the Direct Lake OneLake connection (#619 Bugs 4/6).
+GOLD_DIRECT_LAKE_RULE_ID = "DD-113-direct-lake-connection"
+
+_DIRECT_LAKE_KEY = "direct_lake_connection"
+_DIRECT_LAKE_ENVIRONMENT_FIELDS = ("workspace_id", "lakehouse_id")
+_DIRECT_LAKE_CONFIG_PATH = f"{_GOLD_KEY}.{_DIRECT_LAKE_KEY}"
+#: A Fabric workspace/lakehouse ID is a GUID; anything else is an unresolved
+#: placeholder (the exact failure mode #619 Bugs 4/6 report).
+_GUID = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GoldDirectLakeEnvironmentSpec:
+    """One environment's OneLake workspace/lakehouse coordinates."""
+
+    name: str
+    workspace_id: str
+    lakehouse_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class GoldDirectLakeConnectionSpec:
+    """Every environment a released Direct Lake semantic model may be promoted into."""
+
+    default_environment: str
+    environments: tuple[GoldDirectLakeEnvironmentSpec, ...]
+
+    @property
+    def default(self) -> GoldDirectLakeEnvironmentSpec:
+        """Return the environment whose values are emitted into the artifact."""
+        return next(item for item in self.environments if item.name == self.default_environment)
+
+
+def _direct_lake_invalid(detail: str) -> GoldContractError:
+    return GoldContractError(
+        "gold.direct-lake-connection-invalid",
+        f"kairos.yaml {_DIRECT_LAKE_CONFIG_PATH} is malformed: {detail}",
+        rule_id=GOLD_DIRECT_LAKE_RULE_ID,
+    )
+
+
+def _direct_lake_guid(environment: str, field: str, raw: object) -> str:
+    if not isinstance(raw, str) or not _GUID.match(raw.strip()):
+        raise _direct_lake_invalid(
+            f"environment {environment!r} needs a GUID {field!r} "
+            "(author the resolved workspace/lakehouse ID, not a template placeholder)"
+        )
+    return raw.strip()
+
+
+def _direct_lake_environment(name: object, raw: object) -> GoldDirectLakeEnvironmentSpec:
+    if not isinstance(name, str) or not name.strip():
+        raise _direct_lake_invalid(f"environment key {name!r} is not a non-empty string")
+    environment = name.strip()
+    if not isinstance(raw, dict):
+        raise _direct_lake_invalid(f"environment {environment!r} must be a mapping")
+    unknown = sorted(set(map(str, raw)) - set(_DIRECT_LAKE_ENVIRONMENT_FIELDS))
+    if unknown:
+        raise _direct_lake_invalid(f"environment {environment!r} has unknown key(s) {unknown}")
+    return GoldDirectLakeEnvironmentSpec(
+        name=environment,
+        workspace_id=_direct_lake_guid(environment, "workspace_id", raw.get("workspace_id")),
+        lakehouse_id=_direct_lake_guid(environment, "lakehouse_id", raw.get("lakehouse_id")),
+    )
+
+
+def _direct_lake_default_environment(
+    raw: object,
+    environments: tuple[GoldDirectLakeEnvironmentSpec, ...],
+) -> str:
+    names = [item.name for item in environments]
+    if raw is None:
+        if len(environments) > 1:
+            raise _direct_lake_invalid(
+                f"{_DEFAULT_ENVIRONMENT_KEY!r} is required when more than one environment "
+                f"is declared (declared: {names})"
+            )
+        return names[0]
+    if not isinstance(raw, str) or raw.strip() not in names:
+        raise _direct_lake_invalid(
+            f"{_DEFAULT_ENVIRONMENT_KEY!r} {raw!r} is not one of the declared environments {names}"
+        )
+    return raw.strip()
+
+
+def parse_gold_direct_lake_connection(config: object) -> GoldDirectLakeConnectionSpec | None:
+    """Read the Direct Lake OneLake connection block out of already-loaded ``kairos.yaml``."""
+    if not isinstance(config, dict):
+        return None
+    gold = config.get(_GOLD_KEY)
+    if gold is None:
+        return None
+    if not isinstance(gold, dict):
+        raise _direct_lake_invalid(f"{_GOLD_KEY!r} must be a mapping")
+    block = gold.get(_DIRECT_LAKE_KEY)
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise _direct_lake_invalid("the direct_lake_connection block must be a mapping")
+    unknown = sorted(set(map(str, block)) - {_ENVIRONMENTS_KEY, _DEFAULT_ENVIRONMENT_KEY})
+    if unknown:
+        raise _direct_lake_invalid(f"unknown key(s) {unknown}")
+    declared = block.get(_ENVIRONMENTS_KEY)
+    if not isinstance(declared, dict) or not declared:
+        raise _direct_lake_invalid(
+            f"{_ENVIRONMENTS_KEY!r} must be a non-empty mapping of environment keys"
+        )
+    environments = tuple(
+        sorted(
+            (_direct_lake_environment(name, raw) for name, raw in declared.items()),
+            key=lambda item: item.name,
+        )
+    )
+    return GoldDirectLakeConnectionSpec(
+        default_environment=_direct_lake_default_environment(
+            block.get(_DEFAULT_ENVIRONMENT_KEY),
+            environments,
+        ),
+        environments=environments,
+    )
+
+
+def load_gold_direct_lake_connection(
+    hub_root: Path | None,
+) -> GoldDirectLakeConnectionSpec | None:
+    """Load the hub's Gold Direct Lake connection block, or ``None`` when unauthored."""
+    if hub_root is None:
+        return None
+    config_path = Path(hub_root) / "kairos.yaml"
+    if not config_path.is_file():
+        return None
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise _direct_lake_invalid(f"{config_path} could not be read ({exc})") from exc
+    return parse_gold_direct_lake_connection(config)

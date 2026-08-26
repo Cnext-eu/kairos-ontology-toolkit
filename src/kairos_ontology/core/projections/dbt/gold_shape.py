@@ -46,6 +46,13 @@ _CALENDAR_ROLE = re.compile(
     r"(?P<column>[A-Za-z_][A-Za-z0-9_]*)$"
 )
 _DAX_REFERENCE = re.compile(r"\[([^\]]+)\]")
+# #619 Bug 11: a DAX table reference is either a single-quoted name (DAX never uses single
+# quotes for string literals, only table names -- e.g. COUNTROWS('dim_frachtparty')) or a
+# bare identifier immediately before a column bracket (e.g. Sales[Amount]). This is a
+# heuristic over the expression text, not a full DAX parser, but it catches the exact
+# failure mode reported: a measureExpression naming a table that was never emitted.
+_DAX_QUOTED_TABLE_REFERENCE = re.compile(r"'([^']+)'")
+_DAX_BARE_TABLE_REFERENCE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\[")
 
 
 def _fail(
@@ -238,6 +245,26 @@ def _shape_measures(
                 _fail(
                     "measure.home-table-missing",
                     (f"measure {source.measure_id.value!r} has no resolvable emitted home table"),
+                    rule_id="DD-113-measure-dependencies",
+                    resource_uri=source.resource_uri,
+                )
+            known_tables = {item.name for item in tables} | (
+                {"dim_date"} if policy.gold.calendar is not None else set()
+            )
+            referenced_tables = {
+                *_DAX_QUOTED_TABLE_REFERENCE.findall(expression),
+                *_DAX_BARE_TABLE_REFERENCE.findall(expression),
+            }
+            unknown_tables = tuple(sorted(referenced_tables - known_tables))
+            if unknown_tables:
+                _fail(
+                    "measure.unresolved-dax-table-reference",
+                    (
+                        f"measure {source.measure_id.value!r} DAX references table(s) "
+                        f"{unknown_tables!r} that are not emitted in this Gold product "
+                        "(check for a stale prefix such as 'dim_' on an entity whose "
+                        "goldTableName does not use one)"
+                    ),
                     rule_id="DD-113-measure-dependencies",
                     resource_uri=source.resource_uri,
                 )

@@ -124,11 +124,12 @@ def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkey
         observed["adapter_version"] = kwargs["adapter_version"]
         return physical
 
-    def render(spec, physical_plan, *, silver_parity, connection):
+    def render(spec, physical_plan, *, silver_parity, connection, direct_lake_connection):
         assert spec is logical
         assert physical_plan is physical
         observed["parity"] = silver_parity
         observed["connection"] = connection
+        observed["direct_lake_connection"] = direct_lake_connection
         return {"party/gold.sql": "select 1\n"}
 
     monkeypatch.setattr(
