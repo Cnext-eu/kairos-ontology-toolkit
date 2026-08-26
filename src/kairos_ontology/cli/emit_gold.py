@@ -48,7 +48,16 @@ def _gold_manifest_name(domain: str) -> str:
     help="Required to actually write files. Without it, this validates and reports "
     "what would be emitted without touching disk.",
 )
-def emit_gold_cmd(domain: str, confirm_emit: bool) -> None:
+@click.option(
+    "--skip-tmdl-validation",
+    "skip_tmdl_validation",
+    is_flag=True,
+    default=False,
+    help="Skip TOM SDK structural validation of the generated TMDL. Runs by default "
+    "(dry run or --confirm-emit) whenever dotnet is on PATH; a missing dotnet SDK is "
+    "reported but never blocks the emit.",
+)
+def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -> None:
     """Emit Gold/PowerBI artifacts (TMDL, PBIP, DAX, ERD) for one compiled DOMAIN.
 
     Builds the same typed ``CompilePlan`` ``compile`` uses, then projects its Gold
@@ -56,6 +65,13 @@ def emit_gold_cmd(domain: str, confirm_emit: bool) -> None:
     Requires the domain to have an authored Gold profile (``kairos-ext:goldProductProfile``)
     and, for a Direct Lake or Databricks-backed product, the matching connection block
     in ``kairos.yaml`` (``gold.direct_lake_connection`` / ``gold.databricks_connection``).
+
+    Before writing anything, the generated TMDL is validated with the real Microsoft
+    TOM SDK (the same engine Power BI Desktop and Fabric use to open a model) via
+    ``validate_tmdl_artifacts()`` -- a structural failure here fails the command with
+    the exact file/line instead of only surfacing as a cryptic dialog in Desktop.
+    Pass ``--skip-tmdl-validation`` to skip it (for example in an environment without
+    the .NET SDK where you'd rather not pay the build cost on every emit).
 
     The emit location is fixed and not configurable:
     ``<repo>/ontology-hub-publish/powerbi`` (sibling of the hub, and of the dbt publish
@@ -68,6 +84,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool) -> None:
     """
     from ..core.compiler.emit import emit_artifacts
     from ..core.projections.dbt.gold_specs import GoldContractError
+    from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
     from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plan
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
@@ -93,6 +110,21 @@ def emit_gold_cmd(domain: str, confirm_emit: bool) -> None:
         artifacts = generate_gold_from_compile_plan(plan)
     except GoldContractError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    if not skip_tmdl_validation:
+        tmdl_results = validate_tmdl_artifacts(artifacts)
+        failures = [result for result in tmdl_results if result.status == "fail"]
+        for result in tmdl_results:
+            if result.status == "unavailable":
+                click.echo(
+                    f"   (TOM SDK validation unavailable for {result.definition_root}: "
+                    f"{result.message})"
+                )
+        if failures:
+            detail = "; ".join(f"{item.definition_root}: {item.message}" for item in failures)
+            raise click.ClickException(
+                f"TOM SDK structural validation failed for {len(failures)} model(s): {detail}"
+            )
 
     target = (publish_root(hub_root) / _POWERBI_EMIT_SUBPATH).resolve(strict=False)
     manifest_name = _gold_manifest_name(domain)
