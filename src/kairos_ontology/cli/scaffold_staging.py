@@ -18,8 +18,9 @@ import click
     "sources",
     multiple=True,
     required=True,
-    help="'<system>.<table>' contributing to the merged entity. Repeatable; at least two "
-    "required (a single source does not need the merged layer).",
+    help="'<system>.<table>' contributing to the merged entity. Repeatable; a single source "
+    "scaffolds a trivial passthrough int_merged__<entity> (issue #616's day-one pattern), "
+    "two or more scaffold a real survivorship model.",
 )
 @click.option("--force", is_flag=True, default=False, help="Overwrite existing output files.")
 @click.option(
@@ -29,19 +30,26 @@ import click
     help="Compute and report what would be scaffolded without writing any file.",
 )
 def scaffold_staging_cmd(entity, domain, sources, force, dry_run):
-    """Scaffold first-class stg_<source>__<entity> + int_merged__<entity> staging (issue #399).
+    """Scaffold first-class stg_<source>__<entity> + int_merged__<entity> staging (issue #399, #616).
 
     kairos-develop-dbt-transformation/SKILL.md already documents this layering -- one
     stg_<source>__<entity> model per contributing source, feeding one merged survivorship
     model -- as a convention with no tooling behind it. This writes the starter SQL +
     properties YAML for each stage (reusing the same per-table staging SELECT
-    scaffold-binding's passthrough archetype already generates) plus the merged model with
+    scaffold-binding's passthrough archetype already generates) plus the merged model.
+
+    With two or more --source entries, the merged model is a survivorship skeleton with
     sentinel placeholders for the judgment a human must confirm (natural key, priority
     order, target class, virtual source identity) -- compile --check rejects the merged
-    model's contract until those are filled in.
+    model's contract until those are filled in. With a single --source entry (the
+    kairos-design-mapping/SKILL.md day-one pattern for master/business-entity accelerator
+    classes), the merged model is a trivial passthrough of its one stage -- no
+    natural-key/priority sentinels, since there is nothing yet to reconcile.
 
     \b
     Examples:
+      kairos-ontology scaffold-staging --entity party --domain party \\
+          --source cargowise.OrgCompanyData
       kairos-ontology scaffold-staging --entity party --domain party \\
           --source crm.customers --source erp.parties
     """
@@ -83,9 +91,15 @@ def scaffold_staging_cmd(entity, domain, sources, force, dry_run):
         f"   Common columns across every stage ({len(result.common_columns)}): "
         f"{', '.join(result.common_columns) or '(none)'}"
     )
-    click.echo(
-        "   ⚠ The merged model is a SKELETON: confirm the natural key, priority order, "
-        "target class, and virtual source IRI (search for <CONFIRM_...>) before compiling."
-    )
+    if len(result.stages) == 1:
+        click.echo(
+            "   ⚠ The merged model is a single-source passthrough SKELETON: confirm the "
+            "target class and virtual source IRI (search for <CONFIRM_...>) before compiling."
+        )
+    else:
+        click.echo(
+            "   ⚠ The merged model is a SKELETON: confirm the natural key, priority order, "
+            "target class, and virtual source IRI (search for <CONFIRM_...>) before compiling."
+        )
     for note in result.notes:
         click.echo(f"   NOTE: {note}")

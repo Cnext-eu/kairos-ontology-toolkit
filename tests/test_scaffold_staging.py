@@ -167,11 +167,36 @@ def test_stage_yaml_has_no_meta_kairos_block(tmp_path):
         assert "meta" not in model
 
 
-def test_single_source_is_rejected(tmp_path):
+def test_single_source_scaffolds_trivial_passthrough_merged_model(tmp_path):
+    hub = _hub(tmp_path)
+
+    result = run_scaffold_staging(
+        hub, entity="party", domain="party", sources=(("crm", "customers"),)
+    )
+
+    assert [s.model_name for s in result.stages] == ["stg_crm__party"]
+    assert result.merged_model_name == "int_merged__party"
+    assert result.merged_sql_written and result.merged_yaml_written
+
+    sql = result.merged_sql_path.read_text(encoding="utf-8")
+    assert sql.strip().endswith("select * from {{ ref('stg_crm__party') }}")
+    assert "kairos_survivor(" not in sql
+    assert "<CONFIRM_NATURAL_KEY_COLUMN>" not in sql
+    assert "<CONFIRM_PRIORITY_COLUMN>" not in sql
+
+    document = yaml.safe_load(result.merged_yaml_path.read_text(encoding="utf-8"))
+    model = document["models"][0]
+    assert model["config"]["contract"]["enforced"] is True
+    meta = model["meta"]["kairos"]
+    assert meta["target_class"] == "<CONFIRM_TARGET_CLASS>"
+    assert meta["virtual_source_iri"] == "<CONFIRM_VIRTUAL_SOURCE_IRI>"
+
+
+def test_no_source_is_rejected(tmp_path):
     hub = _hub(tmp_path)
 
     with pytest.raises(ScaffoldStagingError):
-        run_scaffold_staging(hub, entity="party", domain="party", sources=(("crm", "customers"),))
+        run_scaffold_staging(hub, entity="party", domain="party", sources=())
 
 
 def test_unknown_table_raises_scaffold_binding_error(tmp_path):
