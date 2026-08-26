@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0rc2] — 2026-08-27
+
+### Changed
+- **`emit-gold` now runs the real TOM SDK TMDL validation by default.** `validate_tmdl_artifacts()` existed since 5.15.0rc1 but had no caller — a hub could emit a structurally broken TMDL tree (e.g. a placeholder Direct Lake OneLake GUID, or a genuine TMDL syntax error) and only discover it when a human opened the `.pbip` in Power BI Desktop. `emit-gold` now calls it after projection, in both dry-run and `--confirm-emit` mode: a `status="fail"` result fails the command with the exact file/line before anything is written; a `status="unavailable"` result (no `dotnet` on PATH) is reported but never blocks the emit, matching the module's existing best-effort design. Pass `--skip-tmdl-validation` to opt out entirely.
+
 ## [5.15.0rc1] — 2026-08-26
 
 ### Added

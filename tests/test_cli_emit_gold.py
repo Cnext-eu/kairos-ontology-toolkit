@@ -10,10 +10,13 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.hub_utils import publish_root
+
+_HAS_DOTNET = shutil.which("dotnet") is not None
 
 _V5_FK_HUB = Path(__file__).parent / "scenarios" / "v5-hub"
 
@@ -112,6 +115,44 @@ def test_missing_direct_lake_connection_surfaces_as_click_error(tmp_path, monkey
 
     assert result.exit_code != 0
     assert "direct-lake-connection-missing" in result.output
+
+
+@pytest.mark.skipif(not _HAS_DOTNET, reason="dotnet SDK not installed; TOM SDK validation is best-effort")
+def test_confirm_emit_runs_real_tom_sdk_validation_by_default(tmp_path, monkeypatch):
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["emit-gold", "party", "--confirm-emit"])
+
+    assert result.exit_code == 0, result.output
+    assert "TOM SDK validation unavailable" not in result.output
+    assert "TOM SDK structural validation failed" not in result.output
+
+
+def test_confirm_emit_reports_when_dotnet_unavailable(tmp_path, monkeypatch):
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+    monkeypatch.setattr(
+        "kairos_ontology.core.projections.dbt.tmdl_validate.shutil.which", lambda _: None
+    )
+
+    result = CliRunner().invoke(cli, ["emit-gold", "party", "--confirm-emit"])
+
+    assert result.exit_code == 0, result.output
+    assert "TOM SDK validation unavailable" in result.output
+    assert (publish_root(hub) / "powerbi" / "party" / "Party.pbip").is_file()
+
+
+def test_skip_tmdl_validation_flag_bypasses_it(tmp_path, monkeypatch):
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli, ["emit-gold", "party", "--confirm-emit", "--skip-tmdl-validation"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "TOM SDK" not in result.output
 
 
 def test_blocked_compile_plan_fails_before_projecting(tmp_path, monkeypatch):
