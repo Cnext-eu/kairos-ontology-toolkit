@@ -422,6 +422,17 @@ def _shape_security(
 
 
 def _relationship_column(table: GoldTableSpec, property_uri: str, explicit: str) -> str:
+    # #619 Bug 12: the FK surrogate-key column kernel.py generates for a relationship
+    # (`{target}_sk`) is tagged provenance `relationship:{property_uri}`, not
+    # `property:{property_uri}` -- prefer it over a same-property natural-key column so
+    # joins use the surrogate key, not the natural key, whenever both exist.
+    relationship_tagged = [
+        column.name
+        for column in table.columns
+        if f"relationship:{property_uri}" in column.provenance
+    ]
+    if len(relationship_tagged) == 1:
+        return relationship_tagged[0]
     candidates = [
         column.name for column in table.columns if f"property:{property_uri}" in column.provenance
     ]

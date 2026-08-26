@@ -638,6 +638,26 @@ def test_fabric_direct_lake_needs_no_connection_and_emits_no_parameter_file(clie
     assert "parameter.yml" not in client_gold
 
 
+def test_model_tmdl_declares_ref_tables_and_datasource_version(client_gold):
+    model = client_gold["client/Client.SemanticModel/definition/model.tmdl"]
+    assert "ref table dim_client" in model
+    assert "defaultPowerBIDataSourceVersion: powerBI_V3" in model
+    assert "sourceQueryCulture: en-US" in model
+
+
+def test_direct_lake_partition_entity_name_is_bare_table_name(client_gold):
+    partition = client_gold["client/Client.SemanticModel/definition/tables/dim_client.tmdl"]
+    assert 'entityName: "dim_client"' in partition
+    assert 'entityName: "gold.dim_client"' not in partition
+
+
+def test_table_tmdl_places_measures_before_columns_with_doc_comment(invoice_gold):
+    table = invoice_gold["invoice/Invoice.SemanticModel/definition/tables/fact_invoice.tmdl"]
+    assert table.index("\tmeasure ") < table.index("\tcolumn ")
+    assert "/// " in table
+    assert "description: " not in table
+
+
 def test_ddl_tmdl_dax_erd_and_report_are_deterministic(invoice_gold):
     second = _generate("invoice")
     comparable = {
@@ -677,7 +697,7 @@ def test_pbip_wrapper_is_complete_and_schema_stamped(invoice_gold):
     assert "semanticModel/definitionProperties" in pbism["$schema"]
 
     assert invoice_gold[f"{prefix}/definition/database.tmdl"] == (
-        "database\n\tcompatibilityLevel: 1604\n"
+        "database\n\tcompatibilityLevel: 1702\n\tcompatibilityMode: powerBI\n\tlanguage: 1033\n"
     )
 
 

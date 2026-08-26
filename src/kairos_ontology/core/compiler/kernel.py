@@ -1931,7 +1931,20 @@ def _project_relationship_match_counts(shaped, bindings, context):
         )
         for document in shaped.schema_documents
     )
-    return replace(shaped, silver_models=tuple(models), schema_documents=documents)
+    # #617/#619: this function adds runtime FK match-count columns to silver_models
+    # *after* shape_project() already snapshotted silver_registry from the
+    # pre-augmentation columns -- refresh the registry here too, or gold_shape.py's
+    # DD-110-parity drift check compares a stale registry against the real columns.
+    updated_columns = dict(shaped.silver_registry.columns)
+    for model in models:
+        if model.identity.model_name in updated_columns:
+            updated_columns[model.identity.model_name] = frozenset(
+                column.name for column in model.columns
+            )
+    registry = replace(shaped.silver_registry, columns=tuple(sorted(updated_columns.items())))
+    return replace(
+        shaped, silver_models=tuple(models), schema_documents=documents, silver_registry=registry
+    )
 
 
 def _explain_field(binding: EntityBinding) -> tuple[tuple[str, str], ...]:

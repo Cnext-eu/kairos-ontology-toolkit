@@ -466,10 +466,13 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
         spec.calendar.locale if spec.calendar is not None and spec.calendar.approved else "en-US"
     )
     time_enabled = int(spec.calendar is not None and spec.calendar.approved)
+    has_calendar = spec.calendar is not None and spec.calendar.approved
     return "\n".join(
         [
             "model Model",
             f"\tculture: {locale}",
+            "\tdefaultPowerBIDataSourceVersion: powerBI_V3",
+            f"\tsourceQueryCulture: {locale}",
             "\tdataAccessOptions",
             "\t\tlegacyRedirects",
             "\t\treturnErrorValuesAsNull",
@@ -478,6 +481,9 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
             f'\tannotation Kairos_GoldProfileVersion = "{spec.profile_version}"',
             f'\tannotation Kairos_Adapter = "{physical.adapter}"',
             f"\tannotation __PBI_TimeIntelligenceEnabled = {time_enabled}",
+            "",
+            *(f"ref table {table.name}" for table in spec.tables),
+            *(("ref table dim_date",) if has_calendar else ()),
             "",
         ]
     )
@@ -494,7 +500,7 @@ def _partition(
             f"\tpartition {table_name} = entity",
             "\t\tmode: directLake",
             "\t\tsource",
-            f'\t\t\tentityName: "{schema_name}.{table_name}"',
+            f'\t\t\tentityName: "{table_name}"',
             f'\t\t\tschemaName: "{schema_name}"',
             "",
         ]
@@ -570,6 +576,19 @@ def _table_tmdl(
         f'\tannotation Kairos_SilverBinding = "{table.source_model}@{table.source_version}"',
         "",
     ]
+    for measure in measures:
+        lines.extend(
+            [
+                f"\t/// {_tmdl_text(measure.definition)}",
+                f"\tmeasure '{measure.measure_id}' = {measure.expression}",
+                f"\t\tformatString: {measure.format_string}",
+                f"\t\tdisplayFolder: {measure.folder}",
+                f"\t\tlineageTag: {_guid(f'{table.name}.{measure.measure_id}')}",
+                f'\t\tannotation Kairos_Lifecycle = "{measure.lifecycle.value}"',
+                "\t\tannotation Kairos_DataValidatedByProjection = false",
+                "",
+            ]
+        )
     for column in physical.columns:
         lines.extend(
             [
@@ -578,19 +597,6 @@ def _table_tmdl(
                 f"\t\tlineageTag: {_guid(f'{table.name}.{column.name}')}",
                 f"\t\tsourceColumn: {column.name}",
                 "\t\tsummarizeBy: none",
-                "",
-            ]
-        )
-    for measure in measures:
-        lines.extend(
-            [
-                f"\tmeasure '{measure.measure_id}' = {measure.expression}",
-                f"\t\tformatString: {measure.format_string}",
-                f"\t\tdisplayFolder: {measure.folder}",
-                f"\t\tlineageTag: {_guid(f'{table.name}.{measure.measure_id}')}",
-                f'\t\tdescription: "{_tmdl_text(measure.definition)}"',
-                f'\t\tannotation Kairos_Lifecycle = "{measure.lifecycle.value}"',
-                "\t\tannotation Kairos_DataValidatedByProjection = false",
                 "",
             ]
         )
@@ -934,7 +940,9 @@ def render_powerbi_artifacts(
         f"{report}/definition.pbir": _pbir(model_name),
         f"{prefix}/.platform": _platform(model_name),
         f"{prefix}/definition.pbism": _pbism(),
-        f"{definition}/database.tmdl": "database\n\tcompatibilityLevel: 1604\n",
+        f"{definition}/database.tmdl": (
+            "database\n\tcompatibilityLevel: 1702\n\tcompatibilityMode: powerBI\n\tlanguage: 1033\n"
+        ),
         f"{definition}/model.tmdl": _model_tmdl(spec, physical),
         (f"{definition}/relationships/relationships.tmdl"): _relationships_tmdl(spec),
     }
