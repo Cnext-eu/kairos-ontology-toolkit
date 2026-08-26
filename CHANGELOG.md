@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`scaffold-staging` now accepts a single `--source` (issue #616).** It previously refused fewer than two sources, contradicting `kairos-design-mapping/SKILL.md`'s decision rule to default to `int_merged__<entity>` from day one for master/business-entity accelerator classes (Party, Location, TransportOrder, Equipment, ...) even with one contributing source — pushing authors toward a hand-authored, `stg_`-less `int_merged__<entity>.sql` instead. A single source now scaffolds its `stg_<source>__<entity>` model as usual, plus a trivial `int_merged__<entity>.sql` (`select * from {{ ref(...) }}`, no survivorship sentinels) that is ready to grow into a real union+survivorship model when a second source arrives.
+
 ## [5.14.0] — 2026-08-23
 
 Consolidates everything recorded under `5.13.0rc1` through `rc31` (2026-08-19 through
