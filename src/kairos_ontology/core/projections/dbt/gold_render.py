@@ -11,7 +11,9 @@ import yaml
 
 from .gold_connection import (
     GOLD_CONNECTION_RULE_ID,
+    GOLD_DIRECT_LAKE_RULE_ID,
     GoldDatabricksConnectionSpec,
+    GoldDirectLakeConnectionSpec,
 )
 from .gold_specs import (
     DimensionalGoldSpec,
@@ -45,6 +47,11 @@ _PBIR_SCHEMA = (
     "definitionProperties/1.0.0/schema.json"
 )
 _DEFAULT_LOGICAL_ID = "00000000-0000-0000-0000-000000000000"
+
+# #619 Bugs 4/6: the shared M named expression every Direct Lake partition's
+# `expressionSource` points at. TMDL names containing spaces/hyphens must be
+# single-quoted (Bug 6) wherever they are referenced.
+_DIRECT_LAKE_EXPRESSION_NAME = "DirectLake - Kairos Gold"
 
 # fabric-cicd reads exactly this file from the root of the ``repository_directory``
 # it is pointed at (``fabric_cicd.constants.PARAMETER_FILE_NAME``), so the artifact
@@ -466,10 +473,13 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
         spec.calendar.locale if spec.calendar is not None and spec.calendar.approved else "en-US"
     )
     time_enabled = int(spec.calendar is not None and spec.calendar.approved)
+    has_calendar = spec.calendar is not None and spec.calendar.approved
     return "\n".join(
         [
             "model Model",
             f"\tculture: {locale}",
+            "\tdefaultPowerBIDataSourceVersion: powerBI_V3",
+            f"\tsourceQueryCulture: {locale}",
             "\tdataAccessOptions",
             "\t\tlegacyRedirects",
             "\t\treturnErrorValuesAsNull",
@@ -478,6 +488,40 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
             f'\tannotation Kairos_GoldProfileVersion = "{spec.profile_version}"',
             f'\tannotation Kairos_Adapter = "{physical.adapter}"',
             f"\tannotation __PBI_TimeIntelligenceEnabled = {time_enabled}",
+            "",
+            *(f"ref table {table.name}" for table in spec.tables),
+            *(("ref table dim_date",) if has_calendar else ()),
+            *(
+                (f"ref expression '{_DIRECT_LAKE_EXPRESSION_NAME}'",)
+                if physical.semantic_mode == "directLake"
+                else ()
+            ),
+            "",
+        ]
+    )
+
+
+def _direct_lake_expression_tmdl(connection: GoldDirectLakeConnectionSpec) -> str:
+    """Render the shared OneLake named expression every Direct Lake partition needs.
+
+    Direct Lake mode has no per-table connection string -- every partition resolves
+    its data through this one M expression's `AzureStorage.DataLake` call, pointed
+    at the released environment's workspace/lakehouse (#619 Bug 4).
+    """
+    environment = connection.default
+    onelake_url = (
+        f"https://onelake.dfs.fabric.microsoft.com/{environment.workspace_id}/"
+        f"{environment.lakehouse_id}"
+    )
+    return "\n".join(
+        [
+            f"expression '{_DIRECT_LAKE_EXPRESSION_NAME}' =",
+            "\t\tlet",
+            f'\t\t\tSource = AzureStorage.DataLake("{onelake_url}", [HierarchicalNavigation=true])',
+            "\t\tin",
+            "\t\t\tSource",
+            f"\tlineageTag: {_guid(_DIRECT_LAKE_EXPRESSION_NAME)}",
+            "\tannotation PBI_ResultType = Table",
             "",
         ]
     )
@@ -494,8 +538,9 @@ def _partition(
             f"\tpartition {table_name} = entity",
             "\t\tmode: directLake",
             "\t\tsource",
-            f'\t\t\tentityName: "{schema_name}.{table_name}"',
+            f'\t\t\tentityName: "{table_name}"',
             f'\t\t\tschemaName: "{schema_name}"',
+            f"\t\t\texpressionSource: '{_DIRECT_LAKE_EXPRESSION_NAME}'",
             "",
         ]
     # A Power Query partition must name a resolved host and HTTP path: nothing
@@ -570,6 +615,19 @@ def _table_tmdl(
         f'\tannotation Kairos_SilverBinding = "{table.source_model}@{table.source_version}"',
         "",
     ]
+    for measure in measures:
+        lines.extend(
+            [
+                f"\t/// {_tmdl_text(measure.definition)}",
+                f"\tmeasure '{measure.measure_id}' = {measure.expression}",
+                f"\t\tformatString: {measure.format_string}",
+                f"\t\tdisplayFolder: {measure.folder}",
+                f"\t\tlineageTag: {_guid(f'{table.name}.{measure.measure_id}')}",
+                f'\t\tannotation Kairos_Lifecycle = "{measure.lifecycle.value}"',
+                "\t\tannotation Kairos_DataValidatedByProjection = false",
+                "",
+            ]
+        )
     for column in physical.columns:
         lines.extend(
             [
@@ -578,19 +636,6 @@ def _table_tmdl(
                 f"\t\tlineageTag: {_guid(f'{table.name}.{column.name}')}",
                 f"\t\tsourceColumn: {column.name}",
                 "\t\tsummarizeBy: none",
-                "",
-            ]
-        )
-    for measure in measures:
-        lines.extend(
-            [
-                f"\tmeasure '{measure.measure_id}' = {measure.expression}",
-                f"\t\tformatString: {measure.format_string}",
-                f"\t\tdisplayFolder: {measure.folder}",
-                f"\t\tlineageTag: {_guid(f'{table.name}.{measure.measure_id}')}",
-                f'\t\tdescription: "{_tmdl_text(measure.definition)}"',
-                f'\t\tannotation Kairos_Lifecycle = "{measure.lifecycle.value}"',
-                "\t\tannotation Kairos_DataValidatedByProjection = false",
                 "",
             ]
         )
@@ -894,6 +939,7 @@ def render_powerbi_artifacts(
     *,
     silver_parity: dict | None = None,
     connection: GoldDatabricksConnectionSpec | None = None,
+    direct_lake_connection: GoldDirectLakeConnectionSpec | None = None,
 ) -> dict[str, str]:
     """Render DDL, dbt, TMDL, DAX, ERD, and report artifacts.
 
@@ -901,6 +947,11 @@ def render_powerbi_artifacts(
     required for every non-Direct-Lake (``directQuery``) product: without it the
     Power Query partitions cannot name a warehouse, and emitting the model anyway
     would ship a semantic model that silently cannot connect (issue #283).
+
+    ``direct_lake_connection`` is the hub's authored ``gold.direct_lake_connection``
+    block and is required for every Direct Lake product, for the same reason: without
+    a resolved workspace/lakehouse ID, the OneLake named expression has nothing to
+    point at and the model cannot resolve its data source (#619 Bugs 4/6).
     """
     if physical.semantic_mode != "directLake" and connection is None:
         raise GoldContractError(
@@ -912,6 +963,17 @@ def render_powerbi_artifacts(
                 "server_hostname and http_path per environment"
             ),
             rule_id=GOLD_CONNECTION_RULE_ID,
+        )
+    if physical.semantic_mode == "directLake" and direct_lake_connection is None:
+        raise GoldContractError(
+            "gold.direct-lake-connection-missing",
+            (
+                "Direct Lake Gold semantic models bind Power BI to a OneLake "
+                "workspace/lakehouse via a named expression, so kairos.yaml must "
+                "declare gold.direct_lake_connection with a workspace_id and "
+                "lakehouse_id per environment"
+            ),
+            rule_id=GOLD_DIRECT_LAKE_RULE_ID,
         )
     domain = spec.ontology_name
     model_name = "".join(item.capitalize() for item in domain.replace("-", "_").split("_"))
@@ -934,10 +996,17 @@ def render_powerbi_artifacts(
         f"{report}/definition.pbir": _pbir(model_name),
         f"{prefix}/.platform": _platform(model_name),
         f"{prefix}/definition.pbism": _pbism(),
-        f"{definition}/database.tmdl": "database\n\tcompatibilityLevel: 1604\n",
+        f"{definition}/database.tmdl": (
+            "database\n\tcompatibilityLevel: 1702\n\tcompatibilityMode: powerBI\n\tlanguage: 1033\n"
+        ),
         f"{definition}/model.tmdl": _model_tmdl(spec, physical),
         (f"{definition}/relationships/relationships.tmdl"): _relationships_tmdl(spec),
     }
+    if physical.semantic_mode == "directLake":
+        assert direct_lake_connection is not None  # guaranteed above
+        artifacts[f"{definition}/expressions/{_DIRECT_LAKE_EXPRESSION_NAME}.tmdl"] = (
+            _direct_lake_expression_tmdl(direct_lake_connection)
+        )
     for table in spec.tables:
         measures = tuple(
             item for item in spec.measures if item.emitted and item.home_table == table.name

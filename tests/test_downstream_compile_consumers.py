@@ -32,6 +32,7 @@ from kairos_ontology.mdm.profile_projector import (
 )
 
 _V5_HUB = Path(__file__).parent / "scenarios" / "v5-governed-hub"
+_V5_FK_HUB = Path(__file__).parent / "scenarios" / "v5-hub"
 _AUTHORITATIVE_SUFFIXES = (".ttl", ".yaml")
 _RETIRED_PARTS = {
     ".kairos-state",
@@ -123,11 +124,12 @@ def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkey
         observed["adapter_version"] = kwargs["adapter_version"]
         return physical
 
-    def render(spec, physical_plan, *, silver_parity, connection):
+    def render(spec, physical_plan, *, silver_parity, connection, direct_lake_connection):
         assert spec is logical
         assert physical_plan is physical
         observed["parity"] = silver_parity
         observed["connection"] = connection
+        observed["direct_lake_connection"] = direct_lake_connection
         return {"party/gold.sql": "select 1\n"}
 
     monkeypatch.setattr(
@@ -157,6 +159,42 @@ def test_gold_consumes_exact_shaped_registry_without_rebuilding(tmp_path, monkey
         observed["connection"].default.server_hostname
         == "adb-1111111111111111.11.azuredatabricks.net"
     )
+
+
+def test_gold_projection_survives_fk_match_count_columns(tmp_path):
+    # #617/#619 Bug 1: a Gold dimensional profile on an entity with an FK relationship
+    # (v5-hub's Customer -> Country) used to raise gold.silver-registry-drift, because
+    # kernel.py's _project_relationship_match_counts added _kairos_fk_*_match_count
+    # columns to silver_models *after* silver_registry had already been snapshotted.
+    hub = tmp_path / "hub"
+    shutil.copytree(_V5_FK_HUB, hub)
+    ext_dir = hub / "model" / "extensions"
+    ext_dir.mkdir(parents=True, exist_ok=True)
+    (ext_dir / "party-gold-ext.ttl").write_text(
+        """
+        @prefix party: <https://example.test/ontology/party#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <https://example.test/ontology/party>
+          kairos-ext:goldSchema "gold" ;
+          kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+        party:Customer
+          kairos-ext:goldTableType "dimension" ;
+          kairos-ext:goldTableName "dim_customer" ;
+          kairos-ext:goldSourceModel "customer" ;
+          kairos-ext:goldSourceVersion "1.0.0" ;
+          kairos-ext:dimensionExposure "current-only" ;
+          kairos-ext:dimensionVersionBinding "current" .
+        """,
+        encoding="utf-8",
+    )
+
+    plan = build_compile_plan(hub, "party")
+
+    assert not plan.blocked, [item.render() for item in plan.diagnostics.items]
+    artifacts = generate_gold_from_compile_plan(plan)
+    assert artifacts
 
 
 def test_gold_rejects_blocked_compile_plan(tmp_path):

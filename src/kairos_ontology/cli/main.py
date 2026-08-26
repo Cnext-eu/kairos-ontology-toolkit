@@ -30,6 +30,7 @@ from . import shared as _shared
 from . import sources as _sources
 from . import validation as _validation
 from .compile import compile_cmd
+from .emit_gold import emit_gold_cmd
 from .decisions import decision
 from .feedback import feedback
 from .validation import (
@@ -276,6 +277,7 @@ def _reset_operation_context(ctx, _result, **_kwargs):  # noqa: ANN001
 def register_commands(group: click.Group) -> None:
     """Register the retained v5 command surface on *group*."""
     group.add_command(compile_cmd)
+    group.add_command(emit_gold_cmd)
     group.add_command(decision)
     group.add_command(feedback)
     group.add_command(validate_dbt_cmd)

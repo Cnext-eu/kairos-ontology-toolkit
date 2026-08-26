@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -52,6 +53,22 @@ def _gold_text(domain: str) -> str:
     return (EXTENSIONS_DIR / f"{domain}-gold-ext.ttl").read_text(encoding="utf-8")
 
 
+# #619 Bugs 4/6: every Direct Lake product now requires gold.direct_lake_connection
+# (mirroring the existing databricks_connection fail-closed requirement, issue #283).
+# Every "fabric" test in this module (the default *platform*) needs one authored
+# somewhere, so this stands in for a hub whenever a test doesn't author its own.
+_DIRECT_LAKE_HUB_ROOT = Path(tempfile.mkdtemp(prefix="kairos-gold-direct-lake-hub-"))
+(_DIRECT_LAKE_HUB_ROOT / "kairos.yaml").write_text(
+    "gold:\n"
+    "  direct_lake_connection:\n"
+    "    environments:\n"
+    "      DEV:\n"
+    "        workspace_id: 11111111-1111-1111-1111-111111111111\n"
+    "        lakehouse_id: 22222222-2222-2222-2222-222222222222\n",
+    encoding="utf-8",
+)
+
+
 def _generate(
     domain: str,
     *,
@@ -77,7 +94,7 @@ def _generate(
         silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
         peer_ext_paths=peers,
         target_platform=platform,
-        hub_root=hub_root,
+        hub_root=hub_root if hub_root is not None else _DIRECT_LAKE_HUB_ROOT,
     )
 
 
@@ -320,6 +337,18 @@ def test_missing_silver_measure_column_blocks(tmp_path: Path):
         1,
     )
     with pytest.raises(GoldContractError, match="missing-column-dependency"):
+        _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
+
+
+def test_measure_dax_referencing_unemitted_table_blocks(tmp_path: Path):
+    # #619 Bug 11: a measureExpression naming a table that isn't actually emitted (e.g. a
+    # stale `dim_`-prefixed name) used to render silently instead of failing closed.
+    text = _gold_text("invoice").replace(
+        'kairos-ext:measureExpression "SUM([total_amount])" ;',
+        'kairos-ext:measureExpression "SUM([total_amount]) + COUNTROWS(\'dim_frachtparty\')" ;',
+        1,
+    )
+    with pytest.raises(GoldContractError, match="unresolved-dax-table-reference"):
         _generate("invoice", gold_path=_write_gold(tmp_path, "invoice", text))
 
 
@@ -638,6 +667,67 @@ def test_fabric_direct_lake_needs_no_connection_and_emits_no_parameter_file(clie
     assert "parameter.yml" not in client_gold
 
 
+def test_direct_lake_named_expression_is_emitted_and_referenced(client_gold):
+    # #619 Bugs 4/6: Direct Lake has no per-table connection string -- every partition
+    # resolves through one shared OneLake named expression, quoted wherever referenced
+    # since its name contains spaces/a hyphen.
+    expression = client_gold[
+        "client/Client.SemanticModel/definition/expressions/DirectLake - Kairos Gold.tmdl"
+    ]
+    assert "AzureStorage.DataLake(" in expression
+    assert "onelake.dfs.fabric.microsoft.com/11111111-1111-1111-1111-111111111111/" in expression
+    assert "22222222-2222-2222-2222-222222222222" in expression
+
+    model = client_gold["client/Client.SemanticModel/definition/model.tmdl"]
+    assert "ref expression 'DirectLake - Kairos Gold'" in model
+
+    partition = client_gold["client/Client.SemanticModel/definition/tables/dim_client.tmdl"]
+    assert "expressionSource: 'DirectLake - Kairos Gold'" in partition
+
+
+def test_direct_lake_without_connection_config_fails_closed(tmp_path: Path):
+    with pytest.raises(GoldContractError, match="direct-lake-connection-missing"):
+        _generate("client", hub_root=tmp_path)
+
+
+def test_direct_lake_connection_rejects_non_guid_placeholder(tmp_path: Path):
+    # The exact failure mode #619 reported: a template placeholder like "WORKSPACE_ID"
+    # left unresolved instead of a real GUID.
+    hub_root = tmp_path / "hub"
+    hub_root.mkdir(parents=True, exist_ok=True)
+    (hub_root / "kairos.yaml").write_text(
+        "gold:\n"
+        "  direct_lake_connection:\n"
+        "    environments:\n"
+        "      DEV:\n"
+        "        workspace_id: WORKSPACE_ID\n"
+        "        lakehouse_id: 22222222-2222-2222-2222-222222222222\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(GoldContractError, match="direct-lake-connection-invalid"):
+        _generate("client", hub_root=hub_root)
+
+
+def test_model_tmdl_declares_ref_tables_and_datasource_version(client_gold):
+    model = client_gold["client/Client.SemanticModel/definition/model.tmdl"]
+    assert "ref table dim_client" in model
+    assert "defaultPowerBIDataSourceVersion: powerBI_V3" in model
+    assert "sourceQueryCulture: en-US" in model
+
+
+def test_direct_lake_partition_entity_name_is_bare_table_name(client_gold):
+    partition = client_gold["client/Client.SemanticModel/definition/tables/dim_client.tmdl"]
+    assert 'entityName: "dim_client"' in partition
+    assert 'entityName: "gold.dim_client"' not in partition
+
+
+def test_table_tmdl_places_measures_before_columns_with_doc_comment(invoice_gold):
+    table = invoice_gold["invoice/Invoice.SemanticModel/definition/tables/fact_invoice.tmdl"]
+    assert table.index("\tmeasure ") < table.index("\tcolumn ")
+    assert "/// " in table
+    assert "description: " not in table
+
+
 def test_ddl_tmdl_dax_erd_and_report_are_deterministic(invoice_gold):
     second = _generate("invoice")
     comparable = {
@@ -677,7 +767,7 @@ def test_pbip_wrapper_is_complete_and_schema_stamped(invoice_gold):
     assert "semanticModel/definitionProperties" in pbism["$schema"]
 
     assert invoice_gold[f"{prefix}/definition/database.tmdl"] == (
-        "database\n\tcompatibilityLevel: 1604\n"
+        "database\n\tcompatibilityLevel: 1702\n\tcompatibilityMode: powerBI\n\tlanguage: 1033\n"
     )
 
 

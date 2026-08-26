@@ -105,12 +105,20 @@ def project(
         raise click.ClickException(
             f"`project --target {target}` is retired; use `kairos-ontology compile <domain> --emit`"
         )
+    if target in {"powerbi", "gold"}:
+        raise click.ClickException(
+            f"`project --target {target}` is disabled because it bypasses the immutable "
+            "CompilePlan; use `kairos-ontology compile <domain> --check|--explain` to "
+            "validate the plan first, then `kairos-ontology emit-gold <domain> "
+            "--confirm-emit` to project and write Gold/PowerBI artifacts."
+        )
     if target in COMPILE_PLAN_ONLY_TARGETS:
         raise click.ClickException(
             f"`project --target {target}` is disabled because it bypasses the immutable "
-            "CompilePlan; use `kairos-ontology compile <domain> "
-            "--check|--explain|--emit`. Gold and MDM must consume the "
-            "compiler-produced plan through the typed downstream registry."
+            "CompilePlan; use `kairos-ontology compile <domain> --check|--explain|--emit`. "
+            "It must consume the compiler-produced plan through the typed downstream "
+            "registry (Python API only today: "
+            "kairos_ontology.mdm.profile_projector.generate_mdm_profile_from_compile_plan)."
         )
     cwd = Path.cwd()
     if platform != "fabric" and target not in {"dbt", "all"}:

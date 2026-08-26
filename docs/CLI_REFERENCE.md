@@ -34,12 +34,15 @@ design — `validate` is an advisory command, not a machine-output command.
 | `compile DOMAIN --check` | Build and validate a `CompilePlan` without writing |
 | `compile DOMAIN --explain [--format text\|json]` | Explain that plan without writing |
 | `compile DOMAIN --emit` | Atomically render manifest-owned dbt artifacts to the fixed `ontology-hub-publish/medallion/dbt` (not configurable) |
+| `emit-gold DOMAIN [--confirm-emit]` | Project the domain's Gold/PowerBI product (TMDL, PBIP, DAX, ERD) from the same `CompilePlan` and atomically write it to the fixed `ontology-hub-publish/powerbi` (not configurable, and never inside the dbt publish tree). Without `--confirm-emit`, reports what would be written without touching disk. Requires an authored Gold profile and, for Direct Lake/Databricks products, the matching `gold.direct_lake_connection`/`gold.databricks_connection` block in `kairos.yaml`. |
 
 The modes are mutually exclusive. The compiler reads the adapter from `kairos.yaml`;
 supported values are `fabric` and `databricks`.
 
-`project` remains registered for retained non-compiler projections. Its `dbt`, `silver`,
-`powerbi`/`gold`, and `mdm-profile` targets reject use and direct authors to `compile`;
+`project` remains registered for retained non-compiler projections. Its `dbt` and `silver`
+targets reject use and direct authors to `compile`. Its `powerbi`/`gold` targets direct
+authors to `compile --check|--explain` then `emit-gold --confirm-emit`; `mdm-profile`
+remains Python-API-only (`kairos_ontology.mdm.profile_projector.generate_mdm_profile_from_compile_plan`).
 Gold and MDM are typed downstream consumers of a compiler-produced immutable `CompilePlan`,
 never graph-authority project targets. `project --target all` excludes them.
 `scaffold-mapping`, `scaffold-silver-ext`, `validate-mapping`, and

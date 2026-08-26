@@ -60,3 +60,8 @@ tests/scenarios/**/.kairos-state/
 
 # Sub-agent git worktrees (transient, never part of the repo)
 .claude/worktrees/
+
+# .NET build output for the bundled TMDL validator tool (source ships, build output
+# does not -- it's built on demand by tmdl_validate.py when `dotnet` is available).
+src/kairos_ontology/core/projections/dbt/tmdl_validator_tool/bin/
+src/kairos_ontology/core/projections/dbt/tmdl_validator_tool/obj/

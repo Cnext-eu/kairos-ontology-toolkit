@@ -18,7 +18,7 @@ from .dbt import (
     render_project,
     shape_project,
 )
-from .dbt.gold_connection import load_gold_databricks_connection
+from .dbt.gold_connection import load_gold_databricks_connection, load_gold_direct_lake_connection
 from .dbt.gold_render import render_powerbi_artifacts
 from .dbt.gold_materialize import materialize_gold_product
 from .dbt.gold_shape import shape_gold_product
@@ -79,13 +79,17 @@ def generate_gold_from_compile_plan(
         "provenance_hash": compile_plan.provenance_hash,
         "models": [name for name, _ in compile_plan.silver_registry.names],
     }
+    hub_root = Path(compile_plan.scope.hub_root)
     return render_powerbi_artifacts(
         logical,
         physical,
         silver_parity=parity,
         # The compiler already resolved and hashed this hub's kairos.yaml, which is
-        # where the per-environment Databricks connection is authored (issue #283).
-        connection=load_gold_databricks_connection(Path(compile_plan.scope.hub_root)),
+        # where the per-environment Databricks connection is authored (issue #283),
+        # and where the per-environment Direct Lake workspace/lakehouse IDs are
+        # authored the same way (#619 Bugs 4/6).
+        connection=load_gold_databricks_connection(hub_root),
+        direct_lake_connection=load_gold_direct_lake_connection(hub_root),
     )
 
 
@@ -134,7 +138,9 @@ def generate_gold_artifacts(
     """Generate one registered Gold product from typed Silver and Gold plans.
 
     ``hub_root`` locates the ``kairos.yaml`` that authors the per-environment
-    Databricks connection required by a ``directQuery`` product (issue #283).
+    Databricks connection required by a ``directQuery`` product (issue #283), and the
+    per-environment Direct Lake workspace/lakehouse IDs required by a Direct Lake
+    product (#619 Bugs 4/6).
     """
     shaped, plan = plan_gold_projection(
         classes=classes,
@@ -175,6 +181,7 @@ def generate_gold_artifacts(
         plan.gold,
         silver_parity=parity,
         connection=load_gold_databricks_connection(hub_root),
+        direct_lake_connection=load_gold_direct_lake_connection(hub_root),
     )
     artifacts["__release_data__"] = release_data
     return artifacts
