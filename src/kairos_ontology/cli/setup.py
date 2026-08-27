@@ -491,6 +491,12 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
             print("  ✓ Created pyproject.toml")
             print(f"    toolkit {ref} (channel '{tk_channel}'), reference models {rm_ref}")
 
+    cicd_src = _SCAFFOLD_DIR / "CICD.md.template"
+    cicd_dst = cwd / "CICD.md"
+    if cicd_src.is_file() and (not cicd_dst.exists() or force):
+        _copy_managed(cicd_src, cicd_dst)
+        print("  ✓ Created CICD.md")
+
     # 6. Generate hub README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
     hub_readme_dst = hub / "README.md"
@@ -1243,6 +1249,11 @@ def new_repo(
         (repo_dir / "README.md").write_text(content, encoding="utf-8")
         print("  ✓ README.md")
 
+    cicd_src = _SCAFFOLD_DIR / "CICD.md.template"
+    if cicd_src.is_file():
+        _copy_managed(cicd_src, repo_dir / "CICD.md")
+        print("  ✓ CICD.md")
+
     # update-referencemodels.ps1 is no longer installed; reference models are
     # populated by the `kairos-ontology update-refmodels` command instead.
 
@@ -1451,6 +1462,7 @@ def init_dataplatform(name, dest, platform, org_override):
       - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd)
       - .github/fabric/deployment-settings.json.example
       - README.md with setup instructions
+      - CICD.md with branch, promotion, rollback, and hotfix guidance
 
     \b
     Examples:
@@ -1545,6 +1557,11 @@ def init_dataplatform(name, dest, platform, org_override):
                 content = content.replace(placeholder, value)
             (repo_dir / dst_name).write_text(content, encoding="utf-8")
             click.echo(f"  ✓ {dst_name}")
+
+    cicd_src = _DATAPLATFORM_SCAFFOLD / "CICD.md.template"
+    if cicd_src.is_file():
+        _copy_managed(cicd_src, repo_dir / "CICD.md")
+        click.echo("  ✓ CICD.md")
 
     # Copy macros
     for macro_name in ("extract_source_schema.sql", "print_query.sql"):

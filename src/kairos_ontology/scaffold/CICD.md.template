@@ -1,0 +1,71 @@
+# Hub CI/CD
+
+This managed guide describes the minimum workflow for this ontology hub. See `CONTRIBUTING.md` for
+authoring and review conventions.
+
+## Branching
+
+- `main` is protected and is the only long-lived branch.
+- Use short-lived `model/*`, `import/*`, `fix/*`, or `upgrade/*` branches.
+- DEV, UAT, and PROD are deployment targets, not Git branches.
+- Never hand-edit compiler-owned files under `ontology-hub-publish/`.
+
+## Pull-request checks
+
+From `ontology-hub/`, run the focused checks for every changed domain:
+
+```powershell
+uv sync --locked
+uv run kairos-ontology compile <domain> --check --format json
+uv run kairos-ontology compile <domain> --explain --format json
+uv run kairos-ontology compile <domain> --emit --confirm-emit
+```
+
+The pull request must include any release-relevant generated diff required by repository policy.
+CI must regenerate the same output and fail on drift. A green result proves compilation and
+structural validation; it does not replace a real downstream dbt build.
+
+## Release
+
+1. Merge the reviewed change to `main`.
+2. Tag the exact validated commit.
+3. Let `.github/workflows/release-projections.yml` validate and publish the projection artifacts.
+4. Record the full 40-character hub commit SHA for dataplatform adoption.
+
+A release tag is a readable label. The dataplatform dependency must use the full commit SHA.
+
+### Power BI release artifact
+
+When Gold Power BI output is configured, the same release also publishes
+`powerbi-semantic-model.zip`. It contains the first generated `SemanticModel` and `Report`
+versions from the same hub commit.
+
+The release workflow performs all wrapper generation and TMDL normalization before validating
+PBIP/report structure, TMDL, DAX, relationships, and generated security metadata. Release evidence
+records the hub SHA and archive SHA-256. Gold configuration without both expected item types fails
+the release.
+
+The generated report is a deployable starting point, not business signoff. Change compiler-owned
+report or semantic-model output in the hub inputs and regenerate it; never patch the archive.
+
+## Hotfix
+
+Create the hub hotfix from the hub SHA used by PROD, publish a new release, and adopt its new SHA in
+the dataplatform. Then forward-port the same fix and regression test onto a branch from current hub
+`main`, using cherry-pick when it applies cleanly; do not merge the old release history wholesale
+into `main`.
+
+## Managed files
+
+Adopt a newer managed guide and toolkit release in an isolated upgrade PR:
+
+```powershell
+uv run kairos-ontology update --upgrade
+# On Windows, wait for the detached managed-file refresh to finish.
+uv run kairos-ontology update --check
+```
+
+If the toolkit pin is already current, run `uv run kairos-ontology update` without `--upgrade`;
+plain `update` completes synchronously. Only a version-changing Windows `update --upgrade` requires
+checking `.kairos/upgrade-refresh.log`. Review all managed, lock, and generated consequences before
+merging.

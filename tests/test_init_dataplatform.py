@@ -162,6 +162,20 @@ class TestInitDataplatform:
         assert (dp_dir / "packages.yml").exists()
         assert (dp_dir / "pyproject.toml").exists()
         assert (dp_dir / "README.md").exists()
+        assert (dp_dir / "CICD.md").exists()
+
+    def test_cicd_guide_is_managed_and_describes_exact_sha_promotion(
+        self, dataplatform_output
+    ):
+        cicd = (dataplatform_output / "CICD.md").read_text(encoding="utf-8")
+        assert "kairos-ontology-toolkit:managed" in cicd
+        assert "full 40-character hub commit SHA" in cicd
+        assert "DEV build -> approval -> UAT build" in cicd
+        assert "forward-port" in cicd
+        assert "kairos-ontology update --upgrade" in cicd
+        assert "powerbi-semantic-model.zip" in cicd
+        assert "both `SemanticModel` and `Report`" in cicd
+        assert "downstream deployment is read-only" in cicd
 
     def test_packages_yml_has_hub_reference(self, dataplatform_output):
         packages = (dataplatform_output / "packages.yml").read_text(encoding="utf-8")
@@ -402,6 +416,9 @@ class TestUpdateDataplatform:
         assert ci.exists()
         content = ci.read_text(encoding="utf-8")
         assert "Kairos Dataplatform" in content
+        cicd = tmp_path / "CICD.md"
+        assert cicd.exists()
+        assert "kairos-ontology-toolkit:managed" in cicd.read_text(encoding="utf-8")
 
     def test_update_creates_skill_subset(self, tmp_path):
         """Update in dataplatform repo should only create the skill subset."""

@@ -3,6 +3,8 @@
 This dbt project consumes deterministic artifacts produced by the
 [ontology hub]({HUB_REPO_URL}).
 
+Operational branching, promotion, rollback, and hotfix guidance is in [`CICD.md`](CICD.md).
+
 ## Contract
 
 The hub builds one immutable `CompilePlan` from canonical TTL, source vocabularies, and

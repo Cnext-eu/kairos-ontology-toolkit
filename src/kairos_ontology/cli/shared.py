@@ -1357,6 +1357,10 @@ def _managed_scaffold_map() -> dict[str, Path]:
     """Return ``{repo_relative_path: scaffold_source_path}`` for managed files."""
     result: dict[str, Path] = {}
 
+    cicd = _SCAFFOLD_DIR / "CICD.md.template"
+    if cicd.is_file():
+        result["CICD.md"] = cicd
+
     ci = _SCAFFOLD_DIR / "copilot-instructions.md"
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
@@ -1399,6 +1403,10 @@ def _managed_scaffold_map() -> dict[str, Path]:
 def _managed_dataplatform_map() -> dict[str, Path]:
     """Return managed-file map for dataplatform repos (skill subset)."""
     result: dict[str, Path] = {}
+
+    cicd = _DATAPLATFORM_SCAFFOLD / "CICD.md.template"
+    if cicd.is_file():
+        result["CICD.md"] = cicd
 
     ci = _SCAFFOLD_DIR / "dataplatform-copilot-instructions.md"
     if ci.is_file():

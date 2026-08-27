@@ -1,0 +1,95 @@
+# Dataplatform CI/CD
+
+This managed guide describes the minimum workflow for this dataplatform. See `CONTRIBUTING.md` for
+development and review conventions.
+
+## Branching
+
+- `main` is protected and is the only long-lived branch.
+- Use short-lived `feature/*`, `bump/hub-*`, `fix/*`, or `chore/*` branches.
+- DEV, UAT, and PROD are dbt targets and GitHub Environments, not Git branches.
+- Never edit installed hub-package files under `dbt_packages/`.
+
+## Hub package updates
+
+A `bump/hub-*` PR updates these items together:
+
+1. the full 40-character hub commit SHA in `packages.yml`;
+2. the resolved dbt package lock; and
+3. all physical source bindings required by the new package.
+
+Do not pin a moving branch in production. A release tag may help reviewers find the hub release,
+but the package revision is the commit SHA.
+
+## Pull-request checks
+
+Before enabling the PR workflow, add a credential-isolated `ci` target to `.dbt/profiles.yml`.
+Then run:
+
+```powershell
+uv sync --locked
+uv run dbt deps
+uv run dbt parse --profiles-dir .dbt --target ci
+uv run dbt compile --profiles-dir .dbt --target ci
+uv run dbt build --profiles-dir .dbt --target ci
+```
+
+CI must fail before the build when any package source lacks a real physical binding. The full build
+is the default; introduce Slim CI only when project scale demonstrates that it is necessary.
+
+## Promotion
+
+After merge, every job checks out the same dataplatform commit:
+
+```text
+commit D8 -> DEV build -> approval -> UAT build -> approval -> PROD build
+```
+
+Use GitHub Environments for credentials and approvals. Retain `manifest.json`,
+`run_results.json`, and the workflow run for each deployment. Never rebuild from current `main`
+during an existing promotion.
+
+## Rollback and PROD hotfix
+
+Rollback redeploys the last known-good dataplatform SHA from GitHub deployment history.
+
+For an urgent fix when `main` has advanced:
+
+1. branch from the exact SHA running in PROD;
+2. add the smallest fix and a regression test;
+3. run required checks and deploy that exact hotfix SHA after approval;
+4. create a new branch from current `main`;
+5. cherry-pick or reapply the same fix; and
+6. merge the forward-port through a normal PR.
+
+Never merge the old production branch wholesale into current `main`.
+
+## Fabric and Power BI
+
+dbt deployment and Fabric/Power BI artifact deployment are separate lanes. The Power BI workflow
+consumes `powerbi-semantic-model.zip` from the same hub release as the dbt package. The
+archive contains the first generated `SemanticModel` and `Report` versions.
+
+The workflow must accept and verify the expected hub SHA and archive SHA-256 before extraction.
+After the target environment's dbt build succeeds, it uses that GitHub Environment's credentials
+to deploy both `SemanticModel` and `Report` item types. DEV, UAT, and PROD receive the same archive;
+only approved workspace and connection parameterization changes.
+
+Power BI rollback redeploys the previously successful archive. Never regenerate or hand-edit TMDL,
+PBIR, or report JSON in the dataplatform. Any wrapper generation or TMDL normalization happens in
+the hub before the archive is validated and checksummed; downstream deployment is read-only.
+
+## Updating this guide
+
+Adopt a newer toolkit and managed guide in an isolated PR:
+
+```powershell
+uv run kairos-ontology update --upgrade
+# On Windows, wait for the detached managed-file refresh to finish.
+uv run kairos-ontology update --check
+```
+
+If the toolkit dependency is already current, run `uv run kairos-ontology update` without
+`--upgrade`; plain `update` completes synchronously. Only a version-changing Windows
+`update --upgrade` requires checking `.kairos/upgrade-refresh.log`. Review local environment,
+source-binding, and workflow changes manually; the update command cannot infer them.

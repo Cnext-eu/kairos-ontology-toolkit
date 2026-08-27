@@ -93,6 +93,9 @@ def _assert_v5_hub_contract(hub: Path) -> None:
     assert (feedback / "index.md").is_file()
     assert (hub / "catalog-v001.xml").is_file()
     assert (hub / "kairos.yaml").is_file()
+    cicd = hub.parent / "CICD.md"
+    assert cicd.is_file()
+    assert _get_managed_version(cicd.read_text(encoding="utf-8")) is not None
     assert not (hub / "model/shapes/kairos-prep-shapes.shacl.ttl").exists()
     assert not (hub / "model/shapes/kairos-ext-shapes.shacl.ttl").exists()
     assert not (hub / "model/shapes/kairos-map-shapes.shacl.ttl").exists()
@@ -416,6 +419,7 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / "pyproject.toml").is_file()
     assert (repo / ".gitignore").is_file()
     assert (repo / "README.md").is_file()
+    assert (repo / "CICD.md").is_file()
 
     # pyproject references the toolkit
     pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
@@ -1217,6 +1221,38 @@ def test_init_generates_hub_readme(tmp_path):
             assert "contoso.com" in content
             assert "Contoso" in content
             assert "https://contoso.com/ont/" in content
+
+
+def test_init_generates_managed_cicd_guide(tmp_path):
+    """init should create the managed root CI/CD guide."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
+            assert result.exit_code == 0, result.output
+
+            cicd = Path("CICD.md")
+            content = cicd.read_text(encoding="utf-8")
+            assert _get_managed_version(content) is not None
+            assert "full 40-character hub commit SHA" in content
+            assert "forward-port" in content
+            assert "kairos-ontology update --upgrade" in content
+            assert "powerbi-semantic-model.zip" in content
+            assert "archive SHA-256" in content
+            assert "TMDL normalization" in content
+
+
+def test_init_preserves_existing_cicd_guide_without_force(tmp_path):
+    """init should not replace a pre-existing root CI/CD guide without --force."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            Path("CICD.md").write_text("# Local CI/CD\n", encoding="utf-8")
+            result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
+            assert result.exit_code == 0, result.output
+            assert Path("CICD.md").read_text(encoding="utf-8") == "# Local CI/CD\n"
 
 
 def test_init_generates_master_ontology(tmp_path):
