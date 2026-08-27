@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -660,12 +661,51 @@ def test_malformed_gold_connection_block_never_partially_applies(tmp_path: Path)
         )
 
 
-def test_fabric_direct_lake_needs_no_connection_and_emits_no_parameter_file(client_gold):
+def test_fabric_direct_lake_partition_carries_no_databricks_connection(client_gold):
+    """Direct Lake has no per-table connection string; it binds via the named expression.
+
+    Renamed from `..._needs_no_connection_and_emits_no_parameter_file`: that name was
+    wrong twice over. Direct Lake *does* require `gold.direct_lake_connection` (the
+    projector fail-closes without it), and it now emits `parameter.yml` too, because a
+    model whose OneLake GUIDs cannot be rewritten at deploy time cannot be promoted
+    between Fabric workspaces (#623).
+    """
     partition = client_gold["client/Client.SemanticModel/definition/tables/dim_client.tmdl"]
     assert "mode: directLake" in partition
     assert "Databricks.Catalogs" not in partition
-    assert "parameter.yml" not in client_gold
 
+
+def test_direct_lake_emits_promotable_parameterisation(client_gold):
+    """The OneLake URL in the TMDL must be exactly what fabric-cicd is told to find.
+
+    fabric-cicd does a literal substring replacement, so a find_value that differs
+    from the emitted TMDL by even a character silently leaves the model bound to the
+    environment it was emitted for.
+    """
+    import yaml as _yaml
+
+    assert "parameter.yml" in client_gold
+    document = _yaml.safe_load(client_gold["parameter.yml"])
+    entries = document["find_replace"]
+    assert len(entries) == 1
+    entry = entries[0]
+
+    expression = client_gold[
+        "client/Client.SemanticModel/definition/expressions/DirectLake - Kairos Gold.tmdl"
+    ]
+    assert entry["find_value"] in expression, "find_value must match the emitted TMDL verbatim"
+    assert entry["item_type"] == "SemanticModel"
+
+    # Every declared environment is a promotion target, and each is a distinct URL.
+    replacements = entry["replace_value"]
+    assert len(replacements) >= 1
+    assert len(set(replacements.values())) == len(replacements)
+    for url in replacements.values():
+        assert url.startswith("https://onelake.dfs.fabric.microsoft.com/")
+
+    # One entry on the whole URL, not two on the bare GUIDs: a GUID also appears in
+    # lineageTags, where rewriting it would be wrong.
+    assert entry["find_value"].count("/") >= 4
 
 def test_direct_lake_named_expression_is_emitted_and_referenced(client_gold):
     # #619 Bugs 4/6: Direct Lake has no per-table connection string -- every partition
@@ -810,4 +850,113 @@ def test_blank_report_has_exactly_one_page_and_is_deterministic(invoice_gold):
     page_files = [p for p in invoice_gold if p.startswith(f"{report_dir}/definition/pages/")]
     assert len(page_files) == 2  # pages.json + the single page.json
 
-    assert json.loads(invoice_gold[f"{report_dir}/definition/version.json"])["version"] == "4.0"
+    # versionMetadata constrains this to major.minor.0, so the "4.0" emitted
+    # before #623 could never validate.
+    version = json.loads(invoice_gold[f"{report_dir}/definition/version.json"])
+    assert version["version"] == "2.0.0"
+    assert re.fullmatch(r"[1-9][0-9]*\.(0|[1-9][0-9]*)\.0", version["version"])
+    assert version["$schema"].endswith("definition/versionMetadata/1.0.0/schema.json")
+
+
+def test_every_pbir_entry_point_is_schema_stamped(invoice_gold):
+    """#623: each PBIR schema lists `$schema` in `required` with
+    `additionalProperties: false`, so an unstamped file is invalid on its face —
+    Desktop and Fabric both read these before the model.
+    """
+    report_dir = "invoice/Invoice.Report"
+    expected = {
+        "definition/report.json": "definition/report/2.0.0/schema.json",
+        "definition/version.json": "definition/versionMetadata/1.0.0/schema.json",
+        "definition/pages/pages.json": "definition/pagesMetadata/1.0.0/schema.json",
+    }
+    for relative, suffix in expected.items():
+        payload = json.loads(invoice_gold[f"{report_dir}/{relative}"])
+        assert payload["$schema"].endswith(suffix), relative
+
+    page_name = json.loads(invoice_gold[f"{report_dir}/definition/pages/pages.json"])["pageOrder"][
+        0
+    ]
+    page = json.loads(invoice_gold[f"{report_dir}/definition/pages/{page_name}/page.json"])
+    assert page["$schema"].endswith("definition/page/1.0.0/schema.json")
+
+
+def test_report_json_matches_the_schema_version_it_declares(invoice_gold):
+    """report/1.0.0 *requires* `layoutOptimization`; 2.0.0 removed the property and
+    forbids extras. The stamp and the field set have to agree, so this pins both.
+    """
+    report = json.loads(invoice_gold["invoice/Invoice.Report/definition/report.json"])
+    assert report["$schema"].endswith("definition/report/2.0.0/schema.json")
+    assert "layoutOptimization" not in report
+    # ThemeMetadata requires all three fields and forbids extras, so `name` alone
+    # (what was emitted before #623) is invalid under either report version.
+    assert report["themeCollection"] == {
+        "baseTheme": {
+            "name": "CY24SU10",
+            "reportVersionAtImport": "5.55",
+            "type": "SharedResources",
+        }
+    }
+
+
+def test_pbip_declares_the_published_schema_uri_exactly(invoice_gold):
+    """The `/fabric/item/pbipProperties/...` form 404s and Desktop refuses to open
+    the project before reading anything else (#623). A substring check would not
+    have caught it, so this asserts the whole URI.
+    """
+    pbip = json.loads(invoice_gold["invoice/Invoice.pbip"])
+    assert pbip["$schema"] == (
+        "https://developer.microsoft.com/json-schemas/fabric/pbip/"
+        "pbipProperties/1.0.0/schema.json"
+    )
+    assert "/fabric/item/pbipProperties/" not in pbip["$schema"]
+
+
+def test_report_and_semantic_model_get_distinct_non_zero_logical_ids(invoice_gold):
+    """Both items carried the all-zero placeholder, so nothing keying on logicalId
+    could tell the report from the model (#623). Deterministic, so re-projection
+    stays a no-op.
+    """
+    report = json.loads(invoice_gold["invoice/Invoice.Report/.platform"])
+    model = json.loads(invoice_gold["invoice/Invoice.SemanticModel/.platform"])
+
+    report_id = report["config"]["logicalId"]
+    model_id = model["config"]["logicalId"]
+    zero = "00000000-0000-0000-0000-000000000000"
+
+    assert report_id != zero
+    assert model_id != zero
+    assert report_id != model_id
+    for value in (report_id, model_id):
+        assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value)
+
+
+def test_relationships_use_the_canonical_definition_layout(invoice_gold):
+    """Desktop and Fabric emit `definition/relationships.tmdl`; the projector used a
+    `relationships/` subfolder (#623).
+    """
+    prefix = "invoice/Invoice.SemanticModel/definition"
+    assert f"{prefix}/relationships.tmdl" in invoice_gold
+    assert f"{prefix}/relationships/relationships.tmdl" not in invoice_gold
+
+
+def test_every_emitted_package_file_validates_against_its_declared_schema(invoice_gold):
+    """The gate #623 was missing: TOM reads only the TMDL, so every Fabric package
+    file went unchecked and the schema URLs were literals nothing dereferenced.
+
+    Validating each document against the schema *it declares* also catches a wrong
+    URI for free -- an unknown schema is a failure, which is how the 404 `.pbip`
+    URI would have been caught at emit time.
+    """
+    from kairos_ontology.core.projections.dbt.pbip_validate import validate_package_artifacts
+
+    results = validate_package_artifacts(invoice_gold)
+    failures = [item for item in results if item.status != "pass"]
+    detail = [f"{item.artifact_path}: {item.message}" for item in failures]
+    assert not failures, detail
+    # Guard against the gate silently checking nothing.
+    checked = {item.artifact_path.rsplit("/", 1)[-1] for item in results}
+    assert {"report.json", "version.json", "pages.json", "page.json"} <= checked
+    assert any(name.endswith(".pbip") for name in checked)
+    assert any(name.endswith(".platform") for name in checked)
+    assert any(name.endswith(".pbir") for name in checked)
+    assert any(name.endswith(".pbism") for name in checked)

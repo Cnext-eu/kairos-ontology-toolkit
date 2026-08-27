@@ -2,12 +2,15 @@
 # Copyright 2026 Cnext.eu
 """Per-environment Databricks connection configuration for Gold semantic models.
 
-A ``directQuery`` Power BI semantic model over Databricks SQL is the only Gold
-artifact that needs external connection details. A Direct Lake partition resolves
-its binding from the Fabric workspace it is deployed into, so it needs none; a
-Power Query partition must name a concrete server hostname and HTTP path, and an
-unresolved placeholder there produces a semantic model that cannot connect to
-anything (issue #283).
+Both semantic modes need connection details, for different reasons. A
+``directQuery`` model over Databricks SQL must name a concrete server hostname and
+HTTP path, and an unresolved placeholder there produces a semantic model that cannot
+connect to anything (issue #283). A Direct Lake model binds through a named
+expression whose OneLake URL embeds a specific workspace and lakehouse, so it needs
+``gold.direct_lake_connection`` and fails closed without it -- this module said
+"it needs none" until #623, which was wrong in both directions: the projector had
+already required it since #619, and the emitted model could not be promoted to
+another workspace because nothing rewrote those GUIDs at deploy time.
 
 The values are authored per environment in ``kairos.yaml`` because one released
 semantic model is promoted across environments:

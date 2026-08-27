@@ -16,6 +16,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0rc3] — 2026-08-27
+
+### Fixed
+- **The emitted Fabric package is schema-valid, and is now validated (issue #623).** Power BI
+  Desktop refused an `emit-gold` project before reading the report or the model, while every
+  local gate passed — the TOM gate reads only the TMDL tree, so nothing checked the files
+  Desktop and Fabric look at first, and the schema URLs in those files were string literals
+  nothing dereferenced. Verified against the published schemas, each of which sets
+  `additionalProperties: false`: the `.pbip` declared a `$schema` URI that 404s (the published
+  family is `/fabric/pbip/…`, not `/fabric/item/…`); `report.json`, `version.json`, `pages.json`
+  and `page.json` all omitted the `$schema` their schemas require; `version.json` carried `"4.0"`
+  where the value is constrained to `major.minor.0`; `themeCollection.baseTheme` carried only
+  `name` where `reportVersionAtImport` and `type` are required too; both `.platform` files
+  carried the all-zero `logicalId`, so nothing could tell the report from the semantic model; and
+  relationships moved to the canonical `definition/relationships.tmdl`. A new gate validates
+  every package file against the schema *it declares*, from vendored copies, never touching the
+  network — which is what makes a wrong URI a failure rather than something a test must enumerate.
+- **`emit-gold` describes its TOM gate accurately.** It claimed "the same engine Power BI Desktop
+  and Fabric use to open a model"; it is one call, `TmdlSerializer.DeserializeDatabaseFromFolder`,
+  and covers neither the package JSON nor the model rules Desktop enforces when it creates its
+  local database.
+- **Four places claimed Fabric Direct Lake "needs no connection configuration"** while the
+  projector fail-closes without `gold.direct_lake_connection`. The scaffolded `kairos.yaml` also
+  shipped `adapter: fabric` with no `gold` block, so a freshly scaffolded hub failed `emit-gold`
+  on its first run with no hint why.
+
+### Added
+- **Direct Lake semantic models are promotable between Fabric workspaces (issue #623).**
+  `parameter.yml` was emitted only for non-Direct-Lake models, so the OneLake workspace and
+  lakehouse GUIDs were baked into the emitted M expression with no deploy-time rewrite path — one
+  artifact was pinned to whichever environment was default at emit time, which defeats deploying
+  to a Fabric dev workspace to validate. Direct Lake now emits the same root `parameter.yml`,
+  with a single `find_replace` entry on the whole OneLake URL (a bare GUID also appears in
+  lineage tags, where rewriting it would be wrong). The URL is built by one helper shared with
+  the named expression, so `find_value` cannot drift from the TMDL it must match.
+
+### Changed
+- **`provenance_hash`-style behaviour change:** `.platform` `logicalId` values change from the
+  all-zero placeholder to deterministic, distinct ids derived from item name and type.
+  `scaffold/dataplatform/scripts/package_fabric_semantic_model.py` still backfills the zero
+  placeholder for hand-authored models only, and does not overwrite projector output.
+
+
 ## [5.15.0rc2] — 2026-08-27
 
 ### Changed
