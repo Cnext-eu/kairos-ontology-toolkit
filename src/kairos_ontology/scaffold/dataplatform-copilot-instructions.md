@@ -24,6 +24,8 @@ creates one immutable `CompilePlan`; emitted artifacts are pinned and consumed h
 Dataplatform setup supports `fabric-lakehouse`, `fabric-warehouse`, and `databricks`;
 compiler adapters are `fabric` and `databricks`.
 
-Managed `.github/skills/` and `.github/copilot-instructions.md` files are refreshed with
-`uv run kairos-ontology update`. For reversible unreleased testing use
-`update --test-ref <branch-or-sha>`, then `update --restore`; neither publishes a release.
+Managed `.claude/skills/` and `.github/copilot-instructions.md` files are refreshed with
+`uv run kairos-ontology update`. `.claude/skills/` is read directly by both Claude Code and
+GitHub Copilot's Agent Skills support — there is no separate `.github/skills/` copy. For
+reversible unreleased testing use `update --test-ref <branch-or-sha>`, then `update --restore`;
+neither publishes a release.

@@ -105,4 +105,4 @@ Open a small `chore/bump-X.Y.Z` PR with the bump, merge it, then tag.
 2. Run `python -m kairos_ontology project` to regenerate artifacts
 3. New domain in `model/ontologies/_master.ttl` and README.md domain table?
 4. Projection outputs committed (if not gitignored)?
-5. `kairos-help` skill updated (both `.github/skills/` and scaffold copy)?
+5. `kairos-help` skill updated (both `.claude/skills/` and scaffold copy)?

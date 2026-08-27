@@ -421,7 +421,7 @@ existing file (use `--force` deliberately). Author the classes and properties by
 hand afterwards — the scaffold gives you the frame, not the model.
 
 A worked, fully-commented exemplar lives at
-`.github/skills/kairos-design-domain/exemplar-domain.ttl` (with a paired
+`.claude/skills/kairos-design-domain/exemplar-domain.ttl` (with a paired
 `exemplar-domain.shacl.ttl`). Copy its structure; do not copy its content.
 
 Rules the exemplar demonstrates:

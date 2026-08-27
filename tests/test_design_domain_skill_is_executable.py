@@ -27,7 +27,7 @@ from click.testing import CliRunner
 from kairos_ontology.cli.main import cli
 
 _SKILL = (
-    Path(__file__).resolve().parents[1] / ".github" / "skills" / "kairos-design-domain" / "SKILL.md"
+    Path(__file__).resolve().parents[1] / ".claude" / "skills" / "kairos-design-domain" / "SKILL.md"
 )
 
 _DOMAIN = "order"

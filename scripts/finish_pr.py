@@ -3,7 +3,7 @@
 # Copyright 2026 Cnext.eu
 """Mechanical git/gh choreography for the SC-merge-pr skill.
 
-The SC-merge-pr skill (.github/skills/SC-merge-pr/SKILL.md) keeps judgment
+The SC-merge-pr skill (.claude/skills/SC-merge-pr/SKILL.md) keeps judgment
 calls in prose (commit wording, rebase-conflict resolution, the security
 review, which issues a PR "fully resolves", PR title/body prose, whether to
 ship a release and which bump size) and delegates everything mechanical here.

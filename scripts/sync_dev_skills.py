@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Sync .github/ skills and copilot-instructions to scaffold/.
+"""Sync .claude/ skills and copilot-instructions to scaffold/.
 
-Direction: .github/ (master) → scaffold/ (distribution copy)
+Direction: .claude/skills/ (master) → scaffold/skills/ (distribution copy)
+           .github/copilot-instructions.md (master) → scaffold/ (distribution copy)
 
-This ensures the scaffold (distributed to hub repos via `update`) always
-matches the working copies used by Copilot in this repo.
+.claude/skills/ is the authored source for skills — read directly by Claude Code
+and by GitHub Copilot's Agent Skills support (since Copilot's December 2025
+release), so one tree serves both tools. scaffold/ is what `update` distributes
+to hub and dataplatform repos.
 
 Usage:
     python scripts/sync-dev-skills.py [--check]
@@ -20,12 +23,18 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GITHUB_SKILLS = REPO_ROOT / ".github" / "skills"
+CLAUDE_SKILLS = REPO_ROOT / ".claude" / "skills"
 SCAFFOLD_SKILLS = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills"
 GITHUB_INSTRUCTIONS = REPO_ROOT / ".github" / "copilot-instructions.md"
 SCAFFOLD_INSTRUCTIONS = (
     REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "copilot-instructions.md"
 )
+
+# Skill directories under .claude/skills/ that are contributor-workflow skills
+# for this repo, not part of the kairos-* scaffold shipped to hub/dataplatform
+# repos, and must never be synced to the scaffold. "synced" is also a name
+# Claude Code reserves for claude.ai account sync and would never be authored here.
+_UNMANAGED_SKILL_DIRS = {"synced", "langfuse"}
 
 
 def get_sync_pairs() -> list[tuple[Path, Path]]:
@@ -36,15 +45,15 @@ def get_sync_pairs() -> list[tuple[Path, Path]]:
     if GITHUB_INSTRUCTIONS.exists():
         pairs.append((GITHUB_INSTRUCTIONS, SCAFFOLD_INSTRUCTIONS))
 
-    # All SKILL.md files and exemplar files (.ttl) in .github/skills/
-    if GITHUB_SKILLS.is_dir():
-        for skill_dir in sorted(GITHUB_SKILLS.iterdir()):
-            if not skill_dir.is_dir():
+    # All SKILL.md files and exemplar files (.ttl) in .claude/skills/
+    if CLAUDE_SKILLS.is_dir():
+        for skill_dir in sorted(CLAUDE_SKILLS.iterdir()):
+            if not skill_dir.is_dir() or skill_dir.name in _UNMANAGED_SKILL_DIRS:
                 continue
             skill_file = skill_dir / "SKILL.md"
-            if skill_file.exists():
-                dest = SCAFFOLD_SKILLS / skill_dir.name / "SKILL.md"
-                pairs.append((skill_file, dest))
+            if not skill_file.exists():
+                continue
+            pairs.append((skill_file, SCAFFOLD_SKILLS / skill_dir.name / "SKILL.md"))
             # Exemplar artefacts (TTL, SHACL, etc.) shipped alongside the skill
             extra_globs = [
                 *skill_dir.glob("*-domain.ttl"),
@@ -52,8 +61,7 @@ def get_sync_pairs() -> list[tuple[Path, Path]]:
                 *skill_dir.glob("exemplar-binding.yaml"),
             ]
             for extra in sorted(extra_globs):
-                dest = SCAFFOLD_SKILLS / skill_dir.name / extra.name
-                pairs.append((extra, dest))
+                pairs.append((extra, SCAFFOLD_SKILLS / skill_dir.name / extra.name))
 
     return pairs
 
@@ -71,7 +79,7 @@ def check_drift() -> list[tuple[Path, Path]]:
 
 
 def sync() -> list[tuple[Path, Path]]:
-    """Copy .github/ → scaffold/ for all managed files. Returns changed pairs."""
+    """Copy .claude/skills/ → scaffold/skills/ for all managed files. Returns changed pairs."""
     changed = []
     for src, dst in get_sync_pairs():
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -93,12 +101,12 @@ def main() -> int:
             print("\nRun: python scripts/sync-dev-skills.py")
             return 1
         else:
-            print("✅ .github/ and scaffold/ are in sync.")
+            print("✅ .claude/ and scaffold/ are in sync.")
             return 0
     else:
         changed = sync()
         if changed:
-            print(f"✅ Synced {len(changed)} file(s) from .github/ → scaffold/:")
+            print(f"✅ Synced {len(changed)} file(s) from .claude/ → scaffold/:")
             for src, dst in changed:
                 print(f"   {dst.relative_to(REPO_ROOT)}")
         else:

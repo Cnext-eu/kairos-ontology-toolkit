@@ -44,7 +44,7 @@ uv sync --all-groups
 
 ### Install git hooks
 
-Install the pre-commit hook to auto-sync `.github/` skills to the scaffold:
+Install the pre-commit hook to auto-sync `.claude/` skills to the scaffold:
 
 ```powershell
 # Windows
@@ -54,9 +54,10 @@ powershell scripts/install-hooks.ps1
 python scripts/sync_dev_skills.py  # run manually, or set up your own hook
 ```
 
-The hook ensures that when you edit skills in `.github/skills/` (the master
-source), the scaffold copies (`src/kairos_ontology/scaffold/skills/`) stay in
-sync automatically. CI will fail if they drift apart.
+The hook ensures that when you edit skills in `.claude/skills/` (the master
+source, read directly by both Claude Code and GitHub Copilot), the scaffold copies
+(`src/kairos_ontology/scaffold/skills/`) stay in sync automatically. CI will fail
+if they drift apart.
 
 ### Running tests
 

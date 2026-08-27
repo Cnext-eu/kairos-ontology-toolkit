@@ -3696,7 +3696,7 @@ def test_allow_fallback_registry_appears_nowhere():
             "allow-fallback-registry",
             "--",
             "src/",
-            ".github/skills/",
+            ".claude/skills/",
         ],
         capture_output=True,
         text=True,

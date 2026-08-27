@@ -24,6 +24,7 @@ from .shared import (
     _DependencyFilesSnapshot,
     _KNOWN_CLAUDE_SETTINGS_HASHES,
     _MANAGED_MARKER_RE,
+    _MANAGED_SKILLS_TREE,
     _RETIRED_MANAGED_SCAFFOLD_FILES,
     _RETIRED_SCAFFOLD_DIRECTORIES,
     _SCAFFOLD_DIR,
@@ -109,7 +110,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
     \b
     Managed files (do not edit manually):
       .github/copilot-instructions.md
-      .github/skills/*/SKILL.md
+      .claude/skills/*/SKILL.md
     """
     selected_modes = sum((bool(upgrade), test_ref is not None, bool(restore)))
     if selected_modes > 1:
@@ -374,7 +375,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
     # --- Stale managed-skill cleanup ----------------------------------------
     stale: list[str] = []
     removed: list[str] = []
-    skills_dir = repo_root / ".github" / "skills"
+    skills_dir = repo_root / _MANAGED_SKILLS_TREE
     scaffold_skills_dir = _SCAFFOLD_DIR / "skills"
     if skills_dir.is_dir() and scaffold_skills_dir.is_dir():
         scaffold_skill_names = {
@@ -476,7 +477,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
         if stale:
             print(f"⚠  {len(stale)} stale managed skill(s) to remove:")
             for name in stale:
-                print(f"   .github/skills/{name}/")
+                print(f"   {_MANAGED_SKILLS_TREE}/{name}/")
         if retired_assets:
             print(f"⚠  {len(retired_assets)} retired scaffold asset(s) to remove:")
             for path in retired_assets:
@@ -518,7 +519,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
         if removed:
             print(f"🗑️  Removed {len(removed)} stale managed skill(s):")
             for name in removed:
-                print(f"   .github/skills/{name}/")
+                print(f"   {_MANAGED_SKILLS_TREE}/{name}/")
         if removed_assets:
             print(f"🗑️  Removed {len(removed_assets)} retired scaffold asset(s):")
             for path in removed_assets:
