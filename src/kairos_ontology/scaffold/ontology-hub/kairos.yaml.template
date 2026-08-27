@@ -8,3 +8,20 @@ adapter: fabric
 # modes_served:
 #   - interactive
 #   - dataplatform
+
+# Gold semantic-model connection. Required as soon as a domain authors a Gold
+# product profile: `emit-gold` fails closed with
+# `gold.direct-lake-connection-missing` without it, because a Direct Lake model
+# binds through a named expression that embeds the workspace and lakehouse GUIDs.
+# Declare every environment the model may be promoted into -- the projector emits
+# a root `parameter.yml` so fabric-cicd rewrites these at deploy time.
+# gold:
+#   direct_lake_connection:
+#     default_environment: dev
+#     environments:
+#       - name: dev
+#         workspace_id: 00000000-0000-0000-0000-000000000000
+#         lakehouse_id: 00000000-0000-0000-0000-000000000000
+#       - name: prod
+#         workspace_id: 00000000-0000-0000-0000-000000000000
+#         lakehouse_id: 00000000-0000-0000-0000-000000000000

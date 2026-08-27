@@ -661,12 +661,51 @@ def test_malformed_gold_connection_block_never_partially_applies(tmp_path: Path)
         )
 
 
-def test_fabric_direct_lake_needs_no_connection_and_emits_no_parameter_file(client_gold):
+def test_fabric_direct_lake_partition_carries_no_databricks_connection(client_gold):
+    """Direct Lake has no per-table connection string; it binds via the named expression.
+
+    Renamed from `..._needs_no_connection_and_emits_no_parameter_file`: that name was
+    wrong twice over. Direct Lake *does* require `gold.direct_lake_connection` (the
+    projector fail-closes without it), and it now emits `parameter.yml` too, because a
+    model whose OneLake GUIDs cannot be rewritten at deploy time cannot be promoted
+    between Fabric workspaces (#623).
+    """
     partition = client_gold["client/Client.SemanticModel/definition/tables/dim_client.tmdl"]
     assert "mode: directLake" in partition
     assert "Databricks.Catalogs" not in partition
-    assert "parameter.yml" not in client_gold
 
+
+def test_direct_lake_emits_promotable_parameterisation(client_gold):
+    """The OneLake URL in the TMDL must be exactly what fabric-cicd is told to find.
+
+    fabric-cicd does a literal substring replacement, so a find_value that differs
+    from the emitted TMDL by even a character silently leaves the model bound to the
+    environment it was emitted for.
+    """
+    import yaml as _yaml
+
+    assert "parameter.yml" in client_gold
+    document = _yaml.safe_load(client_gold["parameter.yml"])
+    entries = document["find_replace"]
+    assert len(entries) == 1
+    entry = entries[0]
+
+    expression = client_gold[
+        "client/Client.SemanticModel/definition/expressions/DirectLake - Kairos Gold.tmdl"
+    ]
+    assert entry["find_value"] in expression, "find_value must match the emitted TMDL verbatim"
+    assert entry["item_type"] == "SemanticModel"
+
+    # Every declared environment is a promotion target, and each is a distinct URL.
+    replacements = entry["replace_value"]
+    assert len(replacements) >= 1
+    assert len(set(replacements.values())) == len(replacements)
+    for url in replacements.values():
+        assert url.startswith("https://onelake.dfs.fabric.microsoft.com/")
+
+    # One entry on the whole URL, not two on the bare GUIDs: a GUID also appears in
+    # lineageTags, where rewriting it would be wrong.
+    assert entry["find_value"].count("/") >= 4
 
 def test_direct_lake_named_expression_is_emitted_and_referenced(client_gold):
     # #619 Bugs 4/6: Direct Lake has no per-table connection string -- every partition
