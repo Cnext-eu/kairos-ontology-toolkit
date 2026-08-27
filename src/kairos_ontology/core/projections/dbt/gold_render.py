@@ -39,14 +39,61 @@ _PBISM_SCHEMA = (
     "https://developer.microsoft.com/json-schemas/fabric/item/semanticModel/"
     "definitionProperties/1.0.0/schema.json"
 )
+# The published family is /fabric/pbip/..., not /fabric/item/... (#623). The
+# `item` form 404s, and Power BI Desktop rejects the project before reading the
+# report or the model:
+#   Expected '$schema' property in '<Model>.pbip' to follow patterns:
+#   ^https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1\.[0-9]+\.[0-9]+/schema\.json$
 _PBIP_SCHEMA = (
-    "https://developer.microsoft.com/json-schemas/fabric/item/pbipProperties/1.0.0/schema.json"
+    "https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json"
 )
 _PBIR_SCHEMA = (
     "https://developer.microsoft.com/json-schemas/fabric/item/report/"
     "definitionProperties/1.0.0/schema.json"
 )
-_DEFAULT_LOGICAL_ID = "00000000-0000-0000-0000-000000000000"
+
+# Every PBIR entry point is schema-stamped (#623): each of these schemas lists
+# `$schema` in `required` and sets `additionalProperties: false`, so an unstamped
+# file is invalid and an extra key is too -- the field sets below are exact, not
+# illustrative.
+#
+# report/2.0.0 rather than 1.0.0 deliberately: 1.0.0 *requires* `layoutOptimization`
+# while 2.0.0 removed the property entirely, so the version stamp and that field
+# have to move together. 2.0.0 is what current Desktop exports.
+_REPORT_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/item/report/"
+    "definition/report/2.0.0/schema.json"
+)
+_REPORT_VERSION_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/item/report/"
+    "definition/versionMetadata/1.0.0/schema.json"
+)
+_PAGES_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/item/report/"
+    "definition/pagesMetadata/1.0.0/schema.json"
+)
+_PAGE_SCHEMA = (
+    "https://developer.microsoft.com/json-schemas/fabric/item/report/"
+    "definition/page/1.0.0/schema.json"
+)
+
+#: The base theme, complete per the schema's ``ThemeMetadata`` (#623). ``name``
+#: alone was emitted before, but all three fields are required and
+#: ``additionalProperties`` is false, so a partial theme fails validation. A
+#: built-in monthly-release theme is ``SharedResources`` (the schema's own wording:
+#: "base monthly release themes shipped with Power BI"). ``reportVersionAtImport``
+#: is a free string -- the Power BI report version the theme was added at -- pinned
+#: here so re-projection stays byte-identical.
+_BASE_THEME = {
+    "name": "CY24SU10",
+    "reportVersionAtImport": "5.55",
+    "type": "SharedResources",
+}
+
+#: Report definition version. The versionMetadata schema constrains this to
+#: ``major.minor.0`` (``^[1-9][0-9]*\.(0|[1-9][0-9]*)\.0$``), so the bare "4.0"
+#: this used to emit could never validate (#623).
+_REPORT_DEFINITION_VERSION = "2.0.0"
 
 # #619 Bugs 4/6: the shared M named expression every Direct Lake partition's
 # `expressionSource` points at. TMDL names containing spaces/hyphens must be
@@ -392,11 +439,20 @@ def _erd(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
 
 
 def _platform(display_name: str, *, artifact_type: str = "SemanticModel") -> str:
+    """Render a Fabric item's Git-integration descriptor.
+
+    ``logicalId`` is derived from the item's own name *and* type (#623), so the
+    report and the semantic model get distinct, deterministic ids. They previously
+    both carried the all-zero placeholder: schema-valid (the schema constrains
+    logicalId to a string and nothing more), but it makes two items in the same
+    project indistinguishable to anything keying on it, and re-emission cannot be
+    told apart from a genuinely new item.
+    """
     return _json(
         {
             "$schema": _PLATFORM_SCHEMA,
             "config": {
-                "logicalId": _DEFAULT_LOGICAL_ID,
+                "logicalId": _guid(f"{display_name}.{artifact_type}"),
                 "version": "2.0",
             },
             "metadata": {"displayName": display_name, "type": artifact_type},
@@ -446,18 +502,30 @@ def _blank_report(model_name: str) -> dict[str, str]:
     """
     page = _guid(f"{model_name}.Report/page")
     return {
+        # No `layoutOptimization`: report/2.0.0 dropped the property and forbids
+        # extras, so carrying it over from 1.0.0 would invalidate the file.
         "definition/report.json": _json(
             {
-                "themeCollection": {"baseTheme": {"name": "CY24SU10"}},
-                "layoutOptimization": "None",
+                "$schema": _REPORT_SCHEMA,
+                "themeCollection": {"baseTheme": _BASE_THEME},
             }
         ),
-        "definition/version.json": _json({"version": "4.0"}),
+        "definition/version.json": _json(
+            {
+                "$schema": _REPORT_VERSION_SCHEMA,
+                "version": _REPORT_DEFINITION_VERSION,
+            }
+        ),
         "definition/pages/pages.json": _json(
-            {"pageOrder": [page], "activePageName": page},
+            {
+                "$schema": _PAGES_SCHEMA,
+                "pageOrder": [page],
+                "activePageName": page,
+            },
         ),
         f"definition/pages/{page}/page.json": _json(
             {
+                "$schema": _PAGE_SCHEMA,
                 "name": page,
                 "displayName": "Page 1",
                 "displayOption": "FitToPage",
@@ -1000,7 +1068,9 @@ def render_powerbi_artifacts(
             "database\n\tcompatibilityLevel: 1702\n\tcompatibilityMode: powerBI\n\tlanguage: 1033\n"
         ),
         f"{definition}/model.tmdl": _model_tmdl(spec, physical),
-        (f"{definition}/relationships/relationships.tmdl"): _relationships_tmdl(spec),
+        # Canonical Desktop/Fabric layout is a single file directly under
+        # `definition/`, not a `relationships/` subfolder (#623).
+        (f"{definition}/relationships.tmdl"): _relationships_tmdl(spec),
     }
     if physical.semantic_mode == "directLake":
         assert direct_lake_connection is not None  # guaranteed above

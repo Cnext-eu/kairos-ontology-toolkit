@@ -22,6 +22,7 @@ import click
 
 from ..core.compiler import build_compile_plan
 from ..core.hub_utils import find_hub_root, publish_root
+from ..core.projections.dbt.pbip_validate import validate_package_artifacts
 
 #: Power BI/Gold publish sub-path under the publish root (``<publish_root>/powerbi``),
 #: a sibling of the dbt publish sub-path (``<publish_root>/medallion/dbt``) -- never
@@ -66,12 +67,22 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     and, for a Direct Lake or Databricks-backed product, the matching connection block
     in ``kairos.yaml`` (``gold.direct_lake_connection`` / ``gold.databricks_connection``).
 
-    Before writing anything, the generated TMDL is validated with the real Microsoft
-    TOM SDK (the same engine Power BI Desktop and Fabric use to open a model) via
-    ``validate_tmdl_artifacts()`` -- a structural failure here fails the command with
-    the exact file/line instead of only surfacing as a cryptic dialog in Desktop.
-    Pass ``--skip-tmdl-validation`` to skip it (for example in an environment without
-    the .NET SDK where you'd rather not pay the build cost on every emit).
+    Before writing anything, two independent gates run.
+
+    ``validate_package_artifacts()`` validates every Fabric package file (``.pbip``,
+    ``definition.pbir``, ``definition.pbism``, ``.platform``, and the PBIR report JSON)
+    against the JSON Schema each one declares, using vendored copies of Microsoft's
+    published schemas. It always runs and never touches the network.
+
+    ``validate_tmdl_artifacts()`` then runs the generated TMDL through the Microsoft
+    TOM SDK. This is **TMDL structural/deserialization validation only**
+    (``TmdlSerializer.DeserializeDatabaseFromFolder``) -- it is not proof that Desktop
+    or Fabric can open the project. It does not evaluate the package JSON above, the
+    ``sourceColumn`` requirements Desktop enforces on calculated tables, relationship
+    endpoint validity, or anything else checked when a local Analysis Services
+    database is created (#623). Pass ``--skip-tmdl-validation`` to skip it (for
+    example in an environment without the .NET SDK where you'd rather not pay the
+    build cost on every emit).
 
     The emit location is fixed and not configurable:
     ``<repo>/ontology-hub-publish/powerbi`` (sibling of the hub, and of the dbt publish
@@ -111,6 +122,19 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     except GoldContractError as exc:
         raise click.ClickException(str(exc)) from exc
 
+    # Always on, unlike the TMDL gate: this is pure Python against vendored schemas,
+    # so there is no .NET SDK to be missing and no build cost to opt out of. It is also
+    # the gate that covers everything Desktop and Fabric read *before* the model, which
+    # is where #623's blocker lived -- a `.pbip` whose $schema URI 404s.
+    package_failures = [
+        result for result in validate_package_artifacts(artifacts) if result.status != "pass"
+    ]
+    if package_failures:
+        detail = "; ".join(f"{item.artifact_path}: {item.message}" for item in package_failures)
+        raise click.ClickException(
+            f"Fabric package validation failed for {len(package_failures)} file(s): {detail}"
+        )
+
     if not skip_tmdl_validation:
         tmdl_results = validate_tmdl_artifacts(artifacts)
         failures = [result for result in tmdl_results if result.status == "fail"]
@@ -123,7 +147,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         if failures:
             detail = "; ".join(f"{item.definition_root}: {item.message}" for item in failures)
             raise click.ClickException(
-                f"TOM SDK structural validation failed for {len(failures)} model(s): {detail}"
+                f"TMDL structural validation failed for {len(failures)} model(s): {detail}"
             )
 
     target = (publish_root(hub_root) / _POWERBI_EMIT_SUBPATH).resolve(strict=False)
