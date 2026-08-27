@@ -928,6 +928,12 @@ def _dependency_files_transaction(root: Path) -> Iterator[_DependencyFilesSnapsh
         raise
 
 
+# Skills live under .claude/skills/ — both Claude Code and GitHub Copilot (since
+# Copilot's December 2025 Agent Skills release) read that location directly, so
+# a single tree serves both tools without a .github/skills/ mirror.
+_MANAGED_SKILLS_TREE = ".claude/skills"
+
+
 @dataclass(frozen=True)
 class _ManagedFilesSnapshot:
     """Managed-file state that a forced refresh may replace or remove."""
@@ -941,7 +947,7 @@ class _ManagedFilesSnapshot:
 def _snapshot_managed_files(root: Path) -> _ManagedFilesSnapshot:
     """Capture managed paths without including unrelated custom skill content."""
     copilot = root / ".github" / "copilot-instructions.md"
-    skills_dir = root / ".github" / "skills"
+    skills_dir = root / _MANAGED_SKILLS_TREE
     skill_files: dict[str, bytes | None] = {}
     managed_skill_trees: dict[str, dict[str, bytes]] = {}
 
@@ -978,7 +984,7 @@ def _restore_managed_files(snapshot: _ManagedFilesSnapshot) -> None:
         copilot.parent.mkdir(parents=True, exist_ok=True)
         copilot.write_bytes(snapshot.copilot_content)
 
-    skills_dir = snapshot.root / ".github" / "skills"
+    skills_dir = snapshot.root / _MANAGED_SKILLS_TREE
     if skills_dir.is_dir():
         for skill_dir in sorted(skills_dir.iterdir()):
             if not skill_dir.is_dir() or skill_dir.name in snapshot.skill_files:
@@ -1350,6 +1356,10 @@ def _managed_scaffold_map() -> dict[str, Path]:
     """Return ``{repo_relative_path: scaffold_source_path}`` for managed files."""
     result: dict[str, Path] = {}
 
+    cicd = _SCAFFOLD_DIR / "CICD.md.template"
+    if cicd.is_file():
+        result["CICD.md"] = cicd
+
     ci = _SCAFFOLD_DIR / "copilot-instructions.md"
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
@@ -1382,7 +1392,9 @@ def _managed_scaffold_map() -> dict[str, Path]:
             if skill_dir.is_dir():
                 skill_file = skill_dir / "SKILL.md"
                 if skill_file.is_file():
-                    result[f".github/skills/{skill_dir.name}/SKILL.md"] = skill_file
+                    # .claude/skills/ is read directly by both Claude Code and
+                    # GitHub Copilot (since Copilot's Dec 2025 Agent Skills release).
+                    result[f".claude/skills/{skill_dir.name}/SKILL.md"] = skill_file
 
     return result
 
@@ -1390,6 +1402,10 @@ def _managed_scaffold_map() -> dict[str, Path]:
 def _managed_dataplatform_map() -> dict[str, Path]:
     """Return managed-file map for dataplatform repos (skill subset)."""
     result: dict[str, Path] = {}
+
+    cicd = _DATAPLATFORM_SCAFFOLD / "CICD.md.template"
+    if cicd.is_file():
+        result["CICD.md"] = cicd
 
     ci = _SCAFFOLD_DIR / "dataplatform-copilot-instructions.md"
     if ci.is_file():
@@ -1399,7 +1415,7 @@ def _managed_dataplatform_map() -> dict[str, Path]:
     for skill_name in _DATAPLATFORM_SKILLS:
         skill_file = skills / skill_name / "SKILL.md"
         if skill_file.is_file():
-            result[f".github/skills/{skill_name}/SKILL.md"] = skill_file
+            result[f".claude/skills/{skill_name}/SKILL.md"] = skill_file
 
     return result
 

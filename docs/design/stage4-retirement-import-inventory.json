@@ -405,8 +405,8 @@
         "src/kairos_ontology/scaffold/ontology-hub/model/mappings/README.md"
       ],
       "managed_skill_references": [
-        ".github/skills/kairos-design-domain/SKILL.md",
-        ".github/skills/kairos-design-mapping/SKILL.md"
+        ".claude/skills/kairos-design-domain/SKILL.md",
+        ".claude/skills/kairos-design-mapping/SKILL.md"
       ],
       "tests": [
         "tests/test_claim_check_result.py",
@@ -461,8 +461,8 @@
         "src/kairos_ontology/templates/dbt/silver_stub_model.sql.jinja2"
       ],
       "managed_skill_references": [
-        ".github/skills/kairos-design-domain/SKILL.md",
-        ".github/skills/kairos-design-mapping/SKILL.md"
+        ".claude/skills/kairos-design-domain/SKILL.md",
+        ".claude/skills/kairos-design-mapping/SKILL.md"
       ],
       "tests": [
         "tests/test_aspirational_stubs.py",
@@ -624,7 +624,7 @@
         "src/kairos_ontology/scaffold/ontology-hub/integration/preparation/source-prep.ttl.template"
       ],
       "managed_skill_references": [
-        ".github/skills/kairos-design-silver/SKILL.md"
+        ".claude/skills/kairos-design-silver/SKILL.md"
       ],
       "tests": [
         "tests/test_dbt_preparation.py",

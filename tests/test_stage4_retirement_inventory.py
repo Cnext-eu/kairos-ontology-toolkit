@@ -151,7 +151,7 @@ def test_inventory_modules_assets_skills_and_tests_exist(inventory):
 def test_managed_skill_reference_inventory_is_complete_and_mirrored(inventory):
     markers = tuple(inventory["managed_skill_reference_markers"])
     actual: set[str] = set()
-    for path in sorted((ROOT / ".github" / "skills").glob("*/SKILL.md")):
+    for path in sorted((ROOT / ".claude" / "skills").glob("*/SKILL.md")):
         content = path.read_text(encoding="utf-8").lower()
         if any(marker in content for marker in markers):
             actual.add(path.relative_to(ROOT).as_posix())
@@ -165,7 +165,7 @@ def test_managed_skill_reference_inventory_is_complete_and_mirrored(inventory):
     assert actual == expected
 
     for reference in expected:
-        relative = Path(reference).relative_to(".github/skills")
+        relative = Path(reference).relative_to(".claude/skills")
         scaffold_copy = PACKAGE / "scaffold" / "skills" / relative
         assert scaffold_copy.is_file(), f"missing managed skill mirror: {scaffold_copy}"
 
@@ -175,10 +175,10 @@ def test_removed_subsystems_are_absent_from_cli_help_and_managed_guidance(invent
         PACKAGE / "cli" / "main.py",
         ROOT / ".github" / "copilot-instructions.md",
         PACKAGE / "scaffold" / "copilot-instructions.md",
-        ROOT / ".github" / "skills" / "kairos-help" / "SKILL.md",
+        ROOT / ".claude" / "skills" / "kairos-help" / "SKILL.md",
         PACKAGE / "scaffold" / "skills" / "kairos-help" / "SKILL.md",
     ]
-    paths.extend(sorted((ROOT / ".github" / "skills").glob("*/SKILL.md")))
+    paths.extend(sorted((ROOT / ".claude" / "skills").glob("*/SKILL.md")))
     paths.extend(sorted((PACKAGE / "scaffold" / "skills").glob("*/SKILL.md")))
 
     failures = [

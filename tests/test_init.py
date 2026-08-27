@@ -92,6 +92,9 @@ def _assert_v5_hub_contract(hub: Path) -> None:
     assert (feedback / "index.md").is_file()
     assert (hub / "catalog-v001.xml").is_file()
     assert (hub / "kairos.yaml").is_file()
+    cicd = hub.parent / "CICD.md"
+    assert cicd.is_file()
+    assert _get_managed_version(cicd.read_text(encoding="utf-8")) is not None
     assert not (hub / "model/shapes/kairos-prep-shapes.shacl.ttl").exists()
     assert not (hub / "model/shapes/kairos-ext-shapes.shacl.ttl").exists()
     assert not (hub / "model/shapes/kairos-map-shapes.shacl.ttl").exists()
@@ -133,12 +136,12 @@ def test_init_creates_hub_structure(tmp_path):
             assert "default_domain: order" in config
 
             # Check skills installed
-            assert Path(".github/skills/kairos-setup-config/SKILL.md").is_file()
-            assert Path(".github/skills/kairos-design-domain/SKILL.md").is_file()
-            assert Path(".github/skills/kairos-design-discovery/SKILL.md").is_file()
-            assert Path(".github/skills/kairos-execute-validate/SKILL.md").is_file()
-            assert Path(".github/skills/kairos-execute-project/SKILL.md").is_file()
-            assert Path(".github/skills/kairos-develop-dbt-transformation/SKILL.md").is_file()
+            assert Path(".claude/skills/kairos-setup-config/SKILL.md").is_file()
+            assert Path(".claude/skills/kairos-design-domain/SKILL.md").is_file()
+            assert Path(".claude/skills/kairos-design-discovery/SKILL.md").is_file()
+            assert Path(".claude/skills/kairos-execute-validate/SKILL.md").is_file()
+            assert Path(".claude/skills/kairos-execute-project/SKILL.md").is_file()
+            assert Path(".claude/skills/kairos-develop-dbt-transformation/SKILL.md").is_file()
 
             # Check copilot instructions
             assert Path(".github/copilot-instructions.md").is_file()
@@ -184,7 +187,7 @@ def test_init_without_domain(tmp_path):
             assert result.exit_code == 0
 
             assert Path("ontology-hub/model/ontologies").is_dir()
-            assert Path(".github/skills/kairos-setup-config/SKILL.md").is_file()
+            assert Path(".claude/skills/kairos-setup-config/SKILL.md").is_file()
             # Only _foundation.ttl + _master.ttl should exist (no domain starter)
             ttl_files = sorted(Path("ontology-hub/model/ontologies").glob("*.ttl"))
             assert len(ttl_files) == 2
@@ -405,16 +408,17 @@ def test_new_repo_creates_full_structure(tmp_path):
 
     # Copilot
     assert (repo / ".github" / "copilot-instructions.md").is_file()
-    assert (repo / ".github" / "skills" / "kairos-setup-config" / "SKILL.md").is_file()
-    assert (repo / ".github" / "skills" / "kairos-design-discovery" / "SKILL.md").is_file()
+    assert (repo / ".claude" / "skills" / "kairos-setup-config" / "SKILL.md").is_file()
+    assert (repo / ".claude" / "skills" / "kairos-design-discovery" / "SKILL.md").is_file()
     assert (
-        repo / ".github" / "skills" / "kairos-develop-dbt-transformation" / "SKILL.md"
+        repo / ".claude" / "skills" / "kairos-develop-dbt-transformation" / "SKILL.md"
     ).is_file()
 
     # Repo-level files
     assert (repo / "pyproject.toml").is_file()
     assert (repo / ".gitignore").is_file()
     assert (repo / "README.md").is_file()
+    assert (repo / "CICD.md").is_file()
 
     # pyproject references the toolkit
     pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
@@ -671,7 +675,7 @@ def test_new_repo_stamps_managed_files(tmp_path):
     assert _get_managed_version(ci) is not None
 
     # At least one skill should be stamped
-    for skill_md in (repo / ".github" / "skills").rglob("SKILL.md"):
+    for skill_md in (repo / ".claude" / "skills").rglob("SKILL.md"):
         content = skill_md.read_text(encoding="utf-8")
         assert _get_managed_version(content) is not None, f"{skill_md} not stamped"
 
@@ -865,7 +869,7 @@ def test_update_removes_stale_managed_skill(tmp_path):
             dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
 
         # Add a stale managed skill (not in scaffold)
-        stale_dir = Path(td) / ".github" / "skills" / "kairos-old-skill"
+        stale_dir = Path(td) / ".claude" / "skills" / "kairos-old-skill"
         stale_dir.mkdir(parents=True, exist_ok=True)
         stale_content = _stamp_managed("# Old Skill\nThis is stale.", "1.0.0")
         (stale_dir / "SKILL.md").write_text(stale_content, encoding="utf-8")
@@ -895,7 +899,7 @@ def test_update_check_reports_stale_managed_skill(tmp_path):
             dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
 
         # Add a stale managed skill
-        stale_dir = Path(td) / ".github" / "skills" / "kairos-old-skill"
+        stale_dir = Path(td) / ".claude" / "skills" / "kairos-old-skill"
         stale_dir.mkdir(parents=True, exist_ok=True)
         stale_content = _stamp_managed("# Old Skill\nThis is stale.", "1.0.0")
         (stale_dir / "SKILL.md").write_text(stale_content, encoding="utf-8")
@@ -971,7 +975,7 @@ def test_update_preserves_custom_unmanaged_skill(tmp_path):
             dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
 
         # Add a custom skill WITHOUT managed marker
-        custom_dir = Path(td) / ".github" / "skills" / "my-custom-skill"
+        custom_dir = Path(td) / ".claude" / "skills" / "my-custom-skill"
         custom_dir.mkdir(parents=True, exist_ok=True)
         (custom_dir / "SKILL.md").write_text("# My Custom Skill\nNo marker.")
 
@@ -1216,6 +1220,38 @@ def test_init_generates_hub_readme(tmp_path):
             assert "contoso.com" in content
             assert "Contoso" in content
             assert "https://contoso.com/ont/" in content
+
+
+def test_init_generates_managed_cicd_guide(tmp_path):
+    """init should create the managed root CI/CD guide."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
+            assert result.exit_code == 0, result.output
+
+            cicd = Path("CICD.md")
+            content = cicd.read_text(encoding="utf-8")
+            assert _get_managed_version(content) is not None
+            assert "full 40-character hub commit SHA" in content
+            assert "forward-port" in content
+            assert "kairos-ontology update --upgrade" in content
+            assert "powerbi-semantic-model.zip" in content
+            assert "archive SHA-256" in content
+            assert "TMDL normalization" in content
+
+
+def test_init_preserves_existing_cicd_guide_without_force(tmp_path):
+    """init should not replace a pre-existing root CI/CD guide without --force."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            Path("CICD.md").write_text("# Local CI/CD\n", encoding="utf-8")
+            result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
+            assert result.exit_code == 0, result.output
+            assert Path("CICD.md").read_text(encoding="utf-8") == "# Local CI/CD\n"
 
 
 def test_init_generates_master_ontology(tmp_path):

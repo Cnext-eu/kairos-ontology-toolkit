@@ -9,7 +9,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SKILL_ROOTS = [
-    REPO_ROOT / ".github" / "skills",
+    REPO_ROOT / ".claude" / "skills",
     REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills",
 ]
 
@@ -84,19 +84,19 @@ def _skill(root: Path, name: str) -> str:
     return (root / name / "SKILL.md").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("root", SKILL_ROOTS, ids=["github", "scaffold"])
+@pytest.mark.parametrize("root", SKILL_ROOTS, ids=["claude", "scaffold"])
 @pytest.mark.parametrize("anchor", DOMAIN_ANCHORS)
 def test_domain_skill_implements_bounded_v5_canonical_loop(root, anchor):
     assert anchor in _skill(root, "kairos-design-domain")
 
 
-@pytest.mark.parametrize("root", SKILL_ROOTS, ids=["github", "scaffold"])
+@pytest.mark.parametrize("root", SKILL_ROOTS, ids=["claude", "scaffold"])
 @pytest.mark.parametrize("anchor", MAPPING_ANCHORS)
 def test_mapping_skill_implements_v5_compile_feedback_loop(root, anchor):
     assert anchor in _skill(root, "kairos-design-mapping")
 
 
-@pytest.mark.parametrize("root", SKILL_ROOTS, ids=["github", "scaffold"])
+@pytest.mark.parametrize("root", SKILL_ROOTS, ids=["claude", "scaffold"])
 @pytest.mark.parametrize("skill", ["kairos-design-domain", "kairos-design-mapping"])
 def test_v5_skills_do_not_reintroduce_legacy_active_paths(root, skill):
     text = _skill(root, skill)

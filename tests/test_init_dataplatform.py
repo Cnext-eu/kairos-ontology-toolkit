@@ -200,7 +200,7 @@ class TestInitDataplatform:
         assert "kairos-ontology-toolkit" in content
 
     def test_skills_subset_created(self, dataplatform_output):
-        skills_dir = dataplatform_output / ".github" / "skills"
+        skills_dir = dataplatform_output / ".claude" / "skills"
         assert skills_dir.exists()
 
         expected = [
@@ -418,7 +418,7 @@ class TestUpdateDataplatform:
             os.chdir(old_cwd)
 
         assert result.exit_code == 0, result.output
-        skills_dir = tmp_path / ".github" / "skills"
+        skills_dir = tmp_path / ".claude" / "skills"
 
         # Dataplatform skills present
         assert (skills_dir / "kairos-help" / "SKILL.md").exists()

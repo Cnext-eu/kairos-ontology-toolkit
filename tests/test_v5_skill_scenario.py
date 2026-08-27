@@ -13,7 +13,7 @@ from kairos_ontology.core.source_privacy import (
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SKILL_ROOTS = (
-    _ROOT / ".github" / "skills",
+    _ROOT / ".claude" / "skills",
     _ROOT / "src" / "kairos_ontology" / "scaffold" / "skills",
 )
 

@@ -368,11 +368,11 @@ def test_failed_forced_refresh_restores_exact_managed_state(
     lockfile.write_bytes(b"original lock")
 
     copilot = tmp_path / ".github" / "copilot-instructions.md"
-    current = tmp_path / ".github" / "skills" / "current" / "SKILL.md"
-    stale_dir = tmp_path / ".github" / "skills" / "stale"
+    current = tmp_path / ".claude" / "skills" / "current" / "SKILL.md"
+    stale_dir = tmp_path / ".claude" / "skills" / "stale"
     stale = stale_dir / "SKILL.md"
     stale_extra = stale_dir / "custom-notes.txt"
-    custom = tmp_path / ".github" / "skills" / "custom" / "SKILL.md"
+    custom = tmp_path / ".claude" / "skills" / "custom" / "SKILL.md"
     for path in (copilot, current, stale, stale_extra, custom):
         path.parent.mkdir(parents=True, exist_ok=True)
     copilot.write_bytes(b"original copilot")
@@ -381,7 +381,7 @@ def test_failed_forced_refresh_restores_exact_managed_state(
     stale_extra.write_bytes(b"custom content beside managed skill")
     custom.write_bytes(b"unmanaged custom skill")
     original = {path: path.read_bytes() for path in (copilot, current, stale, stale_extra, custom)}
-    created = tmp_path / ".github" / "skills" / "new-skill"
+    created = tmp_path / ".claude" / "skills" / "new-skill"
     monkeypatch.chdir(tmp_path)
 
     def partial_refresh(check, ref):
@@ -558,14 +558,14 @@ def test_same_version_forced_refresh_replaces_changed_managed_content(
     pyproject.write_text(_pyproject(RELEASE_SOURCE), encoding="utf-8")
     scaffold = tmp_path / "scaffold-skill.md"
     scaffold.write_text("# New test-ref content\n", encoding="utf-8")
-    managed = tmp_path / ".github" / "skills" / "kairos-help" / "SKILL.md"
+    managed = tmp_path / ".claude" / "skills" / "kairos-help" / "SKILL.md"
     managed.parent.mkdir(parents=True)
     managed.write_text(
         "<!-- kairos-ontology-toolkit:managed v3.8.0 -->\n# Released content\n",
         encoding="utf-8",
     )
     mock_managed_map.return_value = {
-        ".github/skills/kairos-help/SKILL.md": scaffold,
+        ".claude/skills/kairos-help/SKILL.md": scaffold,
     }
     monkeypatch.chdir(tmp_path)
 

@@ -330,9 +330,10 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
         shutil.copytree(src_template_src, src_template_dst)
         print("  ✓ Installed integration/sources/source-system-template/")
 
-    # 3. Copy Copilot skills into .github/skills/
+    # 3. Copy skills into .claude/skills/ (read directly by both Claude Code and
+    # GitHub Copilot's Agent Skills support)
     skills_src = _SCAFFOLD_DIR / "skills"
-    skills_dst = cwd / ".github" / "skills"
+    skills_dst = cwd / ".claude" / "skills"
     if skills_src.is_dir():
         for skill_dir in skills_src.iterdir():
             if skill_dir.is_dir():
@@ -489,6 +490,12 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
             pyproject_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created pyproject.toml")
             print(f"    toolkit {ref} (channel '{tk_channel}'), reference models {rm_ref}")
+
+    cicd_src = _SCAFFOLD_DIR / "CICD.md.template"
+    cicd_dst = cwd / "CICD.md"
+    if cicd_src.is_file() and (not cicd_dst.exists() or force):
+        _copy_managed(cicd_src, cicd_dst)
+        print("  ✓ Created CICD.md")
 
     # 6. Generate hub README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
@@ -1137,9 +1144,10 @@ def new_repo(
         (hub / "kairos.yaml").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/kairos.yaml")
 
-    # Copilot skills
+    # Skills — installed into .claude/skills/, read directly by both Claude Code
+    # and GitHub Copilot's Agent Skills support
     skills_src = _SCAFFOLD_DIR / "skills"
-    skills_dst = repo_dir / ".github" / "skills"
+    skills_dst = repo_dir / ".claude" / "skills"
     if skills_src.is_dir():
         for skill_dir in skills_src.iterdir():
             if skill_dir.is_dir():
@@ -1240,6 +1248,11 @@ def new_repo(
         content = content.replace("{repo_name}", repo_slug).replace("{description}", description)
         (repo_dir / "README.md").write_text(content, encoding="utf-8")
         print("  ✓ README.md")
+
+    cicd_src = _SCAFFOLD_DIR / "CICD.md.template"
+    if cicd_src.is_file():
+        _copy_managed(cicd_src, repo_dir / "CICD.md")
+        print("  ✓ CICD.md")
 
     # update-referencemodels.ps1 is no longer installed; reference models are
     # populated by the `kairos-ontology update-refmodels` command instead.
@@ -1449,6 +1462,7 @@ def init_dataplatform(name, dest, platform, org_override):
       - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd)
       - .github/fabric/deployment-settings.json.example
       - README.md with setup instructions
+      - CICD.md with branch, promotion, rollback, and hotfix guidance
 
     \b
     Examples:
@@ -1543,6 +1557,11 @@ def init_dataplatform(name, dest, platform, org_override):
                 content = content.replace(placeholder, value)
             (repo_dir / dst_name).write_text(content, encoding="utf-8")
             click.echo(f"  ✓ {dst_name}")
+
+    cicd_src = _DATAPLATFORM_SCAFFOLD / "CICD.md.template"
+    if cicd_src.is_file():
+        _copy_managed(cicd_src, repo_dir / "CICD.md")
+        click.echo("  ✓ CICD.md")
 
     # Copy macros
     for macro_name in ("extract_source_schema.sql", "print_query.sql"):
@@ -1659,11 +1678,12 @@ def init_dataplatform(name, dest, platform, org_override):
         click.echo("  ✓ .github/fabric/deployment-settings.json.example")
 
     skills_src = _SCAFFOLD_DIR / "skills"
+    claude_dir = repo_dir / ".claude"
     for skill_name in _DATAPLATFORM_SKILLS:
         skill_file = skills_src / skill_name / "SKILL.md"
         if skill_file.is_file():
-            _copy_managed(skill_file, github_dir / "skills" / skill_name / "SKILL.md")
-            click.echo(f"  ✓ .github/skills/{skill_name}/SKILL.md")
+            _copy_managed(skill_file, claude_dir / "skills" / skill_name / "SKILL.md")
+            click.echo(f"  ✓ .claude/skills/{skill_name}/SKILL.md")
 
     # Create minimal Python package so hatchling can build the project
     pkg_name = project_name.replace("-", "_")

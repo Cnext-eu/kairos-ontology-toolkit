@@ -416,7 +416,7 @@ def test_check_works_when_run_from_inside_the_hub(tmp_path, monkeypatch):
 )
 def test_published_skill_allow_glob_matches_a_real_hub_path(skill, placeholders, sample_path):
     """Extracted from SKILL.md, not retyped — a re-word that breaks the glob fails here."""
-    text = (REPO_ROOT / ".github" / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    text = (REPO_ROOT / ".claude" / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
     globs = re.findall(r'guard-scope --check-since <token> --allow "([^"]+)"', text)
     assert globs, f"no guard-scope --allow glob found in {skill}/SKILL.md"
 

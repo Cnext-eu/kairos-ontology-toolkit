@@ -41,10 +41,10 @@ def test_global_instructions_scope_design_fleet_mode_to_one_invocation(path):
 @pytest.mark.parametrize(
     "root",
     [
-        REPO_ROOT / ".github" / "skills",
+        REPO_ROOT / ".claude" / "skills",
         REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills",
     ],
-    ids=["github", "scaffold"],
+    ids=["claude", "scaffold"],
 )
 def test_design_skills_include_fleet_mode_guardrails(root, skill):
     path = root / skill / "SKILL.md"
@@ -62,10 +62,10 @@ def test_design_skills_include_fleet_mode_guardrails(root, skill):
 @pytest.mark.parametrize(
     "root",
     [
-        REPO_ROOT / ".github" / "skills",
+        REPO_ROOT / ".claude" / "skills",
         REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills",
     ],
-    ids=["github", "scaffold"],
+    ids=["claude", "scaffold"],
 )
 def test_discovery_offers_invocation_scoped_mode_choice(root):
     text = " ".join(

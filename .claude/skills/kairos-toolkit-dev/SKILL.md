@@ -25,7 +25,7 @@ modules under `src/kairos_ontology/cli`, MDM under `src/kairos_ontology/mdm`, se
    copyright headers.
 3. Add happy-path and edge/error tests; mock external APIs.
 4. For compiler/projection behavior, add scenario coverage and verify deterministic paths/bytes.
-5. For a skill change, edit both `.github/skills/<name>/SKILL.md` and
+5. For a skill change, edit both `.claude/skills/<name>/SKILL.md` and
    `src/kairos_ontology/scaffold/skills/<name>/SKILL.md` identically.
 6. For managed scaffold behavior, update scaffold sources and managed mappings/tests.
 7. Run focused pytest, then scaffold sync/reference/managed tests when those surfaces change.

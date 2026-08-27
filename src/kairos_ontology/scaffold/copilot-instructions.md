@@ -87,6 +87,11 @@ Passing compilation does not replace downstream dbt, adapter, deployment, securi
 
 ## Skill routing
 
+Every skill below lives at `.claude/skills/<name>/SKILL.md` — one location read directly by both
+Claude Code and GitHub Copilot's Agent Skills support (DD-207) — in this repo and in every
+hub/dataplatform repo `setup-init`/`new-repo`/`update` provisions. There is no `.github/skills/`
+copy; Copilot resolves the same tree.
+
 | User intent | Skill |
 |---|---|
 | Start, continue, or determine next action | `kairos-flow` |
@@ -124,8 +129,8 @@ proprietary data, policy choices, and destructive actions.
 - Run the smallest focused tests first; projection/compiler changes require scenario coverage.
 - EntityBinding/compiler changes should run `tests/scenarios/test_scenario_v5.py` and relevant
   compiler tests.
-- Skill or instruction changes must keep `.github/skills/<name>/SKILL.md` byte-identical to
-  `src/kairos_ontology/scaffold/skills/<name>/SKILL.md` and run scaffold sync/managed tests.
+- Skill or instruction changes must keep `.claude/skills/<name>/SKILL.md` byte-identical to
+  `src/kairos_ontology/scaffold/skills/<name>/SKILL.md`; run scaffold sync/managed tests.
 
 ## Scaffold and open-source checks
 

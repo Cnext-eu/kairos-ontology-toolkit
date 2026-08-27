@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 @pytest.mark.parametrize(
     "path",
     [
-        REPO_ROOT / ".github" / "skills" / "kairos-design-source" / "SKILL.md",
+        REPO_ROOT / ".claude" / "skills" / "kairos-design-source" / "SKILL.md",
         REPO_ROOT
         / "src"
         / "kairos_ontology"
@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
         / "kairos-design-source"
         / "SKILL.md",
     ],
-    ids=["github", "scaffold"],
+    ids=["claude", "scaffold"],
 )
 def test_source_skill_defers_provider_choice_until_analysis(path):
     text = " ".join(path.read_text(encoding="utf-8").split()).lower()

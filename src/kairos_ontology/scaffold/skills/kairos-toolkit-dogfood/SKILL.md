@@ -171,7 +171,7 @@ unnoticed. Per stage, verify directly:
   values (`ontology-hub-publish/reports/field-mapping-<sys>.xlsx`) — a dogfood
   session in this repo's own history hand-built an equivalent report from scratch,
   in the wrong location, because no skill referenced the command that already did
-  it. Grep `.github/skills/*/SKILL.md` and `cli/*.py --help` output before
+  it. Grep `.claude/skills/*/SKILL.md` and `cli/*.py --help` output before
   concluding something needs building.
 
 ## Finding capture and GitHub issue discipline
