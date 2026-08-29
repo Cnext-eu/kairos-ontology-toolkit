@@ -141,6 +141,7 @@ def test_merged_yaml_has_full_meta_kairos_sentinels(tmp_path):
 
     document = yaml.safe_load(result.merged_yaml_path.read_text(encoding="utf-8"))
     model = document["models"][0]
+    assert model["access"] == "public"
     assert model["config"]["contract"]["enforced"] is True
     meta = model["meta"]["kairos"]
     assert meta["target_class"] == "<CONFIRM_TARGET_CLASS>"
@@ -165,6 +166,9 @@ def test_stage_yaml_has_no_meta_kairos_block(tmp_path):
         model = document["models"][0]
         assert model["config"]["contract"]["enforced"] is True
         assert "meta" not in model
+        # Stages are internal to the merged model, never a cross-project extension
+        # point, so they keep dbt's default `protected` access (no explicit `access:`).
+        assert "access" not in model
 
 
 def test_single_source_scaffolds_trivial_passthrough_merged_model(tmp_path):
@@ -186,6 +190,7 @@ def test_single_source_scaffolds_trivial_passthrough_merged_model(tmp_path):
 
     document = yaml.safe_load(result.merged_yaml_path.read_text(encoding="utf-8"))
     model = document["models"][0]
+    assert model["access"] == "public"
     assert model["config"]["contract"]["enforced"] is True
     meta = model["meta"]["kairos"]
     assert meta["target_class"] == "<CONFIRM_TARGET_CLASS>"
