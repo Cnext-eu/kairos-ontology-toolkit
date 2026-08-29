@@ -80,8 +80,11 @@ Passing compilation does not replace downstream dbt, adapter, deployment, securi
   `owl:imports` chain, or equivalence/inverse relationships from serialized RDF. Use the CLI's
   semantic commands instead: `kairos-ontology resolve-ontology`, `kairos-ontology
   show-class-inventory`, `kairos-ontology explain-term`, `kairos-ontology list-class-properties`.
-- `.claude/settings.json` is the source of truth for the enforced deny rules for Claude Code
-  sessions; consult it rather than this document for the exact guarded paths.
+- Where a hub provisions a `.claude/settings.json` deny-list (see
+  `scaffold/claude-settings.json`), it is the source of truth for the enforced deny rules for
+  Claude Code sessions in that repo; consult it rather than this document for the exact guarded
+  paths. This toolkit repo itself has no such deny-list — the rule above is a convention, not an
+  enforced boundary, here.
 - This is a guardrail, not a sandbox: shell tools can still reach these files directly, and
   agents other than Claude Code are bound only by this convention, not by enforcement.
 
