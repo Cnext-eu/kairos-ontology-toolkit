@@ -32,7 +32,7 @@ from .policy_specs import (
     MedallionPolicySpec,
     ScdType,
 )
-from .specs import ForeignKeyPolicy, SilverModelSpec, SilverRegistry
+from .specs import ForeignKeyPolicy, SilverForeignKeySpec, SilverModelSpec, SilverRegistry
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SECURITY_BINDING = re.compile(
@@ -448,18 +448,61 @@ def _shape_security(
     )
 
 
-def _relationship_column(table: GoldTableSpec, property_uri: str, explicit: str) -> str:
-    # #619 Bug 12: the FK surrogate-key column kernel.py generates for a relationship
-    # (`{target}_sk`) is tagged provenance `relationship:{property_uri}`, not
-    # `property:{property_uri}` -- prefer it over a same-property natural-key column so
-    # joins use the surrogate key, not the natural key, whenever both exist.
-    relationship_tagged = [
-        column.name
-        for column in table.columns
-        if f"relationship:{property_uri}" in column.provenance
-    ]
-    if len(relationship_tagged) == 1:
-        return relationship_tagged[0]
+def _relationship_column(
+    table: GoldTableSpec,
+    property_uri: str,
+    explicit: str,
+    foreign_keys: tuple[SilverForeignKeySpec, ...] = (),
+    *,
+    resource_uri: str = "",
+) -> str:
+    # #625: the generated surrogate FK column and its `_kairos_fk_*_match_count`
+    # sibling both carry the exact same provenance tag `relationship:{property_uri}`
+    # on the same Silver table (kernel.py DD-133 and DD-109-temporal-fk respectively),
+    # so a provenance search over emitted columns can no longer tell them apart. The
+    # typed, already-materialized `SilverModelSpec.foreign_keys` is the sole authority
+    # now: a match-count column is never recorded there, so it can never displace the
+    # real surrogate FK the way the old provenance heuristic allowed (#619 Bug 12
+    # regressed by #625).
+    typed = [item for item in foreign_keys if item.property_uri == property_uri]
+    if len(typed) > 1:
+        _fail(
+            "gold.relationship-fk-ambiguous",
+            (
+                f"Silver relationship {property_uri!r} resolves to {len(typed)} "
+                f"foreign-key specs on {table.source_model!r}"
+            ),
+            rule_id="DD-112-silver-binding",
+            resource_uri=resource_uri or property_uri,
+        )
+    if typed:
+        descriptor = typed[0]
+        if len(descriptor.columns) != 1 or len(descriptor.referenced_columns) != 1:
+            _fail(
+                "gold.relationship-composite-key-unsupported",
+                (
+                    f"Silver relationship {property_uri!r} on {table.source_model!r} is "
+                    "a composite-key foreign key, which Gold relationship projection "
+                    "does not support yet"
+                ),
+                rule_id="DD-112-silver-binding",
+                resource_uri=resource_uri or property_uri,
+            )
+        column_name = descriptor.columns[0]
+        if not any(column.name == column_name for column in table.columns):
+            _fail(
+                "gold.relationship-column-not-emitted",
+                (
+                    f"Silver relationship {property_uri!r} names foreign-key column "
+                    f"{column_name!r}, which {table.name!r} does not emit"
+                ),
+                rule_id="DD-112-silver-binding",
+                resource_uri=resource_uri or property_uri,
+            )
+        return column_name
+    # No typed Silver FK spec exists for this property (it was never wired as a real
+    # join) -- fall back to a plain denormalized natural-key column, either tagged by
+    # property or explicitly named by policy.
     candidates = [
         column.name for column in table.columns if f"property:{property_uri}" in column.provenance
     ]
@@ -472,6 +515,7 @@ def _relationship_column(table: GoldTableSpec, property_uri: str, explicit: str)
 def _shape_relationships(
     tables: tuple[GoldTableSpec, ...],
     foreign_keys: ForeignKeyPolicy,
+    silver_models: dict[str, SilverModelSpec],
 ) -> tuple[GoldRelationshipSpec, ...]:
     by_resource = {table.resource_uri: table for table in tables}
     relationships: list[GoldRelationshipSpec] = []
@@ -480,10 +524,13 @@ def _shape_relationships(
         target = by_resource.get(descriptor.target_class)
         if source is None or target is None:
             continue
+        source_model = silver_models.get(source.source_model)
         column_name = _relationship_column(
             source,
             descriptor.property_uri,
             descriptor.silver_column_name or "",
+            source_model.foreign_keys if source_model is not None else (),
+            resource_uri=descriptor.property_uri,
         )
         if not column_name:
             continue
@@ -803,7 +850,7 @@ def _shape_dimensional(
         schema_name=policy.gold.schema.value,
         adapter=policy.target_adapter.value.value,
         tables=ordered,
-        relationships=_shape_relationships(ordered, foreign_keys),
+        relationships=_shape_relationships(ordered, foreign_keys, models),
         measures=_shape_measures(policy, ordered),
         calendar=_shape_calendar(policy, ordered),
         security=_shape_security(policy, ordered),
