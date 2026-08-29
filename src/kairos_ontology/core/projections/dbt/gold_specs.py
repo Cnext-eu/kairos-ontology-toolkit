@@ -236,3 +236,4 @@ class GoldPhysicalPlan:
     dbt_schema_artifact_path: str
     erd_artifact_path: str
     report_artifact_path: str
+    exposures_artifact_path: str

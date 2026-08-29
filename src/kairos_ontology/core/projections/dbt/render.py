@@ -1171,6 +1171,7 @@ def render_project(
             expected_paths.add(model.identity.artifact_path)
     if shaped.gold_product is not None and plan.gold is not None:
         expected_paths.add(plan.gold.dbt_schema_artifact_path)
+        expected_paths.add(plan.gold.exposures_artifact_path)
         for table in plan.gold.tables:
             expected_paths.add(f"models/gold/{shaped.gold_product.ontology_name}/{table.name}.sql")
             if table.dual_current_name:

@@ -280,6 +280,57 @@ def _schema_yaml(
     )
 
 
+def _exposures_yaml(
+    spec: DimensionalGoldSpec,
+    physical: GoldPhysicalPlan,
+) -> str:
+    """Render one dbt ``exposures.yml`` declaring this domain's Power BI report (#630).
+
+    Without a declared ``exposures:`` entry, dbt's lineage graph (``dbt docs
+    generate``) stops at the last dbt model and never shows the downstream Power BI
+    report/dataset that actually consumes it. One dashboard exposure is emitted per
+    Gold domain here -- matching the one Power BI semantic model/report
+    :func:`render_powerbi_artifacts` emits per domain -- ``depends_on`` every Gold
+    model (plus the shared calendar, when approved) that report is built from.
+
+    ``name``, ``description``, and ``depends_on`` are derived from the actual Gold
+    physical plan. ``owner``, ``maturity``, and ``url`` have no authored source in
+    kairos.yaml today (issue #630 deliberately keeps this additive rather than
+    inventing a new authoring surface), so those three are sensible, deterministic
+    placeholders: ``maturity: "medium"``, an owner e-mail on the non-routable
+    ``.invalid`` TLD (RFC 2606) naming it clearly as a placeholder, and a
+    deterministic (but not a real, navigable) ``app.powerbi.com`` URL keyed off the
+    domain name via the same :func:`_guid` helper used for TMDL ``lineageTag``\\ s.
+    """
+    domain = spec.ontology_name
+    model_name = "".join(item.capitalize() for item in domain.replace("-", "_").split("_"))
+    depends_on = sorted(f"ref('{table.name}')" for table in spec.tables)
+    if spec.calendar is not None and spec.calendar.approved:
+        depends_on = sorted({*depends_on, "ref('dim_date')"})
+    exposure = {
+        "name": f"{domain}_gold_powerbi_report",
+        "label": f"{model_name} (Power BI)",
+        "type": "dashboard",
+        "maturity": "medium",
+        "url": f"https://app.powerbi.com/groups/me/reports/{_guid(f'{domain}.report')}",
+        "description": (
+            f"Power BI {spec.profile.value}/{spec.profile_version} report for the "
+            f"{domain} Gold domain, built from {len(spec.tables)} Gold model(s) on "
+            f"the {physical.adapter} adapter."
+        ),
+        "depends_on": depends_on,
+        "owner": {
+            "name": f"{domain} Gold owner",
+            "email": f"{domain}-gold-owner@example.invalid",
+        },
+    }
+    return yaml.safe_dump(
+        {"version": 2, "exposures": [exposure]},
+        sort_keys=False,
+        allow_unicode=True,
+    )
+
+
 def render_gold_dbt_artifacts(
     spec: DimensionalGoldSpec,
     physical: GoldPhysicalPlan,
@@ -329,6 +380,7 @@ def render_gold_dbt_artifacts(
             allow_unicode=True,
         )
     artifacts[physical.dbt_schema_artifact_path] = _schema_yaml(spec, physical)
+    artifacts[physical.exposures_artifact_path] = _exposures_yaml(spec, physical)
     return dict(sorted(artifacts.items()))
 
 
