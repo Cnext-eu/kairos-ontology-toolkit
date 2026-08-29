@@ -604,7 +604,9 @@ def test_stage2_full_refresh_remains_unchanged_on_both_adapters(tmp_path, adapte
 
     assert result.succeeded, [item.render() for item in result.diagnostics.items]
     customer_sql = result.artifact_dict()["models/silver/party/customer.sql"].lower()
-    assert "materialized='table'" in customer_sql
+    # DD-627: no inline `materialized=`; relies on dbt_project.yml cascade default.
+    assert "materialized=" not in customer_sql
+    assert "schema='silver'" in customer_sql
     assert "dd-109 scd" not in customer_sql
     assert "kairos_canonical_hash_v1" not in customer_sql
     assert all(entity.load.mode == "full-refresh" for entity in result.explain.entities)
@@ -628,6 +630,9 @@ def test_stage2_incremental_scd_contract_reaches_adapter_sql(tmp_path, adapter, 
     assert first.artifacts == repeated.artifacts
     sql = first.artifact_dict()["models/silver/party/customer.sql"].lower()
     assert f"dd-109 scd{scd} runtime" in sql
+    # DD-627 only drops the inline `materialized=` for non-runtime ENTITY/UNION
+    # models; SCD1/SCD2 runtime models still hardcode `materialized='incremental'`.
+    assert "materialized='incremental'" in sql
     assert "kairos_canonical_hash_v1" in sql
     assert "_cdc_operation" in sql
     assert "_cdc_sequence" in sql

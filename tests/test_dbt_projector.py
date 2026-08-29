@@ -679,6 +679,13 @@ class TestGenerateDbtArtifacts:
         assert "staging" not in proj["models"]["client_project"]
         assert "silver" in proj["models"]["client_project"]
         assert proj.get("docs-paths") == ["docs"]
+        # DD-627: dbt_project.yml's folder-level cascade default is `table`, and
+        # the emitted non-runtime ENTITY model no longer sets `materialized=`
+        # inline, so this project-level default is what actually takes effect.
+        assert proj["models"]["client_project"]["silver"]["+materialized"] == "table"
+        client_sql = artifacts["models/silver/client/client.sql"]
+        assert "materialized=" not in client_sql
+        assert "config(" in client_sql
 
     def test_dbt_project_yml_has_seeds_config(
         self, classes, ontology_graph, template_dir, bronze_dir, mappings_dir
@@ -4171,7 +4178,11 @@ class TestNaturalKeyWarning:
         sql = artifacts["models/silver/client/client.sql"]
         assert "kairos_row_hash" not in sql
         assert "replay_deduplicated" not in sql
-        assert "materialized='table'" in sql
+        # DD-627: non-runtime Silver models no longer hardcode `materialized=`
+        # inline; the dbt_project.yml-level `+materialized: table` cascade
+        # default applies instead, unlocking downstream override.
+        assert "materialized=" not in sql
+        assert "schema=" in sql
         release = artifacts["__release_data__"]
         assert any(item["rule_id"] == "DD-108-identity" for item in release["blocking_reasons"])
 
