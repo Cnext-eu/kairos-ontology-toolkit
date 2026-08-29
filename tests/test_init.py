@@ -52,6 +52,7 @@ V5_PUBLISH_DIRECTORIES = {
     "prompt",
     "reports/details",
     "architecture/ddd",
+    "architecture/erd",
     "mdm",
 }
 

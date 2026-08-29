@@ -21,6 +21,7 @@ BUILTIN_TARGETS = (
     "powerbi",
     "report",
     "ddd",
+    "erd",
 )
 ALL_TARGETS = tuple(target for target in BUILTIN_TARGETS if target != "powerbi")
 CLI_TARGETS = (*BUILTIN_TARGETS, "mdm-profile")
@@ -33,6 +34,7 @@ COMPATIBILITY_TARGETS = (
     "gold",
     "report",
     "ddd",
+    "erd",
     "mdm-profile",
 )
 

@@ -1231,6 +1231,7 @@ _V5_OUTPUT_DIRECTORIES = (
     "prompt",
     "reports/details",
     "architecture/ddd",
+    "architecture/erd",
     "mdm",
 )
 

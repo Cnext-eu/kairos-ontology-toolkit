@@ -235,6 +235,7 @@ for _target_spec in (
         execution_phase=ExecutionPhase.POST_DOMAIN,
     ),
     TargetSpec("ddd", "architecture/ddd", OutputCategory.ARCHITECTURE),
+    TargetSpec("erd", "architecture/erd", OutputCategory.ARCHITECTURE),
 ):
     _register_target_spec(_target_spec)
 del _target_spec
@@ -1842,6 +1843,18 @@ def _run_projection(
             namespace=namespace,
             ontology_name=ontology_name or "domain",
             overlay_path=projection_ext_path,
+            ontology_metadata=ontology_metadata or {},
+        )
+
+    # Canonical ontology ERD (DD-209) — binding-independent graph projection, same
+    # non-interference contract as ``ddd`` above but with no opt-in overlay to gate on.
+    if target == "erd":
+        from .projections.erd_projector import generate_erd_artifacts
+
+        return generate_erd_artifacts(
+            graph=graph,
+            namespace=namespace,
+            ontology_name=ontology_name or "domain",
             ontology_metadata=ontology_metadata or {},
         )
 
