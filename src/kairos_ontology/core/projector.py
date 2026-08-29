@@ -222,8 +222,8 @@ for _target_spec in (
     TargetSpec("prompt", "prompt", OutputCategory.STANDARD),
     TargetSpec(
         "powerbi",
-        "medallion/powerbi",
-        OutputCategory.MEDALLION,
+        "powerbi",
+        OutputCategory.STANDARD,
         aliases=("gold",),
         compatibility_name="gold",
         include_in_all=False,
@@ -1218,7 +1218,7 @@ def run_projections(
             from .projections.medallion_gold_projector import generate_master_gold_erd
             from .projections.medallion_silver_projector import render_mermaid_svg
 
-            gold_output = output_path / "medallion" / "powerbi"
+            gold_output = output_path / "powerbi"
             hub_name = (
                 ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
             )

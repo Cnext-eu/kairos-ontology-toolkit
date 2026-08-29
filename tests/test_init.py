@@ -45,7 +45,7 @@ V5_SCAFFOLD_DIRECTORIES = {
 # Derived/emitted output lives under the sibling publish root, not the hub.
 V5_PUBLISH_DIRECTORIES = {
     "medallion/dbt",
-    "medallion/powerbi",
+    "powerbi",
     "neo4j",
     "azure-search",
     "a2ui",

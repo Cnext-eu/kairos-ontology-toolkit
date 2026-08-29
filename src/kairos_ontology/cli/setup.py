@@ -747,7 +747,7 @@ def migrate(check, dry_run, hub_path):
         hub / "model" / "planning",
         hub / "integration" / "sources",
         hub / "integration" / "discovery",
-        publish_root(hub) / "medallion" / "powerbi",
+        publish_root(hub) / "powerbi",
         publish_root(hub) / "medallion" / "dbt",
     ]
     if not check:
