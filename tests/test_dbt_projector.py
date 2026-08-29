@@ -582,6 +582,11 @@ class TestGenerateDbtArtifacts:
         content = yaml.safe_load(artifacts[schema_key])
         models = content["models"]
         assert len(models) == 1
+        # #630-contracts: this class has no bronze mapping (no bound
+        # EntityBinding), so its schema entry is ontology/SHACL-only with no
+        # physical Silver plan to source a data_type from -- contracts must
+        # stay off rather than emit an enforced-but-untyped contract.
+        assert "config" not in models[0]
         cols = {c["name"]: c for c in models[0]["columns"]}
         assert "client_sk" in cols
         assert "not_null" in cols["client_sk"]["tests"]
@@ -627,6 +632,14 @@ class TestGenerateDbtArtifacts:
         # Should have silver model
         silver_files = [k for k in artifacts if "models/silver/" in k and k.endswith(".sql")]
         assert len(silver_files) >= 1
+
+        # #630-contracts: a fully bound class (bronze + mappings, so the
+        # physical Silver plan resolves a data_type for every column) gets
+        # dbt model contracts enabled in its properties yml.
+        schema_yml = yaml.safe_load(artifacts["models/silver/client/_client__models.yml"])
+        client_model = next(m for m in schema_yml["models"] if m["name"] == "client")
+        assert client_model["config"]["contract"]["enforced"] is True
+        assert all("data_type" in column for column in client_model["columns"])
 
         # Should have dbt_project.yml
         assert "dbt_project.yml" in artifacts

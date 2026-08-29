@@ -4,6 +4,11 @@ models:
 {%- for model in models %}
   - name: {{ model.name }}
     description: {{ model.description | tojson }}
+{%- if model.contract_enforced %}
+    config:
+      contract:
+        enforced: true
+{%- endif %}
 {%- if model.meta %}
     meta:
 {%- for key, value in model.meta.items() %}
