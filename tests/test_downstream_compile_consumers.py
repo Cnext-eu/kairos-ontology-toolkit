@@ -24,6 +24,7 @@ from kairos_ontology.core.projector import (
 from kairos_ontology.core.projections.dbt.gold_specs import GoldContractError
 from kairos_ontology.core.projections.medallion_gold_projector import (
     generate_gold_from_compile_plan,
+    plan_gold_from_compile_plan,
 )
 from kairos_ontology.mdm.profile_projector import (
     MdmCompilePlanError,
@@ -195,6 +196,96 @@ def test_gold_projection_survives_fk_match_count_columns(tmp_path):
     assert not plan.blocked, [item.render() for item in plan.diagnostics.items]
     artifacts = generate_gold_from_compile_plan(plan)
     assert artifacts
+
+
+def test_gold_relationship_uses_surrogate_fk_not_natural_key_despite_match_count_column(
+    tmp_path,
+):
+    """#625 end-to-end regression.
+
+    v5-hub's Customer -> Country relationship (non-temporal, ``missingParent: error``,
+    ``ambiguousParent: error``) makes ``_project_relationship_match_counts`` add a
+    ``_kairos_fk_*_match_count`` column carrying the exact same
+    ``relationship:{property_uri}`` provenance tag as the generated surrogate FK column
+    (``country_sk``) on the ``customer`` Silver model. Once Country is also exposed as a
+    Gold dimension (unlike ``test_gold_projection_survives_fk_match_count_columns``,
+    which never checked the relationship endpoints at all), the relationship shaper used
+    to see two columns tagged ``relationship:...`` on the source table, fall through its
+    ambiguous branch, and could land on a natural-key column instead of the surrogate FK.
+    The fix resolves the endpoint from the typed ``SilverModelSpec.foreign_keys`` instead,
+    so the match-count column can never be selected.
+    """
+    hub = tmp_path / "hub"
+    shutil.copytree(_V5_FK_HUB, hub)
+    ext_dir = hub / "model" / "extensions"
+    ext_dir.mkdir(parents=True, exist_ok=True)
+    (ext_dir / "party-gold-ext.ttl").write_text(
+        """
+        @prefix party: <https://example.test/ontology/party#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <https://example.test/ontology/party>
+          kairos-ext:goldSchema "gold" ;
+          kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+        party:Customer
+          kairos-ext:goldTableType "dimension" ;
+          kairos-ext:goldTableName "dim_customer" ;
+          kairos-ext:goldSourceModel "customer" ;
+          kairos-ext:goldSourceVersion "1.0.0" ;
+          kairos-ext:dimensionExposure "current-only" ;
+          kairos-ext:dimensionVersionBinding "current" .
+
+        party:Country
+          kairos-ext:goldTableType "dimension" ;
+          kairos-ext:goldTableName "dim_country" ;
+          kairos-ext:goldSourceModel "country" ;
+          kairos-ext:goldSourceVersion "1.0.0" ;
+          kairos-ext:dimensionExposure "current-only" ;
+          kairos-ext:dimensionVersionBinding "current" .
+        """,
+        encoding="utf-8",
+    )
+
+    plan = build_compile_plan(hub, "party")
+    assert not plan.blocked, [item.render() for item in plan.diagnostics.items]
+
+    # The exact collision the bug depended on: both a surrogate FK column and its
+    # match-count sibling tagged with the same relationship provenance on `customer`.
+    customer_model = next(
+        model
+        for model in plan.shaped_project.silver_models
+        if model.identity.model_name == "customer"
+    )
+    property_uri = "https://example.test/ontology/party#country"
+    relationship_tagged = [
+        column.name
+        for column in customer_model.columns
+        if f"relationship:{property_uri}" in column.provenance
+    ]
+    assert "country_sk" in relationship_tagged, relationship_tagged
+    match_count_columns = [
+        name
+        for name in relationship_tagged
+        if name.startswith("_kairos_fk_") and name.endswith("_match_count")
+    ]
+    assert len(match_count_columns) == 1, relationship_tagged
+    assert len(relationship_tagged) == 2, relationship_tagged
+    assert [fk.property_uri for fk in customer_model.foreign_keys] == [property_uri]
+    assert customer_model.foreign_keys[0].columns == ("country_sk",)
+
+    logical, _physical = plan_gold_from_compile_plan(plan)
+    assert [
+        (rel.source_table, rel.source_column, rel.target_table, rel.target_column)
+        for rel in logical.relationships
+    ] == [("dim_customer", "country_sk", "dim_country", "country_sk")]
+
+    artifacts = generate_gold_from_compile_plan(plan)
+    tmdl = artifacts["party/Party.SemanticModel/definition/relationships.tmdl"]
+    assert "fromColumn: dim_customer.country_sk" in tmdl
+    assert "toColumn: dim_country.country_sk" in tmdl
+    assert "dim_customer.party_reference" not in tmdl
+    assert "dim_customer.country_code" not in tmdl
 
 
 def test_gold_rejects_blocked_compile_plan(tmp_path):
