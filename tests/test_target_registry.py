@@ -21,6 +21,7 @@ BUILTIN_TARGETS = (
     "powerbi",
     "report",
     "ddd",
+    "erd",
 )
 ALL_TARGETS = tuple(target for target in BUILTIN_TARGETS if target != "powerbi")
 CLI_TARGETS = (*BUILTIN_TARGETS, "mdm-profile")
@@ -33,6 +34,7 @@ COMPATIBILITY_TARGETS = (
     "gold",
     "report",
     "ddd",
+    "erd",
     "mdm-profile",
 )
 
@@ -70,8 +72,8 @@ def test_registry_derives_order_aliases_classification_and_external_metadata():
     gold = projector.get_target_spec("gold")
     assert gold is projector.get_target_spec("powerbi")
     assert gold.canonical_name == "powerbi"
-    assert gold.output_category is projector.OutputCategory.MEDALLION
-    assert gold.output_path(Path("output")) == Path("output/medallion/powerbi")
+    assert gold.output_category is projector.OutputCategory.STANDARD
+    assert gold.output_path(Path("output")) == Path("output/powerbi")
 
     report = projector.get_target_spec("report")
     assert report.execution_phase is projector.ExecutionPhase.POST_DOMAIN

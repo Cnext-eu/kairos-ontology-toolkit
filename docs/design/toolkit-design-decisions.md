@@ -258,6 +258,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-204](#dd-204-rdfsdomain-owlthing-gets-its-own-diagnostic-on-both-sides-of-the-boundary-instead-of-being-read-as-a-missing-owlimports) | `rdfs:domain owl:Thing` gets its own diagnostic, on both sides of the boundary, instead of being read as a missing `owl:imports` | Accepted | 2026-08-20 |
 | [DD-205](#dd-205-source-sample-values-reach-langfuse-and-the-alignment-review-artifact-by-default-a-new-raw-sample-channel-feeds-the-alignment-prompt-itself) | Source sample values reach Langfuse and the alignment review artifact by default; a new raw-sample channel feeds the alignment prompt itself | Accepted | 2026-08-20 |
 | [DD-207](#dd-207-skills-move-from-githubskills-to-claudeskills--one-tree-copilot-and-claude-code-both-read) | Skills move from `.github/skills/` to `.claude/skills/` — one tree Copilot and Claude Code both read | Accepted | 2026-08-27 |
+| [DD-208](#dd-208-the-powerbi-target-registry-entry-becomes-flat-retiring-the-empty-medallionpowerbi-placeholder) | The `powerbi` target registry entry becomes flat, retiring the empty `medallion/powerbi` placeholder | Accepted | 2026-08-29 |
+| [DD-209](#dd-209-a-binding-independent-erd-target-projects-the-full-canonical-graph-regardless-of-compile-plan-coverage) | A binding-independent `erd` target projects the full canonical graph regardless of compile-plan coverage | Accepted | 2026-08-29 |
 
 ---
 
@@ -14852,3 +14854,90 @@ surfaces this toolkit's users actually run (its documentation does not explicitl
 nor guarantee every surface treats all three locations identically). If a gap surfaces on some
 Copilot surface, the fix is to reintroduce a generated `.github/skills/` mirror for that surface
 specifically, not to move the authored source back.
+
+---
+
+## DD-208: The `powerbi` target registry entry becomes flat, retiring the empty `medallion/powerbi` placeholder
+
+**Status:** Accepted
+**Date:** 2026-08-29
+**Affects:** `core/projector.py` (`TargetSpec("powerbi", ...)`, master-Gold-ERD path), `cli/
+shared.py` (`_V5_OUTPUT_DIRECTORIES`), `cli/setup.py` (`migrate` scaffold `new_dirs`),
+`tests/test_target_registry.py`, `tests/test_init.py`
+
+### Context
+
+DD-140 originally placed the Gold/Power BI projection slot at `output/medallion/powerbi/<product>`,
+and DD-099's `TargetSpec` registry (`core/projector.py`) carried that nesting forward as
+`TargetSpec("powerbi", "medallion/powerbi", OutputCategory.MEDALLION, ...)`. In practice, `emit-gold`
+(`cli/emit_gold.py`, `_POWERBI_EMIT_SUBPATH`) never wrote there: it always wrote real Gold PBIP
+content — TMDL, PBIP, DAX, `.mmd` ERDs — to the flat, top-level `<publish_root>/powerbi/`, a sibling
+of `medallion/dbt` rather than a child of `medallion/`. The `project --target powerbi` graph-projection
+path is separately rejected at runtime (`COMPILE_PLAN_ONLY_TARGETS`, "gold and MDM consumers must
+receive that compiler-produced CompilePlan through the typed downstream registry"), so the registry's
+`medallion/powerbi` subdir was never actually populated by anything. The scaffold (`_V5_OUTPUT_DIRECTORIES`,
+`migrate`) mirrored the unused nested path, so every freshly scaffolded or migrated hub grew a stray
+empty `medallion/powerbi/.gitkeep` sitting beside the real, populated `powerbi/` one level up — read as
+accidental scaffold drift rather than an intentional layout (issue #629).
+
+### Decision
+
+Make the registry agree with what already ships: `TargetSpec("powerbi", "powerbi", OutputCategory.
+STANDARD, ...)`, flat at the publish root, matching `neo4j`, `azure-search`, `a2ui`, and `prompt`.
+The dead master-Gold-ERD path computation in `run_projections` is updated to the same flat path for
+consistency, even though it is unreachable while `powerbi` remains compile-plan-only. `cli/shared.py`'s
+`_V5_OUTPUT_DIRECTORIES` and `cli/setup.py`'s `migrate` scaffold both drop the nested placeholder in
+favor of a flat `powerbi` entry. `dbt`'s `medallion/dbt` nesting is intentionally left alone — it is
+the one target this decision does not re-litigate, since dbt is a retired compiler target (not routed
+through this registry for output routing) and changing its layout has a much larger blast radius across
+dbt-specific tests and downstream dataplatform consumption (DD-150-era `publish_root` contract).
+
+### Consequences
+
+A fresh or migrated hub now scaffolds exactly one `powerbi/` placeholder, and it is the same directory
+`emit-gold` populates — no duplicate, no empty sibling one level down. `gold.output_category` changes
+from `OutputCategory.MEDALLION` to `OutputCategory.STANDARD` (metadata only; it does not drive path
+resolution). No other target's path changes.
+
+---
+
+## DD-209: A binding-independent `erd` target projects the full canonical graph regardless of compile-plan coverage
+
+**Status:** Accepted
+**Date:** 2026-08-29
+**Affects:** new `core/projections/erd_projector.py`, `core/projector.py` (new `TargetSpec("erd",
+"architecture/erd", ...)`), CLI `projection_target_choices()`, new `tests/test_erd_projector.py`
+
+### Context
+
+Every existing `project --target` output is either a compile-plan projection (`dbt`, `silver`,
+`gold`/`powerbi`, `mdm-profile` — visible only for classes actually bound via an `EntityBinding`) or,
+for `ddd`, a graph projection gated by explicit DDD-overlay vocabulary (`DDD.BoundedContext`,
+`tacticalPattern`, `aggregateRoot`, etc. — `_has_content()` in `ddd_projector.py`). No target renders
+a general class/relationship ERD straight off the ontology graph for a class or relationship that has
+no binding and no DDD annotation, so the canonical model's actual shape — including everything not yet
+bound to a source — is invisible in every diagram-like output (issue #631).
+
+### Decision
+
+Add `core/projections/erd_projector.py`, sitting alongside `ddd_projector.py` in shape and contract:
+deterministic, sorted output, no `CompilePlan`/`EntityBinding` dependency. It receives the same
+already-loaded graph the rest of the per-domain projection loop already produces via
+`ontology_loader.load_ontology` (the `run_projections` orchestrator loads each domain once and hands
+every target the same graph -- ``ddd_projector.py`` follows the identical contract, no target
+re-loads its own copy), walks `owl:Class`/`owl:ObjectProperty` directly, resolves relationship
+endpoints from `rdfs:domain`/`rdfs:range` (via `effective_domain_classes`, the DD-131 multi-class
+domain-resolution authority the silver/dbt projectors already share), reads
+`owl:Restriction`/`owl:cardinality`/`owl:minCardinality`/`owl:maxCardinality` where present, and emits
+one Mermaid `erDiagram` per domain. It is registered as `TargetSpec("erd", "architecture/erd",
+OutputCategory.ARCHITECTURE, ...)` — mirroring `ddd`'s `architecture/ddd` placement — and, because
+`projection_target_choices()`/`projection_targets_for_all()` already derive purely from the target
+registry, requires no separate CLI wiring: `--target erd` and `--target all` both work as soon as the
+`TargetSpec` is registered.
+
+### Consequences
+
+A class or relationship modeled in the ontology but never bound to a source is now visible in at
+least one diagram output. `erd` never influences `silver`/`gold`/`dbt`/Power BI generation, the same
+non-interference guarantee `ddd` already provides. The new target adds one more entry to every
+`--target all` run's output.

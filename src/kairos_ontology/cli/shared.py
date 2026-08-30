@@ -1224,13 +1224,14 @@ _V5_HUB_DIRECTORIES = (
 # artifacts live outside the authored hub directory.
 _V5_OUTPUT_DIRECTORIES = (
     "medallion/dbt",
-    "medallion/powerbi",
+    "powerbi",
     "neo4j",
     "azure-search",
     "a2ui",
     "prompt",
     "reports/details",
     "architecture/ddd",
+    "architecture/erd",
     "mdm",
 )
 
