@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   check-version:
@@ -18,63 +17,16 @@ jobs:
         with:
           fetch-depth: 0  # need full history for diff
 
-      - name: Check for skip-version label
-        id: labels
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Require CHANGELOG entry for a bumped version
         run: |
-          LABELS=$(gh pr view "${{ github.event.pull_request.number }}" --json labels -q '.labels[].name')
-          if echo "$LABELS" | grep -q "skip-version"; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check if src/ changed
-        if: steps.labels.outputs.skip == 'false'
-        id: changes
-        run: |
-          CHANGED=$(git diff --name-only origin/main...HEAD -- 'src/' | head -1)
-          if [ -n "$CHANGED" ]; then
-            echo "src_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "src_changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Compare version with main
-        if: steps.labels.outputs.skip == 'false' && steps.changes.outputs.src_changed == 'true'
-        run: |
-          # Get version from main branch
-          MAIN_VERSION=$(git show origin/main:src/kairos_ontology/__init__.py \
-            | grep '__version__' | sed 's/.*"\(.*\)".*/\1/')
-
-          # Get version from PR branch
-          PR_VERSION=$(grep '__version__' src/kairos_ontology/__init__.py \
-            | sed 's/.*"\(.*\)".*/\1/')
-
-          echo "main version: $MAIN_VERSION"
-          echo "PR   version: $PR_VERSION"
-
-          if [ "$MAIN_VERSION" = "$PR_VERSION" ]; then
-            echo ""
-            echo "::error::Version was not bumped. src/ files changed but __version__ is still $PR_VERSION."
-            echo "::error::Bump the version in pyproject.toml and src/kairos_ontology/__init__.py,"
-            echo "::error::or add the 'skip-version' label to this PR."
-            exit 1
-          fi
-
-          echo "✅ Version bumped: $MAIN_VERSION → $PR_VERSION"
-
-      - name: Require CHANGELOG entry for the bumped version
-        if: steps.labels.outputs.skip == 'false' && steps.changes.outputs.src_changed == 'true'
-        run: |
+          # Version bumps happen at release time (docs/RELEASING.md), not on every
+          # PR. This only enforces that *if* a PR does bump __version__ to a stable
+          # release, it also carries the matching CHANGELOG entry.
           PR_VERSION=$(grep '__version__' src/kairos_ontology/__init__.py \
             | sed 's/.*"\(.*\)".*/\1/')
           MAIN_VERSION=$(git show origin/main:src/kairos_ontology/__init__.py \
             | grep '__version__' | sed 's/.*"\(.*\)".*/\1/')
 
-          # Only enforce when the version actually changed (the bump check above
-          # already fails the unchanged case).
           if [ "$MAIN_VERSION" = "$PR_VERSION" ]; then
             exit 0
           fi
@@ -88,7 +40,7 @@ jobs:
           if ! grep -qE "^## \[${PR_VERSION}\]" CHANGELOG.md; then
             echo "::error::Version bumped to ${PR_VERSION} but CHANGELOG.md has no"
             echo "::error::'## [${PR_VERSION}]' entry. Promote the [Unreleased] section to a"
-            echo "::error::dated '## [${PR_VERSION}]' heading, or add the 'skip-version' label."
+            echo "::error::dated '## [${PR_VERSION}]' heading."
             exit 1
           fi
 

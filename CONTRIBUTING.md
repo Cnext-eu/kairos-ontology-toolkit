@@ -145,26 +145,20 @@ Never commit to `main` directly — always branch + PR.
 - [ ] Tests pass (`uv run pytest` for fast, `uv run pytest -m ""` for full)
 - [ ] `python -m kairos_ontology validate` passes (if ontology changes)
 - [ ] `python -m kairos_ontology project` regenerated (if ontology changes)
-- [ ] Version bumped in `src/kairos_ontology/__init__.py` (required when `src/` changed) or `skip-version` label added
+- [ ] Version bump only if this PR is cutting a release (see `docs/RELEASING.md`) — not required otherwise
 - [ ] DCO sign-off on all commits
 - [ ] No secrets, credentials, or PII in code
 
 ### Version bump and CI version-check
 
-The CI **version-check** job fails any PR that changes files under `src/` but
-doesn't bump `__version__` in `src/kairos_ontology/__init__.py`. Pre-release
-versions (containing `rc`, `b`, or `a` suffixes) don't need a CHANGELOG entry;
-stable releases must have a `## [X.Y.Z]` section in `CHANGELOG.md`.
+Version bumps happen **at release time**, not on every PR — see
+`docs/RELEASING.md` for the full flow (patch/minor/major, hotfixes,
+pre-releases). Most PRs land on `main` without touching `__version__`.
 
-| Bump type | When |
-|-----------|------|
-| `rc` suffix increment | Pre-release development (e.g. `5.2.3rc7` → `5.2.3rc8`) |
-| `patch` | Bug fixes, small skill/doc changes |
-| `minor` | New features, new projections, new CLI commands |
-| `major` | Breaking API changes |
-
-If the PR is docs-only or doesn't touch `src/`, add the `skip-version` label
-instead.
+The CI **version-check** job only fires when a PR *does* bump `__version__`
+to a stable (non pre-release) version: it requires a matching
+`## [X.Y.Z]` section in `CHANGELOG.md`. Pre-release versions (containing
+`rc`, `b`, or `a` suffixes) don't need a CHANGELOG entry.
 
 ### Issue closing keywords
 

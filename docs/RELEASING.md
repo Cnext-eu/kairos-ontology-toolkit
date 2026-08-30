@@ -119,8 +119,6 @@ gh pr create --base main --head hotfix/3.16.1 \
 **Back-merge notes:**
 - On a `__version__` conflict, **keep `main`'s** (higher, in-progress) version — the
   fix's patch number is already shipped on its own tag.
-- The back-merge PR changes `src/` without bumping `main`'s version, so the
-  `version-check` CI gate will flag it → add the **`skip-version`** label to the PR.
 - Make sure the fix's CHANGELOG bullet also appears under `main`'s `[Unreleased]`
   (or its in-progress version section).
 
@@ -192,9 +190,7 @@ git cherry-pick <fix-commit-sha>       # avoid cherry-picking the V3 version bum
 ```
 
 If the version or changelog conflicts, keep `main`'s V4 version and add the bugfix
-note to `main`'s current changelog section. Open a PR to `main`; if CI's
-version-check flags the back-merge because `src/` changed without bumping V4, add
-the `skip-version` label.
+note to `main`'s current changelog section, then open a PR to `main`.
 
 Stable/preview channel expectations:
 

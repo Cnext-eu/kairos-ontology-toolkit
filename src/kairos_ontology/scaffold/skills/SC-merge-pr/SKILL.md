@@ -20,26 +20,24 @@ CHANGELOG, and tag rules — is specific to **this toolkit repository's own** re
 different SHA-pinned release model documented in that repository's generated `CICD.md`; do not apply
 these rules there.
 
-## 1. Version bump is mandatory (not just for releases)
+## 1. Version bump happens at release time, not per PR
 
-The CI `version-check` job fails any PR that changes `src/` but doesn't bump
-`__version__` in `src/kairos_ontology/__init__.py`. This applies to **every**
-PR, not just releases.
+Most PRs land on `main` without touching `__version__` — see
+`docs/RELEASING.md` for the full versioning flow. Only bump the version when
+this PR **is** the release: promoting `main` to a new tagged release.
 
 | Bump type | When |
 |-----------|------|
-| `rc` suffix increment | Pre-release development (`5.2.3rc7` → `5.2.3rc8`) |
-| `patch` | Bug fixes, small changes |
-| `minor` | New features, new CLI commands |
-| `major` | Breaking API changes |
+| `patch` | Cutting a bugfix release |
+| `minor` | Cutting a feature release |
+| `major` | Cutting a breaking-change release |
 
-Commit the bump on the feature branch **before** creating the PR. Because
+Commit the bump on the release branch **before** creating the PR. Because
 `main` is protected, bundling the bump avoids a separate bump-only PR.
 
-Pre-release versions (with `rc`, `b`, `a` suffix) don't need a CHANGELOG
-entry. Stable releases must have a `## [X.Y.Z]` section in `CHANGELOG.md`.
-
-For docs-only or non-`src/` PRs, add the `skip-version` label instead.
+The CI `version-check` job only fires when `__version__` changes: pre-release
+versions (with `rc`, `b`, `a` suffix) don't need a CHANGELOG entry; stable
+releases must have a `## [X.Y.Z]` section in `CHANGELOG.md`.
 
 ```bash
 python scripts/finish_pr.py tag-release --bump <patch|minor|major>
