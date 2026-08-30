@@ -50,7 +50,7 @@
     {{ print('system: "' ~ source_name ~ '"') }}
     {{ print('platform: "' ~ platform ~ '"') }}
     {{ print('environment: "' ~ target.name ~ '"') }}
-    {{ print('extracted_at: "' ~ modules.datetime.datetime.now(modules.datetime.timezone.utc).isoformat() ~ '"') }}
+    {{ print('extracted_at: "' ~ modules.datetime.datetime.utcnow().isoformat() ~ 'Z"') }}
     {{ print('connection:') }}
     {{ print('  database: "' ~ db_name ~ '"') }}
     {{ print('  schema: "' ~ schema_name ~ '"') }}

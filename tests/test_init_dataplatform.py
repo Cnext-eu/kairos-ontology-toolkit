@@ -228,6 +228,12 @@ class TestInitDataplatform:
         content = macro.read_text(encoding="utf-8")
         assert "extract_source_schema" in content
 
+    def test_generate_schema_name_macro_copied(self, dataplatform_output):
+        macro = dataplatform_output / "macros" / "generate_schema_name.sql"
+        assert macro.exists()
+        content = macro.read_text(encoding="utf-8")
+        assert "generate_schema_name" in content
+
     def test_pyproject_has_toolkit_dependency(self, dataplatform_output):
         pyproject = (dataplatform_output / "pyproject.toml").read_text(encoding="utf-8")
         assert "kairos-ontology-toolkit" in pyproject
@@ -388,6 +394,17 @@ class TestInitDataplatform:
         for token in ("DBT_FABRIC_", "DBT_DATABRICKS_", "secrets."):
             assert token not in content, f"unexpected credential reference: {token}"
 
+    def test_pr_validate_workflow_guards_against_local_package_pins(self, dataplatform_output):
+        """A `local:` packages.yml pin must fail CI, pointing at `bump-hub` instead."""
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        content = wf.read_text(encoding="utf-8")
+        assert "local:" in content
+        assert "bump-hub" in content
+        # The guard step must run before any dependency install/build step.
+        guard_index = content.index("Guard against local")
+        deps_index = content.index("Install toolkit and dbt adapter")
+        assert guard_index < deps_index
+
 
 class TestInitDataplatformEdgeCases:
     def test_pyproject_includes_dbt_adapter(self, mock_hub):
@@ -475,6 +492,47 @@ class TestInitDataplatformEdgeCases:
         assert "already exists" in result.output
 
 
+class TestCodeWorkspaceGeneration:
+    """init-dataplatform offers a multi-root .code-workspace spanning hub + dataplatform (#9)."""
+
+    def test_creates_workspace_with_both_folders(self, mock_hub):
+        runner = CliRunner()
+        result = _run_in_hub(
+            runner,
+            mock_hub,
+            ["init-dataplatform", "ws-dp", "--path", str(mock_hub)],
+        )
+        assert result.exit_code == 0, result.output
+
+        workspace_path = mock_hub / "ws-dp.code-workspace"
+        assert workspace_path.exists()
+        document = json.loads(workspace_path.read_text(encoding="utf-8"))
+        folder_paths = {entry["path"] for entry in document["folders"]}
+        assert mock_hub.resolve().as_posix() in folder_paths
+        assert (mock_hub / "ws-dp").resolve().as_posix() in folder_paths
+
+    def test_rerun_is_idempotent_and_preserves_user_additions(self, mock_hub):
+        runner = CliRunner()
+        _run_in_hub(
+            runner, mock_hub, ["init-dataplatform", "ws-dp2", "--path", str(mock_hub)]
+        )
+        workspace_path = mock_hub / "ws-dp2.code-workspace"
+        document = json.loads(workspace_path.read_text(encoding="utf-8"))
+        document["folders"].append({"path": "/some/user-added/folder"})
+        document["settings"]["user.custom"] = True
+        workspace_path.write_text(json.dumps(document), encoding="utf-8")
+
+        # Re-scaffolding a second, differently-named dataplatform must not touch an
+        # unrelated existing workspace file for a different name.
+        _run_in_hub(
+            runner, mock_hub, ["init-dataplatform", "ws-dp3", "--path", str(mock_hub)]
+        )
+
+        reloaded = json.loads(workspace_path.read_text(encoding="utf-8"))
+        assert {"path": "/some/user-added/folder"} in reloaded["folders"]
+        assert reloaded["settings"]["user.custom"] is True
+
+
 class TestProfilesExamplePlatformSelection:
     """The generated .dbt/profiles.yml.example is pre-activated for --platform."""
 
@@ -533,6 +591,12 @@ class TestProfilesExamplePlatformSelection:
         content = self._profiles_example(mock_hub, "dp-guidance", platform="fabric-lakehouse")
         assert 'PowerShell: $env:DBT_PROFILES_DIR = ".dbt"' in content
         assert "bash/zsh:   export DBT_PROFILES_DIR=.dbt" in content
+
+    def test_includes_uat_prod_target_stubs(self, mock_hub):
+        content = self._profiles_example(mock_hub, "dp-promotion", platform="fabric-lakehouse")
+        assert "# uat:" in content
+        assert "# prod:" in content
+        assert "dbt run --target uat" in content
 
     def test_secret_fields_use_env_var_placeholders(self, mock_hub):
         content = self._profiles_example(mock_hub, "dp-secrets", platform="fabric-warehouse")

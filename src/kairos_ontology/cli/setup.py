@@ -3,6 +3,7 @@
 """Focused setup CLI commands."""
 
 import click
+import json
 import re
 import shutil
 import subprocess
@@ -1476,6 +1477,32 @@ def _activate_profile_platform(content: str, platform: str) -> str:
     return "\n".join(output) + "\n"
 
 
+def _write_or_update_code_workspace(workspace_path: Path, folder_paths: tuple[Path, ...]) -> bool:
+    """Ensure *workspace_path* is a multi-root workspace containing every path in *folder_paths*.
+
+    Item #9 (dataplatform-scaffold-improvements backlog): a session working the
+    hub-then-dataplatform loop benefits from both repos open together by default,
+    instead of a user discovering after the fact that they should have set this up.
+    Idempotent: merges into an existing workspace file rather than overwriting it, so
+    a user's own added folders/settings survive a later `init-dataplatform` re-run.
+    Returns True if the file was created or changed.
+    """
+    wanted = [str(path.resolve().as_posix()) for path in folder_paths]
+    if workspace_path.is_file():
+        document = json.loads(workspace_path.read_text(encoding="utf-8"))
+    else:
+        document = {"folders": [], "settings": {}}
+    existing = {entry.get("path") for entry in document.get("folders", [])}
+    changed = not workspace_path.is_file()
+    for path_str in wanted:
+        if path_str not in existing:
+            document.setdefault("folders", []).append({"path": path_str})
+            changed = True
+    if changed:
+        workspace_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    return changed
+
+
 @click.command(name="init-dataplatform")
 @click.argument("name", required=False, default=None)
 @click.option(
@@ -1514,7 +1541,9 @@ def init_dataplatform(name, dest, platform, org_override):
       - dbt_project.yml with correct package reference
       - packages.yml pinned to the hub's current version
       - profiles.yml.example for your platform
-      - macros/extract_source_schema.sql for bronze introspection
+      - macros/extract_source_schema.sql for bronze introspection (fallback; prefer
+        the `extract-schema` CLI command)
+      - macros/generate_schema_name.sql for bare bronze/silver/gold schema names
       - _sources.yml template with physical binding placeholders
       - pyproject.toml with uv + toolkit dependency
       - .github/workflows/pr-validate.yml (dbt deps/parse/compile + binding check)
@@ -1523,6 +1552,7 @@ def init_dataplatform(name, dest, platform, org_override):
       - README.md with setup instructions
       - CICD.md with branch, promotion, rollback, and hotfix guidance
       - CONTRIBUTING.md with branch-naming and PR conventions
+      - <name>.code-workspace opening the hub and this dataplatform together
 
     \b
     Examples:
@@ -1543,13 +1573,13 @@ def init_dataplatform(name, dest, platform, org_override):
     project_name = name.replace("-", "_")
 
     # Determine output directory
+    hub_git_root = (
+        ctx["hub_root"].parent if ctx["hub_root"].name == "ontology-hub" else ctx["hub_root"]
+    )
     if dest:
         parent = Path(dest)
     else:
         # Place sibling to the hub repo
-        hub_git_root = (
-            ctx["hub_root"].parent if ctx["hub_root"].name == "ontology-hub" else ctx["hub_root"]
-        )
         parent = hub_git_root.parent
 
     repo_dir = parent / name
@@ -1630,7 +1660,7 @@ def init_dataplatform(name, dest, platform, org_override):
         click.echo("  ✓ CONTRIBUTING.md")
 
     # Copy macros
-    for macro_name in ("extract_source_schema.sql", "print_query.sql"):
+    for macro_name in ("extract_source_schema.sql", "generate_schema_name.sql", "print_query.sql"):
         macro_src = _DATAPLATFORM_SCAFFOLD / "macros" / macro_name
         if macro_src.exists():
             shutil.copy2(macro_src, repo_dir / "macros" / macro_name)
@@ -1802,6 +1832,10 @@ def init_dataplatform(name, dest, platform, org_override):
         click.echo("  ✓ git init + initial commit")
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         click.echo(f"  ⚠️  git init skipped: {e}")
+
+    workspace_path = parent / f"{name}.code-workspace"
+    if _write_or_update_code_workspace(workspace_path, (hub_git_root, repo_dir)):
+        click.echo(f"  ✓ {workspace_path.name} (hub + dataplatform multi-root workspace)")
 
     click.echo(f"\n✅ Dataplatform project created at: {repo_dir}")
     click.echo("\n📋 Next steps:")

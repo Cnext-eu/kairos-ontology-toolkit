@@ -4,10 +4,11 @@
 
 ``src/kairos_ontology/scaffold/claude-settings.json`` is the shipped Claude Code
 settings file that denies raw ``Read``/``Grep`` access to ontology serializations
-(``.ttl``/``.rdf``/``.owl``) under the three guarded hub paths. Nothing else in the
-suite pins its exact contents, so a well-meaning "cleanup" could quietly narrow it
-back down (e.g. to ``.ttl`` only, or to one anchoring, or to one tool prefix) without
-any test failing.
+(``.ttl``/``.rdf``/``.owl``) under the three guarded hub paths, and (dataplatform
+improvements backlog item #18) denies ``Edit``/``Write`` under ``ontology-hub-publish/``
+so compiler-owned output can't be hand-edited. Nothing else in the suite pins its exact
+contents, so a well-meaning "cleanup" could quietly narrow it back down (e.g. to ``.ttl``
+only, or to one anchoring, or to one tool prefix) without any test failing.
 
 The deny list intentionally duplicates every rule across two axes that look
 redundant but are NOT verified as inert on every Claude Code build:
@@ -58,14 +59,25 @@ _GUARDED_TOOLS = ("Read", "Grep")
 # Both anchorings: see module docstring for why.
 _GUARDED_ANCHORS = ("/", "./")
 
+# Item #18: compiler-owned output must never be hand-edited (CICD.md / kairos-execute-project
+# already say so in prose; this makes it a mechanical guard). Edit/Write only -- Read/Grep of
+# emitted output is normal and expected.
+_PUBLISH_GUARDED_PATH = "ontology-hub-publish"
+_PUBLISH_GUARDED_TOOLS = ("Edit", "Write")
+
 
 def _expected_rules() -> set[str]:
-    return {
+    ttl_rules = {
         f"{tool}({anchor}{path}/**/*.{ext})"
         for path, ext, tool, anchor in itertools.product(
             _GUARDED_PATHS, _GUARDED_EXTENSIONS, _GUARDED_TOOLS, _GUARDED_ANCHORS
         )
     }
+    publish_rules = {
+        f"{tool}({anchor}{_PUBLISH_GUARDED_PATH}/**)"
+        for tool, anchor in itertools.product(_PUBLISH_GUARDED_TOOLS, _GUARDED_ANCHORS)
+    }
+    return ttl_rules | publish_rules
 
 
 def _load_settings() -> dict:

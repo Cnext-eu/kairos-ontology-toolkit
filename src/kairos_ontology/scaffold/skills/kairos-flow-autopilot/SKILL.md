@@ -53,6 +53,10 @@ human, or recorded as an explicit instruction if already given):
    autopilot run with nobody to escalate to is a run that will either stall
    indefinitely or make a policy call it had no authority to make; resolve this
    before starting, not when the first guardrail fires.
+5. **Branch discipline for cross-repo work** — when a run will touch a dataplatform
+   repo and/or the toolkit repo alongside the hub in the same sitting, create and work
+   on a named branch in each repo before changes start, rather than assuming work
+   happens straight on `main`.
 
 ## The stage ladder
 

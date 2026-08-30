@@ -178,7 +178,7 @@ def _in_skill_context() -> bool:
 def _warn_if_no_skill_context(subcommand: str | None) -> None:
     """Emit a soft skill-gate warning for skill-managed commands.
 
-    If *subcommand* is covered by a Copilot skill and the process is not running
+    If *subcommand* is covered by a skill and the process is not running
     inside a skill context (no sentinel env var), print a loud warning to stderr
     that redirects the operator to the skill.  The command still runs afterwards
     — this is a soft gate, not a hard block.
@@ -193,7 +193,7 @@ def _warn_if_no_skill_context(subcommand: str | None) -> None:
 
     click.echo(
         f"⚠️  `{subcommand}` is skill-managed.\n"
-        f"   Prefer the **{skill}** skill in GitHub Copilot Chat — it runs\n"
+        f"   Prefer the **{skill}** skill in your AI coding session — it runs\n"
         f"   pre-flight checks and validation gates this raw command skips.\n"
         f"   Continuing anyway… (set KAIROS_SKILL_CONTEXT=1 to silence)\n",
         err=True,
@@ -813,6 +813,13 @@ def _rewrite_hub_package_pin(content: str, sha: str) -> str:
     normalized = sha.strip().lower()
     if not _COMMIT_SHA_RE.fullmatch(normalized):
         raise ValueError("hub package revision must resolve to a 40-character hexadecimal SHA")
+    # The scaffold's fresh `packages.yml.template` renders `packages: []` (bug #1: a
+    # bare `packages:` key with only commented lines beneath it parses to `None`, not
+    # `[]`, and crashes dbt). An explicit `[]` is itself only valid while the list is
+    # actually empty -- once this rewrite uncomments the git block into a real block
+    # sequence below it, `packages: []` followed by `- git: ...` is invalid YAML. Drop
+    # the `[]` back to a bare key first so the uncommented sequence parses.
+    content = re.sub(r"(?m)^([ \t]*packages:)[ \t]*\[[ \t]*\][ \t]*(\r?\n)", r"\1\2", content)
     match = _find_hub_package_block(content)
     base_indent = match.group("indent")
     url = match.group("url")
@@ -1407,6 +1414,7 @@ _RETIRED_MANAGED_SCAFFOLD_FILES = {
 _KNOWN_CLAUDE_SETTINGS_HASHES = (
     "08c0b53faf0ea032c4746e460ae85e41e8f7731f999778d730e114e50ce037f5",  # .ttl-only, pre-DD-103 broadening
     "7be2c70ddda8878e179930ce9dcaf0ac8d12cd09f982170f4d6b85acc515db08",  # .ttl/.rdf/.owl + refmodel deny-list (pre-package-migration)
+    "6ce03d5dcc389b92b387545e41c3d7b1936112bd87b66b6dc6cee2f4b965e680",  # pre-Edit/Write ontology-hub-publish/** guard
 )
 
 _RETIRED_SCAFFOLD_DIRECTORIES = (

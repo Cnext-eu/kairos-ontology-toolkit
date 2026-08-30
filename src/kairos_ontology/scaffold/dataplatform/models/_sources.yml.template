@@ -44,4 +44,6 @@ sources:
       # tables:
       #   - name: tblClient
       #   - name: tblInvoice
-      # Or run: dbt run-operation extract_source_schema --args '{source_name: "<name>"}'
+      # Or run: kairos-ontology extract-schema --profile <profile> --schema <schema> --system <name>
+      # (falls back to: dbt run-operation extract_source_schema --args '{source_name: "<name>"}'
+      # if pyodbc isn't available)

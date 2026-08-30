@@ -24,7 +24,11 @@
       "Grep(/ontology-hub/model/shapes/**/*.owl)",
       "Grep(./ontology-hub/model/shapes/**/*.ttl)",
       "Grep(./ontology-hub/model/shapes/**/*.rdf)",
-      "Grep(./ontology-hub/model/shapes/**/*.owl)"
+      "Grep(./ontology-hub/model/shapes/**/*.owl)",
+      "Edit(/ontology-hub-publish/**)",
+      "Edit(./ontology-hub-publish/**)",
+      "Write(/ontology-hub-publish/**)",
+      "Write(./ontology-hub-publish/**)"
     ]
   }
 }

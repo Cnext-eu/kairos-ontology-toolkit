@@ -61,6 +61,9 @@ prerequisite that transfers to a resumed or handed-off session.
    immediately after scaffold, before the first source import, so every later stage
    diffs cleanly and `guard-scope` (which needs a git history to compare against) is
    usable from Stage 1 onward, not bolted on after the fact.
+   When a session will also touch a dataplatform repo and/or the toolkit repo in the
+   same sitting, create and work on a named branch in each repo before changes start,
+   rather than assuming work happens straight on `main`.
 3. **Source and business-discovery inputs are staged and their reuse scope is
    explicit.** If reusing `.import/sources/` or `.import/businessdiscovery/` content
    from a reference hub, state in the session record exactly what is reused and what

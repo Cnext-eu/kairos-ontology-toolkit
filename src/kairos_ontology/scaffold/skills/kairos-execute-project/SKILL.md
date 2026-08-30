@@ -32,6 +32,8 @@ Use `compile` directly; do not add orchestration around it.
 
 Compiler input is the authored ontology, source/dbt contracts, and closed
 `EntityBinding` documents. Compiler output is derived and must not be edited by
-this skill. A successful compile is not a deployment or runtime-test verdict.
+this skill — including temporary or workaround edits meant to unblock a failing
+test and "revert later"; if emitted output looks wrong, fix the authored input and
+re-emit. A successful compile is not a deployment or runtime-test verdict.
 Any release-relevant emitted output belongs in the same hub pull request as the
 authored change that produced it — see `CICD.md`.
