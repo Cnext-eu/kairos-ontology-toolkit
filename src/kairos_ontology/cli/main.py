@@ -101,6 +101,7 @@ from .inspection import (
     suggest_type_cmd,
 )
 from .operations import (
+    bump_hub,
     update,
     update_refmodels,
 )
@@ -340,6 +341,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(suggest_type_cmd)
     group.add_command(update)
     group.add_command(update_refmodels)
+    group.add_command(bump_hub)
 
 
 register_commands(cli)
