@@ -594,17 +594,16 @@ def lookup_class_ownership_batch(
 
     seen: set[tuple[str, str]] = set()
     rows: list[ClassOwnershipRow] = []
-    if True:
-        for cls in reference_classes:
-            name = str(cls.get("name") or "")
-            if name.lower() not in wanted:
-                continue
-            row = _ownership_row(cls, alias_to_module, domains_by_module)
-            key = (row.class_uri, row.source_identity)
-            if key in seen:
-                continue
-            seen.add(key)
-            rows.append(row)
+    for cls in reference_classes:
+        name = str(cls.get("name") or "")
+        if name.lower() not in wanted:
+            continue
+        row = _ownership_row(cls, alias_to_module, domains_by_module)
+        key = (row.class_uri, row.source_identity)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
     rows.sort(key=lambda r: (r.class_uri, r.source_identity))
     return ClassOwnershipBatch(
         class_names=ordered_names, inventories_present=True, rows=tuple(rows)
