@@ -385,7 +385,6 @@ def render_silver_model(
     adapter: str,
 ) -> str:
     """Render one Silver spec through the existing template contract."""
-    materialization = plan.materialization
     unique_keys = plan.unique_key
     unique_key: str | list[str] = ""
     if len(unique_keys) == 1:
@@ -409,7 +408,6 @@ def render_silver_model(
     if spec.kind is SilverModelKind.ENTITY:
         context.update(
             {
-                "materialization": materialization,
                 "unique_key": unique_key,
                 "source_ctes": [_source_context(source, adapter) for source in spec.sources],
                 "joins": [_join_context(join, adapter) for join in spec.joins],
@@ -440,7 +438,6 @@ def render_silver_model(
         multi_source = spec.authority.multi_source if spec.authority is not None else None
         context.update(
             {
-                "materialization": materialization,
                 "unique_key": unique_key,
                 "source_models": list(spec.source_models),
                 "sk_expression": spec.surrogate_key_expression,
@@ -624,18 +621,29 @@ def _schema_context(
     physical_columns = (
         {column.name: column for column in physical.columns} if physical is not None else {}
     )
+    columns = [
+        _column_context(
+            column,
+            schema=True,
+            physical=physical_columns.get(column.name),
+        )
+        for column in model.columns
+    ]
+    # DD-630-contracts: dbt's `contract.enforced: true` requires every column
+    # to declare a `data_type`. Most Silver schema models resolve one column
+    # from the physical Silver plan (guaranteed complete or the compile is
+    # blocked -- see materialize.py), but a class with no bound EntityBinding
+    # (no bronze mapping yet) still gets a schema-only, ontology-derived
+    # entry with no physical plan to pull types from. Only turn contracts on
+    # when every column actually has a data_type, so an unbound/documentation
+    # -only model doesn't silently emit an enforced-but-untyped contract.
+    contract_enforced = bool(columns) and all(column.get("data_type") for column in columns)
     return {
         "name": model.name,
         "description": model.description,
         "meta": dict(model.metadata),
-        "columns": [
-            _column_context(
-                column,
-                schema=True,
-                physical=physical_columns.get(column.name),
-            )
-            for column in model.columns
-        ],
+        "contract_enforced": contract_enforced,
+        "columns": columns,
         "grain_columns": list(model.grain_columns),
         "source_identity_columns": list(model.source_identity_columns),
         "grain_where": model.grain_where,

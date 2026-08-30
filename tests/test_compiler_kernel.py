@@ -171,7 +171,9 @@ def test_full_refresh_regression_does_not_enable_incremental_runtime(tmp_path):
     assert result.succeeded
     sql = result.artifact_dict()["models/silver/party/customer.sql"].lower()
     assert "dd-109 scd" not in sql
-    assert "materialized='table'" in sql
+    # DD-627: no inline `materialized=`; relies on dbt_project.yml cascade default.
+    assert "materialized=" not in sql
+    assert "schema='silver'" in sql
 
 
 def test_compile_domain_collects_binding_error_without_writing(tmp_path):
