@@ -1149,14 +1149,20 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             assert "powerbi-semantic-model.zip" not in content
             assert "POWERBI_PACKAGE" not in content
             assert "persist-credentials: false" in content
-            assert "rm -rf ontology-hub-publish/medallion/dbt" in content
             assert 'find "ontology-hub-publish/medallion/dbt"' in content
             assert "-type l -print -quit | grep -q ." in content
             assert "rm -f dbt-artifacts.zip" in content
             assert content.index("-type l -print -quit") < content.index("-type f -print -quit")
-            # #598: --emit has required --confirm-emit since #264. A scaffolded
-            # release workflow that omits it fails on its first domain.
-            assert "--confirm-emit" in content
+            # DD-206: the release workflow must verify already-tracked bytes at the
+            # tagged commit, never regenerate different bytes after tagging. The old
+            # "rm -rf ontology-hub-publish/medallion/dbt" + "compile --all --emit
+            # --confirm-emit" regenerate step is gone; pr-validate.yml (the hub PR
+            # workflow) is what regenerates and diffs that output, before merge.
+            assert "rm -rf ontology-hub-publish/medallion/dbt" not in content
+            assert "compile --all --emit" not in content
+            assert "--confirm-emit" not in content
+            assert "validate-dbt --structural-only" in content
+            assert "read-only, no regeneration" in content
             # #589: same GHES setup-uv/lockfile fixes as managed-check.yml.
             assert "astral-sh/setup-uv@v10.0.1" in content
             assert 'version: "0.12.5"' in content
