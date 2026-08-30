@@ -2,9 +2,8 @@
 # Copyright 2026 Cnext.eu
 """Unit and CLI-level tests for the binding-independent ERD projector (issue #631)."""
 
-from pathlib import Path
 
-from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, URIRef, OWL, XSD
+from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, OWL, XSD
 
 from kairos_ontology.core.projections.erd_projector import generate_erd_artifacts
 from kairos_ontology.core.projector import run_projections
