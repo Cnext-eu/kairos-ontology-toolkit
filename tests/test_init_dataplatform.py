@@ -257,7 +257,9 @@ class TestInitDataplatform:
         content = wf.read_text(encoding="utf-8")
         assert "powerbi-semantic-model.zip" in content
         assert "fabric-cicd" in content
-        assert "package_fabric_semantic_model.py" in content
+        # DD-206 #12 item 10: normalization moved into hub Gold emission; the
+        # dataplatform side no longer scaffolds or invokes a mutating helper script.
+        assert "package_fabric_semantic_model.py" not in content
         assert "TestOrg" in content
         assert "test-ontology-hub" in content
         assert "v1.2.0" in content
@@ -270,12 +272,12 @@ class TestInitDataplatform:
         assert "test-ontology-hub" in content
         assert "v1.2.0" in content
 
-    def test_fabric_package_script_created(self, dataplatform_output):
+    def test_fabric_package_script_is_not_scaffolded(self, dataplatform_output):
+        """DD-206 #12 item 10: the mutating packaging helper is gone from the hub
+        scaffold; TMDL/PBIP normalization now happens once, in hub Gold emission.
+        """
         script = dataplatform_output / "scripts" / "package_fabric_semantic_model.py"
-        assert script.exists()
-        content = script.read_text(encoding="utf-8")
-        assert "definition.pbism" in content
-        assert ".platform" in content
+        assert not script.exists()
 
 
 class TestInitDataplatformEdgeCases:

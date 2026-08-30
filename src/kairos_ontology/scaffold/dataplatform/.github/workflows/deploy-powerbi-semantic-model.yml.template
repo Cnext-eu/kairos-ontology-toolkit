@@ -46,9 +46,9 @@ jobs:
           mkdir -p semantic-model
           unzip -q powerbi-semantic-model.zip -d semantic-model
 
-      - name: Prepare Fabric semantic-model package structure
-        run: |
-          python scripts/package_fabric_semantic_model.py --input semantic-model
+      # DD-206 #12 item 10: TMDL/PBIP normalization now happens once, in the hub's
+      # Gold emission, before the archive is checksummed. This deploy workflow is
+      # read-only -- extract, verify, deploy -- and must never rewrite the archive.
 
       - name: Azure login (service principal)
         uses: azure/login@v2

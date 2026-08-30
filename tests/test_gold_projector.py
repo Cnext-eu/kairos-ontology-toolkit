@@ -768,6 +768,68 @@ def test_table_tmdl_places_measures_before_columns_with_doc_comment(invoice_gold
     assert "description: " not in table
 
 
+def test_direct_lake_and_directquery_partitions_need_no_post_processing(
+    client_gold, tmp_path: Path
+):
+    """DD-206 #12 item 10: TMDL normalization used to run a second time, at Power BI
+    deploy time, in a dataplatform script (``package_fabric_semantic_model.py``, now
+    deleted) that rewrote ``partition ... = m`` to ``= entity`` by sniffing the text of
+    every ``.tmdl`` file for a Direct Lake partition older projector releases
+    mislabelled. The hub must emit the correct keyword the first time so no downstream
+    rewrite is ever needed: ``= entity`` for Direct Lake, and an untouched ``= m`` for a
+    genuine Power Query (directQuery) partition.
+    """
+    direct_lake_partition = client_gold[
+        "client/Client.SemanticModel/definition/tables/dim_client.tmdl"
+    ]
+    assert "partition dim_client = entity" in direct_lake_partition
+    assert " = m" not in direct_lake_partition
+
+    directquery_artifacts = _generate(
+        "client",
+        gold_path=_databricks_gold(tmp_path),
+        platform="databricks",
+        hub_root=_databricks_hub(tmp_path),
+    )
+    directquery_partition = directquery_artifacts[
+        "client/Client.SemanticModel/definition/tables/dim_client.tmdl"
+    ]
+    assert "partition dim_client = m" in directquery_partition
+    assert "source =" in directquery_partition
+    assert "= entity" not in directquery_partition
+
+
+def test_pbip_wrapper_never_needs_dataplatform_backfill(invoice_gold):
+    """DD-206 #12 item 10: ``.platform``, ``definition.pbism``, and ``database.tmdl``
+    used to be backfilled only when absent by a dataplatform-side script -- a case that
+    could arise because the projector's own emission was not guaranteed complete. The
+    projector is now the sole, unconditional writer of all three, so a domain's Gold
+    emission is deployable exactly as emitted; there is no "missing wrapper" case left
+    for anything downstream to fill in.
+    """
+    prefix = "invoice/Invoice.SemanticModel"
+    assert f"{prefix}/.platform" in invoice_gold
+    assert f"{prefix}/definition.pbism" in invoice_gold
+    assert f"{prefix}/definition/database.tmdl" in invoice_gold
+    # Every one of these is schema-valid or fixed-content on its own -- covered by
+    # test_pbip_wrapper_is_complete_and_schema_stamped and
+    # test_every_emitted_package_file_validates_against_its_declared_schema.
+
+
+def test_measure_doc_comments_are_intentional_output_not_debris(invoice_gold):
+    """DD-206 #12 item 10: the deleted dataplatform script stripped every ``///`` line
+    from every ``.tmdl`` file unconditionally. That was safe only because no measure
+    doc comment existed yet; #617/#619 later added one deliberately
+    (``_table_tmdl``'s ``/// {measure.definition}``), so that blind strip would now
+    destroy real content on the way to Fabric. Normalization moving into the hub means
+    this text is emitted once, correctly, and never touched again downstream.
+    """
+    table = invoice_gold["invoice/Invoice.SemanticModel/definition/tables/fact_invoice.tmdl"]
+    assert "\t/// " in table
+    doc_line = next(line for line in table.splitlines() if line.strip().startswith("///"))
+    assert doc_line.strip() != "///"  # carries real measure-definition text, not a bare marker
+
+
 def test_ddl_tmdl_dax_erd_and_report_are_deterministic(invoice_gold):
     second = _generate("invoice")
     comparable = {

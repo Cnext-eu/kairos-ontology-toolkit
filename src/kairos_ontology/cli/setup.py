@@ -1587,12 +1587,9 @@ def init_dataplatform(name, dest, platform, org_override):
             shutil.copy2(macro_src, repo_dir / "macros" / macro_name)
             click.echo(f"  ✓ macros/{macro_name}")
 
-    # Copy helper scripts
-    for script_name in ("package_fabric_semantic_model.py",):
-        script_src = _DATAPLATFORM_SCAFFOLD / "scripts" / script_name
-        if script_src.exists():
-            shutil.copy2(script_src, repo_dir / "scripts" / script_name)
-            click.echo(f"  ✓ scripts/{script_name}")
+    # DD-206 #12 item 10: no helper script is scaffolded here anymore. TMDL/PBIP
+    # normalization now happens once, in the hub's Gold emission; the dataplatform
+    # Power BI workflow is read-only (extract -> verify -> deploy).
 
     # Generate _sources.yml from detected source systems
     if ctx["source_systems"]:
