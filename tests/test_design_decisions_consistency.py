@@ -20,13 +20,18 @@ _DD_FILE = (
 def _github_anchor(heading: str) -> str:
     """Approximate GitHub Markdown anchor generation.
 
-    GitHub: lowercase, strip everything except a-z 0-9 space hyphen,
+    GitHub: lowercase, strip everything except a-z 0-9 underscore space hyphen,
     then replace spaces with hyphens. Characters like — + & = become nothing,
-    and surrounding spaces naturally produce double hyphens.
+    and surrounding spaces naturally produce double hyphens. Underscores are a
+    real GitHub word character and survive slugification (e.g. a heading
+    containing `row_count` anchors to `...-row_count-...`, not `...-rowcount-...`)
+    -- a prior version of this helper stripped them, which produced false
+    positives against correctly-authored TOC links (DD-211) while letting a
+    genuinely broken one (DD-156, missing its underscores) pass unnoticed.
     """
     anchor = heading.lower()
-    # Keep only a-z, 0-9, spaces, and hyphens
-    anchor = re.sub(r"[^a-z0-9 -]", "", anchor)
+    # Keep only a-z, 0-9, underscore, spaces, and hyphens
+    anchor = re.sub(r"[^a-z0-9_ -]", "", anchor)
     anchor = anchor.strip().replace(" ", "-")
     return anchor
 
