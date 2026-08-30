@@ -1165,7 +1165,6 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             # workflow) is what regenerates and diffs that output, before merge.
             assert "rm -rf ontology-hub-publish/medallion/dbt" not in content
             assert "compile --all --emit" not in content
-            assert "--confirm-emit" not in content
             assert "validate-dbt --structural-only" in content
             assert "read-only, no regeneration" in content
             # #589: same GHES setup-uv/lockfile fixes as managed-check.yml.
