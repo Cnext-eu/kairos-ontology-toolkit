@@ -15,9 +15,11 @@ Treat the ontology hub as the producer and the dataplatform as the runtime consu
    `kairos-ontology bump-hub <ref>` from the dataplatform root to resolve a hub branch, tag, or SHA
    to that pin and rewrite `packages.yml` in place; never consume a moving branch in production.
 3. Run `kairos-ontology validate-source-bindings` (after `dbt deps`) to fail closed on missing,
-   unknown, or duplicate physical source bindings before any warehouse execution. This check belongs
-   in the same `bump/hub-*` PR that adopts the new SHA, alongside `dbt parse`, `dbt compile`, and the
-   isolated `dbt build --target ci` — see `CICD.md`.
+   unknown, duplicate, or stale physical source bindings before any warehouse execution — a binding
+   is stale once `bump-hub` moves the pin and its `meta.kairos.verified_hub_sha` no longer matches.
+   After reviewing bindings against the new commit, run `validate-source-bindings --confirm` to stamp
+   them verified for that SHA. Both checks belong in the same `bump/hub-*` PR that adopts the new SHA,
+   alongside `dbt parse`, `dbt compile`, and the isolated `dbt build --target ci` — see `CICD.md`.
 4. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` with the target adapter.
 5. Reference emitted models with package-qualified `ref()` and keep downstream-only business logic
    in ordinary contracted dbt models.
