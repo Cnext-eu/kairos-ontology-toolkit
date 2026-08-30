@@ -62,6 +62,11 @@ def _context() -> ResolutionContext:
                     ResolvedColumn("beta_src", "varchar(50)", nullable=False),
                     ResolvedColumn("dup", "varchar(50)", nullable=False),
                     ResolvedColumn("lonely", "varchar(50)", nullable=False),
+                    # Source columns whose output aliases are unrelated names entirely
+                    # (not just reordered/suffixed), mirroring the real reported binding.
+                    ResolvedColumn("booking_id", "varchar(50)", nullable=False),
+                    ResolvedColumn("party_id", "varchar(50)", nullable=False),
+                    ResolvedColumn("party_role", "varchar(50)", nullable=False),
                 ),
             ),
         ),
@@ -98,6 +103,25 @@ def _context() -> ResolutionContext:
                 ref="order:beta",
                 uri=f"{_NS}beta",
                 column_name="beta",
+                data_type="string",
+            ),
+            # Unrelated output names for the sibling-alias regression below.
+            ResolvedProperty(
+                ref="order:transportOrderReference",
+                uri=f"{_NS}transportOrderReference",
+                column_name="transport_order_reference",
+                data_type="string",
+            ),
+            ResolvedProperty(
+                ref="order:partyRef",
+                uri=f"{_NS}partyRef",
+                column_name="party_ref",
+                data_type="string",
+            ),
+            ResolvedProperty(
+                ref="order:sourcePartyRoleValue",
+                uri=f"{_NS}sourcePartyRoleValue",
+                column_name="source_party_role_value",
                 data_type="string",
             ),
         ),
@@ -252,6 +276,65 @@ def test_composite_business_key_does_not_emit_extraneous_placeholder_test():
     assert schema_yml.count("unique_combination_of_columns") == 1
     assert "_source_system" not in schema_yml
     assert "_source_record_key" not in schema_yml
+
+
+def test_surrogate_key_references_source_expressions_not_sibling_aliases():
+    """Regression for bug #16 (real, reproduced against a live Fabric warehouse).
+
+    A composite `source-natural` identity whose sourceKey columns map to entirely
+    unrelated output aliases (not just a suffix/reorder) must hash the real
+    source-side expression for each key column, never the column's own bare output
+    alias -- referencing a sibling SELECT-list alias from another expression in the
+    same SELECT list is invalid SQL. `column.expression` is empty for ordinary
+    `fields:`-mapped columns (the real text lives in `column.mapping_expression`,
+    rendered only at final SQL time); the prior fallback to the bare column name
+    silently produced exactly the invalid SQL this test guards against.
+    """
+    text = _binding("""
+        apiVersion: kairos.eu/v5
+        kind: EntityBinding
+        metadata:
+          name: ops-order
+          domain: order
+        source:
+          relation: ops.orders
+        target:
+          class: order:Order
+        grain:
+          columns: [order_id]
+        identity:
+          strategy: source-natural
+          sourceKey: [booking_id, party_id, party_role]
+        load:
+          mode: full-refresh
+        fields:
+          - property: order:orderId
+            expression: order_id
+          - property: order:transportOrderReference
+            expression: booking_id
+          - property: order:partyRef
+            expression: party_id
+          - property: order:sourcePartyRoleValue
+            expression: party_role
+    """)
+    bound = adapt_binding(load_entity_binding(text, path="order.yaml"), _context())
+    contract = normalize_contract(bound, ExecutionMode.FAIL_FAST)
+    shaped = shape_project(contract)
+    plan = plan_materialization(contract, shaped)
+    artifacts = render_project(shaped, plan)
+    sql = artifacts["models/silver/order/order.sql"]
+
+    hash_start = sql.index("generate_surrogate_key(")
+    hash_call = sql[hash_start : sql.index(") }}", hash_start)]
+    assert "[src].[booking_id]" in hash_call
+    assert "[src].[party_id]" in hash_call
+    assert "[src].[party_role]" in hash_call
+    # The output aliases must not appear as bare, unqualified names inside the hash --
+    # they are only valid as the SELECT list's own column aliases, defined alongside
+    # (never inside) this expression.
+    assert "'transport_order_reference'" not in hash_call
+    assert "'party_ref'" not in hash_call
+    assert "'source_party_role_value'" not in hash_call
 
 
 def test_identity_key_without_field_mapping_is_actionable():

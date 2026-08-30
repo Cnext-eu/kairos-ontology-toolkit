@@ -15,6 +15,7 @@ from .builders import (
 from .gold_shape import shape_gold_product
 from .canonical_hash import temporal_match_count_column
 from .context import NormalizedProjectFacts, ProjectionContract, ShapedProject
+from .mapping_renderers import render_mapping_expression
 from .policy_specs import (
     CanonicalTypeKind,
     CanonicalTypeSpec,
@@ -77,17 +78,48 @@ def _identity_input_names(model: SilverModelSpec) -> tuple[str, ...]:
     return ("_source_system", "_source_record_key")
 
 
+def _resolve_identity_names(
+    names: tuple[str, ...],
+    columns: tuple[ColumnSpec, ...],
+    *,
+    platform: str,
+    sources: tuple[SourceBindingSpec, ...],
+) -> tuple[str, ...]:
+    """Resolve identity/grain column names to their real source-side SQL.
+
+    A resolved business/integration identity's key columns are computed in the same
+    SELECT list as the hash/IRI expression that references them here -- referencing
+    their own bare output alias is invalid SQL (a SELECT-list expression cannot
+    reference a sibling alias at the same query level). `column.expression` is empty
+    for ordinary `fields:`-mapped columns; the real rendered source SQL lives in
+    `column.mapping_expression` (DD-107), the same field `model_renderers.py` renders
+    for the column's own SELECT-list entry -- route through it here too instead of
+    falling back to the bare column name.
+    """
+
+    def resolved(column: ColumnSpec) -> str:
+        if column.mapping_expression is not None:
+            return render_mapping_expression(
+                column.mapping_expression, adapter=platform, sources=sources
+            )
+        return column.expression or column.name
+
+    by_name = {column.name: resolved(column) for column in columns}
+    return tuple(by_name.get(name, name) for name in names)
+
+
 def _identity_expression_inputs(
     model: SilverModelSpec,
     columns: tuple[ColumnSpec, ...],
+    *,
+    platform: str,
 ) -> tuple[str, ...]:
     input_names = _identity_input_names(model)
     if model.kind is SilverModelKind.UNION or (
         model.authority is not None and model.authority.runtime is not None
     ):
         return input_names
-    by_name = {column.name: column.expression or column.name for column in columns}
-    return tuple(by_name.get(name, name) for name in input_names)
+    return _resolve_identity_names(input_names, columns, platform=platform, sources=model.sources)
 
 
 def _timestamp_expression(
@@ -307,7 +339,7 @@ def _apply_identity_contract(
         return replace(model, columns=tuple(columns))
 
     by_name = {column.name: column for column in columns}
-    inputs = _identity_expression_inputs(model, tuple(columns))
+    inputs = _identity_expression_inputs(model, tuple(columns), platform=platform)
     key_expression = _generated_key_expression(inputs)
     if model.kind is SilverModelKind.UNION:
         names = {column.name for column in columns}
@@ -467,7 +499,11 @@ def _apply_identity_contract(
             0,
             ColumnSpec(
                 name=integration_name,
-                expression=_generated_key_expression(tuple(identity.business.keys.value)),
+                # `integration.emitted` is only ever true for the DETERMINISTIC_INTEGRATION_KEY
+                # strategy (policy_normalize.py), for which `_identity_input_names` already
+                # resolves to this same `identity.business.keys.value` -- `inputs` above is
+                # already its safely-resolved form; do not re-resolve the bare names here.
+                expression=_generated_key_expression(inputs),
                 canonical_type=_STRING,
                 nullable=False,
                 role=SilverColumnRole.INTEGRATION_IDENTITY.value,
@@ -568,17 +604,12 @@ def _apply_identity_contract(
         columns=tuple(columns),
         surrogate_key_expression=key_expression,
         integration_key_expression=(
-            _generated_key_expression(tuple(identity.business.keys.value))
-            if identity.integration.emitted
-            else ""
+            _generated_key_expression(inputs) if identity.integration.emitted else ""
         ),
         iri_expression=(
             ""
             if identity.iri.mode.value is EntityIriMode.OMIT
-            else (
-                f"CONCAT('{identity.entity_uri}/instance/', "
-                f"{_generated_key_expression(tuple(_identity_input_names(model)))})"
-            )
+            else (f"CONCAT('{identity.entity_uri}/instance/', {_generated_key_expression(inputs)})")
         ),
     )
 
