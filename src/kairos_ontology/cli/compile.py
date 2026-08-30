@@ -595,6 +595,9 @@ def compile_cmd(
             if not succeeded:
                 failed.append(one)
 
+    if mode is CompileMode.EMIT:
+        _regenerate_master_silver_erd(hub)
+
     if output_format == "json" and payloads:
         # An explicitly named single domain keeps the exact object shape every existing
         # consumer parses. --all always returns an array: its arity is decided by the
@@ -620,6 +623,27 @@ def compile_cmd(
             click.echo(f"  failed: {', '.join(failed)}", err=True)
     if failed:
         raise click.exceptions.Exit(1)
+
+
+def _regenerate_master_silver_erd(hub: Path) -> None:
+    """Recompute the hub-wide bound Silver ERD from whatever domains are on disk.
+
+    ``generate_master_erd`` is a pure disk-scan-and-merge over every
+    ``docs/diagrams/**/*-erd.mmd`` already emitted under the dbt publish root, so this is
+    safe to call after any single-domain ``--emit`` in a multi-domain hub: it reflects
+    every domain emitted so far, not just the one(s) this invocation compiled. Ported
+    from the legacy ``run_projections`` orchestrator (DD-011), whose dbt/silver targets
+    are retired and unreachable; that call site is now commented out.
+    """
+    from ..core.projections.medallion_silver_projector import generate_master_erd
+
+    dbt_output = publish_root(hub) / _DBT_EMIT_SUBPATH
+    master_mmd = generate_master_erd(dbt_output, hub_name=hub.name)
+    if master_mmd is None:
+        return
+    diagrams_dir = dbt_output / "docs" / "diagrams"
+    diagrams_dir.mkdir(parents=True, exist_ok=True)
+    (diagrams_dir / "master-erd.mmd").write_text(master_mmd, encoding="utf-8")
 
 
 def _hub_domains(hub: Path) -> list[str]:

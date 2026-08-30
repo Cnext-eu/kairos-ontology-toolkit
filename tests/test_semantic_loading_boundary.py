@@ -46,6 +46,7 @@ ALLOWED_DIRECT_PARSE_SITES = {
     "validator.py": "syntax/content checks, extensions, mappings, and SHACL shapes",
     "projections/a2ui_projector.py": "SHACL shapes",
     "projections/ddd_projector.py": "DDD overlay",
+    "projections/erd_projector.py": "ERD overlay",
     "projections/medallion_dbt_projector.py": "sources, mappings, extensions, and templates",
     "projections/medallion_gold_projector.py": "SHACL shapes",
     "projections/medallion_silver_projector.py": "SHACL shapes",

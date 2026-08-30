@@ -562,6 +562,37 @@ def test_emit_fails_closed_on_conflicting_shared_source_metadata(tmp_path, monke
     assert before == after, "a failed emit must leave the target tree untouched"
 
 
+def test_master_silver_erd_accumulates_across_sequential_emits(tmp_path, monkeypatch):
+    """The hub-wide bound ERD (DD-011) must reflect every domain emitted so far, even
+    though `compile` only ever emits one domain's own artifacts per invocation."""
+    hub = _hub(tmp_path / "hub")
+    _add_crm_countries_table(hub)
+    _add_billing_domain_on_crm_countries(hub)
+    monkeypatch.chdir(hub)
+    runner = CliRunner()
+    master_erd = (
+        hub.parent / "ontology-hub-publish" / "medallion" / "dbt" / "docs" / "diagrams"
+        / "master-erd.mmd"
+    )
+
+    party_only = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"])
+    assert party_only.exit_code == 0, party_only.output
+    assert master_erd.is_file()
+    content_after_party = master_erd.read_text(encoding="utf-8")
+    assert "CUSTOMER" in content_after_party
+    assert "REGION" not in content_after_party
+
+    billing_too = runner.invoke(cli, ["compile", "billing", "--emit", "--confirm-emit"])
+    assert billing_too.exit_code == 0, billing_too.output
+    content_after_both = master_erd.read_text(encoding="utf-8")
+    assert "CUSTOMER" in content_after_both
+    assert "REGION" in content_after_both
+
+    reemitted = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"])
+    assert reemitted.exit_code == 0, reemitted.output
+    assert master_erd.read_text(encoding="utf-8") == content_after_both
+
+
 def _seeded_contracted_hub(root):
     hub = _contracted_hub(root)
     seeds = hub / "integration" / "transforms" / "dbt" / "seeds"

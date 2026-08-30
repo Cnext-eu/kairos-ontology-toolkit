@@ -38,7 +38,7 @@ class TestBindingIndependentRendering:
         assert artifacts
         content = artifacts["order-erd.mmd"]
         assert content.strip()
-        assert "erDiagram" in content
+        assert "classDiagram" in content
         assert "Customer" in content
         assert "Order" in content
         assert "places" in content
@@ -46,14 +46,14 @@ class TestBindingIndependentRendering:
     def test_empty_graph_yields_no_artifacts(self):
         assert generate_erd_artifacts(Graph(), NS, "empty") == {}
 
-    def test_class_with_no_relationships_still_renders_as_an_entity(self):
+    def test_class_with_no_relationships_still_renders_as_a_class(self):
         g = Graph()
         g.add((ORDER.Orphan, RDF.type, OWL.Class))
 
         artifacts = generate_erd_artifacts(g, NS, "order")
 
         content = artifacts["order-erd.mmd"]
-        assert "Orphan {" in content
+        assert "class Orphan {" in content
         assert "string uri" in content
 
     def test_only_domain_local_classes_are_rendered(self):
@@ -65,6 +65,32 @@ class TestBindingIndependentRendering:
 
         content = artifacts["order-erd.mmd"]
         assert "Unrelated" not in content
+
+
+class TestInheritance:
+    def test_named_subclass_of_renders_as_inheritance_edge(self):
+        g = _base_graph()
+        g.add((ORDER.VipCustomer, RDF.type, OWL.Class))
+        g.add((ORDER.VipCustomer, RDFS.subClassOf, ORDER.Customer))
+
+        content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+
+        assert "Customer <|-- VipCustomer" in content
+
+    def test_restriction_subclass_of_is_not_rendered_as_inheritance(self):
+        # A blank-node restriction subject is cardinality metadata (see
+        # TestCardinalityRestrictions below), never a superclass -- it must not
+        # produce a spurious inheritance edge.
+        g = _base_graph()
+        restriction = BNode()
+        g.add((restriction, RDF.type, OWL.Restriction))
+        g.add((restriction, OWL.onProperty, ORDER.places))
+        g.add((restriction, OWL.cardinality, Literal(1)))
+        g.add((ORDER.Customer, RDFS.subClassOf, restriction))
+
+        content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+
+        assert "<|--" not in content
 
 
 class TestDeterminism:
@@ -99,7 +125,7 @@ class TestCardinalityRestrictions:
         content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
 
         relationship_line = next(line for line in content.splitlines() if ": places" in line)
-        assert "--||" in relationship_line
+        assert '--> "1" Order' in relationship_line
 
     def test_min_zero_max_many_restriction_renders_as_zero_or_more(self):
         g = _base_graph()
@@ -112,7 +138,7 @@ class TestCardinalityRestrictions:
         content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
 
         relationship_line = next(line for line in content.splitlines() if ": places" in line)
-        assert "--o{" in relationship_line
+        assert '--> "0..*" Order' in relationship_line
 
     def test_functional_property_without_restriction_renders_as_at_most_one(self):
         g = _base_graph()
@@ -123,9 +149,43 @@ class TestCardinalityRestrictions:
         relationship_line = next(line for line in content.splitlines() if ": places" in line)
         # Functional (max-cardinality-one) without an explicit min defaults to
         # "zero or one" on the range side -- distinct from the unconstrained default
-        # ("zero or more", "--o{").
-        assert "--o|" in relationship_line
-        assert "--o{" not in relationship_line
+        # ("zero or more", "0..*").
+        assert '--> "0..1" Order' in relationship_line
+        assert '--> "0..*" Order' not in relationship_line
+
+
+class TestOverlayExtension:
+    """Plumbing-only ``{domain}-erd-ext.ttl`` overlay hook -- no packaged vocabulary
+    exists yet, so this only proves the merge itself is live end-to-end."""
+
+    def test_overlay_triples_are_merged_into_output(self, tmp_path):
+        overlay = tmp_path / "order-erd-ext.ttl"
+        overlay.write_text(
+            f"""
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix order: <{NS}> .
+
+            order:VipCustomer a owl:Class ;
+                rdfs:subClassOf order:Customer .
+            """,
+            encoding="utf-8",
+        )
+
+        content = generate_erd_artifacts(_base_graph(), NS, "order", overlay_path=overlay)[
+            "order-erd.mmd"
+        ]
+
+        assert "class VipCustomer {" in content
+        assert "Customer <|-- VipCustomer" in content
+
+    def test_missing_overlay_path_leaves_output_unchanged(self, tmp_path):
+        missing = tmp_path / "order-erd-ext.ttl"
+
+        with_missing_overlay = generate_erd_artifacts(_base_graph(), NS, "order", overlay_path=missing)
+        without_overlay = generate_erd_artifacts(_base_graph(), NS, "order")
+
+        assert with_missing_overlay == without_overlay
 
 
 class TestCliLevelProjection:
@@ -147,7 +207,7 @@ class TestCliLevelProjection:
         mmd_files = sorted(erd_dir.glob("*-erd.mmd"))
         assert mmd_files
         content = mmd_files[0].read_text(encoding="utf-8")
-        assert "erDiagram" in content
+        assert "classDiagram" in content
 
     def test_erd_is_included_in_target_all(self, temp_dir, ontology_files):
         output_dir = temp_dir / "output"

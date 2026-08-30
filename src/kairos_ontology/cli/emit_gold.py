@@ -160,3 +160,23 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
 
     emit_artifacts(artifacts, target, manifest_name=manifest_name)
     click.echo(f"   → {target}")
+
+    _regenerate_master_gold_erd(target, hub_name=hub_root.name)
+
+
+def _regenerate_master_gold_erd(gold_output: Path, *, hub_name: str) -> None:
+    """Recompute the hub-wide bound Gold ERD from whatever domains are on disk.
+
+    ``generate_master_gold_erd`` is a pure disk-scan-and-merge over every
+    ``**/*-gold-erd.mmd`` already emitted under the shared Gold/PowerBI publish root, so
+    this accumulates correctly across separate single-domain ``emit-gold`` invocations.
+    Ported from the legacy ``run_projections`` orchestrator (DD-011), whose ``powerbi``
+    target is compile-plan-only and unreachable there; that call site is now commented
+    out.
+    """
+    from ..core.projections.medallion_gold_projector import generate_master_gold_erd
+
+    master_mmd = generate_master_gold_erd(gold_output, hub_name=hub_name)
+    if master_mmd is None:
+        return
+    (gold_output / "master-gold-erd.mmd").write_text(master_mmd, encoding="utf-8")

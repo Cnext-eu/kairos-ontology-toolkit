@@ -86,6 +86,24 @@ def test_confirm_emit_is_idempotent(tmp_path, monkeypatch):
     assert second.exit_code == 0, second.output
 
 
+def test_master_gold_erd_is_written_alongside_the_domain_erd(tmp_path, monkeypatch):
+    """DD-011's hub-wide bound Gold ERD, ported from the retired ``run_projections``
+    orchestrator to the real ``emit-gold`` CLI path. ``generate_master_gold_erd`` scans
+    the whole shared publish root, so it accumulates across separate single-domain
+    invocations without this command needing to know about other domains itself."""
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["emit-gold", "party", "--confirm-emit"])
+
+    assert result.exit_code == 0, result.output
+    master_erd = publish_root(hub) / "powerbi" / "master-gold-erd.mmd"
+    assert master_erd.is_file()
+    content = master_erd.read_text(encoding="utf-8")
+    assert "erDiagram" in content
+    assert "party" in content
+
+
 def test_domain_without_gold_profile_fails_clearly(tmp_path, monkeypatch):
     hub = _copy_hub(tmp_path, with_gold_ext=False)
     monkeypatch.chdir(hub)
