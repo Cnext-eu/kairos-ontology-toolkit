@@ -1072,6 +1072,65 @@ def test_init_includes_workflow(tmp_path):
             assert "uv sync --locked" in content
 
 
+def test_new_repo_includes_pr_validate_workflow(tmp_path):
+    """new-repo should scaffold the DD-206 §4 pr-validate.yml PR-check workflow."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path)],
+        )
+    assert result.exit_code == 0, result.output
+    wf = tmp_path / "contoso-ontology-hub" / ".github" / "workflows" / "pr-validate.yml"
+    assert wf.is_file()
+    content = wf.read_text(encoding="utf-8")
+    assert "pull_request" in content
+    assert "branches: [main]" in content
+    assert "uv sync --locked" in content
+    assert "astral-sh/setup-uv@v10.0.1" in content
+    assert 'version: "0.12.5"' in content
+
+
+def test_init_pr_validate_workflow_content(tmp_path):
+    """init's pr-validate.yml must validate, regenerate-and-diff, then check the dbt package.
+
+    DD-206 §4 ("Hub pull request"): restore deps, validate ontology/SHACL,
+    compile-check every bound domain, regenerate the tracked publish output and
+    fail on drift, then validate the assembled dbt package.
+    """
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0
+            wf = Path(".github/workflows/pr-validate.yml")
+            assert wf.is_file()
+            content = wf.read_text(encoding="utf-8")
+
+            assert "on:" in content
+            assert "pull_request:" in content
+            assert "branches: [main]" in content
+
+            # Ontology/SHACL/binding validation.
+            assert "kairos-ontology validate " in content or "kairos-ontology validate \\" in content
+            assert "kairos-ontology compile --all --check --format json" in content
+
+            # Regenerate tracked publish output and fail on drift (only the two
+            # tracked lanes under ontology-hub-publish/, per gitignore.template).
+            assert "kairos-ontology compile --all --emit --confirm-emit" in content
+            assert "git diff --exit-code" in content
+            assert "ontology-hub-publish/medallion/dbt" in content
+            assert "ontology-hub-publish/powerbi" in content
+
+            # Assembled dbt package validation.
+            assert "kairos-ontology validate-dbt --structural-only" in content
+
+            # This workflow runs alongside managed-check.yml, not instead of it.
+            assert "alongside" in content
+
+
 def test_init_release_workflow_uses_supported_project_options(tmp_path):
     """The release workflow must not use retired release-evaluation options."""
     runner = CliRunner()
@@ -1090,14 +1149,20 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             assert "powerbi-semantic-model.zip" not in content
             assert "POWERBI_PACKAGE" not in content
             assert "persist-credentials: false" in content
-            assert "rm -rf ontology-hub-publish/medallion/dbt" in content
             assert 'find "ontology-hub-publish/medallion/dbt"' in content
             assert "-type l -print -quit | grep -q ." in content
             assert "rm -f dbt-artifacts.zip" in content
             assert content.index("-type l -print -quit") < content.index("-type f -print -quit")
-            # #598: --emit has required --confirm-emit since #264. A scaffolded
-            # release workflow that omits it fails on its first domain.
-            assert "--confirm-emit" in content
+            # DD-206: the release workflow must verify already-tracked bytes at the
+            # tagged commit, never regenerate different bytes after tagging. The old
+            # "rm -rf ontology-hub-publish/medallion/dbt" + "compile --all --emit
+            # --confirm-emit" regenerate step is gone; pr-validate.yml (the hub PR
+            # workflow) is what regenerates and diffs that output, before merge.
+            assert "rm -rf ontology-hub-publish/medallion/dbt" not in content
+            assert "compile --all --emit" not in content
+            assert "--confirm-emit" not in content
+            assert "validate-dbt --structural-only" in content
+            assert "read-only, no regeneration" in content
             # #589: same GHES setup-uv/lockfile fixes as managed-check.yml.
             assert "astral-sh/setup-uv@v10.0.1" in content
             assert 'version: "0.12.5"' in content

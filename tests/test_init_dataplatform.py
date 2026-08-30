@@ -183,6 +183,26 @@ class TestInitDataplatform:
         assert "both `SemanticModel` and `Report`" in cicd
         assert "downstream deployment is read-only" in cicd
 
+    def test_cicd_guide_distinguishes_pr_default_from_opt_in_build(self, dataplatform_output):
+        """CICD.md prose must match pr-validate.yml: parse/compile default, build opt-in.
+
+        DD-206 group C, task 3: the scaffolded PR workflow's default is schema-level
+        only (no warehouse credentials); a full `dbt build` is documented as an
+        additional opt-in step that needs its own credential-isolated `ci` target.
+        """
+        cicd = (dataplatform_output / "CICD.md").read_text(encoding="utf-8")
+        assert "pr-validate.yml" in cicd
+        assert "no warehouse credentials required" in cicd
+        assert "uv run dbt parse --profiles-dir .dbt --target ci" in cicd
+        assert "uv run dbt compile --profiles-dir .dbt --target ci" in cicd
+        assert "validate-source-bindings" in cicd
+        assert "Opt-in: full" in cicd
+        assert "uv run dbt build --profiles-dir .dbt --target ci" in cicd
+        assert "credential-isolated" in cicd
+        # The old unconditional framing ("full build is the default") must be gone.
+        assert "full build\nis the default" not in cicd
+        assert "The full build is the default" not in cicd
+
     def test_contributing_guide_is_managed_and_describes_branch_prefixes(
         self, dataplatform_output
     ):
@@ -277,6 +297,49 @@ class TestInitDataplatform:
         assert "definition.pbism" in content
         assert ".platform" in content
 
+    def test_pr_validate_workflow_created(self, dataplatform_output):
+        """DD-206 §4 "Dataplatform pull request": schema-level default PR gate.
+
+        Restores pinned deps, runs `dbt deps`/`parse`/`compile` against a
+        placeholder `ci` target (no warehouse credentials), then validates
+        physical source bindings. Deliberately NOT a full `dbt build` by
+        default -- see CICD.md for the opt-in addition.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        assert wf.exists()
+        content = wf.read_text(encoding="utf-8")
+
+        assert "pull_request" in content
+        assert "branches: [main]" in content
+        assert "runs-on: ubuntu-latest" in content
+
+        assert "uv sync --locked" in content
+        assert "uv run dbt deps" in content
+        assert "uv run dbt parse --profiles-dir .dbt --target ci" in content
+        assert "uv run dbt compile --profiles-dir .dbt --target ci" in content
+        assert "kairos-ontology validate-source-bindings" in content
+        # Group B dependency must be documented, not silently assumed.
+        assert "feature/cicd-group-b-source-binding" in content
+
+        # Full `dbt build` must only appear as a commented-out, opt-in step.
+        assert "uv run dbt build --profiles-dir .dbt --target ci" in content
+        for line in content.splitlines():
+            if "dbt build" in line:
+                assert line.strip().startswith("#"), (
+                    f"dbt build must stay opt-in (commented out) by default: {line!r}"
+                )
+
+        # The placeholder profile step must use no real credential-shaped value.
+        assert "offline.invalid" in content
+        assert "target: ci" in content
+
+    def test_pr_validate_workflow_no_credentials_needed(self, dataplatform_output):
+        """None of the four default steps may require warehouse credentials."""
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        content = wf.read_text(encoding="utf-8")
+        for token in ("DBT_FABRIC_", "DBT_DATABRICKS_", "secrets."):
+            assert token not in content, f"unexpected credential reference: {token}"
+
 
 class TestInitDataplatformEdgeCases:
     def test_pyproject_includes_dbt_adapter(self, mock_hub):
@@ -299,6 +362,33 @@ class TestInitDataplatformEdgeCases:
         pyproject = (dp_dir / "pyproject.toml").read_text(encoding="utf-8")
         assert "dbt-fabric>=1.9.0" in pyproject
         assert "dbt-core" not in pyproject
+
+    def test_pr_validate_ci_profile_matches_platform(self, mock_hub):
+        """The placeholder CI profile's `type:` must track --platform, not always fabric."""
+        runner = CliRunner()
+        dp_dir = mock_hub / "test-dp-databricks-ci"
+
+        result = _run_in_hub(
+            runner,
+            mock_hub,
+            [
+                "init-dataplatform",
+                "test-dp-databricks-ci",
+                "--path",
+                str(mock_hub),
+                "--platform",
+                "databricks",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        wf = dp_dir / ".github" / "workflows" / "pr-validate.yml"
+        content = wf.read_text(encoding="utf-8")
+        assert "type: databricks" in content
+        assert "type: fabric" not in content
+        assert "host: https://offline.invalid" in content
+        assert "test_dp_databricks_ci:" in content
+        assert "target: ci" in content
 
     def test_default_name_derived_from_hub(self, mock_hub, tmp_path_factory):
         runner = CliRunner()
