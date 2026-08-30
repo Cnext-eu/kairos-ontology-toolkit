@@ -34,6 +34,7 @@ from .emit_gold import emit_gold_cmd
 from .package_powerbi_release import package_powerbi_release_cmd
 from .decisions import decision
 from .feedback import feedback
+from .promote_transform import promote_transform_cmd
 from .validation import (
     validate_dbt_cmd,
     validate_dbt_contracts_cmd,
@@ -299,6 +300,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(scaffold_binding_cmd)
     group.add_command(scaffold_staging_cmd)
     group.add_command(scaffold_system_cmd)
+    group.add_command(promote_transform_cmd)
     group.add_command(init)
     group.add_command(migrate)
     group.add_command(new_repo)
