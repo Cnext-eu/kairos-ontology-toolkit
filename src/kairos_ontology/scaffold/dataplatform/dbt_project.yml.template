@@ -27,3 +27,10 @@ clean-targets:
 # Schema routing per environment
 models:
   +schema: silver
+
+# Redacted source samples emitted by `kairos-ontology extract-schema --emit-seed`
+# (seeds/<system>__<table>__sample.csv) get their own schema/tags, distinct from
+# any hand-authored reference seeds this project may add later.
+seeds:
+  +schema: 'bronze_samples'
+  +tags: ['source-sample']
