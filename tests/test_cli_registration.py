@@ -73,6 +73,7 @@ RETAINED_COMMANDS = {
     "validate-dbt-contracts",
     "validate-mapping",
     "validate-silver-ext",
+    "validate-source-bindings",
 }
 
 RETIRED_STAGE4_COMMANDS = {
