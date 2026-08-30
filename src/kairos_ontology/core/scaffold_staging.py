@@ -188,6 +188,7 @@ def _merged_properties_yaml(entity: str, common_columns: tuple[str, ...], *, sin
         "models:",
         f"  - name: {model_name}",
         f'    description: "{description}"',
+        "    access: public",
         "    config:",
         "      materialized: view",
         "      contract:",
