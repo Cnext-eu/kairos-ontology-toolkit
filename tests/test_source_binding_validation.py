@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Tests for DD-206 §5 structural fail-closed source-binding validation (Group B).
+"""Tests for DD-206 §5 fail-closed source-binding validation (Group B).
 
-Covers the core validator (``core/source_binding_validation.py``) directly, plus an
-end-to-end CLI invocation of ``validate-source-bindings``. Deliberately does not
-exercise staleness detection -- that is explicitly out of scope for this module.
+Covers the core validator (``core/source_binding_validation.py``) directly -- both
+the structural checks (missing/unknown/duplicate) and staleness (opt-in via
+``current_hub_sha``) -- plus ``stamp_verified_bindings()``, and end-to-end CLI
+invocations of ``validate-source-bindings`` including ``--hub-sha``/auto-read from
+``packages.yml`` and ``--confirm``.
 """
 
 from __future__ import annotations
@@ -14,16 +16,22 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
-from kairos_ontology.cli.main import cli
+from kairos_ontology.cli.main import _rewrite_hub_package_pin, cli
 from kairos_ontology.core.source_binding_validation import (
     FINDING_DUPLICATE,
     FINDING_MISSING,
+    FINDING_STALE,
     FINDING_UNKNOWN,
     SourceBindingDiscoveryError,
+    stamp_verified_bindings,
     validate_source_bindings,
 )
+
+SHA_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+SHA_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
 def _write(path: Path, content: str) -> None:
@@ -78,8 +86,14 @@ def _binding_file(
     database: str = "raw",
     schema: str = "dbo",
     tables: tuple[str, ...] = ("customers",),
+    verified_hub_sha: str | None = None,
 ) -> Path:
-    """Write one dataplatform-owned physical source-binding YAML file."""
+    """Write one dataplatform-owned physical source-binding YAML file.
+
+    *verified_hub_sha*, when given, adds the DD-206 §5 staleness-tracking
+    ``meta.kairos.verified_hub_sha`` key at the source level (native dbt ``meta:``,
+    just a new key read from under it -- see ``_sources.yml.template``'s header).
+    """
     path = project_root / relative_path
     lines = [
         "version: 2",
@@ -89,8 +103,14 @@ def _binding_file(
         f'    description: "Bronze source: {source_name}"',
         f'    database: "{database}"',
         f'    schema: "{schema}"',
-        "    tables:",
     ]
+    if verified_hub_sha is not None:
+        lines += [
+            "    meta:",
+            "      kairos:",
+            f'        verified_hub_sha: "{verified_hub_sha}"',
+        ]
+    lines.append("    tables:")
     for table in tables:
         lines.append(f"      - name: {table}")
     _write(path, "\n".join(lines) + "\n")
@@ -283,6 +303,173 @@ def test_empty_declared_and_bound_is_a_clean_pass(project):
     assert report.validated_pairs == 0
 
 
+# --- staleness detection (DD-206 §5's fourth finding type) -------------------------
+
+
+def test_no_staleness_checking_when_current_hub_sha_is_omitted(project):
+    """Default (current_hub_sha=None) is fully backward compatible: no stale findings."""
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))  # no verified_hub_sha
+
+    report = validate_source_bindings(project)
+
+    assert report.passed
+    assert not any(f.kind == FINDING_STALE for f in report.findings)
+
+
+def test_matching_verified_hub_sha_is_not_stale(project):
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(
+        project, "models/_sources.yml", tables=("customers",), verified_hub_sha=SHA_A
+    )
+
+    report = validate_source_bindings(project, current_hub_sha=SHA_A)
+
+    assert report.passed
+    assert not any(f.kind == FINDING_STALE for f in report.findings)
+
+
+def test_mismatched_verified_hub_sha_is_stale(project):
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(
+        project, "models/_sources.yml", tables=("customers",), verified_hub_sha=SHA_A
+    )
+
+    report = validate_source_bindings(project, current_hub_sha=SHA_B)
+
+    assert not report.passed
+    stale = [f for f in report.findings if f.kind == FINDING_STALE]
+    assert len(stale) == 1
+    assert stale[0].source_name == "crm"
+    assert stale[0].table_name == ""  # once per source, not per table
+    assert SHA_B in stale[0].message
+
+
+def test_missing_verified_hub_sha_is_stale_only_when_current_hub_sha_given(project):
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))  # no meta at all
+
+    without_check = validate_source_bindings(project)
+    assert not any(f.kind == FINDING_STALE for f in without_check.findings)
+
+    with_check = validate_source_bindings(project, current_hub_sha=SHA_A)
+    stale = [f for f in with_check.findings if f.kind == FINDING_STALE]
+    assert len(stale) == 1
+    assert stale[0].source_name == "crm"
+    assert "never recorded" in stale[0].message
+
+
+def test_stale_finding_reported_once_per_source_not_per_table(project):
+    _declared_catalog(project, tables=("customers", "orders"))
+    _binding_file(
+        project,
+        "models/_sources.yml",
+        tables=("customers", "orders"),
+        verified_hub_sha=SHA_A,
+    )
+
+    report = validate_source_bindings(project, current_hub_sha=SHA_B)
+
+    stale = [f for f in report.findings if f.kind == FINDING_STALE]
+    assert len(stale) == 1
+
+
+def test_source_with_no_bindings_at_all_cannot_be_stale(project):
+    """A declared-but-unbound source is `missing`, never additionally `stale`."""
+    _declared_catalog(project, tables=("customers",))
+    # No binding file at all for this source.
+
+    report = validate_source_bindings(project, current_hub_sha=SHA_A)
+
+    assert not any(f.kind == FINDING_STALE for f in report.findings)
+    assert any(f.kind == FINDING_MISSING for f in report.findings)
+
+
+# --- stamp_verified_bindings --------------------------------------------------------
+
+
+def test_stamp_verified_bindings_adds_meta_when_absent(project):
+    path = _binding_file(project, "models/_sources.yml", tables=("customers",))
+    original = path.read_text(encoding="utf-8")
+
+    report = stamp_verified_bindings(project, SHA_A)
+
+    assert report.hub_sha == SHA_A
+    assert report.stamped_sources == ("crm",)
+    assert report.updated_files == ("models/_sources.yml",)
+    rewritten = path.read_text(encoding="utf-8")
+    assert rewritten != original
+    parsed = yaml.safe_load(rewritten)
+    assert parsed["sources"][0]["meta"]["kairos"]["verified_hub_sha"] == SHA_A
+    # Everything else is preserved.
+    assert parsed["sources"][0]["database"] == "raw"
+    assert parsed["sources"][0]["schema"] == "dbo"
+    assert parsed["sources"][0]["tables"] == [{"name": "customers"}]
+
+
+def test_stamp_verified_bindings_updates_only_the_sha_field(project):
+    path = _binding_file(
+        project, "models/_sources.yml", tables=("customers",), verified_hub_sha=SHA_A
+    )
+    original_lines = path.read_text(encoding="utf-8").splitlines()
+
+    stamp_verified_bindings(project, SHA_B)
+
+    new_lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(new_lines) == len(original_lines)
+    changed = [
+        (old, new) for old, new in zip(original_lines, new_lines, strict=True) if old != new
+    ]
+    assert len(changed) == 1
+    old_line, new_line = changed[0]
+    assert SHA_A in old_line
+    assert SHA_B in new_line
+    # Only the value differs -- same key, same indentation.
+    assert old_line.replace(SHA_A, "") == new_line.replace(SHA_B, "")
+
+
+def test_stamp_verified_bindings_is_idempotent_and_leaves_file_untouched_when_current(project):
+    path = _binding_file(
+        project, "models/_sources.yml", tables=("customers",), verified_hub_sha=SHA_A
+    )
+    before = path.read_text(encoding="utf-8")
+
+    report = stamp_verified_bindings(project, SHA_A)
+
+    after = path.read_text(encoding="utf-8")
+    assert after == before
+    assert report.updated_files == ()  # nothing rewritten -- already current
+    assert report.stamped_sources == ("crm",)  # still reported as covered
+
+
+def test_stamp_verified_bindings_covers_every_source_across_split_files(project):
+    _binding_file(project, "models/_sources_crm.yml", source_name="crm", tables=("customers",))
+    _binding_file(project, "models/_sources_dtb.yml", source_name="dtb", tables=("bookings",))
+
+    report = stamp_verified_bindings(project, SHA_A)
+
+    assert set(report.stamped_sources) == {"crm", "dtb"}
+    assert len(report.updated_files) == 2
+
+
+def test_stamp_verified_bindings_rejects_non_sha_input(project):
+    _binding_file(project, "models/_sources.yml", tables=("customers",))
+
+    with pytest.raises(ValueError, match="40-character"):
+        stamp_verified_bindings(project, "v1.0.0")
+
+
+def test_stamp_then_validate_round_trip_is_no_longer_stale(project):
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",), verified_hub_sha=SHA_A)
+
+    stamp_verified_bindings(project, SHA_B)
+    report = validate_source_bindings(project, current_hub_sha=SHA_B)
+
+    assert report.passed
+    assert not any(f.kind == FINDING_STALE for f in report.findings)
+
+
 def _json_payload(output: str) -> dict:
     """Extract the trailing JSON report from mixed stdout/stderr CLI output.
 
@@ -338,3 +525,165 @@ def test_cli_raises_clean_error_when_dbt_deps_not_run(tmp_path):
 
     assert result.exit_code != 0
     assert "dbt deps" in result.output
+
+
+# --- CLI: --hub-sha / auto-read from packages.yml / --confirm ---------------------
+
+
+_PLACEHOLDER_PACKAGES_YML = (
+    "packages:\n"
+    '  # - git: "https://github.com/acme/customer-ontology-hub.git"\n'
+    '  #   revision: "v1.0.0"\n'
+    "  #   subdirectory: ontology-hub-publish/medallion/dbt\n"
+)
+
+
+def _write_packages_yml(project_root: Path, sha: str | None) -> Path:
+    """Write a packages.yml with the hub package pinned to *sha* (or still a placeholder tag).
+
+    ``_parse_hub_package_pin`` reads ``previous_revision`` regardless of whether the
+    block is commented out, so the placeholder (pre-``bump-hub``) form is exercised
+    as-is when *sha* is ``None`` -- no need to uncomment it.
+    """
+    content = (
+        _rewrite_hub_package_pin(_PLACEHOLDER_PACKAGES_YML, sha)
+        if sha is not None
+        else _PLACEHOLDER_PACKAGES_YML
+    )
+    path = project_root / "packages.yml"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def test_cli_reports_stale_finding_via_explicit_hub_sha(project):
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(
+        project, "models/_sources.yml", tables=("customers",), verified_hub_sha=SHA_A
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["validate-source-bindings", "--project-dir", str(project), "--hub-sha", SHA_B],
+    )
+
+    assert result.exit_code != 0
+    assert "stale" in result.output
+    payload = _json_payload(result.output)
+    assert any(f["kind"] == FINDING_STALE for f in payload["findings"])
+
+
+def test_cli_rejects_malformed_hub_sha(project):
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))
+
+    result = CliRunner().invoke(
+        cli,
+        ["validate-source-bindings", "--project-dir", str(project), "--hub-sha", "not-a-sha"],
+    )
+
+    assert result.exit_code != 0
+    assert "40-character" in result.output
+
+
+def test_cli_auto_reads_hub_sha_from_packages_yml(project):
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(
+        project, "models/_sources.yml", tables=("customers",), verified_hub_sha=SHA_A
+    )
+    _write_packages_yml(project, SHA_B)
+
+    result = CliRunner().invoke(
+        cli, ["validate-source-bindings", "--project-dir", str(project)]
+    )
+
+    assert result.exit_code != 0
+    payload = _json_payload(result.output)
+    stale = [f for f in payload["findings"] if f["kind"] == FINDING_STALE]
+    assert len(stale) == 1
+
+
+def test_cli_skips_staleness_when_packages_yml_absent(project):
+    """No packages.yml at all (repo hasn't adopted bump-hub-style pinning): not an error."""
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))  # no verified_hub_sha
+
+    result = CliRunner().invoke(
+        cli, ["validate-source-bindings", "--project-dir", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json_payload(result.output)
+    assert not any(f["kind"] == FINDING_STALE for f in payload["findings"])
+
+
+def test_cli_skips_staleness_when_packages_yml_not_yet_pinned_to_a_sha(project):
+    """A fresh scaffold's packages.yml still pins a placeholder tag, not a commit SHA."""
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))
+    _write_packages_yml(project, None)  # revision: "v1.0.0", not a SHA
+
+    result = CliRunner().invoke(
+        cli, ["validate-source-bindings", "--project-dir", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json_payload(result.output)
+    assert not any(f["kind"] == FINDING_STALE for f in payload["findings"])
+
+
+def test_cli_confirm_stamps_bindings_and_passes(project):
+    _declared_catalog(project, tables=("customers",))
+    binding_path = _binding_file(project, "models/_sources.yml", tables=("customers",))
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "validate-source-bindings",
+            "--project-dir",
+            str(project),
+            "--hub-sha",
+            SHA_A,
+            "--confirm",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "stamped" in result.output
+    assert "crm" in result.output
+    parsed = yaml.safe_load(binding_path.read_text(encoding="utf-8"))
+    assert parsed["sources"][0]["meta"]["kairos"]["verified_hub_sha"] == SHA_A
+    payload = _json_payload(result.output)
+    assert payload["passed"] is True
+
+
+def test_cli_confirm_refuses_when_other_findings_present(project):
+    _declared_catalog(project, tables=("customers", "orders"))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))  # "orders" missing
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "validate-source-bindings",
+            "--project-dir",
+            str(project),
+            "--hub-sha",
+            SHA_A,
+            "--confirm",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "resolve missing" in result.output.lower() or "missing" in result.output.lower()
+
+
+def test_cli_confirm_requires_a_resolvable_hub_sha(project):
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))
+
+    result = CliRunner().invoke(
+        cli,
+        ["validate-source-bindings", "--project-dir", str(project), "--confirm"],
+    )
+
+    assert result.exit_code != 0
+    assert "resolvable hub sha" in result.output.lower()
