@@ -14,14 +14,23 @@ was applied (three parallel read-only code traces, one per code area). Outcome:
   wrong; see the note under item 17 below for the actual locations).
 - **Confirmed and fixed on this branch (workflow items):** #6, #9, #11, #18 (#18
   implemented as a `.claude/settings.json` permission-deny guard, not a CI workflow).
-- **Stale — resolved already on current `main`, no code change made:** #14, #15, #16.
-  All three trace to code that already does the right thing; most likely observed
-  against an older/pinned toolkit release, not current HEAD. See notes under each item.
+- **Stale — resolved already on current `main`, no code change made:** #14, #15.
+  Both trace to code that already does the right thing; most likely observed against an
+  older/pinned toolkit release, not current HEAD. See notes under each item.
+- **Correction (2026-08-30, branch `fix/surrogate-key-sibling-alias-bug`): #16 was
+  wrongly marked stale above.** It reproduces on the real release this branch shipped
+  in and is now fixed — see the updated note under item 16 for the real root cause and
+  why the first trace missed it.
 - **Deferred — left as backlog notes, not implemented:** #5 (partially stale; the
   specific "gold config path" example no longer exists in the template — the narrower
   general "seeds path is empty → dbt warns" gap is still real but wasn't fixed here),
   #8 (PII redaction heuristic tuning — a false-positive/negative tradeoff that needs
   its own scoping conversation, not a mechanical fix).
+- **New items found in downstream use (2026-08-30):** #19 (`update`'s managed-file diff
+  is line-ending sensitive on Windows, producing false "local customizations" positives
+  — not yet fixed) and #20 (`update --upgrade` reports false success in a dataplatform
+  repo with no `[tool.kairos]` channel — fixed on branch
+  `fix/dataplatform-toolkit-update-channel`).
 
 ## Confirmed bugs
 
@@ -464,17 +473,41 @@ test branch from item 14, purely to unblock `dbt compile` for this test.
 
 ### 16. Surrogate-key expression references sibling SELECT-list aliases instead of source expressions (real warehouse failure)
 
-**Triage: stale — not reproducible on current `main`, no code change made.** Traced
-`_identity_expression_inputs` and its call site precisely, plus where
-`identity.business.keys` is populated: `adapter.py`'s `_resolve_identity_output_columns`
-explicitly resolves `sourceKey` to emitted output-column names (its own docstring cites
-DD-108/DD-133, exactly to prevent this class of bug), and `model.columns` at the
-`shape.py` call site is already in that same output-name space — so
-`by_name.get(name, name)` succeeds and returns the real expression, not a bare-alias
-fallback. The doc's own hedge ("needs a maintainer to confirm with a debugger") was the
-right instinct — a maintainer-level trace shows no mismatch. Most likely this session's
-compiled output came from an older toolkit release with a real version of this bug that
-has since been fixed, or from a binding shape not covered by this trace.
+**Triage: confirmed real, fixed on branch `fix/surrogate-key-sibling-alias-bug`.** The
+first triage pass (below, struck through) wrongly concluded this was stale, based on a
+unit-test-level trace that assumed `column.expression` was populated with the real
+source-side SQL wherever `identity.business.keys` was resolved. A second report,
+re-running `compile party --emit --confirm-emit` on the real `nns-ontology-hub` against
+v5.15.0rc9 (the release the first triage pass itself shipped in), reproduced the exact
+same bug byte-for-byte — proving it wasn't an old-pin artifact. A fresh trace through the
+actual `compile --emit` pipeline (confirmed identical to the seam the first pass used, so
+not a divergent code path) found the real defect: `column.expression`
+(`src/kairos_ontology/core/projections/dbt/specs.py`) is a plain string field that
+**defaults to `""` and is never populated** for ordinary `fields:`-mapped columns — the
+real rendered source SQL lives in the separate `column.mapping_expression` field,
+rendered only at final SQL-render time via `render_mapping_expression()`
+(`model_renderers.py`). `_identity_expression_inputs`'s fallback (`column.expression or
+column.name`) therefore silently fired and put the bare canonical output alias into the
+hash. Fixed by routing identity/grain name resolution through the same
+`render_mapping_expression()` call the column's own SELECT-list entry already uses.
+Two more call sites in the same function (`shape.py`) had the identical unsafe pattern
+(the integration-key expression and the model-level `iri_expression` field) and were
+fixed the same way; the moral for next time: verify a "no bug found" conclusion by
+actually running `compile --emit` and reading the output, not by reasoning about which
+field the pipeline *should* have populated.
+
+**First triage pass (superseded, kept for the record):** ~~stale — not reproducible on
+current `main`, no code change made. Traced `_identity_expression_inputs` and its call
+site precisely, plus where `identity.business.keys` is populated: `adapter.py`'s
+`_resolve_identity_output_columns` explicitly resolves `sourceKey` to emitted
+output-column names (its own docstring cites DD-108/DD-133, exactly to prevent this
+class of bug), and `model.columns` at the `shape.py` call site is already in that same
+output-name space — so `by_name.get(name, name)` succeeds and returns the real
+expression, not a bare-alias fallback. The doc's own hedge ("needs a maintainer to
+confirm with a debugger") was the right instinct — a maintainer-level trace shows no
+mismatch. Most likely this session's compiled output came from an older toolkit release
+with a real version of this bug that has since been fixed, or from a binding shape not
+covered by this trace.~~
 
 `dbt build` against the real Fabric `dev` warehouse failed (not just parse/compile-dry-run):
 
@@ -651,6 +684,69 @@ didn't prevent the mistake:
   reinforcing that this applies to **temporary/workaround edits too**, not
   just permanent ones — the rule as currently worded doesn't obviously rule
   out "just for this test, I'll patch it and revert later" reasoning.
+
+### 19. `kairos-ontology update`'s managed-file diff is line-ending sensitive, producing a false "local customizations" positive
+
+Ran `update --check`/`update` against `nns-ontology-hub` (pinned v5.15.0rc8).
+Both reported `.claude/settings.json` as having "local customizations" that
+prevented auto-merging a DD-103 semantic-access deny-rule broadening
+(`.ttl`/`.rdf`/`.owl`, not just `.ttl`). But the hub's `.claude/settings.json`
+has never been touched since the initial scaffold commit (`git log` shows one
+commit total, the scaffold itself), and diffing it against the toolkit's own
+bundled `scaffold/claude-settings.json` template after stripping `\r`
+(`diff -q <(tr -d '\r' < scaffold-file) <(tr -d '\r' < hub-file)`) shows **zero
+difference** — the content is already identical, already broadened. The only
+actual difference is CRLF (hub checkout, Windows `core.autocrlf=true`) vs. LF
+(toolkit's bundled template file).
+
+Fix: whatever hash/diff mechanism `update`/`update --check` uses to detect
+"local customizations" in a managed file should normalize line endings before
+comparing (or compare parsed content for structured files like JSON, rather
+than raw bytes) — otherwise every Windows checkout with `core.autocrlf=true`
+will perpetually report unmerged customizations for managed files that are
+actually unchanged, training users to ignore a warning that's sometimes real
+and sometimes just line-ending noise.
+
+### 20. `update --upgrade` reports a false success in a dataplatform repo (no `[tool.kairos]` channel block to write to)
+
+`nns-dataplatform`'s `pyproject.toml` depends on the toolkit too
+(`kairos-ontology-toolkit = { git = "https://github.com/Cnext-eu/kairos-ontology-toolkit" }`,
+**no `rev`/`tag`** — an unpinned, floating git source), unlike the hub's
+explicit released-wheel-URL + `channel = "..."` pin block. Ran
+`kairos-ontology update --upgrade` there (no channel configured) and got:
+
+```
+📦 Channel: stable → v5.14.0
+   Syncing environment with uv ...
+   ✓ Upgraded to v5.14.0
+```
+
+But `git diff pyproject.toml uv.lock` showed **zero changes**, and
+`python -c "import kairos_ontology; print(kairos_ontology.__version__)"`
+still reported `5.15.0rc8` — the actual installed version, unchanged. The
+"✓ Upgraded to v5.14.0" message is false: nothing was upgraded, nothing was
+even attempted at the dependency-spec level, because there's no
+`[tool.kairos]` pin/channel structure in this `pyproject.toml` for the command
+to resolve a channel against or write a result into (that structure only
+exists in the hub scaffold). The managed-file refresh that ran afterward
+correctly operated against the real, unchanged v5.15.0rc8 (created several
+missing scaffold files — `.claude/settings.json`, `package.json`,
+`.env.example`, `.devcontainer/` — all correctly versioned for rc8), so only
+the dependency-upgrade half of the command is affected.
+
+Fix: `update --upgrade` should detect the absence of a `[tool.kairos]`
+channel/pin block (i.e. an unpinned or non-toolkit-managed dependency source)
+and either (a) refuse with a clear error explaining this repo type isn't set
+up for managed version pinning, or (b) actually implement the upgrade for a
+plain git-source dependency (e.g. `uv lock --upgrade-package
+kairos-ontology-toolkit`, optionally adding an explicit `rev`/`tag` for
+reproducibility) — but never print a version-bump success message that
+doesn't correspond to any actual file or environment change. Also worth
+deciding deliberately whether `kairos-setup-dataplatform`'s scaffold should
+give the toolkit dependency an explicit pin (tag or rev) by default instead
+of an unpinned floating git source — right now a plain `uv sync` in a fresh
+clone could silently resolve to a different toolkit commit than whatever was
+last used, with no record of which commit that even was beyond `uv.lock`.
 
 ## Non-issue, checked
 
