@@ -262,6 +262,8 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-208](#dd-208-the-powerbi-target-registry-entry-becomes-flat-retiring-the-empty-medallionpowerbi-placeholder) | The `powerbi` target registry entry becomes flat, retiring the empty `medallion/powerbi` placeholder | Accepted | 2026-08-29 |
 | [DD-209](#dd-209-a-binding-independent-erd-target-projects-the-full-canonical-graph-regardless-of-compile-plan-coverage) | A binding-independent `erd` target projects the full canonical graph regardless of compile-plan coverage | Accepted | 2026-08-29 |
 | [DD-210](#dd-210-version-bump-moves-from-mandatory-per-pr-to-release-time-only) | Version bump moves from mandatory-per-PR to release-time-only | Accepted | 2026-08-30 |
+| [DD-211](#dd-211-the-hub-wide-bound-master-erd-is-reconnected-to-compileemit-gold-the-dead-run_projections-dbtsilverpowerbi-branch-is-retired-in-place) | The hub-wide bound master ERD is reconnected to `compile`/`emit-gold`; the dead `run_projections` dbt/silver/powerbi branch is retired in place | Accepted | 2026-08-30 |
+| [DD-212](#dd-212-the-canonical-erd-target-renders-a-mermaid-classdiagram-instead-of-erdiagram-and-gains-a-plumbing-only-overlay-hook) | The canonical `erd` target renders a Mermaid `classDiagram` instead of `erDiagram`, and gains a plumbing-only overlay hook | Accepted | 2026-08-30 |
 
 ---
 
@@ -15044,3 +15046,111 @@ Ordinary PRs no longer fail CI for not bumping `__version__`. A contributor cutt
 hotfix) still must bump `__version__` and, for stable versions, add the matching CHANGELOG entry —
 enforced exactly as before, just conditionally rather than unconditionally. `release.yml`'s
 tag-vs-`__version__` check is unaffected, since it never relied on this gate.
+
+---
+
+## DD-211: The hub-wide bound master ERD is reconnected to `compile`/`emit-gold`; the dead `run_projections` dbt/silver/powerbi branch is retired in place
+
+**Status:** Accepted
+**Date:** 2026-08-30
+**Affects:** `cli/compile.py` (new `_regenerate_master_silver_erd`), `cli/emit_gold.py` (new
+`_regenerate_master_gold_erd`), `core/projector.py` (`run_projections`, dead branch commented out,
+not deleted), `tests/test_compile_cli.py`, `tests/test_cli_emit_gold.py`
+
+### Context
+
+DD-011 introduced a hub-wide "master ERD" merging every domain's bound Silver diagram
+(`docs/diagrams/master-erd.mmd`) and, later, every domain's bound Gold diagram
+(`powerbi/master-gold-erd.mmd`) — both produced by pure, stateless disk-scan-and-merge functions,
+`generate_master_erd` (`medallion_silver_projector.py`) and `generate_master_gold_erd`
+(`medallion_gold_projector.py`). Their only call sites lived inside the legacy `run_projections`
+orchestrator's `dbt`/`silver`/`powerbi` branches. Once those targets were retired in favor of the v5
+`compile`/`emit-gold` CompilePlan pipeline (`RETIRED_COMPILER_TARGETS`/`COMPILE_PLAN_ONLY_TARGETS`,
+`_reject_retired_compiler_targets`), both the CLI (`project`) and `run_projections` itself began
+rejecting those targets before the branch could ever run — confirmed unreachable at the Python level,
+not merely the Click layer, and not exercised by any test (DD-208 found and patched this same dead
+path rather than removing it). Nobody ported the master-ERD merge step to the real pipeline when it
+moved, so a multi-domain hub silently lost its hub-wide bound ERD with no replacement and no failing
+test to surface the gap.
+
+### Decision
+
+Reuse the two merge functions as-is from real call sites instead of rewriting them: `compile_cmd`
+(`compile.py`) calls `_regenerate_master_silver_erd(hub)` once after its per-domain `--emit` loop,
+gated on `mode is CompileMode.EMIT`; `emit_gold_cmd` (`emit_gold.py`) calls
+`_regenerate_master_gold_erd(target, hub_name=hub_root.name)` once after `emit_artifacts` succeeds.
+Both merge functions are pure disk scans over already-written per-domain `.mmd` files, so both are
+safe to call unconditionally on every emit — they naturally reflect every domain emitted so far
+(across separate invocations), not just the domain(s) named on the current one, and return `None`
+gracefully when nothing has been emitted yet. SVG rendering (`render_mermaid_svg`) is deliberately
+**not** ported: the real pipeline never rendered SVGs for the existing per-domain bound diagrams
+either, so adding it only for the new master file would be new, inconsistent scope.
+
+The now-fully-redundant dead branch inside `run_projections` (dbt contract preflight, dbt
+project-config generation, coverage-report merging, and both master-ERD blocks) is commented out,
+not deleted, per explicit instruction — with a comment pointing at the new call sites as the live
+replacement. The two locals (`transforms_dir`, `target_failed`) left with no remaining live reader
+by that change were removed rather than kept as unused-variable lint failures.
+
+### Consequences
+
+A multi-domain hub regains its hub-wide bound Silver and Gold ERDs, generated by the real
+`compile --emit`/`emit-gold --confirm-emit` commands with no behavior change to either merge
+function itself. `tests/test_compile_cli.py::test_master_silver_erd_accumulates_across_sequential_emits`
+and `tests/test_cli_emit_gold.py::test_master_gold_erd_is_written_alongside_the_domain_erd` cover the
+wiring end-to-end. The commented-out `run_projections` code remains available for reference; nothing
+else in the codebase reads `generate_dbt_project_config`, `_merge_dbt_artifacts`, or
+`dbt_contracts.discover_dbt_contracts` outside that dead block and their own definition modules.
+
+---
+
+## DD-212: The canonical `erd` target renders a Mermaid `classDiagram` instead of `erDiagram`, and gains a plumbing-only overlay hook
+
+**Status:** Accepted
+**Date:** 2026-08-30
+**Affects:** `core/projections/erd_projector.py`, `core/projector.py` (`_discover_extensions` gains an
+`erd` branch; the `erd` dispatch passes `overlay_path`), `tests/test_erd_projector.py`
+
+### Context
+
+DD-209's canonical `erd` target (binding-independent, walks the ontology graph directly) rendered a
+Mermaid `erDiagram`, matching the Silver/Gold bound ERDs it sits alongside. `erDiagram` has no syntax
+for class inheritance at all, and `erd_projector.py`'s only use of `rdfs:subClassOf` was for OWL
+restriction-cardinality traversal (mirroring `projections/shared.py`'s FK cardinality-one detection) —
+never for rendering a hierarchy edge. OWL class hierarchies are ordinary, common modeling content, so
+the one diagram meant to show the canonical model's *full* shape was silent on a structural feature
+that shape routinely has. Separately, `erd` was the only architecture-level target
+(`ddd`/`erd`/`report`) with no overlay-extension hook at all — `ddd` already supports
+`{domain}-ddd-ext.ttl` — so there was no way to add a future projection-specific hint (grouping,
+attribute hiding, diagram-inclusion filters) without new discovery/dispatch plumbing.
+
+### Decision
+
+Rewrite `erd_projector.py`'s rendering from `erDiagram` to Mermaid `classDiagram`, chosen over
+PlantUML or another UML tool because it needs zero new tooling — the same optional `mmdc` CLI
+(`render_mermaid_svg`) already used elsewhere renders it, and no other diagram technology exists
+anywhere in this codebase. Named, non-restriction `rdfs:subClassOf` triples between two domain-local
+classes now render as inheritance edges (`Superclass <|-- Subclass`); the existing
+`_restriction_bounds` min/max-bound logic is unchanged and now renders as `classDiagram` multiplicity
+strings (`"0..1"`/`"1"`/`"0..*"`/`"1..*"`) instead of crow's-foot tokens. The output filename
+convention (`{domain}-erd.mmd`) is unchanged — `mmdc` detects the diagram type from the
+`classDiagram` keyword inside the file. Silver/Gold bound ERDs are untouched: physical dbt tables
+have no class-hierarchy concept, so `erDiagram` remains the right fit there.
+
+Separately, `generate_erd_artifacts` gained an `overlay_path: Optional[Path] = None` parameter, and
+`_discover_extensions` gained an `elif target_name == "erd":` branch globbing `{onto_name}-erd-ext.ttl`
+(exact match, no wildcard fallback — mirroring `ddd`'s convention, not `silver`'s `*-silver-ext.ttl`
+wildcard), read the same established way every overlay file in this codebase is read: a raw
+`graph.parse(path, format="turtle")` merge, never through the full `ontology_loader.load_ontology()`
+closure-resolution path reserved for base domain ontologies. This is plumbing only — no
+`kairos-erd.ttl` vocabulary or annotation properties exist yet; passing no `overlay_path` leaves
+output byte-identical to before this parameter existed.
+
+### Consequences
+
+Class hierarchies modeled in the ontology are now visible in the one diagram meant to show the full
+canonical shape, with no new diagram tooling. A future ERD-specific hint vocabulary can be added by
+touching only `erd_projector.py`'s rendering logic — no further discovery/dispatch plumbing needed.
+`tests/test_erd_projector.py` covers inheritance rendering (including that a restriction's blank-node
+`subClassOf` is never mistaken for a superclass), multiplicity strings, and the overlay hook (both
+that overlay triples are merged and that a missing overlay path leaves output unchanged).

@@ -1,14 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Canonical ontology ERD projector (DD-209 / issue #631).
+"""Canonical ontology class-diagram projector (DD-209 / issue #631).
 
 One-way, documentation-only projection of the raw ontology graph into a Mermaid
-``erDiagram`` per domain -- independent of ``EntityBinding``/compile-plan coverage.
+``classDiagram`` per domain -- independent of ``EntityBinding``/compile-plan coverage.
 Every existing diagram-like target either only shows what has been bound to a source
 (``dbt``/``silver``/``gold``/``mdm-profile``) or requires explicit DDD-overlay vocabulary
-(``ddd``). This target walks ``owl:Class``/``owl:ObjectProperty`` directly off the loaded
-ontology graph so a canonical class or relationship that is modeled but not yet bound (or
-not DDD-annotated) is still visible in at least one diagram output.
+(``ddd``). This target walks ``owl:Class``/``owl:ObjectProperty``/``rdfs:subClassOf``
+directly off the loaded ontology graph so a canonical class, relationship, or class
+hierarchy that is modeled but not yet bound (or not DDD-annotated) is still visible in at
+least one diagram output.
+
+Mermaid ``classDiagram`` was chosen over ``erDiagram`` specifically because OWL class
+hierarchies are ordinary, common modeling content that ``erDiagram`` has no syntax for at
+all (entity-relationship diagrams have no notion of inheritance). ``classDiagram``
+renders that hierarchy as real inheritance arrows using the same ``mmdc`` CLI already
+used elsewhere in this codebase -- no new diagram tooling. The Silver/Gold bound ERDs
+stay on ``erDiagram``: they describe physical dbt tables, which have no class-hierarchy
+concept.
 
 Output is deterministic (sorted, no embedded timestamps) and, like ``ddd_projector.py``,
 never influences silver/gold/dbt/Power BI generation.
@@ -17,6 +26,7 @@ never influences silver/gold/dbt/Power BI generation.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Optional
 
 from rdflib import Graph, URIRef
@@ -27,7 +37,7 @@ from .uri_utils import extract_local_name
 
 
 def _sanitize(node_id: str) -> str:
-    """Make a Mermaid-safe entity/attribute identifier from a local name."""
+    """Make a Mermaid-safe class/attribute identifier from a local name."""
     return re.sub(r"[^0-9A-Za-z_]", "_", node_id)
 
 
@@ -90,20 +100,16 @@ def _restriction_bounds(
     return min_bound, max_bound
 
 
-def _left_token(min_bound: Optional[int], max_bound: Optional[int]) -> str:
-    """Mermaid cardinality token for the entity on the left of a relationship."""
+def _multiplicity(min_bound: Optional[int], max_bound: Optional[int]) -> str:
+    """Mermaid ``classDiagram`` multiplicity string for one end of an association.
+
+    Same semantics as the crow's-foot tokens this replaced: an undeclared upper bound
+    (``None``) or any bound greater than one renders as unbounded (``*``).
+    """
     at_least_one = (min_bound or 0) >= 1
     if max_bound == 1:
-        return "||" if at_least_one else "|o"
-    return "}|" if at_least_one else "}o"
-
-
-def _right_token(min_bound: Optional[int], max_bound: Optional[int]) -> str:
-    """Mermaid cardinality token for the entity on the right of a relationship."""
-    at_least_one = (min_bound or 0) >= 1
-    if max_bound == 1:
-        return "||" if at_least_one else "o|"
-    return "|{" if at_least_one else "o{"
+        return "1" if at_least_one else "0..1"
+    return "1..*" if at_least_one else "0..*"
 
 
 def _collect_classes(graph: Graph, namespace: str) -> list[URIRef]:
@@ -139,8 +145,27 @@ def _collect_relationships(
     return relationships
 
 
-def _entity_block(graph: Graph, cls: URIRef) -> str:
-    """Render one Mermaid ``erDiagram`` entity block with its datatype attributes."""
+def _collect_inheritance(graph: Graph, classes: list[URIRef]) -> list[tuple[URIRef, URIRef]]:
+    """Return ``(superclass, subclass)`` pairs between two domain-local named classes.
+
+    Only direct, named ``rdfs:subClassOf`` assertions count -- a blank-node object is an
+    OWL restriction (property cardinality), not a superclass, and is what
+    :func:`_restriction_bounds` walks separately; the two sets of ``subClassOf`` triples
+    are disjoint by construction (a triple's object is either a URIRef or a blank node,
+    never both).
+    """
+    class_set = set(classes)
+    pairs: list[tuple[URIRef, URIRef]] = []
+    for cls in classes:
+        for parent in graph.objects(cls, RDFS.subClassOf):
+            if isinstance(parent, URIRef) and parent in class_set:
+                pairs.append((parent, cls))
+    pairs.sort(key=lambda item: tuple(str(part) for part in item))
+    return pairs
+
+
+def _class_block(graph: Graph, cls: URIRef) -> str:
+    """Render one Mermaid ``classDiagram`` class block with its datatype attributes."""
     node = _sanitize(extract_local_name(str(cls)))
     props = sorted(
         (
@@ -150,14 +175,14 @@ def _entity_block(graph: Graph, cls: URIRef) -> str:
         ),
         key=str,
     )
-    lines = [f"    {node} {{"]
+    lines = [f"    class {node} {{"]
     if props:
         for prop in props:
             attr_name = _sanitize(extract_local_name(str(prop)))
             lines.append(f"        {_attribute_type(graph, prop)} {attr_name}")
     else:
-        # Every entity renders with at least one attribute so the block is always a
-        # valid, visible Mermaid entity even for classes with no declared datatype
+        # Every class renders with at least one attribute so the block is always a
+        # valid, visible Mermaid class even for classes with no declared datatype
         # properties (e.g. pure relationship hubs, or classes only bound downstream).
         lines.append("        string uri")
     lines.append("    }")
@@ -169,44 +194,66 @@ def generate_erd_artifacts(
     namespace: str,
     ontology_name: str,
     ontology_metadata: Optional[dict] = None,
+    overlay_path: Optional[Path] = None,
 ) -> dict:
-    """Generate a binding-independent canonical ERD for one ontology domain.
+    """Generate a binding-independent canonical class diagram for one ontology domain.
 
     Returns ``{}`` only when the domain has no local classes at all; unlike ``ddd``,
     this target has no opt-in overlay vocabulary to gate on, so any modeled class or
     relationship renders regardless of ``EntityBinding``/compile-plan/DDD status.
+
+    *overlay_path* is an optional ``{domain}-erd-ext.ttl`` file (mirroring the ``ddd``
+    overlay convention) whose triples are merged into the working graph before rendering.
+    No packaged vocabulary exists for it yet -- this is plumbing only, so passing
+    ``None`` (the default) leaves output byte-identical to before this parameter existed.
     """
     del ontology_metadata  # reserved for parity with other projector signatures
     domain = ontology_name or "domain"
-    classes = _collect_classes(graph, namespace)
+
+    working_graph = graph
+    if overlay_path is not None and Path(overlay_path).exists():
+        working_graph = Graph()
+        for triple in graph:
+            working_graph.add(triple)
+        working_graph.parse(overlay_path, format="turtle")
+
+    classes = _collect_classes(working_graph, namespace)
     if not classes:
         return {}
 
-    relationships = _collect_relationships(graph, classes)
+    relationships = _collect_relationships(working_graph, classes)
+    inheritance = _collect_inheritance(working_graph, classes)
 
     lines = [
-        "%% Canonical ontology ERD (generated by kairos-ontology — do not edit)",
+        "%% Canonical ontology class diagram (generated by kairos-ontology — do not edit)",
         "%% Binding-independent: reflects the ontology graph, not compile-plan coverage.",
-        "erDiagram",
+        "classDiagram",
     ]
     for cls in classes:
-        lines.append(_entity_block(graph, cls))
+        lines.append(_class_block(working_graph, cls))
+
+    for superclass, subclass in inheritance:
+        parent = _sanitize(extract_local_name(str(superclass)))
+        child = _sanitize(extract_local_name(str(subclass)))
+        lines.append(f"    {parent} <|-- {child}")
 
     for prop, domain_cls, range_cls in relationships:
         left = _sanitize(extract_local_name(str(domain_cls)))
         right = _sanitize(extract_local_name(str(range_cls)))
-        min_bound, max_bound = _restriction_bounds(graph, domain_cls, prop)
-        if max_bound is None and (prop, RDF.type, OWL.FunctionalProperty) in graph:
+        min_bound, max_bound = _restriction_bounds(working_graph, domain_cls, prop)
+        if max_bound is None and (prop, RDF.type, OWL.FunctionalProperty) in working_graph:
             max_bound = 1
         # The left (domain-class) side has no restriction to read directly from --
         # OWL restrictions are declared on the class holding the property, i.e. the
         # domain side, which is exactly what `_restriction_bounds` already captured
         # for the right side above. The only signal available for the left side is
         # inverse-functionality (at most one domain instance per range value).
-        left_max = 1 if (prop, RDF.type, OWL.InverseFunctionalProperty) in graph else None
-        left_token = _left_token(None, left_max)
-        right_token = _right_token(min_bound, max_bound)
+        left_max = (
+            1 if (prop, RDF.type, OWL.InverseFunctionalProperty) in working_graph else None
+        )
+        left_mult = _multiplicity(None, left_max)
+        right_mult = _multiplicity(min_bound, max_bound)
         label = _sanitize(extract_local_name(str(prop)))
-        lines.append(f"    {left} {left_token}--{right_token} {right} : {label}")
+        lines.append(f'    {left} "{left_mult}" --> "{right_mult}" {right} : {label}')
 
     return {f"{domain}-erd.mmd": "\n".join(lines) + "\n"}

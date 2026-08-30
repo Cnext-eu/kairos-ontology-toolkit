@@ -48,6 +48,25 @@ never graph-authority project targets. `project --target all` excludes them.
 `scaffold-mapping`, `scaffold-silver-ext`, `validate-mapping`, and
 `validate-silver-ext` remain only as explicitly legacy, non-authoritative utilities.
 
+### ERD projections: three different diagrams, three different purposes
+
+| Diagram | Command | Output | Scope | Diagram type |
+|---|---|---|---|---|
+| Canonical/full ERD | `project --target erd` (or `--target all`) | `ontology-hub-publish/architecture/erd/<domain>-erd.mmd`, one file per domain | Every `owl:Class`/`owl:ObjectProperty` in the ontology graph, regardless of `EntityBinding`/compile-plan coverage (DD-209) | Mermaid `classDiagram` — includes inheritance (`rdfs:subClassOf`) as `Superclass <|-- Subclass` edges (DD-212) |
+| Bound per-domain ERD | `compile DOMAIN --emit` (Silver) / `emit-gold DOMAIN --confirm-emit` (Gold) | `medallion/dbt/docs/diagrams/<domain>/<domain>-erd.mmd` / `powerbi/<domain>/<domain>-gold-erd.mmd` | Only classes/relationships actually bound and compiled for that domain | Mermaid `erDiagram` — physical dbt tables have no inheritance concept |
+| Bound hub-wide master ERD | automatic, after any `compile --emit` / `emit-gold --confirm-emit` | `medallion/dbt/docs/diagrams/master-erd.mmd` / `powerbi/master-gold-erd.mmd` | Merges every domain's bound ERD emitted so far anywhere in the hub (DD-011, reconnected by DD-211) | Mermaid `erDiagram`, same as the per-domain bound ERDs it merges |
+
+The canonical ERD is the only one of the three with no binding dependency — it is where an
+author sees the ontology's actual modeled shape, including classes and relationships not yet
+bound to any source. It accepts an optional, plumbing-only `{domain}-erd-ext.ttl` overlay file
+under `model/extensions/` (mirroring the `ddd` target's `{domain}-ddd-ext.ttl` convention); no
+packaged hint vocabulary exists yet, so an absent overlay leaves output unchanged (DD-212).
+
+The master ERDs are pure disk-scan-and-merge over whatever per-domain bound diagrams already
+exist under the shared publish root, so they accumulate correctly across separate,
+single-domain `compile`/`emit-gold` invocations — running `compile party --emit` in a hub that
+already has a `billing` domain emitted updates the master ERD to include both, not just `party`.
+
 ## Retained root commands
 
 | Category | Commands |

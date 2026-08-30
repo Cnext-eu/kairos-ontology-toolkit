@@ -509,6 +509,16 @@ def _discover_extensions(
             candidates = list(src_file.parent.glob(f"{onto_name}-ddd-ext.ttl"))
             ext_path = candidates[0] if candidates else None
 
+    elif target_name == "erd":
+        # Canonical ERD overlay (plumbing only, no packaged vocabulary yet):
+        # {onto}-erd-ext.ttl, mirroring the ddd overlay convention above.
+        if extensions_dir and extensions_dir.exists():
+            candidates = list(extensions_dir.glob(f"{onto_name}-erd-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+        if not ext_path:
+            candidates = list(src_file.parent.glob(f"{onto_name}-erd-ext.ttl"))
+            ext_path = candidates[0] if candidates else None
+
     else:
         target_spec = get_target_spec(target_name)
         external_dispatch = target_spec.external_dispatch if target_spec else None
@@ -940,21 +950,26 @@ def run_projections(
             target_output.mkdir(parents=True, exist_ok=True)
 
         total_files = 0
-        target_failed = False
+        # `target_failed`/`transforms_dir` only ever fed the dead dbt/silver blocks
+        # commented out below; left uninitialized rather than kept as unused locals.
         pending_dbt_artifacts: dict[str, str] = {}
         contract_registry: dict = {}
-        transforms_dir = hub_root / "integration" / "transforms" / "dbt" if hub_root else None
-        if target_name == "dbt" and transforms_dir and transforms_dir.is_dir():
-            from .dbt_contracts import discover_dbt_contracts
-
-            try:
-                contracts = discover_dbt_contracts(transforms_dir, hub_root)
-                contract_registry = {contract.name: contract for contract in contracts}
-            except Exception as exc:
-                message = f"dbt preflight failed: {exc}"
-                fatal_target_errors.append(message)
-                print(f"  ✗ {message}\n")
-                continue
+        # dbt contract preflight: dead code. `target_name` can never be "dbt" here --
+        # RETIRED_COMPILER_TARGETS/_reject_retired_compiler_targets rejects it before
+        # this loop is reached (see run_projections' guard above and project_graph's).
+        # Custom dbt contracts are handled by the real pipeline via
+        # core.dbt_bundle.assemble_dbt_bundle, invoked from the compile-plan emit path.
+        # if target_name == "dbt" and transforms_dir and transforms_dir.is_dir():
+        #     from .dbt_contracts import discover_dbt_contracts
+        #
+        #     try:
+        #         contracts = discover_dbt_contracts(transforms_dir, hub_root)
+        #         contract_registry = {contract.name: contract for contract in contracts}
+        #     except Exception as exc:
+        #         message = f"dbt preflight failed: {exc}"
+        #         fatal_target_errors.append(message)
+        #         print(f"  ✗ {message}\n")
+        #         continue
         # Track which domains produce artifacts for dbt project config
         dbt_domain_names: list[str] = []
         dbt_gold_domains: list[str] = []
@@ -1101,148 +1116,158 @@ def run_projections(
                         if any(k.startswith("models/gold/") for k in artifacts):
                             dbt_gold_domains.append(onto_name)
             except Exception as e:
-                target_failed = True
                 print(f"  [{onto_name}] ✗ Failed: {e}")
                 _tb.print_exc()
 
         if check_only:
             continue
 
-        # After all domains: generate dbt project config (once, with all domains)
-        if target_name in {"dbt", "silver"} and dbt_domain_names and not target_failed:
-            try:
-                from .projections.medallion_dbt_projector import generate_dbt_project_config
-
-                dbt_template_dir = Path(__file__).parent.parent / "templates" / "dbt"
-                hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "hub"
-                project_config = generate_dbt_project_config(
-                    systems=[],
-                    ontology_names=dbt_domain_names,
-                    template_dir=dbt_template_dir,
-                    project_name=f"{hub_name}_project",
-                    gold_domain_names=dbt_gold_domains,
-                    platform=platform,
-                )
-                for path in project_config:
-                    pending_dbt_artifacts.pop(path, None)
-                pending_dbt_artifacts.update(project_config)
-
-                if contract_registry and transforms_dir is not None:
-                    from .dbt_bundle import assemble_dbt_bundle
-
-                    bundle = assemble_dbt_bundle(
-                        transforms_dir,
-                        tuple(contract_registry.values()),
-                        generated_artifacts=tuple(pending_dbt_artifacts),
-                    )
-                    bundle_collisions = sorted(set(pending_dbt_artifacts) & set(bundle.artifacts))
-                    if bundle_collisions:
-                        raise RuntimeError(
-                            f"Custom/generated dbt artifact collisions: {bundle_collisions}"
-                        )
-                    pending_dbt_artifacts.update(bundle.artifacts)
-
-                total_files += _write_artifacts(pending_dbt_artifacts, target_output)
-                # Remove dbt artifacts this run no longer produces so re-projection
-                # converges on the current output.
-                removed = _reconcile_managed_output(target_output, pending_dbt_artifacts.keys())
-                if removed:
-                    _logger.info("Removed %d obsolete dbt artifact(s)", removed)
-                _logger.info("Generated project config for %d domain(s)", len(dbt_domain_names))
-            except Exception as exc:
-                target_failed = True
-                message = f"dbt assembly failed; no dbt artifacts were written: {exc}"
-                fatal_target_errors.append(message)
-                print(f"  ✗ {message}\n")
-        elif target_name in {"dbt", "silver"} and target_failed:
-            message = f"{target_name} projection failed; no dbt artifacts were written"
-            fatal_target_errors.append(message)
-            print(f"  ✗ {message}\n")
-
-        # After all domains: merge per-domain coverage data into a single report
-        if target_name in {"dbt", "silver"} and dbt_coverage_data and not target_failed:
-            import json as _json
-
-            merged_coverage = {
-                "domains": dbt_coverage_data,
-                "summary": _build_coverage_summary(dbt_coverage_data),
-            }
-            coverage_content = _json.dumps(merged_coverage, indent=2, ensure_ascii=False)
-            reports_dir = output_path / "reports"
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            coverage_artifacts = {"coverage-silver.json": coverage_content}
-            # Generate human-readable Markdown rendering
-            md_content = _render_silver_coverage_md(merged_coverage, generated_at=generated_at)
-            coverage_artifacts["coverage-silver.md"] = md_content
-            total_files += _write_artifacts(coverage_artifacts, reports_dir)
-            _reconcile_managed_output(reports_dir, coverage_artifacts.keys())
-            print(f"  ✓ Merged coverage report for {len(dbt_coverage_data)} domain(s)")
-
-        # DD-110: dbt and the explicit Silver facade emit the same physical ERDs.
-        if target_name in {"dbt", "silver"} and total_files > 0:
-            from .projections.medallion_silver_projector import (
-                generate_master_erd,
-                render_mermaid_svg,
-            )
-
-            dbt_output = output_path / "medallion" / "dbt"
-            hub_name = (
-                ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
-            )
-            master_mmd = generate_master_erd(dbt_output, hub_name=hub_name)
-            if master_mmd:
-                diagrams_dir = dbt_output / "docs" / "diagrams"
-                diagrams_dir.mkdir(parents=True, exist_ok=True)
-                master_path = diagrams_dir / "master-erd.mmd"
-                master_path.write_text(master_mmd, encoding="utf-8")
-                total_files += 1
-                print("  ✓ Master ERD written: dbt/docs/diagrams/master-erd.mmd")
-            # Render all .mmd files to SVG via Mermaid CLI (if available)
-            svg_count = 0
-            diagrams_root = dbt_output / "docs" / "diagrams"
-            if diagrams_root.exists():
-                for mmd_file in sorted(diagrams_root.rglob("*.mmd")):
-                    svg = render_mermaid_svg(mmd_file)
-                    if svg:
-                        svg_count += 1
-            if svg_count:
-                total_files += svg_count
-                print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
-            else:
-                print(
-                    "  [info] Mermaid CLI (mmdc) not found -- SVG export skipped."
-                    " Install: npm install -D @mermaid-js/mermaid-cli"
-                )
-
-        # After all domains: generate master gold ERD
-        if target_name == "powerbi" and total_files > 0:
-            from .projections.medallion_gold_projector import generate_master_gold_erd
-            from .projections.medallion_silver_projector import render_mermaid_svg
-
-            gold_output = output_path / "powerbi"
-            hub_name = (
-                ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
-            )
-            master_mmd = generate_master_gold_erd(gold_output, hub_name=hub_name)
-            if master_mmd:
-                master_path = gold_output / "master-gold-erd.mmd"
-                master_path.write_text(master_mmd, encoding="utf-8")
-                total_files += 1
-                print("  ✓ Master Gold ERD written: powerbi/master-gold-erd.mmd")
-            svg_count = 0
-            if gold_output.exists():
-                for mmd_file in sorted(gold_output.rglob("*.mmd")):
-                    svg = render_mermaid_svg(mmd_file)
-                    if svg:
-                        svg_count += 1
-            if svg_count:
-                total_files += svg_count
-                print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
-            else:
-                print(
-                    "  [info] Mermaid CLI (mmdc) not found -- SVG export skipped."
-                    " Install: npm install -D @mermaid-js/mermaid-cli"
-                )
+        # Dead code below: dbt project-config generation, coverage-report merging, and
+        # master-ERD generation (Silver + Gold). `target_name` can never be
+        # "dbt"/"silver"/"powerbi" in this loop -- both this function and the CLI reject
+        # those targets before reaching here (`_reject_retired_compiler_targets`,
+        # `cli/projections.py`'s `project` command). DD-208 previously found this same
+        # dead path and patched it rather than removing it; this time the two master-ERD
+        # calls were genuinely still useful, so they were ported to the real pipeline:
+        # Silver's to `cli/compile.py` (`compile_cmd`, after the per-domain emit loop),
+        # Gold's to `cli/emit_gold.py` (`emit_gold_cmd`, after `emit_artifacts`). Kept
+        # commented out, not deleted, per explicit instruction.
+        #
+        # # After all domains: generate dbt project config (once, with all domains)
+        # if target_name in {"dbt", "silver"} and dbt_domain_names and not target_failed:
+        #     try:
+        #         from .projections.medallion_dbt_projector import generate_dbt_project_config
+        #
+        #         dbt_template_dir = Path(__file__).parent.parent / "templates" / "dbt"
+        #         hub_name = ontologies_path.parent.parent.name if ontologies_path.parent else "hub"
+        #         project_config = generate_dbt_project_config(
+        #             systems=[],
+        #             ontology_names=dbt_domain_names,
+        #             template_dir=dbt_template_dir,
+        #             project_name=f"{hub_name}_project",
+        #             gold_domain_names=dbt_gold_domains,
+        #             platform=platform,
+        #         )
+        #         for path in project_config:
+        #             pending_dbt_artifacts.pop(path, None)
+        #         pending_dbt_artifacts.update(project_config)
+        #
+        #         if contract_registry and transforms_dir is not None:
+        #             from .dbt_bundle import assemble_dbt_bundle
+        #
+        #             bundle = assemble_dbt_bundle(
+        #                 transforms_dir,
+        #                 tuple(contract_registry.values()),
+        #                 generated_artifacts=tuple(pending_dbt_artifacts),
+        #             )
+        #             bundle_collisions = sorted(set(pending_dbt_artifacts) & set(bundle.artifacts))
+        #             if bundle_collisions:
+        #                 raise RuntimeError(
+        #                     f"Custom/generated dbt artifact collisions: {bundle_collisions}"
+        #                 )
+        #             pending_dbt_artifacts.update(bundle.artifacts)
+        #
+        #         total_files += _write_artifacts(pending_dbt_artifacts, target_output)
+        #         # Remove dbt artifacts this run no longer produces so re-projection
+        #         # converges on the current output.
+        #         removed = _reconcile_managed_output(target_output, pending_dbt_artifacts.keys())
+        #         if removed:
+        #             _logger.info("Removed %d obsolete dbt artifact(s)", removed)
+        #         _logger.info("Generated project config for %d domain(s)", len(dbt_domain_names))
+        #     except Exception as exc:
+        #         target_failed = True
+        #         message = f"dbt assembly failed; no dbt artifacts were written: {exc}"
+        #         fatal_target_errors.append(message)
+        #         print(f"  ✗ {message}\n")
+        # elif target_name in {"dbt", "silver"} and target_failed:
+        #     message = f"{target_name} projection failed; no dbt artifacts were written"
+        #     fatal_target_errors.append(message)
+        #     print(f"  ✗ {message}\n")
+        #
+        # # After all domains: merge per-domain coverage data into a single report
+        # if target_name in {"dbt", "silver"} and dbt_coverage_data and not target_failed:
+        #     import json as _json
+        #
+        #     merged_coverage = {
+        #         "domains": dbt_coverage_data,
+        #         "summary": _build_coverage_summary(dbt_coverage_data),
+        #     }
+        #     coverage_content = _json.dumps(merged_coverage, indent=2, ensure_ascii=False)
+        #     reports_dir = output_path / "reports"
+        #     reports_dir.mkdir(parents=True, exist_ok=True)
+        #     coverage_artifacts = {"coverage-silver.json": coverage_content}
+        #     # Generate human-readable Markdown rendering
+        #     md_content = _render_silver_coverage_md(merged_coverage, generated_at=generated_at)
+        #     coverage_artifacts["coverage-silver.md"] = md_content
+        #     total_files += _write_artifacts(coverage_artifacts, reports_dir)
+        #     _reconcile_managed_output(reports_dir, coverage_artifacts.keys())
+        #     print(f"  ✓ Merged coverage report for {len(dbt_coverage_data)} domain(s)")
+        #
+        # # DD-110: dbt and the explicit Silver facade emit the same physical ERDs.
+        # if target_name in {"dbt", "silver"} and total_files > 0:
+        #     from .projections.medallion_silver_projector import (
+        #         generate_master_erd,
+        #         render_mermaid_svg,
+        #     )
+        #
+        #     dbt_output = output_path / "medallion" / "dbt"
+        #     hub_name = (
+        #         ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
+        #     )
+        #     master_mmd = generate_master_erd(dbt_output, hub_name=hub_name)
+        #     if master_mmd:
+        #         diagrams_dir = dbt_output / "docs" / "diagrams"
+        #         diagrams_dir.mkdir(parents=True, exist_ok=True)
+        #         master_path = diagrams_dir / "master-erd.mmd"
+        #         master_path.write_text(master_mmd, encoding="utf-8")
+        #         total_files += 1
+        #         print("  ✓ Master ERD written: dbt/docs/diagrams/master-erd.mmd")
+        #     # Render all .mmd files to SVG via Mermaid CLI (if available)
+        #     svg_count = 0
+        #     diagrams_root = dbt_output / "docs" / "diagrams"
+        #     if diagrams_root.exists():
+        #         for mmd_file in sorted(diagrams_root.rglob("*.mmd")):
+        #             svg = render_mermaid_svg(mmd_file)
+        #             if svg:
+        #                 svg_count += 1
+        #     if svg_count:
+        #         total_files += svg_count
+        #         print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
+        #     else:
+        #         print(
+        #             "  [info] Mermaid CLI (mmdc) not found -- SVG export skipped."
+        #             " Install: npm install -D @mermaid-js/mermaid-cli"
+        #         )
+        #
+        # # After all domains: generate master gold ERD
+        # if target_name == "powerbi" and total_files > 0:
+        #     from .projections.medallion_gold_projector import generate_master_gold_erd
+        #     from .projections.medallion_silver_projector import render_mermaid_svg
+        #
+        #     gold_output = output_path / "powerbi"
+        #     hub_name = (
+        #         ontologies_path.parent.parent.name if ontologies_path.parent else "ontology-hub"
+        #     )
+        #     master_mmd = generate_master_gold_erd(gold_output, hub_name=hub_name)
+        #     if master_mmd:
+        #         master_path = gold_output / "master-gold-erd.mmd"
+        #         master_path.write_text(master_mmd, encoding="utf-8")
+        #         total_files += 1
+        #         print("  ✓ Master Gold ERD written: powerbi/master-gold-erd.mmd")
+        #     svg_count = 0
+        #     if gold_output.exists():
+        #         for mmd_file in sorted(gold_output.rglob("*.mmd")):
+        #             svg = render_mermaid_svg(mmd_file)
+        #             if svg:
+        #                 svg_count += 1
+        #     if svg_count:
+        #         total_files += svg_count
+        #         print(f"  ✓ Rendered {svg_count} SVG file(s) via Mermaid CLI")
+        #     else:
+        #         print(
+        #             "  [info] Mermaid CLI (mmdc) not found -- SVG export skipped."
+        #             " Install: npm install -D @mermaid-js/mermaid-cli"
+        #         )
 
         print(f"  ✓ {target_name} projection completed: {total_files} total files\n")
 
@@ -1856,6 +1881,7 @@ def _run_projection(
             namespace=namespace,
             ontology_name=ontology_name or "domain",
             ontology_metadata=ontology_metadata or {},
+            overlay_path=projection_ext_path,
         )
 
     # Externally-registered targets (e.g. mdm-profile) — dispatched via the
