@@ -23,19 +23,39 @@ but the package revision is the commit SHA.
 
 ## Pull-request checks
 
-Before enabling the PR workflow, add a credential-isolated `ci` target to `.dbt/profiles.yml`.
-Then run:
+`.github/workflows/pr-validate.yml` runs on every pull request against `main`, entirely on a
+GitHub-hosted runner, with **no warehouse credentials required**:
 
 ```powershell
 uv sync --locked
 uv run dbt deps
 uv run dbt parse --profiles-dir .dbt --target ci
 uv run dbt compile --profiles-dir .dbt --target ci
+uv run kairos-ontology validate-source-bindings
+```
+
+This schema-level default is deliberate: a freshly scaffolded dataplatform has no warehouse CI
+credentials configured, so a literal full build by default would fail out of the box for every new
+hub. The workflow writes its own throwaway, credential-free `ci` target (the same synthetic
+`offline.invalid` placeholder the hub's own `validate-dbt` gate uses) so `dbt parse`/`dbt compile`
+have a `--target ci` to resolve against without needing any secret. `validate-source-bindings` must
+fail closed before any warehouse execution when a package source lacks a real physical binding, or
+the binding is unknown, duplicate, or stale — and it needs no credentials either, since it only
+compares package source usage against `models/_sources.yml`.
+
+### Opt-in: full `dbt build`
+
+Add a full, isolated `dbt build --profiles-dir .dbt --target ci` step only once this repository has
+a real, credential-isolated `ci` target — add it as a GitHub Environment secret, never commit it to
+`.dbt/profiles.yml`, and remove (or make conditional) the workflow's placeholder-profile step first,
+since a build needs a `ci` target that can actually reach a warehouse:
+
+```powershell
 uv run dbt build --profiles-dir .dbt --target ci
 ```
 
-CI must fail before the build when any package source lacks a real physical binding. The full build
-is the default; introduce Slim CI only when project scale demonstrates that it is necessary.
+The full build runs applicable unit tests, materializes models, and then runs data tests in
+dependency order; introduce Slim CI only when project scale demonstrates that it is necessary.
 
 ## Promotion
 
