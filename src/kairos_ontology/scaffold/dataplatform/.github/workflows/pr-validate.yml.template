@@ -27,6 +27,21 @@ jobs:
         with:
           persist-credentials: false
 
+      # The hub package must always be pinned via `git:` + a full commit SHA
+      # `revision:`, updated only through `kairos-ontology bump-hub <ref>` (see
+      # CICD.md's "Hub package updates" section). A `local:` filesystem path is
+      # a tempting shortcut for testing pre-release hub output, but it silently
+      # breaks on every other clone/CI runner and bypasses the staleness-
+      # tracking mechanism entirely -- fail closed here instead of letting it
+      # reach main.
+      - name: Guard against local: package pins
+        run: |
+          if grep -qE '^\s*-?\s*local:' packages.yml; then
+            echo "::error file=packages.yml::packages.yml pins a package via 'local:'." \
+              "Use 'kairos-ontology bump-hub <ref>' to pin an immutable git revision instead."
+            exit 1
+          fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

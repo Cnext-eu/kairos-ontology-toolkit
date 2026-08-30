@@ -37,6 +37,28 @@
       # tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
       # client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
       # client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
+      # --- Promotion targets (uncomment/adjust for a multi-environment setup,
+      # e.g. one Fabric workspace per environment) — run with: dbt run --target uat
+      # uat:
+      #   type: fabric
+      #   driver: "ODBC Driver 18 for SQL Server"
+      #   server: "{your-uat-workspace}.datawarehouse.fabric.microsoft.com"
+      #   database: "{your-lakehouse-name}"
+      #   schema: "dbo"
+      #   authentication: ServicePrincipal
+      #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
+      #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
+      #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
+      # prod:
+      #   type: fabric
+      #   driver: "ODBC Driver 18 for SQL Server"
+      #   server: "{your-prod-workspace}.datawarehouse.fabric.microsoft.com"
+      #   database: "{your-lakehouse-name}"
+      #   schema: "dbo"
+      #   authentication: ServicePrincipal
+      #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
+      #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
+      #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
 # --- END PLATFORM ---
 
 # --- PLATFORM: fabric-warehouse ---
@@ -54,6 +76,28 @@
     #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
     #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
     # @endconfig
+    # --- Promotion targets (uncomment/adjust for a multi-environment setup,
+    # e.g. one Fabric workspace per environment) — run with: dbt run --target uat
+    # uat:
+    #   type: fabric
+    #   driver: "ODBC Driver 18 for SQL Server"
+    #   server: "{your-uat-workspace}.datawarehouse.fabric.microsoft.com"
+    #   database: "{your-warehouse-name}"
+    #   schema: "dbo"
+    #   authentication: ServicePrincipal
+    #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
+    #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
+    #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
+    # prod:
+    #   type: fabric
+    #   driver: "ODBC Driver 18 for SQL Server"
+    #   server: "{your-prod-workspace}.datawarehouse.fabric.microsoft.com"
+    #   database: "{your-warehouse-name}"
+    #   schema: "dbo"
+    #   authentication: ServicePrincipal
+    #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
+    #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
+    #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
 # --- END PLATFORM ---
 
 # --- PLATFORM: databricks ---
@@ -68,4 +112,20 @@
     #   http_path: "/sql/1.0/warehouses/{warehouse-id}"
     #   token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
     # @endconfig
+    # --- Promotion targets (uncomment/adjust for a multi-environment setup)
+    # — run with: dbt run --target uat
+    # uat:
+    #   type: databricks
+    #   catalog: "{your-uat-catalog}"
+    #   schema: "silver"
+    #   host: "{workspace-url}.azuredatabricks.net"
+    #   http_path: "/sql/1.0/warehouses/{warehouse-id}"
+    #   token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
+    # prod:
+    #   type: databricks
+    #   catalog: "{your-prod-catalog}"
+    #   schema: "silver"
+    #   host: "{workspace-url}.azuredatabricks.net"
+    #   http_path: "/sql/1.0/warehouses/{warehouse-id}"
+    #   token: "{{ env_var('DBT_DATABRICKS_TOKEN') }}"
 # --- END PLATFORM ---

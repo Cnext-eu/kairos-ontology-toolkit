@@ -19,6 +19,10 @@ deployment configuration, and runtime tests.
    is uncommented under `dev:`, the other two platforms remain as commented reference blocks.
    Copy it to `.dbt/profiles.yml` and fill in real connection details/credentials only; no
    manual comment-toggling between platforms is required.
+   `--platform` only picks where **this dbt project's own silver/gold models write** and
+   which adapter is templated — bronze source data can live in any same-workspace item
+   (e.g. a Fabric Lakehouse) regardless of the chosen platform; bind it via `database:` in
+   `_sources.yml` using the platform's native cross-item SQL, no second connection needed.
 4. Bind physical databases, schemas, and source relations in the downstream dbt project.
 5. Consume the compiler-emitted dbt package at an immutable Git revision or artifact version.
 6. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` against the target adapter.

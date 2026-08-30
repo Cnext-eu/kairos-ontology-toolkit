@@ -1809,13 +1809,25 @@ def _schema_model(
             )
         )
 
+    # DD-108 fallback pair only names real columns on models that lack a resolved
+    # business/integration identity (see the analogous `grain_columns` fallback in
+    # `_finalize_silver_contracts`). A resolved identity's model never carries these
+    # two literal columns, so unconditionally emitting them here produced an extra,
+    # always-failing `unique_combination_of_columns` test against nonexistent columns
+    # whenever it differed from the real `grain_columns` (bug #17a).
+    schema_names = {column.name for column in columns}
+    source_identity_placeholder = tuple(
+        column for column in ("_source_system", "_source_record_key") if column in schema_names
+    )
+    source_identity_columns = source_identity_placeholder or grain_columns
+
     return SchemaModelSpec(
         name=model.name,
         description=model.description,
         metadata=tuple(sorted((key, str(value)) for key, value in model_metadata.items())),
         columns=tuple(columns),
         grain_columns=grain_columns,
-        source_identity_columns=("_source_system", "_source_record_key"),
+        source_identity_columns=source_identity_columns,
         grain_where=(
             f"{runtime.history.current_flag_column} = 1"
             if runtime is not None and runtime.history.scd_type.value.value == "2"

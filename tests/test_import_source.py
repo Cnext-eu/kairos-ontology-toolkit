@@ -649,6 +649,25 @@ class TestMergeWithExisting:
             == "<redacted kind=email source=tblClient.Email datatype=string>"
         )
 
+    def test_distinct_count_updated_on_merge(self, existing_vocab_file):
+        """distinct_count must be re-synced on merge, not silently dropped (bug #10)."""
+        with existing_vocab_file.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\ntestapp:tblClient_ClientId "
+                'kairos-bronze:distinctCount "5"^^xsd:integer .\n'
+            )
+        data = copy.deepcopy(VALID_YAML_DATA)
+        data["tables"][0]["columns"][0]["distinct_count"] = 42
+
+        ttl, _ = merge_with_existing(data, existing_vocab_file)
+
+        graph = Graph()
+        graph.parse(data=ttl, format="turtle")
+        ns = Namespace("https://kairos.cnext.eu/source/testapp#")
+        assert (
+            int(graph.value(ns["tblClient_ClientId"], KAIROS_BRONZE.distinctCount)) == 42
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Orchestration Tests
