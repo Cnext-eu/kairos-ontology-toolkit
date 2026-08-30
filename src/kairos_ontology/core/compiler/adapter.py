@@ -925,6 +925,15 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
     for check in binding.quality:
         if check.kind not in {"not-null", "unique"}:
             continue
+        # A multi-column `unique` check is a claim about the tuple, not about any one
+        # column in isolation -- decomposing it into per-column `unique` tests (like
+        # `not-null` legitimately does, since "all not null" does mean "each not null")
+        # produces tests that are both semantically wrong and guaranteed to fail on any
+        # real multi-column grain (bug #17b). Composite uniqueness across these columns
+        # is left untested here; when they coincide with the model's own identity/grain
+        # columns it is already covered by the grain's own composite test.
+        if check.kind == "unique" and len(check.columns) > 1:
+            continue
         dbt_test = "not_null" if check.kind == "not-null" else "unique"
         for column in check.columns:
             source_uri = relation.column_uri(column)

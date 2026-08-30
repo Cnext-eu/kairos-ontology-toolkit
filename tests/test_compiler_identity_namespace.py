@@ -208,6 +208,52 @@ def test_composite_key_preserves_order():
     assert _natural_keys(text) == ("beta", "alpha")
 
 
+def test_composite_business_key_does_not_emit_extraneous_placeholder_test():
+    """Regression for bug #17a.
+
+    A resolved composite business-key identity never carries real
+    `_source_system`/`_source_record_key` columns, so the DD-108 fallback pair must not
+    be emitted as a second `unique_combination_of_columns` test alongside the real,
+    grain-based one -- that placeholder pair referenced nonexistent columns and always
+    errored against a live warehouse.
+    """
+    text = _binding("""
+        apiVersion: kairos.eu/v5
+        kind: EntityBinding
+        metadata:
+          name: ops-order
+          domain: order
+        source:
+          relation: ops.orders
+        target:
+          class: order:Order
+        grain:
+          columns: [order_id]
+        identity:
+          strategy: source-natural
+          sourceKey: [beta_src, alpha_src]
+        load:
+          mode: full-refresh
+        fields:
+          - property: order:orderId
+            expression: order_id
+          - property: order:alpha
+            expression: alpha_src
+          - property: order:beta
+            expression: beta_src
+    """)
+    bound = adapt_binding(load_entity_binding(text, path="order.yaml"), _context())
+    contract = normalize_contract(bound, ExecutionMode.FAIL_FAST)
+    shaped = shape_project(contract)
+    plan = plan_materialization(contract, shaped)
+    artifacts = render_project(shaped, plan)
+    schema_yml = artifacts["models/silver/order/_order__models.yml"]
+
+    assert schema_yml.count("unique_combination_of_columns") == 1
+    assert "_source_system" not in schema_yml
+    assert "_source_record_key" not in schema_yml
+
+
 def test_identity_key_without_field_mapping_is_actionable():
     text = _binding("""
         apiVersion: kairos.eu/v5

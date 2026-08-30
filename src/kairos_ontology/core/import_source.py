@@ -930,6 +930,7 @@ def _sync_managed_sample_predicates(
             subject = _column_uri(base_ns, table_name, column_name)
             graph.remove((subject, KAIROS_BRONZE.sampleValues, None))
             graph.remove((subject, KAIROS_BRONZE.enumValues, None))
+            graph.remove((subject, KAIROS_BRONZE.distinctCount, None))
 
             samples = column.get("samples") or []
             if samples:
@@ -947,6 +948,15 @@ def _sync_managed_sample_predicates(
                         subject,
                         KAIROS_BRONZE.enumValues,
                         Literal(" | ".join(str(item) for item in enum_values)),
+                    )
+                )
+            distinct_count = column.get("distinct_count")
+            if distinct_count is not None:
+                graph.add(
+                    (
+                        subject,
+                        KAIROS_BRONZE.distinctCount,
+                        Literal(distinct_count, datatype=XSD.integer),
                     )
                 )
 

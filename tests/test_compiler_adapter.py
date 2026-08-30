@@ -145,6 +145,31 @@ def test_adapter_is_deterministic():
     assert file_first == file_second
 
 
+def test_multi_column_unique_quality_check_does_not_decompose_per_column():
+    """Regression for bug #17b.
+
+    A composite `quality: kind: unique, columns: [a, b]` declaration is a claim about
+    the tuple, not that each column is independently unique -- decomposing it into
+    per-column `unique` tests (as `not-null` legitimately does) produces tests
+    guaranteed to fail on any real multi-column grain.
+    """
+    binding = BINDING + "\nquality:\n  - kind: unique\n    columns: [customer_id, customer_name]\n"
+    artifacts = _render(binding, _context())
+    schema_yml = artifacts["models/silver/party/_party__models.yml"]
+
+    # customer_name is never part of the grain, so any `unique` test attached to it
+    # can only have come from the (buggy) per-column decomposition of the composite
+    # quality check.
+    lines = schema_yml.splitlines()
+    name_index = next(i for i, line in enumerate(lines) if "name: customer_name" in line)
+    next_column_index = next(
+        (i for i in range(name_index + 1, len(lines)) if lines[i].lstrip().startswith("- name:")),
+        len(lines),
+    )
+    column_block = "\n".join(lines[name_index:next_column_index])
+    assert "unique" not in column_block, column_block
+
+
 def test_unknown_property_is_reported_with_location():
     context = _context()
     broken = BINDING.replace("party:customerName", "party:doesNotExist")
