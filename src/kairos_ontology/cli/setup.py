@@ -372,6 +372,18 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
             shutil.copy2(workflow_src, workflow_dst)
             print("  ✓ Installed .github/workflows/managed-check.yml")
 
+    # 4b-i-b. Copy PR validation workflow (DD-206 §4: ontology/SHACL/binding
+    # validation, compile checks, publish-output drift check, dbt package validation)
+    pr_wf_src = _SCAFFOLD_DIR / "github-workflows" / "pr-validate.yml"
+    pr_wf_dst = cwd / ".github" / "workflows" / "pr-validate.yml"
+    if pr_wf_src.is_file():
+        if pr_wf_dst.exists() and not force:
+            print("  ⏭  .github/workflows/pr-validate.yml already exists (use --force)")
+        else:
+            pr_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pr_wf_src, pr_wf_dst)
+            print("  ✓ Installed .github/workflows/pr-validate.yml")
+
     # 4b-ii. Copy release-projections workflow
     release_wf_src = _SCAFFOLD_DIR / "github-workflows" / "release-projections.yml"
     release_wf_dst = cwd / ".github" / "workflows" / "release-projections.yml"
@@ -1180,6 +1192,15 @@ def new_repo(
         workflow_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(workflow_src, workflow_dst)
         print("  ✓ .github/workflows/managed-check.yml")
+
+    # PR validation workflow (DD-206 §4: ontology/SHACL/binding validation,
+    # compile checks, publish-output drift check, dbt package validation)
+    pr_wf_src = _SCAFFOLD_DIR / "github-workflows" / "pr-validate.yml"
+    pr_wf_dst = repo_dir / ".github" / "workflows" / "pr-validate.yml"
+    if pr_wf_src.is_file():
+        pr_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pr_wf_src, pr_wf_dst)
+        print("  ✓ .github/workflows/pr-validate.yml")
 
     # Release-projections workflow
     release_wf_src = _SCAFFOLD_DIR / "github-workflows" / "release-projections.yml"
