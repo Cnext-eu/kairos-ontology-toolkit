@@ -597,3 +597,114 @@ class TestUpdateDataplatform:
         # Hub-only skills absent
         assert not (skills_dir / "kairos-design-domain").exists()
         assert not (skills_dir / "kairos-execute-project").exists()
+
+
+class TestUpdateModelsCustomMigration:
+    """Tests for the idempotent models/custom/ -> models/downstream_only/ migration
+    that `update` runs for existing dataplatform repos (DD-206 follow-up)."""
+
+    @staticmethod
+    def _dataplatform_repo(tmp_path):
+        """Create a minimal dataplatform repo (dbt_project.yml + .github/)."""
+        (tmp_path / "dbt_project.yml").write_text("name: test\n", encoding="utf-8")
+        (tmp_path / ".github").mkdir()
+        return tmp_path
+
+    @staticmethod
+    def _invoke_update(tmp_path, args=None):
+        runner = CliRunner()
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            return runner.invoke(cli, ["update", *(args or [])])
+        finally:
+            os.chdir(old_cwd)
+
+    def test_already_migrated_repo_is_noop(self, tmp_path):
+        """Only models/downstream_only/ present -> nothing printed about migration."""
+        self._dataplatform_repo(tmp_path)
+        downstream_dir = tmp_path / "models" / "downstream_only"
+        downstream_dir.mkdir(parents=True)
+        (downstream_dir / ".gitkeep").write_text("", encoding="utf-8")
+
+        result = self._invoke_update(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert "models/custom" not in result.output
+        assert "DD-206" not in result.output
+        # Untouched
+        assert (downstream_dir / ".gitkeep").exists()
+
+    def test_migrates_real_user_model_file(self, tmp_path):
+        """models/custom/my_model.sql, no models/downstream_only/ -> file moves over."""
+        self._dataplatform_repo(tmp_path)
+        custom_dir = tmp_path / "models" / "custom"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "my_model.sql").write_text(
+            "select 1 as id\n", encoding="utf-8"
+        )
+
+        result = self._invoke_update(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert "Migrated models/custom" in result.output
+        assert "DD-206" in result.output
+        assert not custom_dir.exists()
+        migrated = tmp_path / "models" / "downstream_only" / "my_model.sql"
+        assert migrated.exists()
+        assert migrated.read_text(encoding="utf-8") == "select 1 as id\n"
+
+    def test_conflict_when_both_directories_exist(self, tmp_path):
+        """Both directories populated -> neither touched, warning printed, update still succeeds."""
+        self._dataplatform_repo(tmp_path)
+        custom_dir = tmp_path / "models" / "custom"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "old_model.sql").write_text("select 1\n", encoding="utf-8")
+        downstream_dir = tmp_path / "models" / "downstream_only"
+        downstream_dir.mkdir(parents=True)
+        (downstream_dir / "new_model.sql").write_text("select 2\n", encoding="utf-8")
+
+        result = self._invoke_update(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert "Both models/custom/ and models/downstream_only/ exist" in result.output
+        # Neither directory was modified
+        assert (custom_dir / "old_model.sql").read_text(encoding="utf-8") == "select 1\n"
+        assert (downstream_dir / "new_model.sql").read_text(encoding="utf-8") == "select 2\n"
+        # The rest of `update` still ran normally (managed-file refresh happened)
+        assert (tmp_path / ".github" / "copilot-instructions.md").exists()
+
+    def test_second_update_run_is_silent(self, tmp_path):
+        """Running `update` twice: the second run prints nothing about migration."""
+        self._dataplatform_repo(tmp_path)
+        custom_dir = tmp_path / "models" / "custom"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "my_model.sql").write_text("select 1\n", encoding="utf-8")
+
+        first = self._invoke_update(tmp_path)
+        assert first.exit_code == 0, first.output
+        assert "Migrated models/custom" in first.output
+
+        second = self._invoke_update(tmp_path)
+        assert second.exit_code == 0, second.output
+        assert "models/custom" not in second.output
+        assert "DD-206" not in second.output
+        # Still migrated, nothing reverted
+        assert (tmp_path / "models" / "downstream_only" / "my_model.sql").exists()
+        assert not custom_dir.exists()
+
+    def test_noop_for_hub_repo(self, tmp_path):
+        """No dbt_project.yml (hub repo) -> migration step never runs."""
+        (tmp_path / ".github").mkdir()
+        custom_dir = tmp_path / "models" / "custom"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "my_model.sql").write_text("select 1\n", encoding="utf-8")
+
+        result = self._invoke_update(tmp_path)
+
+        assert result.exit_code == 0, result.output
+        assert "models/custom" not in result.output
+        assert "DD-206" not in result.output
+        # Left completely alone
+        assert (custom_dir / "my_model.sql").exists()
+        assert not (tmp_path / "models" / "downstream_only").exists()

@@ -60,6 +60,66 @@ from .shared import (
 )
 
 
+def _migrate_dataplatform_custom_models(repo_root: Path, check: bool) -> None:
+    """Migrate a legacy ``models/custom/`` directory to ``models/downstream_only/``.
+
+    DD-206 Phase 1 renamed the *fresh-scaffold* placeholder, but a dataplatform
+    repo scaffolded before that rename still has a real ``models/custom/``
+    directory -- possibly with real user-authored dbt models in it. Nothing
+    else migrates an existing repo, so ``update`` does it here, as part of its
+    normal managed-file refresh.
+
+    Idempotent: a repo with no ``models/custom/`` (never had one, or already
+    migrated) is a silent no-op -- this is what makes repeated ``update`` runs
+    print nothing about this step after the first successful migration.
+
+    Never touches anything when both directories already exist -- that is a
+    real conflict (e.g. a partial hand-migration) the user must resolve; this
+    prints a warning and lets the rest of ``update`` continue normally.
+    """
+    custom_dir = repo_root / "models" / "custom"
+    downstream_dir = repo_root / "models" / "downstream_only"
+
+    if not custom_dir.is_dir():
+        return  # never existed, or already migrated -- nothing to do
+
+    if downstream_dir.exists():
+        print(
+            "⚠  Both models/custom/ and models/downstream_only/ exist.\n"
+            "   DD-206 renamed models/custom/ to models/downstream_only/, but this repo\n"
+            "   has content in both directories -- resolve the conflict by hand (merge\n"
+            "   the two, or remove whichever is stale) and re-run `update`. Nothing was\n"
+            "   moved automatically."
+        )
+        return
+
+    if check:
+        print(
+            "ℹ  models/custom/ exists and will be migrated to models/downstream_only/\n"
+            "   (DD-206) on the next `update` run without --check."
+        )
+        return
+
+    # Prefer `git mv` -- it preserves file history -- but only when this repo
+    # is (or is inside) a git repo and the move succeeds cleanly. Any failure
+    # (not a git repo, dirty index conflict, etc.) falls back to a plain
+    # filesystem move so the migration still completes.
+    git_result = subprocess.run(
+        ["git", "mv", "models/custom", "models/downstream_only"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if git_result.returncode != 0:
+        shutil.move(str(custom_dir), str(downstream_dir))
+
+    print(
+        "📦 Migrated models/custom/ -> models/downstream_only/ (DD-206): downstream-owned\n"
+        "   dbt models now live under the new path. Update any dbt selectors, docs, or\n"
+        "   CI configuration that still reference models/custom/."
+    )
+
+
 @click.command()
 @click.option(
     "--check",
@@ -335,10 +395,23 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
 
     # Detect repo type: dataplatform (has dbt_project.yml) vs ontology-hub
     repo_root = Path.cwd()
-    if (repo_root / "dbt_project.yml").is_file():
+    is_dataplatform = (repo_root / "dbt_project.yml").is_file()
+    if is_dataplatform:
         managed_map = _managed_dataplatform_map()
     else:
         managed_map = _managed_scaffold_map()
+
+    # --- models/custom/ -> models/downstream_only/ migration (DD-206 follow-up) --
+    # DD-206 Phase 1 renamed the *fresh-scaffold* placeholder from models/custom/
+    # to models/downstream_only/, but a dataplatform repo scaffolded before that
+    # rename still has a real models/custom/ directory -- possibly containing
+    # real user-authored dbt models, not just a placeholder. Nothing else
+    # migrates that repo, so `update` does it here: automatically, idempotently
+    # (silent no-op once migrated, or if the repo never had models/custom/), and
+    # only for dataplatform repos -- a hub repo never has a models/ directory in
+    # the first place.
+    if is_dataplatform:
+        _migrate_dataplatform_custom_models(repo_root, check)
 
     updated: list[tuple[str, str]] = []
     outdated: list[tuple[str, str]] = []
