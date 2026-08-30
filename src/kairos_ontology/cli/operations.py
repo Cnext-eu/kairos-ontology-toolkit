@@ -37,16 +37,19 @@ from .shared import (
     _managed_dataplatform_map,
     _managed_files_transaction,
     _managed_scaffold_map,
+    _parse_hub_package_pin,
     _read_hub_channel,
     _read_pinned_toolkit_version,
     _read_toolkit_test_ref_state,
     _refresh_with_installed_toolkit,
     _remove_toolkit_test_ref_state,
     _resolve_channel,
+    _resolve_hub_ref_sha,
     _resolve_refmodels_tag,
     _resolve_toolkit_ref_sha,
     _restore_dependency_files,
     _resync_restored_dependency,
+    _rewrite_hub_package_pin,
     _rewrite_toolkit_dependency_source,
     _refmodels_whl_url,
     _single_toolkit_dependency_source,
@@ -646,3 +649,58 @@ def update_refmodels(version_tag):
         kairos-ontology update-refmodels --version v1.33.1
     """
     _upgrade_refmodels(version_tag)
+
+
+@click.command(name="bump-hub")
+@click.argument("ref")
+def bump_hub(ref):
+    """Pin the hub dbt package in packages.yml to REF's full commit SHA.
+
+    Run from a dataplatform repository root containing packages.yml (DD-206
+    §2, §12 item 4). REF is a hub branch, tag, or commit SHA; it is resolved
+    against the hub's GitHub repository -- read from the existing ``git:``
+    line in packages.yml, commented or not -- to an immutable 40-character
+    commit SHA via `gh api`. The hub package block is uncommented and pinned
+    on first use, and its ``revision:`` is updated in place on every
+    subsequent bump. Fails closed if REF cannot be resolved: packages.yml is
+    left untouched.
+
+    \b
+    Examples:
+      kairos-ontology bump-hub v1.4.0
+      kairos-ontology bump-hub main
+      kairos-ontology bump-hub 0123456789abcdef0123456789abcdef01234567
+    """
+    packages_path = Path.cwd() / "packages.yml"
+    if not packages_path.is_file():
+        print(
+            f"❌ {packages_path} not found.\n"
+            "   Run this command from a dataplatform repository root."
+        )
+        raise SystemExit(1)
+
+    content = packages_path.read_text(encoding="utf-8")
+    try:
+        pin = _parse_hub_package_pin(content)
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        raise SystemExit(1)
+
+    sha = _resolve_hub_ref_sha(ref, pin.org_repo)
+    if sha is None:
+        print(
+            f"❌ Could not resolve hub ref {ref!r} against {pin.org_repo} to an immutable\n"
+            "   commit SHA; verify the ref and `gh auth status`, then retry."
+        )
+        raise SystemExit(1)
+
+    new_content = _rewrite_hub_package_pin(content, sha)
+    packages_path.write_text(new_content, encoding="utf-8")
+
+    previous = pin.previous_revision or "(none)"
+    action = "Uncommented and pinned" if pin.was_commented else "Updated"
+    print(f"✅ {action} hub package pin in {packages_path.name}")
+    print(f"   Hub:      {pin.org_repo}")
+    print(f"   Ref:      {ref}")
+    print(f"   Previous: {previous}")
+    print(f"   New SHA:  {sha}")

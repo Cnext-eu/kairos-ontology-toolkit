@@ -162,6 +162,55 @@ class TestInitDataplatform:
         assert (dp_dir / "packages.yml").exists()
         assert (dp_dir / "pyproject.toml").exists()
         assert (dp_dir / "README.md").exists()
+        assert (dp_dir / "CICD.md").exists()
+        assert (dp_dir / "CONTRIBUTING.md").exists()
+
+    def test_creates_downstream_only_models_dir_not_custom(self, dataplatform_output):
+        dp_dir = dataplatform_output
+        assert (dp_dir / "models" / "downstream_only").is_dir()
+        assert not (dp_dir / "models" / "custom").exists()
+
+    def test_cicd_guide_is_managed_and_describes_exact_sha_promotion(
+        self, dataplatform_output
+    ):
+        cicd = (dataplatform_output / "CICD.md").read_text(encoding="utf-8")
+        assert "kairos-ontology-toolkit:managed" in cicd
+        assert "full 40-character hub commit SHA" in cicd
+        assert "DEV build -> approval -> UAT build" in cicd
+        assert "forward-port" in cicd
+        assert "kairos-ontology update --upgrade" in cicd
+        assert "powerbi-semantic-model.zip" in cicd
+        assert "both `SemanticModel` and `Report`" in cicd
+        assert "downstream deployment is read-only" in cicd
+
+    def test_cicd_guide_distinguishes_pr_default_from_opt_in_build(self, dataplatform_output):
+        """CICD.md prose must match pr-validate.yml: parse/compile default, build opt-in.
+
+        DD-206 group C, task 3: the scaffolded PR workflow's default is schema-level
+        only (no warehouse credentials); a full `dbt build` is documented as an
+        additional opt-in step that needs its own credential-isolated `ci` target.
+        """
+        cicd = (dataplatform_output / "CICD.md").read_text(encoding="utf-8")
+        assert "pr-validate.yml" in cicd
+        assert "no warehouse credentials required" in cicd
+        assert "uv run dbt parse --profiles-dir .dbt --target ci" in cicd
+        assert "uv run dbt compile --profiles-dir .dbt --target ci" in cicd
+        assert "validate-source-bindings" in cicd
+        assert "Opt-in: full" in cicd
+        assert "uv run dbt build --profiles-dir .dbt --target ci" in cicd
+        assert "credential-isolated" in cicd
+        # The old unconditional framing ("full build is the default") must be gone.
+        assert "full build\nis the default" not in cicd
+        assert "The full build is the default" not in cicd
+
+    def test_contributing_guide_is_managed_and_describes_branch_prefixes(
+        self, dataplatform_output
+    ):
+        contributing = (dataplatform_output / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        assert "kairos-ontology-toolkit:managed" in contributing
+        assert "bump/hub-" in contributing
+        assert "hotfix/" in contributing
+        assert "kairos-ontology update --upgrade" in contributing
 
     def test_packages_yml_has_hub_reference(self, dataplatform_output):
         packages = (dataplatform_output / "packages.yml").read_text(encoding="utf-8")
@@ -228,10 +277,58 @@ class TestInitDataplatform:
         content = wf.read_text(encoding="utf-8")
         assert "powerbi-semantic-model.zip" in content
         assert "fabric-cicd" in content
-        assert "package_fabric_semantic_model.py" in content
+        # DD-206 #12 item 10: normalization moved into hub Gold emission; the
+        # dataplatform side no longer scaffolds or invokes a mutating helper script.
+        assert "package_fabric_semantic_model.py" not in content
         assert "TestOrg" in content
         assert "test-ontology-hub" in content
         assert "v1.2.0" in content
+
+    def test_fabric_deploy_workflow_verifies_hub_sha_and_archive_checksum(
+        self, dataplatform_output
+    ):
+        """DD-206 §8 dataplatform responsibility items 1-3: accept and verify the
+        expected hub SHA and archive SHA-256 before extraction, fail closed on either
+        mismatch.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        content = wf.read_text(encoding="utf-8")
+
+        assert "expected_hub_sha" in content
+        assert "expected_archive_sha256" in content
+        assert "sha256sum powerbi-semantic-model.zip" in content
+        # Both verification steps run, and fail closed, before extraction.
+        verify_hub_sha = content.index("expected_hub_sha")
+        verify_checksum = content.index("Verify archive SHA-256")
+        unpack = content.index("Unpack semantic model package")
+        assert verify_hub_sha < unpack
+        assert verify_checksum < unpack
+        assert content.count("exit 1") >= 2
+
+    def test_fabric_deploy_workflow_gates_on_dbt_build_success(self, dataplatform_output):
+        """DD-206 §12 item 9 / §8 dataplatform responsibility item 7: deploy only
+        after the target environment's dbt build already succeeded. GitHub Actions has
+        no native cross-workflow `needs:` for two independently workflow_dispatch
+        -triggered workflows, so this is a verified, documented manual-ordering input
+        rather than a silent precondition.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        content = wf.read_text(encoding="utf-8")
+
+        assert "dbt_build_run_id" in content
+        assert "gh run view" in content
+        dbt_gate = content.index("Verify target environment's dbt build already succeeded")
+        download = content.index("Download semantic model package")
+        assert dbt_gate < download
+
+    def test_fabric_deploy_workflow_deploys_both_item_types(self, dataplatform_output):
+        """DD-206 §8 dataplatform responsibility item 6: deploy both SemanticModel and
+        Report item types, not SemanticModel alone.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        content = wf.read_text(encoding="utf-8")
+
+        assert '"SemanticModel", "Report"' in content
 
     def test_fabric_deploy_settings_example_created(self, dataplatform_output):
         cfg = dataplatform_output / ".github" / "fabric" / "deployment-settings.json.example"
@@ -241,12 +338,55 @@ class TestInitDataplatform:
         assert "test-ontology-hub" in content
         assert "v1.2.0" in content
 
-    def test_fabric_package_script_created(self, dataplatform_output):
+    def test_fabric_package_script_is_not_scaffolded(self, dataplatform_output):
+        """DD-206 #12 item 10: the mutating packaging helper is gone from the hub
+        scaffold; TMDL/PBIP normalization now happens once, in hub Gold emission.
+        """
         script = dataplatform_output / "scripts" / "package_fabric_semantic_model.py"
-        assert script.exists()
-        content = script.read_text(encoding="utf-8")
-        assert "definition.pbism" in content
-        assert ".platform" in content
+        assert not script.exists()
+
+    def test_pr_validate_workflow_created(self, dataplatform_output):
+        """DD-206 §4 "Dataplatform pull request": schema-level default PR gate.
+
+        Restores pinned deps, runs `dbt deps`/`parse`/`compile` against a
+        placeholder `ci` target (no warehouse credentials), then validates
+        physical source bindings. Deliberately NOT a full `dbt build` by
+        default -- see CICD.md for the opt-in addition.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        assert wf.exists()
+        content = wf.read_text(encoding="utf-8")
+
+        assert "pull_request" in content
+        assert "branches: [main]" in content
+        assert "runs-on: ubuntu-latest" in content
+
+        assert "uv sync --locked" in content
+        assert "uv run dbt deps" in content
+        assert "uv run dbt parse --profiles-dir .dbt --target ci" in content
+        assert "uv run dbt compile --profiles-dir .dbt --target ci" in content
+        assert "kairos-ontology validate-source-bindings" in content
+        # Group B dependency must be documented, not silently assumed.
+        assert "feature/cicd-group-b-source-binding" in content
+
+        # Full `dbt build` must only appear as a commented-out, opt-in step.
+        assert "uv run dbt build --profiles-dir .dbt --target ci" in content
+        for line in content.splitlines():
+            if "dbt build" in line:
+                assert line.strip().startswith("#"), (
+                    f"dbt build must stay opt-in (commented out) by default: {line!r}"
+                )
+
+        # The placeholder profile step must use no real credential-shaped value.
+        assert "offline.invalid" in content
+        assert "target: ci" in content
+
+    def test_pr_validate_workflow_no_credentials_needed(self, dataplatform_output):
+        """None of the four default steps may require warehouse credentials."""
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        content = wf.read_text(encoding="utf-8")
+        for token in ("DBT_FABRIC_", "DBT_DATABRICKS_", "secrets."):
+            assert token not in content, f"unexpected credential reference: {token}"
 
 
 class TestInitDataplatformEdgeCases:
@@ -270,6 +410,33 @@ class TestInitDataplatformEdgeCases:
         pyproject = (dp_dir / "pyproject.toml").read_text(encoding="utf-8")
         assert "dbt-fabric>=1.9.0" in pyproject
         assert "dbt-core" not in pyproject
+
+    def test_pr_validate_ci_profile_matches_platform(self, mock_hub):
+        """The placeholder CI profile's `type:` must track --platform, not always fabric."""
+        runner = CliRunner()
+        dp_dir = mock_hub / "test-dp-databricks-ci"
+
+        result = _run_in_hub(
+            runner,
+            mock_hub,
+            [
+                "init-dataplatform",
+                "test-dp-databricks-ci",
+                "--path",
+                str(mock_hub),
+                "--platform",
+                "databricks",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        wf = dp_dir / ".github" / "workflows" / "pr-validate.yml"
+        content = wf.read_text(encoding="utf-8")
+        assert "type: databricks" in content
+        assert "type: fabric" not in content
+        assert "host: https://offline.invalid" in content
+        assert "test_dp_databricks_ci:" in content
+        assert "target: ci" in content
 
     def test_default_name_derived_from_hub(self, mock_hub, tmp_path_factory):
         runner = CliRunner()
@@ -402,6 +569,9 @@ class TestUpdateDataplatform:
         assert ci.exists()
         content = ci.read_text(encoding="utf-8")
         assert "Kairos Dataplatform" in content
+        cicd = tmp_path / "CICD.md"
+        assert cicd.exists()
+        assert "kairos-ontology-toolkit:managed" in cicd.read_text(encoding="utf-8")
 
     def test_update_creates_skill_subset(self, tmp_path):
         """Update in dataplatform repo should only create the skill subset."""

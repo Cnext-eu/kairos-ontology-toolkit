@@ -93,6 +93,12 @@ def _assert_v5_hub_contract(hub: Path) -> None:
     assert (feedback / "index.md").is_file()
     assert (hub / "catalog-v001.xml").is_file()
     assert (hub / "kairos.yaml").is_file()
+    cicd = hub.parent / "CICD.md"
+    assert cicd.is_file()
+    assert _get_managed_version(cicd.read_text(encoding="utf-8")) is not None
+    contributing = hub.parent / "CONTRIBUTING.md"
+    assert contributing.is_file()
+    assert _get_managed_version(contributing.read_text(encoding="utf-8")) is not None
     assert not (hub / "model/shapes/kairos-prep-shapes.shacl.ttl").exists()
     assert not (hub / "model/shapes/kairos-ext-shapes.shacl.ttl").exists()
     assert not (hub / "model/shapes/kairos-map-shapes.shacl.ttl").exists()
@@ -416,6 +422,8 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / "pyproject.toml").is_file()
     assert (repo / ".gitignore").is_file()
     assert (repo / "README.md").is_file()
+    assert (repo / "CICD.md").is_file()
+    assert (repo / "CONTRIBUTING.md").is_file()
 
     # pyproject references the toolkit
     pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
@@ -427,6 +435,41 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert '"dbt-databricks>=1.9,<1.10"' in pyproject
     assert "flatfile = [" in pyproject
     assert "kairos-ontology-toolkit[flatfile]" in pyproject
+
+
+def test_new_repo_contributing_guide_describes_branch_prefixes(tmp_path):
+    """new-repo's managed CONTRIBUTING.md should describe hub branch conventions."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(cli, ["new-repo", "contoso", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    contributing = (tmp_path / "contoso-ontology-hub" / "CONTRIBUTING.md").read_text(
+        encoding="utf-8"
+    )
+    assert _get_managed_version(contributing) is not None
+    assert "model/<domain>-<topic>" in contributing
+    assert "hotfix/<version>-<topic>" in contributing
+    assert "kairos-ontology update --upgrade" in contributing
+
+
+def test_new_repo_publish_gitignore_allows_release_relevant_output(tmp_path):
+    """new-repo's .gitignore should track dbt + Power BI output, ignore the rest."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(cli, ["new-repo", "contoso", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    gitignore = (tmp_path / "contoso-ontology-hub" / ".gitignore").read_text(encoding="utf-8")
+    assert "ontology-hub-publish/**" in gitignore
+    assert "!ontology-hub-publish/medallion/dbt/**" in gitignore
+    assert "!ontology-hub-publish/powerbi/**" in gitignore
+    # Everything else under ontology-hub-publish/ (neo4j, azure-search, reports/details,
+    # etc.) stays ignored by the blanket pattern -- no allowlist entry for them.
+    assert "!ontology-hub-publish/neo4j/**" not in gitignore
+    assert "!ontology-hub-publish/reports/**" not in gitignore
 
 
 def test_new_repo_fails_if_dir_exists(tmp_path):
@@ -1029,6 +1072,65 @@ def test_init_includes_workflow(tmp_path):
             assert "uv sync --locked" in content
 
 
+def test_new_repo_includes_pr_validate_workflow(tmp_path):
+    """new-repo should scaffold the DD-206 §4 pr-validate.yml PR-check workflow."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(
+            cli,
+            ["new-repo", "contoso", "--path", str(tmp_path)],
+        )
+    assert result.exit_code == 0, result.output
+    wf = tmp_path / "contoso-ontology-hub" / ".github" / "workflows" / "pr-validate.yml"
+    assert wf.is_file()
+    content = wf.read_text(encoding="utf-8")
+    assert "pull_request" in content
+    assert "branches: [main]" in content
+    assert "uv sync --locked" in content
+    assert "astral-sh/setup-uv@v10.0.1" in content
+    assert 'version: "0.12.5"' in content
+
+
+def test_init_pr_validate_workflow_content(tmp_path):
+    """init's pr-validate.yml must validate, regenerate-and-diff, then check the dbt package.
+
+    DD-206 §4 ("Hub pull request"): restore deps, validate ontology/SHACL,
+    compile-check every bound domain, regenerate the tracked publish output and
+    fail on drift, then validate the assembled dbt package.
+    """
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0
+            wf = Path(".github/workflows/pr-validate.yml")
+            assert wf.is_file()
+            content = wf.read_text(encoding="utf-8")
+
+            assert "on:" in content
+            assert "pull_request:" in content
+            assert "branches: [main]" in content
+
+            # Ontology/SHACL/binding validation.
+            assert "kairos-ontology validate " in content or "kairos-ontology validate \\" in content
+            assert "kairos-ontology compile --all --check --format json" in content
+
+            # Regenerate tracked publish output and fail on drift (only the two
+            # tracked lanes under ontology-hub-publish/, per gitignore.template).
+            assert "kairos-ontology compile --all --emit --confirm-emit" in content
+            assert "git diff --exit-code" in content
+            assert "ontology-hub-publish/medallion/dbt" in content
+            assert "ontology-hub-publish/powerbi" in content
+
+            # Assembled dbt package validation.
+            assert "kairos-ontology validate-dbt --structural-only" in content
+
+            # This workflow runs alongside managed-check.yml, not instead of it.
+            assert "alongside" in content
+
+
 def test_init_release_workflow_uses_supported_project_options(tmp_path):
     """The release workflow must not use retired release-evaluation options."""
     runner = CliRunner()
@@ -1044,17 +1146,27 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             assert "compile-plan-only consumers" in content
             assert content.count('find "ontology-hub-publish/medallion/dbt"') == 2
             assert content.count("-type f -print -quit | grep -q .") == 1
-            assert "powerbi-semantic-model.zip" not in content
-            assert "POWERBI_PACKAGE" not in content
+            # DD-206 §8: the hub release ships powerbi-semantic-model.zip beside the
+            # dbt artifact for every Gold-configured domain, checksummed, with no
+            # dangling archive when no domain is Gold-configured.
+            assert "powerbi-semantic-model.zip" in content
+            assert "POWERBI_PACKAGE" in content
+            assert "package-powerbi-release" in content
+            assert "powerbi-semantic-model.zip.sha256" in content
             assert "persist-credentials: false" in content
-            assert "rm -rf ontology-hub-publish/medallion/dbt" in content
             assert 'find "ontology-hub-publish/medallion/dbt"' in content
             assert "-type l -print -quit | grep -q ." in content
             assert "rm -f dbt-artifacts.zip" in content
             assert content.index("-type l -print -quit") < content.index("-type f -print -quit")
-            # #598: --emit has required --confirm-emit since #264. A scaffolded
-            # release workflow that omits it fails on its first domain.
-            assert "--confirm-emit" in content
+            # DD-206: the release workflow must verify already-tracked bytes at the
+            # tagged commit, never regenerate different bytes after tagging. The old
+            # "rm -rf ontology-hub-publish/medallion/dbt" + "compile --all --emit
+            # --confirm-emit" regenerate step is gone; pr-validate.yml (the hub PR
+            # workflow) is what regenerates and diffs that output, before merge.
+            assert "rm -rf ontology-hub-publish/medallion/dbt" not in content
+            assert "compile --all --emit" not in content
+            assert "validate-dbt --structural-only" in content
+            assert "read-only, no regeneration" in content
             # #589: same GHES setup-uv/lockfile fixes as managed-check.yml.
             assert "astral-sh/setup-uv@v10.0.1" in content
             assert 'version: "0.12.5"' in content
@@ -1217,6 +1329,38 @@ def test_init_generates_hub_readme(tmp_path):
             assert "contoso.com" in content
             assert "Contoso" in content
             assert "https://contoso.com/ont/" in content
+
+
+def test_init_generates_managed_cicd_guide(tmp_path):
+    """init should create the managed root CI/CD guide."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
+            assert result.exit_code == 0, result.output
+
+            cicd = Path("CICD.md")
+            content = cicd.read_text(encoding="utf-8")
+            assert _get_managed_version(content) is not None
+            assert "full 40-character hub commit SHA" in content
+            assert "forward-port" in content
+            assert "kairos-ontology update --upgrade" in content
+            assert "powerbi-semantic-model.zip" in content
+            assert "archive SHA-256" in content
+            assert "TMDL normalization" in content
+
+
+def test_init_preserves_existing_cicd_guide_without_force(tmp_path):
+    """init should not replace a pre-existing root CI/CD guide without --force."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            Path("CICD.md").write_text("# Local CI/CD\n", encoding="utf-8")
+            result = runner.invoke(cli, ["init", "--company-domain", "contoso.com"])
+            assert result.exit_code == 0, result.output
+            assert Path("CICD.md").read_text(encoding="utf-8") == "# Local CI/CD\n"
 
 
 def test_init_generates_master_ontology(tmp_path):

@@ -6,6 +6,7 @@ import click
 import re
 import shutil
 import subprocess
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -372,6 +373,18 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
             shutil.copy2(workflow_src, workflow_dst)
             print("  ✓ Installed .github/workflows/managed-check.yml")
 
+    # 4b-i-b. Copy PR validation workflow (DD-206 §4: ontology/SHACL/binding
+    # validation, compile checks, publish-output drift check, dbt package validation)
+    pr_wf_src = _SCAFFOLD_DIR / "github-workflows" / "pr-validate.yml"
+    pr_wf_dst = cwd / ".github" / "workflows" / "pr-validate.yml"
+    if pr_wf_src.is_file():
+        if pr_wf_dst.exists() and not force:
+            print("  ⏭  .github/workflows/pr-validate.yml already exists (use --force)")
+        else:
+            pr_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pr_wf_src, pr_wf_dst)
+            print("  ✓ Installed .github/workflows/pr-validate.yml")
+
     # 4b-ii. Copy release-projections workflow
     release_wf_src = _SCAFFOLD_DIR / "github-workflows" / "release-projections.yml"
     release_wf_dst = cwd / ".github" / "workflows" / "release-projections.yml"
@@ -490,6 +503,18 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
             pyproject_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created pyproject.toml")
             print(f"    toolkit {ref} (channel '{tk_channel}'), reference models {rm_ref}")
+
+    cicd_src = _SCAFFOLD_DIR / "CICD.md.template"
+    cicd_dst = cwd / "CICD.md"
+    if cicd_src.is_file() and (not cicd_dst.exists() or force):
+        _copy_managed(cicd_src, cicd_dst)
+        print("  ✓ Created CICD.md")
+
+    contributing_src = _SCAFFOLD_DIR / "CONTRIBUTING.md.template"
+    contributing_dst = cwd / "CONTRIBUTING.md"
+    if contributing_src.is_file() and (not contributing_dst.exists() or force):
+        _copy_managed(contributing_src, contributing_dst)
+        print("  ✓ Created CONTRIBUTING.md")
 
     # 6. Generate hub README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
@@ -1169,6 +1194,15 @@ def new_repo(
         shutil.copy2(workflow_src, workflow_dst)
         print("  ✓ .github/workflows/managed-check.yml")
 
+    # PR validation workflow (DD-206 §4: ontology/SHACL/binding validation,
+    # compile checks, publish-output drift check, dbt package validation)
+    pr_wf_src = _SCAFFOLD_DIR / "github-workflows" / "pr-validate.yml"
+    pr_wf_dst = repo_dir / ".github" / "workflows" / "pr-validate.yml"
+    if pr_wf_src.is_file():
+        pr_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pr_wf_src, pr_wf_dst)
+        print("  ✓ .github/workflows/pr-validate.yml")
+
     # Release-projections workflow
     release_wf_src = _SCAFFOLD_DIR / "github-workflows" / "release-projections.yml"
     release_wf_dst = repo_dir / ".github" / "workflows" / "release-projections.yml"
@@ -1242,6 +1276,16 @@ def new_repo(
         content = content.replace("{repo_name}", repo_slug).replace("{description}", description)
         (repo_dir / "README.md").write_text(content, encoding="utf-8")
         print("  ✓ README.md")
+
+    cicd_src = _SCAFFOLD_DIR / "CICD.md.template"
+    if cicd_src.is_file():
+        _copy_managed(cicd_src, repo_dir / "CICD.md")
+        print("  ✓ CICD.md")
+
+    contributing_src = _SCAFFOLD_DIR / "CONTRIBUTING.md.template"
+    if contributing_src.is_file():
+        _copy_managed(contributing_src, repo_dir / "CONTRIBUTING.md")
+        print("  ✓ CONTRIBUTING.md")
 
     # update-referencemodels.ps1 is no longer installed; reference models are
     # populated by the `kairos-ontology update-refmodels` command instead.
@@ -1337,6 +1381,31 @@ def new_repo(
     print("\nNext steps:")
     print(f"  cd {repo_dir}")
     print("  uv sync")
+
+
+def _ci_profile_yaml_block(profile_name: str, platform: str, *, indent: str = "          ") -> str:
+    """Render an indented, credential-free dbt ``ci`` target for ``pr-validate.yml``.
+
+    ``dbt parse``/``dbt compile`` refuse to run against a ``--target`` that has no
+    matching ``profiles.yml`` output at all, even though neither command opens a
+    real warehouse connection for ordinary models. This reuses the same synthetic,
+    unreachable ``offline.invalid`` placeholder values
+    ``core.dbt_validation._offline_profile`` already writes for the hub's own
+    tier-2 dbt gate, so a freshly scaffolded dataplatform's PR workflow needs
+    nothing added before its schema-level default (parse/compile) can run —
+    only the opt-in full ``dbt build`` needs a real, credential-isolated ``ci``
+    target the repository owner configures separately (see CICD.md).
+
+    *indent* is the column the caller's YAML heredoc body starts at, so every
+    rendered line lines up under the enclosing ``run: |`` block.
+    """
+    from ..core.dbt_validation import _offline_profile
+
+    adapter = "databricks" if platform == "databricks" else "fabric"
+    output = _offline_profile(adapter)["outputs"]["offline"]
+    document = {profile_name: {"target": "ci", "outputs": {"ci": output}}}
+    rendered = yaml.safe_dump(document, sort_keys=False).rstrip("\n")
+    return "\n".join(f"{indent}{line}" if line else line for line in rendered.splitlines())
 
 
 _PLATFORM_MARKER_RE = re.compile(r"^\s*# --- PLATFORM: (\S+) ---\s*$")
@@ -1448,9 +1517,12 @@ def init_dataplatform(name, dest, platform, org_override):
       - macros/extract_source_schema.sql for bronze introspection
       - _sources.yml template with physical binding placeholders
       - pyproject.toml with uv + toolkit dependency
+      - .github/workflows/pr-validate.yml (dbt deps/parse/compile + binding check)
       - .github/workflows/deploy-powerbi-semantic-model.yml (fabric-cicd)
       - .github/fabric/deployment-settings.json.example
       - README.md with setup instructions
+      - CICD.md with branch, promotion, rollback, and hotfix guidance
+      - CONTRIBUTING.md with branch-naming and PR conventions
 
     \b
     Examples:
@@ -1495,7 +1567,7 @@ def init_dataplatform(name, dest, platform, org_override):
 
     # Create directory structure
     repo_dir.mkdir(parents=True)
-    (repo_dir / "models" / "custom").mkdir(parents=True)
+    (repo_dir / "models" / "downstream_only").mkdir(parents=True)
     (repo_dir / "macros").mkdir(parents=True)
     (repo_dir / "scripts").mkdir(parents=True)
     (repo_dir / "tests").mkdir(parents=True)
@@ -1524,6 +1596,7 @@ def init_dataplatform(name, dest, platform, org_override):
         "{DATABASE}": "your_bronze_database",
         "{SCHEMA}": "your_bronze_schema",
         "{DBT_ADAPTER}": adapter_map.get(platform, "dbt-fabric>=1.9.0,<2.0.0"),
+        "{DBT_CI_PROFILE_YAML}": _ci_profile_yaml_block(project_name, platform),
     }
 
     # Copy and template scaffold files
@@ -1546,6 +1619,16 @@ def init_dataplatform(name, dest, platform, org_override):
             (repo_dir / dst_name).write_text(content, encoding="utf-8")
             click.echo(f"  ✓ {dst_name}")
 
+    cicd_src = _DATAPLATFORM_SCAFFOLD / "CICD.md.template"
+    if cicd_src.is_file():
+        _copy_managed(cicd_src, repo_dir / "CICD.md")
+        click.echo("  ✓ CICD.md")
+
+    contributing_src = _DATAPLATFORM_SCAFFOLD / "CONTRIBUTING.md.template"
+    if contributing_src.is_file():
+        _copy_managed(contributing_src, repo_dir / "CONTRIBUTING.md")
+        click.echo("  ✓ CONTRIBUTING.md")
+
     # Copy macros
     for macro_name in ("extract_source_schema.sql", "print_query.sql"):
         macro_src = _DATAPLATFORM_SCAFFOLD / "macros" / macro_name
@@ -1553,12 +1636,9 @@ def init_dataplatform(name, dest, platform, org_override):
             shutil.copy2(macro_src, repo_dir / "macros" / macro_name)
             click.echo(f"  ✓ macros/{macro_name}")
 
-    # Copy helper scripts
-    for script_name in ("package_fabric_semantic_model.py",):
-        script_src = _DATAPLATFORM_SCAFFOLD / "scripts" / script_name
-        if script_src.exists():
-            shutil.copy2(script_src, repo_dir / "scripts" / script_name)
-            click.echo(f"  ✓ scripts/{script_name}")
+    # DD-206 #12 item 10: no helper script is scaffolded here anymore. TMDL/PBIP
+    # normalization now happens once, in the hub's Gold emission; the dataplatform
+    # Power BI workflow is read-only (extract -> verify -> deploy).
 
     # Generate _sources.yml from detected source systems
     if ctx["source_systems"]:
@@ -1631,6 +1711,19 @@ def init_dataplatform(name, dest, platform, org_override):
     if dp_instructions.is_file():
         _copy_managed(dp_instructions, github_dir / "copilot-instructions.md")
         click.echo("  ✓ .github/copilot-instructions.md")
+
+    # PR validation workflow (DD-206 §4 "Dataplatform pull request", schema-level
+    # default): dbt deps/parse/compile plus physical source-binding validation,
+    # no warehouse credentials required. See CICD.md for the opt-in full build.
+    pr_wf_src = _DATAPLATFORM_SCAFFOLD / ".github" / "workflows" / "pr-validate.yml.template"
+    pr_wf_dst = github_dir / "workflows" / "pr-validate.yml"
+    if pr_wf_src.is_file():
+        pr_wf_content = pr_wf_src.read_text(encoding="utf-8")
+        for placeholder, value in subs.items():
+            pr_wf_content = pr_wf_content.replace(placeholder, value)
+        pr_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+        pr_wf_dst.write_text(pr_wf_content, encoding="utf-8")
+        click.echo("  ✓ .github/workflows/pr-validate.yml")
 
     # Scaffold Fabric semantic-model deployment workflow (Phase 1: fabric-cicd)
     deploy_wf_src = (

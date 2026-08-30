@@ -28,10 +28,13 @@ from .gold_specs import (
 )
 
 
-# PBIP wrapper schemas. The projector is the single source of truth for these
-# files; ``scaffold/dataplatform/scripts/package_fabric_semantic_model.py`` only
-# backfills them for hand-authored or imported models and must not overwrite
-# what is emitted here.
+# PBIP wrapper schemas. The projector is the single, authoritative source of
+# these files (DD-206 #12 item 10): normalization used to run a second time at
+# Power BI deploy time, in a dataplatform-side script that mutated the
+# extracted package (stripping "///" doc comments and rewriting partition
+# keywords by text-sniffing). That script is gone -- everything it backfilled
+# is emitted correctly here, at hub Gold emission, so the dataplatform side can
+# stay read-only (extract -> verify -> deploy).
 _PLATFORM_SCHEMA = (
     "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/"
     "platformProperties/2.0.0/schema.json"

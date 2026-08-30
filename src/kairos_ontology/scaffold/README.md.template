@@ -2,6 +2,8 @@
 
 Kairos v5 ontology hub for **{description}**.
 
+Operational branching, release, rollback, and hotfix guidance is in [`CICD.md`](CICD.md).
+
 ## Quick start
 
 ```bash

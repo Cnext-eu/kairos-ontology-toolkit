@@ -12,7 +12,9 @@ deployment configuration, and runtime tests.
    domain and resolve all errors.
 2. Set `KAIROS_SKILL_CONTEXT=1`, then run
    `kairos-ontology init-dataplatform <name> --platform <platform>`
-   (`fabric-lakehouse`, `fabric-warehouse`, or `databricks`).
+   (`fabric-lakehouse`, `fabric-warehouse`, or `databricks`). This also scaffolds the
+   managed root `CICD.md` and `CONTRIBUTING.md` — confirm both exist and point users
+   to them for the CI target, promotion, rollback, and hotfix workflow.
 3. `.dbt/profiles.yml.example` is already pre-activated for the chosen `--platform` — its block
    is uncommented under `dev:`, the other two platforms remain as commented reference blocks.
    Copy it to `.dbt/profiles.yml` and fill in real connection details/credentials only; no

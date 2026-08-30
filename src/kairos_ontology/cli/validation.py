@@ -101,6 +101,100 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir, structural_only):
         click.echo(f"⚠ dbt compile environment-blocked: {result.compile_message}")
 
 
+@click.command(name="validate-source-bindings")
+@click.option(
+    "--project-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Dataplatform project directory (default: current working directory). "
+    "Must contain a models/ directory and, after `dbt deps` has run, an installed "
+    "dbt_packages/ with the hub package's models/silver/_{source}__sources.yml "
+    "catalogs.",
+)
+@click.option(
+    "--dbt-packages-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the installed dbt package directory "
+    "(default: <project-dir>/dbt_packages).",
+)
+@click.option(
+    "--models-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the dataplatform models directory that holds physical source "
+    "bindings (default: <project-dir>/models).",
+)
+@_FORMAT_OPTION
+def validate_source_bindings_cmd(project_dir, dbt_packages_dir, models_dir, output_format):
+    """Fail-closed structural validation of dataplatform physical source bindings.
+
+    DD-206 §5: the dataplatform owns real database/schema/table identifiers; the hub
+    owns the logical source names used by generated models. This command compares
+    every ``(source_name, table_name)`` pair the installed hub package declares in its
+    contracted ``models/silver/_{source}__sources.yml`` catalogs against the
+    dataplatform's own physical binding files under ``models/**/*.yml`` (dbt's native
+    ``sources:`` schema -- ``name``/``database``/``schema``/``tables: [{name}]``), and
+    fails closed on:
+
+    \b
+    - missing: the package uses a source/table with no physical binding entry at
+      all, or one whose database/schema is still empty or an unedited scaffold
+      placeholder;
+    - unknown: a physical binding entry for a source/table the package does not
+      declare using at all; and
+    - duplicate: the same source/table bound more than once with conflicting
+      database/schema values.
+
+    Staleness (a binding that was valid but no longer matches after a hub bump) is
+    explicitly out of scope -- it needs a manifest/versioning design that does not
+    exist yet.
+
+    Run from the dataplatform project root (or pass --project-dir), after `dbt deps`
+    has installed the hub package locally under dbt_packages/.
+    """
+    from ..core.source_binding_validation import (
+        SourceBindingDiscoveryError,
+        validate_source_bindings,
+    )
+
+    cwd = Path.cwd()
+    root = Path(project_dir) if project_dir is not None else cwd
+    packages_dir = Path(dbt_packages_dir) if dbt_packages_dir is not None else None
+    resolved_models_dir = Path(models_dir) if models_dir is not None else None
+
+    try:
+        report = validate_source_bindings(
+            root,
+            dbt_packages_dir=packages_dir,
+            models_dir=resolved_models_dir,
+        )
+    except SourceBindingDiscoveryError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for finding in report.findings:
+        click.echo(f"❌ [{finding.kind}] {finding.message}", err=True)
+
+    if report.passed:
+        click.echo(
+            f"✅ {report.validated_pairs} source binding(s) validated "
+            f"({report.declared_pairs} declared by the hub package, "
+            f"{report.bound_pairs} physically bound) across "
+            f"{len(report.declared_files)} declared source file(s) and "
+            f"{len(report.binding_files)} binding file(s)."
+        )
+    else:
+        click.echo(
+            f"❌ {len(report.findings)} source-binding error(s) "
+            f"({report.validated_pairs}/{report.declared_pairs} pairs valid).",
+            err=True,
+        )
+
+    _emit(report.to_dict(), output_format)
+    if not report.passed:
+        raise click.exceptions.Exit(1)
+
+
 def _hub_class_resolver(hub_root: Path, catalog_path, *, on_warning):
     """Build a ``(class_iri) -> bool`` resolver over every domain ontology's import closure.
 

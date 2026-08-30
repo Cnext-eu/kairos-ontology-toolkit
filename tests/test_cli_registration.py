@@ -17,6 +17,7 @@ RETAINED_COMMANDS = {
     "audit-silver-samples",
     "audit-column-coverage",
     "build-glossary",
+    "bump-hub",
     "catalog-test",
     "check-ai-config",
     "compile",
@@ -48,6 +49,7 @@ RETAINED_COMMANDS = {
     "migrate",
     "new-repo",
     "next",
+    "package-powerbi-release",
     "plan-sources",
     "project",
     "propose-alignment",
@@ -73,6 +75,7 @@ RETAINED_COMMANDS = {
     "validate-dbt-contracts",
     "validate-mapping",
     "validate-silver-ext",
+    "validate-source-bindings",
 }
 
 RETIRED_STAGE4_COMMANDS = {

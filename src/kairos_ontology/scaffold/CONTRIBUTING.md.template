@@ -1,0 +1,45 @@
+# Contributing to this ontology hub
+
+This managed guide describes how changes are branched and reviewed. See `CICD.md` for
+how they are validated, released, promoted, rolled back, and hotfixed.
+
+## Branching
+
+`main` is protected and is the only long-lived branch. Never commit to it directly —
+always branch and open a pull request.
+
+| Prefix | Use for |
+|---|---|
+| `model/<domain>-<topic>` | Ontology, shape, binding, or contracted dbt change |
+| `import/<source>-<topic>` | New or corrected source evidence |
+| `upgrade/toolkit-<version>` | Toolkit or reference-model upgrade |
+| `fix/<topic>` | Normal correction |
+| `hotfix/<version>-<topic>` | Urgent correction based on a released hub commit |
+
+Branches should live for days, not weeks. Open a draft PR early when changing a shared
+domain, and coordinate with the domain owner before making concurrent edits to it.
+
+## Submitting a change
+
+1. Branch from `main` using the prefix table above.
+2. Author the change — authored inputs and any release-relevant generated diff belong
+   in the same pull request; never hand-edit compiler-owned output under
+   `ontology-hub-publish/`.
+3. Run the pull-request checks documented in `CICD.md` before opening the PR.
+4. Open the PR against `main`. CI must validate the prospective merge result.
+5. Toolkit and reference-model upgrades stay isolated from modeling changes, so
+   reviewers can distinguish tool-generated consequences from intentional semantic
+   changes.
+
+## Updating this guide
+
+This file and `CICD.md` are toolkit-managed. Adopt a newer version with:
+
+```powershell
+uv run kairos-ontology update --upgrade
+# On Windows, wait for the detached managed-file refresh to finish.
+uv run kairos-ontology update --check
+```
+
+If the toolkit pin is already current, run `uv run kairos-ontology update` without
+`--upgrade`; plain `update` completes synchronously.

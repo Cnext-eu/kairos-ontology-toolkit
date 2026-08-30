@@ -14,10 +14,20 @@ venv/
 # Node.js
 node_modules/
 
-# Generated projection output (keep scaffold slot markers)
+# Generated projection output. Ignored by default, with an explicit allowlist for
+# the release-relevant lanes DD-206 (Branching and Collaboration Guide) requires a
+# hub release to publish from an exact commit: the dbt package a dataplatform pins
+# by SHA, and the Power BI PBIP output a hub release packages and checksums. Every
+# other projection target (neo4j, azure-search, a2ui, prompt, mdm, architecture/*,
+# reports/details) stays ignored -- reports/details in particular can carry
+# PII-adjacent validation detail, and the rest are alternate export targets, not
+# part of the dbt+Power BI release lane. Track more only after a deliberate,
+# per-hub review (see CICD.md), never by widening this default silently.
 ontology-hub-publish/**
 !ontology-hub-publish/**/
 !ontology-hub-publish/**/.gitkeep
+!ontology-hub-publish/medallion/dbt/**
+!ontology-hub-publish/powerbi/**
 
 # IDE
 .vscode/

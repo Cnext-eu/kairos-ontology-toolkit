@@ -71,6 +71,8 @@ immutable CompilePlan and deterministic downstream artifacts.
   material ontology choices
 - `kairos.yaml`: namespace, catalog, adapters, and selected roots
 - `../ontology-hub-publish/`: derived artifacts only (sibling of the hub)
+- `CICD.md` / `CONTRIBUTING.md`: managed branching, review, validation, promotion,
+  rollback, and hotfix guidance for this repository
 
 Never read a raw `.ttl`/`.rdf`/`.owl` file as text; use `resolve-ontology`, `show-class-inventory`,
 `list-class-properties`, or `explain-term` if semantic detail is needed.

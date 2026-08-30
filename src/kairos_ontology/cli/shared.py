@@ -721,6 +721,110 @@ def _toolkit_git_sha_source(sha: str) -> str:
     return f"{_TOOLKIT_GIT_URL}@{normalized}"
 
 
+def _resolve_hub_ref_sha(ref: str, hub_repo: str) -> str | None:
+    """Resolve a hub GitHub ref to an immutable, lowercase commit SHA.
+
+    Sibling of :func:`_resolve_toolkit_ref_sha` (DD-206 §12 item 4), resolving
+    against the *hub's* ``org/repo`` — discovered from the dataplatform's own
+    ``packages.yml`` (see :func:`_parse_hub_package_pin`) rather than a second
+    hardcoded repo constant, since a hub pairs with exactly one dataplatform and
+    that pairing is already recorded there. Fails closed on any error: missing
+    ``gh``, a timeout, a non-zero exit, or a malformed SHA all return ``None``.
+    """
+    ref = ref.strip()
+    if not ref:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"/repos/{hub_repo}/commits/{quote(ref, safe='')}",
+                "--jq",
+                ".sha",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip().lower()
+    return sha if _COMMIT_SHA_RE.fullmatch(sha) else None
+
+
+@dataclass(frozen=True)
+class _HubPackagePin:
+    """Current state of the hub package block in a dataplatform ``packages.yml``."""
+
+    org_repo: str
+    previous_revision: str
+    was_commented: bool
+
+
+# Matches the exact three-line hub package block the dataplatform scaffold writes
+# (``packages.yml.template``), whether still commented out (fresh scaffold, no hub
+# release yet) or already active (a prior ``bump-hub`` uncommented it). Captures
+# each line's own EOL sequence so a rewrite never flips CRLF/LF on an unrelated
+# line -- this repo's tree is mixed, and a blanket normalization explodes diffs.
+_HUB_PACKAGE_BLOCK_RE = re.compile(
+    r'(?P<indent>[ \t]*)(?P<hash1>#[ \t]*)?-[ \t]*git:[ \t]*"'
+    r'(?P<url>https://github\.com/(?P<org>[^/"]+)/(?P<repo>[^"]+?)(?:\.git)?)"[ \t]*'
+    r"(?P<eol1>\r?\n)"
+    r'[ \t]*(?P<hash2>#[ \t]*)?revision:[ \t]*"(?P<rev>[^"]*)"[^\r\n]*(?P<eol2>\r?\n)'
+    r"[ \t]*(?P<hash3>#[ \t]*)?subdirectory:[ \t]*(?P<subdir>[^\r\n]+?)[ \t]*(?P<eol3>\r?\n)?"
+)
+
+
+def _find_hub_package_block(content: str) -> re.Match[str]:
+    """Locate the hub git/revision/subdirectory block, raising if absent."""
+    match = _HUB_PACKAGE_BLOCK_RE.search(content)
+    if match is None:
+        raise ValueError(
+            "could not find the hub package block (git/revision/subdirectory) in packages.yml"
+        )
+    return match
+
+
+def _parse_hub_package_pin(content: str) -> _HubPackagePin:
+    """Read the hub org/repo and current revision from a dataplatform ``packages.yml``."""
+    match = _find_hub_package_block(content)
+    return _HubPackagePin(
+        org_repo=f"{match.group('org')}/{match.group('repo')}",
+        previous_revision=match.group("rev"),
+        was_commented=match.group("hash1") is not None,
+    )
+
+
+def _rewrite_hub_package_pin(content: str, sha: str) -> str:
+    """Uncomment (first use) or update (subsequent bumps) the hub package pin.
+
+    Rewrites only the matched three-line block to the canonical, uncommented
+    form DD-206 §2 requires -- ``- git:``/``revision:``/``subdirectory:`` at a
+    fixed two-space list-item indent -- using *sha* as the new ``revision``.
+    Every other line in the file, including any custom comments the caller
+    added elsewhere, is left untouched.
+    """
+    normalized = sha.strip().lower()
+    if not _COMMIT_SHA_RE.fullmatch(normalized):
+        raise ValueError("hub package revision must resolve to a 40-character hexadecimal SHA")
+    match = _find_hub_package_block(content)
+    base_indent = match.group("indent")
+    url = match.group("url")
+    subdir = match.group("subdir")
+    eol1 = match.group("eol1")
+    eol2 = match.group("eol2")
+    eol3 = match.group("eol3") or ""
+    replacement = (
+        f'{base_indent}- git: "{url}"{eol1}'
+        f'{base_indent}  revision: "{normalized}"{eol2}'
+        f"{base_indent}  subdirectory: {subdir}{eol3}"
+    )
+    return content[: match.start()] + replacement + content[match.end() :]
+
+
 def _decode_toml_string(match: re.Match[str]) -> str:
     """Decode one TOML basic or literal string regex match."""
     if match.group("double") is not None:
@@ -1357,6 +1461,14 @@ def _managed_scaffold_map() -> dict[str, Path]:
     """Return ``{repo_relative_path: scaffold_source_path}`` for managed files."""
     result: dict[str, Path] = {}
 
+    cicd = _SCAFFOLD_DIR / "CICD.md.template"
+    if cicd.is_file():
+        result["CICD.md"] = cicd
+
+    contributing = _SCAFFOLD_DIR / "CONTRIBUTING.md.template"
+    if contributing.is_file():
+        result["CONTRIBUTING.md"] = contributing
+
     ci = _SCAFFOLD_DIR / "copilot-instructions.md"
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
@@ -1399,6 +1511,14 @@ def _managed_scaffold_map() -> dict[str, Path]:
 def _managed_dataplatform_map() -> dict[str, Path]:
     """Return managed-file map for dataplatform repos (skill subset)."""
     result: dict[str, Path] = {}
+
+    cicd = _DATAPLATFORM_SCAFFOLD / "CICD.md.template"
+    if cicd.is_file():
+        result["CICD.md"] = cicd
+
+    contributing = _DATAPLATFORM_SCAFFOLD / "CONTRIBUTING.md.template"
+    if contributing.is_file():
+        result["CONTRIBUTING.md"] = contributing
 
     ci = _SCAFFOLD_DIR / "dataplatform-copilot-instructions.md"
     if ci.is_file():
