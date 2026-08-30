@@ -49,6 +49,7 @@ RETAINED_COMMANDS = {
     "migrate",
     "new-repo",
     "next",
+    "package-powerbi-release",
     "plan-sources",
     "project",
     "propose-alignment",

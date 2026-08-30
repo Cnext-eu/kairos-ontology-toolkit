@@ -1146,8 +1146,13 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             assert "compile-plan-only consumers" in content
             assert content.count('find "ontology-hub-publish/medallion/dbt"') == 2
             assert content.count("-type f -print -quit | grep -q .") == 1
-            assert "powerbi-semantic-model.zip" not in content
-            assert "POWERBI_PACKAGE" not in content
+            # DD-206 §8: the hub release ships powerbi-semantic-model.zip beside the
+            # dbt artifact for every Gold-configured domain, checksummed, with no
+            # dangling archive when no domain is Gold-configured.
+            assert "powerbi-semantic-model.zip" in content
+            assert "POWERBI_PACKAGE" in content
+            assert "package-powerbi-release" in content
+            assert "powerbi-semantic-model.zip.sha256" in content
             assert "persist-credentials: false" in content
             assert 'find "ontology-hub-publish/medallion/dbt"' in content
             assert "-type l -print -quit | grep -q ." in content
