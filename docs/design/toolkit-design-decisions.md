@@ -207,7 +207,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-153](#dd-153-command-outcome-and-exit-code-contract) | Command Outcome and Exit-Code Contract | Accepted | 2026-08-14 |
 | [DD-154](#dd-154-content-addressed-inventory-writes-unchanged-counts-as-produced) | Content-addressed inventory writes; unchanged counts as produced | Accepted | 2026-08-15 |
 | [DD-155](#dd-155-managed-import-completeness-is-mode-independent-and-gates-registration) | Managed Import Completeness is mode-independent and gates registration | Accepted | 2026-08-15 |
-| [DD-156](#dd-156-profiling-evidence-semantics-rowcount-rowssampled-distinctscope) | Profiling evidence semantics: row_count, rows_sampled, distinctScope | Accepted | 2026-08-15 |
+| [DD-156](#dd-156-profiling-evidence-semantics-row_count-rows_sampled-distinctscope) | Profiling evidence semantics: row_count, rows_sampled, distinctScope | Accepted | 2026-08-15 |
 | [DD-157](#dd-157-domain-ownership-surfacing-and-demand-evidence-routing) | Domain ownership surfacing and demand-evidence routing | Accepted | 2026-08-15 |
 | [DD-158](#dd-158-reference-models-resolve-from-an-installed-python-package-supersedes-dd-152-amends-dd-036) | Reference Models Resolve From an Installed Python Package (Supersedes DD-152, Amends DD-036) | Accepted | 2026-08-15 |
 | [DD-159](#dd-159-llm-judgment-steps-must-never-auto-degrade) | LLM Judgment Steps Must Never Auto-Degrade | Accepted | 2026-07-28 |
