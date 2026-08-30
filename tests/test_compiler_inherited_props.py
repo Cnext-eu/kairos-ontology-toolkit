@@ -256,6 +256,13 @@ def test_duplicate_prefix_redefinition_is_a_diagnostic(tmp_path):
 def test_inherited_property_with_differing_source_identity_name(tmp_path):
     # Combined #6 + #16: the identity SOURCE column ``name`` differs from the inherited target
     # property ``partyName``; identity must carry the OUTPUT column, not the source column.
+    #
+    # Bug #16 correction: this assertion previously expected
+    # `generate_surrogate_key(['party_name'])` -- the bare OUTPUT alias -- and passed, which
+    # enshrined the exact bug it claimed to guard against: `party_name` is defined as a sibling
+    # SELECT-list alias (`[src].[name] as party_name`) in the very same query, and referencing a
+    # sibling alias from another expression at the same SELECT level is invalid SQL. The fix
+    # (shape.py's `_identity_expression_inputs`) renders the real source-side expression instead.
     binding = """
         apiVersion: kairos.eu/v5
         kind: EntityBinding
@@ -283,8 +290,10 @@ def test_inherited_property_with_differing_source_identity_name(tmp_path):
     result = compile_domain(hub, "party")
     assert result.succeeded, {item.code for item in result.diagnostics.items}
     sql = result.artifact_dict()["models/silver/party/organisation.sql"]
-    # Business identity surrogate key references the OUTPUT column, never the source ``name``.
-    assert "generate_surrogate_key(['party_name'])" in sql
+    # Business identity surrogate key references the real source expression, never the bare
+    # output alias `party_name` (a sibling SELECT-list alias -- see bug #16 note above).
+    assert "generate_surrogate_key(['[src].[name]'])" in sql
+    assert "generate_surrogate_key(['party_name'])" not in sql
 
 
 def test_ambiguous_inherited_alias_is_a_diagnostic(tmp_path):
