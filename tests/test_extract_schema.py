@@ -2,9 +2,12 @@
 # Copyright 2026 Cnext.eu
 """Tests for extract_schema module — JSON classification and YAML output."""
 
+from pathlib import Path
+
 import pytest
 
 from kairos_ontology.core.extract_schema import (
+    DEFAULT_SAMPLE_SIZE,
     ColumnInfo,
     JsonKeyInfo,
     TableInfo,
@@ -469,6 +472,328 @@ class TestSamplesYamlOutput:
         # Row 1: different row's values
         assert data["rows"][1]["street"] == "Kerkstraat 45"
         assert data["rows"][1]["city"] == "Antwerpen"
+
+
+class TestSeedCsvOutput:
+    """Issue #628: optional seed-CSV sibling to the redacted `.samples.yaml`."""
+
+    def test_no_csv_when_emit_seed_off(self, tmp_path):
+        """Default (emit_seed=False) writes no CSV anywhere, even with rows present."""
+        tables = [
+            TableInfo(
+                name="tblClient",
+                schema="dbo",
+                row_count=1,
+                columns=[
+                    ColumnInfo(name="id", data_type="int", ordinal_position=1),
+                    ColumnInfo(name="name", data_type="varchar(100)", ordinal_position=2),
+                ],
+                sample_rows=[{"id": "1", "name": "Acme NV"}],
+            ),
+        ]
+
+        seeds_dir = tmp_path / "seeds"
+        result_dir = write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=tables,
+            seeds_dir=seeds_dir,
+        )
+
+        assert not seeds_dir.exists()
+        assert not any(result_dir.glob("*.csv"))
+        assert not list(tmp_path.rglob("*.csv"))
+
+    def test_emit_seed_writes_expected_rows_with_redaction_token_verbatim(self, tmp_path):
+        """--emit-seed writes a CSV whose cells match safe_rows, redaction token verbatim."""
+        tables = [
+            TableInfo(
+                name="contacts",
+                schema="dbo",
+                row_count=1,
+                columns=[
+                    ColumnInfo(name="email", data_type="nvarchar(255)", ordinal_position=1),
+                    ColumnInfo(name="status", data_type="nvarchar(20)", ordinal_position=2),
+                ],
+                sample_rows=[{"email": "person@example.com", "status": "active"}],
+            ),
+        ]
+
+        seeds_dir = tmp_path / "seeds"
+        write_extraction_output(
+            output_dir=tmp_path,
+            system_name="crm",
+            platform="fabric-warehouse",
+            database="warehouse",
+            schema="dbo",
+            tables=tables,
+            emit_seed=True,
+            seeds_dir=seeds_dir,
+        )
+
+        csv_path = seeds_dir / "crm__contacts__sample.csv"
+        assert csv_path.exists()
+
+        import csv
+
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            assert reader.fieldnames == ["email", "status"]
+            rows = list(reader)
+
+        assert len(rows) == 1
+        assert rows[0]["email"] == (
+            "<redacted kind=email source=contacts.email datatype=nvarchar(255)>"
+        )
+        assert rows[0]["status"] == "active"
+        # Verify verbatim: no re-escaping/mangling of the token's angle brackets.
+        raw = csv_path.read_text(encoding="utf-8")
+        assert "<redacted kind=email source=contacts.email datatype=nvarchar(255)>" in raw
+
+    def test_none_decimal_datetime_cells_serialize_deterministically(self, tmp_path):
+        """None/Decimal/datetime cells round-trip through the CSV as plain text."""
+        from datetime import datetime
+        from decimal import Decimal
+
+        tables = [
+            TableInfo(
+                name="tblInvoice",
+                schema="dbo",
+                row_count=1,
+                columns=[
+                    ColumnInfo(name="amount", data_type="decimal(10,2)", ordinal_position=1),
+                    ColumnInfo(name="created_at", data_type="datetime", ordinal_position=2),
+                    ColumnInfo(name="note", data_type="varchar(50)", ordinal_position=3),
+                ],
+                sample_rows=[
+                    {
+                        "amount": Decimal("1234.50"),
+                        "created_at": datetime(2026, 1, 15, 9, 30, 0),
+                        "note": None,
+                    }
+                ],
+            ),
+        ]
+
+        seeds_dir = tmp_path / "seeds"
+        write_extraction_output(
+            output_dir=tmp_path,
+            system_name="finance",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=tables,
+            emit_seed=True,
+            seeds_dir=seeds_dir,
+        )
+
+        import csv
+
+        csv_path = seeds_dir / "finance__tblInvoice__sample.csv"
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        assert rows[0]["amount"] == "1234.50"
+        assert rows[0]["created_at"] == "2026-01-15T09:30:00"
+        assert rows[0]["note"] == ""
+
+    def test_column_order_matches_table_columns_not_dict_key_order(self, tmp_path):
+        """CSV header follows table.columns order even if safe_rows keys differ."""
+        tables = [
+            TableInfo(
+                name="tblClient",
+                schema="dbo",
+                row_count=1,
+                columns=[
+                    ColumnInfo(name="id", data_type="int", ordinal_position=1),
+                    ColumnInfo(name="name", data_type="varchar(100)", ordinal_position=2),
+                ],
+                # Row dict key order is reversed relative to table.columns order.
+                sample_rows=[{"name": "Acme NV", "id": "1"}],
+            ),
+        ]
+
+        seeds_dir = tmp_path / "seeds"
+        write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=tables,
+            emit_seed=True,
+            seeds_dir=seeds_dir,
+        )
+
+        csv_path = seeds_dir / "testapp__tblClient__sample.csv"
+        header = csv_path.read_text(encoding="utf-8").splitlines()[0]
+        assert header == "id,name"
+
+        import csv
+
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            row = next(csv.DictReader(f))
+        assert row == {"id": "1", "name": "Acme NV"}
+
+    def test_seeds_dir_override_changes_output_location(self, tmp_path):
+        """--seeds-dir routes CSVs to a custom directory instead of the default."""
+        tables = [
+            TableInfo(
+                name="tblClient",
+                schema="dbo",
+                row_count=1,
+                columns=[ColumnInfo(name="id", data_type="int", ordinal_position=1)],
+                sample_rows=[{"id": "1"}],
+            ),
+        ]
+
+        custom_dir = tmp_path / "my_custom_seeds"
+        default_dir = tmp_path / "seeds"
+        write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=tables,
+            emit_seed=True,
+            seeds_dir=custom_dir,
+        )
+
+        assert (custom_dir / "testapp__tblClient__sample.csv").exists()
+        assert not default_dir.exists()
+
+    def test_zero_sample_rows_writes_no_csv_and_deletes_stale_one(self, tmp_path):
+        """A table with zero safe_rows writes no CSV, deleting a stale prior-run file."""
+        seeds_dir = tmp_path / "seeds"
+
+        table_with_rows = TableInfo(
+            name="tblClient",
+            schema="dbo",
+            row_count=1,
+            columns=[ColumnInfo(name="id", data_type="int", ordinal_position=1)],
+            sample_rows=[{"id": "1"}],
+        )
+        write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=[table_with_rows],
+            emit_seed=True,
+            seeds_dir=seeds_dir,
+        )
+        csv_path = seeds_dir / "testapp__tblClient__sample.csv"
+        assert csv_path.exists()
+
+        table_now_empty = TableInfo(
+            name="tblClient",
+            schema="dbo",
+            row_count=0,
+            columns=[ColumnInfo(name="id", data_type="int", ordinal_position=1)],
+            sample_rows=[],
+        )
+        write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=[table_now_empty],
+            emit_seed=True,
+            seeds_dir=seeds_dir,
+        )
+
+        assert not csv_path.exists()
+
+    def test_cli_emit_seed_end_to_end(self, tmp_path, monkeypatch):
+        """CLI `extract-schema --emit-seed --seeds-dir` threads flags through and writes CSVs."""
+        from click.testing import CliRunner
+        import kairos_ontology.core.extract_schema as extract_schema_mod
+        from kairos_ontology.cli.main import cli
+
+        captured: dict = {}
+
+        def fake_run_extract_schema(
+            profiles_dir,
+            profile_name,
+            target,
+            schema,
+            system_name,
+            output_dir,
+            tables=None,
+            sample_size=DEFAULT_SAMPLE_SIZE,
+            emit_seed=False,
+            seeds_dir="seeds",
+        ):
+            """Stand in for a live DB connection: no mock/fake DB-connection harness
+            exists yet for `extract-schema` in this test suite, so this fakes the
+            introspection boundary and exercises the real write_extraction_output."""
+            captured["emit_seed"] = emit_seed
+            captured["seeds_dir"] = seeds_dir
+            fake_tables = [
+                TableInfo(
+                    name="tblClient",
+                    schema=schema,
+                    row_count=1,
+                    columns=[
+                        ColumnInfo(name="id", data_type="int", ordinal_position=1),
+                        ColumnInfo(
+                            name="email", data_type="varchar(255)", ordinal_position=2
+                        ),
+                    ],
+                    sample_rows=[{"id": "1", "email": "person@example.com"}],
+                ),
+            ]
+            return write_extraction_output(
+                output_dir=output_dir,
+                system_name=system_name,
+                platform="fabric-warehouse",
+                database="mydb",
+                schema=schema,
+                tables=fake_tables,
+                sample_size=sample_size,
+                emit_seed=emit_seed,
+                seeds_dir=seeds_dir,
+            )
+
+        monkeypatch.setattr(
+            extract_schema_mod, "run_extract_schema", fake_run_extract_schema
+        )
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "extract-schema",
+                "--profile",
+                "myproject",
+                "--schema",
+                "dbo",
+                "--system",
+                "testapp",
+                "--profiles-dir",
+                str(tmp_path),
+                "--emit-seed",
+                "--seeds-dir",
+                "myseeds",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured["emit_seed"] is True
+        assert captured["seeds_dir"] == Path("myseeds")
+
+        csv_path = tmp_path / "myseeds" / "testapp__tblClient__sample.csv"
+        assert csv_path.exists()
+        content = csv_path.read_text(encoding="utf-8")
+        assert "<redacted kind=email source=tblClient.email datatype=varchar(255)>" in content
+        assert "Wrote 1 seed CSV" in result.output
 
 
 class TestImportSourceCwdGuard:

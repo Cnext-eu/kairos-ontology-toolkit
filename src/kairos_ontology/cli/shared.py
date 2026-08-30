@@ -1855,8 +1855,30 @@ def _resolve_semantic_input(
     type=int,
     help=f"Number of sample rows per table (default: {DEFAULT_SAMPLE_SIZE}).",
 )
+@click.option(
+    "--emit-seed",
+    is_flag=True,
+    default=False,
+    help="Also write each table's redacted samples as a dbt seed CSV.",
+)
+@click.option(
+    "--seeds-dir",
+    "seeds_dir",
+    type=click.Path(),
+    default="seeds",
+    help="Output directory for --emit-seed CSV files (default: seeds/).",
+)
 def extract_schema(
-    profile_name, target, schema_name, system_name, output, profiles_dir, table_list, sample_size
+    profile_name,
+    target,
+    schema_name,
+    system_name,
+    output,
+    profiles_dir,
+    table_list,
+    sample_size,
+    emit_seed,
+    seeds_dir,
 ):
     """Introspect live warehouse/lakehouse schema and produce per-table YAML.
 
@@ -1871,16 +1893,26 @@ def extract_schema(
         <table2>.yaml
 
     \b
+    With --emit-seed, each table's already-redacted sample rows (the same
+    rows written to <table>.samples.yaml) are also serialized as a dbt
+    seed CSV under --seeds-dir (default: seeds/):
+      seeds/<system>__<table1>__sample.csv
+      seeds/<system>__<table2>__sample.csv
+
+    \b
     Examples:
       kairos-ontology extract-schema --profile myproject --schema bronze --system adminpulse
       kairos-ontology extract-schema --profile myproject --schema dbo --system nms \\
           --tables "tblClient,tblInvoice" --sample-size 10
+      kairos-ontology extract-schema --profile myproject --schema bronze --system adminpulse \\
+          --emit-seed --seeds-dir seeds
     """
     from ..core.extract_schema import run_extract_schema
 
     tables = [t.strip() for t in table_list.split(",")] if table_list else None
     output_path = Path(output)
     profiles_path = Path(profiles_dir)
+    seeds_path = Path(seeds_dir)
 
     click.echo(f"🔍 Extracting schema: {schema_name}")
     click.echo(f"   Profile: {profile_name} (target: {target})")
@@ -1891,6 +1923,8 @@ def extract_schema(
     else:
         click.echo("   Tables: all in schema")
     click.echo(f"   Sample size: {sample_size}")
+    if emit_seed:
+        click.echo(f"   Emit seed CSVs: yes ({seeds_path})")
     click.echo()
 
     try:
@@ -1903,6 +1937,8 @@ def extract_schema(
             output_dir=output_path,
             tables=tables,
             sample_size=sample_size,
+            emit_seed=emit_seed,
+            seeds_dir=seeds_path,
         )
     except ImportError as e:
         click.echo(f"\n❌ Missing dependency: {e}", err=True)
@@ -1920,6 +1956,13 @@ def extract_schema(
     click.echo(f"✅ Extracted {len(table_files)} tables to: {result_dir}")
     for f in table_files:
         click.echo(f"   📄 {f.name}")
+
+    if emit_seed and seeds_path.is_dir():
+        seed_files = sorted(seeds_path.glob(f"{system_name}__*__sample.csv"))
+        if seed_files:
+            click.echo(f"✅ Wrote {len(seed_files)} seed CSV(s) to: {seeds_path}")
+            for f in seed_files:
+                click.echo(f"   🌱 {f.name}")
 
 
 def _autodetect_analysis_dir(cwd: Path, hub_root: Path | None) -> Path | None:

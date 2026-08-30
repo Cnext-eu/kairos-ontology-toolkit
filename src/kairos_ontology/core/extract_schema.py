@@ -13,11 +13,13 @@ Supports:
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -780,6 +782,58 @@ def parse_dbt_profile(profiles_dir: Path, profile_name: str, target: str = "dev"
 # --------------------------------------------------------------------------- #
 
 
+def _seed_csv_cell(value: Any) -> str:
+    """Serialize one already-redacted sample cell to a CSV-safe string.
+
+    Redaction tokens (e.g. ``<redacted kind=email ...>``) are already plain
+    strings and pass through verbatim. This only adds deterministic
+    stringification for types ``csv.writer`` would otherwise stringify
+    implicitly (``Decimal``, ``datetime``), and turns ``None`` into an empty
+    cell rather than the literal string ``"None"``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _write_seed_csv(
+    seeds_dir: Path,
+    system_name: str,
+    table: TableInfo,
+    safe_rows: list[dict[str, Any]],
+) -> None:
+    """Write (or clean up) one table's dbt seed CSV under ``seeds_dir``.
+
+    Serializes the *same* already-redacted ``safe_rows`` computed for the
+    table's ``.samples.yaml`` — no re-sampling or re-redaction here.  Rows
+    are projected against the table's fixed column order (``table.columns``)
+    rather than trusting ``safe_rows`` dict key order, since
+    ``csv.DictWriter`` requires consistent ``fieldnames``.
+
+    Mirrors the ``.samples.yaml`` empty-table behavior: a table with zero
+    ``safe_rows`` writes no CSV, deleting a stale one from a prior run.
+    """
+    csv_path = seeds_dir / f"{system_name}__{table.name}__sample.csv"
+    if not safe_rows:
+        if csv_path.exists():
+            csv_path.unlink()
+        return
+
+    seeds_dir.mkdir(parents=True, exist_ok=True)
+    fieldnames = [col.name for col in table.columns]
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in safe_rows:
+            writer.writerow({name: _seed_csv_cell(row.get(name)) for name in fieldnames})
+
+
 def write_extraction_output(
     output_dir: Path,
     system_name: str,
@@ -788,6 +842,8 @@ def write_extraction_output(
     schema: str,
     tables: list[TableInfo],
     sample_size: int = DEFAULT_SAMPLE_SIZE,
+    emit_seed: bool = False,
+    seeds_dir: Path | str = "seeds",
 ) -> Path:
     """Write extraction results as per-table YAML files.
 
@@ -797,9 +853,14 @@ def write_extraction_output(
         <table1>.yaml
         <table2>.yaml
 
+    When ``emit_seed`` is set, also writes a dbt seed CSV per table (with
+    ``safe_rows``) under ``seeds_dir``:
+      seeds_dir/<system_name>__<table1>__sample.csv
+
     Returns:
         Path to the output directory.
     """
+    seeds_dir_path = Path(seeds_dir)
     # Prepare and validate all output before publishing any artifact.
     manifest = ExtractionManifest(
         system=system_name,
@@ -868,6 +929,9 @@ def write_extraction_output(
             if stale_samples.exists():
                 stale_samples.unlink()
 
+        if emit_seed:
+            _write_seed_csv(seeds_dir_path, system_name, table, safe_rows)
+
     return system_dir
 
 
@@ -929,6 +993,8 @@ def run_extract_schema(
     output_dir: Path,
     tables: list[str] | None = None,
     sample_size: int = DEFAULT_SAMPLE_SIZE,
+    emit_seed: bool = False,
+    seeds_dir: Path | str = "seeds",
 ) -> Path:
     """Run full schema extraction pipeline.
 
@@ -941,6 +1007,8 @@ def run_extract_schema(
         output_dir: Base output directory (e.g., "extracted/").
         tables: Optional list of specific tables to introspect.
         sample_size: Number of sample rows per table.
+        emit_seed: Also write each table's redacted samples as a dbt seed CSV.
+        seeds_dir: Output directory for the seed CSVs (default: "seeds").
 
     Returns:
         Path to the output directory with YAML files.
@@ -990,6 +1058,8 @@ def run_extract_schema(
         schema=schema,
         tables=table_infos,
         sample_size=sample_size,
+        emit_seed=emit_seed,
+        seeds_dir=seeds_dir,
     )
 
     return result_dir
