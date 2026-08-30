@@ -9,7 +9,8 @@
     "workspace_id": "<set in secret FABRIC_WORKSPACE_ID>",
     "environment": "DEV",
     "item_type_in_scope": [
-      "SemanticModel"
+      "SemanticModel",
+      "Report"
     ]
   },
   "github": {

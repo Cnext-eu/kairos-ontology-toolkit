@@ -264,6 +264,52 @@ class TestInitDataplatform:
         assert "test-ontology-hub" in content
         assert "v1.2.0" in content
 
+    def test_fabric_deploy_workflow_verifies_hub_sha_and_archive_checksum(
+        self, dataplatform_output
+    ):
+        """DD-206 §8 dataplatform responsibility items 1-3: accept and verify the
+        expected hub SHA and archive SHA-256 before extraction, fail closed on either
+        mismatch.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        content = wf.read_text(encoding="utf-8")
+
+        assert "expected_hub_sha" in content
+        assert "expected_archive_sha256" in content
+        assert "sha256sum powerbi-semantic-model.zip" in content
+        # Both verification steps run, and fail closed, before extraction.
+        verify_hub_sha = content.index("expected_hub_sha")
+        verify_checksum = content.index("Verify archive SHA-256")
+        unpack = content.index("Unpack semantic model package")
+        assert verify_hub_sha < unpack
+        assert verify_checksum < unpack
+        assert content.count("exit 1") >= 2
+
+    def test_fabric_deploy_workflow_gates_on_dbt_build_success(self, dataplatform_output):
+        """DD-206 §12 item 9 / §8 dataplatform responsibility item 7: deploy only
+        after the target environment's dbt build already succeeded. GitHub Actions has
+        no native cross-workflow `needs:` for two independently workflow_dispatch
+        -triggered workflows, so this is a verified, documented manual-ordering input
+        rather than a silent precondition.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        content = wf.read_text(encoding="utf-8")
+
+        assert "dbt_build_run_id" in content
+        assert "gh run view" in content
+        dbt_gate = content.index("Verify target environment's dbt build already succeeded")
+        download = content.index("Download semantic model package")
+        assert dbt_gate < download
+
+    def test_fabric_deploy_workflow_deploys_both_item_types(self, dataplatform_output):
+        """DD-206 §8 dataplatform responsibility item 6: deploy both SemanticModel and
+        Report item types, not SemanticModel alone.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        content = wf.read_text(encoding="utf-8")
+
+        assert '"SemanticModel", "Report"' in content
+
     def test_fabric_deploy_settings_example_created(self, dataplatform_output):
         cfg = dataplatform_output / ".github" / "fabric" / "deployment-settings.json.example"
         assert cfg.exists()

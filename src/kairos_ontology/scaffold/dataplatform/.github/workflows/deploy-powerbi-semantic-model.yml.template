@@ -1,5 +1,10 @@
 name: Deploy Power BI Semantic Model
 
+# DD-206 §8/§12 items 7, 9: this workflow is read-only -- extract, verify, deploy.
+# TMDL/PBIP normalization happens once, in the hub's Gold emission, before the
+# archive is checksummed; nothing here rewrites archive contents. Every input below
+# must verify before extraction (fail closed), and deployment must not run ahead of
+# the target environment's own dbt build.
 on:
   workflow_dispatch:
     inputs:
@@ -7,13 +12,29 @@ on:
         description: "Ontology-hub release tag containing powerbi-semantic-model.zip"
         required: true
         default: "{HUB_VERSION}"
+      expected_hub_sha:
+        description: "Full 40-character hub commit SHA the release tag must resolve to"
+        required: true
+      expected_archive_sha256:
+        description: "SHA-256 of powerbi-semantic-model.zip recorded in the hub release evidence"
+        required: true
       target_environment:
         description: "Fabric environment key (used by fabric-cicd parameterization)"
         required: true
         default: "DEV"
+      dbt_build_run_id:
+        description: >-
+          Run ID of the workflow run that built dbt successfully in target_environment.
+          GitHub Actions has no native `needs:`/`workflow_run` dependency across two
+          independently workflow_dispatch-triggered workflows, so this is the documented
+          manual-ordering convention (see CICD.md, "Fabric and Power BI"): the operator
+          promoting dbt supplies the run ID of that success, and this workflow verifies
+          it before deploying anything.
+        required: true
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 env:
@@ -32,6 +53,37 @@ jobs:
         with:
           python-version: "3.12"
 
+      # §12 item 9: deploy only after the target environment's dbt build succeeded.
+      # No dbt-build workflow ships from this template (it is scaffolded/maintained
+      # separately); this only verifies the run the operator names actually succeeded.
+      - name: Verify target environment's dbt build already succeeded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.dbt_build_run_id }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+        run: |
+          CONCLUSION=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion -q .conclusion)
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::dbt_build_run_id $RUN_ID did not succeed (conclusion: ${CONCLUSION:-unknown})."
+            echo "::error::Deploy the target environment's dbt build first, then re-run with its run ID."
+            exit 1
+          fi
+          echo "Verified dbt build run $RUN_ID succeeded for $TARGET_ENVIRONMENT."
+
+      # §8 dataplatform responsibility items 1-2: verify the tag resolves to the
+      # expected hub SHA before anything is downloaded.
+      - name: Verify hub release tag resolves to the expected hub SHA
+        env:
+          GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN || github.token }}
+          EXPECTED_HUB_SHA: ${{ inputs.expected_hub_sha }}
+        run: |
+          RESOLVED_SHA=$(gh api "repos/${HUB_ORG}/${HUB_REPO}/commits/${{ inputs.hub_release_tag }}" -q .sha)
+          if [ "$RESOLVED_SHA" != "$EXPECTED_HUB_SHA" ]; then
+            echo "::error::${{ inputs.hub_release_tag }} resolves to $RESOLVED_SHA, expected $EXPECTED_HUB_SHA."
+            exit 1
+          fi
+          echo "Verified ${{ inputs.hub_release_tag }} resolves to $EXPECTED_HUB_SHA."
+
       - name: Download semantic model package from ontology-hub release
         env:
           GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN || github.token }}
@@ -41,13 +93,26 @@ jobs:
             --pattern "powerbi-semantic-model.zip" \
             --output powerbi-semantic-model.zip
 
+      # §8 dataplatform responsibility item 3: verify the archive's SHA-256 before
+      # extraction. Fails closed -- a checksum mismatch must never reach fabric-cicd.
+      - name: Verify archive SHA-256
+        env:
+          EXPECTED_ARCHIVE_SHA256: ${{ inputs.expected_archive_sha256 }}
+        run: |
+          ACTUAL_SHA256=$(sha256sum powerbi-semantic-model.zip | cut -d' ' -f1)
+          if [ "$ACTUAL_SHA256" != "$EXPECTED_ARCHIVE_SHA256" ]; then
+            echo "::error::powerbi-semantic-model.zip SHA-256 is $ACTUAL_SHA256, expected $EXPECTED_ARCHIVE_SHA256."
+            exit 1
+          fi
+          echo "Verified powerbi-semantic-model.zip SHA-256: $ACTUAL_SHA256"
+
       - name: Unpack semantic model package
         run: |
           mkdir -p semantic-model
           unzip -q powerbi-semantic-model.zip -d semantic-model
 
-      # DD-206 #12 item 10: TMDL/PBIP normalization now happens once, in the hub's
-      # Gold emission, before the archive is checksummed. This deploy workflow is
+      # DD-206 #12 item 10: TMDL/PBIP normalization happens once, in the hub's Gold
+      # emission, before the archive is checksummed. This deploy workflow is
       # read-only -- extract, verify, deploy -- and must never rewrite the archive.
 
       - name: Azure login (service principal)
@@ -68,7 +133,10 @@ jobs:
       # from `gold.databricks_connection` in `kairos.yaml`; `target_environment` must be
       # one of the environment keys declared there or the rewrite is skipped and the
       # model keeps the default environment's warehouse.
-      - name: Publish semantic model to Fabric workspace
+      #
+      # §8 dataplatform responsibility item 6: both Fabric item types the hub ships
+      # (SemanticModel and Report) are deployed together.
+      - name: Publish semantic model and report to Fabric workspace
         env:
           FABRIC_WORKSPACE_ID: ${{ secrets.FABRIC_WORKSPACE_ID }}
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
@@ -88,10 +156,10 @@ jobs:
               workspace_id=workspace_id,
               environment=target_env,
               repository_directory=str(model_dir),
-              item_type_in_scope=["SemanticModel"],
+              item_type_in_scope=["SemanticModel", "Report"],
               token_credential=AzureCliCredential(),
           )
 
           publish_all_items(target_workspace)
-          print(f"Published SemanticModel items from: {model_dir}")
+          print(f"Published SemanticModel and Report items from: {model_dir}")
           PY
