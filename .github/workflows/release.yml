@@ -2,21 +2,86 @@ name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
 
 permissions:
-  contents: write   # create GitHub Release (with built wheel/sdist assets)
+  contents: write   # create GitHub Release (with built wheel/sdist assets) and push the tag
 
 jobs:
+  # Unifies two release triggers into one tag + should_release decision:
+  #   - a tag push (docs/RELEASING.md hotfix runbook: tag a hotfix/x.y.z branch
+  #     directly, never touching main) -- behaves exactly as before.
+  #   - a push to main (the normal case: a squash-merged version-bump PR) -- detects
+  #     whether __version__ actually changed and, if so, creates and pushes the tag
+  #     itself, so release-cutting never again depends on a manual `git tag` step.
+  #
+  # Both paths are handled in this one workflow, rather than a separate "tag on
+  # bump" workflow feeding this one via its tag-push trigger, because a tag pushed
+  # by a workflow's own GITHUB_TOKEN does not trigger another workflow's `push:
+  # tags` listener (GitHub's anti-recursion rule) -- chaining that way would either
+  # silently never build, or require a PAT secret to work around it.
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      should_release: ${{ steps.resolve.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve release tag
+        id: resolve
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Push to main: only a real __version__ bump warrants a release. Same
+          # comparison version-check.yml already makes for a PR against main.
+          CURR_VERSION=$(grep '^__version__' src/kairos_ontology/__init__.py \
+            | sed 's/.*"\(.*\)".*/\1/')
+          PREV_VERSION=$(git show HEAD~1:src/kairos_ontology/__init__.py 2>/dev/null \
+            | grep '^__version__' | sed 's/.*"\(.*\)".*/\1/' || echo "")
+          if [ "$CURR_VERSION" = "$PREV_VERSION" ]; then
+            echo "No __version__ change ($CURR_VERSION) -- nothing to release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG="v${CURR_VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Tag $TAG already exists -- already released, skipping."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Version bumped $PREV_VERSION -> $CURR_VERSION, tagging $TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve
+    if: needs.resolve.outputs.should_release == 'true'
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Verify version matches tag
         run: |
-          RAW_TAG="${GITHUB_REF#refs/tags/v}"
+          RAW_TAG="${{ needs.resolve.outputs.tag }}"
+          RAW_TAG="${RAW_TAG#v}"
           # Normalize the SemVer-style tag to PEP 440, mirroring
           # _tag_to_version() in src/kairos_ontology/cli/shared.py so that both
           # v4.4.0rc1 and v4.4.0-rc.1 validate against __version__.
@@ -38,8 +103,8 @@ jobs:
 
       - name: Verify CHANGELOG has an entry for the release
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${GITHUB_REF#refs/tags/v}"
+          TAG="${{ needs.resolve.outputs.tag }}"
+          VERSION="${TAG#v}"
           # Pre-releases (rc/beta/alpha) are throwaway test builds — exempt.
           if [[ "$TAG" =~ (rc|beta|alpha) ]]; then
             echo "Pre-release $TAG — skipping CHANGELOG entry check."
@@ -73,12 +138,14 @@ jobs:
           path: dist/
 
   github-release:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.should_release == 'true'
     runs-on: ubuntu-latest
-    needs: build
 
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve.outputs.tag }}
           fetch-depth: 0
 
       - name: Download artifacts
@@ -90,7 +157,7 @@ jobs:
       - name: Detect pre-release
         id: prerelease
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="${{ needs.resolve.outputs.tag }}"
           if [[ "$TAG" =~ (rc|beta|alpha) ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
             echo "flags=--prerelease" >> "$GITHUB_OUTPUT"
@@ -103,7 +170,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="${{ needs.resolve.outputs.tag }}"
           if gh release view "$TAG" &>/dev/null; then
             echo "Release $TAG already exists — uploading assets only"
             gh release upload "$TAG" dist/* --clobber

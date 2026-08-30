@@ -255,13 +255,19 @@ to `stable` after GA (DD-013, and the `kairos-toolkit-ops` skill §2).
 Run from a clean `main` (or the hotfix branch in Case B):
 
 1. **Bump** `__version__` in `src/kairos_ontology/__init__.py`.
-2. **CHANGELOG** — promote `[Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`; leave a fresh
-   empty `[Unreleased]` above it. *(CI enforces a matching entry for GA tags.)*
+2. **CHANGELOG** — promote `[Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`, summarizing
+   what shipped. Do this for **every** bump, RC included — CI only *enforces* a
+   matching entry for GA tags (pre-releases are exempt from the gate), but leaving
+   it blank for RCs just means the changelog reads as stale later. Leave a fresh
+   empty `[Unreleased]` above it.
 3. **Lock + build**: `uv lock` then `uv build`.
-4. **Commit** (`chore: bump version to X.Y.Z`), open/merge the PR (or, for a hotfix,
-   tag the branch directly).
-5. **Tag** the released commit on `main`: `git tag -a vX.Y.Z -m "Release vX.Y.Z"` and
-   `git push origin vX.Y.Z`. *(Never push commits straight to `main`; push the tag.)*
+4. **Commit** (`chore: bump version to X.Y.Z`), open/merge the PR.
+5. **Tagging is automatic** for a merge to `main`: `release.yml` detects the
+   `__version__` change on the push to `main`, tags the merged commit itself, and
+   proceeds straight to build + publish — no manual `git tag`/`git push` step.
+   (Hotfix branches are the one exception: since a `hotfix/x.y.z` branch never
+   pushes to `main`, tag it directly as shown in §4 Case B/C — that manual
+   `git tag -a vX.Y.Z ... && git push origin vX.Y.Z` step still applies there.)
 6. **Verify**:
    ```bash
    gh run list --workflow release.yml --limit 1     # build + github-release succeeded
