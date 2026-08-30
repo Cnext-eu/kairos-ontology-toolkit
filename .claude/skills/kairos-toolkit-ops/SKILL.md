@@ -34,3 +34,22 @@ before accepting changed semantics.
 Use SemVer: fixes are patch, compatible features minor, and breaking contracts major. RC/beta/alpha
 versions use PEP 440 in `__version__` and matching Git tags. Never publish when managed skill pairs,
 reference assets, or package tests drift.
+
+## Hub and dataplatform release operations
+
+A separate, adjacent concern from the toolkit's own release above: releasing a **hub or
+dataplatform repository** that this toolkit scaffolds. Keep the two apart — do not apply the
+toolkit's own SemVer/tag/CHANGELOG rules to a hub or dataplatform repo.
+
+- **Hub release:** tag the validated `main` commit (the same commit whose PR already regenerated
+  and diff-checked the tracked publish output). When Gold is configured, `kairos-ontology
+  package-powerbi-release` (`cli/package_powerbi_release.py`) packages and checksums
+  `powerbi-semantic-model.zip`; the generated `release-projections.yml` then validates the
+  already-tracked dbt bytes at that tag rather than regenerating them, and records the hub commit
+  SHA and archive SHA-256 as release evidence.
+- **Hotfix and forward-port:** the generated `CICD.md`'s hotfix section documents the exact-SHA
+  hub/dataplatform hotfix and forward-port flow. Point users there rather than re-describing it in
+  this skill.
+- **Managed-guide updates:** `CICD.md` and `CONTRIBUTING.md` are managed files. The same
+  `update`/`update --upgrade` mechanism documented above for the toolkit's own managed files now
+  also carries these two guides into hub and dataplatform repositories.

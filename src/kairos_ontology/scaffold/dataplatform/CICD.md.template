@@ -18,6 +18,23 @@ A `bump/hub-*` PR updates these items together:
 2. the resolved dbt package lock; and
 3. all physical source bindings required by the new package.
 
+The concrete mechanism for item 3:
+
+```powershell
+kairos-ontology bump-hub <ref>                    # 1: pins packages.yml to the new SHA
+uv run dbt deps                                   # 2: refreshes the resolved package lock
+kairos-ontology validate-source-bindings          # see which bindings need re-confirmation
+# ...review the reported `stale` findings, and any `missing`/`unknown`/`duplicate` ones...
+kairos-ontology validate-source-bindings --confirm  # 3: stamp bindings verified for the new SHA
+```
+
+`validate-source-bindings` reads the new pin from `packages.yml` automatically and reports a
+`stale` finding for every physically bound source whose `meta.kairos.verified_hub_sha` (see
+`models/_sources.yml`'s header comment) does not match it -- i.e. has not been explicitly
+re-confirmed correct since the bump. `--confirm` only stamps once every other finding (missing,
+unknown, duplicate) is already clean, so review and fix those first. Commit the stamped binding
+file(s) as part of the same `bump/hub-*` PR, before opening it.
+
 Do not pin a moving branch in production. A release tag may help reviewers find the hub release,
 but the package revision is the commit SHA.
 

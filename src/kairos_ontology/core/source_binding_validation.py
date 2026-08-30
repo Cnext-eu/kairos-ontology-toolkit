@@ -7,9 +7,20 @@ hub owns the logical source names used by generated models. The scaffold must pr
 a validation step that compares package source usage with dataplatform bindings and
 fails on missing, unknown, duplicate, or stale entries."
 
-This module implements the **structural** half only: missing / unknown / duplicate.
-Staleness (a binding that was valid but no longer matches after a hub bump) needs a
-manifest/versioning design that does not exist yet and is explicitly out of scope.
+This module implements all four checks. missing / unknown / duplicate are pure
+name-matching between what the installed hub package currently declares and what the
+dataplatform currently binds -- structural, and independent of any hub commit.
+Staleness is different: it is a human-signoff-tracking concept. A binding's
+``database``/``schema`` values may have been reviewed and confirmed correct for an
+*older* hub commit, and not explicitly re-confirmed since the hub was bumped to a
+newer SHA -- even though it still structurally validates by name. That confirmation
+is recorded per-source in the dataplatform's own binding file(s), under each source's
+native dbt ``meta:`` block (``meta.kairos.verified_hub_sha``, see
+``scaffold/dataplatform/models/_sources.yml.template``'s header comment for the
+convention). Staleness checking is opt-in: it only runs when a caller passes
+``current_hub_sha`` to :func:`validate_source_bindings`; a repo that has not adopted
+that convention (or the ``bump-hub``-style SHA pin it is compared against) sees no
+behavior change at all.
 
 Two authoritative inputs:
 
@@ -36,6 +47,7 @@ Click (the same rule ``core/dbt_contract_lint.py`` documents).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -51,7 +63,14 @@ SEVERITY_ERROR = "error"
 FINDING_MISSING = "missing"
 FINDING_UNKNOWN = "unknown"
 FINDING_DUPLICATE = "duplicate"
+FINDING_STALE = "stale"
 FINDING_PARSE_ERROR = "parse-error"
+
+#: Matches a full lowercase 40-character git commit SHA. Deliberately a local,
+#: duplicate-but-tiny copy of ``cli/shared.py``'s ``_COMMIT_SHA_RE`` rather than an
+#: import of it -- this module stays leaf (no ``kairos_ontology.cli`` import) so it
+#: is unit-testable without Click, per the module docstring's rule.
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 #: Glob (relative to the dataplatform's ``dbt_packages/`` directory) matching every
 #: installed hub package's emitted contracted-source catalog. One level of wildcard
@@ -129,6 +148,7 @@ class PhysicalSourceBinding:
     database: str
     schema: str
     origin: str
+    verified_hub_sha: str | None = None
 
     @property
     def is_placeholder(self) -> bool:
@@ -292,6 +312,7 @@ def discover_physical_bindings(
             schema = block.get("schema")
             database = "" if database is None else str(database)
             schema = "" if schema is None else str(schema)
+            verified_hub_sha = _extract_verified_hub_sha(block)
             for table in block.get("tables") or []:
                 if not isinstance(table, dict):
                     continue
@@ -299,9 +320,32 @@ def discover_physical_bindings(
                 if not table_name:
                     continue
                 bindings.append(
-                    PhysicalSourceBinding(source_name, table_name, database, schema, rel)
+                    PhysicalSourceBinding(
+                        source_name, table_name, database, schema, rel, verified_hub_sha
+                    )
                 )
     return tuple(bindings), tuple(findings)
+
+
+def _extract_verified_hub_sha(source_block: dict[str, Any]) -> str | None:
+    """Read ``meta.kairos.verified_hub_sha`` off one parsed ``sources:`` block.
+
+    dbt's native ``sources:`` schema already supports an arbitrary ``meta:`` block
+    per source -- this is not a new dbt extension, just a new key read from under it
+    (see ``scaffold/dataplatform/models/_sources.yml.template``'s header comment).
+    Returns ``None`` when the source carries no ``meta:``/``kairos:``/
+    ``verified_hub_sha`` at all, or when any of those levels is not a mapping.
+    """
+    meta = source_block.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    kairos_meta = meta.get("kairos")
+    if not isinstance(kairos_meta, dict):
+        return None
+    raw = kairos_meta.get("verified_hub_sha")
+    if raw is None:
+        return None
+    return str(raw).strip()
 
 
 def validate_source_bindings(
@@ -309,6 +353,7 @@ def validate_source_bindings(
     *,
     dbt_packages_dir: Path | None = None,
     models_dir: Path | None = None,
+    current_hub_sha: str | None = None,
 ) -> SourceBindingReport:
     """Validate physical source bindings for the dataplatform project at *project_root*.
 
@@ -316,6 +361,13 @@ def validate_source_bindings(
     validation at all are absent (``dbt_packages/`` or ``models/`` missing) --
     almost always because ``dbt deps`` has not been run yet. A directory that
     exists but yields zero declared/bound pairs is not itself an error.
+
+    *current_hub_sha*, when given, additionally enables staleness checking (DD-206
+    §5's fourth finding type): every physically bound source whose ``meta.kairos.
+    verified_hub_sha`` is absent, or does not match *current_hub_sha*, gets one
+    :data:`FINDING_STALE` finding (per source, not per table -- confirmation happens
+    at the source level). Defaults to ``None``, which skips staleness checking
+    entirely -- fully backward compatible with every existing call site.
     """
     project_root = Path(project_root).resolve()
     packages_dir = (
@@ -425,6 +477,35 @@ def validate_source_bindings(
             )
         )
 
+    if current_hub_sha is not None:
+        target = current_hub_sha.strip().lower()
+        bindings_by_source: dict[str, list[PhysicalSourceBinding]] = {}
+        for binding in bound:
+            bindings_by_source.setdefault(binding.source_name, []).append(binding)
+        for source_name, group in sorted(bindings_by_source.items()):
+            recorded = {(b.verified_hub_sha or "").strip().lower() for b in group}
+            if recorded == {target}:
+                continue  # every binding for this source already confirmed for target
+            present = sorted(sha for sha in recorded if sha)
+            detail = (
+                f"recorded as verified for {', '.join(present)}"
+                if present
+                else "never recorded as verified for any hub commit"
+            )
+            findings.append(
+                SourceBindingFinding(
+                    kind=FINDING_STALE,
+                    source_name=source_name,
+                    table_name="",
+                    message=(
+                        f"source '{source_name}' has not been re-confirmed for hub commit "
+                        f"{target} ({detail}). Review its physical binding, then run "
+                        "`validate-source-bindings --confirm` (or `stamp_verified_bindings`) "
+                        "once satisfied it is still correct."
+                    ),
+                )
+            )
+
     findings.sort(key=lambda finding: (finding.kind, finding.source_name, finding.table_name))
 
     declared_files = tuple(sorted({usage.origin for usage in declared}))
@@ -437,4 +518,236 @@ def validate_source_bindings(
         findings=tuple(findings),
         declared_files=declared_files,
         binding_files=binding_files,
+    )
+
+
+# --- stamp_verified_bindings -------------------------------------------------------
+#
+# What a human runs *after* reviewing physical bindings post hub-bump, to mark every
+# currently bound source confirmed for the new hub commit. Deliberately line/regex
+# surgical rather than a `yaml.safe_load` + `yaml.dump()` round-trip -- these binding
+# files are meant to stay human-edited and readable (comments, key order, quoting
+# style), and `cli/shared.py`'s `_rewrite_hub_package_pin`/
+# `_rewrite_toolkit_dependency_source` already establish that convention for other
+# "surgically update one field in a human-maintained file" cases in this codebase.
+
+
+@dataclass(frozen=True, slots=True)
+class StampedBindingsReport:
+    """What :func:`stamp_verified_bindings` actually rewrote."""
+
+    hub_sha: str
+    stamped_sources: tuple[str, ...] = ()
+    updated_files: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hub_sha": self.hub_sha,
+            "stamped_sources": list(self.stamped_sources),
+            "updated_files": list(self.updated_files),
+        }
+
+
+def _indent_of(line: str) -> int:
+    stripped = line.lstrip(" \t")
+    return len(line) - len(stripped)
+
+
+def _line_eol(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    return ""
+
+
+def _body_end(lines: list[str], parent_idx: int, parent_indent: int) -> int:
+    """First index after *parent_idx* whose (non-blank) indent is <= *parent_indent*.
+
+    This is where the mapping/sequence value that starts right after the line at
+    *parent_idx* ends -- everything more indented than *parent_indent* belongs to
+    it. Blank lines are skipped over. Returns ``len(lines)`` if the body runs to the
+    end of the file.
+    """
+    i = parent_idx + 1
+    n = len(lines)
+    while i < n:
+        if lines[i].strip() != "" and _indent_of(lines[i]) <= parent_indent:
+            return i
+        i += 1
+    return n
+
+
+def _find_direct_child(lines: list[str], parent_idx: int, parent_indent: int, key: str) -> int | None:
+    """Return the index of a direct ``key:`` child of the mapping at *parent_idx*, if any.
+
+    Only lines at the (auto-detected) indentation of the parent's first child line
+    are considered direct children; anything more deeply indented (a child's own
+    nested value, e.g. a ``tables:`` list) is skipped over rather than mistaken for
+    a sibling key.
+    """
+    end = _body_end(lines, parent_idx, parent_indent)
+    key_re = re.compile(rf"^{re.escape(key)}:(?:\s|$)")
+    child_indent: int | None = None
+    i = parent_idx + 1
+    while i < end:
+        line = lines[i]
+        if line.strip() == "":
+            i += 1
+            continue
+        indent = _indent_of(line)
+        if child_indent is None:
+            child_indent = indent
+        if indent == child_indent and key_re.match(line.strip()):
+            return i
+        i += 1
+    return None
+
+
+_SOURCE_LIST_ITEM_RE = re.compile(r"^-\s+name:\s*(\S.*?)\s*$")
+
+
+def _stamp_source_block(lines: list[str], dash_idx: int, dash_indent: int, sha: str) -> bool:
+    """Ensure the source item at *dash_idx* has ``meta.kairos.verified_hub_sha == sha``.
+
+    Mutates *lines* in place -- inserting or replacing whole lines only, so every
+    other line (including surrounding blank lines and comments) is left untouched --
+    and returns True iff anything actually changed.
+    """
+    eol = _line_eol(lines[dash_idx]) or "\n"
+    quoted = f'"{sha}"'
+
+    meta_idx = _find_direct_child(lines, dash_idx, dash_indent, "meta")
+    if meta_idx is None:
+        indent = dash_indent + 2
+        insert_at = _body_end(lines, dash_idx, dash_indent)
+        lines[insert_at:insert_at] = [
+            f"{' ' * indent}meta:{eol}",
+            f"{' ' * (indent + 2)}kairos:{eol}",
+            f"{' ' * (indent + 4)}verified_hub_sha: {quoted}{eol}",
+        ]
+        return True
+
+    meta_indent = _indent_of(lines[meta_idx])
+    kairos_idx = _find_direct_child(lines, meta_idx, meta_indent, "kairos")
+    if kairos_idx is None:
+        indent = meta_indent + 2
+        insert_at = _body_end(lines, meta_idx, meta_indent)
+        lines[insert_at:insert_at] = [
+            f"{' ' * indent}kairos:{eol}",
+            f"{' ' * (indent + 2)}verified_hub_sha: {quoted}{eol}",
+        ]
+        return True
+
+    kairos_indent = _indent_of(lines[kairos_idx])
+    sha_idx = _find_direct_child(lines, kairos_idx, kairos_indent, "verified_hub_sha")
+    if sha_idx is None:
+        indent = kairos_indent + 2
+        insert_at = _body_end(lines, kairos_idx, kairos_indent)
+        lines.insert(insert_at, f"{' ' * indent}verified_hub_sha: {quoted}{eol}")
+        return True
+
+    old_line = lines[sha_idx]
+    indent = _indent_of(old_line)
+    new_line = f"{' ' * indent}verified_hub_sha: {quoted}{_line_eol(old_line) or eol}"
+    if old_line == new_line:
+        return False
+    lines[sha_idx] = new_line
+    return True
+
+
+def _stamp_source_meta(content: str, sha: str) -> tuple[str, tuple[str, ...]]:
+    """Stamp every source under one file's top-level ``sources:`` key to *sha*.
+
+    Returns the (possibly unchanged) rewritten content and the names of every
+    source found -- regardless of whether stamping it actually changed anything,
+    since a source already correctly stamped still counts as "covered" for the
+    caller's report.
+    """
+    lines = content.splitlines(keepends=True)
+    stamped: list[str] = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _indent_of(line) == 0 and line.strip() == "sources:":
+            source_list_end = _body_end(lines, i, 0)
+            item_indent: int | None = None
+            j = i + 1
+            while j < source_list_end:
+                item_line = lines[j]
+                if item_line.strip() == "":
+                    j += 1
+                    continue
+                indent = _indent_of(item_line)
+                if item_indent is None:
+                    item_indent = indent
+                if indent == item_indent:
+                    match = _SOURCE_LIST_ITEM_RE.match(item_line.strip())
+                    if match is not None:
+                        source_name = match.group(1)
+                        _stamp_source_block(lines, j, item_indent, sha)
+                        stamped.append(source_name)
+                        j = _body_end(lines, j, item_indent)
+                        source_list_end = _body_end(lines, i, 0)
+                        continue
+                j += 1
+            i = source_list_end
+            continue
+        i += 1
+    return "".join(lines), tuple(stamped)
+
+
+def stamp_verified_bindings(
+    project_root: Path,
+    hub_sha: str,
+    *,
+    models_dir: Path | None = None,
+) -> StampedBindingsReport:
+    """Stamp every physically bound source's ``meta.kairos.verified_hub_sha`` to *hub_sha*.
+
+    This is what a human runs after reviewing bindings post hub-bump: it marks every
+    source currently declared in the dataplatform's own binding file(s) (the same
+    ``models/**/*.yml``/``.yaml`` files with a top-level ``sources:`` key that
+    :func:`discover_physical_bindings` reads) as confirmed correct for *hub_sha*,
+    rewriting only the ``meta.kairos.verified_hub_sha`` line(s) via surgical,
+    indentation-based line edits -- never a full ``yaml.dump()`` round-trip -- so
+    every other line, comment, and formatting choice in a human-edited binding file
+    is left byte-for-byte unchanged.
+
+    Returns a :class:`StampedBindingsReport` listing which source names were found
+    (and (re)stamped) and which files were actually rewritten on disk; a file with
+    no top-level ``sources:`` key is left untouched, and a file whose sources were
+    already stamped for *hub_sha* is not rewritten even though its sources are still
+    reported as covered.
+    """
+    normalized = hub_sha.strip().lower()
+    if not _COMMIT_SHA_RE.fullmatch(normalized):
+        raise ValueError("hub_sha must be a 40-character hexadecimal commit SHA")
+
+    project_root = Path(project_root).resolve()
+    resolved_models_dir = (
+        Path(models_dir).resolve() if models_dir is not None else project_root / "models"
+    )
+    if not resolved_models_dir.is_dir():
+        return StampedBindingsReport(hub_sha=normalized)
+
+    stamped_sources: set[str] = set()
+    updated_files: list[str] = []
+    paths = sorted({*resolved_models_dir.rglob("*.yml"), *resolved_models_dir.rglob("*.yaml")})
+    for path in paths:
+        content = path.read_text(encoding="utf-8")
+        data, error = _load_yaml(path)
+        if error is not None or not isinstance(data, dict) or "sources" not in data:
+            continue
+        new_content, names = _stamp_source_meta(content, normalized)
+        stamped_sources.update(names)
+        if new_content != content:
+            path.write_text(new_content, encoding="utf-8")
+            updated_files.append(_relative(path, project_root))
+
+    return StampedBindingsReport(
+        hub_sha=normalized,
+        stamped_sources=tuple(sorted(stamped_sources)),
+        updated_files=tuple(updated_files),
     )

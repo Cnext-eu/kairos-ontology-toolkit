@@ -17,9 +17,11 @@ from ..core.conformance_artifact import check_discovery_gate
 from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
 
 from .shared import (
+    _COMMIT_SHA_RE,
     _emit,
     _FORMAT_OPTION,
     _ontology_domain_hints,
+    _parse_hub_package_pin,
     _resolve_catalog,
     resolve_refmodels_dir,
 )
@@ -125,8 +127,28 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir, structural_only):
     help="Override the dataplatform models directory that holds physical source "
     "bindings (default: <project-dir>/models).",
 )
+@click.option(
+    "--hub-sha",
+    default=None,
+    help="Hub commit SHA to check binding staleness against (DD-206 §5's fourth "
+    "finding type). If omitted, the CLI tries to auto-read the current pin from "
+    "<project-dir>/packages.yml (the same `bump-hub` uses); if packages.yml is "
+    "absent, unparsable, or not yet pinned to a real 40-character commit SHA, "
+    "staleness checking is silently skipped -- not an error.",
+)
+@click.option(
+    "--confirm",
+    is_flag=True,
+    help="After a clean structural pass (no missing/unknown/duplicate/parse-error "
+    "findings), stamp every currently bound source's meta.kairos.verified_hub_sha "
+    "to the resolved hub SHA (--hub-sha, or the auto-read packages.yml pin), "
+    "marking bindings confirmed for that commit, then re-report. Requires a "
+    "resolvable hub SHA.",
+)
 @_FORMAT_OPTION
-def validate_source_bindings_cmd(project_dir, dbt_packages_dir, models_dir, output_format):
+def validate_source_bindings_cmd(
+    project_dir, dbt_packages_dir, models_dir, hub_sha, confirm, output_format
+):
     """Fail-closed structural validation of dataplatform physical source bindings.
 
     DD-206 §5: the dataplatform owns real database/schema/table identifiers; the hub
@@ -142,19 +164,20 @@ def validate_source_bindings_cmd(project_dir, dbt_packages_dir, models_dir, outp
       all, or one whose database/schema is still empty or an unedited scaffold
       placeholder;
     - unknown: a physical binding entry for a source/table the package does not
-      declare using at all; and
+      declare using at all;
     - duplicate: the same source/table bound more than once with conflicting
-      database/schema values.
-
-    Staleness (a binding that was valid but no longer matches after a hub bump) is
-    explicitly out of scope -- it needs a manifest/versioning design that does not
-    exist yet.
+      database/schema values; and
+    - stale: (only when a hub SHA is resolved -- see --hub-sha) a bound source
+      whose meta.kairos.verified_hub_sha is absent or does not match that SHA, i.e.
+      has not been re-confirmed correct since the hub was last bumped.
 
     Run from the dataplatform project root (or pass --project-dir), after `dbt deps`
     has installed the hub package locally under dbt_packages/.
     """
     from ..core.source_binding_validation import (
+        FINDING_STALE,
         SourceBindingDiscoveryError,
+        stamp_verified_bindings,
         validate_source_bindings,
     )
 
@@ -163,17 +186,59 @@ def validate_source_bindings_cmd(project_dir, dbt_packages_dir, models_dir, outp
     packages_dir = Path(dbt_packages_dir) if dbt_packages_dir is not None else None
     resolved_models_dir = Path(models_dir) if models_dir is not None else None
 
-    try:
-        report = validate_source_bindings(
-            root,
-            dbt_packages_dir=packages_dir,
-            models_dir=resolved_models_dir,
-        )
-    except SourceBindingDiscoveryError as exc:
-        raise click.ClickException(str(exc)) from exc
+    resolved_hub_sha = hub_sha.strip().lower() if hub_sha else None
+    if resolved_hub_sha is not None and not _COMMIT_SHA_RE.fullmatch(resolved_hub_sha):
+        raise click.UsageError("--hub-sha must be a 40-character hexadecimal commit SHA")
+    if resolved_hub_sha is None:
+        packages_path = root / "packages.yml"
+        if packages_path.is_file():
+            try:
+                pin = _parse_hub_package_pin(packages_path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                pin = None
+            if pin is not None:
+                candidate = pin.previous_revision.strip().lower()
+                if _COMMIT_SHA_RE.fullmatch(candidate):
+                    resolved_hub_sha = candidate
+
+    def _validate():
+        try:
+            return validate_source_bindings(
+                root,
+                dbt_packages_dir=packages_dir,
+                models_dir=resolved_models_dir,
+                current_hub_sha=resolved_hub_sha,
+            )
+        except SourceBindingDiscoveryError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    report = _validate()
 
     for finding in report.findings:
         click.echo(f"❌ [{finding.kind}] {finding.message}", err=True)
+
+    if confirm:
+        blocking = [f for f in report.findings if f.kind != FINDING_STALE]
+        if blocking:
+            raise click.ClickException(
+                "--confirm skipped: resolve missing/unknown/duplicate/parse-error "
+                "findings first (stale bindings alone do not block --confirm)."
+            )
+        if resolved_hub_sha is None:
+            raise click.ClickException(
+                "--confirm requires a resolvable hub SHA: pass --hub-sha explicitly, "
+                "or pin packages.yml to a real commit SHA via `bump-hub` first."
+            )
+        stamp_report = stamp_verified_bindings(
+            root, resolved_hub_sha, models_dir=resolved_models_dir
+        )
+        click.echo(
+            f"✅ stamped {len(stamp_report.stamped_sources)} source(s) as verified "
+            f"for {resolved_hub_sha}: {', '.join(stamp_report.stamped_sources) or '(none bound)'}"
+        )
+        report = _validate()
+        for finding in report.findings:
+            click.echo(f"❌ [{finding.kind}] {finding.message}", err=True)
 
     if report.passed:
         click.echo(
