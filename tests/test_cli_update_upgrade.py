@@ -637,6 +637,76 @@ class TestUpdateUpgradeDowngradeGuard:
         assert "--allow-downgrade only applies to --upgrade" in result.output
 
 
+def _make_old_dataplatform_pyproject(cwd: Path) -> None:
+    """The pre-fix dataplatform scaffold shape: unpinned, no [tool.kairos] at all."""
+    (cwd / "dbt_project.yml").write_text("name: test_dp\n", encoding="utf-8")
+    (cwd / "pyproject.toml").write_text(
+        '[project]\nname = "test-dp"\n\ndependencies = [\n'
+        '    "kairos-ontology-toolkit",\n'
+        '    "dbt-fabric",\n]\n\n'
+        "[tool.uv.sources]\n"
+        'kairos-ontology-toolkit = { git = "https://github.com/acme/kairos-ontology-toolkit" }\n',
+        encoding="utf-8",
+    )
+
+
+def _make_new_dataplatform_pyproject(cwd: Path, version: str = "v3.8.0") -> None:
+    """The aligned (post-fix) dataplatform shape: wheel-URL pin + [tool.kairos] channel."""
+    (cwd / "dbt_project.yml").write_text("name: test_dp\n", encoding="utf-8")
+    (cwd / "pyproject.toml").write_text(
+        '[project]\nname = "test-dp"\n\ndependencies = [\n'
+        f'    "kairos-ontology-toolkit @ https://github.com/Cnext-eu/'
+        f"kairos-ontology-toolkit/releases/download/{version}/"
+        'kairos_ontology_toolkit-0.0.0-py3-none-any.whl",\n'
+        '    "dbt-fabric",\n]\n\n'
+        '[tool.kairos]\nchannel = "preview"\n',
+        encoding="utf-8",
+    )
+
+
+class TestUpdateUpgradeDataplatform:
+    """A dataplatform repo without a [tool.kairos] channel must refuse, not lie (#20).
+
+    Before this fix, `update --upgrade` here printed a fabricated "✓ Upgraded to
+    vX.Y.Z" and exited 0 while touching nothing: `_read_hub_channel()` silently
+    defaulted to "stable" (indistinguishable from a hub that chose it deliberately),
+    the downgrade guard never fired because it can't parse a `[tool.uv.sources]` pin,
+    and the pin-rewrite regex matched nothing -- but the final success print and `uv
+    lock` call were unconditional.
+    """
+
+    def test_old_shape_dataplatform_refuses_instead_of_lying(self, runner, tmp_path):
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_old_dataplatform_pyproject(Path.cwd())
+                with patch("subprocess.run") as mock_run:
+                    result = runner.invoke(cli, ["update", "--upgrade"])
+
+        assert result.exit_code == 1
+        assert "no [tool.kairos] channel configured" in result.output
+        assert "Upgraded to" not in result.output
+        mock_run.assert_not_called()
+
+    @patch("kairos_ontology.cli.operations._managed_dataplatform_map", return_value={})
+    @patch("kairos_ontology.cli.operations._resolve_channel", return_value="v3.9.0-rc.2")
+    @patch("kairos_ontology.cli.operations._read_hub_channel", return_value="preview")
+    @patch("subprocess.run")
+    def test_new_shape_dataplatform_upgrades_like_a_hub(
+        self, mock_run, mock_channel, mock_resolve, mock_managed, runner, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sys.platform", "linux"):
+            with runner.isolated_filesystem(temp_dir=tmp_path):
+                _make_new_dataplatform_pyproject(Path.cwd())
+                result = runner.invoke(cli, ["update", "--upgrade"])
+                text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+        assert result.exit_code == 0, result.output
+        assert "/download/v3.9.0-rc.2/" in text
+        assert ["uv", "lock"] in [c[0][0] for c in mock_run.call_args_list]
+
+
 class TestReadHubChannel:
     """`_read_hub_channel` feeds the upgrade target, so a wrong answer picks the
     wrong version."""

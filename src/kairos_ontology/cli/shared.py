@@ -1224,6 +1224,30 @@ def _read_hub_channel() -> str:
     return channel if isinstance(channel, str) and channel.strip() else "stable"
 
 
+def _has_kairos_channel() -> bool:
+    """Return whether the cwd's ``pyproject.toml`` genuinely configures a channel.
+
+    Unlike :func:`_read_hub_channel`, this does not default to ``"stable"`` when
+    ``[tool.kairos].channel`` is absent -- a dataplatform repo has no such table at
+    all, and defaulting there is indistinguishable from a hub that genuinely chose
+    ``stable``, which previously let ``update --upgrade`` silently no-op while
+    claiming success for a dataplatform (item #20).
+    """
+    pyproject = Path.cwd() / "pyproject.toml"
+    if not pyproject.is_file():
+        return False
+    try:
+        channel = (
+            tomllib.loads(pyproject.read_text(encoding="utf-8"))
+            .get("tool", {})
+            .get("kairos", {})
+            .get("channel")
+        )
+    except tomllib.TOMLDecodeError:
+        return False
+    return isinstance(channel, str) and bool(channel.strip())
+
+
 def _read_pinned_toolkit_version() -> str | None:
     """Return the toolkit version pinned in the cwd ``pyproject.toml`` (or None).
 

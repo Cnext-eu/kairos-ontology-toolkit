@@ -130,3 +130,30 @@ If the toolkit dependency is already current, run `uv run kairos-ontology update
 `--upgrade`; plain `update` completes synchronously. Only a version-changing Windows
 `update --upgrade` requires checking `.kairos/upgrade-refresh.log`. Review local environment,
 source-binding, and workflow changes manually; the update command cannot infer them.
+
+### One-time migration for a dataplatform scaffolded before this pin existed
+
+`update --upgrade` refuses (rather than silently doing nothing) if `pyproject.toml` has no
+`[tool.kairos] channel` block. Dataplatforms scaffolded before this existed pinned the toolkit
+via an unversioned `[tool.uv.sources]` git dependency instead. Migrate once, by hand:
+
+```toml
+# Replace this:
+dependencies = [
+    "kairos-ontology-toolkit",
+    ...
+]
+[tool.uv.sources]
+kairos-ontology-toolkit = { git = "https://github.com/{ORG}/kairos-ontology-toolkit" }
+
+# With this (pick a real released tag, e.g. from
+# https://github.com/Cnext-eu/kairos-ontology-toolkit/releases):
+dependencies = [
+    "kairos-ontology-toolkit @ https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/<tag>/kairos_ontology_toolkit-<version>-py3-none-any.whl",
+    ...
+]
+[tool.kairos]
+channel = "stable"  # or "preview" / an explicit tag, matching whatever <tag> above is
+```
+
+Then `uv lock && uv sync`. `update --upgrade` works normally from here on.

@@ -21,7 +21,15 @@ was applied (three parallel read-only code traces, one per code area). Outcome:
   specific "gold config path" example no longer exists in the template — the narrower
   general "seeds path is empty → dbt warns" gap is still real but wasn't fixed here),
   #8 (PII redaction heuristic tuning — a false-positive/negative tradeoff that needs
-  its own scoping conversation, not a mechanical fix).
+  its own scoping conversation, not a mechanical fix), #19 (`update`'s managed-file
+  diff is line-ending sensitive on Windows — confirmed, not yet fixed).
+- **New item found and fixed (2026-08-30, branch
+  `fix/dataplatform-toolkit-update-channel`): #20** — `update --upgrade` reported a
+  false success in a dataplatform repo with no `[tool.kairos]` channel. See item 20
+  below.
+- **Correction (2026-08-30, branch `fix/surrogate-key-sibling-alias-bug`): #16 was
+  wrongly marked stale above** — it reproduces on the real release this branch
+  shipped in and is now fixed on that branch. See the updated note under item 16.
 
 ## Confirmed bugs
 
@@ -651,6 +659,57 @@ didn't prevent the mistake:
   reinforcing that this applies to **temporary/workaround edits too**, not
   just permanent ones — the rule as currently worded doesn't obviously rule
   out "just for this test, I'll patch it and revert later" reasoning.
+
+### 19. `kairos-ontology update`'s managed-file diff is line-ending sensitive, producing a false "local customizations" positive
+
+**Triage: confirmed, not fixed on this branch — backlog for a future pass.**
+
+Ran `update --check`/`update` against `nns-ontology-hub` (pinned v5.15.0rc8).
+Both reported `.claude/settings.json` as having "local customizations" that
+prevented auto-merging a DD-103 semantic-access deny-rule broadening
+(`.ttl`/`.rdf`/`.owl`, not just `.ttl`). But the hub's `.claude/settings.json`
+has never been touched since the initial scaffold commit (`git log` shows one
+commit total, the scaffold itself), and diffing it against the toolkit's own
+bundled `scaffold/claude-settings.json` template after stripping `\r`
+(`diff -q <(tr -d '\r' < scaffold-file) <(tr -d '\r' < hub-file)`) shows **zero
+difference** — the content is already identical, already broadened. The only
+actual difference is CRLF (hub checkout, Windows `core.autocrlf=true`) vs. LF
+(toolkit's bundled template file).
+
+Fix: whatever hash/diff mechanism `update`/`update --check` uses to detect
+"local customizations" in a managed file should normalize line endings before
+comparing (or compare parsed content for structured files like JSON, rather
+than raw bytes) — otherwise every Windows checkout with `core.autocrlf=true`
+will perpetually report unmerged customizations for managed files that are
+actually unchanged, training users to ignore a warning that's sometimes real
+and sometimes just line-ending noise.
+
+### 20. `update --upgrade` reports a false success in a dataplatform repo (no `[tool.kairos]` channel block to write to)
+
+**Triage: confirmed, fixed on branch `fix/dataplatform-toolkit-update-channel`.**
+
+`nns-dataplatform`'s `pyproject.toml` depended on the toolkit too
+(`kairos-ontology-toolkit = { git = "https://github.com/Cnext-eu/kairos-ontology-toolkit" }`,
+**no `rev`/`tag`** — an unpinned, floating git source), unlike the hub's
+explicit released-wheel-URL + `channel = "..."` pin block. Running
+`kairos-ontology update --upgrade` there (no channel configured) printed a
+fabricated `✓ Upgraded to v5.14.0` and exited 0, but nothing changed:
+`pyproject.toml`/`uv.lock` were byte-identical before and after, and the
+actually-installed toolkit version was unchanged. Every value printed was a
+*real* resolution (a genuine GitHub "stable" lookup) — just answering a
+question nobody had configured this repo to ask, because `_read_hub_channel()`
+silently defaulted to `"stable"` when no `[tool.kairos]` table existed at all,
+indistinguishable from a hub that chose it deliberately.
+
+Fix: a new `_has_kairos_channel()` predicate distinguishes "genuinely no
+channel configured" from the hub's deliberate default, and `update --upgrade`
+now refuses with a clear, actionable error for a dataplatform repo with no
+channel, instead of falling through to a fabricated success. Newly-scaffolded
+dataplatforms (`kairos-ontology init-dataplatform`) now get the same
+wheel-URL-pin + `[tool.kairos] channel` mechanism the hub scaffold already
+has, reusing `_resolve_scaffold_toolkit_pin()` — so `update --upgrade` just
+works the same way in both repo kinds going forward. A dataplatform scaffolded
+before this fix needs a one-time manual migration, documented in `CICD.md`.
 
 ## Non-issue, checked
 

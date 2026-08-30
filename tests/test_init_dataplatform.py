@@ -238,6 +238,19 @@ class TestInitDataplatform:
         pyproject = (dataplatform_output / "pyproject.toml").read_text(encoding="utf-8")
         assert "kairos-ontology-toolkit" in pyproject
 
+    def test_pyproject_pins_toolkit_the_same_way_as_the_hub(self, dataplatform_output):
+        """Aligned with the hub's mechanism (#20): a wheel-URL pin + [tool.kairos]
+        channel, not an unpinned [tool.uv.sources] git dependency `update --upgrade`
+        can't resolve or rewrite."""
+        pyproject = (dataplatform_output / "pyproject.toml").read_text(encoding="utf-8")
+        assert (
+            "kairos-ontology-toolkit @ https://github.com/Cnext-eu/"
+            "kairos-ontology-toolkit/releases/download/" in pyproject
+        )
+        assert "[tool.kairos]" in pyproject
+        assert "channel = " in pyproject
+        assert "[tool.uv.sources]" not in pyproject
+
     def test_version_pinned_from_hub(self, dataplatform_output):
         packages = (dataplatform_output / "packages.yml").read_text(encoding="utf-8")
         assert "v1.2.0" in packages
