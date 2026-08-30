@@ -8,6 +8,29 @@
 # - Adding a new source system
 # - Changing database/schema names between environments
 # - Deploying to a different environment (use dbt target-specific overrides)
+#
+# Staleness tracking (DD-206 §5): each source below may carry an optional
+# meta.kairos.verified_hub_sha key -- this is dbt's own native per-source `meta:`
+# block, not a new dbt extension, just one new key read from under it. It records
+# the full 40-character hub commit SHA this source's database/schema were last
+# reviewed and confirmed correct for, e.g.:
+#
+#   sources:
+#     - name: crm
+#       database: "raw"
+#       schema: "dbo"
+#       meta:
+#         kairos:
+#           verified_hub_sha: "0123456789abcdef0123456789abcdef01234567"
+#       tables: [...]
+#
+# After `bump-hub` moves packages.yml to a new SHA, run
+# `kairos-ontology validate-source-bindings` to see which sources have not been
+# re-confirmed for it (reported as `stale` findings); once you have reviewed them
+# and are satisfied the database/schema are still correct, run
+# `kairos-ontology validate-source-bindings --confirm` to stamp every currently
+# bound source's verified_hub_sha to the new pin. Do not hand-edit this key with a
+# SHA you have not actually verified against -- that defeats the point.
 
 version: 2
 
