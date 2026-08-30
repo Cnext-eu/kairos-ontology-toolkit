@@ -13,6 +13,13 @@ Standard git/gh operations (branch, commit, push, `gh pr create`, `gh pr
 merge`) are not repeated here. This skill documents the **toolkit-specific
 rules that are easy to forget and cause CI failures or broken releases.**
 
+This skill is also copied into scaffolded dataplatform repositories (it's part of the
+`_DATAPLATFORM_SKILLS` set `init-dataplatform` installs). Everything below — the version bump,
+CHANGELOG, and tag rules — is specific to **this toolkit repository's own** release process
+(`src/kairos_ontology/__init__.py`, `scripts/finish_pr.py`). A hub or dataplatform repo has its own,
+different SHA-pinned release model documented in that repository's generated `CICD.md`; do not apply
+these rules there.
+
 ## 1. Version bump is mandatory (not just for releases)
 
 The CI `version-check` job fails any PR that changes `src/` but doesn't bump
