@@ -1618,6 +1618,11 @@ def init_dataplatform(name, dest, platform, org_override):
         "fabric-warehouse": "dbt-fabric>=1.9.0,<2.0.0",
         "databricks": "dbt-databricks>=1.9.0,<2.0.0",
     }
+    # Same channel-based toolkit pin the hub scaffold uses (issue: dataplatform
+    # `update --upgrade` previously had no [tool.kairos] channel to resolve against
+    # and silently no-opped while claiming success). One policy, shared with `init`.
+    toolkit_ref, toolkit_channel = _resolve_scaffold_toolkit_pin()
+    toolkit_version = _tag_to_version(toolkit_ref)
     subs = {
         "{PROJECT_NAME}": project_name,
         "{ORG}": hub_org,
@@ -1627,6 +1632,9 @@ def init_dataplatform(name, dest, platform, org_override):
         "{SCHEMA}": "your_bronze_schema",
         "{DBT_ADAPTER}": adapter_map.get(platform, "dbt-fabric>=1.9.0,<2.0.0"),
         "{DBT_CI_PROFILE_YAML}": _ci_profile_yaml_block(project_name, platform),
+        "{toolkit_ref}": toolkit_ref,
+        "{toolkit_version}": toolkit_version,
+        "{toolkit_channel}": toolkit_channel,
     }
 
     # Copy and template scaffold files
@@ -1648,6 +1656,7 @@ def init_dataplatform(name, dest, platform, org_override):
                 content = content.replace(placeholder, value)
             (repo_dir / dst_name).write_text(content, encoding="utf-8")
             click.echo(f"  ✓ {dst_name}")
+    click.echo(f"    toolkit {toolkit_ref} (channel '{toolkit_channel}')")
 
     cicd_src = _DATAPLATFORM_SCAFFOLD / "CICD.md.template"
     if cicd_src.is_file():

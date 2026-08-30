@@ -5,7 +5,7 @@ description = "Dataplatform dbt project consuming ontology-hub projections"
 requires-python = ">=3.12"
 
 dependencies = [
-    "kairos-ontology-toolkit",
+    "kairos-ontology-toolkit @ https://github.com/Cnext-eu/kairos-ontology-toolkit/releases/download/{toolkit_ref}/kairos_ontology_toolkit-{toolkit_version}-py3-none-any.whl",
     "{DBT_ADAPTER}",
 ]
 
@@ -18,5 +18,11 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv.sources]
-kairos-ontology-toolkit = { git = "https://github.com/{ORG}/kairos-ontology-toolkit" }
+[tool.kairos]
+# Channel controls which toolkit version is installed on `kairos-ontology update --upgrade`.
+#   "stable"  — latest GA release (default)
+#   "preview" — latest pre-release (rc/beta/alpha) for testing new features
+#   "v2.16.0" — explicit pinned version
+# This channel is written by the scaffolder to match the pin above, so `update --upgrade`
+# moves forward from it instead of resolving to an older release.
+channel = "{toolkit_channel}"

@@ -33,6 +33,7 @@ from .shared import (
     _copy_managed,
     _dependency_files_transaction,
     _get_managed_version,
+    _has_kairos_channel,
     _lock_and_sync_dependency,
     _managed_dataplatform_map,
     _managed_files_transaction,
@@ -197,6 +198,12 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
         )
         os.chdir(managed_root)
 
+    # Detect repo type: dataplatform (has dbt_project.yml) vs ontology-hub. Computed
+    # once, up front, so both the --upgrade channel gate below and the managed-file
+    # refresh further down agree on which repo kind they're operating on.
+    repo_root = Path.cwd()
+    is_dataplatform = (repo_root / "dbt_project.yml").is_file()
+
     # --- Temporarily test or restore an exact toolkit dependency source --------
     if test_ref is not None or restore:
         if managed_root is None:
@@ -264,6 +271,17 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
 
     # --- Upgrade toolkit dependency via uv ------------------------------------
     if upgrade:
+        if is_dataplatform and not _has_kairos_channel():
+            print(
+                "❌ This dataplatform repo has no [tool.kairos] channel configured.\n"
+                "   The toolkit dependency is pinned as an unversioned git source, so\n"
+                "   there is nothing for --upgrade to resolve against or write a result\n"
+                "   into. Recently-scaffolded dataplatforms (kairos-ontology "
+                "init-dataplatform)\n"
+                "   get a channel-based pin automatically; see CICD.md for the manual\n"
+                "   migration steps for a repo scaffolded before this existed."
+            )
+            raise SystemExit(1)
         channel = _read_hub_channel()
         ref = _resolve_channel(channel)
         if ref is None:
@@ -393,9 +411,6 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
                 raise SystemExit(1)
             raise SystemExit(refresh_code)
 
-    # Detect repo type: dataplatform (has dbt_project.yml) vs ontology-hub
-    repo_root = Path.cwd()
-    is_dataplatform = (repo_root / "dbt_project.yml").is_file()
     if is_dataplatform:
         managed_map = _managed_dataplatform_map()
     else:
