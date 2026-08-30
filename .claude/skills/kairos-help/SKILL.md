@@ -72,6 +72,9 @@ immutable CompilePlan and deterministic downstream artifacts.
 - `kairos.yaml`: namespace, catalog, adapters, and selected roots
 - `../ontology-hub-publish/`: derived artifacts only (sibling of the hub)
 
+Never read a raw `.ttl`/`.rdf`/`.owl` file as text; use `resolve-ontology`, `show-class-inventory`,
+`list-class-properties`, or `explain-term` if semantic detail is needed.
+
 ## Canonical commands
 
 ```powershell
