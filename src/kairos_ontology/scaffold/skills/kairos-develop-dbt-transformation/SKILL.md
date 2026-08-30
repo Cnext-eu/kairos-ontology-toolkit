@@ -158,6 +158,33 @@ directories — only `init`/`new-repo` create them. Run
 `mkdir integration/transforms/dbt/seeds` before authoring the first seed; this is
 expected behavior, not a bug.
 
+## Alternative entry path: author outside the hub, then promote (issue #634)
+
+Steps 1-6 below assume authoring directly inside the ontology hub. An engineer who
+prefers to iterate in their own dataplatform repo instead may develop and test the
+`int_merged__<entity>`/`int_<source>__<entity>` model there as an ordinary local dbt
+model -- same naming convention, same `contract: {enforced: true}`, same `meta.kairos`
+block, validated with plain `dbt build`/`dbt test` against seed data, with zero hub
+involvement during active development. Once the model is stable, run:
+
+```powershell
+uv run kairos-ontology promote-transform <path-to-model.sql> --domain <domain>
+```
+
+from inside the dataplatform repo (or pass `--hub-root` explicitly). This copies
+(never moves -- the dataplatform-authored SQL and properties YAML are left untouched)
+the model's SQL and just its own properties-YAML entry into
+`integration/transforms/dbt/models/intermediate/<domain>/` in the hub, then runs the
+same offline `validate-dbt-contracts` check step 6 below documents. A validation
+failure rolls back (deletes both just-written files) so an invalid model is never left
+in the hub tree. Pass `--dry-run` to preview the destination paths first, and
+`--force` to overwrite an already-promoted copy.
+
+`promote-transform` only replaces steps 1-6's *authoring location* -- it does not wire
+the EntityBinding or record a Decision Log entry. Steps 7 and 8 below (the Decision Log
+entry for an `int_merged__` model, and returning to kairos-design-mapping to wire
+`source.dbtModel`) are still required either way, whichever entry path was used.
+
 ## Workflow
 
 1. Read the target ontology, source vocabulary, PII-safe samples, current binding,

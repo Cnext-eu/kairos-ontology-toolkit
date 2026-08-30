@@ -159,6 +159,9 @@ _SKILL_COVERED_COMMANDS = {
     # tree an author is mid-way through writing, and the skill that walks them through
     # writing it is the one that should be running it (issue #504).
     "validate-dbt-contracts": "kairos-develop-dbt-transformation",
+    # Alternative entry path into the same skill's workflow: promoting a model authored
+    # outside the hub is still that skill's territory, not a separate one (issue #634).
+    "promote-transform": "kairos-develop-dbt-transformation",
     "validate-mapping": "kairos-design-mapping",
     "scaffold-mapping": "kairos-design-mapping",
 }
