@@ -26,10 +26,17 @@ before accepting changed semantics.
 ## Toolkit release
 
 1. Work from a clean feature branch and merge reviewed changes to `main`.
-2. Update `src/kairos_ontology/__init__.py`, `CHANGELOG.md`, and `uv.lock` as required.
+2. Update `src/kairos_ontology/__init__.py` and `CHANGELOG.md` — promote
+   `[Unreleased]` to a dated `## [X.Y.Z]` entry for every bump, RC included, not
+   just GA (CI only enforces the entry for GA tags; write one anyway so the
+   changelog doesn't read as stale). Run `uv lock` if needed.
 3. Run the full relevant tests plus `uv build`.
-4. Commit with DCO sign-off, tag `vX.Y.Z`, and push the commit and tag.
-5. Verify the release workflow and attached wheel/sdist with `gh`.
+4. Commit with DCO sign-off, open the PR, merge to `main`.
+5. Tagging is automatic: `release.yml` detects the `__version__` change on the push
+   to `main`, tags the merged commit itself, and builds + publishes — no manual
+   `git tag`/`git push` step. (Hotfix branches, which never push to `main`, are the
+   one exception — tag those directly per `docs/RELEASING.md` §4.)
+6. Verify the release workflow and attached wheel/sdist with `gh`.
 
 Use SemVer: fixes are patch, compatible features minor, and breaking contracts major. RC/beta/alpha
 versions use PEP 440 in `__version__` and matching Git tags. Never publish when managed skill pairs,
