@@ -121,6 +121,7 @@ def _materialize_dimensional_powerbi(
         dbt_schema_artifact_path=(f"models/gold/{domain}/_{domain}__gold_models.yml"),
         erd_artifact_path=f"{domain}/{domain}-gold-erd.mmd",
         report_artifact_path=f"{domain}/{domain}-gold-product.json",
+        exposures_artifact_path=(f"models/gold/{domain}/_{domain}__exposures.yml"),
     )
 
 
