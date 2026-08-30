@@ -1361,6 +1361,10 @@ def _managed_scaffold_map() -> dict[str, Path]:
     if cicd.is_file():
         result["CICD.md"] = cicd
 
+    contributing = _SCAFFOLD_DIR / "CONTRIBUTING.md.template"
+    if contributing.is_file():
+        result["CONTRIBUTING.md"] = contributing
+
     ci = _SCAFFOLD_DIR / "copilot-instructions.md"
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
@@ -1407,6 +1411,10 @@ def _managed_dataplatform_map() -> dict[str, Path]:
     cicd = _DATAPLATFORM_SCAFFOLD / "CICD.md.template"
     if cicd.is_file():
         result["CICD.md"] = cicd
+
+    contributing = _DATAPLATFORM_SCAFFOLD / "CONTRIBUTING.md.template"
+    if contributing.is_file():
+        result["CONTRIBUTING.md"] = contributing
 
     ci = _SCAFFOLD_DIR / "dataplatform-copilot-instructions.md"
     if ci.is_file():

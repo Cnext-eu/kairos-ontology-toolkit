@@ -38,3 +38,7 @@ Run `kairos-ontology compile <domain> --check --format json` before Gold generat
 the returned CompilePlan view through the registered projector; it never calls a legacy Silver/dbt
 projection path. Review generated dbt/DDL, TMDL, DAX, relationships, and security scaffolding, then
 validate them in the target toolchain.
+
+Gold produces the first generated report and semantic-model version, packaged and checksummed as
+part of the hub release. Target-workspace deployment, environment promotion, and business
+acceptance of that report are downstream responsibilities — see `CICD.md`.

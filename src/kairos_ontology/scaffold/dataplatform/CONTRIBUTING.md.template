@@ -1,0 +1,45 @@
+# Contributing to this dataplatform
+
+This managed guide describes how changes are branched and reviewed. See `CICD.md` for
+how they are validated, promoted, rolled back, and hotfixed.
+
+## Branching
+
+`main` is protected and is the only long-lived branch. Never commit to it directly —
+always branch and open a pull request.
+
+| Prefix | Use for |
+|---|---|
+| `feature/<topic>` | Downstream model or orchestration change |
+| `bump/hub-<version>` | Hub SHA and physical binding update |
+| `fix/<topic>` | Normal correction |
+| `hotfix/<version>-<topic>` | Urgent correction based on the commit running in PROD |
+| `chore/<topic>` | Dependency, workflow, or maintenance change |
+
+Branches should live for days, not weeks. Open a draft PR early when changing a shared
+model, and coordinate with its owner before making concurrent edits to it.
+
+## Submitting a change
+
+1. Branch from `main` using the prefix table above.
+2. Author the change. A `bump/hub-*` branch updates the hub package's full commit
+   SHA, the resolved dbt package lock, and every required physical source binding
+   together — never partially.
+3. Run the pull-request checks documented in `CICD.md` before opening the PR.
+4. Open the PR against `main`. CI must run a full isolated `dbt build` against the
+   pinned hub commit.
+5. Never edit installed hub-package files under `dbt_packages/`; report a problem
+   with a compiler-owned model upstream in the hub instead.
+
+## Updating this guide
+
+This file and `CICD.md` are toolkit-managed. Adopt a newer version with:
+
+```powershell
+uv run kairos-ontology update --upgrade
+# On Windows, wait for the detached managed-file refresh to finish.
+uv run kairos-ontology update --check
+```
+
+If the toolkit dependency is already current, run `uv run kairos-ontology update`
+without `--upgrade`; plain `update` completes synchronously.

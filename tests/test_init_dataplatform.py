@@ -163,6 +163,12 @@ class TestInitDataplatform:
         assert (dp_dir / "pyproject.toml").exists()
         assert (dp_dir / "README.md").exists()
         assert (dp_dir / "CICD.md").exists()
+        assert (dp_dir / "CONTRIBUTING.md").exists()
+
+    def test_creates_downstream_only_models_dir_not_custom(self, dataplatform_output):
+        dp_dir = dataplatform_output
+        assert (dp_dir / "models" / "downstream_only").is_dir()
+        assert not (dp_dir / "models" / "custom").exists()
 
     def test_cicd_guide_is_managed_and_describes_exact_sha_promotion(
         self, dataplatform_output
@@ -176,6 +182,15 @@ class TestInitDataplatform:
         assert "powerbi-semantic-model.zip" in cicd
         assert "both `SemanticModel` and `Report`" in cicd
         assert "downstream deployment is read-only" in cicd
+
+    def test_contributing_guide_is_managed_and_describes_branch_prefixes(
+        self, dataplatform_output
+    ):
+        contributing = (dataplatform_output / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        assert "kairos-ontology-toolkit:managed" in contributing
+        assert "bump/hub-" in contributing
+        assert "hotfix/" in contributing
+        assert "kairos-ontology update --upgrade" in contributing
 
     def test_packages_yml_has_hub_reference(self, dataplatform_output):
         packages = (dataplatform_output / "packages.yml").read_text(encoding="utf-8")

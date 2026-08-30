@@ -96,6 +96,9 @@ def _assert_v5_hub_contract(hub: Path) -> None:
     cicd = hub.parent / "CICD.md"
     assert cicd.is_file()
     assert _get_managed_version(cicd.read_text(encoding="utf-8")) is not None
+    contributing = hub.parent / "CONTRIBUTING.md"
+    assert contributing.is_file()
+    assert _get_managed_version(contributing.read_text(encoding="utf-8")) is not None
     assert not (hub / "model/shapes/kairos-prep-shapes.shacl.ttl").exists()
     assert not (hub / "model/shapes/kairos-ext-shapes.shacl.ttl").exists()
     assert not (hub / "model/shapes/kairos-map-shapes.shacl.ttl").exists()
@@ -420,6 +423,7 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert (repo / ".gitignore").is_file()
     assert (repo / "README.md").is_file()
     assert (repo / "CICD.md").is_file()
+    assert (repo / "CONTRIBUTING.md").is_file()
 
     # pyproject references the toolkit
     pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
@@ -431,6 +435,41 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert '"dbt-databricks>=1.9,<1.10"' in pyproject
     assert "flatfile = [" in pyproject
     assert "kairos-ontology-toolkit[flatfile]" in pyproject
+
+
+def test_new_repo_contributing_guide_describes_branch_prefixes(tmp_path):
+    """new-repo's managed CONTRIBUTING.md should describe hub branch conventions."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(cli, ["new-repo", "contoso", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    contributing = (tmp_path / "contoso-ontology-hub" / "CONTRIBUTING.md").read_text(
+        encoding="utf-8"
+    )
+    assert _get_managed_version(contributing) is not None
+    assert "model/<domain>-<topic>" in contributing
+    assert "hotfix/<version>-<topic>" in contributing
+    assert "kairos-ontology update --upgrade" in contributing
+
+
+def test_new_repo_publish_gitignore_allows_release_relevant_output(tmp_path):
+    """new-repo's .gitignore should track dbt + Power BI output, ignore the rest."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        result = runner.invoke(cli, ["new-repo", "contoso", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    gitignore = (tmp_path / "contoso-ontology-hub" / ".gitignore").read_text(encoding="utf-8")
+    assert "ontology-hub-publish/**" in gitignore
+    assert "!ontology-hub-publish/medallion/dbt/**" in gitignore
+    assert "!ontology-hub-publish/powerbi/**" in gitignore
+    # Everything else under ontology-hub-publish/ (neo4j, azure-search, reports/details,
+    # etc.) stays ignored by the blanket pattern -- no allowlist entry for them.
+    assert "!ontology-hub-publish/neo4j/**" not in gitignore
+    assert "!ontology-hub-publish/reports/**" not in gitignore
 
 
 def test_new_repo_fails_if_dir_exists(tmp_path):

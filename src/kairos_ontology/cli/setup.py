@@ -497,6 +497,12 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
         _copy_managed(cicd_src, cicd_dst)
         print("  ✓ Created CICD.md")
 
+    contributing_src = _SCAFFOLD_DIR / "CONTRIBUTING.md.template"
+    contributing_dst = cwd / "CONTRIBUTING.md"
+    if contributing_src.is_file() and (not contributing_dst.exists() or force):
+        _copy_managed(contributing_src, contributing_dst)
+        print("  ✓ Created CONTRIBUTING.md")
+
     # 6. Generate hub README with company context
     hub_readme_src = _SCAFFOLD_DIR / "ontology-hub" / "README.md.template"
     hub_readme_dst = hub / "README.md"
@@ -1254,6 +1260,11 @@ def new_repo(
         _copy_managed(cicd_src, repo_dir / "CICD.md")
         print("  ✓ CICD.md")
 
+    contributing_src = _SCAFFOLD_DIR / "CONTRIBUTING.md.template"
+    if contributing_src.is_file():
+        _copy_managed(contributing_src, repo_dir / "CONTRIBUTING.md")
+        print("  ✓ CONTRIBUTING.md")
+
     # update-referencemodels.ps1 is no longer installed; reference models are
     # populated by the `kairos-ontology update-refmodels` command instead.
 
@@ -1463,6 +1474,7 @@ def init_dataplatform(name, dest, platform, org_override):
       - .github/fabric/deployment-settings.json.example
       - README.md with setup instructions
       - CICD.md with branch, promotion, rollback, and hotfix guidance
+      - CONTRIBUTING.md with branch-naming and PR conventions
 
     \b
     Examples:
@@ -1507,7 +1519,7 @@ def init_dataplatform(name, dest, platform, org_override):
 
     # Create directory structure
     repo_dir.mkdir(parents=True)
-    (repo_dir / "models" / "custom").mkdir(parents=True)
+    (repo_dir / "models" / "downstream_only").mkdir(parents=True)
     (repo_dir / "macros").mkdir(parents=True)
     (repo_dir / "scripts").mkdir(parents=True)
     (repo_dir / "tests").mkdir(parents=True)
@@ -1562,6 +1574,11 @@ def init_dataplatform(name, dest, platform, org_override):
     if cicd_src.is_file():
         _copy_managed(cicd_src, repo_dir / "CICD.md")
         click.echo("  ✓ CICD.md")
+
+    contributing_src = _DATAPLATFORM_SCAFFOLD / "CONTRIBUTING.md.template"
+    if contributing_src.is_file():
+        _copy_managed(contributing_src, repo_dir / "CONTRIBUTING.md")
+        click.echo("  ✓ CONTRIBUTING.md")
 
     # Copy macros
     for macro_name in ("extract_source_schema.sql", "print_query.sql"):
