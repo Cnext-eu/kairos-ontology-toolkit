@@ -59,7 +59,17 @@ from .adapter import (
     object_property_in_fields_message,
     system_fact_for_relation,
 )
-from .contract_conformance import contract_binding_diagnostics, models_by_class
+from .contract_conformance import (
+    contract_binding_diagnostics,
+    contract_resolution_diagnostics,
+    models_by_class,
+)
+from .contract_emission import (
+    apply_column_names,
+    expand_binding,
+    mark_padded_columns,
+    padded_column_names,
+)
 from .contracts import SilverContract, load_silver_contract
 from .bindings import (
     EntityBinding,
@@ -1130,6 +1140,7 @@ def _conformance_plans(
     bindings: tuple[EntityBinding, ...],
     context: ResolutionContext,
     scope: BuildScope,
+    governed_classes: frozenset[str] = frozenset(),
 ) -> tuple[tuple[ConformancePlan, ...], tuple[CompileDiagnostic, ...], frozenset[str]]:
     remaining = set(range(len(bindings)))
     groups: list[list[EntityBinding]] = []
@@ -1188,6 +1199,7 @@ def _conformance_plans(
                         member.name: _conformance_contract(member, context) for member in members
                     },
                     provenance_inputs=provenance,
+                    governed_classes=governed_classes,
                 )
             )
         except CompileError as exc:
@@ -3625,8 +3637,23 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     # clean break.
     domain_contract, contract_diagnostics = _load_domain_contract(scope, domain)
     diagnostics.extend(contract_diagnostics)
+    if domain_contract is not None:
+        # Contract-pinned column names replace the camel_to_snake default, which is what
+        # decouples an ontology rename from a physical column rename. An unpinned contract
+        # leaves the context untouched and emits byte-identically to no contract at all.
+        context = apply_column_names(context, domain_contract)
+        diagnostics.extend(
+            contract_resolution_diagnostics(
+                domain_contract, context, severity=DiagnosticSeverity.ERROR
+            )
+        )
     specs: list[EntityBindingSpec] = []
     valid_bindings: list[EntityBinding] = []
+    # The bindings exactly as authored, parallel to ``valid_bindings``. Gate A must judge
+    # what the author wrote: ``valid_bindings`` carries the contract-expanded form, in which
+    # every padded property already looks mapped, so checking coverage against it would make
+    # required-property-unmapped and optional-property-undeclared permanently unreachable.
+    authored_bindings: list[EntityBinding] = []
     bounds: list[BoundSources] = []
     selected_bindings: list[EntityBinding] = []
     for path_text in scope.binding_paths:
@@ -3661,7 +3688,14 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             )
         )
     conformance_plans, conformance_diagnostics, conformance_blocked = _conformance_plans(
-        tuple(selected_bindings), context, scope
+        tuple(selected_bindings),
+        context,
+        scope,
+        governed_classes=(
+            frozenset(entity.target_class for entity in domain_contract.entities)
+            if domain_contract is not None
+            else frozenset()
+        ),
     )
     diagnostics.extend(conformance_diagnostics)
     selected_by_name = {binding.name: binding for binding in selected_bindings}
@@ -3748,7 +3782,22 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
             continue
         try:
+            # DD-213: expand a governed binding to the contract's full property list, in the
+            # contract's declared order, padding what this source does not supply. Every
+            # branch in a conformance group therefore has identical columns, which is what
+            # makes the union's `base_model` invariant under binding filename order.
+            padded_columns: frozenset[str] = frozenset()
+            authored_binding = binding
+            contract_entity = (
+                domain_contract.entity_for(binding.target_class)
+                if domain_contract is not None
+                else None
+            )
+            if contract_entity is not None:
+                padded_columns = padded_column_names(binding, contract_entity, context)
+                binding = expand_binding(binding, contract_entity, context)
             bound = adapt_binding(binding, context)
+            bound = mark_padded_columns(bound, padded_columns)
             relationship_hash_is_deferred = any(
                 relationship.temporal is not None
                 and relationship.temporal.change_detection == "include"
@@ -3759,6 +3808,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 individual_shape = shape_project(individual_contract)
                 plan_materialization(individual_contract, individual_shape)
             valid_bindings.append(binding)
+            authored_bindings.append(authored_binding)
             bounds.append(bound)
             specs.append(EntityBindingSpec(binding=binding))
         except CompileError as exc:
@@ -3843,7 +3893,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     # scaffolder had just generated from this very hub.
     if domain_contract is not None:
         shaped_models = models_by_class(shaped.silver_models) if shaped is not None else {}
-        for binding in valid_bindings:
+        for binding in authored_bindings:
             resolved_class = context.klass(binding.target_class)
             diagnostics.extend(
                 contract_binding_diagnostics(
@@ -3854,7 +3904,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                         if resolved_class is not None
                         else None
                     ),
-                    severity=DiagnosticSeverity.WARNING,
+                    severity=DiagnosticSeverity.ERROR,
                 )
             )
 

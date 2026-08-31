@@ -10,9 +10,9 @@ constrains the bindings and a binding either conforms or is reported.
 Every rule here is stateless and needs no Git history: it compares one authored binding with
 one authored contract, so ``compile --check`` statelessness is preserved (DD-213 §2).
 
-Severity is a parameter, not a constant. The rules ship at ``warning`` first so an existing
-hub can adopt a contract and see what would block before anything does, and are promoted to
-``error`` once contract-driven emission lands.
+Severity is a parameter, not a constant. The rules shipped at ``warning`` alongside the
+advisory slice and are now raised to ``error``: once the contract actually drives emission,
+a binding that diverges from it would otherwise emit a shape nobody declared.
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ def contract_binding_diagnostics(
     contract: SilverContract | None,
     *,
     model: SilverModelSpec | None = None,
-    severity: DiagnosticSeverity = DiagnosticSeverity.WARNING,
+    severity: DiagnosticSeverity = DiagnosticSeverity.ERROR,
 ) -> list[CompileDiagnostic]:
     """Return Gate A diagnostics for one binding against its domain's contract.
 
@@ -347,3 +347,55 @@ def _check_hash_inputs(entity, binding, unmapped_set, report) -> None:
                 ),
                 "/load/incremental/canonicalHashInputs",
             )
+
+
+def contract_resolution_diagnostics(
+    contract: SilverContract | None,
+    context,
+    *,
+    severity: DiagnosticSeverity = DiagnosticSeverity.ERROR,
+) -> list[CompileDiagnostic]:
+    """Return the contract-load rules that need the ontology closure (DD-213 §4).
+
+    Split from ``contracts.py`` deliberately: those rules are pure document checks, while
+    these need the DD-103 semantic index under the ``rdfs`` profile, which only the kernel
+    has. Resolution uses the same ``context.klass``/``context.property`` helpers the binding
+    path uses, so a contract cannot declare a symbol a binding would be unable to bind.
+    """
+    if contract is None:
+        return []
+    diagnostics: list[CompileDiagnostic] = []
+    for entity in contract.entities:
+        if context.klass(entity.target_class) is None:
+            diagnostics.append(
+                CompileDiagnostic(
+                    code="contract.class-unresolved",
+                    message=(
+                        f"contract class '{entity.target_class}' does not resolve in the "
+                        "ontology import closure, or resolves ambiguously"
+                    ),
+                    location=SourceLocation(
+                        path=contract.source_path or "<contract>",
+                        pointer=f"{entity.pointer}/class",
+                    ),
+                    severity=severity,
+                )
+            )
+        for item in entity.properties:
+            if context.property(item.property) is None:
+                diagnostics.append(
+                    CompileDiagnostic(
+                        code="contract.property-unresolved",
+                        message=(
+                            f"contract property '{item.property}' does not resolve in the "
+                            "ontology import closure, or resolves to more than one property "
+                            "URI; qualify it with the owning namespace to disambiguate"
+                        ),
+                        location=SourceLocation(
+                            path=contract.source_path or "<contract>",
+                            pointer=item.pointer,
+                        ),
+                        severity=severity,
+                    )
+                )
+    return diagnostics

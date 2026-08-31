@@ -20,6 +20,8 @@ from kairos_ontology.core.compiler.contracts import (
 from kairos_ontology.core.compiler.kernel import build_compile_plan, resolve_scope
 from kairos_ontology.core.compiler.result import CompileError
 
+from _contract_second_source import add_second_source as _add_second_source
+
 GOOD_CONTRACT = textwrap.dedent("""
     apiVersion: kairos.eu/v5
     kind: SilverContract
@@ -235,6 +237,8 @@ def _write_hub(hub_root):
             party:customer_id a owl:DatatypeProperty ;
               rdfs:domain party:Customer ; rdfs:range xsd:string .
             party:customerName a owl:DatatypeProperty ;
+              rdfs:domain party:Customer ; rdfs:range xsd:string .
+            party:loyaltyTier a owl:DatatypeProperty ;
               rdfs:domain party:Customer ; rdfs:range xsd:string .
             """).strip(),
         encoding="utf-8",
@@ -472,9 +476,9 @@ class TestGateA:
         def add_required(document):
             document["entities"][0]["properties"].append(
                 {
-                    "property": "party:unsupplied",
-                    "columnName": "unsupplied",
-                    "type": "string(10)",
+                    "property": "party:loyaltyTier",
+                    "columnName": "loyalty_tier",
+                    "type": "string",
                     "requirement": "required",
                     "nullable": True,
                 }
@@ -489,9 +493,9 @@ class TestGateA:
         def add_optional(document):
             document["entities"][0]["properties"].append(
                 {
-                    "property": "party:unsupplied",
-                    "columnName": "unsupplied",
-                    "type": "string(10)",
+                    "property": "party:loyaltyTier",
+                    "columnName": "loyalty_tier",
+                    "type": "string",
                     "requirement": "optional",
                     "nullable": True,
                 }
@@ -507,9 +511,9 @@ class TestGateA:
         def add_optional(document):
             document["entities"][0]["properties"].append(
                 {
-                    "property": "party:unsupplied",
-                    "columnName": "unsupplied",
-                    "type": "string(10)",
+                    "property": "party:loyaltyTier",
+                    "columnName": "loyalty_tier",
+                    "type": "string",
                     "requirement": "optional",
                     "nullable": True,
                 }
@@ -518,7 +522,7 @@ class TestGateA:
         _adopt_contract(tmp_path, add_optional)
         path = binding_dir / "customer.binding.yaml"
         path.write_text(
-            path.read_text(encoding="utf-8") + "\nunmapped: [party:unsupplied]\n",
+            path.read_text(encoding="utf-8") + "\nunmapped: [party:loyaltyTier]\n",
             encoding="utf-8",
         )
         codes = _diagnostics(tmp_path)
@@ -574,9 +578,9 @@ class TestGateA:
         _adopt_contract(tmp_path, flip)
         assert "contract.identity-mismatch" in _diagnostics(tmp_path)
 
-    def test_gate_a_findings_are_warnings_in_this_slice(self, tmp_path):
-        """Slice 2 ships advisory: a hub can adopt a contract and see what would block
-        before anything does."""
+    def test_gate_a_findings_block(self, tmp_path):
+        """Once the contract drives emission, a divergent binding must not emit a shape
+        nobody declared."""
         _write_hub(tmp_path)
 
         def retype(document):
@@ -587,5 +591,232 @@ class TestGateA:
         finding = next(
             item for item in plan.diagnostics.items if item.code == "contract.type-mismatch"
         )
-        assert finding.severity.value == "warning"
-        assert not plan.blocked
+        assert finding.severity.value == "error"
+
+    def test_unresolved_contract_property_is_reported(self, tmp_path):
+        """A contract may not declare a symbol a binding could never bind."""
+        _write_hub(tmp_path)
+
+        def add_unknown(document):
+            document["entities"][0]["properties"].append(
+                {
+                    "property": "party:nosuchproperty",
+                    "type": "string",
+                    "requirement": "optional",
+                    "nullable": True,
+                }
+            )
+
+        _adopt_contract(tmp_path, add_unknown)
+        assert "contract.property-unresolved" in _diagnostics(tmp_path)
+
+
+def _model_columns(hub_root, model_name):
+    plan = build_compile_plan(hub_root, "party")
+    model = next(
+        item
+        for item in plan.shaped_project.silver_models
+        if item.identity.model_name == model_name
+    )
+    return [column.name for column in model.columns]
+
+
+def _authored_columns(hub_root, model_name):
+    """Only the columns the contract governs, excluding compiler-owned ones."""
+    plan = build_compile_plan(hub_root, "party")
+    model = next(
+        item
+        for item in plan.shaped_project.silver_models
+        if item.identity.model_name == model_name
+    )
+    return [
+        column.name
+        for column in model.columns
+        if column.role in {"business", "business-natural-key"}
+    ]
+
+
+class TestContractDrivenEmission:
+    def test_adoption_is_a_no_op(self, tmp_path):
+        """Scaffold a contract, adopt it, and the emitted columns must not move.
+
+        This is DD-213 §6's acceptance test: the generated contract records what is, so
+        turning it on cannot change the emit.
+        """
+        _write_hub(tmp_path)
+        before = _model_columns(tmp_path, "customer")
+        _adopt_contract(tmp_path)
+        assert _model_columns(tmp_path, "customer") == before
+
+    def test_contract_order_drives_column_order(self, tmp_path):
+        """Reordering a binding's fields: is fingerprint-neutral once governed -- the
+        contract decides column order, not the authored YAML sequence."""
+        binding_dir = _write_hub(tmp_path)
+        _adopt_contract(tmp_path)
+        governed = _model_columns(tmp_path, "customer")
+
+        path = binding_dir / "customer.binding.yaml"
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        document["fields"].reverse()
+        path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        assert _model_columns(tmp_path, "customer") == governed
+
+    def test_pinned_column_name_survives_an_ontology_rename(self, tmp_path):
+        """The point of pinning: a physical column keeps its name when the ontology
+        property behind it is renamed."""
+        _write_hub(tmp_path)
+
+        def pin(document):
+            document["entities"][0]["properties"][1]["columnName"] = "customer_name"
+
+        _adopt_contract(tmp_path, pin)
+        assert "customer_name" in _model_columns(tmp_path, "customer")
+
+    def test_optional_gap_is_padded_as_a_column(self, tmp_path):
+        """A source that cannot supply an optional property still emits its column, so the
+        Silver shape does not depend on which sources happen to exist."""
+        binding_dir = _write_hub(tmp_path)
+
+        def add_optional(document):
+            document["entities"][0]["properties"].append(
+                {
+                    "property": "party:loyaltyTier",
+                    "columnName": "loyalty_tier",
+                    "type": "string",
+                    "requirement": "optional",
+                    "nullable": True,
+                }
+            )
+
+        _adopt_contract(tmp_path, add_optional)
+        path = binding_dir / "customer.binding.yaml"
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nunmapped: [party:loyaltyTier]\n",
+            encoding="utf-8",
+        )
+        assert "loyalty_tier" in _model_columns(tmp_path, "customer")
+
+    def test_padded_column_is_excluded_from_change_detection(self, tmp_path):
+        """A padded NULL must never join the SCD2 canonical hash: the day the source starts
+        supplying it, every row's hash would change at once."""
+        binding_dir = _write_hub(tmp_path)
+
+        def add_optional(document):
+            document["entities"][0]["properties"].append(
+                {
+                    "property": "party:loyaltyTier",
+                    "columnName": "loyalty_tier",
+                    "type": "string",
+                    "requirement": "optional",
+                    "nullable": True,
+                }
+            )
+
+        _adopt_contract(tmp_path, add_optional)
+        path = binding_dir / "customer.binding.yaml"
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nunmapped: [party:loyaltyTier]\n",
+            encoding="utf-8",
+        )
+        plan = build_compile_plan(tmp_path, "party")
+        model = next(
+            item
+            for item in plan.shaped_project.silver_models
+            if item.identity.model_name == "customer"
+        )
+        padded = next(item for item in model.columns if item.name == "loyalty_tier")
+        supplied = next(item for item in model.columns if item.name == "customer_name")
+        assert padded.include_in_change_detection is False
+        assert supplied.include_in_change_detection is True
+
+    def test_required_property_is_never_padded(self, tmp_path):
+        """Padding a required property would hide the very violation Gate A exists to
+        surface, so it must block instead."""
+        _write_hub(tmp_path)
+
+        def add_required(document):
+            document["entities"][0]["properties"].append(
+                {
+                    "property": "party:loyaltyTier",
+                    "columnName": "loyalty_tier",
+                    "type": "string",
+                    "requirement": "required",
+                    "nullable": True,
+                }
+            )
+
+        _adopt_contract(tmp_path, add_required)
+        codes = _diagnostics(tmp_path)
+        assert "contract.required-property-unmapped" in codes
+        assert codes["contract.required-property-unmapped"].severity.value == "error"
+
+
+class TestConformanceRelaxation:
+    def test_a_partial_second_source_is_rejected_without_a_contract(self, tmp_path):
+        """The status quo this proposal exists to change: onboarding a source that cannot
+        supply every property forces an edit to the incumbent binding."""
+        binding_dir = _write_hub(tmp_path)
+        _add_second_source(tmp_path, binding_dir, partial=True)
+        assert "conformance.property-incompatible" in _diagnostics(tmp_path)
+
+    def test_gaining_a_second_source_widens_the_column_type(self, tmp_path):
+        """A pre-existing toolkit defect, surfaced by Gate A on first contact.
+
+        The conformance UNION drops the string length its branches keep -- ``string(50)``
+        becomes unsized ``string`` -- so a class's published column type silently widens the
+        moment it gains a second source, with no ontology or binding change. This is exactly
+        the class of instability DD-213 exists to catch, and the check is deliberately left
+        strict rather than relaxed to accommodate it: the widening is real and a consumer
+        would feel it.
+        """
+        binding_dir = _write_hub(tmp_path)
+        _adopt_contract(tmp_path)
+        _add_second_source(tmp_path, binding_dir, partial=False)
+        finding = _diagnostics(tmp_path).get("contract.type-mismatch")
+        assert finding is not None
+        assert "string" in finding.message
+
+    def test_a_partial_second_source_joins_a_governed_group(self, tmp_path):
+        """DD-213's headline: a new source binds to the Silver model by declaring its gap,
+        without reshaping it or touching any existing binding."""
+        binding_dir = _write_hub(tmp_path)
+
+        def govern(document):
+            entity = document["entities"][0]
+            entity["properties"][1]["requirement"] = "optional"
+            entity["properties"][1]["nullable"] = True
+            # The union emits unsized string (see the widening test above), so this is the
+            # contract an operator lands once the class is multi-source.
+            for item in entity["properties"]:
+                item["type"] = "string"
+
+        _adopt_contract(tmp_path, govern)
+        _add_second_source(tmp_path, binding_dir, partial=True)
+        codes = _diagnostics(tmp_path)
+        assert "conformance.property-incompatible" not in codes
+        assert not [code for code in codes if code.startswith("contract.")]
+        assert _authored_columns(tmp_path, "customer") == ["customer_id", "customer_name"]
+
+    def test_union_columns_do_not_depend_on_binding_filename(self, tmp_path):
+        """B1: the union takes its columns from `base_model` -- the binding that sorts first
+        by path. Under a contract that must stop mattering, or a partial source could
+        silently truncate the canonical model by being renamed."""
+        binding_dir = _write_hub(tmp_path)
+
+        def govern(document):
+            entity = document["entities"][0]
+            entity["properties"][1]["requirement"] = "optional"
+            entity["properties"][1]["nullable"] = True
+            for item in entity["properties"]:
+                item["type"] = "string"
+
+        _adopt_contract(tmp_path, govern)
+        _add_second_source(tmp_path, binding_dir, partial=True)
+        columns = _authored_columns(tmp_path, "customer")
+        assert columns == ["customer_id", "customer_name"]
+
+        # Rename the partial binding so it now sorts FIRST, becoming `base_model`.
+        (binding_dir / "erp-customer.binding.yaml").rename(
+            binding_dir / "aaa-customer.binding.yaml"
+        )
+        assert _authored_columns(tmp_path, "customer") == columns

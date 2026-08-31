@@ -145,10 +145,12 @@ closure, which stamps the caller-supplied severity and the binding's source path
 | Code | Default severity | Rule ID / DD citation | Notes |
 | --- | --- | --- | --- |
 | `contract.class-not-declared` | varies | DD-133 (default) | The binding's `target.class` is absent from a present domain contract. A governed domain cannot silently regrow ungoverned entities. |
+| `contract.class-unresolved` | varies | DD-133 (default) | A contract `class` does not resolve in the ontology import closure, or resolves ambiguously. Needs the DD-103 semantic index, so it lives here rather than with the pure document rules in `contracts.py`. |
 | `contract.grain-mismatch` | varies | DD-133 (default) | The binding's `grain.columns`, resolved to canonical properties via the DD-133 §8b source→output rule, differs from the contract's declared grain. |
 | `contract.identity-mismatch` | varies | DD-133 (default) | The binding's identity `strategy` or resolved `businessKey` differs from the contract. |
 | `contract.nullability-mismatch` | varies | DD-133 (default) | A mapped column's resolved nullability contradicts the contract. |
 | `contract.optional-property-undeclared` | varies | DD-133 (default) | A `requirement: optional` property is neither mapped nor listed under `unmapped:`. Explicit rather than inferred: a silent gap and a reviewed gap must not look the same in a diff. |
+| `contract.property-unresolved` | varies | DD-133 (default) | A contract `property` does not resolve in the ontology import closure, or resolves to more than one property URI. A contract may not declare a symbol a binding could never bind. |
 | `contract.property-not-declared` | varies | DD-133 (default) | The binding maps a property the contract does not declare, on a `closed: true` entity. |
 | `contract.relationship-not-declared` | varies | DD-133 (default) | A `relationships:` entry's `(property, target)` pair is undeclared, on a `closed: true` entity. |
 | `contract.required-property-unmapped` | varies | DD-133 (default) | A `requirement: required` property has no `fields:` entry in this binding. The rule that makes the contract binding on every source. |

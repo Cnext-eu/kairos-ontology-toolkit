@@ -419,6 +419,30 @@ No skill produces a contract today. On acceptance:
    `model/ontologies/<domain>.ttl` and keeps the reviewable unit whole; one file per entity
    produces cleaner diffs and less merge contention on a busy domain.
 
+## 9a. Defect found by Gate A on first contact
+
+Implementing Gate A immediately surfaced a **pre-existing** contract-stability defect,
+independent of anything in this design:
+
+> The conformance `UNION` model drops the string length its `SOURCE_BRANCH` models keep.
+> A column typed `string(50)` on every branch emits as unsized `string` on the union.
+
+So a class's consumer-facing column type silently widens the moment it gains a second
+source — no ontology change, no binding change, no review. Verified with two fully-mapped
+sources and no contract present at all, so it is not caused by padding or by contract-driven
+emission.
+
+`contract.type-mismatch` is deliberately **not** relaxed to accommodate this. The widening is
+real, a downstream consumer would feel it, and a check weakened to hide a defect is worse
+than the defect. The consequence is that a governed class gaining its second source reports a
+type mismatch until an operator either accepts the widening (edit the contract to `string`,
+which Gate B classifies as breaking) or the underlying width loss is fixed.
+
+Fixing it — having the union preserve a length its branches agree on — is a change to
+pre-existing normalization semantics, outside this design's scope, and should be its own
+issue. `tests/test_compiler_contracts.py::test_gaining_a_second_source_widens_the_column_type`
+pins the current behaviour so the fix has a failing test waiting for it.
+
 ## 10. Implementation slices
 
 Four slices, strictly ordered. Each is independently shippable and independently revertible.
