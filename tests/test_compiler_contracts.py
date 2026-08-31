@@ -33,10 +33,10 @@ GOOD_CONTRACT = textwrap.dedent("""
         stability: stable
         closed: true
         grain:
-          properties: [party:customerId]
+          columns: [customer_id]
         identity:
           strategy: source-natural
-          businessKey: [party:customerId]
+          businessKey: [customer_id]
         properties:
           - property: party:customerId
             type: string(64)
@@ -149,19 +149,19 @@ class TestContractLoadRules:
         _entity(document)["stability"] = "preview"
         assert load_silver_contract(_dump(document)).entities[0].closed is False
 
-    def test_grain_property_must_be_declared_required(self):
+    def test_grain_column_must_be_declared_required(self):
         document = _document()
-        _entity(document)["grain"]["properties"] = ["party:displayName"]
+        _entity(document)["grain"]["columns"] = ["display_name"]
         assert "contract.grain-not-required" in _codes(_dump(document))
 
-    def test_grain_property_must_be_declared_at_all(self):
+    def test_grain_column_must_be_declared_at_all(self):
         document = _document()
-        _entity(document)["grain"]["properties"] = ["party:missing"]
+        _entity(document)["grain"]["columns"] = ["nosuchcolumn"]
         assert "contract.grain-not-required" in _codes(_dump(document))
 
-    def test_business_key_must_be_declared_required(self):
+    def test_business_key_column_must_be_declared_required(self):
         document = _document()
-        _entity(document)["identity"]["businessKey"] = ["party:displayName"]
+        _entity(document)["identity"]["businessKey"] = ["display_name"]
         assert "contract.grain-not-required" in _codes(_dump(document))
 
     def test_column_name_collision_is_rejected(self):
@@ -347,13 +347,13 @@ class TestContractScaffold:
         declared |= {item.name for item in entity.technical_columns}
         assert not any(name.startswith("_") or name.endswith("_sk") for name in declared)
 
-    def test_scaffold_records_grain_as_canonical_properties(self, tmp_path):
+    def test_scaffold_records_grain_as_emitted_columns(self, tmp_path):
         _write_hub(tmp_path)
         plan = build_compile_plan(tmp_path, "party")
         entity = load_silver_contract(
             render_contract_yaml(build_contract_document(plan))
         ).entity_for("party:Customer")
-        assert entity.grain == ("party:customer_id",)
+        assert entity.grain == ("customer_id",)
         assert entity.identity.strategy == "source-natural"
 
 
@@ -820,3 +820,61 @@ class TestConformanceRelaxation:
             binding_dir / "aaa-customer.binding.yaml"
         )
         assert _authored_columns(tmp_path, "customer") == columns
+
+
+class TestRealHubShapes:
+    """Shapes found in real client hubs that synthetic fixtures did not cover.
+
+    Both cases below were caught by running scaffold-contract against
+    fracht-client-ontology-hub, where the scaffolder produced documents its own loader
+    rejected. Pinned here so a synthetic-only fixture cannot let them regress.
+    """
+
+    def test_absolute_iris_are_accepted(self):
+        """Real hubs author target.class and field properties as absolute IRIs, not
+        prefixed QNames."""
+        document = _document()
+        entity = _entity(document)
+        entity["class"] = "https://fracht.com/ont/party#FrachtParty"
+        entity["properties"][0]["property"] = "https://fracht.com/ont/party#partyReference"
+        entity["properties"][1]["property"] = (
+            "https://www.kairosflow.ai/ont/bsp/party#partyIdentifier"
+        )
+        # The local name is taken after '#', not by splitting on the scheme colon.
+        entity["grain"]["columns"] = ["party_reference"]
+        entity["identity"]["businessKey"] = ["party_reference"]
+        contract = load_silver_contract(_dump(document))
+        declared = contract.entity_for("https://fracht.com/ont/party#FrachtParty")
+        assert declared is not None
+        assert [resolved_column_name(item) for item in declared.properties] == [
+            "party_reference",
+            "party_identifier",
+        ]
+
+    def test_a_technical_column_may_carry_the_grain(self):
+        """A materialized grain is routinely a DD-139 technical identity column that is no
+        semantic property at all -- e.g. `source_record_id` in fracht's bindings."""
+        document = _document()
+        entity = _entity(document)
+        entity["technicalColumns"][0] = {
+            "name": "source_record_id",
+            "type": "string",
+            "requirement": "required",
+            "nullable": False,
+        }
+        entity["grain"]["columns"] = ["source_record_id"]
+        entity["identity"]["businessKey"] = ["source_record_id"]
+        contract = load_silver_contract(_dump(document))
+        assert contract.entity_for("party:Customer").grain == ("source_record_id",)
+
+    def test_an_optional_technical_grain_column_is_still_rejected(self):
+        document = _document()
+        entity = _entity(document)
+        entity["technicalColumns"][0] = {
+            "name": "source_record_id",
+            "type": "string",
+            "requirement": "optional",
+            "nullable": True,
+        }
+        entity["grain"]["columns"] = ["source_record_id"]
+        assert "contract.grain-not-required" in _codes(_dump(document))

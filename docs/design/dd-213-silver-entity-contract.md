@@ -118,12 +118,12 @@ entities:
     stability: preview | stable | deprecated   # required
     closed: true                  # required; `false` permitted only while stability=preview
     grain:
-      properties: [party:customerId]           # CANONICAL properties, not source columns
+      columns: [customer_id]                   # EMITTED column names (see note below)
     identity:
       strategy: source-natural | surrogate     # required
-      businessKey: [party:customerId]          # optional; canonical properties
+      businessKey: [customer_id]               # optional; emitted column names
     properties:                                # declared order IS emitted column order
-      - property: party:customerId             # resolved via the DD-103 semantic index (rdfs)
+      - property: party:customerId             # QName or absolute IRI; both occur in real hubs
         columnName: customer_id                # optional; default camel_to_snake(local name)
         type: string(64)                       # canonical type label (canonical_type_label)
         requirement: required                  # required | optional
@@ -163,6 +163,40 @@ Declaring `unmapped:` is mandatory rather than inferred, matching v5's standing 
 nothing load-bearing is defaulted (DD-133 §3a "no SCD or incremental behavior is inferred";
 §3b's required `missingParent`/`ambiguousParent`). A silent gap and a reviewed gap must not
 look the same in a diff.
+
+### Grain and identity are stated as emitted column names
+
+Both are lists of **emitted column names**, not canonical property tokens. Two reasons, both
+found by running `scaffold-contract` against a real client hub rather than a synthetic
+fixture:
+
+- A materialized grain is a *physical* statement about the table, and real bindings routinely
+  grain on a DD-139 **technical** column that is no semantic property at all — in
+  fracht-client-ontology-hub, `source_record_id` is both the grain and a `technicalFields:`
+  entry. A properties-only grain could not express that, and refused to scaffold 3 of 4
+  domains.
+- The compiler already resolves identity this way: DD-133 §8b has `EntityIdentityFact.naturalKey`
+  carry mapped target *output* column names. Stating grain in the same terms is more consistent
+  with the existing compiler, not less.
+
+Column names stay source-agnostic — the contract declares them. `contract.grain-not-required`
+requires each grain/business-key column to be declared under `properties:` **or**
+`technicalColumns:`, and to be `requirement: required`, which keeps it
+supplied-by-construction so the §8b source→output resolution always applies.
+
+A key column is matched to its emitted column by three routes, because real bindings use all
+three: a `fields:` entry whose expression is exactly that source column; a `technicalFields:`
+entry whose expression is exactly that source column (its emitted name often differs — fracht
+grains on `BL_PK` through a technical column named `source_record_id`); or a technical entry
+whose name equals the source column.
+
+### Term references accept both authoring forms
+
+`class`, `property`, `target`, and `replacedBy` accept a prefixed QName (`party:Customer`) or
+an absolute IRI (`https://fracht.com/ont/party#FrachtParty`). Real hubs author full IRIs; a
+QName-only schema made the scaffolder emit documents its own loader rejected. The default
+column name takes the local part after `#`, else after the last `/`, else after `:` — a bare
+`split(":")` mangles an IRI into `//fracht.com/ont/party#partyReference`.
 
 ### Reserved names outside the contract
 

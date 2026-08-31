@@ -249,7 +249,7 @@ def _build_entity(raw: dict, index: int) -> ContractEntity:
         target_class=str(raw["class"]),
         stability=str(raw["stability"]),
         closed=bool(raw["closed"]),
-        grain=tuple(str(item) for item in raw["grain"]["properties"]),
+        grain=tuple(str(item) for item in raw["grain"]["columns"]),
         identity=ContractIdentity(
             strategy=str(identity_raw["strategy"]),
             business_key=tuple(str(item) for item in identity_raw.get("businessKey", ())),
@@ -269,8 +269,20 @@ def default_column_name(qname: str) -> str:
     second local copy of that rule would be exactly the drift this contract exists to
     prevent. A contract that pins no ``columnName`` therefore reproduces today's emission
     byte for byte, which is what makes adopting a scaffolded contract a no-op.
+
+    Accepts both authoring forms. A bare ``split(":", 1)`` is wrong for the absolute IRIs
+    real hubs use: ``https://x/ont/party#partyReference`` would yield
+    ``//x/ont/party#partyReference``. The local name is taken after ``#`` or the last ``/``
+    for an IRI, and after ``:`` for a prefixed QName.
     """
-    return camel_to_snake(qname.split(":", 1)[-1])
+    local = qname
+    if "#" in local:
+        local = local.rsplit("#", 1)[-1]
+    elif "/" in local:
+        local = local.rsplit("/", 1)[-1]
+    elif ":" in local:
+        local = local.split(":", 1)[-1]
+    return camel_to_snake(local)
 
 
 def resolved_column_name(item: ContractProperty) -> str:
@@ -349,27 +361,40 @@ def _entity_diagnostics(
                 pointer,
             )
 
-    # contract.grain-not-required -- grain and business-key properties must be declared
-    # `required`, which makes them mapped-by-construction so the DD-133 §8b source->output
+    # contract.grain-not-required -- grain and business-key COLUMNS must be declared and
+    # `required`, which makes them supplied-by-construction so the DD-133 §8b source->output
     # resolution always applies (DD-213 §4).
-    declared = {item.property: item for item in entity.properties}
+    #
+    # Stated as emitted column names rather than canonical properties: a materialized grain
+    # is a physical statement about the table, and real bindings routinely grain on a DD-139
+    # technical identity column that is no semantic property at all (verified against
+    # fracht-client-ontology-hub, where `source_record_id` is the grain and a technicalField).
+    # Column names are still source-agnostic -- the contract declares them.
+    by_column: dict[str, tuple[str, bool]] = {}
+    for item in entity.properties:
+        by_column[resolved_column_name(item).lower()] = (item.pointer, item.required)
+    for technical in entity.technical_columns:
+        by_column[technical.name.lower()] = (technical.pointer, technical.required)
     for label, keys, key_pointer in (
-        ("grain", entity.grain, f"{entity.pointer}/grain/properties"),
+        ("grain", entity.grain, f"{entity.pointer}/grain/columns"),
         ("identity businessKey", entity.identity.business_key, f"{entity.pointer}/identity"),
     ):
-        for qname in keys:
-            item = declared.get(qname)
-            if item is None:
+        for column in keys:
+            found = by_column.get(column.lower())
+            if found is None:
                 diagnostic(
                     "contract.grain-not-required",
-                    f"{label} property '{qname}' is not declared under properties:",
+                    (
+                        f"{label} column '{column}' is declared by neither properties: nor "
+                        "technicalColumns:"
+                    ),
                     key_pointer,
                 )
-            elif not item.required:
+            elif not found[1]:
                 diagnostic(
                     "contract.grain-not-required",
-                    f"{label} property '{qname}' must be declared requirement: required",
-                    item.pointer,
+                    f"{label} column '{column}' must be declared requirement: required",
+                    found[0],
                 )
 
     # contract.closed-requires-preview -- an open entity is only tolerable while it is
@@ -386,6 +411,7 @@ def _entity_diagnostics(
 
     # contract.deprecated-shape -- shape only; version values are never compared against
     # release history, which would make compile --check stateful (DD-213 §4).
+    declared_properties = {item.property for item in entity.properties}
     lifecycles: list[tuple[DeprecationSpec | None, str]] = [
         (item.deprecated, item.pointer) for item in entity.properties
     ]
@@ -402,7 +428,7 @@ def _entity_diagnostics(
                 ),
                 f"{pointer}/lifecycle/deprecated",
             )
-        if deprecated.replaced_by and deprecated.replaced_by not in declared:
+        if deprecated.replaced_by and deprecated.replaced_by not in declared_properties:
             diagnostic(
                 "contract.deprecated-shape",
                 (

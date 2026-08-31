@@ -21,7 +21,7 @@ from ..projections.dbt.policy_specs import SilverColumnRole
 from ..projections.dbt.silver_contract import canonical_type_label
 from ..projections.dbt.specs import SilverModelKind, SilverModelSpec
 from .bindings import EntityBinding, ExprColumn
-from .contracts import SilverContract, resolved_column_name
+from .contracts import ContractEntity, SilverContract, resolved_column_name
 from .result import CompileDiagnostic, DiagnosticSeverity, SourceLocation
 
 #: Column roles the contract governs. Everything else in ``SilverModelSpec.columns`` is
@@ -72,6 +72,46 @@ def source_columns_to_properties(
                 if field.property not in result:
                     result.append(field.property)
                 break
+    return result
+
+
+def source_columns_to_emitted(
+    binding: EntityBinding, source_columns: tuple[str, ...], entity: ContractEntity
+) -> list[str]:
+    """Map authored SOURCE key columns to the EMITTED column names carrying them.
+
+    Mirrors the scaffolder's ``_key_columns`` exactly -- both must agree or a generated
+    contract would fail the check meant to accept it.
+    Three routes, because real bindings use all three: a semantic ``fields:`` entry whose
+    expression is exactly that source column; a DD-139 ``technicalFields:`` entry whose
+    expression is exactly that source column (its emitted name often differs -- fracht
+    grains on ``BL_PK`` through a technical column named ``source_record_id``); or a
+    technical entry whose name simply equals the source column.
+    """
+    technical = {item.name for item in binding.technical_fields}
+    result: list[str] = []
+    for source_column in source_columns:
+        emitted: str | None = None
+        for field in binding.fields:
+            if (
+                isinstance(field.expression, ExprColumn)
+                and field.expression.column == source_column
+            ):
+                item = entity.property_for(field.property)
+                emitted = resolved_column_name(item) if item is not None else None
+                break
+        if emitted is None:
+            for item in binding.technical_fields:
+                if (
+                    isinstance(item.expression, ExprColumn)
+                    and item.expression.column == source_column
+                ):
+                    emitted = item.name
+                    break
+        if emitted is None and source_column in technical:
+            emitted = source_column
+        if emitted is not None and emitted not in result:
+            result.append(emitted)
     return result
 
 
@@ -259,7 +299,7 @@ def _check_types(entity, binding, declared, mapped, model, report) -> None:
 
 
 def _check_grain_and_identity(entity, binding, report) -> None:
-    grain = source_columns_to_properties(binding, binding.grain.columns)
+    grain = source_columns_to_emitted(binding, binding.grain.columns, entity)
     if grain and tuple(grain) != entity.grain:
         report(
             "contract.grain-mismatch",
@@ -278,7 +318,9 @@ def _check_grain_and_identity(entity, binding, report) -> None:
             ),
             "/identity/strategy",
         )
-    business_key = source_columns_to_properties(binding, binding.identity.business_key)
+    business_key = source_columns_to_emitted(
+        binding, binding.identity.business_key, entity
+    )
     if business_key and tuple(business_key) != entity.identity.business_key:
         report(
             "contract.identity-mismatch",
