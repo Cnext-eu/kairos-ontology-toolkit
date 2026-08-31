@@ -114,7 +114,41 @@ only approved workspace and connection parameterization changes.
 
 Power BI rollback redeploys the previously successful archive. Never regenerate or hand-edit TMDL,
 PBIR, or report JSON in the dataplatform. Any wrapper generation or TMDL normalization happens in
-the hub before the archive is validated and checksummed; downstream deployment is read-only.
+the hub before the archive is validated and checksummed; downstream deployment is read-only over
+item content.
+
+### Direct Lake connection overrides
+
+Deploy-time parameterization is the exception to "read-only", and is this repo's job by design.
+A Fabric Direct Lake semantic model resolves every partition through one named expression whose
+OneLake URL embeds a specific workspace and lakehouse. The hub bakes its own default environment's
+URL into the TMDL and ships a `parameter.yml` so fabric-cicd can rewrite it per environment — but
+the hub can only enumerate environments it declares in its own `kairos.yaml`, which would force
+every Fabric workspace this platform ever deploys to into a repo that is otherwise
+infrastructure-agnostic.
+
+Instead, declare the workspace and lakehouse IDs this platform owns in
+`.github/fabric/gold-connections.yml` (copy `gold-connections.yml.example`):
+
+```yaml
+environments:
+  PROD:
+    workspace_id: "${FABRIC_PROD_WORKSPACE_ID}"
+    lakehouse_id: "${FABRIC_PROD_LAKEHOUSE_ID}"
+```
+
+A whole value written as `${VAR}` is resolved from the deploy environment, so real GUIDs need
+never be committed. The deploy workflow applies this after the archive's SHA-256 has been
+verified, via `kairos-ontology apply-gold-connection`, which:
+
+- rewrites only `replace_value[<target_environment>]` in the extracted `parameter.yml`;
+- leaves `find_value` exactly as the hub emitted it — fabric-cicd matches it as a literal
+  substring against the URL in the TMDL, so a locally supplied value would silently fail to
+  match and leave the model pointed at the hub's default workspace;
+- never touches the `.zip`, its checksum, or any TMDL/PBIP file;
+- logs the before/after URL into the run log;
+- is a clean no-op when the file is absent or declares no matching environment, in which case
+  the hub's own values stand.
 
 ## Updating this guide
 

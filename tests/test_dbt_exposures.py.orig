@@ -191,9 +191,7 @@ def test_domain_without_gold_output_emits_no_exposures_file() -> None:
 
     artifacts = render_project(shaped, plan)
 
-    assert not any(
-        "exposures" in path for path in artifacts if not path.startswith("__")
-    )
+    assert not any("exposures" in path for path in artifacts if not path.startswith("__"))
 
 
 def test_domain_with_gold_output_emits_exposures_file_via_full_project_render() -> None:

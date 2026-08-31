@@ -148,9 +148,21 @@ def _existing_domains(target: Path, current_domain: str) -> tuple[str, ...]:
     return tuple(sorted(domains))
 
 
-def _existing_gold_domains(target: Path, current_domains: tuple[str, ...]) -> tuple[str, ...]:
+def _existing_gold_domains(
+    target: Path,
+    current_domains: tuple[str, ...],
+    planned: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Gold domains to configure in ``dbt_project.yml``: already on disk, plus this run's.
+
+    The disk scan alone accumulates across separate per-domain emits, but it runs
+    *before* this run writes its own ``models/gold/**`` -- so a Gold-bearing domain's
+    first ``compile --emit`` produced the models and a ``dbt_project.yml`` with no
+    ``gold:`` block, and only converged on a second run. *planned* carries the domains
+    this run is about to write (issue #665).
+    """
     gold = target / "models" / "gold"
-    domains = set()
+    domains = set(planned)
     if gold.is_dir():
         domains.update(
             path.name for path in gold.iterdir() if path.is_dir() and path.name != "shared"
@@ -175,7 +187,7 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
             plan.project,
             project_name="kairos_medallion_project",
             domains=domains,
-            gold_domains=_existing_gold_domains(target, domains),
+            gold_domains=_existing_gold_domains(target, domains, plan.project.gold_domains),
         )
         shared.update(render_project_config(replace(plan, project=project)))
 

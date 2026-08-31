@@ -3022,6 +3022,16 @@ def _planned_artifact_paths(
                 materialized.silver.parity_artifact_path,
             )
         )
+    if shaped.gold_product is not None and materialized.gold is not None:
+        # `render_project` already renders these into the medallion project, and the
+        # medallion `dbt_project.yml` already carries a `models/gold/<domain>` config
+        # block -- but the compile result is intersected with this planned set, so
+        # omitting them here silently dropped every Gold dbt model before anything was
+        # written, leaving Gold with no packaging path at all (issue #665). Shared with
+        # the renderer's own completeness check so the two sets cannot drift.
+        from ..projections.dbt.gold_render import gold_dbt_artifact_paths
+
+        paths.update(gold_dbt_artifact_paths(shaped.gold_product, materialized.gold))
     if materialized.project.emit:
         paths.update(("README.md", "dbt_project.yml", "packages.yml"))
     for quality in materialized.quality_models:

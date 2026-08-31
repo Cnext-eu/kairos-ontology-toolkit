@@ -1,10 +1,12 @@
 name: Deploy Power BI Semantic Model
 
-# DD-206 §8/§12 items 7, 9: this workflow is read-only -- extract, verify, deploy.
-# TMDL/PBIP normalization happens once, in the hub's Gold emission, before the
-# archive is checksummed; nothing here rewrites archive contents. Every input below
-# must verify before extraction (fail closed), and deployment must not run ahead of
-# the target environment's own dbt build.
+# DD-206 §8/§12 items 7, 9: this workflow is read-only over item CONTENT -- extract,
+# verify, deploy. TMDL/PBIP normalization happens once, in the hub's Gold emission,
+# before the archive is checksummed; nothing here rewrites the archive, its checksum,
+# or any TMDL/PBIP file. The one exception is deploy-time parameterisation of the
+# extracted `parameter.yml`, which is this side's job by design (issue #662) and is
+# logged before/after. Every input below must verify before extraction (fail closed),
+# and deployment must not run ahead of the target environment's own dbt build.
 on:
   workflow_dispatch:
     inputs:
@@ -112,8 +114,26 @@ jobs:
           unzip -q powerbi-semantic-model.zip -d semantic-model
 
       # DD-206 #12 item 10: TMDL/PBIP normalization happens once, in the hub's Gold
-      # emission, before the archive is checksummed. This deploy workflow is
-      # read-only -- extract, verify, deploy -- and must never rewrite the archive.
+      # emission, before the archive is checksummed. This workflow never normalizes,
+      # never rewrites item content (TMDL/PBIP), and never touches the .zip or its
+      # verified checksum.
+      #
+      # Deploy-time parameterisation is a separate concern and IS this side's job:
+      # `parameter.yml` exists precisely so one checksummed artifact can be promoted
+      # between environments. The hub can only enumerate environments it declares
+      # itself, which forced real Fabric GUIDs into a repo that is otherwise
+      # infrastructure-agnostic (issue #662). The step below lets this repo supply its
+      # own target instead. It rewrites only `replace_value[<target_environment>]` in
+      # the already-extracted, already-verified `parameter.yml`, leaves `find_value`
+      # exactly as the hub emitted it, and logs before/after so the change is auditable
+      # in the run log. No config file, or no matching environment => clean no-op.
+      - name: Apply dataplatform Direct Lake connection override
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+        run: |
+          uv run kairos-ontology apply-gold-connection \
+            --package-dir semantic-model \
+            --environment "$TARGET_ENVIRONMENT"
 
       - name: Azure login (service principal)
         uses: azure/login@v2
@@ -131,8 +151,9 @@ jobs:
       # that fabric-cicd reads from the root of `repository_directory`. For a Databricks
       # (directQuery) model the hub ships that file inside the release package, generated
       # from `gold.databricks_connection` in `kairos.yaml`; `target_environment` must be
-      # one of the environment keys declared there or the rewrite is skipped and the
-      # model keeps the default environment's warehouse.
+      # one of the environment keys declared there -- or supplied by the override step
+      # above via `.github/fabric/gold-connections.yml` -- or the rewrite is skipped and
+      # the model keeps the default environment's warehouse.
       #
       # §8 dataplatform responsibility item 6: both Fabric item types the hub ships
       # (SemanticModel and Report) are deployed together.

@@ -379,7 +379,7 @@ def test_measure_dax_referencing_unemitted_table_blocks(tmp_path: Path):
     # stale `dim_`-prefixed name) used to render silently instead of failing closed.
     text = _gold_text("invoice").replace(
         'kairos-ext:measureExpression "SUM([total_amount])" ;',
-        'kairos-ext:measureExpression "SUM([total_amount]) + COUNTROWS(\'dim_frachtparty\')" ;',
+        "kairos-ext:measureExpression \"SUM([total_amount]) + COUNTROWS('dim_frachtparty')\" ;",
         1,
     )
     with pytest.raises(GoldContractError, match="unresolved-dax-table-reference"):
@@ -740,6 +740,7 @@ def test_direct_lake_emits_promotable_parameterisation(client_gold):
     # lineageTags, where rewriting it would be wrong.
     assert entry["find_value"].count("/") >= 4
 
+
 def test_direct_lake_named_expression_is_emitted_and_referenced(client_gold):
     # #619 Bugs 4/6: Direct Lake has no per-table connection string -- every partition
     # resolves through one shared OneLake named expression, quoted wherever referenced
@@ -998,8 +999,7 @@ def test_pbip_declares_the_published_schema_uri_exactly(invoice_gold):
     """
     pbip = json.loads(invoice_gold["invoice/Invoice.pbip"])
     assert pbip["$schema"] == (
-        "https://developer.microsoft.com/json-schemas/fabric/pbip/"
-        "pbipProperties/1.0.0/schema.json"
+        "https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json"
     )
     assert "/fabric/item/pbipProperties/" not in pbip["$schema"]
 
