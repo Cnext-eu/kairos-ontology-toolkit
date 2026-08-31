@@ -510,16 +510,23 @@ full rule table, and this phase is its delivery plan.
    (`contract.required-property-unmapped`, `contract.property-not-declared`,
    `contract.type-mismatch`, `contract.grain-mismatch`, `contract.identity-mismatch`, …), and the
    new optional `EntityBinding` key `unmapped:`.
-4. Move column set, order, name, and type for a governed class from the binding to the contract;
-   an `unmapped` property still emits its column as a typed NULL for that source's rows.
-5. Relax `conformance.property-incompatible` for governed classes — subset-of-contract plus
+4. Make the contract the column authority for a governed class across **both** the source-branch
+   models and the union model — not just the single-source entity model — padding every branch to
+   the full contract column set with typed NULLs. Retire `conformance_bases`/`base_model` as a
+   column source (`kernel.py:1487-1497`), where the union currently takes its columns from
+   whichever binding sorts first by filename.
+5. Emit padded columns with `include_in_change_detection: False`, and reject an `unmapped`
+   property that also appears in `load.incremental.canonicalHashInputs`, so a source that later
+   starts supplying the column cannot trigger a mass SCD2 re-versioning.
+6. Relax `conformance.property-incompatible` for governed classes — subset-of-contract plus
    explicit gaps replaces identical-property-sets, which is what lets a partial source join a
    conformance group.
-6. Add `scaffold-contract <domain>`, generating the contract from the current `CompilePlan`.
-7. Keep an absent contract file behaving exactly as today, with one advisory
+7. Add `scaffold-contract <domain>`, generating the contract from the current `CompilePlan`, with
+   `BuildScope` resolving foreign-domain contracts for cross-domain relationship targets.
+8. Keep an absent contract file behaving exactly as today, with one advisory
    `contract.domain-ungoverned` warning — incremental adoption, no clean break, no migration
    command.
-8. Add the `contract.*` rows to `diagnostic-codes.md` in the same change, as
+9. Add the `contract.*` rows to `diagnostic-codes.md` in the same change, as
    `tests/test_diagnostic_catalog.py` requires.
 
 Acceptance criteria:
@@ -530,6 +537,10 @@ Acceptance criteria:
 - Reordering a binding's `fields:` leaves the parity manifest unchanged.
 - Renaming an ontology property whose `columnName` is pinned changes no emitted column.
 - A binding that omits a contract-optional property without declaring it in `unmapped:` blocks.
+- The emitted column set of a governed class is unchanged by adding, removing, or renaming a
+  binding file.
+- A source that later begins supplying a previously-unmapped property triggers no SCD2
+  re-versioning.
 - `compile --check` remains stateless and independent of Git history.
 - A domain with no contract file compiles byte-identically to the release before this phase.
 
@@ -554,6 +565,10 @@ Goal: detect changes between two releases without adding generated authority to 
    reviewable unit and the parity-manifest diff the corroborating evidence that the emit matches
    the contract, classified against the table in [DD-213 §5](dd-213-silver-entity-contract.md).
    For an ungoverned domain the manifest diff remains the only available signal.
+9. Compare a **contract-relevant projection** of the manifest, not the full fingerprint: the
+   manifest hashes all 15 `ColumnSpec` fields, of which the contract governs 5, so an unfiltered
+   diff reads every ordinary binding edit as a contract change. The full fingerprint keeps its
+   separate job of proving release reproducibility.
 
 Acceptance criteria:
 

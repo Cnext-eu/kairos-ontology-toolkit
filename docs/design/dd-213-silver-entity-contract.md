@@ -72,6 +72,25 @@ Two properties keep this compatible with the v5 architecture:
   no generated baseline may live under `model/`. The contract is hand-authored and reviewed
   like an ontology, not emitted like a manifest.
 
+### Alternative considered: the previous release's manifest as the contract
+
+Rejected, but recorded so review does not re-litigate it. Instead of a new authored artifact,
+treat **the previous release's parity manifest under `ontology-hub-publish/`** as the contract.
+That sibling tree is already the derived-output location DD-206 tracks a release allowlist in, so
+it sidesteps the architecture document's "no generated baseline under `model/`" rule, needs no new
+schema or authoring burden, and reuses the Phase 5 comparator wholesale. It is markedly cheaper.
+
+It loses on three counts. It is *descriptive, not prescriptive*: it records what was emitted, so
+it cannot express `required` versus `optional`, a deprecation window, or a `columnName` pinned
+ahead of an anticipated ontology rename. It cannot gate the **first** binding of a class — which
+is precisely when the shape is decided and where first-binding-wins does its damage. And it makes
+`compile --check` depend on release history, breaking the statelessness the architecture document
+requires and that DD-133 §8 builds the `BuildScope` around.
+
+A declared contract is more expensive to author and is the only option that can say what Silver
+*promises* rather than what it *happens to contain*. What it does **not** promise is covered in
+§4's "What the contract does not stabilise" — canonical type remains source-derived.
+
 ### Why closed YAML rather than TTL or SHACL
 
 - **Not TTL.** v5's established direction is to move execution-relevant declarations out of
@@ -108,7 +127,7 @@ entities:
         columnName: customer_id                # optional; default camel_to_snake(local name)
         type: string(64)                       # canonical type label (canonical_type_label)
         requirement: required                  # required | optional
-        nullable: false                        # required
+        nullable: false                        # required; `optional` implies `nullable: true`
       - property: party:displayName
         type: string(256)
         requirement: optional
@@ -152,6 +171,22 @@ generated surrogate/integration/IRI columns are compiler-owned and always emitte
 outside the contract's `closed` scope; the leading `_` prefix and the generated-key names stay
 reserved and a contract that declares one is rejected.
 
+### Cross-domain relationship targets
+
+Relationship FK columns are named `{property_column}_{target_model}` (`kernel.py:1808`),
+embedding the **parent's** model name — while `compile <domain>` resolves only bindings whose
+`metadata.domain` matches the selected domain (DD-133 §8). So when domain A's contract pins a
+`modelName` other than `_slug(class)`, domain B's child models must read **domain A's contract**
+to name their FK columns correctly, and a parent `modelName` change silently breaks a child
+domain that is never recompiled in the same run.
+
+Settled here rather than left to the default: `BuildScope` resolves the contracts of foreign
+domains for every cross-domain relationship target and folds them into the provenance hash, and
+the parent's declared `modelName` is authoritative for the child's FK column name. Gate B must
+correspondingly classify a `modelName` change as breaking for **dependent domains**, not only
+for the domain that owns the entity. This makes contract loading scope-aware from the start
+(§10 slice 1) rather than a later correction.
+
 ## 4. Gate A — compile-time rules (stateless, non-suppressible)
 
 These extend DD-133 §5's safety kernel. They are `error` severity, entity-level blocking, and
@@ -166,6 +201,7 @@ run before materialize/render like every other §5 rule. Codes use a new `contra
 | `contract.column-name-collision` | Two declared properties, technical columns, or relationships resolve to the same `columnName` (case-insensitive), or collide with a reserved name from §3. |
 | `contract.grain-not-required` | A `grain.properties` or `identity.businessKey` entry is not also declared in `properties:` with `requirement: required`. This makes grain and identity columns mapped-by-construction, so the DD-133 §8b source→output resolution always applies. |
 | `contract.closed-requires-preview` | `closed: false` on an entity whose `stability` is not `preview`. |
+| `contract.optional-not-nullable` | A `requirement: optional` property declares `nullable: false`. A source may leave it unmapped, in which case the column carries a padded NULL for that source's rows, so `optional` implies `nullable: true`. |
 | `contract.duplicate-entity` | Two entries declare the same `class`. |
 | `contract.deprecated-shape` | A `lifecycle.deprecated` block is missing `since` or `removeIn`, or `replacedBy` does not resolve. Version *values* are validated for shape only — never compared against release history, which would make `compile --check` stateful. |
 
@@ -182,24 +218,73 @@ run before materialize/render like every other §5 rule. Codes use a new `contra
 | `contract.nullability-mismatch` | A mapped field's resolved nullability contradicts the declared `nullable`. |
 | `contract.grain-mismatch` | The binding's `grain.columns`, resolved to output columns, differs from the contract's declared grain. |
 | `contract.identity-mismatch` | The binding's `identity.strategy`, or its `businessKey` resolved to output columns per DD-133 §8b, differs from the contract's declared identity. |
+| `contract.unmapped-in-hash-inputs` | An `unmapped:` property's source column also appears in `load.incremental.canonicalHashInputs`. Padded NULLs must never participate in the SCD2 canonical hash. |
 | `contract.relationship-not-declared` | The binding declares a `relationships:` entry whose `(property, target)` pair is absent from the contract, and the entity is `closed: true`. |
 | `contract.technical-field-not-declared` | The binding declares a `technicalFields:` entry absent from `technicalColumns:`, and the entity is `closed: true`. |
 
 ### What changes in emission
 
-For a contract-governed class, the contract — not the binding — supplies:
+**The governing invariant:** *the emitted column set of a governed class is a pure function of
+its contract — independent of how many bindings exist, and independent of their filenames.*
+
+That last clause is not decoration. Today the conformance union is built as
+`replace(base_model, columns=tuple(... for column in base_model.columns))`
+(`kernel.py:1487-1497`), where `base_model` is `conformance_bases.setdefault(target_class, model)`
+— **the first binding in path-sorted order** (DD-133 §8). It is harmless only because
+`conformance.property-incompatible` currently forces identical property sets. The relaxation
+below removes that guarantee, so without this invariant the union would take its columns from
+whichever binding sorts first by *filename*, and a `union all` across branches with differing
+column counts would emit invalid SQL.
+
+The contract is therefore the column authority for **both** model kinds of a governed class —
+the `SOURCE_BRANCH` models and the `UNION` model (and the single `ENTITY` model in the
+one-source case). `conformance_bases`/`base_model` ceases to be a column source entirely.
+Concretely, the contract — not the binding — supplies:
 
 - the model name (`modelName`, defaulting to today's `_slug` rule);
-- the column **set**: every declared property is emitted, including ones this binding listed
-  under `unmapped:`, which render as a typed `NULL` for that source's rows. *This is the
-  mechanism that makes a partial new source bindable without reshaping Silver;*
-- the column **order**: `properties:` declared order, then `relationships:`, then
-  `technicalColumns:`, then the reserved envelope. Reordering a binding's `fields:` becomes
+- the column **set**: every declared property is emitted on **every branch**, including ones a
+  branch's binding listed under `unmapped:`, which are padded as a typed `NULL` for that source's
+  rows. Padding at the branch level, not only in the union, is what keeps `union all` well-formed.
+  *This is the mechanism that makes a partial new source bindable without reshaping Silver;*
+- the column **order**: `properties:` declared order, then `technicalColumns:`, then
+  `relationships:` — matching today's actual emission order (`adapter.py:874` then
+  `adapter.py:940`, with relationship FK columns added later at `kernel.py:1808`). The DD-104
+  audit envelope is *not* part of this order: it is injected by the Jinja templates and never
+  appears in `SilverModelSpec.columns` at all (`materialize.py:120-126` unions it in only to
+  validate quality-rule column references). Reordering a binding's `fields:` becomes
   fingerprint-neutral;
 - the column **name** (`columnName`, defaulting to today's `camel_to_snake` rule), decoupling
   ontology renames from physical renames and restoring the intent of the v4-only
   `kairos-ext:silverColumnName` inside a governed artifact;
 - the column **type** and **nullability**, which the binding must match rather than determine.
+
+Every other `ColumnSpec` field stays binding-derived, and deliberately so — `expression`,
+`mapping_resource_uri`, `mapping_expression`, `description`, `tests`, `role`, `provenance`,
+`generated_after_mapping`, `runtime_generated`, and `include_in_change_detection` are
+implementation, not contract. The contract governs 5 of `ColumnSpec`'s 15 fields; see §5 for why
+that distinction matters to Gate B.
+
+**Padded columns are excluded from change detection.** `ColumnSpec.include_in_change_detection`
+defaults to `True`, so a naively padded NULL column would participate in the SCD2 canonical hash.
+The day that source *began* supplying the column, every row's hash would change at once — a mass
+re-versioning event across the whole entity. Padded columns are therefore emitted with
+`include_in_change_detection: False`, and `contract.unmapped-in-hash-inputs` (§4) rejects a
+binding that names an `unmapped` property's source column in
+`load.incremental.canonicalHashInputs`.
+
+### What the contract does not stabilise
+
+Shape, names, order, and nullability are contract-governed. **Canonical type is not fully
+so.** A field's canonical type is *inferred* from the source column's type and the property's
+range (DD-133 §4), and `cast` is deliberately excluded from the expression allow-list — it
+belongs in kairos-prep, not a mapping expression. So a source whose column is `varchar(100)`
+cannot satisfy a contract declaring `string(64)`: `contract.type-mismatch` blocks it, and the
+only remedy is a contracted dbt model via `source.dbtModel`.
+
+Stated plainly: a new source binds to a stable *shape* without reshaping it, but a source whose
+*types* diverge still needs a contracted intermediate. Adding coercion machinery would reopen a
+deliberate DD-133 §4 exclusion and require per-adapter capability negotiation for widening
+safety; that is out of scope here and is not smuggled in.
 
 ### Consequent relaxation of `conformance.property-incompatible`
 
@@ -219,6 +304,23 @@ Gate B is the architecture document's two-manifest comparator, with one addition
 **contract file diff is the primary reviewable unit**, and the parity-manifest diff is the
 corroborating evidence that the emit matches the contract. Classification stays
 comparator-assisted and human-approved, per the architecture document's existing stance.
+
+**The full parity manifest is the wrong comparison surface for this.** `silver_parity_fields`
+hashes *every* field of `ColumnSpec` per column (`columns.{index}.{field}`,
+`projections/dbt/silver_contract.py:76`), and `ColumnSpec` has 15 fields
+(`projections/dbt/specs.py:315-333`) of which the contract governs 5. The other 10 —
+`expression`, `mapping_resource_uri`, `mapping_expression`, `description`, `tests`, `role`,
+`provenance`, `generated_after_mapping`, `runtime_generated`, `include_in_change_detection` —
+are binding-derived implementation. Two releases with an *identical* contract therefore produce
+*different* parity manifests whenever any binding's expression changes, so an unfiltered manifest
+diff reads every ordinary binding edit as a contract change.
+
+Gate B must therefore compare a **contract-relevant projection** of the manifest — model
+identity plus the contract-governed `ColumnSpec` fields (`name`, canonical/physical type,
+`nullable`, ordinal position) — and classify against the table below. The full 15-field
+fingerprint keeps its own separate job: proving release *reproducibility* (that a rebuild of the
+same commit yields the same bytes), which is a different question from contract compatibility and
+must not be conflated with it.
 
 | Contract change | Class | Minimum bump |
 |---|---|---|
@@ -256,7 +358,10 @@ The contract must be adoptable incrementally or no existing hub will adopt it.
    (`projections/dbt/specs.py:452`), and `canonical_type_label` already produces the stable
    labels the schema needs. The generated contract is byte-reproducible from the plan, so
    adopting it is provably a no-op emit — the parity manifest must be unchanged, which is the
-   acceptance test.
+   acceptance test. That test must cover the `SOURCE_BRANCH` and `UNION` models of a
+   conformance group, not only the single-source `ENTITY` model: the branch/union split is
+   exactly where the column authority moves (§4), so an entity-only assertion would pass while
+   the interesting case regressed.
 3. **Author intent on top.** The generated contract is a starting point recording *what is*;
    the reviewed edit that follows records *what is promised* — marking `required` vs
    `optional`, setting `stability`, pinning `columnName` where a rename is anticipated.
@@ -301,10 +406,64 @@ No skill produces a contract today. On acceptance:
    `conformance.conflict: prefer-precedence` and with `deduplicate` ordering in ways worth
    settling before implementation: should a NULL from a higher-precedence source lose to a
    real value from a lower-precedence one?
-2. **Contract scope for relationship FK columns.** §3 governs them, but the default column
-   name (`kernel.py:1808`, `{property_column}_{target_model}`) embeds the *target model name*
-   — so renaming a parent entity's `modelName` renames a column on every child. Either the
-   default must change or child contracts must pin those `columnName`s.
-3. **One file per domain, or one per entity?** One file per domain matches
+2. **One file per domain, or one per entity?** One file per domain matches
    `model/ontologies/<domain>.ttl` and keeps the reviewable unit whole; one file per entity
    produces cleaner diffs and less merge contention on a busy domain.
+
+## 10. Implementation slices
+
+Four slices, strictly ordered. Each is independently shippable and independently revertible.
+The ordering is load-bearing: slice 4 before slice 3 reintroduces the filename-ordering defect
+§4 exists to close, and slice 3 before slice 2 makes the emission change unreviewable.
+
+### Slice 1 — schema, loader, `scaffold-contract` (no behaviour change)
+
+- `core/compiler/schema/silver-contract.schema.json`, following the closed-schema conventions of
+  the existing `entity-binding.schema.json` (unknown fields rejected, duplicate keys rejected at
+  loader level).
+- `core/compiler/contracts.py`: frozen dataclasses plus loader, shaped like `bindings.py`. Reuse
+  `_canonical_type` (`projections/dbt/mapping_normalize.py:171`) to parse `type:` labels and
+  `canonical_type_label` (`projections/dbt/silver_contract.py:17`) for the inverse — no new type
+  parsing code is needed.
+- The §4 contract-load rules only.
+- `scaffold-contract <domain>`, following the `scaffold-binding` click-command pattern in
+  `cli/scaffold_binding.py`, reading `CompilePlan.silver_registry`/`shaped_project`
+  (`compiler/plan.py`).
+- Scope-aware loading per §3's cross-domain rule: `compiler/scope.py` resolves foreign-domain
+  contracts and folds them into the provenance hash.
+- No kernel wiring — a contract file present in a hub changes nothing yet.
+- Tests: new `tests/test_compiler_contracts.py`; a scaffold→parse round-trip; a cross-domain test
+  asserting the foreign contract is in scope and in the provenance hash.
+
+### Slice 2 — Gate A rules, warning-only
+
+- Wire contract resolution into `kernel.py` scope resolution; add the §4 per-binding rules at
+  **warning** severity.
+- Add the optional `unmapped:` key to `entity-binding.schema.json` and `bindings.py`, plus
+  `contract.unmapped-in-hash-inputs`.
+- Add the `contract.*` rows to `diagnostic-codes.md` in this same change —
+  `tests/test_diagnostic_catalog.py` fails both on a documented code with no construction site
+  and on a construction site with no row.
+- Tests: extend `tests/test_compiler_bindings.py`; every rule fires on a crafted hub, and no
+  existing fixture changes its emitted bytes.
+
+### Slice 3 — contract-driven emission
+
+- Make the contract the column authority in `adapter.py` and `kernel.py` for governed classes:
+  set, order, names, types, nullability, across `SOURCE_BRANCH`, `UNION`, and `ENTITY` models.
+- Pad branches with typed NULLs carrying `include_in_change_detection: False`; build the union
+  from the contract, retiring `conformance_bases`/`base_model` as a column source
+  (`kernel.py:1487-1497`).
+- Leave the other ten `ColumnSpec` fields binding-derived (§4).
+- Promote the slice 2 rules from warning to error.
+- Tests: byte-identical adoption across entity, branch, and union models; renaming a binding file
+  cannot change the emitted column set; a source that later begins supplying a previously-padded
+  column triggers no SCD2 re-versioning.
+
+### Slice 4 — conformance relaxation
+
+- Replace `conformance.property-incompatible`'s identical-property-set requirement with contract
+  conformance for governed classes only (`conformance.py:172`), leaving it in force for
+  ungoverned classes.
+- Tests: extend `tests/test_compiler_conformance.py` — a genuinely partial source joins a group
+  by declaring `unmapped:`, and the union's columns are unchanged.

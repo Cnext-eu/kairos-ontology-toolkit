@@ -264,7 +264,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-210](#dd-210-version-bump-moves-from-mandatory-per-pr-to-release-time-only) | Version bump moves from mandatory-per-PR to release-time-only | Accepted | 2026-08-30 |
 | [DD-211](#dd-211-the-hub-wide-bound-master-erd-is-reconnected-to-compileemit-gold-the-dead-run_projections-dbtsilverpowerbi-branch-is-retired-in-place) | The hub-wide bound master ERD is reconnected to `compile`/`emit-gold`; the dead `run_projections` dbt/silver/powerbi branch is retired in place | Accepted | 2026-08-30 |
 | [DD-212](#dd-212-the-canonical-erd-target-renders-a-mermaid-classdiagram-instead-of-erdiagram-and-gains-a-plumbing-only-overlay-hook) | The canonical `erd` target renders a Mermaid `classDiagram` instead of `erDiagram`, and gains a plumbing-only overlay hook | Accepted | 2026-08-30 |
-| [DD-213](#dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it) | The Silver contract is declared, not derived — bindings conform to it | Proposed | 2026-08-31 |
+| [DD-213](#dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it) | The Silver contract is declared, not derived — bindings conform to it | Proposed | 2026-09-01 |
 
 ---
 
@@ -15161,13 +15161,13 @@ that overlay triples are merged and that a missing overlay path leaves output un
 ## DD-213: The Silver contract is declared, not derived — bindings conform to it
 
 **Status:** Proposed
-**Date:** 2026-08-31
+**Date:** 2026-09-01
 **Affects:** a new `model/contracts/<domain>.contract.yaml` authored input and its packaged JSON
 Schema; `core/compiler/kernel.py` (new `contract.*` safety rules), `core/compiler/adapter.py`
 (contract-supplied model/column name, set, order, type), `core/compiler/conformance.py`
 (identical-property-set rule relaxed for governed classes), `core/compiler/bindings.py` (new
-optional `unmapped:` key); a new `scaffold-contract` command; `kairos-design-domain` and
-`kairos-design-mapping`. Amends DD-133 §2, §3, §3c, §5 and revisits DD-020's deferral of Silver
+optional `unmapped:` key), `core/compiler/scope.py` (foreign-domain contract resolution); a new
+`scaffold-contract` command; `kairos-design-domain` and `kairos-design-mapping`. Amends DD-133 §2, §3, §3c, §5 and revisits DD-020's deferral of Silver
 stability to an unbuilt release process.
 **Implementation:** design only — see
 [`dd-213-silver-entity-contract.md`](dd-213-silver-entity-contract.md) for the closed schema,
@@ -15227,9 +15227,11 @@ Bindings then **conform to** the contract rather than constitute it, enforced by
   contract supplies the emitted column set, order, names, and types — an `unmapped` property
   still emits its column as a typed NULL for that source's rows.
 - **Gate B — release-time, stateful, outside compile.** The architecture document's
-  two-manifest comparator, with the contract file diff as the primary reviewable unit and the
-  parity manifest as corroborating evidence, against a fixed change-classification table.
-  Comparator-assisted, human-approved, unknown changes block.
+  two-manifest comparator, with the contract file diff as the primary reviewable unit and a
+  *contract-relevant projection* of the parity manifest as corroborating evidence, against a
+  fixed change-classification table. The full manifest hashes all 15 `ColumnSpec` fields, of
+  which the contract governs 5, so comparing it unfiltered would read every binding edit as a
+  contract change. Comparator-assisted, human-approved, unknown changes block.
 
 Gate A is ordered before Gate B, reversing the current roadmap. Gate A prevents the break during
 the ordinary act of onboarding a source; Gate B only reports it afterwards.
@@ -15267,8 +15269,23 @@ owner while `kairos-design-mapping`'s brief narrows to "satisfy this contract fr
 The `contract.*` rows are added to `diagnostic-codes.md` by the implementing change, not by this
 one — `tests/test_diagnostic_catalog.py` fails on any documented code with no construction site.
 
-Three questions are left open for review in the companion document: NULL semantics for
-`unmapped` properties under `prefer-precedence` and `deduplicate` union policies; whether the
-relationship FK column default (`kernel.py:1808`, which embeds the *target* model name, so
-renaming a parent renames a column on every child) must change; and one contract file per domain
-versus one per entity.
+This design was challenged against the compiler before acceptance, and five findings changed it.
+The union model currently takes its column set from `base_model` — the binding that sorts first
+by *filename* (`kernel.py:1487-1497`) — which is harmless only while identical property sets are
+enforced; the relaxation therefore had to make the contract the column authority for source-branch
+*and* union models, padding every branch, or it would have emitted invalid `union all` SQL.
+Padded columns must carry `include_in_change_detection: False`, or a source that later starts
+supplying the column would trigger a mass SCD2 re-versioning. Cross-domain relationship FK names
+embed the *parent's* model name, so `BuildScope` must resolve foreign-domain contracts rather
+than leaving it to a naming default. The declared column order was corrected to
+properties → technical → relationships, matching actual emission, with the audit envelope
+template-injected and absent from `SilverModelSpec.columns`. And canonical type is *not*
+contract-stabilised — a diverging source type still requires a contracted dbt model, since `cast`
+is deliberately excluded from DD-133 §4's allow-list. A cheaper alternative — treating the
+previous release's parity manifest as the contract — was considered and rejected as descriptive
+rather than prescriptive, unable to gate a class's first binding, and fatal to `compile --check`
+statelessness.
+
+Two questions are left open for review in the companion document: NULL semantics for `unmapped`
+properties under `prefer-precedence` and `deduplicate` union policies; and one contract file per
+domain versus one per entity.
