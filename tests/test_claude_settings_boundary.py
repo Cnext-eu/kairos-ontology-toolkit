@@ -3,7 +3,7 @@
 """Static boundary test pinning the DD-103 semantic-access deny list.
 
 ``src/kairos_ontology/scaffold/claude-settings.json`` is the shipped Claude Code
-settings file that denies raw ``Read``/``Grep`` access to ontology serializations
+settings file that denies raw ``Grep`` access to ontology serializations
 (``.ttl``/``.rdf``/``.owl``) under the three guarded hub paths, and (dataplatform
 improvements backlog item #18) denies ``Edit``/``Write`` under ``ontology-hub-publish/``
 so compiler-owned output can't be hand-edited. Nothing else in the suite pins its exact
@@ -16,12 +16,18 @@ redundant but are NOT verified as inert on every Claude Code build:
 - **anchoring** — both ``/<path>/...`` (repo-root-relative) and ``./<path>/...``
   (cwd-relative) forms, because it is not confirmed which one Claude Code actually
   matches against in every working-directory configuration;
-- **tool prefix** — both ``Read(...)`` and ``Grep(...)``, because documentation
-  suggests ``Grep`` deny rules may be inert on some builds, but that is not
-  verifiable here either.
+**``Read`` is deliberately NOT denied (issue #659).** It was, until it turned out to
+forbid the exact workflow ``kairos-design-domain`` documents: Claude Code requires a
+prior ``Read`` of a file before ``Edit`` will touch it, so denying ``Read`` on
+``model/ontologies/**`` and ``model/shapes/**`` made hand-authoring a domain ``.ttl``
+(step 6b) or its governance SHACL structurally impossible, even though ``Edit``/``Write``
+were never denied. DD-103 is a boundary on *inspection* -- understand ontologies through
+``explain-term``/``show-class-inventory``/``list-class-properties``/``resolve-ontology``,
+not by scanning serialized RDF as unstructured text -- and ``Grep`` is what actually does
+that scanning. Do not re-add ``Read`` here without solving the ``Edit`` precondition.
 
-This is deliberate fail-closed duplication, not sloppiness. Do NOT "simplify" this
-file or this test down to one anchoring or one tool prefix.
+The anchoring duplication below is deliberate fail-closed redundancy, not sloppiness.
+Do NOT "simplify" this file or this test down to one anchoring.
 """
 
 from __future__ import annotations
@@ -53,8 +59,9 @@ _GUARDED_PATHS = (
 # core/archetype_loader.py / core/binding_archetypes.py, and not catalog-v001.xml.
 _GUARDED_EXTENSIONS = ("ttl", "rdf", "owl")
 
-# Both tool prefixes: see module docstring for why.
-_GUARDED_TOOLS = ("Read", "Grep")
+# `Grep` only: `Read` is intentionally permitted so ontology authoring can happen at
+# all. See the module docstring, and issue #659.
+_GUARDED_TOOLS = ("Grep",)
 
 # Both anchorings: see module docstring for why.
 _GUARDED_ANCHORS = ("/", "./")
@@ -125,3 +132,34 @@ def test_current_scaffold_hash_is_not_a_known_superseded_hash():
     # regression waiting to happen the next time the file changes again.
     current_hash = hashlib.sha256(_SCAFFOLD_SETTINGS.read_bytes()).hexdigest()
     assert current_hash not in _KNOWN_CLAUDE_SETTINGS_HASHES
+
+
+def test_read_is_never_denied_on_authorable_paths():
+    """Denying ``Read`` also disables ``Edit``, which needs a prior ``Read``.
+
+    That is not a style preference: it made `kairos-design-domain`'s documented
+    authoring steps impossible to complete under the default scaffold (issue #659).
+    """
+    deny = _load_settings()["permissions"]["deny"]
+    read_rules = [rule for rule in deny if rule.startswith("Read(")]
+    assert not read_rules, (
+        "Read is denied again on ontology/shapes paths, which silently blocks Edit: "
+        f"{read_rules}"
+    )
+
+
+def test_grep_and_publish_guards_survive():
+    """The parts of the boundary that were never the problem must stay intact."""
+    deny = set(_load_settings()["permissions"]["deny"])
+    assert "Grep(./ontology-hub/model/ontologies/**/*.ttl)" in deny
+    assert "Grep(./ontology-hub/model/shapes/**/*.ttl)" in deny
+    assert "Edit(./ontology-hub-publish/**)" in deny
+    assert "Write(./ontology-hub-publish/**)" in deny
+
+
+def test_superseded_generation_is_recorded_so_update_can_deliver_the_fix():
+    """Existing hubs only receive this change if the prior hash is registered."""
+    assert (
+        "32e7e6e05220b84b3667ecc5be8db7bf7250c14220cd3aec5efe25b5094f7c5d"
+        in _KNOWN_CLAUDE_SETTINGS_HASHES
+    )

@@ -1,18 +1,6 @@
 {
   "permissions": {
     "deny": [
-      "Read(/ontology-hub/model/ontologies/**/*.ttl)",
-      "Read(/ontology-hub/model/ontologies/**/*.rdf)",
-      "Read(/ontology-hub/model/ontologies/**/*.owl)",
-      "Read(./ontology-hub/model/ontologies/**/*.ttl)",
-      "Read(./ontology-hub/model/ontologies/**/*.rdf)",
-      "Read(./ontology-hub/model/ontologies/**/*.owl)",
-      "Read(/ontology-hub/model/shapes/**/*.ttl)",
-      "Read(/ontology-hub/model/shapes/**/*.rdf)",
-      "Read(/ontology-hub/model/shapes/**/*.owl)",
-      "Read(./ontology-hub/model/shapes/**/*.ttl)",
-      "Read(./ontology-hub/model/shapes/**/*.rdf)",
-      "Read(./ontology-hub/model/shapes/**/*.owl)",
       "Grep(/ontology-hub/model/ontologies/**/*.ttl)",
       "Grep(/ontology-hub/model/ontologies/**/*.rdf)",
       "Grep(/ontology-hub/model/ontologies/**/*.owl)",

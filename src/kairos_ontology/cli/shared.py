@@ -1439,6 +1439,7 @@ _KNOWN_CLAUDE_SETTINGS_HASHES = (
     "08c0b53faf0ea032c4746e460ae85e41e8f7731f999778d730e114e50ce037f5",  # .ttl-only, pre-DD-103 broadening
     "7be2c70ddda8878e179930ce9dcaf0ac8d12cd09f982170f4d6b85acc515db08",  # .ttl/.rdf/.owl + refmodel deny-list (pre-package-migration)
     "6ce03d5dcc389b92b387545e41c3d7b1936112bd87b66b6dc6cee2f4b965e680",  # pre-Edit/Write ontology-hub-publish/** guard
+    "32e7e6e05220b84b3667ecc5be8db7bf7250c14220cd3aec5efe25b5094f7c5d",  # pre-DD-103 Read relaxation (issue #659)
 )
 
 _RETIRED_SCAFFOLD_DIRECTORIES = (
@@ -2346,3 +2347,73 @@ def _detect_hub_context() -> dict:
         "version": version,
         "source_systems": source_systems,
     }
+
+
+# --- Scaffolded GitHub Actions workflows (issue #658) -----------------------------
+#
+# Written once at scaffold time and, until #658, never revisited -- so a correctness or
+# security fix landing in a workflow template could not reach any repo that already
+# existed. These are NOT part of `_managed_scaffold_map`: `_stamp_managed` injects an
+# HTML comment, which is not valid YAML, and workflow files carry real local
+# customization that must never be silently overwritten. See `cli/workflow_refresh.py`.
+
+#: ``{repo_relative_destination: scaffold_source}`` for a hub repo's workflows.
+_HUB_WORKFLOW_SOURCES = {
+    ".github/workflows/managed-check.yml": "github-workflows/managed-check.yml",
+    ".github/workflows/pr-validate.yml": "github-workflows/pr-validate.yml",
+    ".github/workflows/release-projections.yml": "github-workflows/release-projections.yml",
+    ".github/workflows/assign-copilot.yml": "github-workflows/assign-copilot.yml",
+    ".github/workflows/copilot-setup-steps.yml": "github-workflows/copilot-setup-steps.yml",
+}
+
+#: Same, for a dataplatform repo. These are `.template` files with `{ORG}`-style
+#: placeholders, so their rendered bytes are repo-specific -- which is precisely why
+#: detection reverse-templates rather than comparing hashes.
+_DATAPLATFORM_WORKFLOW_SOURCES = {
+    ".github/workflows/pr-validate.yml": (
+        "dataplatform/.github/workflows/pr-validate.yml.template"
+    ),
+    ".github/workflows/deploy-powerbi-semantic-model.yml": (
+        "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template"
+    ),
+}
+
+#: Previously-shipped generations of a workflow template, by repo-relative destination.
+#: A file matching one of these is an *untouched older generation*, so refreshing it is
+#: pure gain rather than an overwrite -- that distinction is the whole safety property.
+#:
+#: MAINTENANCE: when you change a workflow template, copy its outgoing content to
+#: ``scaffold/superseded-workflows/<slug>/<n>.template`` and list it here. Skipping this
+#: does not break anything, but every already-scaffolded repo will then report
+#: "customized" and need a manual refresh instead of an automatic one.
+_SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
+    # Pre-#650 generation, before `pr-validate.yml` gained its guard against
+    # `local:` dbt package pins. This is the concrete fix #658 was filed about:
+    # it shipped in a release that no existing dataplatform could receive.
+    ".github/workflows/pr-validate.yml": ("dataplatform-pr-validate/1.template",),
+}
+
+
+def _workflow_sources(repo_root: Path) -> dict[str, Path]:
+    """Return ``{destination: template_path}`` for whichever repo kind *repo_root* is."""
+    sources = (
+        _DATAPLATFORM_WORKFLOW_SOURCES
+        if (repo_root / "dbt_project.yml").is_file()
+        else _HUB_WORKFLOW_SOURCES
+    )
+    resolved = {}
+    for destination, relative in sources.items():
+        path = _SCAFFOLD_DIR / relative
+        if path.is_file():
+            resolved[destination] = path
+    return resolved
+
+
+def _superseded_workflow_templates(destination: str) -> tuple[str, ...]:
+    """Load the recorded prior generations of *destination*'s template."""
+    root = _SCAFFOLD_DIR / "superseded-workflows"
+    return tuple(
+        (root / name).read_text(encoding="utf-8")
+        for name in _SUPERSEDED_WORKFLOW_TEMPLATES.get(destination, ())
+        if (root / name).is_file()
+    )
