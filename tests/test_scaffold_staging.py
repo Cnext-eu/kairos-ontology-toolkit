@@ -187,6 +187,9 @@ def test_single_source_scaffolds_trivial_passthrough_merged_model(tmp_path):
     assert "kairos_survivor(" not in sql
     assert "<CONFIRM_NATURAL_KEY_COLUMN>" not in sql
     assert "<CONFIRM_PRIORITY_COLUMN>" not in sql
+    # dbt-fabric's nested-CTE detector false-positives on 2+ literal "with "
+    # occurrences anywhere in the compiled SQL, including comments (#676).
+    assert sql.lower().count("with ") <= 1
 
     document = yaml.safe_load(result.merged_yaml_path.read_text(encoding="utf-8"))
     model = document["models"][0]

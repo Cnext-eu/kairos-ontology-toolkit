@@ -1901,6 +1901,14 @@ def _resolve_semantic_input(
     default="seeds",
     help="Output directory for --emit-seed CSV files (default: seeds/).",
 )
+@click.option(
+    "--no-redact-pii",
+    "no_redact_pii",
+    is_flag=True,
+    default=False,
+    help="Write sample values unredacted, skipping the redact-detected-pii policy. "
+    "Only use for sources already known to hold no sensitive values.",
+)
 def extract_schema(
     profile_name,
     target,
@@ -1912,6 +1920,7 @@ def extract_schema(
     sample_size,
     emit_seed,
     seeds_dir,
+    no_redact_pii,
 ):
     """Introspect live warehouse/lakehouse schema and produce per-table YAML.
 
@@ -1958,6 +1967,8 @@ def extract_schema(
     click.echo(f"   Sample size: {sample_size}")
     if emit_seed:
         click.echo(f"   Emit seed CSVs: yes ({seeds_path})")
+    if no_redact_pii:
+        click.echo("   ⚠ PII redaction: disabled (--no-redact-pii) -- samples written as-is")
     click.echo()
 
     try:
@@ -1972,6 +1983,7 @@ def extract_schema(
             sample_size=sample_size,
             emit_seed=emit_seed,
             seeds_dir=seeds_path,
+            redact_pii=not no_redact_pii,
         )
     except ImportError as e:
         click.echo(f"\n❌ Missing dependency: {e}", err=True)

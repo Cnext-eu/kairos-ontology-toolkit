@@ -52,6 +52,59 @@ uv run kairos-ontology import-source --from extracted-schema.yaml --system sampl
 Review and redact extracted metadata before committing. Never commit credentials, real
 personal data, proprietary sample values, or environment-specific secrets.
 
+## Extending or overriding a package model
+
+Silver/intermediate models are installed via `dbt deps` under
+`dbt_packages/kairos_medallion_project/`. **Never edit files there** — they are
+overwritten on every `dbt deps`. Instead, use one of these patterns from this project's
+own `models/`, `macros/`, or `snapshots/` directories:
+
+1. **Config override** — change `materialized`, `schema`, `tags`, or `enabled` for a
+   package model via this project's `dbt_project.yml`:
+   ```yaml
+   models:
+     kairos_medallion_project:
+       intermediate:
+         party:
+           int_merged__party:
+             +materialized: table
+             +tags: ["party"]
+   ```
+2. **Wrapper model** — add columns or downstream-only logic without touching the
+   package model itself:
+   ```sql
+   -- models/party/party_enriched.sql
+   select
+       base.*,
+       case when base.email is not null then true else false end as has_email
+   from {{ ref('kairos_medallion_project', 'int_merged__party') }} as base
+   ```
+3. **Macro override** — define a macro with the same name under this project's
+   `macros/`; local macros take precedence over package macros of the same name, so a
+   `macros/generate_schema_name.sql` here overrides the package's version project-wide.
+4. **Disable + replace** — turn off a package model and provide your own in its place:
+   ```yaml
+   models:
+     kairos_medallion_project:
+       intermediate:
+         party:
+           int_merged__party:
+             +enabled: false
+   ```
+   then add a same-named replacement under `models/` with your own logic.
+5. **Snapshot** — track SCD history on a package model from this project without
+   modifying it:
+   ```yaml
+   # snapshots/party_snapshot.yml
+   snapshots:
+     - name: party_snapshot
+       relation: ref('kairos_medallion_project', 'int_merged__party')
+       config:
+         unique_key: party_id
+         strategy: timestamp
+         updated_at: updated_at
+   ```
+
 ## Optional Power BI deployment
 
 The Fabric scaffold includes a workflow that consumes a versioned semantic-model artifact.

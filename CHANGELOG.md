@@ -16,6 +16,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0rc12] — 2026-08-31
+
+### Fixed
+- **`update --check` reported "all managed files up to date" while a scaffolded
+  `.github/workflows/*.yml` was entirely missing (issue #671).** `operations.py`'s
+  `update` command computed a `"missing"` workflow status but never read it in either
+  the `--check` or plain-`update` report block -- only `outdated`/`customized` were
+  surfaced. A dataplatform repo scaffolded before `pr-validate.yml` existed had no
+  PR-time `dbt parse`/`compile` gate, and nothing said so. Both report blocks now
+  surface missing workflows, and `--check` no longer exits 0 while one is absent.
+- **`extract-schema` overwrote `_manifest.yaml`'s `tables:` list instead of extending
+  it (issue #672).** Re-running `extract-schema --tables <subset>` after an earlier
+  full extraction dropped every table not in the current invocation from the manifest,
+  even though their per-table YAML files were still on disk. A second run now unions
+  the existing manifest's tables with the current run's (and refuses to merge tables
+  from a different system/platform/database/schema). Also added `--no-redact-pii` to
+  opt out of the `redact-detected-pii` sample policy for sources already known to hold
+  no sensitive values.
+- **`promote-transform`'s "copies, never moves" docs didn't say the local copy must be
+  removed once the promotion ships (issue #673).** Once a promoted model is compiled,
+  emitted, and reinstalled via `dbt deps`, the dataplatform repo's still-present local
+  copy collides with the installed `kairos_medallion_project` package copy (`dbt
+  parse` fails with "two resources with identical database representations"). Both
+  `kairos-develop-dbt-transformation` SKILL.md copies now document the required
+  cleanup, and `promote-transform`'s own CLI output warns about it at promotion time.
+- **`show-class-inventory`/`list-class-properties` listed a class token that `compile`
+  then rejected as ambiguous, with no cross-reference between the two (issue #674).**
+  `_compute_class_tokens` unconditionally attached the `<domain-stem>:<local>` token to
+  every class sharing a local name anywhere in the import closure, even when multiple
+  imports declare the same short prefix for different namespaces with no root
+  declaration -- so three unrelated `party:Contact` classes each falsely claimed
+  `party:Contact` as a usable token. The domain-stem token is now scoped to the root
+  ontology's own namespace, matching what `compile` actually resolves. Additionally,
+  when a `target.class` token remains unresolved specifically because its prefix is
+  ambiguous, `binding.unknown-class`'s message now names the disambiguated alternative
+  (e.g. "did you mean `bsp:Contact`?") instead of leaving the author to cross-reference
+  a separate `safety.prefix-ambiguous` warning by hand.
+- **`explain-term` had no `--domain` shorthand, unlike `show-class-inventory` and
+  `list-class-properties` (issue #675).** It required spelling out `--ontology
+  <file-path>` even when the caller already knew the domain name. `--domain` now
+  resolves the same way the other two commands do.
+- **`kairos-develop-dbt-transformation` had no caveat for `dbt-fabric`'s comment-text
+  nested-CTE false positive (issue #676).** `dbt-fabric`'s `check_for_nested_cte` macro
+  counts literal `"with "` occurrences across the whole compiled SQL text, including
+  comments -- a model with zero real CTEs can still fail to build. Worse, the
+  toolkit's own `scaffold-staging`-generated single-source `int_merged__<entity>.sql`
+  comment already contained the substring three times, tripping the false positive the
+  moment its materialization moves off the scaffolded `view` default. The SKILL.md
+  caveat is added and the generated comment reworded to avoid the trigger.
+- **Dataplatform README lacked guidance for extending an installed dbt package (issue
+  #615, partial).** The generated `README.md` only said never to edit
+  `dbt_packages/kairos_medallion_project/` directly; it now documents the five
+  supported extension patterns (config override, wrapper model, macro override,
+  disable + replace, snapshot) with concrete examples.
+
 ## [5.15.0rc11] — 2026-08-31
 
 ### Fixed

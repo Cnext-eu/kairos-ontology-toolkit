@@ -80,9 +80,15 @@ def _compute_class_tokens(loaded, ontology_path: Path, class_uri: str) -> list[s
 
     Matches what ``compile --check`` prints as "usable class tokens": the full URI,
     rdflib-built-in qnames, declared ``@prefix`` aliases from the source Turtle
-    closure, and the ``<domain-stem>:<LocalName>`` token.
+    closure, and -- only for a class native to this domain ontology's own namespace,
+    the same scoping ``compile``'s ``_ontology_symbols`` applies -- the
+    ``<domain-stem>:<LocalName>`` token. Without that scoping, every class sharing a
+    local name anywhere in the import closure (e.g. three imported ``party:Contact``
+    classes from unrelated ontologies) would each claim the same domain-stem token,
+    even though compile only ever resolves it for the one actually in this namespace
+    (#674).
     """
-    from ..core.compiler.kernel import _qnames, declared_prefix_aliases
+    from ..core.compiler.kernel import _domain_namespace, _qnames, declared_prefix_aliases
 
     from rdflib import URIRef
 
@@ -92,7 +98,8 @@ def _compute_class_tokens(loaded, ontology_path: Path, class_uri: str) -> list[s
     tokens.update(declared_prefix_aliases(loaded, ontology_path, class_uri))
     domain_prefix = ontology_path.stem
     local = class_uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
-    tokens.add(f"{domain_prefix}:{local}")
+    if class_uri.startswith(_domain_namespace(loaded, graph)):
+        tokens.add(f"{domain_prefix}:{local}")
     return sorted(tokens)
 
 
@@ -738,21 +745,34 @@ def plan_sources_cmd(class_token, ontology, domain, source, key_columns, out_for
 
 @click.command(name="explain-term")
 @click.argument("iri")
-@click.option("--ontology", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option("--ontology", type=click.Path(exists=True, dir_okay=False), default=None)
+@click.option("--domain", default=None, help="Hub domain name when --ontology is omitted.")
 @click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)
 @click.option(
     "--profile",
     type=click.Choice(["asserted", "rdfs", "kairos-design", "owl-rl"]),
     default="kairos-design",
 )
-def explain_term_cmd(iri, ontology, catalog, profile):
+def explain_term_cmd(iri, ontology, domain, catalog, profile):
     """Explain one full-URI term with semantic and import provenance."""
     from dataclasses import asdict
 
+    from ..core.hub_utils import find_hub_root
     from ..core.ontology_loader import load_ontology
 
+    if ontology:
+        path = Path(ontology)
+    elif domain:
+        hub = find_hub_root(Path.cwd(), require_model=True)
+        if hub is None:
+            raise click.ClickException("Cannot locate a hub for --domain.")
+        path = hub / "model" / "ontologies" / f"{domain}.ttl"
+        if not path.is_file():
+            raise click.ClickException(f"Domain ontology not found: {path}")
+    else:
+        raise click.UsageError("Provide --ontology or --domain.")
     loaded = load_ontology(
-        Path(ontology),
+        path,
         catalog_path=Path(catalog) if catalog else None,
         profile=profile,
     )

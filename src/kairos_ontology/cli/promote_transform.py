@@ -158,3 +158,12 @@ def promote_transform_cmd(sql_path, domain, properties_path, force, dry_run, hub
             "strategy was chosen and why, and any sample-evidence/row-count reconciliation "
             "performed (kairos-develop-dbt-transformation step 7)."
         )
+    click.echo(
+        f"\n⚠ {result.sql_source_path} is still your dataplatform repo's own copy. Once "
+        f"the hub compiles and emits with this model wired in and this dataplatform repo "
+        f"reinstalls the package (`dbt deps`), that installed copy and this local file "
+        f"resolve to the same database object -- `dbt parse` will fail with 'two resources "
+        f"with identical database representations'. Remove or exclude "
+        f"{result.sql_source_path.name} from this project once the promotion has reached a "
+        "hub release and been reinstalled."
+    )

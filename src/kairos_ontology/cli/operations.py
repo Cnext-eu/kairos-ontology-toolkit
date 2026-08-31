@@ -577,6 +577,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
     # opt-in because a workflow that no longer matches any shipped generation may
     # be carrying deliberate local work (real credentials, extra steps).
     refreshed_workflows: list[str] = []
+    templated_destinations: set[str] = set()
     workflow_statuses: list = []
     for destination, template_path in _workflow_sources(repo_root).items():
         status = classify_workflow(
@@ -586,6 +587,8 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
         )
         status = replace(status, path=destination)
         workflow_statuses.append(status)
+        if template_path.name.endswith(".template"):
+            templated_destinations.add(destination)
         if check or not refresh_workflows or not status.refreshable:
             continue
         if status.state == "missing" and template_path.name.endswith(".template"):
@@ -602,6 +605,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
 
     outdated_workflows = [item.path for item in workflow_statuses if item.state == "outdated"]
     customized_workflows = [item.path for item in workflow_statuses if item.state == "customized"]
+    missing_workflows = [item.path for item in workflow_statuses if item.state == "missing"]
 
     # --- Report -------------------------------------------------------------
     if check:
@@ -626,6 +630,15 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
             for path in outdated_workflows:
                 print(f"   {path}")
             print("   Run `kairos-ontology update --refresh-workflows` to apply.")
+        if missing_workflows:
+            print(f"⚠  {len(missing_workflows)} scaffolded workflow(s) missing:")
+            for path in missing_workflows:
+                print(f"   {path}")
+            print(
+                "   This repo has no PR-time gate for the missing workflow(s). Run "
+                "`kairos-ontology update --refresh-workflows`, or re-run the relevant "
+                "init-dataplatform step if that reports no change needed. See CICD.md."
+            )
         if customized_workflows:
             print(f"ℹ  {len(customized_workflows)} workflow(s) differ from the shipped template:")
             for path in customized_workflows:
@@ -656,6 +669,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
             and not stale
             and not retired_assets
             and not outdated_workflows
+            and not missing_workflows
             and claude_settings_status != "outdated"
         ):
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
@@ -687,6 +701,22 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
             for path in outdated_workflows:
                 print(f"   {path}")
             print("   Run `kairos-ontology update --refresh-workflows` to apply.")
+        still_missing_workflows = [p for p in missing_workflows if p not in refreshed_workflows]
+        if still_missing_workflows:
+            print(f"⚠  {len(still_missing_workflows)} scaffolded workflow(s) missing:")
+            for path in still_missing_workflows:
+                print(f"   {path}")
+            if any(path in templated_destinations for path in still_missing_workflows):
+                print(
+                    "   This repo has no PR-time gate for the missing workflow(s). These need "
+                    "substitution values only `init-dataplatform` has -- re-run the relevant "
+                    "init-dataplatform step, or create the file manually. See CICD.md."
+                )
+            else:
+                print(
+                    "   This repo has no PR-time gate for the missing workflow(s). Run "
+                    "`kairos-ontology update --refresh-workflows` to create them."
+                )
         if customized_workflows:
             print(f"ℹ  {len(customized_workflows)} workflow(s) differ from the shipped template:")
             for path in customized_workflows:
