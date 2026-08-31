@@ -1,0 +1,423 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
+"""Declared Silver contract schema, loader, scaffold, and scope resolution (DD-213)."""
+
+from __future__ import annotations
+
+import textwrap
+
+import pytest
+import yaml
+
+from kairos_ontology.core.compiler.contract_scaffold import (
+    build_contract_document,
+    render_contract_yaml,
+)
+from kairos_ontology.core.compiler.contracts import (
+    load_silver_contract,
+    resolved_column_name,
+)
+from kairos_ontology.core.compiler.kernel import build_compile_plan, resolve_scope
+from kairos_ontology.core.compiler.result import CompileError
+
+GOOD_CONTRACT = textwrap.dedent("""
+    apiVersion: kairos.eu/v5
+    kind: SilverContract
+    metadata:
+      domain: party
+    entities:
+      - class: party:Customer
+        modelName: customer
+        stability: stable
+        closed: true
+        grain:
+          properties: [party:customerId]
+        identity:
+          strategy: source-natural
+          businessKey: [party:customerId]
+        properties:
+          - property: party:customerId
+            type: string(64)
+            requirement: required
+            nullable: false
+          - property: party:displayName
+            type: string(256)
+            requirement: optional
+            nullable: true
+        technicalColumns:
+          - name: source_batch_id
+            type: string(64)
+            requirement: optional
+            nullable: true
+""").strip()
+
+
+def _codes(text: str) -> set[str]:
+    with pytest.raises(CompileError) as excinfo:
+        load_silver_contract(text, path="party.contract.yaml")
+    return {item.code for item in excinfo.value.diagnostics}
+
+
+def _document() -> dict:
+    """Return the good contract as a mutable document.
+
+    Variants are built by mutating this structure rather than by string surgery, so a
+    reindent of the fixture cannot silently turn a rule test into a no-op.
+    """
+    return yaml.safe_load(GOOD_CONTRACT)
+
+
+def _dump(document: dict) -> str:
+    return yaml.safe_dump(document, sort_keys=False)
+
+
+def _entity(document: dict) -> dict:
+    return document["entities"][0]
+
+
+class TestContractLoader:
+    def test_parses_a_well_formed_contract(self):
+        contract = load_silver_contract(GOOD_CONTRACT, path="party.contract.yaml")
+        assert contract.domain == "party"
+        entity = contract.entity_for("party:Customer")
+        assert entity is not None
+        assert entity.model_name == "customer"
+        assert entity.closed is True
+        assert [item.property for item in entity.required_properties] == ["party:customerId"]
+        assert [item.property for item in entity.optional_properties] == ["party:displayName"]
+
+    def test_column_name_defaults_to_the_kernel_rule(self):
+        """An unpinned columnName must reproduce ``camel_to_snake`` exactly (DD-213 §6).
+
+        If this drifts, adopting a scaffolded contract stops being a no-op.
+        """
+        entity = load_silver_contract(GOOD_CONTRACT).entity_for("party:Customer")
+        assert [resolved_column_name(item) for item in entity.properties] == [
+            "customer_id",
+            "display_name",
+        ]
+
+    def test_pinned_column_name_wins(self):
+        document = _document()
+        _entity(document)["properties"][1]["columnName"] = "full_name"
+        entity = load_silver_contract(_dump(document)).entity_for("party:Customer")
+        assert resolved_column_name(entity.properties[1]) == "full_name"
+
+    def test_unknown_field_is_rejected(self):
+        document = _document()
+        document["unexpected"] = True
+        assert "contract.schema" in _codes(_dump(document))
+
+    def test_duplicate_key_is_rejected(self):
+        text = GOOD_CONTRACT.replace(
+            "    stability: stable\n",
+            "    stability: stable\n    stability: preview\n",
+        )
+        assert "contract.duplicate-key" in _codes(text)
+
+    def test_unknown_canonical_type_is_rejected(self):
+        document = _document()
+        _entity(document)["properties"][0]["type"] = "varchar(64)"
+        assert "contract.schema" in _codes(_dump(document))
+
+    def test_document_must_be_a_mapping(self):
+        assert "contract.not-a-mapping" in _codes("- not a mapping\n")
+
+
+class TestContractLoadRules:
+    def test_optional_property_must_be_nullable(self):
+        """An unmapped optional property is padded with NULL, so it cannot be non-null."""
+        document = _document()
+        _entity(document)["properties"][1]["nullable"] = False
+        assert "contract.optional-not-nullable" in _codes(_dump(document))
+
+    def test_optional_technical_column_must_be_nullable(self):
+        document = _document()
+        _entity(document)["technicalColumns"][0]["nullable"] = False
+        assert "contract.optional-not-nullable" in _codes(_dump(document))
+
+    def test_open_contract_requires_preview_stability(self):
+        document = _document()
+        _entity(document)["closed"] = False
+        assert "contract.closed-requires-preview" in _codes(_dump(document))
+
+    def test_open_contract_is_allowed_while_preview(self):
+        document = _document()
+        _entity(document)["closed"] = False
+        _entity(document)["stability"] = "preview"
+        assert load_silver_contract(_dump(document)).entities[0].closed is False
+
+    def test_grain_property_must_be_declared_required(self):
+        document = _document()
+        _entity(document)["grain"]["properties"] = ["party:displayName"]
+        assert "contract.grain-not-required" in _codes(_dump(document))
+
+    def test_grain_property_must_be_declared_at_all(self):
+        document = _document()
+        _entity(document)["grain"]["properties"] = ["party:missing"]
+        assert "contract.grain-not-required" in _codes(_dump(document))
+
+    def test_business_key_must_be_declared_required(self):
+        document = _document()
+        _entity(document)["identity"]["businessKey"] = ["party:displayName"]
+        assert "contract.grain-not-required" in _codes(_dump(document))
+
+    def test_column_name_collision_is_rejected(self):
+        document = _document()
+        _entity(document)["properties"][1]["columnName"] = "customer_id"
+        assert "contract.column-name-collision" in _codes(_dump(document))
+
+    def test_reserved_envelope_name_is_rejected(self):
+        """The DD-104 audit envelope is compiler-owned and outside the closed scope."""
+        document = _document()
+        _entity(document)["technicalColumns"][0]["name"] = "_loaded_at"
+        assert "contract.column-name-collision" in _codes(_dump(document))
+
+    def test_reserved_surrogate_key_suffix_is_rejected(self):
+        """``<model>_sk`` is the generated surrogate join key, not an authored column."""
+        document = _document()
+        _entity(document)["technicalColumns"][0]["name"] = "customer_sk"
+        assert "contract.column-name-collision" in _codes(_dump(document))
+
+    def test_duplicate_entity_is_rejected(self):
+        document = _document()
+        document["entities"].append(dict(_entity(document)))
+        assert "contract.duplicate-entity" in _codes(_dump(document))
+
+    def test_deprecation_window_must_span_two_versions(self):
+        document = _document()
+        _entity(document)["properties"][1]["lifecycle"] = {
+            "deprecated": {"since": "3.2.0", "removeIn": "3.2.0"}
+        }
+        assert "contract.deprecated-shape" in _codes(_dump(document))
+
+    def test_replaced_by_must_resolve_within_the_entity(self):
+        document = _document()
+        _entity(document)["properties"][1]["lifecycle"] = {
+            "deprecated": {
+                "since": "3.2.0",
+                "removeIn": "4.0.0",
+                "replacedBy": "party:nowhere",
+            }
+        }
+        assert "contract.deprecated-shape" in _codes(_dump(document))
+
+    def test_a_valid_deprecation_window_is_accepted(self):
+        document = _document()
+        _entity(document)["properties"][1]["lifecycle"] = {
+            "deprecated": {
+                "since": "3.2.0",
+                "removeIn": "4.0.0",
+                "replacedBy": "party:customerId",
+            }
+        }
+        entity = load_silver_contract(_dump(document)).entity_for("party:Customer")
+        assert entity.properties[1].deprecated.remove_in == "4.0.0"
+
+
+def _write_hub(hub_root):
+    """Minimal v5 hub, mirroring tests/test_silver_sample_audit.py::_write_v5_hub."""
+    ontology_dir = hub_root / "model" / "ontologies"
+    source_dir = hub_root / "integration" / "sources" / "crm"
+    binding_dir = hub_root / "integration" / "bindings"
+    ontology_dir.mkdir(parents=True)
+    source_dir.mkdir(parents=True)
+    binding_dir.mkdir(parents=True)
+    (hub_root / "kairos.yaml").write_text("adapter: fabric\n", encoding="utf-8")
+    (ontology_dir / "party.ttl").write_text(
+        textwrap.dedent("""
+            @prefix party: <https://example.test/party#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            <https://example.test/party> a owl:Ontology ; owl:versionInfo "1.0.0" .
+            party:Customer a owl:Class ; rdfs:label "Customer" .
+            party:customer_id a owl:DatatypeProperty ;
+              rdfs:domain party:Customer ; rdfs:range xsd:string .
+            party:customerName a owl:DatatypeProperty ;
+              rdfs:domain party:Customer ; rdfs:range xsd:string .
+            """).strip(),
+        encoding="utf-8",
+    )
+    (source_dir / "crm.vocabulary.ttl").write_text(
+        textwrap.dedent("""
+            @prefix src: <https://example.test/source#> .
+            @prefix kb: <https://kairos.cnext.eu/bronze#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            src:crm a kb:SourceSystem ; rdfs:label "crm" ;
+              kb:database "raw" ; kb:schema "dbo" ; kb:connectionType "jdbc" .
+            src:customers a kb:SourceTable ; kb:sourceSystem src:crm ;
+              kb:tableName "customers" ; kb:primaryKeyColumns "customer_id" .
+            src:id a kb:SourceColumn ; kb:sourceTable src:customers ;
+              kb:columnName "customer_id" ; kb:dataType "varchar(50)" ;
+              kb:nullable "false"^^xsd:boolean .
+            src:name a kb:SourceColumn ; kb:sourceTable src:customers ;
+              kb:columnName "customer_name" ; kb:dataType "varchar(200)" ;
+              kb:nullable "true"^^xsd:boolean .
+            """).strip(),
+        encoding="utf-8",
+    )
+    (binding_dir / "customer.binding.yaml").write_text(
+        textwrap.dedent("""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: crm-customer
+              domain: party
+            source:
+              relation: crm.customers
+            target:
+              class: party:Customer
+            grain:
+              columns: [customer_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [customer_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: party:customer_id
+                expression: customer_id
+              - property: party:customerName
+                expression: customer_name
+            """).strip(),
+        encoding="utf-8",
+    )
+    return binding_dir
+
+
+class TestContractScaffold:
+    def test_scaffolds_a_loadable_contract_from_a_plan(self, tmp_path):
+        _write_hub(tmp_path)
+        plan = build_compile_plan(tmp_path, "party")
+        document = build_contract_document(plan)
+        contract = load_silver_contract(render_contract_yaml(document), path="generated")
+        entity = contract.entity_for("party:Customer")
+        assert entity is not None
+        assert entity.stability == "preview"
+        assert entity.closed is True
+        assert [item.property for item in entity.properties] == [
+            "party:customer_id",
+            "party:customerName",
+        ]
+
+    def test_scaffolded_columns_match_the_emitted_model_exactly(self, tmp_path):
+        """The contract must record what the compiler already emits -- name, order, type,
+        nullability -- or adopting it would not be a no-op (DD-213 §6)."""
+        _write_hub(tmp_path)
+        plan = build_compile_plan(tmp_path, "party")
+        model = next(
+            item
+            for item in plan.shaped_project.silver_models
+            if item.identity.model_name == "customer"
+        )
+        document = build_contract_document(plan)
+        entity = load_silver_contract(render_contract_yaml(document)).entity_for("party:Customer")
+
+        # Only author-declared roles are contract-governed. Generated keys, the entity IRI,
+        # and the DD-104 audit/source-identity envelope are compiler-owned and DO appear in
+        # SilverModelSpec.columns -- they are simply outside the contract's scope.
+        emitted = [
+            column
+            for column in model.columns
+            if column.role in {"business", "business-natural-key"}
+        ]
+        assert [resolved_column_name(item) for item in entity.properties] == [
+            column.name for column in emitted
+        ]
+        assert [item.nullable for item in entity.properties] == [
+            bool(column.nullable) for column in emitted
+        ]
+        assert entity.model_name == model.identity.model_name
+
+    def test_scaffold_omits_compiler_owned_columns(self, tmp_path):
+        """The envelope and generated keys are emitted unconditionally, so a contract that
+        declared them would be rejected by its own reserved-name rule."""
+        _write_hub(tmp_path)
+        plan = build_compile_plan(tmp_path, "party")
+        entity = load_silver_contract(
+            render_contract_yaml(build_contract_document(plan))
+        ).entity_for("party:Customer")
+        declared = {resolved_column_name(item) for item in entity.properties}
+        declared |= {item.name for item in entity.technical_columns}
+        assert not any(name.startswith("_") or name.endswith("_sk") for name in declared)
+
+    def test_scaffold_records_grain_as_canonical_properties(self, tmp_path):
+        _write_hub(tmp_path)
+        plan = build_compile_plan(tmp_path, "party")
+        entity = load_silver_contract(
+            render_contract_yaml(build_contract_document(plan))
+        ).entity_for("party:Customer")
+        assert entity.grain == ("party:customer_id",)
+        assert entity.identity.strategy == "source-natural"
+
+
+class TestContractScope:
+    def test_absent_contract_directory_leaves_scope_empty(self, tmp_path):
+        _write_hub(tmp_path)
+        scope, _ = resolve_scope(tmp_path, "party")
+        assert scope.contract_paths == ()
+
+    def test_domain_contract_joins_scope_and_provenance(self, tmp_path):
+        _write_hub(tmp_path)
+        before = resolve_scope(tmp_path, "party")[0].provenance_hash()
+        contracts = tmp_path / "model" / "contracts"
+        contracts.mkdir(parents=True)
+        (contracts / "party.contract.yaml").write_text(GOOD_CONTRACT, encoding="utf-8")
+        scope, _ = resolve_scope(tmp_path, "party")
+        assert [p.replace("\\", "/").split("/")[-1] for p in scope.contract_paths] == [
+            "party.contract.yaml"
+        ]
+        assert scope.provenance_hash() != before
+
+    def test_unrelated_foreign_contract_stays_out_of_scope(self, tmp_path):
+        """An unrelated domain's contract must not churn this domain's provenance hash."""
+        _write_hub(tmp_path)
+        contracts = tmp_path / "model" / "contracts"
+        contracts.mkdir(parents=True)
+        (contracts / "party.contract.yaml").write_text(GOOD_CONTRACT, encoding="utf-8")
+        baseline = resolve_scope(tmp_path, "party")[0].provenance_hash()
+        (contracts / "finance.contract.yaml").write_text(
+            GOOD_CONTRACT.replace("domain: party", "domain: finance").replace(
+                "party:Customer", "finance:Invoice"
+            ),
+            encoding="utf-8",
+        )
+        scope, _ = resolve_scope(tmp_path, "party")
+        assert len(scope.contract_paths) == 1
+        assert scope.provenance_hash() == baseline
+
+    def test_foreign_contract_joins_scope_for_a_cross_domain_relationship(self, tmp_path):
+        """A relationship FK column embeds the *parent's* model name, so the parent's
+        contract is load-bearing for this domain's emitted columns (DD-213 §3)."""
+        binding_dir = _write_hub(tmp_path)
+        path = binding_dir / "customer.binding.yaml"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + textwrap.dedent("""
+                relationships:
+                  - property: party:hasInvoice
+                    target: finance:Invoice
+                    join:
+                      - local: customer_id
+                        foreign: customer_id
+                    cardinality: many-to-one
+                    mode: non-temporal
+                    missingParent: error
+                    ambiguousParent: error
+                """),
+            encoding="utf-8",
+        )
+        contracts = tmp_path / "model" / "contracts"
+        contracts.mkdir(parents=True)
+        (contracts / "finance.contract.yaml").write_text(
+            GOOD_CONTRACT.replace("domain: party", "domain: finance").replace(
+                "party:Customer", "finance:Invoice"
+            ),
+            encoding="utf-8",
+        )
+        scope, _ = resolve_scope(tmp_path, "party")
+        assert [p.replace("\\", "/").split("/")[-1] for p in scope.contract_paths] == [
+            "finance.contract.yaml"
+        ]

@@ -58,6 +58,7 @@ RETAINED_COMMANDS = {
     "resolve-ontology",
     "promote-transform",
     "scaffold-binding",
+    "scaffold-contract",
     "scaffold-staging",
     "scaffold-system",
     "scaffold-mapping",

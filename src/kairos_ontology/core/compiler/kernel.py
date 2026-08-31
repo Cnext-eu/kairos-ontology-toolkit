@@ -947,6 +947,22 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
             ]
         )
     inputs.append(ProvenanceInput("kairos.yaml", config_path.read_text(encoding="utf-8")))
+    # DD-213: declared Silver contracts join the closure, including foreign-domain ones a
+    # cross-domain relationship points at. They are provenance inputs because they decide
+    # emitted column sets, names, and order -- a contract edit must change the hash.
+    relationship_targets = frozenset(
+        target
+        for path in binding_paths
+        for target in _binding_relationship_targets(path.read_text(encoding="utf-8"))
+    )
+    contract_paths = discover_contract_paths(root, domain, relationship_targets)
+    for path in contract_paths:
+        inputs.append(
+            ProvenanceInput(
+                str(path.relative_to(root)).replace("\\", "/"),
+                path.read_text(encoding="utf-8"),
+            )
+        )
     scope = BuildScope(
         domain=domain,
         hub_root=str(root),
@@ -956,6 +972,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         toolkit_version=__version__,
         binding_paths=tuple(str(path) for path in binding_paths),
         ontology_paths=ontology_paths,
+        contract_paths=tuple(str(path) for path in contract_paths),
         inputs=tuple(inputs),
         prefix_warnings=prefix_warnings,
     )
@@ -2560,6 +2577,67 @@ def _binding_domain(text: str) -> str | None:
         return None
     metadata = document.get("metadata")
     return str(metadata.get("domain", "")) if isinstance(metadata, dict) else None
+
+
+def _binding_relationship_targets(text: str) -> frozenset[str]:
+    """Read only the relationship target classes before full closed-schema validation.
+
+    Used by scope resolution to decide which *foreign-domain* Silver contracts (DD-213)
+    must join the closure: a relationship FK column embeds the parent's model name, so the
+    parent's declared ``modelName`` is authoritative for this domain's column names.
+    """
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return frozenset()
+    if not isinstance(document, dict):
+        return frozenset()
+    relationships = document.get("relationships")
+    if not isinstance(relationships, list):
+        return frozenset()
+    return frozenset(
+        str(item["target"])
+        for item in relationships
+        if isinstance(item, dict) and isinstance(item.get("target"), str)
+    )
+
+
+def discover_contract_paths(
+    root: Path, domain: str, relationship_targets: frozenset[str]
+) -> tuple[Path, ...]:
+    """Return the Silver contracts in scope, selected domain first (DD-213).
+
+    A foreign-domain contract joins the closure only when it declares a class this
+    domain's bindings actually point a relationship at -- so an unrelated domain's
+    contract edit never churns this domain's provenance hash.
+    """
+    contracts_dir = root / "model" / "contracts"
+    if not contracts_dir.is_dir():
+        return ()
+    own = contracts_dir / f"{domain}.contract.yaml"
+    selected: list[Path] = [own] if own.is_file() else []
+    if not relationship_targets:
+        return tuple(selected)
+    for path in sorted(contracts_dir.glob("*.contract.yaml")):
+        if path == own:
+            continue
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        entities = document.get("entities")
+        if not isinstance(entities, list):
+            continue
+        declared = {
+            str(entity["class"])
+            for entity in entities
+            if isinstance(entity, dict) and isinstance(entity.get("class"), str)
+        }
+        if declared & relationship_targets:
+            selected.append(path)
+    return tuple(selected)
 
 
 def _binding_tier(text: str) -> str:

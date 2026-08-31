@@ -132,6 +132,30 @@ helper, which always sets `rule_id="DD-133 §3c"`.
 | `conformance.type-contract-missing` | error | DD-133 §3c | |
 | `conformance.union-incompatible` | error | DD-133 §3c | |
 
+## `contracts.py` — declared Silver contract loader and contract-load rules (DD-213)
+
+The document-level half of the declared Silver contract: YAML loading, closed-schema
+validation, and the DD-213 §4 rules that need no ontology closure. Rules that *do* need
+resolved symbols (`contract.property-unresolved`, `contract.class-unresolved`) and every
+per-binding conformance rule live in `kernel.py` and are catalogued in that section.
+
+Constructed via `CompileDiagnostic(code=...)` directly, or through the local
+`_entity_diagnostics._diagnostic(code, message, pointer)` closure (all default
+`rule_id`/severity).
+
+| Code | Default severity | Rule ID / DD citation | Notes |
+| --- | --- | --- | --- |
+| `contract.closed-requires-preview` | error | DD-133 (default) | `closed: false` outside `stability: preview`. An open contract is a provisional state, not a permanent one. |
+| `contract.column-name-collision` | error | DD-133 (default) | Two declared columns resolve to the same name, or one collides with a compiler-owned name. Reserved shapes are the `_` prefix (DD-104 audit envelope) and the `_sk` suffix (generated surrogate join key, emitted as `<model_name>_sk`). |
+| `contract.deprecated-shape` | error | DD-133 (default) | A `lifecycle.deprecated` window is degenerate (`since` equals `removeIn`) or its `replacedBy` is not declared on the same entity. Shape only — version values are never compared against release history, which would make `compile --check` stateful. |
+| `contract.duplicate-entity` | error | DD-133 (default) | Two entries declare the same `class`, or two entities pin the same `modelName`. |
+| `contract.duplicate-key` | error | DD-133 (default) | Duplicate YAML mapping key. Same detection as `binding.duplicate-key`, re-coded for the contract document. |
+| `contract.grain-not-required` | error | DD-133 (default) | A `grain.properties` or `identity.businessKey` entry is undeclared or not `requirement: required`. Keeping keys required makes them mapped-by-construction, so the DD-133 §8b source→output key resolution always applies. |
+| `contract.not-a-mapping` | error | DD-133 (default) | The document root is not a YAML mapping. |
+| `contract.optional-not-nullable` | error | DD-133 (default) | A `requirement: optional` property or technical column declares `nullable: false`. An unmapped optional column is padded with NULL for that source's rows, so `optional` implies nullable. |
+| `contract.schema` | error | DD-133 (default) | Closed-schema violation (unknown field, missing required field, bad enum, or a `type` outside the canonical-type label grammar). |
+| `contract.yaml` | error | DD-133 (default) | The document is not parseable YAML. |
+
 ## `dbt_source.py` — contracted dbt model source resolution
 
 All rows are constructed through the local `_failure(binding, code, message, pointer)`

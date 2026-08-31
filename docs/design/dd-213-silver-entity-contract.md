@@ -248,15 +248,24 @@ Concretely, the contract — not the binding — supplies:
   *This is the mechanism that makes a partial new source bindable without reshaping Silver;*
 - the column **order**: `properties:` declared order, then `technicalColumns:`, then
   `relationships:` — matching today's actual emission order (`adapter.py:874` then
-  `adapter.py:940`, with relationship FK columns added later at `kernel.py:1808`). The DD-104
-  audit envelope is *not* part of this order: it is injected by the Jinja templates and never
-  appears in `SilverModelSpec.columns` at all (`materialize.py:120-126` unions it in only to
-  validate quality-rule column references). Reordering a binding's `fields:` becomes
-  fingerprint-neutral;
+  `adapter.py:940`, with relationship FK columns added later at `kernel.py:1808`). Reordering
+  a binding's `fields:` becomes fingerprint-neutral;
 - the column **name** (`columnName`, defaulting to today's `camel_to_snake` rule), decoupling
   ontology renames from physical renames and restoring the intent of the v4-only
   `kairos-ext:silverColumnName` inside a governed artifact;
 - the column **type** and **nullability**, which the binding must match rather than determine.
+
+**Which columns the contract governs is decided by `SilverColumnRole`, not by position.**
+`SilverModelSpec.columns` interleaves author-declared columns with compiler-owned ones: a
+generated surrogate join key (`surrogate-join-key`, emitted as `<model_name>_sk`) leads the
+list, and `_source_identity_ref` (`source-identity`) and `_loaded_at` (`audit`) follow the
+mapped columns. Only the `business` and `business-natural-key` roles are author-declared, plus
+`foreign-key` for relationships; those are the contract's scope. The rest are emitted
+unconditionally and sit outside `closed`. Two envelope columns — `_source_system` and
+`_source_record_key` — really are template-only and never appear in `SilverModelSpec.columns`
+at all, which is why `materialize.py:120-126` has to union them back in before validating
+quality-rule column references. Partitioning by role rather than by name or index is what
+keeps this correct as the envelope grows.
 
 Every other `ColumnSpec` field stays binding-derived, and deliberately so — `expression`,
 `mapping_resource_uri`, `mapping_expression`, `description`, `tests`, `role`, `provenance`,

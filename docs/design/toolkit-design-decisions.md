@@ -15278,8 +15278,10 @@ Padded columns must carry `include_in_change_detection: False`, or a source that
 supplying the column would trigger a mass SCD2 re-versioning. Cross-domain relationship FK names
 embed the *parent's* model name, so `BuildScope` must resolve foreign-domain contracts rather
 than leaving it to a naming default. The declared column order was corrected to
-properties → technical → relationships, matching actual emission, with the audit envelope
-template-injected and absent from `SilverModelSpec.columns`. And canonical type is *not*
+properties → technical → relationships, matching actual emission, and the contract's scope is
+decided by `SilverColumnRole` (`business`/`business-natural-key`, plus `foreign-key`) rather
+than by position -- `SilverModelSpec.columns` interleaves compiler-owned generated keys and
+envelope columns with the author-declared ones. And canonical type is *not*
 contract-stabilised — a diverging source type still requires a contracted dbt model, since `cast`
 is deliberately excluded from DD-133 §4's allow-list. A cheaper alternative — treating the
 previous release's parity manifest as the contract — was considered and rejected as descriptive
