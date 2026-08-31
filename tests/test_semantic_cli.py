@@ -78,6 +78,36 @@ def test_explain_term_requires_full_uri_and_returns_provenance(tmp_path):
     assert payload["term"]["provenance"]["source_identity"] == "https://example.org/domain"
 
 
+def test_explain_term_accepts_domain_shorthand(tmp_path, monkeypatch):
+    ontologies_dir = tmp_path / "model" / "ontologies"
+    ontologies_dir.mkdir(parents=True)
+    (ontologies_dir / "domain.ttl").write_text(ONTOLOGY, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "explain-term",
+            "https://example.org/domain#Party",
+            "--domain",
+            "domain",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["term"]["uri"] == "https://example.org/domain#Party"
+
+
+def test_explain_term_requires_ontology_or_domain(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["explain-term", "https://example.org/domain#Party"])
+
+    assert result.exit_code != 0
+    assert "Provide --ontology or --domain" in result.output
+
+
 def test_show_source_schema_returns_parsed_tables(tmp_path):
     sources = tmp_path / "sources"
     system_dir = sources / "erp"
@@ -161,6 +191,64 @@ def test_show_class_inventory_tokens_empty_for_no_classes(tmp_path):
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["classes"] == []
+
+
+def _catalog(path, mappings: dict[str, str]) -> "Path":
+    entries = "".join(f'  <uri name="{uri}" uri="{target}"/>\n' for uri, target in mappings.items())
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">\n'
+        f"{entries}</catalog>\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_show_class_inventory_domain_stem_token_is_scoped_to_the_root_namespace(tmp_path):
+    """Issue #674: three imports declare an ambiguous `party:` prefix, each with their own
+    `Contact` class in their own namespace. Before the fix, every one of them independently
+    claimed `party:Contact` as a token via the unconditional `<domain-stem>:<local>` rule --
+    even though compile only ever resolves that token for a class in the root ontology's own
+    namespace. None of these imported classes live there, so none should claim it."""
+    from kairos_ontology.core.ontology_loader import load_ontology
+    from kairos_ontology.cli.inspection import _compute_class_tokens
+
+    root = tmp_path / "party.ttl"
+    root.write_text(
+        "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+        "<https://example.test/root/party> a owl:Ontology ;\n"
+        "    owl:imports <urn:bsp> ; owl:imports <urn:dcsa> ; owl:imports <urn:rail> .\n"
+        "<https://example.test/root/party#LocalThing> a owl:Class .\n",
+        encoding="utf-8",
+    )
+    for name, ns in (("bsp", "bsp"), ("dcsa", "dcsa"), ("rail", "rail")):
+        (tmp_path / f"{name}.ttl").write_text(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            f"@prefix party: <https://example.test/{ns}/party#> .\n"
+            f"<urn:{name}> a owl:Ontology .\n"
+            "party:Contact a owl:Class .\n",
+            encoding="utf-8",
+        )
+    catalog = _catalog(
+        tmp_path / "catalog.xml",
+        {"urn:bsp": "bsp.ttl", "urn:dcsa": "dcsa.ttl", "urn:rail": "rail.ttl"},
+    )
+
+    loaded = load_ontology(root, catalog_path=catalog)
+
+    bsp_tokens = _compute_class_tokens(loaded, root, "https://example.test/bsp/party#Contact")
+    dcsa_tokens = _compute_class_tokens(loaded, root, "https://example.test/dcsa/party#Contact")
+    rail_tokens = _compute_class_tokens(loaded, root, "https://example.test/rail/party#Contact")
+    local_tokens = _compute_class_tokens(
+        loaded, root, "https://example.test/root/party#LocalThing"
+    )
+
+    assert "party:Contact" not in bsp_tokens
+    assert "party:Contact" not in dcsa_tokens
+    assert "party:Contact" not in rail_tokens
+    # The root's own class still gets its domain-stem token -- only the cross-namespace
+    # leak is fixed, not the whole mechanism.
+    assert "party:LocalThing" in local_tokens
 
 
 def test_list_class_properties_exposes_tokens(tmp_path):

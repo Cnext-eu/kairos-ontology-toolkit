@@ -17,8 +17,10 @@ from kairos_ontology.cli.main import (
     _resolve_channel,
 )
 from kairos_ontology.cli.shared import (
+    _HUB_WORKFLOW_SOURCES,
     _RETIRED_MANAGED_SCAFFOLD_FILES,
     _RETIRED_SCAFFOLD_DIRECTORIES,
+    _SCAFFOLD_DIR,
     _V5_HUB_DIRECTORIES,
     _V5_OUTPUT_DIRECTORIES,
 )
@@ -791,6 +793,20 @@ def test_update_check_exit_code_nonzero_on_drift(tmp_path):
     assert result.exit_code != 0
 
 
+def _stage_current_hub_workflows(td) -> None:
+    """Write every hub workflow byte-identical to its scaffold source (issue #671).
+
+    `update --check`/`update` now report missing `.github/workflows/*.yml` as drift
+    alongside managed files, so an "everything is current" fixture must include them too.
+    """
+    for rel_path, scaffold_rel in _HUB_WORKFLOW_SOURCES.items():
+        dst = Path(td) / rel_path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(
+            (_SCAFFOLD_DIR / scaffold_rel).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+
 def test_update_check_exit_code_zero_when_current(tmp_path):
     """update --check should exit 0 when everything is up to date."""
     from kairos_ontology import __version__ as ver
@@ -804,6 +820,7 @@ def test_update_check_exit_code_zero_when_current(tmp_path):
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
             dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+        _stage_current_hub_workflows(td)
 
         result = runner.invoke(cli, ["update", "--check"])
 
@@ -824,11 +841,60 @@ def test_update_noop_when_current(tmp_path):
             dst.parent.mkdir(parents=True, exist_ok=True)
             content = scaffold_src.read_text(encoding="utf-8")
             dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+        _stage_current_hub_workflows(td)
 
         result = runner.invoke(cli, ["update"])
 
     assert result.exit_code == 0, result.output
     assert "up to date" in result.output
+
+
+def test_update_check_reports_missing_workflow_as_drift(tmp_path):
+    """update --check must not report success while a scaffolded workflow is missing (#671)."""
+    from kairos_ontology import __version__ as ver
+
+    runner = CliRunner()
+    managed_map = _managed_scaffold_map()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        for rel_path, scaffold_src in managed_map.items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            content = scaffold_src.read_text(encoding="utf-8")
+            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+        _stage_current_hub_workflows(td)
+        # Simulate a repo scaffolded before pr-validate.yml existed.
+        (Path(td) / ".github" / "workflows" / "pr-validate.yml").unlink()
+
+        result = runner.invoke(cli, ["update", "--check"])
+
+    assert result.exit_code != 0
+    assert "scaffolded workflow(s) missing" in result.output
+    assert ".github/workflows/pr-validate.yml" in result.output
+
+
+def test_update_reports_missing_workflow_without_creating_it(tmp_path):
+    """Plain `update` must still surface a missing workflow it did not create (#671)."""
+    from kairos_ontology import __version__ as ver
+
+    runner = CliRunner()
+    managed_map = _managed_scaffold_map()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        for rel_path, scaffold_src in managed_map.items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            content = scaffold_src.read_text(encoding="utf-8")
+            dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
+        _stage_current_hub_workflows(td)
+        (Path(td) / ".github" / "workflows" / "pr-validate.yml").unlink()
+
+        result = runner.invoke(cli, ["update"])
+
+    assert result.exit_code == 0, result.output
+    assert "scaffolded workflow(s) missing" in result.output
+    assert ".github/workflows/pr-validate.yml" in result.output
+    assert not (Path(td) / ".github" / "workflows" / "pr-validate.yml").is_file()
 
 
 def test_update_creates_missing_files(tmp_path):

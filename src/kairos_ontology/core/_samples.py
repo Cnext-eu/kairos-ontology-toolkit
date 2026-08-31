@@ -309,6 +309,14 @@ DETECTED_PII_KINDS: tuple[str, ...] = tuple(
 )
 
 
+# _kind_from_name is deliberately datatype-blind (#672 considered, then rejected, a
+# datatype short-circuit here): a `bit` column named e.g. `religion_christian` still
+# discloses a GDPR art. 9 special category through its mere presence/value, even
+# though the value itself is never a religion *string* -- see
+# TestExemptionsDoNotWeakenDetection.test_column_name_detection_survives_every_datatype
+# in tests/test_samples_policy.py, which pins this as a safety invariant, not an
+# oversight. Over-redacting a non-PII boolean/numeric column that happens to share a
+# name-keyword is the accepted cost of never under-redacting a real special category.
 def _kind_from_name(name: str | None, *, context_name: str | None = None) -> str | None:
     norm = _normalize(name or "")
     for keyword, kind in _NAMED_KINDS:

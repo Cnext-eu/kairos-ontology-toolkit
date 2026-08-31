@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from kairos_ontology.core.compiler.kernel import _prefix_diagnostics
+from kairos_ontology.core.compiler.kernel import _prefix_alternatives, _prefix_diagnostics
 from kairos_ontology.core.compiler.result import DiagnosticSeverity
 
 
@@ -84,3 +84,38 @@ def test_same_file_prefix_conflict_is_a_blocking_error(tmp_path):
     assert len(diagnostics) == 1
     assert diagnostics[0].code == "safety.prefix-ambiguous"
     assert diagnostics[0].severity is DiagnosticSeverity.ERROR
+
+
+def test_prefix_alternatives_suggests_the_unambiguous_prefix_for_the_same_namespace(tmp_path):
+    """Issue #674: three imports share `party:` with no root declaration; `bsp:` is the
+    one prefix unambiguously bound to the namespace the failed `party:` token meant."""
+    root = _write(tmp_path / "root.ttl", "")
+    _write(
+        tmp_path / "bsp.ttl",
+        "@prefix party: <https://example.test/bsp/party#> .\n"
+        "@prefix bsp: <https://example.test/bsp/party#> .\n",
+    )
+    _write(
+        tmp_path / "dcsa.ttl",
+        "@prefix party: <https://example.test/dcsa/party#> .\n",
+    )
+    _write(
+        tmp_path / "rail.ttl",
+        "@prefix party: <https://example.test/rail/party#> .\n",
+    )
+    loaded = _loaded(
+        root, tmp_path / "bsp.ttl", tmp_path / "dcsa.ttl", tmp_path / "rail.ttl"
+    )
+
+    alternatives = _prefix_alternatives(loaded, root)
+
+    assert alternatives == {"party": ("bsp",)}
+
+
+def test_prefix_alternatives_is_empty_when_no_safe_alternative_exists(tmp_path):
+    root = _write(tmp_path / "root.ttl", "")
+    _write(tmp_path / "a.ttl", "@prefix party: <https://example.test/a/party#> .\n")
+    _write(tmp_path / "b.ttl", "@prefix party: <https://example.test/b/party#> .\n")
+    loaded = _loaded(root, tmp_path / "a.ttl", tmp_path / "b.ttl")
+
+    assert _prefix_alternatives(loaded, root) == {}

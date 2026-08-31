@@ -198,6 +198,33 @@ def test_unknown_relation_is_reported():
     assert "binding.unknown-relation" in codes
 
 
+def test_unknown_class_hints_the_disambiguated_alternative_for_an_ambiguous_prefix():
+    """Issue #674: `target.class: party:Contact` fails because `party:` is ambiguous
+    (three imports, no root declaration) -- the message should point at `bsp:Contact`,
+    the one prefix `_prefix_alternatives` found safely bound to the same namespace,
+    instead of leaving the author to guess from the separate prefix-ambiguous warning."""
+    context = replace(_context(), prefix_alternatives={"party": ("bsp",)})
+    broken = BINDING.replace("class: party:Customer", "class: party:Contact")
+
+    with pytest.raises(CompileError) as excinfo:
+        adapt_binding(load_entity_binding(broken, path="b.yaml"), context)
+
+    diagnostic = next(d for d in excinfo.value.diagnostics if d.code == "binding.unknown-class")
+    assert "bsp:Contact" in diagnostic.message
+    assert "ambiguous imported prefix" in diagnostic.message
+
+
+def test_unknown_class_has_no_hint_when_prefix_is_not_ambiguous():
+    context = _context()
+    broken = BINDING.replace("class: party:Customer", "class: party:Missing")
+
+    with pytest.raises(CompileError) as excinfo:
+        adapt_binding(load_entity_binding(broken, path="b.yaml"), context)
+
+    diagnostic = next(d for d in excinfo.value.diagnostics if d.code == "binding.unknown-class")
+    assert "did you mean" not in diagnostic.message
+
+
 @pytest.mark.parametrize(
     ("mutation", "code", "pointer"),
     [

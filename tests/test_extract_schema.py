@@ -151,6 +151,87 @@ class TestYamlOutput:
         # Samples are no longer written inline — they go to .samples.yaml
         assert "samples" not in table_data["columns"][1]
 
+    def test_second_run_extends_manifest_tables_rather_than_overwriting(self, tmp_path):
+        """A follow-up run extracting a new table must not forget earlier tables (#672)."""
+        first = [TableInfo(name="tblClient", schema="dbo", row_count=1)]
+        second = [TableInfo(name="tblContact", schema="dbo", row_count=1)]
+
+        write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=first,
+        )
+        result_dir = write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=second,
+        )
+
+        import yaml
+
+        manifest = yaml.safe_load((result_dir / "_manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["tables"] == ["tblClient", "tblContact"]
+        # The first run's own per-table YAML must still be on disk, untouched.
+        assert (result_dir / "tblClient.yaml").is_file()
+        assert (result_dir / "tblContact.yaml").is_file()
+
+    def test_manifest_merge_refuses_a_different_source(self, tmp_path):
+        """Merging tables from a different database/schema would misdescribe them (#672)."""
+        write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=[TableInfo(name="tblClient", schema="dbo", row_count=1)],
+        )
+
+        with pytest.raises(ValueError, match="different source"):
+            write_extraction_output(
+                output_dir=tmp_path,
+                system_name="testapp",
+                platform="fabric-warehouse",
+                database="otherdb",
+                schema="dbo",
+                tables=[TableInfo(name="tblContact", schema="dbo", row_count=1)],
+            )
+
+    def test_no_redact_pii_writes_samples_unredacted_and_records_policy(self, tmp_path):
+        tables = [
+            TableInfo(
+                name="tblClient",
+                schema="dbo",
+                row_count=1,
+                columns=[ColumnInfo(name="email", data_type="varchar(255)", ordinal_position=1)],
+                sample_rows=[{"email": "jane.doe@acme.com"}],
+            )
+        ]
+
+        result_dir = write_extraction_output(
+            output_dir=tmp_path,
+            system_name="testapp",
+            platform="fabric-warehouse",
+            database="mydb",
+            schema="dbo",
+            tables=tables,
+            redact_pii=False,
+        )
+
+        import yaml
+
+        manifest = yaml.safe_load((result_dir / "_manifest.yaml").read_text(encoding="utf-8"))
+        assert manifest["sample_privacy"]["policy"] == "none"
+        samples = yaml.safe_load(
+            (result_dir / "tblClient.samples.yaml").read_text(encoding="utf-8")
+        )
+        assert samples["rows"] == [{"email": "jane.doe@acme.com"}]
+
 
 class TestProfileParsing:
     """Tests for dbt profile parsing."""
@@ -729,6 +810,7 @@ class TestSeedCsvOutput:
             sample_size=DEFAULT_SAMPLE_SIZE,
             emit_seed=False,
             seeds_dir="seeds",
+            redact_pii=True,
         ):
             """Stand in for a live DB connection: no mock/fake DB-connection harness
             exists yet for `extract-schema` in this test suite, so this fakes the
@@ -759,6 +841,7 @@ class TestSeedCsvOutput:
                 sample_size=sample_size,
                 emit_seed=emit_seed,
                 seeds_dir=seeds_dir,
+                redact_pii=redact_pii,
             )
 
         monkeypatch.setattr(
@@ -794,6 +877,83 @@ class TestSeedCsvOutput:
         content = csv_path.read_text(encoding="utf-8")
         assert "<redacted kind=email source=tblClient.email datatype=varchar(255)>" in content
         assert "Wrote 1 seed CSV" in result.output
+
+    def test_cli_no_redact_pii_flag_disables_redaction(self, tmp_path, monkeypatch):
+        """`--no-redact-pii` must reach `run_extract_schema` as `redact_pii=False` (#672)."""
+        from click.testing import CliRunner
+        import kairos_ontology.core.extract_schema as extract_schema_mod
+        from kairos_ontology.cli.main import cli
+
+        captured: dict = {}
+
+        def fake_run_extract_schema(
+            profiles_dir,
+            profile_name,
+            target,
+            schema,
+            system_name,
+            output_dir,
+            tables=None,
+            sample_size=DEFAULT_SAMPLE_SIZE,
+            emit_seed=False,
+            seeds_dir="seeds",
+            redact_pii=True,
+        ):
+            captured["redact_pii"] = redact_pii
+            fake_tables = [
+                TableInfo(
+                    name="tblClient",
+                    schema=schema,
+                    row_count=1,
+                    columns=[
+                        ColumnInfo(name="email", data_type="varchar(255)", ordinal_position=1),
+                    ],
+                    sample_rows=[{"email": "person@example.com"}],
+                ),
+            ]
+            return write_extraction_output(
+                output_dir=output_dir,
+                system_name=system_name,
+                platform="fabric-warehouse",
+                database="mydb",
+                schema=schema,
+                tables=fake_tables,
+                sample_size=sample_size,
+                redact_pii=redact_pii,
+            )
+
+        monkeypatch.setattr(
+            extract_schema_mod, "run_extract_schema", fake_run_extract_schema
+        )
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "extract-schema",
+                "--profile",
+                "myproject",
+                "--schema",
+                "dbo",
+                "--system",
+                "testapp",
+                "--profiles-dir",
+                str(tmp_path),
+                "--no-redact-pii",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured["redact_pii"] is False
+        assert "PII redaction: disabled" in result.output
+
+        import yaml
+
+        manifest = yaml.safe_load(
+            (tmp_path / "extracted" / "testapp" / "_manifest.yaml").read_text(encoding="utf-8")
+        )
+        assert manifest["sample_privacy"]["policy"] == "none"
 
 
 class TestImportSourceCwdGuard:

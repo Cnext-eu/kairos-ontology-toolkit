@@ -172,13 +172,23 @@ uv run kairos-ontology promote-transform <path-to-model.sql> --domain <domain>
 ```
 
 from inside the dataplatform repo (or pass `--hub-root` explicitly). This copies
-(never moves -- the dataplatform-authored SQL and properties YAML are left untouched)
-the model's SQL and just its own properties-YAML entry into
+(never moves -- the dataplatform-authored SQL and properties YAML are left untouched
+at promotion time) the model's SQL and just its own properties-YAML entry into
 `integration/transforms/dbt/models/intermediate/<domain>/` in the hub, then runs the
 same offline `validate-dbt-contracts` check step 6 below documents. A validation
 failure rolls back (deletes both just-written files) so an invalid model is never left
 in the hub tree. Pass `--dry-run` to preview the destination paths first, and
 `--force` to overwrite an already-promoted copy.
+
+**Required cleanup once the promotion ships (issue #673):** the local copy staying
+untouched is only true up to promotion. Once the hub compiles and emits with this
+model wired into an EntityBinding, and this dataplatform repo runs `dbt deps` again,
+the installed `kairos_medallion_project` package now contains the same model name --
+and this repo's own still-present local copy collides with it (`dbt parse` fails with
+"two resources with identical database representations"). Delete (or otherwise exclude
+from this project) the local SQL/properties files once the promoted model has reached
+a hub release and been reinstalled via `dbt deps`. `promote-transform`'s own CLI output
+prints this reminder at promotion time.
 
 `promote-transform` only replaces steps 1-6's *authoring location* -- it does not wire
 the EntityBinding or record a Decision Log entry. Steps 7 and 8 below (the Decision Log
@@ -199,6 +209,16 @@ entry for an `int_merged__` model, and returning to kairos-design-mapping to wir
    `grain_key`, target class, `virtual_source_iri`, and supported adapters. The
    legacy-named IRI identifies the contracted model output only; do not generate a
    separate virtual-source artifact or registry.
+
+   **`fabric` adapter caveat:** when `supported_adapters` includes `fabric` and
+   `config.contract.enforced: true`, `dbt-fabric`'s materialization macro rejects the
+   model if it detects a "nested CTE" — but its detector just counts literal
+   occurrences of the substring `"with "` (case-insensitive) across the *entire*
+   compiled SQL text, including `--` comments, not an actual parse of `WITH` clauses.
+   A model with zero real CTEs can still fail to build if its own comments happen to
+   use the word "with" twice. Keep that substring to at most one occurrence anywhere
+   in the model file — SQL and comments alike — when targeting `fabric`. This is
+   upstream `dbt-fabric` behavior, not a real SQL constraint.
 6. Validate the contract you just authored, **before** binding it:
 
    ```powershell

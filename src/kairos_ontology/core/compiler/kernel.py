@@ -172,6 +172,37 @@ def _declared_prefixes(source_path: str) -> dict[str, tuple[str, ...]]:
     return {prefix: tuple(namespaces) for prefix, namespaces in prefixes.items()}
 
 
+def _ambiguous_imported_prefixes(loaded, root_path: Path) -> dict[str, tuple[str, ...]]:
+    """Return imported prefixes (no root declaration) bound to 2+ distinct namespaces.
+
+    Shared by :func:`_prefix_diagnostics` (to raise ``safety.prefix-ambiguous``) and the
+    ``safety.class-unresolved`` cross-reference (#674): both need the same "which
+    prefixes are ambiguous, and which namespaces do they candidate for" data, computed
+    once so the two diagnostics can never disagree about it.
+    """
+    imported: dict[str, set[str]] = {}
+    root = str(root_path.resolve())
+    root_prefixes = {
+        prefix
+        for source in loaded.sources
+        if source.manifest.source_path and str(Path(source.manifest.source_path).resolve()) == root
+        for prefix in _declared_prefixes(source.manifest.source_path)
+    }
+    for source in loaded.sources:
+        path = source.manifest.source_path
+        if not path or str(Path(path).resolve()) == root:
+            continue
+        for prefix, namespaces in _declared_prefixes(path).items():
+            if prefix in root_prefixes:
+                continue
+            imported.setdefault(prefix, set()).update(namespaces)
+    return {
+        prefix: tuple(sorted(namespaces))
+        for prefix, namespaces in imported.items()
+        if len(namespaces) > 1
+    }
+
+
 def _prefix_diagnostics(loaded, root_path: Path) -> tuple[CompileDiagnostic, ...]:
     diagnostics: list[CompileDiagnostic] = []
     for source in loaded.sources:
@@ -189,41 +220,24 @@ def _prefix_diagnostics(loaded, root_path: Path) -> tuple[CompileDiagnostic, ...
                         location=SourceLocation(path=path),
                     )
                 )
-    imported: dict[str, set[str]] = {}
-    root = str(root_path.resolve())
-    root_prefixes = {
-        prefix
-        for source in loaded.sources
-        if source.manifest.source_path and str(Path(source.manifest.source_path).resolve()) == root
-        for prefix in _declared_prefixes(source.manifest.source_path)
-    }
-    for source in loaded.sources:
-        path = source.manifest.source_path
-        if not path or str(Path(path).resolve()) == root:
-            continue
-        for prefix, namespaces in _declared_prefixes(path).items():
-            if prefix in root_prefixes:
-                continue
-            imported.setdefault(prefix, set()).update(namespaces)
-    for prefix, namespaces in sorted(imported.items()):
-        if len(namespaces) > 1:
-            label = prefix or ":"
-            candidates = " ".join(
-                f"@prefix {prefix}: <{namespace}> ." for namespace in sorted(namespaces)
+    for prefix, namespaces in sorted(_ambiguous_imported_prefixes(loaded, root_path).items()):
+        label = prefix or ":"
+        candidates = " ".join(
+            f"@prefix {prefix}: <{namespace}> ." for namespace in namespaces
+        )
+        diagnostics.append(
+            CompileDiagnostic(
+                code="safety.prefix-ambiguous",
+                message=(
+                    f"imported prefix '{label}' maps to multiple namespaces "
+                    f"without a root declaration: {', '.join(namespaces)}. "
+                    f"The imported prefix is not bound for resolution; declare one "
+                    f"candidate in the root ontology to disambiguate: {candidates}"
+                ),
+                location=SourceLocation(path=str(root_path)),
+                severity=DiagnosticSeverity.WARNING,
             )
-            diagnostics.append(
-                CompileDiagnostic(
-                    code="safety.prefix-ambiguous",
-                    message=(
-                        f"imported prefix '{label}' maps to multiple namespaces "
-                        f"without a root declaration: {', '.join(sorted(namespaces))}. "
-                        f"The imported prefix is not bound for resolution; declare one "
-                        f"candidate in the root ontology to disambiguate: {candidates}"
-                    ),
-                    location=SourceLocation(path=str(root_path)),
-                    severity=DiagnosticSeverity.WARNING,
-                )
-            )
+        )
     return tuple(diagnostics)
 
 
@@ -249,9 +263,16 @@ def declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ...
     return _compute_declared_prefix_aliases(loaded, root_path, uri)
 
 
-def _compute_declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ...]:
-    """Implementation shared by the private and public aliases (issue #445)."""
-    namespace, local = _namespace_local(uri)
+def _safe_prefix_bindings(loaded, root_path: Path) -> dict[str, str]:
+    """Return every prefix -> namespace binding safe to resolve for ANY local name.
+
+    Root-declared prefixes always win (last declaration per prefix, matching Turtle's
+    own last-wins semantics); an imported prefix is included only when every source in
+    the closure that declares it agrees on one namespace. Shared by
+    :func:`_compute_declared_prefix_aliases` (URI-specific aliases) and
+    :func:`_prefix_alternatives` (the ``safety.class-unresolved`` "did you mean"
+    cross-reference, #674) so both agree on what counts as a safe binding.
+    """
     root = str(root_path.resolve())
     root_prefixes: dict[str, str] = {}
     imported_prefixes: dict[str, set[str]] = {}
@@ -267,16 +288,43 @@ def _compute_declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple
         else:
             for prefix, namespaces in declarations.items():
                 imported_prefixes.setdefault(prefix, set()).update(namespaces)
-    aliases: set[str] = set()
-    for prefix, declared_namespace in root_prefixes.items():
-        if declared_namespace == namespace:
-            aliases.add(f"{prefix}:{local}" if prefix else f":{local}")
+    bindings = dict(root_prefixes)
     for prefix, namespaces in imported_prefixes.items():
         if prefix in root_prefixes or len(namespaces) != 1:
             continue
-        declared_namespace = next(iter(namespaces))
-        if declared_namespace == namespace:
-            aliases.add(f"{prefix}:{local}" if prefix else f":{local}")
+        bindings[prefix] = next(iter(namespaces))
+    return bindings
+
+
+def _prefix_alternatives(loaded, root_path: Path) -> dict[str, tuple[str, ...]]:
+    """Return ambiguous prefix -> other prefixes safely bound to one of its candidate
+    namespaces, e.g. ``{"party": ("bsp",)}`` (#674). Threaded into
+    :class:`~.adapter.ResolutionContext` so a ``binding.unknown-class`` diagnostic can
+    suggest the disambiguated alternative for an ambiguous-prefix token.
+    """
+    safe_bindings = _safe_prefix_bindings(loaded, root_path)
+    result: dict[str, tuple[str, ...]] = {}
+    for prefix, namespaces in _ambiguous_imported_prefixes(loaded, root_path).items():
+        alternatives = tuple(
+            sorted(
+                other_prefix
+                for other_prefix, other_namespace in safe_bindings.items()
+                if other_prefix != prefix and other_namespace in namespaces
+            )
+        )
+        if alternatives:
+            result[prefix] = alternatives
+    return result
+
+
+def _compute_declared_prefix_aliases(loaded, root_path: Path, uri: str) -> tuple[str, ...]:
+    """Implementation shared by the private and public aliases (issue #445)."""
+    namespace, local = _namespace_local(uri)
+    aliases = {
+        f"{prefix}:{local}" if prefix else f":{local}"
+        for prefix, declared_namespace in _safe_prefix_bindings(loaded, root_path).items()
+        if declared_namespace == namespace
+    }
     return tuple(sorted(aliases))
 
 
@@ -506,6 +554,41 @@ def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[Proper
     return tuple(resolved)
 
 
+def _domain_namespace(loaded, graph: Graph) -> str:
+    """Return the namespace ``list_classes``/the domain-prefix token treat as this
+    domain's own vocabulary, deterministically (#600).
+
+    Only named classes are candidates (a BNode never names a namespace); they are
+    sorted, and a class from the root ontology's own IRI wins over one dragged in by
+    the RDFS import closure -- otherwise the "first" class could be a reference-model
+    term and the domain would adopt e.g. FIBO's namespace.
+    """
+    named_classes = sorted(
+        (
+            subject
+            for subject in graph.subjects(RDF.type, OWL.Class)
+            if isinstance(subject, URIRef)
+        ),
+        key=str,
+    )
+    root_iri = next(
+        (entry.ontology_iri for entry in loaded.manifest if entry.import_depth == 0), None
+    )
+    first_class_uri = next(
+        (str(c) for c in named_classes if root_iri and str(c).startswith(root_iri)),
+        str(named_classes[0]) if named_classes else "",
+    )
+    return (
+        first_class_uri.rsplit("#", 1)[0] + "#"
+        if "#" in first_class_uri
+        else (
+            first_class_uri.rsplit("/", 1)[0] + "/"
+            if "/" in first_class_uri
+            else "urn:kairos:ontology:"
+        )
+    )
+
+
 def _ontology_symbols(
     ontology_path: Path, hub_root: Path, referenced_tokens: frozenset[str] = frozenset()
 ) -> tuple[
@@ -517,6 +600,7 @@ def _ontology_symbols(
     tuple[ResolvedProperty, ...],
     tuple[str, ...],
     tuple[CompileDiagnostic, ...],
+    dict[str, tuple[str, ...]],
 ]:
     # DD-108/DD-103: resolve binding symbols against a non-asserted (RDFS) profile so that
     # subclass-inherited and cross-namespace imported properties become bindable via the
@@ -536,40 +620,12 @@ def _ontology_symbols(
         raise CompileError(prefix_errors)
     graph = loaded.graph
     index = loaded.semantic_index
-    # The namespace decides what `list_classes` treats as this domain's own vocabulary,
-    # so picking it must not depend on graph iteration order (#600). `next(graph.subjects(
-    # ...))` returned an arbitrary member of an unordered store: usually a named class,
-    # sometimes an anonymous restriction BNode -- whose str() has no '#' or '/', which
-    # silently fell through to the `urn:kairos:ontology:` placeholder. The same hub then
-    # compiled under two different namespaces from one run to the next.
-    #
-    # Deterministic and closure-aware: only named classes are candidates (a BNode never
-    # names a namespace), they are sorted, and a class from the root ontology's own IRI
-    # wins over one dragged in by the RDFS import closure -- otherwise the "first" class
-    # could be a reference-model term and the domain would adopt FIBO's namespace.
-    named_classes = sorted(
-        (
-            subject
-            for subject in graph.subjects(RDF.type, OWL.Class)
-            if isinstance(subject, URIRef)
-        ),
-        key=str,
-    )
+    # The namespace decides what `list_classes` treats as this domain's own vocabulary;
+    # deterministic derivation matters because picking it must not depend on graph
+    # iteration order (#600) -- see `_domain_namespace`.
+    namespace = _domain_namespace(loaded, graph)
     root_iri = next(
         (entry.ontology_iri for entry in loaded.manifest if entry.import_depth == 0), None
-    )
-    first_class_uri = next(
-        (str(c) for c in named_classes if root_iri and str(c).startswith(root_iri)),
-        str(named_classes[0]) if named_classes else "",
-    )
-    namespace = (
-        first_class_uri.rsplit("#", 1)[0] + "#"
-        if "#" in first_class_uri
-        else (
-            first_class_uri.rsplit("/", 1)[0] + "/"
-            if "/" in first_class_uri
-            else "urn:kairos:ontology:"
-        )
     )
     # Same ordering hazard: a closure holds many owl:Ontology subjects, and `version`
     # below is read off whichever one this picks.
@@ -681,6 +737,7 @@ def _ontology_symbols(
         tuple(properties.values()),
         closure_paths or (str(ontology_path),),
         prefix_warnings,
+        _prefix_alternatives(loaded, ontology_path),
     )
 
 
@@ -838,6 +895,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         properties,
         ontology_paths,
         prefix_warnings,
+        prefix_alternatives,
     ) = _ontology_symbols(ontology_path, root, referenced_tokens)
     relations = list(
         _dedupe_relations(
@@ -915,6 +973,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         data_quality_rules=_data_quality_rules(
             graph, _EXT_NS, frozenset(item.uri for item in classes)
         ),
+        prefix_alternatives=prefix_alternatives,
     )
     return scope, context
 

@@ -179,6 +179,12 @@ class ResolutionContext:
     classes: tuple[ResolvedClass, ...] = ()
     properties: tuple[ResolvedProperty, ...] = ()
     data_quality_rules: tuple[DataQualityRuleFact, ...] = ()
+    #: Ambiguous imported prefix -> other prefixes safely bound to one of its candidate
+    #: namespaces, e.g. {"party": ("bsp",)}. Lets an unresolved ``target.class`` token
+    #: whose prefix is ambiguous suggest the disambiguated alternative(s) (#674) without
+    #: this graph-free adapter needing back the graph/ontology-loader state that computed
+    #: the ambiguity in the first place.
+    prefix_alternatives: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def relation(self, ref: str) -> ResolvedRelation | None:
         """Return the resolved relation for an author ``source.relation`` token."""
@@ -234,6 +240,25 @@ def _ambiguous_targets_by_uri(items: tuple[ResolvedClass | ResolvedProperty, ...
         tokens = tuple(sorted({item.ref for item in items if item.uri == uri}))
         parts.append(f"{uri} (tokens: {_token_list(tokens)})")
     return "; ".join(parts)
+
+
+def _prefix_ambiguity_hint(context: ResolutionContext, token: str) -> str:
+    """Return a "did you mean X:Y?" suffix when *token*'s prefix is ambiguous (#674).
+
+    Empty when the prefix is unambiguous, unknown, or has no safe alternative -- the
+    caller appends this directly to an existing message, so an empty string is a no-op.
+    """
+    prefix, sep, local = token.partition(":")
+    if not sep:
+        return ""
+    alternatives = context.prefix_alternatives.get(prefix)
+    if not alternatives:
+        return ""
+    suggestions = _token_list(tuple(f"{alt}:{local}" for alt in alternatives))
+    return (
+        f" '{prefix}' is an ambiguous imported prefix with no root declaration "
+        f"(see safety.prefix-ambiguous); did you mean {suggestions}?"
+    )
 
 
 def object_property_in_fields_message(property_token: str, prop: ResolvedProperty) -> str:
@@ -732,7 +757,8 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 code="binding.unknown-class",
                 message=(
                     f"target class '{binding.target_class}' does not resolve; usable class "
-                    f"tokens: {_token_list(context.class_tokens())}"
+                    f"tokens: {_token_list(context.class_tokens())}."
+                    f"{_prefix_ambiguity_hint(context, binding.target_class)}"
                 ),
                 location=SourceLocation(path=path, pointer="/target/class"),
             )

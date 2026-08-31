@@ -844,6 +844,7 @@ def write_extraction_output(
     sample_size: int = DEFAULT_SAMPLE_SIZE,
     emit_seed: bool = False,
     seeds_dir: Path | str = "seeds",
+    redact_pii: bool = True,
 ) -> Path:
     """Write extraction results as per-table YAML files.
 
@@ -857,10 +858,50 @@ def write_extraction_output(
     ``safe_rows``) under ``seeds_dir``:
       seeds_dir/<system_name>__<table1>__sample.csv
 
+    If ``output_dir/<system_name>/_manifest.yaml`` already exists, its ``tables:``
+    list is unioned with this run's tables (existing order preserved, new tables
+    appended) rather than overwritten -- a follow-up run extracting only a subset
+    of tables must not make the manifest forget tables from an earlier run whose
+    per-table YAML files are still on disk (#672). Raises :class:`ValueError` if
+    the existing manifest's system/platform/database/schema disagree with this
+    run's, since merging tables from a different extraction would misdescribe them.
+
+    ``redact_pii`` (default ``True``) applies the ``redact-detected-pii`` sample
+    policy. When ``False``, sample values are written unredacted and the manifest
+    records ``sample_privacy.policy: none`` (#672) -- only use this for sources
+    already known to hold no sensitive values.
+
     Returns:
         Path to the output directory.
     """
     seeds_dir_path = Path(seeds_dir)
+    system_dir = output_dir / system_name
+    manifest_path = system_dir / "_manifest.yaml"
+
+    table_names = [t.name for t in tables]
+    if manifest_path.is_file():
+        existing = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        existing_connection = existing.get("connection") or {}
+        mismatched = {
+            "system": (existing.get("system"), system_name),
+            "platform": (existing.get("platform"), platform),
+            "database": (existing_connection.get("database"), database),
+            "schema": (existing_connection.get("schema"), schema),
+        }
+        conflicts = {k: v for k, v in mismatched.items() if v[0] is not None and v[0] != v[1]}
+        if conflicts:
+            details = ", ".join(f"{k}: {old!r} != {new!r}" for k, (old, new) in conflicts.items())
+            raise ValueError(
+                f"{manifest_path} was extracted from a different source ({details}); "
+                "refusing to merge tables into it. Extract into a separate --output "
+                "directory instead."
+            )
+        # Existing tables keep their recorded order; this run's tables are appended
+        # after, preserving their own order, so a partial re-run only ever grows the
+        # manifest instead of reordering or dropping what was already there.
+        existing_names = existing.get("tables") or []
+        table_names = existing_names + [name for name in table_names if name not in existing_names]
+
     # Prepare and validate all output before publishing any artifact.
     manifest = ExtractionManifest(
         system=system_name,
@@ -868,7 +909,7 @@ def write_extraction_output(
         database=database,
         schema=schema,
         extracted_at=datetime.now(timezone.utc).isoformat(),
-        tables=[t.name for t in tables],
+        tables=table_names,
         sample_size=sample_size,
     )
     manifest_data = {
@@ -883,26 +924,27 @@ def write_extraction_output(
         },
         "tables": manifest.tables,
         "sample_privacy": {
-            "policy": SAMPLE_PRIVACY_POLICY,
+            "policy": SAMPLE_PRIVACY_POLICY if redact_pii else "none",
             "version": SAMPLE_PRIVACY_VERSION,
         },
     }
     prepared_tables: list[tuple[TableInfo, dict, list[dict[str, Any]]]] = []
     for table in tables:
-        column_types = {col.name: col.data_type for col in table.columns}
-        safe_rows, _ = redact_sample_rows(
-            table.sample_rows,
-            table=table.name,
-            column_types=column_types,
-        )
-        assert_no_unredacted_sample_pii(safe_rows, table=table.name)
-        prepared_tables.append((table, _table_to_yaml_dict(table), safe_rows))
+        if redact_pii:
+            column_types = {col.name: col.data_type for col in table.columns}
+            safe_rows, _ = redact_sample_rows(
+                table.sample_rows,
+                table=table.name,
+                column_types=column_types,
+            )
+            assert_no_unredacted_sample_pii(safe_rows, table=table.name)
+        else:
+            safe_rows = table.sample_rows
+        prepared_tables.append((table, _table_to_yaml_dict(table, redact_pii=redact_pii), safe_rows))
 
-    system_dir = output_dir / system_name
     system_dir.mkdir(parents=True, exist_ok=True)
 
     # Write manifest
-    manifest_path = system_dir / "_manifest.yaml"
     with open(manifest_path, "w", encoding="utf-8") as f:
         yaml.dump(manifest_data, f, default_flow_style=False, sort_keys=False)
 
@@ -935,7 +977,7 @@ def write_extraction_output(
     return system_dir
 
 
-def _table_to_yaml_dict(table: TableInfo) -> dict:
+def _table_to_yaml_dict(table: TableInfo, *, redact_pii: bool = True) -> dict:
     """Convert a TableInfo to a YAML-serializable dict."""
     columns_data = []
     for col in table.columns:
@@ -956,16 +998,19 @@ def _table_to_yaml_dict(table: TableInfo) -> dict:
                 for js in col.json_structure:
                     structure = {"key": js.key, "type": js.type}
                     if js.sample is not None:
-                        safe_sample, _ = redact_sample_value(
-                            js.sample,
-                            table=table.name,
-                            column=f"{col.name}.{js.key}",
-                            data_type=js.type,
-                        )
-                        assert_no_unredacted_sample_pii(
-                            [{f"{col.name}.{js.key}": safe_sample}],
-                            table=table.name,
-                        )
+                        if redact_pii:
+                            safe_sample, _ = redact_sample_value(
+                                js.sample,
+                                table=table.name,
+                                column=f"{col.name}.{js.key}",
+                                data_type=js.type,
+                            )
+                            assert_no_unredacted_sample_pii(
+                                [{f"{col.name}.{js.key}": safe_sample}],
+                                table=table.name,
+                            )
+                        else:
+                            safe_sample = js.sample
                         structure["sample"] = safe_sample
                     structures.append(structure)
                 col_dict["json_structure"] = structures
@@ -995,6 +1040,7 @@ def run_extract_schema(
     sample_size: int = DEFAULT_SAMPLE_SIZE,
     emit_seed: bool = False,
     seeds_dir: Path | str = "seeds",
+    redact_pii: bool = True,
 ) -> Path:
     """Run full schema extraction pipeline.
 
@@ -1009,6 +1055,7 @@ def run_extract_schema(
         sample_size: Number of sample rows per table.
         emit_seed: Also write each table's redacted samples as a dbt seed CSV.
         seeds_dir: Output directory for the seed CSVs (default: "seeds").
+        redact_pii: Apply the redact-detected-pii sample policy (default: True).
 
     Returns:
         Path to the output directory with YAML files.
@@ -1060,6 +1107,7 @@ def run_extract_schema(
         sample_size=sample_size,
         emit_seed=emit_seed,
         seeds_dir=seeds_dir,
+        redact_pii=redact_pii,
     )
 
     return result_dir

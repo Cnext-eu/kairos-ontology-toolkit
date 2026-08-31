@@ -133,6 +133,8 @@ def test_real_run_writes_files_validates_and_prints_next_steps(tmp_path, monkeyp
     assert "kairos-design-mapping" in result.output
     assert "Decision Log" in result.output
     assert "kairos-ontology decision new" in result.output
+    assert str(sql_path) in result.output
+    assert "identical database representations" in result.output
 
 
 def test_non_merged_intermediate_model_skips_decision_log_guidance(tmp_path, monkeypatch):
