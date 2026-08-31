@@ -193,7 +193,7 @@ def test_show_class_inventory_tokens_empty_for_no_classes(tmp_path):
     assert payload["classes"] == []
 
 
-def _catalog(path, mappings: dict[str, str]) -> "Path":
+def _catalog(path, mappings: dict[str, str]):
     entries = "".join(f'  <uri name="{uri}" uri="{target}"/>\n' for uri, target in mappings.items())
     path.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
