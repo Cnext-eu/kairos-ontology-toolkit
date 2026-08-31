@@ -12,7 +12,12 @@ from rdflib import Graph, OWL, RDF, RDFS, URIRef
 
 from ...ontology_loader import load_ontology
 from ..shared import effective_domain_classes, properties_with_domain
-from .context import ActiveSourceScope, ActiveSourceTable, BoundSources
+from .context import (
+    ActiveSourceScope,
+    ActiveSourceTable,
+    BoundSources,
+    packaged_macro_names,
+)
 from .mapping_bind import bind_mapping_documents, mapping_context
 from .mapping_specs import SourceMappings
 from .specs import (
@@ -624,10 +629,7 @@ def bind_sources(inputs: "DbtInputs") -> BoundSources:
             if isinstance(parent, URIRef) and not str(parent).startswith("http://www.w3.org/")
         )
     )
-    macro_root = Path(inputs.template_root) / "macros"
-    macro_names = (
-        tuple(path.name for path in sorted(macro_root.glob("*.sql"))) if macro_root.is_dir() else ()
-    )
+    macro_names = packaged_macro_names(inputs.template_root)
     contract_facts = tuple(
         sorted((name, _contract_fact(contract)) for name, contract in contracts.items())
     )

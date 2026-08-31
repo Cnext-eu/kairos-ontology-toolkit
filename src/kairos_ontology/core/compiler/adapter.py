@@ -26,7 +26,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from ..projections.dbt import BoundSources
-from ..projections.dbt.context import ActiveSourceScope, ActiveSourceTable
+from ..projections.dbt.context import (
+    ActiveSourceScope,
+    ActiveSourceTable,
+    packaged_macro_names,
+)
 from ..projections.dbt.mapping_normalize import _BOOLEAN, _INT64, _canonical_type, _type_label
 from ..projections.dbt.mapping_specs import (
     AuthoredCaseBranchFact,
@@ -1290,7 +1294,7 @@ def _assemble_bound_sources(
         silver_outcomes=(),
         schema_candidates=(schema_model,),
         coverage=None,
-        macro_names=(),
+        macro_names=packaged_macro_names(context.template_root),
         warnings=(),
         policy_facts=MedallionPolicyFacts(
             ontology_uri=context.ontology_iri,
