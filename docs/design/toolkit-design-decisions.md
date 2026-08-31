@@ -264,6 +264,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-210](#dd-210-version-bump-moves-from-mandatory-per-pr-to-release-time-only) | Version bump moves from mandatory-per-PR to release-time-only | Accepted | 2026-08-30 |
 | [DD-211](#dd-211-the-hub-wide-bound-master-erd-is-reconnected-to-compileemit-gold-the-dead-run_projections-dbtsilverpowerbi-branch-is-retired-in-place) | The hub-wide bound master ERD is reconnected to `compile`/`emit-gold`; the dead `run_projections` dbt/silver/powerbi branch is retired in place | Accepted | 2026-08-30 |
 | [DD-212](#dd-212-the-canonical-erd-target-renders-a-mermaid-classdiagram-instead-of-erdiagram-and-gains-a-plumbing-only-overlay-hook) | The canonical `erd` target renders a Mermaid `classDiagram` instead of `erDiagram`, and gains a plumbing-only overlay hook | Accepted | 2026-08-30 |
+| [DD-213](#dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it) | The Silver contract is declared, not derived — bindings conform to it | Proposed | 2026-08-31 |
 
 ---
 
@@ -15154,3 +15155,120 @@ touching only `erd_projector.py`'s rendering logic — no further discovery/disp
 `tests/test_erd_projector.py` covers inheritance rendering (including that a restriction's blank-node
 `subClassOf` is never mistaken for a superclass), multiplicity strings, and the overlay hook (both
 that overlay triples are merged and that a missing overlay path leaves output unchanged).
+
+---
+
+## DD-213: The Silver contract is declared, not derived — bindings conform to it
+
+**Status:** Proposed
+**Date:** 2026-08-31
+**Affects:** a new `model/contracts/<domain>.contract.yaml` authored input and its packaged JSON
+Schema; `core/compiler/kernel.py` (new `contract.*` safety rules), `core/compiler/adapter.py`
+(contract-supplied model/column name, set, order, type), `core/compiler/conformance.py`
+(identical-property-set rule relaxed for governed classes), `core/compiler/bindings.py` (new
+optional `unmapped:` key); a new `scaffold-contract` command; `kairos-design-domain` and
+`kairos-design-mapping`. Amends DD-133 §2, §3, §3c, §5 and revisits DD-020's deferral of Silver
+stability to an unbuilt release process.
+**Implementation:** design only — see
+[`dd-213-silver-entity-contract.md`](dd-213-silver-entity-contract.md) for the closed schema,
+the full rule table, the release-time classification table, and the adoption path.
+
+### Context
+
+The ontology hub is meant to give each data domain a canonical, source-agnostic Silver model
+that new sources *bind to* and that stays stable because upstream data products and existing
+bindings depend on it. The v5 compiler does not provide that, because the Silver contract is
+never declared anywhere — it is computed from whatever the bindings happen to say.
+
+Every physical fact about an emitted Silver model comes from the bindings: the model name is
+`_slug(class local name)` (`adapter.py:779`), the column name is
+`camel_to_snake(property local name)` (`kernel.py:682`), the column set is only the properties
+some binding explicitly maps (DD-133 §8b: "inherited semantic breadth never widens physical
+breadth"), and the column order is the authored `fields:` list order (`adapter.py:787`). DD-133
+§2 calls the domain TTL the "authoritative canonical Silver model," but that authority is
+semantic only.
+
+The result is that ordinary authoring actions silently change a published contract: deleting a
+`fields:` entry drops a column; reordering `fields:` reorders columns and changes the parity
+fingerprint; renaming an ontology property renames the physical column. Worse for the stated
+goal, onboarding a *second* source cannot leave the model alone —
+`conformance.property-incompatible` (`conformance.py:172`) requires every binding in a
+conformance group to declare an **identical** property set, so a new source either gets
+mutilated to match the incumbent or forces an edit to every existing binding. None of DD-133
+§5's ten safety rules is a stability rule; all ten check one binding's internal consistency.
+SHACL, which could express coverage, is validated by a separate `validate` command and has
+never been in the compile path. `kairos-ext:silverColumnName` and `silverTableName` exist but
+are read only by the retired v4 projector, so no name decoupling is available at all.
+
+DD-020 accepted the ontology-identifier-to-physical-name coupling knowingly and deferred
+breaking-change management to "the hub release process." That release process is Phases 5–6 of
+[the architecture document](ontology-dbt-dataplatform-design-architecture.md) and is not built —
+and even when it is, a comparator with no declared contract only reports diffs in an artifact
+nobody ever agreed to, after the fact.
+
+### Decision
+
+Introduce a third authored input, `model/contracts/<domain>.contract.yaml`, as a closed,
+JSON-Schema-validated document sitting between the ontology (meaning) and the bindings (source
+fulfilment). It declares, per canonical entity: a stable `modelName`; the ordered property list
+with stable `columnName`, canonical `type`, `nullable`, and `requirement: required | optional`;
+governed technical and relationship columns; the canonical grain and identity contract; a
+per-entity `stability` and `closed` flag; and per-column `lifecycle.deprecated` metadata. Column
+name and model name default to today's derivation rules, so decoupling is opt-in per column.
+
+Bindings then **conform to** the contract rather than constitute it, enforced by two gates:
+
+- **Gate A — compile-time, stateless.** A new `contract.*` diagnostic family extends DD-133 §5:
+  every `required` property must be mapped by every binding for the class; a `closed` entity
+  rejects any property, relationship, or technical field it did not declare; resolved canonical
+  type, nullability, grain, and identity must *match* the contract rather than define it; and a
+  contract-optional property a source cannot supply must be named explicitly in a new
+  `EntityBinding` key, `unmapped:`, rather than silently absent. For a governed class the
+  contract supplies the emitted column set, order, names, and types — an `unmapped` property
+  still emits its column as a typed NULL for that source's rows.
+- **Gate B — release-time, stateful, outside compile.** The architecture document's
+  two-manifest comparator, with the contract file diff as the primary reviewable unit and the
+  parity manifest as corroborating evidence, against a fixed change-classification table.
+  Comparator-assisted, human-approved, unknown changes block.
+
+Gate A is ordered before Gate B, reversing the current roadmap. Gate A prevents the break during
+the ordinary act of onboarding a source; Gate B only reports it afterwards.
+
+Adoption is incremental, not a clean break: a domain with no contract file compiles exactly as
+it does today with one advisory warning, and `scaffold-contract <domain>` generates a contract
+from the current `CompilePlan` whose adoption is a provable no-op emit (`SilverModelSpec`
+already carries the resolved columns, order, types, nullability, grain, and identity). Once a
+contract file is present it is authoritative for every class it names.
+
+### Consequences
+
+A new source can bind to an existing Silver model without reshaping it, which is the point.
+Because the contract fixes the column set, `conformance.property-incompatible`'s
+identical-property-set requirement is **replaced** for governed classes by contract conformance
+— a genuinely partial source can now join a conformance group by declaring its gaps, which is
+the largest authoring improvement here and a deliberate behavior change. Reordering a binding's
+`fields:` becomes fingerprint-neutral. An ontology rename becomes a relabelling rather than a
+downstream break, restoring inside a governed artifact the intent of the v4-only
+`kairos-ext:silverColumnName`.
+
+The costs are real: a third artifact to author and review, a new mandatory `unmapped:`
+declaration on partial bindings, and a governed change process for what is today a one-line YAML
+edit. That friction is the deliverable — it is what makes the model a contract.
+
+Not addressed, deliberately: dbt `versions:` remains the separate deferred design, though this
+answers its first open question (stable logical identity across a rename); coverage/completeness
+state stays retired per DD-133 §9 — `required`/`optional` is an interface declaration, never a
+progress metric; and Gold/MDM contracts are a separate question, though both inherit Silver's
+new stability for free.
+
+On acceptance, DD-133 §2's layout block, §3's closed binding schema, §3c's conformance rules,
+and §5's rule list all require amendment, and `kairos-design-domain` becomes the contract's
+owner while `kairos-design-mapping`'s brief narrows to "satisfy this contract from this source."
+The `contract.*` rows are added to `diagnostic-codes.md` by the implementing change, not by this
+one — `tests/test_diagnostic_catalog.py` fails on any documented code with no construction site.
+
+Three questions are left open for review in the companion document: NULL semantics for
+`unmapped` properties under `prefer-precedence` and `deduplicate` union policies; whether the
+relationship FK column default (`kernel.py:1808`, which embeds the *target* model name, so
+renaming a parent renames a column on every child) must change; and one contract file per domain
+versus one per entity.
