@@ -16,6 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`compile --emit` shipped a dbt package with no macros at all (issue #660).** The
+  canonical v5 compile path assembles `BoundSources` through
+  `core/compiler/adapter.py::_assemble_bound_sources`, which hard-coded
+  `macro_names=()` -- so every emitted package carried *zero* of the packaged
+  `templates/dbt/macros/*.sql` files, not the one the issue reported (that single
+  `kairos_current_timestamp.sql` was a stale file already on disk, preserved by
+  `compile`'s shared-artifact reconciliation, never compiler output). A realized
+  cross-domain `relationships:` entry with `missingParent`/`ambiguousParent`
+  enforcement compiles a `kairos_temporal_fk_cardinality` generic test, so `dbt build`
+  failed with `'test_kairos_temporal_fk_cardinality' is undefined` and the referential
+  integrity that relationship was authored to guarantee silently could not be checked.
+  The macro pack is now resolved from the template root on both paths into
+  `BoundSources` via one shared `packaged_macro_names()` helper -- the existing
+  `tests/test_cr3_macros.py` only ever drove the other path (`bind_sources()`), which
+  is why the suite stayed green through the whole regression. Macros are copied
+  unconditionally: they are inert until called, and deciding which ones a compile
+  "needs" is precisely the reasoning that produced a package referencing undefined
+  macros.
+
 ## [5.15.0rc3] — 2026-08-27
 
 ### Fixed

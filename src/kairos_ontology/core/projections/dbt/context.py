@@ -9,6 +9,7 @@ Every value returned by a phase is frozen, slotted, deeply immutable, and graph-
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
 from .mapping_specs import MappingContractSpec, SourceMappings
@@ -46,12 +47,32 @@ from .specs import (
 from .policy_specs import MedallionPolicyFacts, MedallionPolicySpec
 
 if TYPE_CHECKING:  # pragma: no cover
-    from pathlib import Path
-
     from rdflib import Graph
 
     from ...dbt_contracts import DbtContractModel
     from ..shared import ForeignKeyAuthoringFact
+
+
+def packaged_macro_names(template_root: str) -> tuple[str, ...]:
+    """Return every packaged ``kairos_`` macro filename, sorted.
+
+    The macros are inert until a rendered model or test calls one, so the emitted
+    package always carries the whole pack rather than a per-domain subset -- working
+    out which macros a compile "needs" is exactly the reasoning that shipped a
+    package whose generic tests referenced undefined macros (issue #660).
+
+    Single shared predicate for the two independent paths that build
+    ``BoundSources``: :func:`~kairos_ontology.core.projections.dbt.bind.bind_sources`
+    (the direct projection entry point) and
+    ``core.compiler.adapter._assemble_bound_sources`` (the canonical v5 ``compile``
+    path). The latter hard-coded an empty tuple, so every ``compile --emit`` shipped
+    zero macros while the former's tests stayed green -- keep the two call sites on
+    this one helper so they cannot drift apart again.
+    """
+    macro_root = Path(template_root) / "macros"
+    if not macro_root.is_dir():
+        return ()
+    return tuple(path.name for path in sorted(macro_root.glob("*.sql")))
 
 
 @dataclass(frozen=True, slots=True)
