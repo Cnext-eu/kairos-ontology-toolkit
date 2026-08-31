@@ -188,3 +188,78 @@ def test_blocked_compile_plan_fails_before_projecting(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "compile plan is blocked" in result.output
+
+
+def test_two_domains_share_one_parameter_yml_without_colliding(tmp_path):
+    """Sequential per-domain Gold emits must merge on the shared root artifact (issue #664).
+
+    ``parameter.yml`` is hub-wide: fabric-cicd reads exactly one from the root of
+    ``repository_directory``, so every domain's Gold emit writes the same path into the
+    same shared directory. Each domain owns only its own
+    ``.kairos-compile-manifest.gold-<domain>.json``, so the second domain's emit saw an
+    unowned file already on disk and failed closed with ``ArtifactCollisionError`` --
+    which made the recommended one-Gold-extension-per-owning-domain pattern (#661)
+    impossible to actually run.
+
+    Exercised at the emit layer because both v5 hub fixtures are single-domain; this is
+    the exact call ``cli/emit_gold.py`` makes, with the same shared path and per-domain
+    manifest names.
+    """
+    from kairos_ontology.core.compiler.emit import emit_artifacts
+    from kairos_ontology.core.projections.dbt.gold_render import PARAMETER_ARTIFACT_PATH
+
+    target = tmp_path / "powerbi"
+    shared = (PARAMETER_ARTIFACT_PATH,)
+
+    emit_artifacts(
+        {PARAMETER_ARTIFACT_PATH: "find_replace: [booking]\n", "booking/model.tmdl": "b\n"},
+        target,
+        manifest_name=".kairos-compile-manifest.gold-booking.json",
+        replace_unowned_paths=shared,
+    )
+    emit_artifacts(
+        {PARAMETER_ARTIFACT_PATH: "find_replace: [party]\n", "party/model.tmdl": "p\n"},
+        target,
+        manifest_name=".kairos-compile-manifest.gold-party.json",
+        replace_unowned_paths=shared,
+    )
+
+    # The second domain wins the shared file; neither domain's own artifacts are lost.
+    assert (target / PARAMETER_ARTIFACT_PATH).read_text(
+        encoding="utf-8"
+    ) == "find_replace: [party]\n"
+    assert (target / "booking" / "model.tmdl").is_file()
+    assert (target / "party" / "model.tmdl").is_file()
+
+
+def test_repeated_emit_for_one_domain_is_idempotent(tmp_path, monkeypatch):
+    """Re-emitting the same domain must not trip the shared-artifact collision check."""
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    for _ in range(2):
+        result = CliRunner().invoke(cli, ["emit-gold", "party", "--confirm-emit"])
+        assert result.exit_code == 0, result.output
+
+    assert (publish_root(hub) / "powerbi" / "parameter.yml").is_file()
+
+
+def test_gold_dbt_models_are_not_written_beside_the_powerbi_artifacts(tmp_path, monkeypatch):
+    """Gold dbt models ship in the medallion package, not the Power BI bundle (issue #665).
+
+    ``powerbi/<domain>/dbt/`` has no ``dbt_project.yml``, so dbt's ``packages.yml``
+    ``subdirectory:`` mechanism could never install it -- those files could only be
+    hand-copied downstream, and went stale silently on the next emit.
+    """
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["emit-gold", "party", "--confirm-emit"])
+    assert result.exit_code == 0, result.output
+
+    powerbi = publish_root(hub) / "powerbi"
+    assert not list(powerbi.rglob("dbt"))
+    assert not list(powerbi.rglob("models"))
+    # `<domain>-gold-ddl.sql` is a Power BI-side artifact and legitimately stays here;
+    # only the dbt *models* moved.
+    assert not [path for path in powerbi.rglob("*.sql") if not path.name.endswith("-gold-ddl.sql")]

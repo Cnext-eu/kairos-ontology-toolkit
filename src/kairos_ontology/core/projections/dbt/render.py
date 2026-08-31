@@ -16,7 +16,11 @@ from jinja2 import Environment, FileSystemLoader, TemplateSyntaxError
 
 from .context import MaterializationPlan, ShapedProject
 from .canonical_hash import temporal_match_count_column, validate_runtime_sql_static
-from .gold_render import gold_product_report, render_gold_dbt_artifacts
+from .gold_render import (
+    gold_dbt_artifact_paths,
+    gold_product_report,
+    render_gold_dbt_artifacts,
+)
 from .mapping_specs import (
     CaseExpression,
     FunctionExpression,
@@ -381,6 +385,13 @@ def render_canonical_project(
             schema_paths=schema_paths,
         )
         artifacts.update(silver_artifacts)
+    if shaped.gold_product is not None and plan.gold is not None:
+        # The Gold dbt models belong in the medallion package, not beside the Power BI
+        # artifacts: the medallion `dbt_project.yml` already declares a
+        # `models/gold/<domain>` config block and `_existing_gold_domains()` already
+        # scans for it, but nothing ever rendered them here, so Gold had no installable
+        # packaging path and had to be hand-copied downstream (issue #665).
+        artifacts.update(render_gold_dbt_artifacts(shaped.gold_product, plan.gold))
     artifacts.update(_render_project_config(plan, env))
     macro_root = Path(plan.adapter.template_root) / "macros"
     for name in shaped.macros.names:
@@ -1170,21 +1181,7 @@ def render_project(
         if quality is None or not quality.quarantines_rows:
             expected_paths.add(model.identity.artifact_path)
     if shaped.gold_product is not None and plan.gold is not None:
-        expected_paths.add(plan.gold.dbt_schema_artifact_path)
-        expected_paths.add(plan.gold.exposures_artifact_path)
-        for table in plan.gold.tables:
-            expected_paths.add(f"models/gold/{shaped.gold_product.ontology_name}/{table.name}.sql")
-            if table.dual_current_name:
-                expected_paths.add(
-                    f"models/gold/{shaped.gold_product.ontology_name}/{table.dual_current_name}.sql"
-                )
-        if shaped.gold_product.calendar is not None and shaped.gold_product.calendar.approved:
-            expected_paths.update(
-                {
-                    "models/gold/shared/dim_date.sql",
-                    "models/gold/shared/_shared__gold_models.yml",
-                }
-            )
+        expected_paths.update(gold_dbt_artifact_paths(shaped.gold_product, plan.gold))
     expected_paths.update(
         lookup.quarantine_artifact_path
         for model in plan.models

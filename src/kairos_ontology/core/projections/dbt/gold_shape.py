@@ -652,7 +652,14 @@ def _shape_dimensional(
                 "gold.unmaterialized-silver-source",
                 (
                     f"Gold table {authored.table_name.value!r} has no actual "
-                    "materialized Silver registry entry"
+                    f"materialized Silver registry entry in domain {ontology_name!r}. "
+                    "A Gold table is only materialized by the compile of the domain that "
+                    "actually binds it -- an owl:imports of a sibling domain resolves that "
+                    "domain's classes but does not carry its compiled Silver bindings. If "
+                    "this table belongs to another domain, author it in a separate Gold "
+                    f"extension on that domain (model/extensions/<domain>-gold-ext.ttl) and "
+                    "emit it with its own `emit-gold <domain>`; a Gold product spanning a "
+                    "cross-domain relationship needs one extension per owning domain."
                 ),
                 rule_id="DD-112-silver-binding",
                 resource_uri=authored.resource_uri,

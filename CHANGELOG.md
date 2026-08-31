@@ -35,6 +35,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unconditionally: they are inert until called, and deciding which ones a compile
   "needs" is precisely the reasoning that produced a package referencing undefined
   macros.
+- **Gold's dbt models had no packaging or consumption path (issue #665).** `emit-gold`
+  wrote them under `ontology-hub-publish/powerbi/<domain>/dbt/`, a directory with no
+  `dbt_project.yml` -- so dbt's `packages.yml` `subdirectory:` mechanism could not
+  install it, and the only way to consume a working Gold model was to hand-copy three
+  files downstream, where they went stale silently on every re-emit. The medallion side
+  was already built for them: the `dbt_project.yml` template has always carried a
+  `models/gold/<domain>` config block and `_existing_gold_domains()` has always scanned
+  for it, but `render_canonical_project` never rendered the Gold models and
+  `_planned_artifact_paths` never listed them, so the compile result filtered them out
+  before anything reached disk. Gold dbt models now ship inside the medallion package
+  via `compile --emit`, consumed through the same `bump-hub` + `dbt deps` cycle as
+  Silver, and the redundant Power BI-side copies are gone. `_existing_gold_domains()`
+  also unions in the current run's own Gold domains, so `dbt_project.yml` configures
+  them on the first emit instead of converging only on a second.
+- **`emit-gold` collided on the shared `parameter.yml` across domains (issue #664).**
+  It is a hub-wide root artifact -- fabric-cicd reads exactly one per
+  `repository_directory` -- but each domain owns only its own manifest, so the second
+  domain's emit saw an unowned file on disk and failed closed. That made the
+  one-Gold-extension-per-owning-domain pattern impossible to actually run. It is now
+  declared mergeable via `replace_unowned_paths`, mirroring how the Silver emit path
+  already handles its own shared artifacts.
+- **The scaffolded `kairos.yaml` shipped a `gold.direct_lake_connection` example the
+  parser rejects (issue #663).** It declared `environments` as a list of `- name: dev`
+  entries where the parser requires a mapping keyed by environment name, so every fresh
+  hub's first attempt at configuring Gold failed on a verbatim copy of its own template.
+  The example is fixed, and `gold.direct-lake-connection-invalid` now prints the correct
+  shape inline instead of only naming the symptom.
+- **An all-zero placeholder GUID is no longer accepted as a Direct Lake connection.** It
+  matches the GUID format, so nothing downstream rejected it, and the emitted TMDL
+  carried a OneLake path resolving to nothing -- a well-formed semantic model that
+  silently could not deploy.
+- **`gold.unmaterialized-silver-source` now explains itself (issue #661).** A Gold table
+  is materialized only by the compile of the domain that binds it; an `owl:imports` of a
+  sibling domain resolves its classes but does not carry its compiled Silver bindings.
+  The error now names the compiled domain, states that rule, and points at authoring a
+  separate Gold extension on the owning domain. `kairos-design-gold` documents it too.
+
+### Added
+- **`kairos-ontology apply-gold-connection`: deploy-time Direct Lake overrides (issue
+  #662).** `gold.direct_lake_connection` had to be authored in the hub's own
+  `kairos.yaml`, and the emitted `parameter.yml` could only rewrite between environments
+  the hub itself declared -- so every Fabric workspace a hub might ever deploy to needed
+  its real GUIDs committed to a repo that is otherwise infrastructure-agnostic, and a
+  hub author with no Fabric infrastructure yet had no option but a placeholder. The
+  dataplatform can now declare the workspaces it owns in
+  `.github/fabric/gold-connections.yml` (values may be `${VAR}` references resolved from
+  the deploy environment, so real GUIDs need never be committed), and the deploy
+  workflow applies them after the archive's checksum is verified. Only
+  `replace_value[<target_environment>]` is rewritten; `find_value` stays exactly as the
+  hub emitted it, because fabric-cicd matches it as a literal substring against the URL
+  baked into the TMDL and a locally supplied value would silently fail to match. The
+  `.zip`, its checksum, and every TMDL/PBIP file are untouched, and the before/after
+  URLs are logged. No config file, or no matching environment, is a clean no-op.
 
 ## [5.15.0rc3] — 2026-08-27
 

@@ -965,8 +965,16 @@ def migrate(check, dry_run, hub_path):
     "For throwaway hubs used to exercise the toolkit; a client hub belongs on GitHub.",
 )
 def new_repo(
-    name, desc, dest, org, is_private, ref_models_version, company_domain, skip_protection,
-    channel, local_only,
+    name,
+    desc,
+    dest,
+    org,
+    is_private,
+    ref_models_version,
+    company_domain,
+    skip_protection,
+    channel,
+    local_only,
 ):
     """Create a new ontology hub GitHub repository.
 
@@ -1996,9 +2004,7 @@ def _build_boundary_header(
             # domain"). An author extending this block then produces enforceable entries
             # by default instead of prose the checker cannot read.
             lines.append("# Deliberate exclusions (with reasons):")
-            lines.extend(
-                _wrap_comment(f"Blueprint DOES NOT OWN: {excluded}", prefix="#   ")
-            )
+            lines.extend(_wrap_comment(f"Blueprint DOES NOT OWN: {excluded}", prefix="#   "))
             lines.append("#   Record each concept you leave out as its own bullet, in this")
             lines.append("#   form, so 'kairos-ontology validate' can enforce it:")
             lines.append("#     - <Concept>: owned by the <other> domain; <why>")
@@ -2065,10 +2071,10 @@ def _build_domain_ttl(
 
         if iri_to_uri:
             lines.append("")
+            lines.append("## -- Mandated imports from accelerator blueprint data-domains.yaml.")
             lines.append(
-                "## -- Mandated imports from accelerator blueprint data-domains.yaml."
+                "## -- Add matching catalog-v001.xml <uri> entries for offline resolution."
             )
-            lines.append("## -- Add matching catalog-v001.xml <uri> entries for offline resolution.")
             ontology_iri = f"<https://{company_domain}/ont/{domain}>"
             for iri in iri_to_uri:
                 lines.append(f"{ontology_iri} owl:imports <{iri}> .")
@@ -2111,7 +2117,9 @@ def _gather_ai_context(hub: Path, domain_slug: str) -> str:
                     if not isinstance(concept, dict):
                         continue
                     likely_domains = concept.get("likely_domains") or []
-                    if likely_domains and domain_slug not in {d.lower() for d in likely_domains if isinstance(d, str)}:
+                    if likely_domains and domain_slug not in {
+                        d.lower() for d in likely_domains if isinstance(d, str)
+                    }:
                         continue
                     name = concept.get("name") or concept.get("term") or "(unnamed)"
                     predicate = concept.get("predicate", "")
@@ -2198,7 +2206,9 @@ def _build_ai_domain_prompt(
         prompt_lines.append(context)
     else:
         prompt_lines.append("## Context: No conformance evidence or source schemas found.")
-        prompt_lines.append(f"Generate reasonable class and property stubs for the '{label}' domain.")
+        prompt_lines.append(
+            f"Generate reasonable class and property stubs for the '{label}' domain."
+        )
 
     return "\n".join(prompt_lines)
 
@@ -2308,7 +2318,7 @@ def _generate_domain_ttl_with_ai(
     "label",
     default=None,
     type=str,
-    help='Human-readable domain label (default: title-cased domain name).',
+    help="Human-readable domain label (default: title-cased domain name).",
 )
 @click.option("--force", is_flag=True, help="Overwrite existing .ttl file.")
 @click.option(
@@ -2356,8 +2366,7 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
     domain_slug = re.sub(r"[^a-z0-9-]", "-", domain.lower().strip()).strip("-")
     if not domain_slug:
         raise click.ClickException(
-            f"Invalid domain name: {domain!r} — must contain at least one "
-            "alphanumeric character."
+            f"Invalid domain name: {domain!r} — must contain at least one alphanumeric character."
         )
 
     # 4. Determine the label.
@@ -2400,8 +2409,7 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
         data_domains = load_data_domains(refmodels_dir, accelerator)
         if not data_domains:
             raise click.ClickException(
-                f"No data-domains.yaml found for accelerator '{accelerator}' "
-                f"under {refmodels_dir}."
+                f"No data-domains.yaml found for accelerator '{accelerator}' under {refmodels_dir}."
             )
         if domain_slug not in data_domains:
             available = ", ".join(sorted(data_domains.keys())) or "(none)"
@@ -2483,9 +2491,7 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
         print(f"  ✓ Registered {ontology_iri} in ontology-hub/catalog-v001.xml")
     else:
         ontology_iri = f"https://{company_domain.rstrip('/')}/ont/{domain_slug}"
-        print(
-            "  ⚠ ontology-hub/catalog-v001.xml not found; skipping catalog registration."
-        )
+        print("  ⚠ ontology-hub/catalog-v001.xml not found; skipping catalog registration.")
 
     # 9. Sync owl:imports into _master.ttl.
     master_dst = hub / "model" / "ontologies" / "_master.ttl"
@@ -2506,17 +2512,15 @@ def scaffold_domain(domain, accelerator, label, force, refmodels_root, use_ai):
                 )
             else:
                 print(
-                    f"  ⏭  ontology-hub/model/ontologies/_master.ttl already imports "
-                    f"{ontology_iri}"
+                    f"  ⏭  ontology-hub/model/ontologies/_master.ttl already imports {ontology_iri}"
                 )
     else:
-        print(
-            "  ⚠ ontology-hub/model/ontologies/_master.ttl not found; "
-            "skipping owl:imports sync."
-        )
+        print("  ⚠ ontology-hub/model/ontologies/_master.ttl not found; skipping owl:imports sync.")
 
     print(f"\n✅ Domain '{domain_slug}' scaffolded!")
     print("\nNext steps:")
-    print(f"  1. Edit ontology-hub/model/ontologies/{domain_slug}.ttl to define classes and properties")
+    print(
+        f"  1. Edit ontology-hub/model/ontologies/{domain_slug}.ttl to define classes and properties"
+    )
     print("  2. Run: kairos-ontology validate")
     print("  3. Run: kairos-ontology compile <domain> --check")
