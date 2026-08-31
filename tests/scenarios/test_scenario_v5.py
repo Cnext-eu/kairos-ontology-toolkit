@@ -1133,3 +1133,48 @@ def test_class_attached_data_quality_surfaces_in_explain(tmp_path):
         assert rule.result_model.startswith("models/quality/party/customer__dq__")
         assert rule.result_test.startswith("tests/quality/party/test_customer__dq__")
         assert rule.quarantine == ""
+
+
+_MACRO_TEMPLATE_DIR = (
+    Path(__file__).resolve().parents[2] / "src" / "kairos_ontology" / "templates" / "dbt" / "macros"
+)
+
+
+@pytest.mark.parametrize("hub_name", ("v5-hub", "v5-governed-hub"))
+def test_v5_compile_emits_every_packaged_macro(hub_name: str) -> None:
+    """The canonical ``compile`` path ships the whole macro pack (issue #660).
+
+    ``_assemble_bound_sources`` hard-coded ``macro_names=()``, so ``compile --emit``
+    wrote *zero* macros while ``tests/test_cr3_macros.py`` stayed green -- that test
+    drives ``bind_sources()``, the other path into ``BoundSources``. A realized
+    cross-domain relationship therefore compiled a ``kairos_temporal_fk_cardinality``
+    generic test whose macro was never shipped, so ``dbt build`` failed with
+    "'test_kairos_temporal_fk_cardinality' is undefined" and the referential-integrity
+    guarantee the relationship was authored for silently could not run.
+
+    Asserted against the packaged directory rather than a hard-coded list so a newly
+    added macro is covered without touching this test.
+    """
+    packaged = {path.name for path in _MACRO_TEMPLATE_DIR.glob("*.sql")}
+    assert packaged, "no packaged macros found; the fixture path is wrong"
+
+    artifacts = compile_domain(
+        Path(__file__).parent / hub_name, "party", CompileMode.EXPLAIN
+    ).artifact_dict()
+
+    emitted = {path[len("macros/") :] for path in artifacts if path.startswith("macros/")}
+    assert emitted == packaged
+
+    # The specific macro whose absence broke the reported live `dbt build`.
+    assert "macros/kairos_runtime_tests.sql" in artifacts
+    assert "test_kairos_temporal_fk_cardinality" in artifacts["macros/kairos_runtime_tests.sql"]
+
+
+def test_v5_planned_artifact_paths_cover_emitted_macros() -> None:
+    """Planned and rendered artifact sets must agree, or emit filters macros back out.
+
+    ``compile`` intersects rendered artifacts with ``_planned_artifact_paths``; a macro
+    that renders but is not planned is silently dropped before anything is written.
+    """
+    result = compile_domain(_HUB, "party", CompileMode.EXPLAIN)
+    assert set(result.plan.artifact_paths) == set(result.artifact_dict())
