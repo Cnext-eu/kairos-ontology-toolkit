@@ -16,6 +16,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The scaffolded DD-103 deny rule blocked the ontology authoring its own skill
+  documents (issue #659).** `.claude/settings.json` denied `Read` on
+  `model/ontologies/**` and `model/shapes/**`. Claude Code requires a prior `Read` of a
+  file before `Edit` will touch it, so denying `Read` made `kairos-design-domain`'s step
+  6b ("author the classes and properties by hand") and its governance-SHACL step
+  structurally impossible under the default scaffold -- even though `Edit`/`Write` were
+  never on the deny list. DD-103 is a boundary on *inspection*: understand ontologies
+  through `explain-term`/`show-class-inventory`/`list-class-properties`/
+  `resolve-ontology` rather than by scanning serialized RDF as unstructured text, and
+  `Grep` is what does that scanning. The 12 `Read` rules are removed; every `Grep` rule
+  and both `Edit`/`Write(ontology-hub-publish/**)` guards are unchanged. Existing hubs
+  receive this through `update`, which replaces the file only when it matches a recorded
+  prior generation -- a hand-extended settings file still gets an advisory instead.
+
+### Added
+- **`update --refresh-workflows`: scaffolded GitHub Actions workflows can finally receive
+  template fixes (issue #658).** `.github/workflows/*.yml` were written once at
+  `init-hub`/`init-dataplatform` time and never revisited, so a real fix landing in a
+  template -- `pr-validate.yml`'s guard against `local:` dbt package pins, for instance --
+  could not reach any repo that already existed, and `update` reported "all managed files
+  up to date" while silently skipping every one of them. They cannot join the existing
+  managed-file loop: `_stamp_managed` injects an HTML comment, which is not valid YAML,
+  and workflow files carry real local customization that must never be silently
+  overwritten. Detection is therefore structural. Several of these workflows are rendered
+  from templates with `{ORG}`/`{HUB_REPO}`/`{DBT_CI_PROFILE_YAML}` substitutions, so their
+  on-disk bytes are repo-specific and no fixed hash can describe them; `update` instead
+  inverts the rendering to ask "is this file an unmodified rendering of a template we
+  shipped, and with which values?" -- which is exactly the question that decides whether
+  rewriting it is safe. A workflow matching a superseded generation is refreshed in place,
+  keeping the repo's own substituted values; one carrying local edits is reported and left
+  alone. Plain `update` and `update --check` report drift (and `--check` now fails on a
+  refreshable workflow, so `managed-check.yml` catches it); rewriting is opt-in. The
+  pre-#650 `pr-validate.yml` generation ships as the first recorded prior generation, so
+  existing dataplatforms can pull in the `local:` guard directly.
+
 ## [5.15.0rc3] — 2026-08-27
 
 ### Fixed

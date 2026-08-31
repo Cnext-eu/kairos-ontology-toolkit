@@ -10,6 +10,7 @@ import hashlib
 import shutil
 import subprocess
 import importlib.metadata
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -20,9 +21,13 @@ from .. import __version__ as _toolkit_version
 # The CLI is the layer that legitimately depends on both core and mdm.
 from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
 
+from .workflow_refresh import classify as classify_workflow
+from .workflow_refresh import render as render_workflow
 from .shared import (
     _DependencyFilesSnapshot,
     _KNOWN_CLAUDE_SETTINGS_HASHES,
+    _superseded_workflow_templates,
+    _workflow_sources,
     _MANAGED_MARKER_RE,
     _MANAGED_SKILLS_TREE,
     _RETIRED_MANAGED_SCAFFOLD_FILES,
@@ -145,8 +150,13 @@ def _migrate_dataplatform_custom_models(repo_root: Path, check: bool) -> None:
     is_flag=True,
     help="Allow --upgrade to move the toolkit pin backwards to an older version.",
 )
+@click.option(
+    "--refresh-workflows",
+    is_flag=True,
+    help="Also rewrite scaffolded .github/workflows/*.yml that match a shipped template.",
+)
 @click.option("--force-managed", is_flag=True, hidden=True)
-def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
+def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows, force_managed):
     """Update toolkit-managed files to the installed toolkit version.
 
     Scans .github/ for files stamped by kairos-ontology-toolkit and refreshes
@@ -555,6 +565,44 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
             else:
                 claude_settings_status = "advisory"
 
+    # --- Reconcile .github/workflows/*.yml (issue #658) ----------------------
+    # Scaffolded once and never revisited, so a real fix to a workflow template
+    # -- e.g. pr-validate.yml's guard against `local:` dbt package pins -- could
+    # not reach any repo that already existed, and `update` reported "all managed
+    # files up to date" while silently skipping them.
+    #
+    # Detection reverse-templates rather than hashing: some of these are rendered
+    # with {ORG}/{HUB_REPO}/{DBT_CI_PROFILE_YAML} substitutions, so their on-disk
+    # bytes are repo-specific and no fixed hash describes them. Refreshing is
+    # opt-in because a workflow that no longer matches any shipped generation may
+    # be carrying deliberate local work (real credentials, extra steps).
+    refreshed_workflows: list[str] = []
+    workflow_statuses: list = []
+    for destination, template_path in _workflow_sources(repo_root).items():
+        status = classify_workflow(
+            repo_root / destination,
+            template_path.read_text(encoding="utf-8"),
+            _superseded_workflow_templates(destination),
+        )
+        status = replace(status, path=destination)
+        workflow_statuses.append(status)
+        if check or not refresh_workflows or not status.refreshable:
+            continue
+        if status.state == "missing" and template_path.name.endswith(".template"):
+            # A templated workflow needs substitution values this command does not
+            # have; only `init-dataplatform` knows them. Report instead of writing
+            # a file still full of {ORG} placeholders.
+            continue
+        rendered = render_workflow(
+            template_path.read_text(encoding="utf-8"), status.substitutions or {}
+        )
+        (repo_root / destination).parent.mkdir(parents=True, exist_ok=True)
+        (repo_root / destination).write_text(rendered, encoding="utf-8")
+        refreshed_workflows.append(destination)
+
+    outdated_workflows = [item.path for item in workflow_statuses if item.state == "outdated"]
+    customized_workflows = [item.path for item in workflow_statuses if item.state == "customized"]
+
     # --- Report -------------------------------------------------------------
     if check:
         if outdated:
@@ -573,6 +621,20 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
             print(f"⚠  {len(retired_assets)} retired scaffold asset(s) to remove:")
             for path in retired_assets:
                 print(f"   {path}")
+        if outdated_workflows:
+            print(f"⚠  {len(outdated_workflows)} scaffolded workflow(s) need refreshing:")
+            for path in outdated_workflows:
+                print(f"   {path}")
+            print("   Run `kairos-ontology update --refresh-workflows` to apply.")
+        if customized_workflows:
+            print(f"ℹ  {len(customized_workflows)} workflow(s) differ from the shipped template:")
+            for path in customized_workflows:
+                print(f"   {path}")
+            print(
+                "   They carry local edits (or a generation this toolkit no longer "
+                "ships) and were left alone. Diff them against the current template "
+                "by hand if you want a recent fix."
+            )
         if claude_settings_status == "missing":
             print(
                 f"ℹ  {claude_settings_rel} not present — run `update` (without --check) to create it."
@@ -593,6 +655,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
             and not missing
             and not stale
             and not retired_assets
+            and not outdated_workflows
             and claude_settings_status != "outdated"
         ):
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
@@ -615,8 +678,22 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, force_managed):
             print(f"🗑️  Removed {len(removed_assets)} retired scaffold asset(s):")
             for path in removed_assets:
                 print(f"   {path}")
+        if refreshed_workflows:
+            print(f"✅ Refreshed {len(refreshed_workflows)} scaffolded workflow(s):")
+            for path in refreshed_workflows:
+                print(f"   {path}")
+        elif outdated_workflows:
+            print(f"⚠  {len(outdated_workflows)} scaffolded workflow(s) need refreshing:")
+            for path in outdated_workflows:
+                print(f"   {path}")
+            print("   Run `kairos-ontology update --refresh-workflows` to apply.")
+        if customized_workflows:
+            print(f"ℹ  {len(customized_workflows)} workflow(s) differ from the shipped template:")
+            for path in customized_workflows:
+                print(f"   {path}")
+            print("   Left alone: they carry local edits, or a generation no longer shipped.")
         if claude_settings_status == "missing":
-            print(f"  ✓ Created {claude_settings_rel} (denies raw ttl/rdf/owl Read/Grep)")
+            print(f"  ✓ Created {claude_settings_rel} (denies raw ttl/rdf/owl Grep)")
         elif claude_settings_status == "outdated":
             print(f"  ✓ Updated {claude_settings_rel} (semantic-access boundary broadened)")
         elif claude_settings_status == "advisory":
