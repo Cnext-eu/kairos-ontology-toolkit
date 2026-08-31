@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0rc12] — 2026-08-31
+
 ### Fixed
 - **`update --check` reported "all managed files up to date" while a scaffolded
   `.github/workflows/*.yml` was entirely missing (issue #671).** `operations.py`'s
