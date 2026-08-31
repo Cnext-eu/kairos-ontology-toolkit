@@ -59,6 +59,8 @@ from .adapter import (
     object_property_in_fields_message,
     system_fact_for_relation,
 )
+from .contract_conformance import contract_binding_diagnostics, models_by_class
+from .contracts import SilverContract, load_silver_contract
 from .bindings import (
     EntityBinding,
     ExprCase,
@@ -3582,6 +3584,32 @@ def _planned_dbt_dependencies(
     return dependencies, tuple(diagnostics)
 
 
+def _load_domain_contract(
+    scope: BuildScope, domain: str
+) -> tuple[SilverContract | None, list[CompileDiagnostic]]:
+    """Load the selected domain's declared Silver contract, if it has one (DD-213).
+
+    A contract-load failure is reported and treated as *ungoverned* rather than fatal in
+    this slice: Gate A is advisory until contract-driven emission lands, so a malformed
+    contract must not be able to stop a hub compiling.
+    """
+    for path_text in scope.contract_paths:
+        path = Path(path_text)
+        if path.stem != f"{domain}.contract":
+            continue
+        try:
+            return load_silver_contract(path.read_text(encoding="utf-8"), path=str(path)), []
+        except CompileError as exc:
+            return None, list(exc.diagnostics)
+    # No advisory is emitted for an ungoverned domain. DD-213 §6 promises that a domain
+    # without a contract "compiles exactly as it does today", and a diagnostic that fires
+    # on every compile of every existing hub is not that -- it is noise that every
+    # downstream consumer asserting on the diagnostic stream would have to learn to ignore.
+    # Governance status is a question you ask (the contract file either exists or does
+    # not), not something every compile has to answer unprompted.
+    return None, []
+
+
 def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     """Build the canonical graph-free plan without rendering or writing artifacts."""
     scope, context = resolve_scope(Path(hub_root), domain)
@@ -3592,6 +3620,11 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         scope.provenance_hash(),
     )
     diagnostics: list[CompileDiagnostic] = list(scope.prefix_warnings)
+    # DD-213 Gate A. A domain with no contract stays ungoverned and compiles exactly as it
+    # did before, with one advisory -- adoption is incremental by construction, never a
+    # clean break.
+    domain_contract, contract_diagnostics = _load_domain_contract(scope, domain)
+    diagnostics.extend(contract_diagnostics)
     specs: list[EntityBindingSpec] = []
     valid_bindings: list[EntityBinding] = []
     bounds: list[BoundSources] = []
@@ -3804,6 +3837,27 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                     location=SourceLocation(path=scope.hub_root),
                 )
             )
+    # DD-213 Gate A. Deliberately AFTER shaping, not inside the binding loop: the
+    # scaffolder reads types from the shaped project, so checking against the adapter's
+    # pre-shape candidates would compare two different stages and reject a contract the
+    # scaffolder had just generated from this very hub.
+    if domain_contract is not None:
+        shaped_models = models_by_class(shaped.silver_models) if shaped is not None else {}
+        for binding in valid_bindings:
+            resolved_class = context.klass(binding.target_class)
+            diagnostics.extend(
+                contract_binding_diagnostics(
+                    binding,
+                    domain_contract,
+                    model=(
+                        shaped_models.get(resolved_class.uri)
+                        if resolved_class is not None
+                        else None
+                    ),
+                    severity=DiagnosticSeverity.WARNING,
+                )
+            )
+
     artifact_paths = _planned_artifact_paths(shaped, materialized, tuple(valid_bindings), context)
     dbt_dependencies, dependency_diagnostics = _planned_dbt_dependencies(
         dbt_closures, scope, artifact_paths

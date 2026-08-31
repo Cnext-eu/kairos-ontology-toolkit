@@ -421,3 +421,171 @@ class TestContractScope:
         assert [p.replace("\\", "/").split("/")[-1] for p in scope.contract_paths] == [
             "finance.contract.yaml"
         ]
+
+
+def _adopt_contract(hub_root, mutate=None):
+    """Scaffold a contract for the hub, optionally mutate it, and write it into place."""
+    plan = build_compile_plan(hub_root, "party")
+    document = build_contract_document(plan)
+    if mutate is not None:
+        mutate(document)
+    contracts = hub_root / "model" / "contracts"
+    contracts.mkdir(parents=True, exist_ok=True)
+    path = contracts / "party.contract.yaml"
+    path.write_text(render_contract_yaml(document), encoding="utf-8")
+    return path
+
+
+def _diagnostics(hub_root):
+    plan = build_compile_plan(hub_root, "party")
+    return {item.code: item for item in plan.diagnostics.items}
+
+
+class TestGateA:
+    def test_ungoverned_domain_emits_no_contract_diagnostics(self, tmp_path):
+        """DD-213 §6: an ungoverned domain compiles exactly as it did before -- which means
+        no new advisory on every compile, or every downstream consumer has to learn to
+        ignore it."""
+        _write_hub(tmp_path)
+        assert not [code for code in _diagnostics(tmp_path) if code.startswith("contract.")]
+
+    def test_adopting_a_scaffolded_contract_is_clean(self, tmp_path):
+        """The generated contract records what is, so it must conform to itself."""
+        _write_hub(tmp_path)
+        _adopt_contract(tmp_path)
+        assert not [code for code in _diagnostics(tmp_path) if code.startswith("contract.")]
+
+    def test_undeclared_class_is_reported(self, tmp_path):
+        _write_hub(tmp_path)
+
+        def rename(document):
+            document["entities"][0]["class"] = "party:Somethingelse"
+
+        _adopt_contract(tmp_path, rename)
+        assert "contract.class-not-declared" in _diagnostics(tmp_path)
+
+    def test_required_property_unmapped_is_reported(self, tmp_path):
+        """Adding a required property to the contract must call out every binding that
+        does not supply it -- this is the rule that makes the contract a contract."""
+        _write_hub(tmp_path)
+
+        def add_required(document):
+            document["entities"][0]["properties"].append(
+                {
+                    "property": "party:unsupplied",
+                    "columnName": "unsupplied",
+                    "type": "string(10)",
+                    "requirement": "required",
+                    "nullable": True,
+                }
+            )
+
+        _adopt_contract(tmp_path, add_required)
+        assert "contract.required-property-unmapped" in _diagnostics(tmp_path)
+
+    def test_optional_property_must_be_declared_unmapped(self, tmp_path):
+        _write_hub(tmp_path)
+
+        def add_optional(document):
+            document["entities"][0]["properties"].append(
+                {
+                    "property": "party:unsupplied",
+                    "columnName": "unsupplied",
+                    "type": "string(10)",
+                    "requirement": "optional",
+                    "nullable": True,
+                }
+            )
+
+        _adopt_contract(tmp_path, add_optional)
+        assert "contract.optional-property-undeclared" in _diagnostics(tmp_path)
+
+    def test_declaring_unmapped_silences_the_gap(self, tmp_path):
+        """A partial source conforms by declaring its gap explicitly (DD-213 §4)."""
+        binding_dir = _write_hub(tmp_path)
+
+        def add_optional(document):
+            document["entities"][0]["properties"].append(
+                {
+                    "property": "party:unsupplied",
+                    "columnName": "unsupplied",
+                    "type": "string(10)",
+                    "requirement": "optional",
+                    "nullable": True,
+                }
+            )
+
+        _adopt_contract(tmp_path, add_optional)
+        path = binding_dir / "customer.binding.yaml"
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nunmapped: [party:unsupplied]\n",
+            encoding="utf-8",
+        )
+        codes = _diagnostics(tmp_path)
+        assert "contract.optional-property-undeclared" not in codes
+        assert "contract.unmapped-property-required" not in codes
+
+    def test_unmapped_cannot_name_a_required_property(self, tmp_path):
+        binding_dir = _write_hub(tmp_path)
+        _adopt_contract(tmp_path)
+        path = binding_dir / "customer.binding.yaml"
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nunmapped: [party:customerName]\n",
+            encoding="utf-8",
+        )
+        assert "contract.unmapped-property-required" in _diagnostics(tmp_path)
+
+    def test_undeclared_property_is_reported_for_a_closed_entity(self, tmp_path):
+        _write_hub(tmp_path)
+
+        def drop_one(document):
+            document["entities"][0]["properties"].pop()
+
+        _adopt_contract(tmp_path, drop_one)
+        assert "contract.property-not-declared" in _diagnostics(tmp_path)
+
+    def test_type_mismatch_is_reported(self, tmp_path):
+        """Canonical type is source-derived, so a contract type the source cannot produce
+        must be reported rather than silently coerced (DD-213 §4)."""
+        _write_hub(tmp_path)
+
+        def retype(document):
+            document["entities"][0]["properties"][0]["type"] = "int64"
+
+        _adopt_contract(tmp_path, retype)
+        assert "contract.type-mismatch" in _diagnostics(tmp_path)
+
+    def test_nullability_mismatch_is_reported(self, tmp_path):
+        _write_hub(tmp_path)
+
+        def flip(document):
+            for item in document["entities"][0]["properties"]:
+                item["nullable"] = not item["nullable"]
+
+        _adopt_contract(tmp_path, flip)
+        assert "contract.nullability-mismatch" in _diagnostics(tmp_path)
+
+    def test_identity_strategy_mismatch_is_reported(self, tmp_path):
+        _write_hub(tmp_path)
+
+        def flip(document):
+            document["entities"][0]["identity"]["strategy"] = "surrogate"
+
+        _adopt_contract(tmp_path, flip)
+        assert "contract.identity-mismatch" in _diagnostics(tmp_path)
+
+    def test_gate_a_findings_are_warnings_in_this_slice(self, tmp_path):
+        """Slice 2 ships advisory: a hub can adopt a contract and see what would block
+        before anything does."""
+        _write_hub(tmp_path)
+
+        def retype(document):
+            document["entities"][0]["properties"][0]["type"] = "int64"
+
+        _adopt_contract(tmp_path, retype)
+        plan = build_compile_plan(tmp_path, "party")
+        finding = next(
+            item for item in plan.diagnostics.items if item.code == "contract.type-mismatch"
+        )
+        assert finding.severity.value == "warning"
+        assert not plan.blocked

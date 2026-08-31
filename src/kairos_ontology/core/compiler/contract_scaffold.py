@@ -23,6 +23,7 @@ from ..projections.dbt.policy_specs import SilverColumnRole
 from ..projections.dbt.silver_contract import canonical_type_label
 from ..projections.dbt.specs import ColumnSpec, SilverModelKind, SilverModelSpec
 from .bindings import EntityBinding
+from .contract_conformance import models_by_class
 from .plan import CompilePlan
 
 #: Model kinds that carry the consumer-facing contract. A ``SOURCE_BRANCH`` is an internal
@@ -94,16 +95,7 @@ def _models_by_class(plan: CompilePlan) -> dict[str, SilverModelSpec]:
     shaped = plan.shaped_project
     if shaped is None:
         raise ContractScaffoldError("compile plan produced no shaped project")
-    result: dict[str, SilverModelSpec] = {}
-    for model in shaped.silver_models:
-        if model.kind not in _CONTRACT_MODEL_KINDS:
-            continue
-        # A conformance union and its base entity share a class URI; the union wins because
-        # it is the model downstream consumers read.
-        existing = result.get(model.identity.class_uri)
-        if existing is None or model.kind is SilverModelKind.UNION:
-            result[model.identity.class_uri] = model
-    return result
+    return models_by_class(shaped.silver_models)
 
 
 def build_contract_document(plan: CompilePlan) -> dict:
