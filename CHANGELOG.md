@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0rc11] — 2026-08-31
+
 ### Fixed
 - **`compile --emit` shipped a dbt package with no macros at all (issue #660).** The
   canonical v5 compile path assembles `BoundSources` through
