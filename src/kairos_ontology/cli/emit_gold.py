@@ -15,6 +15,7 @@ dbt publish tree.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -22,6 +23,8 @@ import click
 
 from ..core.compiler import build_compile_plan
 from ..core.hub_utils import find_hub_root, publish_root
+from ..core.projections.dbt.gold_connection import GOLD_CONNECTION_OVERRIDE_PATH
+from ..core.projections.dbt.gold_render import PARAMETER_ARTIFACT_PATH
 from ..core.projections.dbt.pbip_validate import validate_package_artifacts
 
 #: Power BI/Gold publish sub-path under the publish root (``<publish_root>/powerbi``),
@@ -158,7 +161,18 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
         return
 
-    emit_artifacts(artifacts, target, manifest_name=manifest_name)
+    # `parameter.yml` is the one hub-wide root artifact every domain's Gold emit writes
+    # into this shared directory -- correctly so, since fabric-cicd reads exactly one
+    # per `repository_directory` and it must cover every domain. Each domain owns only
+    # its own manifest, so without declaring it mergeable the second domain's emit sees
+    # an unowned file already on disk and fails closed (issue #664). Mirrors how
+    # `cli/compile.py` declares the Silver side's shared artifacts.
+    emit_artifacts(
+        artifacts,
+        target,
+        manifest_name=manifest_name,
+        replace_unowned_paths=(PARAMETER_ARTIFACT_PATH,),
+    )
     click.echo(f"   → {target}")
 
     _regenerate_master_gold_erd(target, hub_name=hub_root.name)
@@ -180,3 +194,92 @@ def _regenerate_master_gold_erd(gold_output: Path, *, hub_name: str) -> None:
     if master_mmd is None:
         return
     (gold_output / "master-gold-erd.mmd").write_text(master_mmd, encoding="utf-8")
+
+
+@click.command(name="apply-gold-connection")
+@click.option(
+    "--package-dir",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory the verified semantic-model archive was extracted into.",
+)
+@click.option(
+    "--environment",
+    required=True,
+    help="Target environment key, matching the one passed to fabric-cicd.",
+)
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    type=click.Path(path_type=Path),
+    help=f"Override file (default: {GOLD_CONNECTION_OVERRIDE_PATH}).",
+)
+def apply_gold_connection_cmd(package_dir: Path, environment: str, config_path: Path | None):
+    """Point one environment's Direct Lake target at dataplatform-owned infrastructure.
+
+    The hub authors `gold.direct_lake_connection` in its own `kairos.yaml`, so the
+    `parameter.yml` it ships can only rewrite between environments the hub itself
+    declares. That forced every Fabric workspace a hub might ever deploy to have its real
+    GUIDs committed to the hub repo, which otherwise stays infrastructure-agnostic
+    (issue #662). This is the seam from the other side.
+
+    Only `replace_value[ENVIRONMENT]` is rewritten. `find_value` is left exactly as the
+    hub emitted it: fabric-cicd matches it as a literal substring against the URL baked
+    into the TMDL, so a dataplatform-supplied value would silently fail to match and
+    leave the model pointed at the hub's default workspace.
+
+    A missing config file, or one that does not declare ENVIRONMENT, is a clean no-op --
+    the hub's own values stand. The archive and its verified checksum are never touched;
+    only the already-extracted `parameter.yml` is rewritten, after verification.
+    """
+    import yaml
+
+    from ..core.projections.dbt.gold_connection import (
+        GoldConnectionOverrideError,
+        apply_gold_connection_override,
+        parse_gold_connection_overrides,
+    )
+
+    resolved_config = config_path or Path(GOLD_CONNECTION_OVERRIDE_PATH)
+    if not resolved_config.is_file():
+        click.echo(f"No {resolved_config} -- using the hub's own Direct Lake connection.")
+        return
+
+    parameter_path = package_dir / PARAMETER_ARTIFACT_PATH
+    if not parameter_path.is_file():
+        click.echo(
+            f"No {PARAMETER_ARTIFACT_PATH} in {package_dir} -- nothing to parameterise. "
+            "The hub emits one only for a connection-bound semantic model."
+        )
+        return
+
+    try:
+        overrides = parse_gold_connection_overrides(
+            yaml.safe_load(resolved_config.read_text(encoding="utf-8")),
+            os.environ,
+        )
+    except GoldConnectionOverrideError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    override = overrides.get(environment)
+    if override is None:
+        click.echo(
+            f"{resolved_config} declares no {environment!r} environment "
+            f"(declared: {sorted(overrides)}) -- using the hub's own connection."
+        )
+        return
+
+    try:
+        rewritten, previous, new_url = apply_gold_connection_override(
+            parameter_path.read_text(encoding="utf-8"),
+            environment,
+            override,
+        )
+    except GoldConnectionOverrideError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    parameter_path.write_text(rewritten, encoding="utf-8")
+    click.echo(f"Applied {resolved_config} override for {environment!r}:")
+    click.echo(f"  before: {previous or '(not declared by the hub)'}")
+    click.echo(f"  after:  {new_url}")

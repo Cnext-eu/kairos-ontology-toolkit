@@ -15,13 +15,22 @@ adapter: fabric
 # binds through a named expression that embeds the workspace and lakehouse GUIDs.
 # Declare every environment the model may be promoted into -- the projector emits
 # a root `parameter.yml` so fabric-cicd rewrites these at deploy time.
+# `environments` is a MAPPING keyed by environment name -- not a list of `- name:`
+# entries. Replace every <...> below with a real GUID: the all-zero placeholder is
+# GUID-shaped, so accepting it would emit a well-formed model pointing at a OneLake
+# path that resolves to nothing. `emit-gold` rejects it for that reason.
+#
+# The values here are the hub's own defaults, baked into the emitted TMDL. A
+# dataplatform that owns the target infrastructure can override them per environment
+# at deploy time without the hub declaring those GUIDs at all -- see CICD.md,
+# "Fabric and Power BI".
 # gold:
 #   direct_lake_connection:
 #     default_environment: dev
 #     environments:
-#       - name: dev
-#         workspace_id: 00000000-0000-0000-0000-000000000000
-#         lakehouse_id: 00000000-0000-0000-0000-000000000000
-#       - name: prod
-#         workspace_id: 00000000-0000-0000-0000-000000000000
-#         lakehouse_id: 00000000-0000-0000-0000-000000000000
+#       dev:
+#         workspace_id: <dev workspace GUID>
+#         lakehouse_id: <dev lakehouse GUID>
+#       prod:
+#         workspace_id: <prod workspace GUID>
+#         lakehouse_id: <prod lakehouse GUID>

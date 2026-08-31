@@ -1,0 +1,34 @@
+# Deploy-time Direct Lake connection overrides (dataplatform-owned).
+#
+# The ontology hub authors `gold.direct_lake_connection` in its own `kairos.yaml`, and
+# `emit-gold` bakes the DEFAULT environment's OneLake URL into the semantic model's TMDL.
+# The hub also ships a `parameter.yml` whose `find_replace` entry rewrites that URL per
+# environment at deploy time -- but its `replace_value` map can only cover environments
+# the HUB itself declares.
+#
+# This file is that seam from the other side: it lets the dataplatform point a deployment
+# at Fabric infrastructure the hub knows nothing about, so real workspace and lakehouse
+# GUIDs never have to be committed to the hub repo.
+#
+# How it is applied (see .github/workflows/deploy-powerbi-semantic-model.yml):
+#   - `find_value` is ALWAYS taken from the hub's shipped `parameter.yml`. It must match
+#     the URL baked into the TMDL byte for byte; only the hub knows it, and overriding it
+#     here would make the rewrite silently miss.
+#   - Only `replace_value[<target_environment>]` is overridden, using the GUIDs below.
+#   - Environments absent from this file keep whatever the hub declared.
+#   - No file, or no matching environment => no-op. The hub's own values are used.
+#
+# The archive and its verified SHA-256 are never modified; the rewrite happens on the
+# extracted `parameter.yml` after verification, and the workflow logs before/after.
+#
+# Copy to `gold-connections.yml` (same directory) and fill in real GUIDs. Prefer repo or
+# environment VARIABLES over hardcoding if these IDs are sensitive in your org: any value
+# below may be written as ${VAR_NAME} and is resolved from the environment at deploy time.
+
+environments:
+  DEV:
+    workspace_id: "00000000-0000-0000-0000-000000000000"
+    lakehouse_id: "00000000-0000-0000-0000-000000000000"
+  # PROD:
+  #   workspace_id: "${FABRIC_PROD_WORKSPACE_ID}"
+  #   lakehouse_id: "${FABRIC_PROD_LAKEHOUSE_ID}"

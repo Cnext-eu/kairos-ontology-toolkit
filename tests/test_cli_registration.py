@@ -27,6 +27,7 @@ RETAINED_COMMANDS = {
     "discovery-conformance",
     "discovery-status",
     "emit-gold",
+    "apply-gold-connection",
     "register-concept",
     "source-disposition",
     "domain-coverage",
