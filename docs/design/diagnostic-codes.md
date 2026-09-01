@@ -132,6 +132,57 @@ helper, which always sets `rule_id="DD-133 §3c"`.
 | `conformance.type-contract-missing` | error | DD-133 §3c | |
 | `conformance.union-incompatible` | error | DD-133 §3c | |
 
+## `contract_conformance.py` — Gate A, per-binding contract conformance (DD-213)
+
+One authored binding compared with one authored contract. Stateless: no Git history, no
+prior release. Severity is a *parameter* — these ship at `warning` so a hub can adopt a
+contract and see what would block before anything does, and are promoted to `error` once
+contract-driven emission lands. A domain with no contract produces none of these.
+
+Constructed through the local `contract_binding_diagnostics.report(code, message, pointer)`
+closure, which stamps the caller-supplied severity and the binding's source path.
+
+| Code | Default severity | Rule ID / DD citation | Notes |
+| --- | --- | --- | --- |
+| `contract.class-not-declared` | varies | DD-133 (default) | The binding's `target.class` is absent from a present domain contract. A governed domain cannot silently regrow ungoverned entities. |
+| `contract.class-unresolved` | varies | DD-133 (default) | A contract `class` does not resolve in the ontology import closure, or resolves ambiguously. Needs the DD-103 semantic index, so it lives here rather than with the pure document rules in `contracts.py`. |
+| `contract.grain-mismatch` | varies | DD-133 (default) | The binding's `grain.columns`, resolved to canonical properties via the DD-133 §8b source→output rule, differs from the contract's declared grain. |
+| `contract.identity-mismatch` | varies | DD-133 (default) | The binding's identity `strategy` or resolved `businessKey` differs from the contract. |
+| `contract.nullability-mismatch` | varies | DD-133 (default) | A mapped column's resolved nullability contradicts the contract. |
+| `contract.optional-property-undeclared` | varies | DD-133 (default) | A `requirement: optional` property is neither mapped nor listed under `unmapped:`. Explicit rather than inferred: a silent gap and a reviewed gap must not look the same in a diff. |
+| `contract.property-unresolved` | varies | DD-133 (default) | A contract `property` does not resolve in the ontology import closure, or resolves to more than one property URI. A contract may not declare a symbol a binding could never bind. |
+| `contract.property-not-declared` | varies | DD-133 (default) | The binding maps a property the contract does not declare, on a `closed: true` entity. |
+| `contract.relationship-not-declared` | varies | DD-133 (default) | A `relationships:` entry's `(property, target)` pair is undeclared, on a `closed: true` entity. |
+| `contract.required-property-unmapped` | varies | DD-133 (default) | A `requirement: required` property has no `fields:` entry in this binding. The rule that makes the contract binding on every source. |
+| `contract.technical-field-not-declared` | varies | DD-133 (default) | A `technicalFields:` entry is absent from `technicalColumns:`, on a `closed: true` entity. |
+| `contract.type-mismatch` | varies | DD-133 (default) | A mapped column's resolved canonical type differs from the contract's. Canonical type is inferred from the source column and `cast` is excluded from the mapping grammar (DD-133 §4), so a diverging source type needs a contracted dbt model — the contract cannot coerce it. |
+| `contract.unmapped-in-hash-inputs` | varies | DD-133 (default) | An `unmapped:` property's column feeds `load.incremental.canonicalHashInputs`. A padded NULL must never join the SCD2 canonical hash, or the entity re-versions wholesale the day the source starts supplying it. |
+| `contract.unmapped-property-required` | varies | DD-133 (default) | `unmapped:` names a required property, an undeclared property, or one the same binding also maps. |
+
+## `contracts.py` — declared Silver contract loader and contract-load rules (DD-213)
+
+The document-level half of the declared Silver contract: YAML loading, closed-schema
+validation, and the DD-213 §4 rules that need no ontology closure. Rules that *do* need
+resolved symbols (`contract.property-unresolved`, `contract.class-unresolved`) and every
+per-binding conformance rule live in `kernel.py` and are catalogued in that section.
+
+Constructed via `CompileDiagnostic(code=...)` directly, or through the local
+`_entity_diagnostics._diagnostic(code, message, pointer)` closure (all default
+`rule_id`/severity).
+
+| Code | Default severity | Rule ID / DD citation | Notes |
+| --- | --- | --- | --- |
+| `contract.closed-requires-preview` | error | DD-133 (default) | `closed: false` outside `stability: preview`. An open contract is a provisional state, not a permanent one. |
+| `contract.column-name-collision` | error | DD-133 (default) | Two declared columns resolve to the same name, or one collides with a compiler-owned name. Reserved shapes are the `_` prefix (DD-104 audit envelope) and the `_sk` suffix (generated surrogate join key, emitted as `<model_name>_sk`). |
+| `contract.deprecated-shape` | error | DD-133 (default) | A `lifecycle.deprecated` window is degenerate (`since` equals `removeIn`) or its `replacedBy` is not declared on the same entity. Shape only — version values are never compared against release history, which would make `compile --check` stateful. |
+| `contract.duplicate-entity` | error | DD-133 (default) | Two entries declare the same `class`, or two entities pin the same `modelName`. |
+| `contract.duplicate-key` | error | DD-133 (default) | Duplicate YAML mapping key. Same detection as `binding.duplicate-key`, re-coded for the contract document. |
+| `contract.grain-not-required` | error | DD-133 (default) | A `grain.properties` or `identity.businessKey` entry is undeclared or not `requirement: required`. Keeping keys required makes them mapped-by-construction, so the DD-133 §8b source→output key resolution always applies. |
+| `contract.not-a-mapping` | error | DD-133 (default) | The document root is not a YAML mapping. |
+| `contract.optional-not-nullable` | error | DD-133 (default) | A `requirement: optional` property or technical column declares `nullable: false`. An unmapped optional column is padded with NULL for that source's rows, so `optional` implies nullable. |
+| `contract.schema` | error | DD-133 (default) | Closed-schema violation (unknown field, missing required field, bad enum, or a `type` outside the canonical-type label grammar). |
+| `contract.yaml` | error | DD-133 (default) | The document is not parseable YAML. |
+
 ## `dbt_source.py` — contracted dbt model source resolution
 
 All rows are constructed through the local `_failure(binding, code, message, pointer)`

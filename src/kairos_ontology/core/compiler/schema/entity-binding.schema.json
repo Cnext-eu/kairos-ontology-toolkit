@@ -32,6 +32,13 @@
     "technicalFields": {
       "type": "array",
       "items": {"$ref": "#/definitions/technicalField"}
+    },
+    "unmapped": {
+      "$comment": "DD-213: contract-optional properties this source cannot supply. Declared, never inferred -- a silent gap and a reviewed gap must not look the same in a diff. Each is emitted as a typed NULL for this source's rows.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/definitions/nonEmptyString"}
     }
   },
   "allOf": [

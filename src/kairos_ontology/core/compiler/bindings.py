@@ -379,6 +379,10 @@ class EntityBinding:
     source_path: str = ""
     tier: str = "canonical"
     technical_fields: tuple[TechnicalField, ...] = ()
+    #: DD-213: contract-optional properties this source cannot supply. Explicit rather than
+    #: inferred, matching the standing v5 rule that nothing load-bearing is defaulted -- a
+    #: silent gap and a reviewed gap must not look the same in a binding diff.
+    unmapped: tuple[str, ...] = ()
 
     @property
     def load_mode(self) -> str:
@@ -811,6 +815,7 @@ def _build_binding(data: dict, resolver: _MarkResolver, path: str) -> EntityBind
         source_path=path,
         tier=str(data["metadata"].get("tier", "canonical")),
         technical_fields=tuple(technical_fields),
+        unmapped=tuple(str(item) for item in data.get("unmapped", ())),
     )
 
 

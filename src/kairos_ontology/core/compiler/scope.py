@@ -36,6 +36,14 @@ class BuildScope:
     toolkit_version: str
     binding_paths: tuple[str, ...] = ()
     ontology_paths: tuple[str, ...] = ()
+    #: Declared Silver contracts in scope (DD-213), the selected domain's first and then
+    #: foreign-domain contracts that declare a cross-domain relationship target. Foreign
+    #: contracts are load-bearing, not informational: a relationship FK column is named
+    #: ``{property_column}_{target_model}`` (``kernel.py``), so the *parent's* declared
+    #: ``modelName`` decides a child domain's column name. Resolving only the selected
+    #: domain would let a parent rename silently break a child that is never recompiled
+    #: in the same run.
+    contract_paths: tuple[str, ...] = ()
     inputs: tuple[ProvenanceInput, ...] = ()
     prefix_warnings: tuple[CompileDiagnostic, ...] = ()
 

@@ -144,6 +144,8 @@ def _compare_group_contracts(
     binding: EntityBinding,
     canonical_contract: ConformanceTypeContract,
     contract: ConformanceTypeContract,
+    *,
+    governed: bool = False,
 ) -> list[CompileDiagnostic]:
     diagnostics: list[CompileDiagnostic] = []
     if contract.grain != canonical_contract.grain:
@@ -169,7 +171,16 @@ def _compare_group_contracts(
                 "/identity",
             )
         )
-    if tuple(sorted(contract.properties)) != tuple(sorted(canonical_contract.properties)):
+    # DD-213: for a contract-governed class the identical-property-set rule is *replaced* by
+    # contract conformance -- each binding's properties must be a subset of the contract,
+    # every required one covered, and each gap declared under `unmapped:`. Holding peers to
+    # each other as well would forbid exactly the case the contract makes safe: a genuinely
+    # partial source joining an established group. Grain and identity comparisons stay in
+    # force; the contract makes them redundant rather than wrong, so they cost nothing and
+    # keep working for ungoverned classes on the same code path.
+    if not governed and tuple(sorted(contract.properties)) != tuple(
+        sorted(canonical_contract.properties)
+    ):
         diagnostics.append(
             _diagnostic(
                 binding,
@@ -187,6 +198,7 @@ def build_conformance_plan(
     *,
     type_contracts: Mapping[str, ConformanceTypeContract],
     provenance_inputs: Mapping[str, tuple[ProvenanceInput, ...]],
+    governed_classes: frozenset[str] = frozenset(),
 ) -> ConformancePlan:
     """Validate and canonically plan bindings that share a target class.
 
@@ -423,7 +435,13 @@ def build_conformance_plan(
                 contract = valid_contracts.get(binding.name)
                 if contract is not None:
                     diagnostics.extend(
-                        _compare_group_contracts(canonical, binding, canonical_contract, contract)
+                        _compare_group_contracts(
+                            canonical,
+                            binding,
+                            canonical_contract,
+                            contract,
+                            governed=canonical.target_class in governed_classes,
+                        )
                     )
 
         member_paths = {member.source_path for member in members}

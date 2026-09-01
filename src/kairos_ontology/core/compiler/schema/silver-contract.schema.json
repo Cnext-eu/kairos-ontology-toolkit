@@ -1,0 +1,285 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://kairos.eu/v5/silver-contract.schema.json",
+  "title": "Kairos v5 SilverContract",
+  "description": "Closed declared Silver contract for one domain (DD-213). Bindings conform to this; they never constitute it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "entities"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "kairos.eu/v5"
+    },
+    "kind": {
+      "const": "SilverContract"
+    },
+    "metadata": {
+      "$ref": "#/definitions/metadata"
+    },
+    "entities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/entity"
+      }
+    }
+  },
+  "definitions": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_]*$"
+    },
+    "canonicalType": {
+      "$comment": "Adapter-neutral labels produced by canonical_type_label and parsed by mapping_normalize._canonical_type. Kept in sync with CanonicalTypeKind.",
+      "type": "string",
+      "pattern": "^(string|boolean|int16|int32|int64|decimal|float64|date|time|timestamp|binary|json)$|^string\\([1-9][0-9]*\\)$|^decimal\\([1-9][0-9]*,[0-9]+\\)$"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain"
+      ],
+      "properties": {
+        "domain": {
+          "$ref": "#/definitions/nonEmptyString"
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deprecated"
+      ],
+      "properties": {
+        "deprecated": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "since",
+            "removeIn"
+          ],
+          "properties": {
+            "since": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "removeIn": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "replacedBy": {
+              "$ref": "#/definitions/termRef"
+            }
+          }
+        }
+      }
+    },
+    "property": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "property",
+        "type",
+        "requirement",
+        "nullable"
+      ],
+      "properties": {
+        "property": {
+          "$ref": "#/definitions/termRef"
+        },
+        "columnName": {
+          "$ref": "#/definitions/identifier"
+        },
+        "type": {
+          "$ref": "#/definitions/canonicalType"
+        },
+        "requirement": {
+          "enum": [
+            "required",
+            "optional"
+          ]
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "lifecycle": {
+          "$ref": "#/definitions/lifecycle"
+        }
+      }
+    },
+    "technicalColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "requirement",
+        "nullable"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/identifier"
+        },
+        "type": {
+          "$ref": "#/definitions/canonicalType"
+        },
+        "requirement": {
+          "enum": [
+            "required",
+            "optional"
+          ]
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "lifecycle": {
+          "$ref": "#/definitions/lifecycle"
+        }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "property",
+        "target"
+      ],
+      "properties": {
+        "property": {
+          "$ref": "#/definitions/termRef"
+        },
+        "target": {
+          "$ref": "#/definitions/termRef"
+        },
+        "columnName": {
+          "$ref": "#/definitions/identifier"
+        }
+      }
+    },
+    "grain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "columns"
+      ],
+      "properties": {
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/identifier"
+          }
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy"
+      ],
+      "properties": {
+        "strategy": {
+          "enum": [
+            "source-natural",
+            "surrogate"
+          ]
+        },
+        "businessKey": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/identifier"
+          }
+        }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "stability",
+        "closed",
+        "grain",
+        "identity",
+        "properties"
+      ],
+      "properties": {
+        "class": {
+          "$ref": "#/definitions/termRef"
+        },
+        "modelName": {
+          "$ref": "#/definitions/identifier"
+        },
+        "stability": {
+          "enum": [
+            "preview",
+            "stable",
+            "deprecated"
+          ]
+        },
+        "closed": {
+          "type": "boolean"
+        },
+        "grain": {
+          "$ref": "#/definitions/grain"
+        },
+        "identity": {
+          "$ref": "#/definitions/identity"
+        },
+        "properties": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/property"
+          }
+        },
+        "technicalColumns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/technicalColumn"
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/relationship"
+          }
+        }
+      }
+    },
+    "termRef": {
+      "$comment": "An ontology term: either a prefixed QName (party:Customer) or an absolute IRI (https://example.com/ont/party#Customer). Both forms occur in real hubs and resolve through the same context.property/klass lookup.",
+      "type": "string",
+      "minLength": 1,
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*:[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        {
+          "pattern": "^[A-Za-z][A-Za-z0-9+.-]*://[^\\s]+$"
+        }
+      ]
+    },
+    "termRefs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/definitions/termRef"
+      }
+    }
+  }
+}

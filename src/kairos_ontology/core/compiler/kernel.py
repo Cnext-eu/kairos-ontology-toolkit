@@ -59,6 +59,18 @@ from .adapter import (
     object_property_in_fields_message,
     system_fact_for_relation,
 )
+from .contract_conformance import (
+    contract_binding_diagnostics,
+    contract_resolution_diagnostics,
+    models_by_class,
+)
+from .contract_emission import (
+    apply_column_names,
+    expand_binding,
+    mark_padded_columns,
+    padded_column_names,
+)
+from .contracts import SilverContract, load_silver_contract
 from .bindings import (
     EntityBinding,
     ExprCase,
@@ -947,6 +959,22 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
             ]
         )
     inputs.append(ProvenanceInput("kairos.yaml", config_path.read_text(encoding="utf-8")))
+    # DD-213: declared Silver contracts join the closure, including foreign-domain ones a
+    # cross-domain relationship points at. They are provenance inputs because they decide
+    # emitted column sets, names, and order -- a contract edit must change the hash.
+    relationship_targets = frozenset(
+        target
+        for path in binding_paths
+        for target in _binding_relationship_targets(path.read_text(encoding="utf-8"))
+    )
+    contract_paths = discover_contract_paths(root, domain, relationship_targets)
+    for path in contract_paths:
+        inputs.append(
+            ProvenanceInput(
+                str(path.relative_to(root)).replace("\\", "/"),
+                path.read_text(encoding="utf-8"),
+            )
+        )
     scope = BuildScope(
         domain=domain,
         hub_root=str(root),
@@ -956,6 +984,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         toolkit_version=__version__,
         binding_paths=tuple(str(path) for path in binding_paths),
         ontology_paths=ontology_paths,
+        contract_paths=tuple(str(path) for path in contract_paths),
         inputs=tuple(inputs),
         prefix_warnings=prefix_warnings,
     )
@@ -1111,6 +1140,7 @@ def _conformance_plans(
     bindings: tuple[EntityBinding, ...],
     context: ResolutionContext,
     scope: BuildScope,
+    governed_classes: frozenset[str] = frozenset(),
 ) -> tuple[tuple[ConformancePlan, ...], tuple[CompileDiagnostic, ...], frozenset[str]]:
     remaining = set(range(len(bindings)))
     groups: list[list[EntityBinding]] = []
@@ -1169,6 +1199,7 @@ def _conformance_plans(
                         member.name: _conformance_contract(member, context) for member in members
                     },
                     provenance_inputs=provenance,
+                    governed_classes=governed_classes,
                 )
             )
         except CompileError as exc:
@@ -2562,6 +2593,67 @@ def _binding_domain(text: str) -> str | None:
     return str(metadata.get("domain", "")) if isinstance(metadata, dict) else None
 
 
+def _binding_relationship_targets(text: str) -> frozenset[str]:
+    """Read only the relationship target classes before full closed-schema validation.
+
+    Used by scope resolution to decide which *foreign-domain* Silver contracts (DD-213)
+    must join the closure: a relationship FK column embeds the parent's model name, so the
+    parent's declared ``modelName`` is authoritative for this domain's column names.
+    """
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return frozenset()
+    if not isinstance(document, dict):
+        return frozenset()
+    relationships = document.get("relationships")
+    if not isinstance(relationships, list):
+        return frozenset()
+    return frozenset(
+        str(item["target"])
+        for item in relationships
+        if isinstance(item, dict) and isinstance(item.get("target"), str)
+    )
+
+
+def discover_contract_paths(
+    root: Path, domain: str, relationship_targets: frozenset[str]
+) -> tuple[Path, ...]:
+    """Return the Silver contracts in scope, selected domain first (DD-213).
+
+    A foreign-domain contract joins the closure only when it declares a class this
+    domain's bindings actually point a relationship at -- so an unrelated domain's
+    contract edit never churns this domain's provenance hash.
+    """
+    contracts_dir = root / "model" / "contracts"
+    if not contracts_dir.is_dir():
+        return ()
+    own = contracts_dir / f"{domain}.contract.yaml"
+    selected: list[Path] = [own] if own.is_file() else []
+    if not relationship_targets:
+        return tuple(selected)
+    for path in sorted(contracts_dir.glob("*.contract.yaml")):
+        if path == own:
+            continue
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        entities = document.get("entities")
+        if not isinstance(entities, list):
+            continue
+        declared = {
+            str(entity["class"])
+            for entity in entities
+            if isinstance(entity, dict) and isinstance(entity.get("class"), str)
+        }
+        if declared & relationship_targets:
+            selected.append(path)
+    return tuple(selected)
+
+
 def _binding_tier(text: str) -> str:
     """Read only the ``metadata.tier`` discriminator before full closed-schema validation.
 
@@ -3504,6 +3596,32 @@ def _planned_dbt_dependencies(
     return dependencies, tuple(diagnostics)
 
 
+def _load_domain_contract(
+    scope: BuildScope, domain: str
+) -> tuple[SilverContract | None, list[CompileDiagnostic]]:
+    """Load the selected domain's declared Silver contract, if it has one (DD-213).
+
+    A contract-load failure is reported and treated as *ungoverned* rather than fatal in
+    this slice: Gate A is advisory until contract-driven emission lands, so a malformed
+    contract must not be able to stop a hub compiling.
+    """
+    for path_text in scope.contract_paths:
+        path = Path(path_text)
+        if path.stem != f"{domain}.contract":
+            continue
+        try:
+            return load_silver_contract(path.read_text(encoding="utf-8"), path=str(path)), []
+        except CompileError as exc:
+            return None, list(exc.diagnostics)
+    # No advisory is emitted for an ungoverned domain. DD-213 §6 promises that a domain
+    # without a contract "compiles exactly as it does today", and a diagnostic that fires
+    # on every compile of every existing hub is not that -- it is noise that every
+    # downstream consumer asserting on the diagnostic stream would have to learn to ignore.
+    # Governance status is a question you ask (the contract file either exists or does
+    # not), not something every compile has to answer unprompted.
+    return None, []
+
+
 def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     """Build the canonical graph-free plan without rendering or writing artifacts."""
     scope, context = resolve_scope(Path(hub_root), domain)
@@ -3514,8 +3632,28 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
         scope.provenance_hash(),
     )
     diagnostics: list[CompileDiagnostic] = list(scope.prefix_warnings)
+    # DD-213 Gate A. A domain with no contract stays ungoverned and compiles exactly as it
+    # did before, with one advisory -- adoption is incremental by construction, never a
+    # clean break.
+    domain_contract, contract_diagnostics = _load_domain_contract(scope, domain)
+    diagnostics.extend(contract_diagnostics)
+    if domain_contract is not None:
+        # Contract-pinned column names replace the camel_to_snake default, which is what
+        # decouples an ontology rename from a physical column rename. An unpinned contract
+        # leaves the context untouched and emits byte-identically to no contract at all.
+        context = apply_column_names(context, domain_contract)
+        diagnostics.extend(
+            contract_resolution_diagnostics(
+                domain_contract, context, severity=DiagnosticSeverity.ERROR
+            )
+        )
     specs: list[EntityBindingSpec] = []
     valid_bindings: list[EntityBinding] = []
+    # The bindings exactly as authored, parallel to ``valid_bindings``. Gate A must judge
+    # what the author wrote: ``valid_bindings`` carries the contract-expanded form, in which
+    # every padded property already looks mapped, so checking coverage against it would make
+    # required-property-unmapped and optional-property-undeclared permanently unreachable.
+    authored_bindings: list[EntityBinding] = []
     bounds: list[BoundSources] = []
     selected_bindings: list[EntityBinding] = []
     for path_text in scope.binding_paths:
@@ -3550,7 +3688,14 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             )
         )
     conformance_plans, conformance_diagnostics, conformance_blocked = _conformance_plans(
-        tuple(selected_bindings), context, scope
+        tuple(selected_bindings),
+        context,
+        scope,
+        governed_classes=(
+            frozenset(entity.target_class for entity in domain_contract.entities)
+            if domain_contract is not None
+            else frozenset()
+        ),
     )
     diagnostics.extend(conformance_diagnostics)
     selected_by_name = {binding.name: binding for binding in selected_bindings}
@@ -3637,7 +3782,22 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
             continue
         try:
+            # DD-213: expand a governed binding to the contract's full property list, in the
+            # contract's declared order, padding what this source does not supply. Every
+            # branch in a conformance group therefore has identical columns, which is what
+            # makes the union's `base_model` invariant under binding filename order.
+            padded_columns: frozenset[str] = frozenset()
+            authored_binding = binding
+            contract_entity = (
+                domain_contract.entity_for(binding.target_class)
+                if domain_contract is not None
+                else None
+            )
+            if contract_entity is not None:
+                padded_columns = padded_column_names(binding, contract_entity, context)
+                binding = expand_binding(binding, contract_entity, context)
             bound = adapt_binding(binding, context)
+            bound = mark_padded_columns(bound, padded_columns)
             relationship_hash_is_deferred = any(
                 relationship.temporal is not None
                 and relationship.temporal.change_detection == "include"
@@ -3648,6 +3808,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 individual_shape = shape_project(individual_contract)
                 plan_materialization(individual_contract, individual_shape)
             valid_bindings.append(binding)
+            authored_bindings.append(authored_binding)
             bounds.append(bound)
             specs.append(EntityBindingSpec(binding=binding))
         except CompileError as exc:
@@ -3726,6 +3887,27 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                     location=SourceLocation(path=scope.hub_root),
                 )
             )
+    # DD-213 Gate A. Deliberately AFTER shaping, not inside the binding loop: the
+    # scaffolder reads types from the shaped project, so checking against the adapter's
+    # pre-shape candidates would compare two different stages and reject a contract the
+    # scaffolder had just generated from this very hub.
+    if domain_contract is not None:
+        shaped_models = models_by_class(shaped.silver_models) if shaped is not None else {}
+        for binding in authored_bindings:
+            resolved_class = context.klass(binding.target_class)
+            diagnostics.extend(
+                contract_binding_diagnostics(
+                    binding,
+                    domain_contract,
+                    model=(
+                        shaped_models.get(resolved_class.uri)
+                        if resolved_class is not None
+                        else None
+                    ),
+                    severity=DiagnosticSeverity.ERROR,
+                )
+            )
+
     artifact_paths = _planned_artifact_paths(shaped, materialized, tuple(valid_bindings), context)
     dbt_dependencies, dependency_diagnostics = _planned_dbt_dependencies(
         dbt_closures, scope, artifact_paths

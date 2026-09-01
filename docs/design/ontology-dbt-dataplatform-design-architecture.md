@@ -9,9 +9,10 @@ runtime execution. It is a living architecture reference, not a single delivery 
 capability below should land independently, with its own design-decision record where it changes
 existing behavior.
 
-The scope spans four concerns that have different owners and different failure modes: live source
-introspection and profiling; source-schema drift detection; compatibility between released Silver
-contracts; and cross-repository authoring and release governance. These are kept as separate,
+The scope spans five concerns that have different owners and different failure modes: live source
+introspection and profiling; source-schema drift detection; the declaration of the Silver contract
+itself and binding conformance to it; compatibility between released Silver contracts; and
+cross-repository authoring and release governance. These are kept as separate,
 independently deliverable capabilities joined through versioned, machine-readable artifacts —
 never as one combined program — because bundling them produces a change no one can review,
 test, or roll back incrementally.
@@ -23,13 +24,17 @@ flowchart TD
     subgraph HUB["Ontology Hub Repository"]
         direction TB
         ONT["Ontology TTL +<br/>Source Vocabulary"]
+        CONTRACT["Silver contracts<br/>model/contracts/*.contract.yaml<br/>(DD-213, proposed)"]
         BIND["EntityBindings"]
         CDBT["Contracted dbt models<br/>(hand-authored, hub-only)"]
         COMPILE["compile --check / --explain / --emit<br/>(stateless, deterministic)"]
         PUB["ontology-hub-publish/medallion/dbt<br/>models/silver + models/gold"]
         MANIFEST["Parity manifest<br/>(fingerprints + hashes)"]
 
+        ONT --> CONTRACT
+        CONTRACT -->|"constrains"| BIND
         ONT --> COMPILE
+        CONTRACT --> COMPILE
         BIND --> COMPILE
         CDBT --> COMPILE
         COMPILE --> PUB
@@ -145,7 +150,8 @@ weighed against the same reasoning rather than only against the resulting rule.
 ### Repository and ownership boundaries
 
 **The ontology hub and the dataplatform are separate repositories with non-overlapping
-responsibilities.** The hub owns ontology, source vocabulary, bindings, contracted dbt inputs,
+responsibilities.** The hub owns ontology, source vocabulary, Silver contracts, bindings,
+contracted dbt inputs,
 stateless compilation, compile diagnostics, deterministic emitted artifacts and parity manifests,
 comparison of two supplied Silver contract manifests, and release evidence describing exactly what
 was compiled. The dataplatform owns credentials and live warehouse access, extraction schedules
@@ -190,6 +196,22 @@ dataplatform) rather than the full toolkit and its transitive rendering dependen
 load-bearing part of every target's build.
 
 ### Release and compatibility safety
+
+**The Silver contract is a declared, authored artifact that bindings conform to — never a shape
+derived from whatever the bindings happen to say.** Today it is the latter: model name, column
+name, column set, and column order are all computed from the bindings
+(`adapter.py:779`, `kernel.py:682`, DD-133 §8b, `adapter.py:787`), so deleting a `fields:` entry
+drops a column, reordering `fields:` changes the parity fingerprint, renaming an ontology
+property renames the physical column, and onboarding a second source to a class *must* reshape
+the model because `conformance.property-incompatible` requires identical property sets across a
+group. [DD-213](toolkit-design-decisions.md#dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it)
+(proposed) introduces `model/contracts/<domain>.contract.yaml` as a third authored input between
+ontology and bindings, and a compile-time `contract.*` rule family enforcing conformance to it.
+*Why:* a contract must constrain its implementations; here each implementation redefines the
+contract, so the failure happens during ordinary source onboarding — before any release process
+could observe it. The contract is an *interface declaration*, not readiness or coverage state
+(retired by DD-133 §9), and it is authored input rather than derived history, so `compile
+--check` stays stateless and no generated baseline appears under `model/`.
 
 **Compatibility between two Silver releases is proven by comparing two already-emitted parity
 manifests, never by introducing a second, checked-in schema baseline inside the hub's authored
@@ -358,7 +380,7 @@ already forward-compatible with the 2.0 transition by construction.
 
 ### Hub repository owns
 
-- ontology, source vocabulary, bindings, and contracted dbt inputs;
+- ontology, source vocabulary, Silver contracts, bindings, and contracted dbt inputs;
 - stateless compilation and compile diagnostics;
 - deterministic emitted artifacts and parity manifests;
 - comparison of two supplied Silver contract manifests; and
@@ -473,7 +495,59 @@ Acceptance criteria:
 - High-cardinality fields never cause unbounded value retrieval.
 - Fabric and Databricks tests cover unsupported metadata APIs and partial permissions.
 
-### Phase 4 — add released Silver compatibility comparison
+### Phase 4 — declare the Silver contract and enforce binding conformance (Gate A)
+
+Goal: make the canonical Silver model a declared artifact that a new source binds *to*, so an
+ordinary authoring action can no longer reshape it. Specified in
+[DD-213](dd-213-silver-entity-contract.md); that document is normative for the schema and the
+full rule table, and this phase is its delivery plan.
+
+1. Add the closed `SilverContract` schema and its packaged JSON Schema, loaded from
+   `model/contracts/<domain>.contract.yaml` into frozen dataclasses — never into RDF.
+2. Add the contract-load rules (`contract.property-unresolved`, `contract.column-name-collision`,
+   `contract.grain-not-required`, `contract.closed-requires-preview`, and the rest of DD-213 §4).
+3. Add the per-binding conformance rules to the DD-133 §5 safety kernel
+   (`contract.required-property-unmapped`, `contract.property-not-declared`,
+   `contract.type-mismatch`, `contract.grain-mismatch`, `contract.identity-mismatch`, …), and the
+   new optional `EntityBinding` key `unmapped:`.
+4. Make the contract the column authority for a governed class across **both** the source-branch
+   models and the union model — not just the single-source entity model — padding every branch to
+   the full contract column set with typed NULLs. Retire `conformance_bases`/`base_model` as a
+   column source (`kernel.py:1487-1497`), where the union currently takes its columns from
+   whichever binding sorts first by filename.
+5. Emit padded columns with `include_in_change_detection: False`, and reject an `unmapped`
+   property that also appears in `load.incremental.canonicalHashInputs`, so a source that later
+   starts supplying the column cannot trigger a mass SCD2 re-versioning.
+6. Relax `conformance.property-incompatible` for governed classes — subset-of-contract plus
+   explicit gaps replaces identical-property-sets, which is what lets a partial source join a
+   conformance group.
+7. Add `scaffold-contract <domain>`, generating the contract from the current `CompilePlan`, with
+   `BuildScope` resolving foreign-domain contracts for cross-domain relationship targets.
+8. Keep an absent contract file behaving exactly as today, with one advisory
+   `contract.domain-ungoverned` warning — incremental adoption, no clean break, no migration
+   command.
+9. Add the `contract.*` rows to `diagnostic-codes.md` in the same change, as
+   `tests/test_diagnostic_catalog.py` requires.
+
+Acceptance criteria:
+
+- Adopting a generated contract is a provable no-op: the parity manifest is byte-unchanged.
+- Adding a binding for a second source to a governed class cannot change the emitted column set,
+  order, names, or types — it either conforms or blocks.
+- Reordering a binding's `fields:` leaves the parity manifest unchanged.
+- Renaming an ontology property whose `columnName` is pinned changes no emitted column.
+- A binding that omits a contract-optional property without declaring it in `unmapped:` blocks.
+- The emitted column set of a governed class is unchanged by adding, removing, or renaming a
+  binding file.
+- A source that later begins supplying a previously-unmapped property triggers no SCD2
+  re-versioning.
+- `compile --check` remains stateless and independent of Git history.
+- A domain with no contract file compiles byte-identically to the release before this phase.
+
+Deferred from this phase: Gold and MDM contracts; dbt `versions:`; any comparison against a
+prior release (that is Phase 5).
+
+### Phase 5 — add released Silver compatibility comparison (Gate B)
 
 Goal: detect changes between two releases without adding generated authority to the hub.
 
@@ -487,6 +561,14 @@ Goal: detect changes between two releases without adding generated authority to 
 5. Treat unknown manifest versions and unclassified field changes as blocking.
 6. Emit JSON for CI and concise text for reviewers.
 7. Keep semantic interpretation human-reviewed even when structure is unchanged.
+8. For a domain governed by a Phase 4 contract, make the **contract file diff** the primary
+   reviewable unit and the parity-manifest diff the corroborating evidence that the emit matches
+   the contract, classified against the table in [DD-213 §5](dd-213-silver-entity-contract.md).
+   For an ungoverned domain the manifest diff remains the only available signal.
+9. Compare a **contract-relevant projection** of the manifest, not the full fingerprint: the
+   manifest hashes all 15 `ColumnSpec` fields, of which the contract governs 5, so an unfiltered
+   diff reads every ordinary binding edit as a contract change. The full fingerprint keeps its
+   separate job of proving release reproducibility.
 
 Acceptance criteria:
 
@@ -495,8 +577,9 @@ Acceptance criteria:
 - Adapter changes cannot be silently classified as compatible.
 - No baseline file is written under `model/` or `integration/`.
 - `compile --check` remains stateless and independent of Git history.
+- A contract change and its resulting manifest change cannot be classified inconsistently.
 
-### Phase 5 — make hub releases reproducible
+### Phase 6 — make hub releases reproducible
 
 Goal: prove that a released pin identifies exactly one validated output.
 
@@ -518,7 +601,7 @@ Acceptance criteria:
 - Production and development can pin different immutable releases.
 - Release automation never decides SemVer from the diff without human approval.
 
-### Phase 6 — reduce dataplatform boundary violations
+### Phase 7 — reduce dataplatform boundary violations
 
 Goal: make correct hub authoring easier and incorrect downstream authoring visible.
 
@@ -539,7 +622,7 @@ Acceptance criteria:
 - Every downstream custom model carries an explicit reviewed scope declaration.
 - The documentation states that lint is a governance tripwire, not semantic proof.
 
-### Phase 7 — build scheduled drift automation
+### Phase 8 — build scheduled drift automation
 
 Goal: connect the read-only primitives without putting credentials in the hub.
 
@@ -556,7 +639,7 @@ Acceptance criteria:
 - Repeated detection of the same fingerprint updates one notification rather than creating noise.
 - Invalid extraction blocks automation with an explicit error instead of looking like no drift.
 
-### Phase 8 — document the shipped lifecycle
+### Phase 9 — document the shipped lifecycle
 
 Goal: provide one canonical, tested data-engineer path.
 
@@ -576,10 +659,12 @@ Acceptance criteria:
 
 ## Model-versioning design (separate effort)
 
-Start only after Phases 4 and 5 provide real compatibility and release evidence. The design must
+Start only after Phases 5 and 6 provide real compatibility and release evidence. The design must
 answer, before implementation:
 
-1. What stable logical identity survives a model rename?
+1. What stable logical identity survives a model rename? (Phase 4's contract answers this: the
+   entity's `class` plus its declared `modelName`. Without it, there is no such identity to
+   build on.)
 2. How are old SQL implementations retained without re-reading old hub state?
 3. How does a binding or cross-domain relationship select a version?
 4. How do sequential domain emits preserve versions owned by another domain?
@@ -598,21 +683,27 @@ Until this design is accepted, breaking Silver changes require a coordinated maj
 | 2 | Pure source-schema comparator and JSON CLI | toolkit | 1 |
 | 3 | Structure-only extraction and fingerprints | toolkit | 2 |
 | 4 | Declared-FK extraction and bounded enum evidence | toolkit | 3 |
-| 5 | Silver parity-manifest compatibility comparator | toolkit | 1 |
-| 6 | Reproducible hub release gate | toolkit/scaffold | 5 |
-| 7 | Contracted dbt scaffold command | toolkit | 1 |
-| 8 | Downstream-only model lint and scaffold CI | toolkit/scaffold | 7 |
-| 9 | Scheduled extraction and drift workflow | dataplatform | 2, 3 |
-| 10 | Consolidated data-engineer lifecycle guide | toolkit | 6, 8, 9 |
-| 11 | dbt model-versioning design decision | toolkit | 5, 6 |
+| 5 | `SilverContract` schema, loader, and `scaffold-contract` (DD-213) | toolkit | 1 |
+| 6 | `contract.*` safety rules and contract-driven emission (Gate A) | toolkit | 5 |
+| 7 | Silver parity-manifest compatibility comparator (Gate B) | toolkit | 1 |
+| 8 | Reproducible hub release gate | toolkit/scaffold | 6, 7 |
+| 9 | Contracted dbt scaffold command | toolkit | 1 |
+| 10 | Downstream-only model lint and scaffold CI | toolkit/scaffold | 9 |
+| 11 | Scheduled extraction and drift workflow | dataplatform | 2, 3 |
+| 12 | Consolidated data-engineer lifecycle guide | toolkit | 8, 10, 11 |
+| 13 | dbt model-versioning design decision | toolkit | 6, 7, 8 |
 
-Phases 2–3 and Phases 4–6 can proceed in parallel after Phase 0. The lifecycle guide is
-deliberately last so it documents shipped behavior rather than intent.
+Phases 2–3 and Phases 4–7 can proceed in parallel after Phase 0. Within the second track, issues
+5–6 come before 7–8: Gate A prevents a break during ordinary source onboarding, while Gate B only
+reports one after the fact, and a comparator with no declared contract reports diffs in an
+artifact nobody agreed to. The lifecycle guide is deliberately last so it documents shipped
+behavior rather than intent.
 
 ## Minimum first release
 
-The smallest coherent release is: guidance correction; a read-only source-schema JSON diff; Silver
-manifest comparison; reproducible release evidence; and focused documentation for those shipped
-paths. Richer profiling, FK-aware sampling, folder migration, and dbt model versioning are
-deferred — this first release establishes the machine contracts those later capabilities depend
-on.
+The smallest coherent release is: guidance correction; a read-only source-schema JSON diff; the
+declared Silver contract with its compile-time conformance rules; Silver manifest comparison;
+reproducible release evidence; and focused documentation for those shipped paths. Richer
+profiling, FK-aware sampling, folder migration, and dbt model versioning are deferred — this
+first release establishes the machine contracts those later capabilities depend on, and the
+Silver contract is one of them rather than a later refinement of them.
