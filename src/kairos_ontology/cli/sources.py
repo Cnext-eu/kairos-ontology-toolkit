@@ -165,7 +165,24 @@ def show_source_schema_cmd(system, sources):
     default=False,
     help="ONLY generate per-table files (skip monolithic). By default both are written.",
 )
-def import_source(from_path, system_name, output, dry_run, enrich, enum_threshold, split_tables):
+@click.option(
+    "--redact-pii",
+    "redact_pii",
+    is_flag=True,
+    default=False,
+    help="Apply the redact-detected-pii sample policy. Off by default: the detector's "
+    "false positives destroyed the sample evidence binding design reads (issue #692).",
+)
+def import_source(
+    from_path,
+    system_name,
+    output,
+    dry_run,
+    enrich,
+    enum_threshold,
+    split_tables,
+    redact_pii,
+):
     """Import source schema YAML and generate/refresh bronze vocabulary TTL.
 
     Reads a standardized source-schema YAML file (produced by the
@@ -246,108 +263,123 @@ def import_source(from_path, system_name, output, dry_run, enrich, enum_threshol
         yaml_path = source_path
         click.echo(f"📋 Importing source schema from: {yaml_path}")
 
+    # try/finally so the temp file cannot outlive a failure (issue #692). It holds every
+    # table's sample rows in plaintext in the OS temp dir, and cleanup used to sit on the
+    # success path only -- so any exception left client data outside the hub, where no
+    # gitignore or hub policy reaches it. With redaction now off by default those rows
+    # are raw.
     try:
-        result_path, report = run_import_source(
-            yaml_path=yaml_path,
-            system_name=system_name,
-            output_dir=output_dir,
-            dry_run=dry_run,
-            enrich=enrich,
-            enum_threshold=enum_threshold,
-            split_tables=split_tables,
-        )
-    except ValueError as e:
-        click.echo(f"\n❌ {e}", err=True)
-        raise SystemExit(1)
+        try:
+            result_path, report = run_import_source(
+                yaml_path=yaml_path,
+                system_name=system_name,
+                output_dir=output_dir,
+                dry_run=dry_run,
+                enrich=enrich,
+                enum_threshold=enum_threshold,
+                split_tables=split_tables,
+                redact_pii=redact_pii,
+            )
+        except ValueError as e:
+            click.echo(f"\n❌ {e}", err=True)
+            raise SystemExit(1)
 
-    if report and report.has_changes:
-        click.echo(f"\n📊 Changes detected: {report.summary()}")
-        if report.added_tables:
-            click.echo(f"   ✅ New tables: {', '.join(report.added_tables)}")
-        if report.removed_tables:
-            click.echo(f"   ⚠️  Deprecated tables: {', '.join(report.removed_tables)}")
-        if report.added_columns:
-            for c in report.added_columns[:10]:
-                click.echo(f"   + {c.table}.{c.column}")
-            if len(report.added_columns) > 10:
-                click.echo(f"   ... and {len(report.added_columns) - 10} more")
-        if report.removed_columns:
-            for c in report.removed_columns[:10]:
-                click.echo(f"   - {c.table}.{c.column}")
-            if len(report.removed_columns) > 10:
-                click.echo(f"   ... and {len(report.removed_columns) - 10} more")
-        if report.type_changes:
-            for c in report.type_changes[:10]:
-                click.echo(f"   ~ {c.table}.{c.column}: {c.old_value} → {c.new_value}")
-    elif report is None:
-        click.echo("\n🆕 Fresh vocabulary generated (no existing file to merge with)")
-    else:
-        click.echo("\n✅ No changes — vocabulary is already in sync")
-
-    if dry_run:
-        click.echo("\n🔍 Dry-run mode — no files written")
-    elif result_path:
-        if split_tables:
-            # split-tables-only mode: result_path is the vocabulary/ directory
-            n_files = len(list(result_path.glob("*.vocabulary.ttl")))
-            click.echo(f"\n✅ Written {n_files} per-table vocabulary files to: {result_path}")
+        if report and report.has_changes:
+            click.echo(f"\n📊 Changes detected: {report.summary()}")
+            if report.added_tables:
+                click.echo(f"   ✅ New tables: {', '.join(report.added_tables)}")
+            if report.removed_tables:
+                click.echo(f"   ⚠️  Deprecated tables: {', '.join(report.removed_tables)}")
+            if report.added_columns:
+                for c in report.added_columns[:10]:
+                    click.echo(f"   + {c.table}.{c.column}")
+                if len(report.added_columns) > 10:
+                    click.echo(f"   ... and {len(report.added_columns) - 10} more")
+            if report.removed_columns:
+                for c in report.removed_columns[:10]:
+                    click.echo(f"   - {c.table}.{c.column}")
+                if len(report.removed_columns) > 10:
+                    click.echo(f"   ... and {len(report.removed_columns) - 10} more")
+            if report.type_changes:
+                for c in report.type_changes[:10]:
+                    click.echo(f"   ~ {c.table}.{c.column}: {c.old_value} → {c.new_value}")
+        elif report is None:
+            click.echo("\n🆕 Fresh vocabulary generated (no existing file to merge with)")
         else:
-            # Default mode: monolithic + per-table
-            click.echo(f"\n✅ Written: {result_path}")
-            vocab_dir = result_path.parent / "vocabulary"
-            if vocab_dir.is_dir():
-                n_files = len(list(vocab_dir.glob("*.vocabulary.ttl")))
-                click.echo(f"   📂 Also written {n_files} per-table files to: {vocab_dir}")
+            click.echo("\n✅ No changes — vocabulary is already in sync")
 
-        # Persist privacy-safe row-context files from directory inputs.
-        if source_path.is_dir() and result_path:
-            import yaml as _yaml
+        if dry_run:
+            click.echo("\n🔍 Dry-run mode — no files written")
+        elif result_path:
+            if split_tables:
+                # split-tables-only mode: result_path is the vocabulary/ directory
+                n_files = len(list(result_path.glob("*.vocabulary.ttl")))
+                click.echo(f"\n✅ Written {n_files} per-table vocabulary files to: {result_path}")
+            else:
+                # Default mode: monolithic + per-table
+                click.echo(f"\n✅ Written: {result_path}")
+                vocab_dir = result_path.parent / "vocabulary"
+                if vocab_dir.is_dir():
+                    n_files = len(list(vocab_dir.glob("*.vocabulary.ttl")))
+                    click.echo(f"   📂 Also written {n_files} per-table files to: {vocab_dir}")
 
-            from ..core.source_privacy import sanitize_samples_document
+            # Persist privacy-safe row-context files from directory inputs.
+            if source_path.is_dir() and result_path:
+                import yaml as _yaml
 
-            dest_dir = result_path.parent if not split_tables else result_path.parent
-            samples_copied = 0
-            for samples_file in source_path.glob("*.samples.yaml"):
-                dest_file = dest_dir / samples_file.name
-                document = _yaml.safe_load(samples_file.read_text(encoding="utf-8"))
-                table = (
-                    str(document.get("table"))
-                    if isinstance(document, dict) and document.get("table")
-                    else samples_file.name.removesuffix(".samples.yaml")
-                )
-                table_file = source_path / f"{table}.yaml"
-                table_data = (
-                    _yaml.safe_load(table_file.read_text(encoding="utf-8"))
-                    if table_file.is_file()
-                    else {}
-                ) or {}
-                column_types = {
-                    str(column.get("name", "")): str(column.get("data_type", "unknown"))
-                    for column in table_data.get("columns", [])
-                }
-                safe_document, _ = sanitize_samples_document(
-                    document,
-                    table=table,
-                    column_types=column_types,
-                )
-                dest_file.write_text(
-                    _yaml.safe_dump(
-                        safe_document,
-                        allow_unicode=True,
-                        sort_keys=False,
-                    ),
-                    encoding="utf-8",
-                )
-                samples_copied += 1
-            if samples_copied:
-                click.echo(
-                    f"   📋 Persisted {samples_copied} privacy-safe "
-                    ".samples.yaml file(s) for row-level context"
-                )
+                from ..core.source_privacy import sanitize_samples_document
 
-    # Clean up temp file if we created one
-    if tmp_cleanup and tmp_cleanup.exists():
-        tmp_cleanup.unlink()
+                dest_dir = result_path.parent if not split_tables else result_path.parent
+                samples_copied = 0
+                for samples_file in source_path.glob("*.samples.yaml"):
+                    dest_file = dest_dir / samples_file.name
+                    document = _yaml.safe_load(samples_file.read_text(encoding="utf-8"))
+                    table = (
+                        str(document.get("table"))
+                        if isinstance(document, dict) and document.get("table")
+                        else samples_file.name.removesuffix(".samples.yaml")
+                    )
+                    table_file = source_path / f"{table}.yaml"
+                    table_data = (
+                        _yaml.safe_load(table_file.read_text(encoding="utf-8"))
+                        if table_file.is_file()
+                        else {}
+                    ) or {}
+                    column_types = {
+                        str(column.get("name", "")): str(column.get("data_type", "unknown"))
+                        for column in table_data.get("columns", [])
+                    }
+                    if redact_pii:
+                        safe_document, _ = sanitize_samples_document(
+                            document,
+                            table=table,
+                            column_types=column_types,
+                        )
+                    else:
+                        # Copy verbatim, keeping whatever `sample_privacy` the extract recorded.
+                        # Re-stamping it here is what silently reverted
+                        # `extract-schema --no-redact-pii`, and overwriting a truthful
+                        # `redact-detected-pii` with `none` would be just as wrong: an extract
+                        # that *did* redact holds tokens, and its label describes them correctly.
+                        safe_document = document
+                    dest_file.write_text(
+                        _yaml.safe_dump(
+                            safe_document,
+                            allow_unicode=True,
+                            sort_keys=False,
+                        ),
+                        encoding="utf-8",
+                    )
+                    samples_copied += 1
+                if samples_copied:
+                    click.echo(
+                        f"   📋 Persisted {samples_copied} privacy-safe "
+                        ".samples.yaml file(s) for row-level context"
+                    )
+
+    finally:
+        if tmp_cleanup and tmp_cleanup.exists():
+            tmp_cleanup.unlink()
 
 
 def _echo_privacy_coverage(report) -> None:
@@ -495,6 +527,14 @@ def source_privacy_cmd(sources, fix):
     "(lowercased, separators collapsed) so same-basename files in different "
     "subdirectories don't collide.",
 )
+@click.option(
+    "--redact-pii",
+    "redact_pii",
+    is_flag=True,
+    default=False,
+    help="Apply the redact-detected-pii sample policy. Off by default: the detector's "
+    "false positives destroyed the sample evidence binding design reads (issue #692).",
+)
 def import_flatfile(
     from_path,
     system_name,
@@ -504,6 +544,7 @@ def import_flatfile(
     exclude_columns,
     keep_technical,
     recursive,
+    redact_pii,
 ):
     """Import CSV/.xlsx/Parquet flat files as source schema documentation.
 
@@ -610,6 +651,7 @@ def import_flatfile(
             keep_technical=keep_technical,
             return_count=True,
             recursive=recursive,
+            redact_pii=redact_pii,
         )
     except (ValueError, ImportError) as e:
         click.echo(f"\n❌ {e}", err=True)
@@ -829,19 +871,26 @@ def analyse_sources_cmd(
         click.echo(f"❌ Sources directory not found: {sources_path}", err=True)
         raise SystemExit(1)
 
-    # PII gate (DD-166). This command sends sample values from every column to a
-    # third-party LLM. Redaction happens earlier -- at import, and via `source-privacy`
-    # -- and this module trusted that silently: it contained no privacy check at all, so
-    # an unsanitized vocabulary would have been shipped to the provider with nothing
-    # objecting. Ordering is not a control. Scan before sending.
+    # PII advisory (DD-166, relaxed by issue #692). This command sends sample values from
+    # every column to a third-party LLM, so the scan still runs and still reports before
+    # sending. It no longer refuses: redaction is now opt-in at import, so a hub that
+    # deliberately keeps raw samples would otherwise be unable to run this command at all,
+    # and `run_source_privacy` has no way to record that the exposure was intended.
+    #
+    # Worth knowing what this does and does not cover. It IS affinity's only control --
+    # `analyse_sources` reads sampleValues straight from the committed TTL and has no
+    # raw-samples overlay. It is NOT a system-wide one: `propose-alignment` already ships
+    # twenty raw values per column to the same provider by default via
+    # KAIROS_ALIGNMENT_SEND_RAW_SAMPLES, so "nothing unredacted reaches the LLM" was
+    # already untrue of the larger call path.
     from ..core.source_privacy import run_source_privacy
 
     privacy_report = run_source_privacy(sources_path, fix=False)
     if not privacy_report.passed:
         findings = privacy_report.findings
         click.echo(
-            f"❌ Refusing to send source samples to the AI provider: "
-            f"{len(findings)} unredacted PII finding(s) across "
+            f"⚠  Sending unredacted sample values to the AI provider: "
+            f"{len(findings)} PII finding(s) across "
             f"{privacy_report.files_scanned} artifact(s).",
             err=True,
         )
@@ -852,9 +901,10 @@ def analyse_sources_cmd(
         if len(findings) > 10:
             click.echo(f"   … and {len(findings) - 10} more", err=True)
         click.echo(
-            "   Fix with: kairos-ontology source-privacy --fix, then re-run.", err=True
+            "   Redact first with: kairos-ontology source-privacy --fix, "
+            "or re-import with --redact-pii.",
+            err=True,
         )
-        raise SystemExit(1)
 
     # DD-183: resolve the hub's declared accelerator when none was passed.
     #

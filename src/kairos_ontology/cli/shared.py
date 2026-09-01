@@ -1923,7 +1923,8 @@ def _resolve_semantic_input(
     "--emit-seed",
     is_flag=True,
     default=False,
-    help="Also write each table's redacted samples as a dbt seed CSV.",
+    help="Also write each table's samples as a dbt seed CSV. Requires --redact-pii, "
+    "because seed CSVs are committed and released.",
 )
 @click.option(
     "--seeds-dir",
@@ -1933,12 +1934,20 @@ def _resolve_semantic_input(
     help="Output directory for --emit-seed CSV files (default: seeds/).",
 )
 @click.option(
+    "--redact-pii",
+    "redact_pii",
+    is_flag=True,
+    default=False,
+    help="Apply the redact-detected-pii sample policy. Off by default (issue #692): the "
+    "detector's false positives destroyed the sample evidence binding design reads.",
+)
+@click.option(
     "--no-redact-pii",
     "no_redact_pii",
     is_flag=True,
     default=False,
-    help="Write sample values unredacted, skipping the redact-detected-pii policy. "
-    "Only use for sources already known to hold no sensitive values.",
+    help="Deprecated no-op -- this is now the default. Accepted so scripts and docs that "
+    "pass it keep working.",
 )
 def extract_schema(
     profile_name,
@@ -1951,6 +1960,7 @@ def extract_schema(
     sample_size,
     emit_seed,
     seeds_dir,
+    redact_pii,
     no_redact_pii,
 ):
     """Introspect live warehouse/lakehouse schema and produce per-table YAML.
@@ -1996,10 +2006,22 @@ def extract_schema(
     else:
         click.echo("   Tables: all in schema")
     click.echo(f"   Sample size: {sample_size}")
+    if emit_seed and not redact_pii:
+        click.echo(
+            "\n❌ --emit-seed requires --redact-pii.\n"
+            "   Seed CSVs are not gitignored, and the emitted copy under\n"
+            "   ontology-hub-publish/medallion/dbt/ is explicitly un-ignored and\n"
+            "   packaged into a GitHub Release -- so unredacted rows would leave the\n"
+            "   repo.",
+            err=True,
+        )
+        raise SystemExit(1)
     if emit_seed:
         click.echo(f"   Emit seed CSVs: yes ({seeds_path})")
-    if no_redact_pii:
-        click.echo("   ⚠ PII redaction: disabled (--no-redact-pii) -- samples written as-is")
+    if redact_pii:
+        click.echo("   PII redaction: enabled (--redact-pii)")
+    else:
+        click.echo("   ⚠ PII redaction: off (default) -- sample values written as-is")
     click.echo()
 
     try:
@@ -2014,7 +2036,7 @@ def extract_schema(
             sample_size=sample_size,
             emit_seed=emit_seed,
             seeds_dir=seeds_path,
-            redact_pii=not no_redact_pii,
+            redact_pii=redact_pii,
         )
     except ImportError as e:
         click.echo(f"\n❌ Missing dependency: {e}", err=True)

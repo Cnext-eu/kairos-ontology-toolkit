@@ -278,7 +278,7 @@ class TestWriteSourceDir:
             }
         ]
 
-        output = write_source_dir(tables, "crm", tmp_path / "crm")
+        output = write_source_dir(tables, "crm", tmp_path / "crm", redact_pii=True)
 
         import yaml
 
@@ -338,7 +338,7 @@ class TestWriteSourceDir:
             }
         ]
 
-        output = write_source_dir(tables, "erp", tmp_path / "erp")
+        output = write_source_dir(tables, "erp", tmp_path / "erp", redact_pii=True)
 
         import yaml
 
@@ -520,7 +520,7 @@ class TestRunImportFlatfileRawSamplesSidecar:
         csv_file = self._csv(tmp_path)
         output_dir = tmp_path / "output" / "clients"
 
-        run_import_flatfile(csv_file, output_dir=output_dir)
+        run_import_flatfile(csv_file, output_dir=output_dir, redact_pii=True)
 
         samples_text = (output_dir / "clients.samples.yaml").read_text(encoding="utf-8")
         assert "jane.doe@acme.com" not in samples_text

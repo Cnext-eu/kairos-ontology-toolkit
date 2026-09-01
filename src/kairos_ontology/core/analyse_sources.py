@@ -204,7 +204,9 @@ def parse_source_vocabulary(vocab_path: Path) -> dict[str, list[dict[str, Any]]]
             data_type = str(g.value(col_uri, KAIROS_BRONZE.dataType) or "unknown")
             nullable = bool(g.value(col_uri, KAIROS_BRONZE.nullable))
             samples_raw = g.value(col_uri, KAIROS_BRONZE.sampleValues)
-            samples = str(samples_raw).split(" | ") if samples_raw else []
+            from .silver_sample_audit import _split_samples
+
+            samples = _split_samples(samples_raw)
             distinct_count_raw = g.value(col_uri, KAIROS_BRONZE.distinctCount)
             distinct_count = int(distinct_count_raw) if distinct_count_raw is not None else None
 

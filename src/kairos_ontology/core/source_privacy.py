@@ -39,6 +39,11 @@ class SourcePrivacyReport:
     files_scanned: int = 0
     findings: list[tuple[Path, SamplePrivacyFinding]] = field(default_factory=list)
     changed_files: list[Path] = field(default_factory=list)
+    #: Findings in artifacts that *declare* ``sample_privacy.policy: none`` -- i.e. the hub
+    #: imported deliberately without redaction (issue #692). Reported, but not failures:
+    #: without this, opting out left `source-privacy` permanently red with no way to say so,
+    #: and every `analyse-sources` run warned forever.
+    acknowledged: list[tuple[Path, SamplePrivacyFinding]] = field(default_factory=list)
     #: Redaction kinds actually looked for during this run, so a clean result can state
     #: what it covered instead of implying universal discovery (#415). Derived from the
     #: detectors themselves, never hand-maintained.
@@ -47,6 +52,38 @@ class SourcePrivacyReport:
     @property
     def passed(self) -> bool:
         return not self.findings
+
+
+def _declares_no_redaction(document: Any) -> bool:
+    """Return whether *document* states it was written without a redaction policy.
+
+    Only an explicit ``policy: none`` counts. A missing ``sample_privacy`` block is *not*
+    treated as an opt-out: hand-authored YAML and pre-policy artifacts have no block either,
+    and reading silence as consent is exactly the wrong default here.
+    """
+    if not isinstance(document, dict):
+        return False
+    block = document.get("sample_privacy")
+    return isinstance(block, dict) and str(block.get("policy", "")).strip() == "none"
+
+
+def _sibling_declares_no_redaction(path: Path, table: str) -> bool:
+    """Resolve the declared policy for an artifact that carries none of its own.
+
+    ``<table>.yaml`` and ``<table>.vocabulary.ttl`` have nowhere to record a policy, so the
+    sibling ``<table>.samples.yaml`` -- written by the same import in the same run -- is the
+    declaration that governs them. Absent sibling means unacknowledged, i.e. fail closed.
+    """
+    for candidate in (
+        path.with_name(f"{table}.samples.yaml"),
+        path.parent.parent / f"{table}.samples.yaml",
+    ):
+        if candidate.is_file():
+            try:
+                return _declares_no_redaction(yaml.safe_load(candidate.read_text(encoding="utf-8")))
+            except (OSError, yaml.YAMLError):
+                return False
+    return False
 
 
 def sanitize_samples_document(
@@ -378,7 +415,8 @@ def run_source_privacy(
             else samples_path.name.removesuffix(".samples.yaml")
         )
         findings = find_samples_document_privacy_issues(document, table=table)
-        report.findings.extend((samples_path, finding) for finding in findings)
+        sink = report.acknowledged if _declares_no_redaction(document) else report.findings
+        sink.extend((samples_path, finding) for finding in findings)
         if fix and findings:
             safe_document, _ = sanitize_samples_document(
                 document,
@@ -410,7 +448,12 @@ def run_source_privacy(
         report.files_scanned += 1
         wrapped = {"tables": [table_data]}
         findings = find_source_data_privacy_issues(wrapped)
-        report.findings.extend((table_path, finding) for finding in findings)
+        sink = (
+            report.acknowledged
+            if _sibling_declares_no_redaction(table_path, str(table_data["name"]))
+            else report.findings
+        )
+        sink.extend((table_path, finding) for finding in findings)
         if fix and findings:
             safe_data, _ = sanitize_source_data(wrapped)
             candidates[table_path] = yaml.safe_dump(
@@ -424,7 +467,14 @@ def run_source_privacy(
         graph = Graph()
         graph.parse(ttl_path, format="turtle")
         findings = find_vocabulary_privacy_issues(graph)
-        report.findings.extend((ttl_path, finding) for finding in findings)
+        sink = (
+            report.acknowledged
+            if _sibling_declares_no_redaction(
+                ttl_path, ttl_path.name.removesuffix(".vocabulary.ttl")
+            )
+            else report.findings
+        )
+        sink.extend((ttl_path, finding) for finding in findings)
         if fix and findings:
             sanitize_vocabulary_graph(graph)
             candidates[ttl_path] = graph.serialize(format="turtle")

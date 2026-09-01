@@ -62,6 +62,30 @@ _WAREHOUSE_PLATFORMS = {
 MAX_SAMPLE_VALUES = 20
 
 
+#: How multi-value ``sampleValues``/``enumValues`` literals are delimited. Four consumers
+#: split on it -- ``silver_sample_audit._split_samples``, ``analyse_sources``,
+#: ``source_catalog`` -- so it belongs in one place rather than at each join site.
+SAMPLE_VALUE_SEPARATOR = " | "
+
+
+def join_sample_values(values) -> str:
+    """Join sample values into one delimited literal, keeping the split unambiguous.
+
+    Redaction tokens are delimiter-safe by construction (``_samples._component`` strips
+    ``|``), so this never mattered while every published value was either a token or already
+    checked. With redaction off by default (issue #692) raw client text is published, and a
+    value containing the separator -- an invoice note, a concatenated address, a CSV-in-a-cell
+    -- would silently split into phantom sample values in all four consumers.
+
+    Substituting inside the value is deliberately lossy but honest: it changes one character
+    run in a display string, whereas the alternative fabricates sample values that were never
+    in the source and are indistinguishable from real ones downstream.
+    """
+    return SAMPLE_VALUE_SEPARATOR.join(
+        str(value).replace(SAMPLE_VALUE_SEPARATOR, " / ") for value in values
+    )
+
+
 def distinct_samples(samples, limit: int = MAX_SAMPLE_VALUES) -> list:
     """Return up to *limit* distinct sample values, preserving first-seen order."""
     seen: set[str] = set()
@@ -400,7 +424,7 @@ def _json_type_to_sql(json_type: str) -> str:
     return mapping.get(json_type, "varchar(max)")
 
 
-def generate_vocabulary_ttl(data: dict) -> str:
+def generate_vocabulary_ttl(data: dict, *, redact_pii: bool = False) -> str:
     """Generate a complete vocabulary TTL file from a parsed source-schema YAML.
 
     Args:
@@ -409,7 +433,8 @@ def generate_vocabulary_ttl(data: dict) -> str:
     Returns:
         Turtle-serialized string of the vocabulary.
     """
-    data, _ = sanitize_source_data(data)
+    if redact_pii:
+        data, _ = sanitize_source_data(data)
     system_name = data["system"]
     platform = data.get("platform", "unknown")
     environment = data.get("environment", "")
@@ -511,7 +536,7 @@ def generate_vocabulary_ttl(data: dict) -> str:
                     (
                         col_uri,
                         KAIROS_BRONZE.sampleValues,
-                        Literal(" | ".join(str(s) for s in distinct_samples(samples))),
+                        Literal(join_sample_values(distinct_samples(samples))),
                     )
                 )
 
@@ -535,7 +560,7 @@ def generate_vocabulary_ttl(data: dict) -> str:
                         (
                             col_uri,
                             KAIROS_BRONZE.enumValues,
-                            Literal(" | ".join(str(v) for v in enum_values)),
+                            Literal(join_sample_values(distinct_samples(enum_values))),
                         )
                     )
 
@@ -619,7 +644,8 @@ def generate_vocabulary_ttl(data: dict) -> str:
                             )
                         )
 
-    sanitize_vocabulary_graph(g)
+    if redact_pii:
+        sanitize_vocabulary_graph(g)
     return prepend_provenance(
         g.serialize(format="turtle"),
         "import-source",
@@ -627,14 +653,15 @@ def generate_vocabulary_ttl(data: dict) -> str:
     )
 
 
-def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
+def generate_vocabulary_per_table(data: dict, *, redact_pii: bool = False) -> dict[str, str]:
     """Generate one TTL file per table from a parsed source-schema YAML.
 
     Returns a dict mapping table_name → Turtle string. Each file contains the
     system declaration (SourceSystem) plus one table and its columns.
     This enables fine-grained git diffs and scoped LLM context loading.
     """
-    data, _ = sanitize_source_data(data)
+    if redact_pii:
+        data, _ = sanitize_source_data(data)
     system_name = data["system"]
     connection = data.get("connection", {})
     database = connection.get("database", "")
@@ -674,7 +701,8 @@ def generate_vocabulary_per_table(data: dict) -> dict[str, str]:
 
         # Generate table + columns (reuse same logic as generate_vocabulary_ttl)
         _add_table_to_graph(g, tbl, base_ns, sys_uri)
-        sanitize_vocabulary_graph(g)
+        if redact_pii:
+            sanitize_vocabulary_graph(g)
 
         results[tbl["name"]] = prepend_provenance(
             g.serialize(format="turtle"),
@@ -815,7 +843,7 @@ def _add_table_to_graph(g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef
                 (
                     col_uri,
                     KAIROS_BRONZE.sampleValues,
-                    Literal(" | ".join(str(s) for s in distinct_samples(samples))),
+                    Literal(join_sample_values(distinct_samples(samples))),
                 )
             )
 
@@ -837,7 +865,7 @@ def _add_table_to_graph(g: Graph, tbl: dict, base_ns: Namespace, sys_uri: URIRef
                     (
                         col_uri,
                         KAIROS_BRONZE.enumValues,
-                        Literal(" | ".join(str(v) for v in enum_values)),
+                        Literal(join_sample_values(distinct_samples(enum_values))),
                     )
                 )
 
@@ -938,7 +966,7 @@ def _sync_managed_sample_predicates(
                     (
                         subject,
                         KAIROS_BRONZE.sampleValues,
-                        Literal(" | ".join(str(item) for item in distinct_samples(samples))),
+                        Literal(join_sample_values(distinct_samples(samples))),
                     )
                 )
             enum_values = column.get("enum_values") or []
@@ -947,7 +975,7 @@ def _sync_managed_sample_predicates(
                     (
                         subject,
                         KAIROS_BRONZE.enumValues,
-                        Literal(" | ".join(str(item) for item in enum_values)),
+                        Literal(join_sample_values(distinct_samples(enum_values))),
                     )
                 )
             distinct_count = column.get("distinct_count")
@@ -993,7 +1021,9 @@ def _sync_managed_profiling_predicates(
             graph.add((subject, KAIROS_BRONZE.distinctScope, Literal(scope)))
 
 
-def merge_with_existing(data: dict, existing_path: Path) -> tuple[str, ChangeReport]:
+def merge_with_existing(
+    data: dict, existing_path: Path, *, redact_pii: bool = False
+) -> tuple[str, ChangeReport]:
     """Merge introspected schema with an existing vocabulary TTL file.
 
     Preserves all triples in the existing graph that are not directly managed by
@@ -1007,7 +1037,8 @@ def merge_with_existing(data: dict, existing_path: Path) -> tuple[str, ChangeRep
     Returns:
         Tuple of (updated TTL string, ChangeReport).
     """
-    data, _ = sanitize_source_data(data)
+    if redact_pii:
+        data, _ = sanitize_source_data(data)
     report = ChangeReport()
     system_name = data["system"]
     base_uri = f"https://kairos.cnext.eu/source/{system_name}#"
@@ -1242,7 +1273,8 @@ def merge_with_existing(data: dict, existing_path: Path) -> tuple[str, ChangeRep
 
     _sync_managed_sample_predicates(existing, data, base_ns)
     _sync_managed_profiling_predicates(existing, data, base_ns)
-    sanitize_vocabulary_graph(existing)
+    if redact_pii:
+        sanitize_vocabulary_graph(existing)
 
     return (
         prepend_provenance(
@@ -1267,6 +1299,7 @@ def run_import_source(
     enrich: bool = True,
     enum_threshold: int = 25,
     split_tables: bool = False,
+    redact_pii: bool = False,
 ) -> tuple[Path | None, ChangeReport | None]:
     """Orchestrate the import-source workflow.
 
@@ -1278,6 +1311,11 @@ def run_import_source(
         enrich: If True, run inference enrichment (enum/format/FK detection).
         enum_threshold: Max distinct values for enum detection.
         split_tables: If True, generate one TTL per table in a vocabulary/ subfolder.
+        redact_pii: Apply the redact-detected-pii sample policy (default: False, issue #692).
+            Off by default because the detector's false positives destroyed the sample
+            evidence binding design reads -- money, datetime and business-ID columns arrived
+            with zero samples, mislabelled as phone numbers -- while protecting nothing, the
+            real values being present in the sibling .samples.yaml regardless.
 
     Returns:
         Tuple of (output file/dir path or None if dry-run, ChangeReport or None if fresh).
@@ -1306,7 +1344,8 @@ def run_import_source(
 
     _raw_table_columns = extract_raw_samples_from_schema(data)
 
-    data, _ = sanitize_source_data(data)
+    if redact_pii:
+        data, _ = sanitize_source_data(data)
     sys_name = data["system"]
 
     if not dry_run:
@@ -1333,7 +1372,7 @@ def run_import_source(
             return None, None
 
         vocab_dir.mkdir(parents=True, exist_ok=True)
-        per_table = generate_vocabulary_per_table(data)
+        per_table = generate_vocabulary_per_table(data, redact_pii=redact_pii)
         for tbl_name, ttl_content in per_table.items():
             tbl_file = vocab_dir / f"{tbl_name}.vocabulary.ttl"
             tbl_file.write_text(ttl_content, encoding="utf-8")
@@ -1347,11 +1386,11 @@ def run_import_source(
     if output_file.exists():
         # Merge mode
         logger.info("Existing vocabulary found at %s — merging", output_file)
-        ttl_content, report = merge_with_existing(data, output_file)
+        ttl_content, report = merge_with_existing(data, output_file, redact_pii=redact_pii)
     else:
         # Fresh generation
         logger.info("No existing vocabulary — generating fresh TTL")
-        ttl_content = generate_vocabulary_ttl(data)
+        ttl_content = generate_vocabulary_ttl(data, redact_pii=redact_pii)
         report = None
 
     # Build every output before publishing any of them.

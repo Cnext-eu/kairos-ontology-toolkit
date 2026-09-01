@@ -1,12 +1,27 @@
 ---
 name: kairos-design-source
-description: Import, document, redact, and analyse source-system schemas for v5 hubs.
+description: Import, document, and analyse source-system schemas for v5 hubs.
 ---
 
 # Kairos Source Design
 
 Create authoritative Bronze inputs under `integration/sources/<source>/`. Source vocabularies and
-redacted samples describe physical relations and columns; they do not define canonical entities.
+samples describe physical relations and columns; they do not define canonical entities.
+
+**Sample redaction is opt-in (DD-214).** `extract-schema`, `import-source` and `import-flatfile`
+write sample values as-is unless you pass `--redact-pii`. That is deliberate: the detector's false
+positives destroyed the evidence this step exists to produce -- money, datetime and business-ID
+columns arrived with zero samples, mislabelled as phone numbers -- while protecting nothing, since
+the real values were present in the sibling `.samples.yaml` regardless.
+
+Consequences you must tell the user about, not assume:
+
+- Committed artifacts under `integration/sources/**` can contain raw client PII, and they enter the
+  client's git history.
+- `analyse-sources` reports unredacted findings and **proceeds**, so sample values can reach the
+  configured AI provider.
+- Pass `--redact-pii` when a source is known to carry personal data and the hub has not accepted
+  that exposure. `kairos-ontology source-privacy [--fix]` audits and remediates after the fact.
 
 ## Design fleet mode (DD-088)
 
@@ -32,7 +47,8 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
    parent directory where the CLI already accepts one). Continue past a single source failure so the
    remaining sources still import, and record each failure and its reason.
 7. Review relation names, column names, physical types, nullability, keys, descriptions, and
-   redacted samples. Never expose credentials or unredacted sensitive values.
+   samples. Never expose credentials. Note that samples are unredacted by default (DD-214), so do
+   not paste them into reports or transcripts -- describe them instead.
 8. Parse every generated Turtle file with `rdflib`; use `kairos-ontology validate` through
    `kairos-execute-validate` when ontology or SHACL checks are required.
 9. After the batch completes, show a short report listing which sources were imported (name and

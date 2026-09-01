@@ -388,6 +388,37 @@ strings), `needs_confirmation` (optional bool, default `false`), `decided_by` (`
 `"ai"`), `likely_domains` (optional list of lowercase domain-id strings; empty/absent means
 cross-cutting -- in scope for every domain).
 
+## Sample redaction is opt-in (`--redact-pii`)
+
+`extract-schema`, `import-source` and `import-flatfile` write sample values **as-is by default**.
+Pass `--redact-pii` to apply the `redact-detected-pii` policy. See DD-214 for why the default
+flipped: the detector's false positives destroyed the sample evidence binding design reads, while
+protecting nothing, because the real values were present in a sibling artifact regardless.
+
+```
+kairos-ontology extract-schema  ... [--redact-pii] [--no-redact-pii]
+kairos-ontology import-source   ... [--redact-pii]
+kairos-ontology import-flatfile ... [--redact-pii]
+```
+
+- `--no-redact-pii` (`extract-schema` only) is a **deprecated no-op**, kept because it shipped as a
+  real flag in 5.15.0rc12 and asks for what is now the default.
+- `--emit-seed` **requires** `--redact-pii`: seed CSVs are not gitignored, and the emitted copy under
+  `ontology-hub-publish/medallion/dbt/` is explicitly un-ignored and packaged into a GitHub Release.
+- Artifacts record the policy that actually ran (`sample_privacy.policy: none`), and carry no policy
+  *version* when no policy ran.
+
+What this changes elsewhere:
+
+- Committed artifacts under `integration/sources/**` may contain raw client PII and enter git history.
+- `analyse-sources` **reports and proceeds** rather than refusing, so sample values can reach the
+  configured AI provider. It still reports paths and kinds only, never a value.
+- `source-privacy` treats findings in artifacts declaring `policy: none` as *acknowledged* rather
+  than failures, so an opted-out hub is not permanently red. A missing `sample_privacy` block is not
+  treated as consent.
+- `audit-column-coverage` still redacts its sample value unconditionally, because that value is
+  printed to stdout and `--format json`.
+
 ## Removed commands
 
 The following commands do not exist and must not appear in active procedures:

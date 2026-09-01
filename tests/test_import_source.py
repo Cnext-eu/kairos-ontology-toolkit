@@ -255,7 +255,7 @@ class TestGenerateVocabularyTtl:
         email["suggested_enum"] = True
         email["enum_values"] = ["person@example.com"]
 
-        ttl = generate_vocabulary_ttl(data)
+        ttl = generate_vocabulary_ttl(data, redact_pii=True)
 
         assert "person@example.com" not in ttl
         graph = Graph()
@@ -633,7 +633,7 @@ class TestMergeWithExisting:
         data = copy.deepcopy(VALID_YAML_DATA)
         data["tables"][0]["columns"][2]["samples"] = ["new.person@example.com"]
 
-        ttl, _ = merge_with_existing(data, existing_vocab_file)
+        ttl, _ = merge_with_existing(data, existing_vocab_file, redact_pii=True)
 
         assert "old.person@example.com" not in ttl
         assert "new.person@example.com" not in ttl
@@ -809,7 +809,9 @@ class TestRunImportSourceRawSamplesSidecar:
         yaml_path.write_text(_yaml.dump(data), encoding="utf-8")
         output_dir = tmp_path / "output"
 
-        result_path, _ = run_import_source(yaml_path, output_dir=output_dir, enrich=False)
+        result_path, _ = run_import_source(
+            yaml_path, output_dir=output_dir, enrich=False, redact_pii=True
+        )
         ttl_text = result_path.read_text(encoding="utf-8")
         assert "jane.doe@acme.com" not in ttl_text
 
@@ -1420,3 +1422,67 @@ class TestSampleCaptureLimits:
         from kairos_ontology.core.propose_alignment import _compact_prompt_samples
 
         assert _compact_prompt_samples(["ACTIVE", "ACTIVE", "CLOSED"]) == ["ACTIVE", "CLOSED"]
+
+
+class TestSampleValueSeparator:
+    """Raw values may contain the delimiter used to join them (issue #692).
+
+    Redaction tokens are delimiter-safe by construction (`_samples._component` strips `|`), so
+    this never mattered while every published value was a token or already checked. With
+    redaction off by default, raw client text is published — an invoice note, a concatenated
+    address, a CSV-in-a-cell — and a value containing `" | "` would split into sample values
+    that were never in the source, indistinguishable from real ones, in all four consumers.
+    """
+
+    def test_separator_inside_a_value_does_not_fabricate_samples(self):
+        from kairos_ontology.core.import_source import join_sample_values
+        from kairos_ontology.core.silver_sample_audit import _split_samples
+
+        values = ["Acme Ltd | Rotterdam", "Globex BV", "Initech"]
+        literal = join_sample_values(values)
+
+        # Round-trips to the same number of samples that went in.
+        assert len(_split_samples(literal)) == len(values)
+        assert _split_samples(literal) == ["Acme Ltd / Rotterdam", "Globex BV", "Initech"]
+
+    def test_join_is_the_inverse_of_split_for_ordinary_values(self):
+        from kairos_ontology.core.import_source import join_sample_values
+        from kairos_ontology.core.silver_sample_audit import _split_samples
+
+        values = ["6420.49", "2026-07-29 14:19:00", "BKXAJI0Y6DPB"]
+        assert _split_samples(join_sample_values(values)) == values
+
+    def test_redaction_tokens_survive_the_round_trip_unchanged(self):
+        """The token format must stay usable as a sample value."""
+        from kairos_ontology.core._samples import redaction_token
+        from kairos_ontology.core.import_source import join_sample_values
+        from kairos_ontology.core.silver_sample_audit import _split_samples
+
+        token = redaction_token(
+            kind="email", table="tblClient", column="Email", data_type="varchar(255)"
+        )
+        assert _split_samples(join_sample_values([token, "active"])) == [token, "active"]
+
+    def test_enum_values_are_capped_like_sample_values(self):
+        """`enumValues` had no cap; with raw values published that is unbounded growth."""
+        import copy
+
+        from rdflib import Graph, Namespace
+
+        from kairos_ontology.core.import_source import (
+            MAX_SAMPLE_VALUES,
+            generate_vocabulary_ttl,
+        )
+        from kairos_ontology.core.silver_sample_audit import _split_samples
+
+        data = copy.deepcopy(VALID_YAML_DATA)
+        column = data["tables"][0]["columns"][2]
+        column["suggested_enum"] = True
+        column["enum_values"] = [f"code-{index}" for index in range(MAX_SAMPLE_VALUES + 15)]
+
+        graph = Graph()
+        graph.parse(data=generate_vocabulary_ttl(data), format="turtle")
+        ns = Namespace("https://kairos.cnext.eu/source/testapp#")
+        emitted = _split_samples(graph.value(ns["tblClient_Email"], KAIROS_BRONZE.enumValues))
+
+        assert len(emitted) == MAX_SAMPLE_VALUES
