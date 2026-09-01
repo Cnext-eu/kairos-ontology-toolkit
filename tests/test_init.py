@@ -2,8 +2,11 @@
 # Copyright 2026 Cnext.eu
 """Tests for the kairos-ontology init and new-repo CLI commands."""
 
+import json
 import subprocess
 from pathlib import Path
+
+import pytest
 from unittest import mock
 from click.testing import CliRunner
 from kairos_ontology.cli.main import (
@@ -805,6 +808,97 @@ def _stage_current_hub_workflows(td) -> None:
         dst.write_text(
             (_SCAFFOLD_DIR / scaffold_rel).read_text(encoding="utf-8"), encoding="utf-8"
         )
+
+
+class TestClaudeSettingsReconciliation:
+    """`update` classification of `.claude/settings.json` (issue #684).
+
+    Nothing covered these branches before: every `update --check` fixture omitted the file, so
+    they all took the harmless "missing" path. The platform-divergence bug therefore had no
+    test that could have failed.
+    """
+
+    _PRE_659 = "01c1cae"  # last generation that still denied `Read` on ontologies/shapes
+
+    def _historical_settings(self) -> bytes:
+        """The pre-#659 scaffold generation, as committed (LF)."""
+        return subprocess.run(
+            ["git", "show", f"{self._PRE_659}:src/kairos_ontology/scaffold/claude-settings.json"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            check=True,
+        ).stdout.replace(b"\r\n", b"\n")
+
+    def _stage(self, td, settings_bytes: bytes) -> None:
+        from kairos_ontology import __version__ as ver
+
+        for rel_path, scaffold_src in _managed_scaffold_map().items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(
+                _stamp_managed(scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
+            )
+        _stage_current_hub_workflows(td)
+        settings = Path(td) / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_bytes(settings_bytes)
+
+    @pytest.mark.parametrize("eol", ["lf", "crlf"], ids=["lf-checkout", "crlf-checkout"])
+    def test_superseded_generation_is_classified_identically_on_either_line_ending(
+        self, tmp_path, eol
+    ):
+        """The reported bug: same content, different verdict per line ending.
+
+        A Windows checkout (`core.autocrlf=true`) and a Linux one hold byte-different but
+        semantically identical files. `update --check` used to exit 1 on one and 0 on the other.
+        """
+        blob = self._historical_settings()
+        if eol == "crlf":
+            blob = blob.replace(b"\n", b"\r\n")
+
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+            self._stage(td, blob)
+            result = runner.invoke(cli, ["update", "--check"])
+
+        assert result.exit_code != 0, result.output
+        assert "needs updating" in result.output
+        # The report must name the change that is actually pending -- the removal of the `Read`
+        # denies -- not the oldest generation's `.ttl`-extension broadening.
+        assert "Read" in result.output
+        assert "659" in result.output
+
+    def test_replacement_reports_the_deny_rules_it_removes(self, tmp_path):
+        """A settings.json rewrite must never be silent about which rules it drops."""
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+            self._stage(td, self._historical_settings())
+            result = runner.invoke(cli, ["update"])
+            written = (Path(td) / ".claude" / "settings.json").read_text(encoding="utf-8")
+
+        assert result.exit_code == 0, result.output
+        assert "Read(./ontology-hub/model/ontologies/**/*.ttl)" in result.output
+        assert "Read(" not in written  # the #659 fix landed
+
+    def test_genuinely_customized_settings_are_left_alone_and_do_not_fail_check(self, tmp_path):
+        """An unrecognized hash is an advisory, not drift -- it must not flip the exit code."""
+        customized = json.dumps(
+            {
+                "permissions": {"deny": ["Grep(./ontology-hub/model/ontologies/**/*.ttl)"]},
+                "env": {"HUB_LOCAL_SETTING": "1"},
+            },
+            indent=2,
+        ).encode("utf-8")
+
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+            self._stage(td, customized)
+            result = runner.invoke(cli, ["update", "--check"])
+            after = (Path(td) / ".claude" / "settings.json").read_bytes()
+
+        assert result.exit_code == 0, result.output
+        assert "left alone" in result.output
+        assert after == customized
 
 
 def test_update_check_exit_code_zero_when_current(tmp_path):

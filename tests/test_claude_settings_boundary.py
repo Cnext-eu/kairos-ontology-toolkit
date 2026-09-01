@@ -35,9 +35,13 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import subprocess
 from pathlib import Path
 
 from kairos_ontology.cli.shared import _KNOWN_CLAUDE_SETTINGS_HASHES
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SCAFFOLD_REL = "src/kairos_ontology/scaffold/claude-settings.json"
 
 _SCAFFOLD_SETTINGS = (
     Path(__file__).resolve().parent.parent
@@ -123,6 +127,11 @@ def test_no_rule_denies_json_or_xml():
         assert ".xml" not in rule, f"Unexpected .xml in deny rule: {rule}"
 
 
+def _lf_hash(data: bytes) -> str:
+    normalized = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(normalized).hexdigest()
+
+
 def test_current_scaffold_hash_is_not_a_known_superseded_hash():
     # _KNOWN_CLAUDE_SETTINGS_HASHES must hold only *superseded* generations of this
     # file. If the current file's hash ever ended up in that tuple (e.g. someone
@@ -130,7 +139,7 @@ def test_current_scaffold_hash_is_not_a_known_superseded_hash():
     # a hub already on the current generation as needing replacement by itself —
     # harmless in effect, but a sign the tuple was mis-maintained and a real
     # regression waiting to happen the next time the file changes again.
-    current_hash = hashlib.sha256(_SCAFFOLD_SETTINGS.read_bytes()).hexdigest()
+    current_hash = _lf_hash(_SCAFFOLD_SETTINGS.read_bytes())
     assert current_hash not in _KNOWN_CLAUDE_SETTINGS_HASHES
 
 
@@ -158,8 +167,50 @@ def test_grep_and_publish_guards_survive():
 
 
 def test_superseded_generation_is_recorded_so_update_can_deliver_the_fix():
-    """Existing hubs only receive this change if the prior hash is registered."""
+    """Existing hubs only receive this change if the prior hash is registered.
+
+    This is the **LF-normalized** hash of the pre-#659 generation. It used to be that
+    generation's CRLF rendering (issue #684), so the entry only matched on a Windows checkout:
+    ``update --check`` then exited 1 on Windows and 0 on Linux for the identical commit.
+    """
     assert (
-        "32e7e6e05220b84b3667ecc5be8db7bf7250c14220cd3aec5efe25b5094f7c5d"
+        "6e6ee7d78b3f32e890ac2c7f4bbd4c77546a068bee136f61f96a7cb4a3d4a0e6"
         in _KNOWN_CLAUDE_SETTINGS_HASHES
+    )
+
+
+def test_every_registered_hash_is_line_ending_normalized():
+    """No entry may be a CRLF rendering of a generation (issue #684).
+
+    A CRLF hash silently turns managed-file identity into a per-platform question: the same
+    committed file is "a known superseded generation" on Windows and "unrecognized, leave it
+    alone" on Linux. Nothing else in the suite would notice, because both branches are
+    plausible in isolation -- which is exactly how the previous entry survived.
+
+    Every registered hash must therefore equal the LF hash of some real historical revision of
+    the scaffold file. Resolved from git so the assertion cannot drift as generations are added.
+    """
+    revisions = subprocess.run(
+        ["git", "log", "--format=%H", "--", _SCAFFOLD_REL],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert revisions, "no git history for the scaffold settings file"
+
+    historical_lf_hashes = set()
+    for revision in revisions:
+        blob = subprocess.run(
+            ["git", "show", f"{revision}:{_SCAFFOLD_REL}"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            check=True,
+        ).stdout
+        historical_lf_hashes.add(_lf_hash(blob))
+
+    unexplained = set(_KNOWN_CLAUDE_SETTINGS_HASHES) - historical_lf_hashes
+    assert not unexplained, (
+        "registered hash(es) match no historical revision's LF-normalized content -- most "
+        f"likely captured from a CRLF checkout: {sorted(unexplained)}"
     )

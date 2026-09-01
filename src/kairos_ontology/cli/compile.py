@@ -326,6 +326,58 @@ def _existing_generated_model_paths(result, target: Path) -> dict[str, str]:
     return model_paths
 
 
+def _check_cross_domain_model_collisions(result, target: Path) -> None:
+    """Reject a generated model name another domain's emit already claims (issue #685).
+
+    Within one domain, ``render._check_duplicate_model_names`` catches this from the rendered
+    artifact paths. Across domains it cannot: gold shaping and rendering are per-domain, yet
+    every domain emits into the *same* medallion dbt project, and one Gold extension per owning
+    domain is the recommended pattern. So a ``party`` Gold table named ``client`` collides with
+    the ``client`` domain's Silver model, project-wide and fatally, with each domain's own
+    compile looking clean.
+
+    Deliberately not reusing ``_existing_generated_model_paths``: it seeds the mapping with
+    *this* run's paths and merges foreign manifests with ``setdefault``, so a cross-domain
+    duplicate resolves to the local path and disappears. That precedence is right for its own
+    caller, which only asks whether a *contracted* model shadows a generated one.
+    """
+    from ..core.compiler.emit import ArtifactCollisionError, _parse_manifest
+
+    own_by_stem = {
+        Path(path).stem.casefold(): path
+        for path in result.artifact_dict()
+        if path.startswith("models/") and path.endswith(".sql")
+    }
+    if not own_by_stem or not target.is_dir():
+        return
+
+    # Every manifest except this domain's own and the two non-domain ones: re-emitting a
+    # domain must stay idempotent, and shared/dependency artifacts are not domain-owned.
+    excluded = {
+        _DEPENDENCY_MANIFEST_NAME,
+        _SHARED_MANIFEST_NAME,
+        _domain_manifest_name(result.domain),
+    }
+    foreign: dict[str, str] = {}
+    for manifest in sorted(target.glob(".kairos-compile-manifest.*.json")):
+        if manifest.name in excluded:
+            continue
+        for path in _parse_manifest(target, manifest.name):
+            if path.startswith("models/") and path.endswith(".sql"):
+                foreign.setdefault(Path(path).stem.casefold(), path)
+
+    for stem, own_path in sorted(own_by_stem.items()):
+        foreign_path = foreign.get(stem)
+        if foreign_path is not None and foreign_path != own_path:
+            raise ArtifactCollisionError(
+                f"generated dbt model name {Path(own_path).stem!r} is emitted at "
+                f"{own_path!r} by domain {result.domain!r} and at {foreign_path!r} by another "
+                "domain already in this project. dbt resolves ref() in one namespace per "
+                "project, so the assembled project cannot be parsed. Rename the Gold table "
+                "(goldTableName) -- the scaffold convention is a dim_/fact_/bridge_ prefix."
+            )
+
+
 def _reconciled_dbt_dependencies(result, target: Path) -> dict[str, str] | None:
     """Reconcile plan-selected contracted dbt files across sequential domain emits."""
     from ..core.compiler.emit import ArtifactCollisionError
@@ -431,6 +483,7 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     from ..core.compiler.emit import emit_artifacts
 
     target = emit_dir.resolve(strict=False)
+    _check_cross_domain_model_collisions(result, target)
     artifacts = result.artifact_dict()
     domain_artifacts = {
         path: content for path, content in artifacts.items() if not _is_shared_artifact(path)
