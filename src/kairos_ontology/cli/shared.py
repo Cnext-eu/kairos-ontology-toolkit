@@ -1432,15 +1432,46 @@ _RETIRED_MANAGED_SCAFFOLD_FILES = {
     ),
 }
 
-# SHA-256 of every previously-shipped scaffold/claude-settings.json generation. `update`
-# replaces a hub's file only when it matches one of these, so a hand-extended settings file
-# (extra allow rules, hooks, model settings) is never destroyed — it gets an advisory instead.
-_KNOWN_CLAUDE_SETTINGS_HASHES = (
-    "08c0b53faf0ea032c4746e460ae85e41e8f7731f999778d730e114e50ce037f5",  # .ttl-only, pre-DD-103 broadening
-    "7be2c70ddda8878e179930ce9dcaf0ac8d12cd09f982170f4d6b85acc515db08",  # .ttl/.rdf/.owl + refmodel deny-list (pre-package-migration)
-    "6ce03d5dcc389b92b387545e41c3d7b1936112bd87b66b6dc6cee2f4b965e680",  # pre-Edit/Write ontology-hub-publish/** guard
-    "32e7e6e05220b84b3667ecc5be8db7bf7250c14220cd3aec5efe25b5094f7c5d",  # pre-DD-103 Read relaxation (issue #659)
-)
+# Every previously-shipped scaffold/claude-settings.json generation, mapped to a description of
+# what changed *after* it. `update` replaces a hub's file only when it matches one of these, so a
+# hand-extended settings file (extra allow rules, hooks, model settings) is never destroyed — it
+# gets an advisory instead.
+#
+# Two things about this table are load-bearing (issue #684).
+#
+# **The hashes are of LF-normalized bytes.** They used to be raw-byte hashes, and the #659 entry
+# had been captured from a CRLF checkout. A hub carrying that generation was then classified by
+# line ending rather than by content: `update --check` exited 1 on Windows and 0 on Linux for the
+# identical commit, and only the Windows path went on to overwrite the file. Callers must hash the
+# LF-normalized bytes, never the raw bytes.
+#
+# **The description is per-generation.** The report used to hard-code one sentence about the
+# ".ttl -> .ttl/.rdf/.owl" broadening, which is only true of the oldest entry. A hub sitting on the
+# #659 generation was told its pending change concerned file extensions, when it was actually the
+# removal of twelve `Read` denies -- which is why that overwrite read as destroying local edits.
+_KNOWN_CLAUDE_SETTINGS_GENERATIONS = {
+    "08c0b53faf0ea032c4746e460ae85e41e8f7731f999778d730e114e50ce037f5": (
+        "the DD-103 semantic-access boundary was broadened "
+        "(.ttl/.rdf/.owl, not just .ttl, and both path anchorings)"
+    ),
+    "7be2c70ddda8878e179930ce9dcaf0ac8d12cd09f982170f4d6b85acc515db08": (
+        "the reference-model deny rules were dropped when reference models moved from "
+        "copy-in-scaffold to pip-package distribution (DD-158)"
+    ),
+    "6ce03d5dcc389b92b387545e41c3d7b1936112bd87b66b6dc6cee2f4b965e680": (
+        "Edit/Write of compiler-owned ontology-hub-publish/** is now denied, so emitted "
+        "output cannot be hand-edited"
+    ),
+    "6e6ee7d78b3f32e890ac2c7f4bbd4c77546a068bee136f61f96a7cb4a3d4a0e6": (
+        "the twelve Read denies on model/ontologies and model/shapes were REMOVED: denying "
+        "Read also disables Edit (Claude Code requires a prior Read), which made authoring a "
+        "domain .ttl or its SHACL structurally impossible (issue #659). If your hub restored "
+        "them by hand, that revert is what blocks kairos-design-domain -- let this update land"
+    ),
+}
+
+# Retained for callers that only need membership (e.g. the static boundary test).
+_KNOWN_CLAUDE_SETTINGS_HASHES = tuple(_KNOWN_CLAUDE_SETTINGS_GENERATIONS)
 
 _RETIRED_SCAFFOLD_DIRECTORIES = (
     "ontology-hub/referencemodels-unpacked",
@@ -1972,7 +2003,7 @@ def extract_schema(
     click.echo()
 
     try:
-        result_dir = run_extract_schema(
+        extraction = run_extract_schema(
             profiles_dir=profiles_path,
             profile_name=profile_name,
             target=target,
@@ -1995,12 +2026,14 @@ def extract_schema(
         click.echo(f"\n❌ {e}", err=True)
         raise SystemExit(1)
 
-    # Report results
-    yaml_files = sorted(result_dir.glob("*.yaml"))
-    table_files = [f for f in yaml_files if f.name != "_manifest.yaml"]
-    click.echo(f"✅ Extracted {len(table_files)} tables to: {result_dir}")
-    for f in table_files:
-        click.echo(f"   📄 {f.name}")
+    # Report what THIS run extracted, from the run itself rather than from the output
+    # directory (#679). Globbing "*.yaml" there counted tables left by earlier runs and
+    # double-counted every table, because each one writes both <table>.yaml and
+    # <table>.samples.yaml -- so a single-table refresh reported "Extracted 8 tables".
+    result_dir = extraction.directory
+    click.echo(f"✅ Extracted {len(extraction.tables)} table(s) to: {result_dir}")
+    for table_name in extraction.tables:
+        click.echo(f"   📄 {table_name}")
 
     if emit_seed and seeds_path.is_dir():
         seed_files = sorted(seeds_path.glob(f"{system_name}__*__sample.csv"))

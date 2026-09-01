@@ -9,6 +9,7 @@ import pytest
 from kairos_ontology.core.extract_schema import (
     DEFAULT_SAMPLE_SIZE,
     ColumnInfo,
+    ExtractionResult,
     JsonKeyInfo,
     TableInfo,
     classify_json_column,
@@ -831,17 +832,20 @@ class TestSeedCsvOutput:
                     sample_rows=[{"id": "1", "email": "person@example.com"}],
                 ),
             ]
-            return write_extraction_output(
-                output_dir=output_dir,
-                system_name=system_name,
-                platform="fabric-warehouse",
-                database="mydb",
-                schema=schema,
-                tables=fake_tables,
-                sample_size=sample_size,
-                emit_seed=emit_seed,
-                seeds_dir=seeds_dir,
-                redact_pii=redact_pii,
+            return ExtractionResult(
+                directory=write_extraction_output(
+                    output_dir=output_dir,
+                    system_name=system_name,
+                    platform="fabric-warehouse",
+                    database="mydb",
+                    schema=schema,
+                    tables=fake_tables,
+                    sample_size=sample_size,
+                    emit_seed=emit_seed,
+                    seeds_dir=seeds_dir,
+                    redact_pii=redact_pii,
+                ),
+                tables=tuple(table.name for table in fake_tables),
             )
 
         monkeypatch.setattr(
@@ -911,15 +915,18 @@ class TestSeedCsvOutput:
                     sample_rows=[{"email": "person@example.com"}],
                 ),
             ]
-            return write_extraction_output(
-                output_dir=output_dir,
-                system_name=system_name,
-                platform="fabric-warehouse",
-                database="mydb",
-                schema=schema,
-                tables=fake_tables,
-                sample_size=sample_size,
-                redact_pii=redact_pii,
+            return ExtractionResult(
+                directory=write_extraction_output(
+                    output_dir=output_dir,
+                    system_name=system_name,
+                    platform="fabric-warehouse",
+                    database="mydb",
+                    schema=schema,
+                    tables=fake_tables,
+                    sample_size=sample_size,
+                    redact_pii=redact_pii,
+                ),
+                tables=tuple(table.name for table in fake_tables),
             )
 
         monkeypatch.setattr(
@@ -954,6 +961,58 @@ class TestSeedCsvOutput:
             (tmp_path / "extracted" / "testapp" / "_manifest.yaml").read_text(encoding="utf-8")
         )
         assert manifest["sample_privacy"]["policy"] == "none"
+
+
+class TestExtractionCountMessage:
+    """The success message must report this run's tables (#679).
+
+    It used to glob ``*.yaml`` in the output directory, which counts tables left by earlier
+    runs *and* double-counts each one, since every table writes both ``<table>.yaml`` and
+    ``<table>.samples.yaml``. A one-table incremental refresh into a directory holding four
+    tables therefore reported "Extracted 8 tables".
+    """
+
+    def test_incremental_run_counts_only_its_own_tables(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+        from kairos_ontology.core import extract_schema as extract_schema_mod
+
+        (tmp_path / ".dbt").mkdir()
+
+        # Four tables already on disk from earlier runs: eight .yaml files.
+        system_dir = tmp_path / "extracted" / "nns"
+        system_dir.mkdir(parents=True)
+        (system_dir / "_manifest.yaml").write_text("tables: []\n", encoding="utf-8")
+        for existing in ("bookings", "parties", "party_contacts", "shipments"):
+            (system_dir / f"{existing}.yaml").write_text("name: x\n", encoding="utf-8")
+            (system_dir / f"{existing}.samples.yaml").write_text("rows: []\n", encoding="utf-8")
+
+        def fake_run_extract_schema(*_args, **_kwargs):
+            return ExtractionResult(directory=system_dir, tables=("invoices",))
+
+        monkeypatch.setattr(extract_schema_mod, "run_extract_schema", fake_run_extract_schema)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract-schema",
+                "--profile", "nns_dataplatform",
+                "--schema", "dbo",
+                "--system", "nns",
+                "--tables", "invoices",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Extracted 1 table(s)" in result.output
+        assert "invoices" in result.output
+        # The pre-existing tables are still on disk, but they are not this run's work.
+        assert "Extracted 8" not in result.output
+        assert "bookings" not in result.output
+        # Reports table names, not filenames.
+        assert "invoices.samples.yaml" not in result.output
 
 
 class TestImportSourceCwdGuard:

@@ -1221,11 +1221,60 @@ def render_project(
     return artifacts
 
 
+class DbtModelNameCollisionError(ValueError):
+    """Two generated dbt models claim the same resource name.
+
+    dbt resolves ``ref()`` in one flat namespace per project, so two models with the same
+    name make the emitted project fail ``dbt parse`` outright -- there is no valid output
+    being suppressed here, which is why this raises rather than warning (issue #685).
+    """
+
+
+def _check_duplicate_model_names(artifacts: dict[str, str]) -> None:
+    """Reject two generated models that would claim the same dbt resource name.
+
+    Scoped to ``models/`` on purpose: macros are also ``.sql`` but live in a separate dbt
+    resource namespace, so ``macros/kairos_concat.sql`` and a model named ``kairos_concat``
+    are not a collision.
+
+    Case-folded, matching the rest of the toolkit's collision checks
+    (``emit._collision_key``, ``compile._existing_generated_model_paths``): the adapters
+    target case-insensitive warehouses and development happens on case-insensitive
+    filesystems, so differing only by case is not a usable distinction even though dbt's own
+    duplicate-resource error is case-sensitive.
+    """
+    by_name: dict[str, list[str]] = {}
+    for path in artifacts:
+        if not (path.startswith("models/") and path.endswith(".sql")):
+            continue
+        name = path.rsplit("/", 1)[-1].removesuffix(".sql")
+        by_name.setdefault(name.casefold(), []).append(path)
+
+    collisions = {name: sorted(paths) for name, paths in by_name.items() if len(paths) > 1}
+    if not collisions:
+        return
+
+    detail = "; ".join(
+        f"{name!r} claimed by {' and '.join(paths)}" for name, paths in sorted(collisions.items())
+    )
+    raise DbtModelNameCollisionError(
+        "duplicate generated dbt model name(s): "
+        f"{detail}. dbt resolves ref() in one namespace per project, so this project cannot "
+        "be parsed. Rename the Gold table (goldTableName) -- the scaffold convention is a "
+        "dim_/fact_/bridge_ prefix, which keeps Gold names distinct from Silver model names."
+    )
+
+
 def _validate_dbt_artifacts(
     artifacts: dict[str, str],
     *,
     known_models: set[str] | None = None,
 ) -> None:
+    # Blocking, unlike the ref/Jinja scans below: a duplicate model name is never valid
+    # output. This used to surface only as a "self-referential ref(...)" warning from
+    # `_check_refs`, which described the symptom in the generated Gold SQL rather than the
+    # project-wide name collision, and `compile --check`/`--emit` both passed (issue #685).
+    _check_duplicate_model_names(artifacts)
     model_names = _extract_model_names(artifacts) | (known_models or set())
     known_refs = model_names | _collect_join_ref_targets(artifacts)
     for path, content in artifacts.items():
@@ -1277,8 +1326,13 @@ def _check_refs(path: str, content: str, model_names: set[str]) -> None:
     for match in _REF_PATTERN.finditer(content):
         target = match.group(1)
         if target == model_name:
+            # Reached only when the colliding pair is outside `models/` (the blocking check
+            # in `_check_duplicate_model_names` covers models). Worded as a name conflict
+            # rather than "self-referential ref", which described the symptom in the
+            # generated SQL and read as though dbt would resolve it (issue #685).
             logger.warning(
-                "dbt validation: self-referential ref('%s') in %s",
+                "dbt validation: ref('%s') in %s resolves to the model itself -- another "
+                "resource is claiming this name",
                 target,
                 path,
             )

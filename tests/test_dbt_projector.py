@@ -5468,3 +5468,90 @@ class TestIssue194Scd2InheritedFkScope:
         )
         assert "source_data" not in sql
         assert "select *\nfrom mapped" in sql
+
+
+class TestDuplicateGeneratedModelNames:
+    """A duplicate dbt model name is never valid output (issue #685).
+
+    A Gold product whose ``goldTableName`` equalled the Silver model it sources from emitted
+    ``models/silver/<d>/x.sql`` and ``models/gold/<d>/x.sql``. dbt refuses to parse that, but
+    ``compile --check`` passed and ``--emit`` wrote it, reporting only a ``self-referential
+    ref(...)`` warning -- which named the symptom in the Gold SQL rather than the project-wide
+    collision. The rendered project could then be committed and released.
+    """
+
+    def _check(self, artifacts):
+        from kairos_ontology.core.projections.dbt.render import _check_duplicate_model_names
+
+        _check_duplicate_model_names(artifacts)
+
+    def test_silver_and_gold_claiming_one_name_is_blocking(self):
+        from kairos_ontology.core.projections.dbt.render import DbtModelNameCollisionError
+
+        artifacts = {
+            "models/silver/party/frachtparty.sql": "select 1",
+            "models/gold/party/frachtparty.sql": "select * from {{ ref('frachtparty') }}",
+        }
+        with pytest.raises(DbtModelNameCollisionError) as excinfo:
+            self._check(artifacts)
+
+        message = str(excinfo.value)
+        # The issue asks for the colliding pair to be named, not just the condition.
+        assert "frachtparty" in message
+        assert "models/silver/party/frachtparty.sql" in message
+        assert "models/gold/party/frachtparty.sql" in message
+        # And it must point at the authoring fix.
+        assert "goldTableName" in message
+
+    def test_gold_table_colliding_with_a_dual_current_view_is_blocking(self):
+        """`dimensionExposure "dual"` derives `<name>_current`, which is also a model.
+
+        This name is produced during materialization, so an authored-name-only check never
+        sees it -- and two artifacts on the same path silently overwrite one another.
+        """
+        from kairos_ontology.core.projections.dbt.render import DbtModelNameCollisionError
+
+        with pytest.raises(DbtModelNameCollisionError):
+            self._check(
+                {
+                    "models/gold/party/dim_customer.sql": "select 1",
+                    "models/gold/party/dim_customer_current.sql": "select 1",
+                    "models/gold/other/dim_customer_current.sql": "select 1",
+                }
+            )
+
+    def test_collision_is_case_insensitive(self):
+        """Matches emit._collision_key and compile's stem comparison.
+
+        dbt's own duplicate-resource error is case-sensitive, but the adapters target
+        case-insensitive warehouses and development happens on case-insensitive filesystems,
+        so differing only by case is not a usable distinction.
+        """
+        from kairos_ontology.core.projections.dbt.render import DbtModelNameCollisionError
+
+        with pytest.raises(DbtModelNameCollisionError):
+            self._check(
+                {
+                    "models/silver/party/frachtparty.sql": "select 1",
+                    "models/gold/party/FrachtParty.sql": "select 1",
+                }
+            )
+
+    def test_macro_sharing_a_model_name_is_not_a_collision(self):
+        """Macros are `.sql` too, but live in a separate dbt resource namespace."""
+        self._check(
+            {
+                "macros/kairos_concat.sql": "{% macro kairos_concat() %}{% endmacro %}",
+                "models/silver/party/kairos_concat.sql": "select 1",
+            }
+        )
+
+    def test_distinct_names_across_layers_pass(self):
+        self._check(
+            {
+                "models/silver/party/frachtparty.sql": "select 1",
+                "models/gold/party/dim_frachtparty.sql": "select 1",
+                "models/quality/party/frachtparty__dq_quarantine.sql": "select 1",
+                "models/silver/party/_party__models.yml": "version: 2",
+            }
+        )

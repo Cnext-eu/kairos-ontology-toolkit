@@ -987,3 +987,86 @@ def test_every_selected_domain_appears_even_when_one_is_refused(tmp_path, monkey
     payload = json.loads(result.stdout)
     assert [entry["domain"] for entry in payload] == ["party", "nosuchdomain"]
     assert all(entry["succeeded"] is False for entry in payload)
+
+
+class TestCrossDomainGeneratedModelCollision:
+    """A generated model name may not be claimed by two domains (issue #685).
+
+    `render._check_duplicate_model_names` catches collisions inside one domain's rendered
+    artifacts, but gold shaping and rendering are per-domain while every domain emits into the
+    *same* medallion dbt project -- and one Gold extension per owning domain is the pattern the
+    toolkit recommends. So a `party` Gold table named `client` collides with the `client`
+    domain's Silver model project-wide, while each domain's own compile looks clean.
+    """
+
+    @staticmethod
+    def _write_manifest(target, domain, paths):
+        import hashlib
+        import json
+
+        from kairos_ontology.cli.compile import _domain_manifest_name
+        from kairos_ontology.core.compiler.emit import EMIT_MANIFEST_SCHEMA
+
+        document = {
+            "schema": EMIT_MANIFEST_SCHEMA,
+            "files": [
+                {
+                    "path": path,
+                    "sha256": hashlib.sha256(path.encode()).hexdigest(),
+                }
+                for path in paths
+            ],
+        }
+        (target / _domain_manifest_name(domain)).write_text(
+            json.dumps(document), encoding="utf-8"
+        )
+
+    class _Result:
+        def __init__(self, domain, artifacts):
+            self.domain = domain
+            self._artifacts = artifacts
+
+        def artifact_dict(self):
+            return dict(self._artifacts)
+
+    def test_reusing_another_domains_model_name_is_rejected(self, tmp_path):
+        import pytest
+
+        from kairos_ontology.cli.compile import _check_cross_domain_model_collisions
+        from kairos_ontology.core.compiler.emit import ArtifactCollisionError
+
+        target = tmp_path / "dbt"
+        target.mkdir()
+        self._write_manifest(target, "client", ["models/silver/client/client.sql"])
+
+        result = self._Result("party", {"models/gold/party/client.sql": "select 1"})
+
+        with pytest.raises(ArtifactCollisionError) as excinfo:
+            _check_cross_domain_model_collisions(result, target)
+
+        message = str(excinfo.value)
+        assert "client" in message
+        assert "models/gold/party/client.sql" in message
+        assert "models/silver/client/client.sql" in message
+        assert "goldTableName" in message
+
+    def test_reemitting_the_same_domain_is_not_a_collision(self, tmp_path):
+        """Re-running `compile <domain> --emit` must stay idempotent."""
+        from kairos_ontology.cli.compile import _check_cross_domain_model_collisions
+
+        target = tmp_path / "dbt"
+        target.mkdir()
+        self._write_manifest(target, "party", ["models/gold/party/dim_party.sql"])
+
+        result = self._Result("party", {"models/gold/party/dim_party.sql": "select 1"})
+        _check_cross_domain_model_collisions(result, target)
+
+    def test_distinct_names_across_domains_pass(self, tmp_path):
+        from kairos_ontology.cli.compile import _check_cross_domain_model_collisions
+
+        target = tmp_path / "dbt"
+        target.mkdir()
+        self._write_manifest(target, "client", ["models/silver/client/client.sql"])
+
+        result = self._Result("party", {"models/gold/party/dim_party.sql": "select 1"})
+        _check_cross_domain_model_collisions(result, target)

@@ -39,6 +39,8 @@ from pathlib import Path
 
 from kairos_ontology.cli.shared import _KNOWN_CLAUDE_SETTINGS_HASHES
 
+_GENERATIONS_DIR = Path(__file__).resolve().parent / "fixtures" / "claude-settings-generations"
+
 _SCAFFOLD_SETTINGS = (
     Path(__file__).resolve().parent.parent
     / "src"
@@ -123,6 +125,11 @@ def test_no_rule_denies_json_or_xml():
         assert ".xml" not in rule, f"Unexpected .xml in deny rule: {rule}"
 
 
+def _lf_hash(data: bytes) -> str:
+    normalized = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(normalized).hexdigest()
+
+
 def test_current_scaffold_hash_is_not_a_known_superseded_hash():
     # _KNOWN_CLAUDE_SETTINGS_HASHES must hold only *superseded* generations of this
     # file. If the current file's hash ever ended up in that tuple (e.g. someone
@@ -130,7 +137,7 @@ def test_current_scaffold_hash_is_not_a_known_superseded_hash():
     # a hub already on the current generation as needing replacement by itself —
     # harmless in effect, but a sign the tuple was mis-maintained and a real
     # regression waiting to happen the next time the file changes again.
-    current_hash = hashlib.sha256(_SCAFFOLD_SETTINGS.read_bytes()).hexdigest()
+    current_hash = _lf_hash(_SCAFFOLD_SETTINGS.read_bytes())
     assert current_hash not in _KNOWN_CLAUDE_SETTINGS_HASHES
 
 
@@ -158,8 +165,78 @@ def test_grep_and_publish_guards_survive():
 
 
 def test_superseded_generation_is_recorded_so_update_can_deliver_the_fix():
-    """Existing hubs only receive this change if the prior hash is registered."""
+    """Existing hubs only receive this change if the prior hash is registered.
+
+    This is the **LF-normalized** hash of the pre-#659 generation. It used to be that
+    generation's CRLF rendering (issue #684), so the entry only matched on a Windows checkout:
+    ``update --check`` then exited 1 on Windows and 0 on Linux for the identical commit.
+    """
     assert (
-        "32e7e6e05220b84b3667ecc5be8db7bf7250c14220cd3aec5efe25b5094f7c5d"
+        "6e6ee7d78b3f32e890ac2c7f4bbd4c77546a068bee136f61f96a7cb4a3d4a0e6"
         in _KNOWN_CLAUDE_SETTINGS_HASHES
     )
+
+
+def test_every_registered_hash_is_line_ending_normalized():
+    """No entry may be a CRLF rendering of a generation (issue #684).
+
+    A CRLF hash silently turns managed-file identity into a per-platform question: the same
+    committed file is "a known superseded generation" on Windows and "unrecognized, leave it
+    alone" on Linux. Nothing else in the suite would notice, because both branches are
+    plausible in isolation -- which is exactly how the previous entry survived.
+
+    Checked against vendored fixtures rather than git history: CI checks out at
+    ``fetch-depth: 1``, so a test that reached for old revisions passed locally and failed
+    only in CI.
+    """
+    fixtures = sorted(_GENERATIONS_DIR.glob("*.json"))
+    assert fixtures, f"no vendored generations in {_GENERATIONS_DIR}"
+
+    lf_hashes = {_lf_hash(path.read_bytes()): path.name for path in fixtures}
+    # Raw sha256 of the CRLF rendering -- deliberately NOT `_lf_hash`, which normalizes and
+    # would just hand back the LF digest, making this check vacuous.
+    crlf_hashes = {
+        hashlib.sha256(path.read_bytes().replace(b"\n", b"\r\n")).hexdigest(): path.name
+        for path in fixtures
+    }
+
+    unexplained = set(_KNOWN_CLAUDE_SETTINGS_HASHES) - set(lf_hashes)
+    assert not unexplained, (
+        "registered hash(es) match no vendored generation's LF content. If a generation was "
+        "just added, vendor it under tests/fixtures/claude-settings-generations/; otherwise "
+        f"the entry was likely captured from a CRLF checkout: {sorted(unexplained)}"
+    )
+
+    crlf_entries = {
+        digest: crlf_hashes[digest]
+        for digest in _KNOWN_CLAUDE_SETTINGS_HASHES
+        if digest in crlf_hashes
+    }
+    assert not crlf_entries, (
+        f"registered hash(es) are the CRLF rendering of a generation: {crlf_entries}"
+    )
+
+
+def test_every_vendored_generation_is_stored_with_lf_endings():
+    """A CRLF fixture would re-introduce the bug these fixtures exist to pin."""
+    for path in sorted(_GENERATIONS_DIR.glob("*.json")):
+        assert b"\r" not in path.read_bytes(), f"{path.name} must be stored with LF endings"
+
+
+def test_the_pre_659_generation_is_the_one_that_denied_read():
+    """Pins what the #659 change actually was, which the report must be able to state.
+
+    The twelve ``Read(...)`` denies are the *shipped* pre-#659 file, not a hub customization
+    -- which is why `update` replacing them is the fix being delivered rather than data loss.
+    """
+    pre_659 = json.loads(
+        (_GENERATIONS_DIR / "04-pre-659-read-denies.json").read_text(encoding="utf-8")
+    )
+    read_rules = [rule for rule in pre_659["permissions"]["deny"] if rule.startswith("Read(")]
+    assert len(read_rules) == 12
+    # 2 guarded paths x 3 extensions x 2 anchorings.
+    assert len(_GUARDED_PATHS) * len(_GUARDED_EXTENSIONS) * len(_GUARDED_ANCHORS) == 12
+    # And they are gone from what ships today.
+    assert not [
+        rule for rule in _load_settings()["permissions"]["deny"] if rule.startswith("Read(")
+    ]

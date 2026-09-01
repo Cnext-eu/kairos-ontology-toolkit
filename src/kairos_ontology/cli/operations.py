@@ -5,6 +5,7 @@
 import os
 import re
 import sys
+import json
 import click
 import hashlib
 import shutil
@@ -25,7 +26,7 @@ from .workflow_refresh import classify as classify_workflow
 from .workflow_refresh import render as render_workflow
 from .shared import (
     _DependencyFilesSnapshot,
-    _KNOWN_CLAUDE_SETTINGS_HASHES,
+    _KNOWN_CLAUDE_SETTINGS_GENERATIONS,
     _superseded_workflow_templates,
     _workflow_sources,
     _MANAGED_MARKER_RE,
@@ -64,6 +65,54 @@ from .shared import (
     _toolkit_git_sha_source,
     _whl_url,
 )
+
+
+def _lf_normalized_bytes(path: Path) -> bytes:
+    """Return *path*'s bytes with CRLF/CR collapsed to LF.
+
+    Managed-file identity is content, not line ending. Git for Windows checks out CRLF by
+    default, so hashing raw bytes makes the same committed file hash differently per platform
+    (issue #684). Mirrors the normalization the retired-managed-file loop already applies.
+    """
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def _deny_rule_diff(
+    local_path: Path, shipped_path: Path
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return ``(removed, added)`` ``permissions.deny`` rules going local -> shipped.
+
+    Reported so a settings.json replacement is never silent about which rules it changes
+    (issue #684): a hub whose file matched a superseded generation saw only "semantic-access
+    boundary broadened" while twelve ``Read`` denies were being removed. Returns empty tuples
+    if either file is unreadable or not shaped as expected -- this is reporting, never a gate.
+    """
+
+    def _deny(path: Path) -> set[str]:
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        rules = (
+            document.get("permissions", {}).get("deny", []) if isinstance(document, dict) else []
+        )
+        return {rule for rule in rules if isinstance(rule, str)}
+
+    local, shipped = _deny(local_path), _deny(shipped_path)
+    return tuple(sorted(local - shipped)), tuple(sorted(shipped - local))
+
+
+def _print_deny_rule_diff(removed: tuple[str, ...], added: tuple[str, ...]) -> None:
+    """Print which ``permissions.deny`` rules a settings.json refresh changes.
+
+    A replacement that silently drops deny rules reads as data loss even when it is the
+    intended fix being delivered (issue #684). Naming the rules lets the reader see at a
+    glance whether the change is the one they expect.
+    """
+    for rule in removed:
+        print(f"     - {rule}")
+    for rule in added:
+        print(f"     + {rule}")
 
 
 def _migrate_dataplatform_custom_models(repo_root: Path, check: bool) -> None:
@@ -544,6 +593,12 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
     # missing the file, or one carrying local customizations, is reported but
     # must not flip the exit code.
     claude_settings_status: str | None = None  # "missing" | "outdated" | "advisory"
+    # What changed after the generation the hub is on, so the report can name the real pending
+    # change instead of one hard-coded sentence about file extensions (issue #684). None for
+    # "advisory", where the hub's file matches no shipped generation and the change is unknown.
+    claude_settings_change: str | None = None
+    claude_settings_removed: tuple[str, ...] = ()
+    claude_settings_added: tuple[str, ...] = ()
     claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
     claude_settings_dst = repo_root / ".claude" / "settings.json"
     claude_settings_rel = ".claude/settings.json"
@@ -554,16 +609,28 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
                 claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(claude_settings_src, claude_settings_dst)
         else:
-            local_hash = hashlib.sha256(claude_settings_dst.read_bytes()).hexdigest()
-            scaffold_hash = hashlib.sha256(claude_settings_src.read_bytes()).hexdigest()
+            # Hash the LF-normalized bytes, not the raw bytes (issue #684). Git for Windows
+            # checks out CRLF by default, so a raw-byte hash classifies an identical file
+            # differently per platform -- which made `update --check` exit 1 on Windows and 0
+            # on Linux for the same commit, and only Windows went on to replace the file. The
+            # retired-managed-file loop above already normalizes for exactly this reason.
+            local_hash = hashlib.sha256(_lf_normalized_bytes(claude_settings_dst)).hexdigest()
+            scaffold_hash = hashlib.sha256(_lf_normalized_bytes(claude_settings_src)).hexdigest()
             if local_hash == scaffold_hash:
                 pass  # already current; silent no-op
-            elif local_hash in _KNOWN_CLAUDE_SETTINGS_HASHES:
+            elif local_hash in _KNOWN_CLAUDE_SETTINGS_GENERATIONS:
                 claude_settings_status = "outdated"
+                claude_settings_change = _KNOWN_CLAUDE_SETTINGS_GENERATIONS[local_hash]
+                claude_settings_removed, claude_settings_added = _deny_rule_diff(
+                    claude_settings_dst, claude_settings_src
+                )
                 if not check:
                     shutil.copy2(claude_settings_src, claude_settings_dst)
             else:
                 claude_settings_status = "advisory"
+                claude_settings_removed, claude_settings_added = _deny_rule_diff(
+                    claude_settings_dst, claude_settings_src
+                )
 
     # --- Reconcile .github/workflows/*.yml (issue #658) ----------------------
     # Scaffolded once and never revisited, so a real fix to a workflow template
@@ -653,16 +720,15 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
                 f"ℹ  {claude_settings_rel} not present — run `update` (without --check) to create it."
             )
         elif claude_settings_status == "outdated":
-            print(
-                f"⚠  {claude_settings_rel} needs updating: the DD-103 semantic-access boundary\n"
-                f"   was broadened (.ttl/.rdf/.owl, not just .ttl)."
-            )
+            print(f"⚠  {claude_settings_rel} needs updating: {claude_settings_change}.")
+            _print_deny_rule_diff(claude_settings_removed, claude_settings_added)
         elif claude_settings_status == "advisory":
             print(
-                f"ℹ  {claude_settings_rel} has local customizations and was left alone.\n"
-                f"   The DD-103 semantic-access boundary was broadened (.ttl/.rdf/.owl, not\n"
-                f"   just .ttl) — please review and merge the updated deny rules by hand."
+                f"ℹ  {claude_settings_rel} matches no shipped generation (local"
+                f" edits, or a generation this toolkit no longer ships) and was left"
+                f" alone — please review and merge the updated deny rules by hand."
             )
+            _print_deny_rule_diff(claude_settings_removed, claude_settings_added)
         if (
             not outdated
             and not missing
@@ -725,13 +791,15 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
         if claude_settings_status == "missing":
             print(f"  ✓ Created {claude_settings_rel} (denies raw ttl/rdf/owl Grep)")
         elif claude_settings_status == "outdated":
-            print(f"  ✓ Updated {claude_settings_rel} (semantic-access boundary broadened)")
+            print(f"  ✓ Updated {claude_settings_rel}: {claude_settings_change}")
+            _print_deny_rule_diff(claude_settings_removed, claude_settings_added)
         elif claude_settings_status == "advisory":
             print(
-                f"ℹ  {claude_settings_rel} has local customizations and was left alone.\n"
-                f"   The DD-103 semantic-access boundary was broadened (.ttl/.rdf/.owl, not\n"
-                f"   just .ttl) — please review and merge the updated deny rules by hand."
+                f"ℹ  {claude_settings_rel} matches no shipped generation (local"
+                f" edits, or a generation this toolkit no longer ships) and was left"
+                f" alone — please review and merge the updated deny rules by hand."
             )
+            _print_deny_rule_diff(claude_settings_removed, claude_settings_added)
         if not updated and not created and not removed and not removed_assets:
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
 

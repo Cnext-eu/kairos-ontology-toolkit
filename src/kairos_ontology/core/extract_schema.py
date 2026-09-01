@@ -116,6 +116,20 @@ class ExtractionManifest:
     version: str = "1.2"
 
 
+@dataclass(frozen=True)
+class ExtractionResult:
+    """What one ``extract-schema`` run produced.
+
+    ``tables`` is *this run's* tables, which is not recoverable from the output directory:
+    ``_manifest.yaml`` holds the merged inventory across runs (#672) and the directory holds
+    two files per table. Reporting from the directory therefore counted previously-extracted
+    tables and double-counted each one (#679).
+    """
+
+    directory: Path
+    tables: tuple[str, ...]
+
+
 # --------------------------------------------------------------------------- #
 # JSON Classification
 # --------------------------------------------------------------------------- #
@@ -1041,7 +1055,7 @@ def run_extract_schema(
     emit_seed: bool = False,
     seeds_dir: Path | str = "seeds",
     redact_pii: bool = True,
-) -> Path:
+) -> ExtractionResult:
     """Run full schema extraction pipeline.
 
     Args:
@@ -1056,6 +1070,11 @@ def run_extract_schema(
         emit_seed: Also write each table's redacted samples as a dbt seed CSV.
         seeds_dir: Output directory for the seed CSVs (default: "seeds").
         redact_pii: Apply the redact-detected-pii sample policy (default: True).
+
+    Returns:
+        An ``ExtractionResult`` carrying the output directory and the tables this run
+        extracted. Callers must not re-derive the table list from the directory: it holds
+        two files per table and accumulates across runs (#679).
 
     Returns:
         Path to the output directory with YAML files.
@@ -1110,4 +1129,7 @@ def run_extract_schema(
         redact_pii=redact_pii,
     )
 
-    return result_dir
+    return ExtractionResult(
+        directory=result_dir,
+        tables=tuple(table.name for table in table_infos),
+    )
