@@ -112,9 +112,16 @@ class SilverSampleAuditReport:
 
 
 def _split_samples(value: Any) -> list[str]:
+    """Split a delimited ``sampleValues``/``enumValues`` literal.
+
+    Paired with ``import_source.join_sample_values``, which substitutes the separator inside
+    values so this split cannot invent samples that were never in the source (issue #692).
+    """
     if value is None:
         return []
-    return [part.strip() for part in str(value).split(" | ") if part.strip()]
+    from .import_source import SAMPLE_VALUE_SEPARATOR
+
+    return [part.strip() for part in str(value).split(SAMPLE_VALUE_SEPARATOR) if part.strip()]
 
 
 def load_source_samples(sources_dir: Path) -> dict[str, SourceColumnSample]:

@@ -858,7 +858,7 @@ def write_extraction_output(
     sample_size: int = DEFAULT_SAMPLE_SIZE,
     emit_seed: bool = False,
     seeds_dir: Path | str = "seeds",
-    redact_pii: bool = True,
+    redact_pii: bool = False,
 ) -> Path:
     """Write extraction results as per-table YAML files.
 
@@ -880,10 +880,16 @@ def write_extraction_output(
     the existing manifest's system/platform/database/schema disagree with this
     run's, since merging tables from a different extraction would misdescribe them.
 
-    ``redact_pii`` (default ``True``) applies the ``redact-detected-pii`` sample
-    policy. When ``False``, sample values are written unredacted and the manifest
-    records ``sample_privacy.policy: none`` (#672) -- only use this for sources
-    already known to hold no sensitive values.
+    ``redact_pii`` (default ``False`` since issue #692) applies the
+    ``redact-detected-pii`` sample policy. When off, sample values are written as-is and
+    the manifest records ``sample_privacy.policy: none`` -- the artifact always states the
+    policy actually applied, never one it did not.
+
+    Off by default because the detector's false positives destroyed the evidence binding
+    design reads: money, datetime and business-ID columns arrived with zero samples,
+    mislabelled as phone numbers, while protecting nothing (the real values were present in
+    the sibling ``.samples.yaml`` regardless). Turning it on is a deliberate choice for a
+    source known to carry sensitive values.
 
     Returns:
         Path to the output directory.
@@ -937,10 +943,13 @@ def write_extraction_output(
             "schema": manifest.schema,
         },
         "tables": manifest.tables,
-        "sample_privacy": {
-            "policy": SAMPLE_PRIVACY_POLICY if redact_pii else "none",
-            "version": SAMPLE_PRIVACY_VERSION,
-        },
+        # No policy version when no policy ran: recording the version of a policy that was
+        # not applied is the overstatement DD-075's first amendment exists to prevent.
+        "sample_privacy": (
+            {"policy": SAMPLE_PRIVACY_POLICY, "version": SAMPLE_PRIVACY_VERSION}
+            if redact_pii
+            else {"policy": "none"}
+        ),
     }
     prepared_tables: list[tuple[TableInfo, dict, list[dict[str, Any]]]] = []
     for table in tables:
@@ -991,7 +1000,7 @@ def write_extraction_output(
     return system_dir
 
 
-def _table_to_yaml_dict(table: TableInfo, *, redact_pii: bool = True) -> dict:
+def _table_to_yaml_dict(table: TableInfo, *, redact_pii: bool = False) -> dict:
     """Convert a TableInfo to a YAML-serializable dict."""
     columns_data = []
     for col in table.columns:
@@ -1054,7 +1063,7 @@ def run_extract_schema(
     sample_size: int = DEFAULT_SAMPLE_SIZE,
     emit_seed: bool = False,
     seeds_dir: Path | str = "seeds",
-    redact_pii: bool = True,
+    redact_pii: bool = False,
 ) -> ExtractionResult:
     """Run full schema extraction pipeline.
 
@@ -1069,7 +1078,7 @@ def run_extract_schema(
         sample_size: Number of sample rows per table.
         emit_seed: Also write each table's redacted samples as a dbt seed CSV.
         seeds_dir: Output directory for the seed CSVs (default: "seeds").
-        redact_pii: Apply the redact-detected-pii sample policy (default: True).
+        redact_pii: Apply the redact-detected-pii sample policy (default: False, #692).
 
     Returns:
         An ``ExtractionResult`` carrying the output directory and the tables this run

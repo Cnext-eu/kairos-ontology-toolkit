@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ._samples import redact_sample_value
 from .compiler import CompileError, load_entity_binding
 from .compiler.adapter import _expression_columns
 from .compiler.bindings import EntityBinding
@@ -298,7 +299,21 @@ def run_column_coverage_audit(
             unmapped.append(column)
             if column.distinct_count is None or column.distinct_count <= 1:
                 continue
-            sample_value = column.samples[0] if column.samples else ""
+            # Always redact here, whatever the import policy was (issue #692). This value is
+            # printed to stdout and included in `--format json`, so it lands in terminals,
+            # agent transcripts and CI logs -- destinations no hub controls. Redacting
+            # per-value rather than blanking keeps the evidence this finding exists to give:
+            # the #302 exemptions mean money, dates and identifiers survive intact, and only
+            # a genuine detection becomes an opaque token.
+            raw_sample = column.samples[0] if column.samples else ""
+            sample_value = ""
+            if raw_sample:
+                sample_value, _ = redact_sample_value(
+                    raw_sample,
+                    table=table,
+                    column=column.name,
+                    data_type=column.data_type,
+                )
             report.orphan_columns.append(
                 OrphanColumnFinding(
                     table=table,

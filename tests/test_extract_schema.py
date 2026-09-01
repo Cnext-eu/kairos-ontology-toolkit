@@ -462,6 +462,7 @@ class TestSamplesYamlOutput:
             database="warehouse",
             schema="dbo",
             tables=tables,
+            redact_pii=True,
         )
 
         import yaml
@@ -508,6 +509,7 @@ class TestSamplesYamlOutput:
             database="lakehouse",
             schema="bronze",
             tables=tables,
+            redact_pii=True,
         )
 
         import yaml
@@ -614,6 +616,7 @@ class TestSeedCsvOutput:
             tables=tables,
             emit_seed=True,
             seeds_dir=seeds_dir,
+            redact_pii=True,
         )
 
         csv_path = seeds_dir / "crm__contacts__sample.csv"
@@ -867,6 +870,7 @@ class TestSeedCsvOutput:
                 "--profiles-dir",
                 str(tmp_path),
                 "--emit-seed",
+                "--redact-pii",
                 "--seeds-dir",
                 "myseeds",
             ],
@@ -882,8 +886,12 @@ class TestSeedCsvOutput:
         assert "<redacted kind=email source=tblClient.email datatype=varchar(255)>" in content
         assert "Wrote 1 seed CSV" in result.output
 
-    def test_cli_no_redact_pii_flag_disables_redaction(self, tmp_path, monkeypatch):
-        """`--no-redact-pii` must reach `run_extract_schema` as `redact_pii=False` (#672)."""
+    def test_cli_no_redact_pii_flag_is_an_accepted_no_op(self, tmp_path, monkeypatch):
+        """`--no-redact-pii` is now the default, kept as an accepted no-op (issue #692).
+
+        It shipped as a real flag in 5.15.0rc12 (#672), so scripts and docs pass it. Renaming
+        it away would break them for no benefit; it simply asks for what already happens.
+        """
         from click.testing import CliRunner
         import kairos_ontology.core.extract_schema as extract_schema_mod
         from kairos_ontology.cli.main import cli
@@ -953,7 +961,7 @@ class TestSeedCsvOutput:
 
         assert result.exit_code == 0, result.output
         assert captured["redact_pii"] is False
-        assert "PII redaction: disabled" in result.output
+        assert "PII redaction: off (default)" in result.output
 
         import yaml
 
@@ -961,6 +969,114 @@ class TestSeedCsvOutput:
             (tmp_path / "extracted" / "testapp" / "_manifest.yaml").read_text(encoding="utf-8")
         )
         assert manifest["sample_privacy"]["policy"] == "none"
+
+
+class TestRedactPiiIsOptIn:
+    """Redaction is off by default and on with `--redact-pii` (issue #692)."""
+
+    def test_default_writes_values_as_is_and_records_policy_none(self, tmp_path):
+        tables = [
+            TableInfo(
+                name="contacts",
+                schema="dbo",
+                row_count=1,
+                columns=[
+                    ColumnInfo(name="email", data_type="nvarchar(255)", ordinal_position=1),
+                    ColumnInfo(name="amount", data_type="decimal(18,2)", ordinal_position=2),
+                ],
+                sample_rows=[{"email": "person@example.com", "amount": "6420.49"}],
+            ),
+        ]
+
+        result_dir = write_extraction_output(
+            output_dir=tmp_path,
+            system_name="crm",
+            platform="fabric-warehouse",
+            database="warehouse",
+            schema="dbo",
+            tables=tables,
+        )
+
+        import yaml
+
+        samples = yaml.safe_load(
+            (result_dir / "contacts.samples.yaml").read_text(encoding="utf-8")
+        )
+        assert samples["rows"][0]["email"] == "person@example.com"
+        assert samples["rows"][0]["amount"] == "6420.49"
+
+        manifest = yaml.safe_load((result_dir / "_manifest.yaml").read_text(encoding="utf-8"))
+        # The artifact states the policy that actually ran, and carries no version for a
+        # policy that did not run.
+        assert manifest["sample_privacy"] == {"policy": "none"}
+
+    def test_redact_pii_flag_reaches_the_core_and_is_reported(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+        from kairos_ontology.core import extract_schema as extract_schema_mod
+
+        (tmp_path / ".dbt").mkdir()
+        captured: dict = {}
+
+        def fake_run_extract_schema(*_args, **kwargs):
+            captured["redact_pii"] = kwargs["redact_pii"]
+            return ExtractionResult(directory=tmp_path, tables=("tblClient",))
+
+        monkeypatch.setattr(extract_schema_mod, "run_extract_schema", fake_run_extract_schema)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract-schema",
+                "--profile", "myproject",
+                "--schema", "dbo",
+                "--system", "testapp",
+                "--redact-pii",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured["redact_pii"] is True
+        assert "PII redaction: enabled" in result.output
+
+    def test_emit_seed_is_refused_without_redaction(self, tmp_path, monkeypatch):
+        """Seed CSVs leave the repo, so they may not carry raw rows (issue #692).
+
+        `seeds/` is not gitignored, and the emitted copy under
+        `ontology-hub-publish/medallion/dbt/` is explicitly *un*-ignored and packaged into a
+        GitHub Release by `release-projections.yml`.
+        """
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+        from kairos_ontology.core import extract_schema as extract_schema_mod
+
+        (tmp_path / ".dbt").mkdir()
+        called = {"ran": False}
+
+        def fake_run_extract_schema(*_args, **_kwargs):
+            called["ran"] = True
+            return ExtractionResult(directory=tmp_path, tables=())
+
+        monkeypatch.setattr(extract_schema_mod, "run_extract_schema", fake_run_extract_schema)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "extract-schema",
+                "--profile", "myproject",
+                "--schema", "dbo",
+                "--system", "testapp",
+                "--emit-seed",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "--emit-seed requires --redact-pii" in result.output
+        assert not called["ran"], "must refuse before touching the warehouse"
 
 
 class TestExtractionCountMessage:

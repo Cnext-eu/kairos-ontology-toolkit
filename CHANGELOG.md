@@ -16,7 +16,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Sample redaction is now opt-in on every import path (DD-214, issue #692).**
+  `extract-schema`, `import-source` and `import-flatfile` write sample values as-is
+  unless `--redact-pii` is passed. The control was costing more than it bought: a
+  74-table CargoWise bronze profile was refused over 2197 NULLs across 136 columns
+  with zero real values among them (and aborted mid-write, leaving 77 files created
+  and 76 modified), while money, datetime and business-ID columns reached the
+  vocabulary TTL with *zero* sample evidence mislabelled `kind=phone` — with no
+  privacy upside, since the real values sat unredacted in the sibling
+  `.samples.yaml` in the same directory. Sample values are the evidence binding
+  design reads, and the detector accepts over-redaction by design (DD-075).
+
+  Both halves matter and neither alone suffices: `extract-schema`'s default is what
+  stops redaction at the warehouse boundary, while gating `import-source` is what
+  recovers the false-positive damage, since money and date values already survived
+  the per-value pass and were destroyed later by `sanitize_vocabulary_graph`.
+
+  `extract-schema --no-redact-pii` (shipped in 5.15.0rc12) is kept as an accepted
+  no-op, since it now asks for the default.
+
+  **Accepted consequences, stated plainly:** committed artifacts under
+  `integration/sources/**` may contain raw client PII and enter the client's git
+  history — the exact condition DD-205's authorization rested on — and sample values
+  may reach the configured AI provider unredacted. No automated control remains;
+  `source-privacy` stays available as a deliberate audit and `--fix` step.
+- **`analyse-sources` reports unredacted findings instead of refusing (DD-214).**
+  Refusing is no longer coherent once redaction is opt-in: a hub that deliberately
+  keeps raw samples could not run the command at all. The scan still runs before the
+  provider call and still reports paths and kinds only, never a value.
+
 ### Fixed
+- **`source-privacy` would have been permanently red for a hub that opted out
+  (issue #692).** It never read `sample_privacy.policy`, so there was no way to
+  record that an exposure was intended, and the new `analyse-sources` advisory would
+  have fired on every run forever. Findings in artifacts that *declare*
+  `policy: none` are now reported as acknowledged rather than as failures. A missing
+  `sample_privacy` block is deliberately **not** treated as consent — hand-authored
+  and pre-policy artifacts have none either.
+- **`--emit-seed` could have put raw client rows in a tagged GitHub Release
+  (issue #692).** `seeds/` is not gitignored, and the emitted copy under
+  `ontology-hub-publish/medallion/dbt/` is explicitly *un*-ignored and packaged into
+  a Release by `release-projections.yml`. `--emit-seed` now requires `--redact-pii`
+  and refuses before connecting to the warehouse; its help text no longer claims the
+  samples are redacted.
+- **The `" | "` sample-value delimiter became injectable from client data
+  (issue #692).** Redaction tokens are delimiter-safe by construction, so this never
+  mattered while every published value was a token — but a raw value containing the
+  separator (an invoice note, a concatenated address, a CSV-in-a-cell) would split
+  into sample values that were never in the source, indistinguishable from real ones,
+  across all four consumers that split it: affinity, alignment, the source catalog
+  and the silver audit. `join_sample_values` now substitutes the separator inside
+  values, and the separator lives in one constant instead of ten literals.
+  `enumValues` also gained the `distinct_samples` cap that `sampleValues` always had.
+- **`audit-column-coverage` printed a raw sample value to stdout and `--format json`
+  (issue #692).** With redaction off by default that would land client data in
+  terminals, agent transcripts and CI logs. It now redacts unconditionally,
+  per-value, so money, dates and identifiers survive intact and only a genuine
+  detection becomes a token.
+- **`import-source` could leave a plaintext copy of every table's samples in the OS
+  temp directory (issue #692).** Directory-mode import writes a combined YAML with
+  `delete=False`, and cleanup sat on the success path only — so any exception left
+  client data outside the hub, where no gitignore or hub policy reaches it. Now in a
+  `try/finally`.
+- **Artifacts stamped a redaction policy they had not applied (issue #692).** Three
+  of four writers hardcoded `policy: redact-detected-pii`. All now record the policy
+  that actually ran, and omit the policy *version* when no policy ran — the same
+  overstatement DD-075's first amendment exists to prevent.
 - **A NULL in a PII-named column was reported as unredacted PII, and the report could
   not be cleared.** `detect_sample_pii_kind` ran `_kind_from_name` before it looked at
   the value, so `GS_HomePhone = NULL` was convicted on the column name alone. The

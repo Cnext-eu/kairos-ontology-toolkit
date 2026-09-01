@@ -381,7 +381,14 @@ class TestAnalyseSourcesPiiGate:
         (refs / "accelerator-packs").mkdir(parents=True)
         return tmp_path / "integration" / "sources", refs
 
-    def test_gate_blocks_and_names_no_values(self, tmp_path, monkeypatch):
+    def test_advisory_reports_kinds_and_paths_but_never_a_value(self, tmp_path, monkeypatch):
+        """Findings are reported and the run continues (issue #692).
+
+        This used to refuse. It no longer can: redaction is opt-in at import, so a hub that
+        deliberately keeps raw samples would otherwise be unable to run `analyse-sources` at
+        all. What must not change is the *reporting* discipline -- paths and kinds only, never
+        the offending value, which is the thing being protected.
+        """
         from unittest.mock import MagicMock, patch
 
         from click.testing import CliRunner
@@ -407,13 +414,20 @@ class TestAnalyseSourcesPiiGate:
                 ],
             )
 
-        assert result.exit_code == 1, result.output
-        assert "Refusing to send source samples" in result.output
+        assert "Sending unredacted sample values to the AI provider" in result.output
         assert "email" in result.output
         assert "source-privacy --fix" in result.output
+        # The advisory must not be the thing that stops the run. This invocation still fails,
+        # but on the missing data-domains.yaml further along -- proving the scan fell through.
+        assert "Refusing to send source samples" not in result.output
+        assert "data-domains.yaml" in result.output
 
-    def test_clean_sources_are_not_blocked_by_the_gate(self, tmp_path):
-        """A passing scan must fall through; the gate is not allowed to be the failure."""
+    def test_clean_sources_emit_no_advisory_at_all(self, tmp_path):
+        """A passing scan must say nothing about privacy.
+
+        Asserted positively rather than as "the refusal is absent": that negative form kept
+        passing once the refusal was removed, so it no longer tested anything.
+        """
         from unittest.mock import MagicMock, patch
 
         from click.testing import CliRunner
@@ -437,4 +451,5 @@ class TestAnalyseSourcesPiiGate:
                 ],
             )
 
-        assert "Refusing to send source samples" not in result.output
+        assert "unredacted sample values" not in result.output
+        assert "PII finding" not in result.output

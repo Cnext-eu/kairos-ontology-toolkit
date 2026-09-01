@@ -11,6 +11,8 @@ from typing import Any
 
 from rdflib import RDF, Graph, Namespace, URIRef
 
+from .silver_sample_audit import _split_samples
+
 KAIROS_BRONZE = Namespace("https://kairos.cnext.eu/bronze#")
 KAIROS_DBT = Namespace("https://kairos.cnext.eu/dbt-contract#")
 
@@ -139,7 +141,7 @@ def _table_definition(
                 "name": column_name,
                 "data_type": str(graph.value(column_uri, KAIROS_BRONZE.dataType) or "unknown"),
                 "nullable": bool(graph.value(column_uri, KAIROS_BRONZE.nullable)),
-                "samples": str(sample_values).split(" | ") if sample_values else [],
+                "samples": _split_samples(sample_values),
             }
         )
     return SourceCatalogTable(

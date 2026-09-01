@@ -277,6 +277,19 @@ def build_shapes_graph(
                     )
                 )
 
+            # Known exposure, deliberately not papered over (issue #692). `pii` comes from
+            # `is_pii_column`, which DD-075's second amendment keeps *deliberately* weaker
+            # than the persistence detector: it has no location awareness and receives no
+            # row context, and `tests/test_samples_policy.py` pins
+            # `is_pii_column("latitude")` False so the redactor and the datatype-blind
+            # residual gate cannot disagree.
+            #
+            # While import always redacted, that gap was harmless here -- the stored value
+            # was already a token. With redaction off by default it is not: coordinates and
+            # PII embedded in free text can reach these advisory `Example values:` comments.
+            # Widening `is_pii_column` would break the pinned invariant it exists to protect,
+            # so the exposure is recorded in the DD instead. Use `--no-sample-values` to
+            # suppress examples entirely.
             examples = example_values(samples, is_pii=pii, include=include_sample_values)
             if examples:
                 graph.add(

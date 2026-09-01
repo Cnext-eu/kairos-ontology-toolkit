@@ -563,6 +563,7 @@ def write_source_dir(
     system_name: str,
     output_dir: Path,
     platform: str = "flatfile",
+    redact_pii: bool = False,
 ) -> Path:
     """Write table data to the standard source directory format.
 
@@ -588,7 +589,11 @@ def write_source_dir(
 
     # Sanitize and validate every sample before publishing any artifact.
     safe_tables = copy.deepcopy(tables)
-    for table in safe_tables:
+    # Redaction and its assertions are gated as one unit (issue #692).
+    # ``assert_no_unredacted_sample_pii`` is a *post-condition* of ``redact_sample_rows``, not
+    # an independent gate -- skipping the redaction while keeping the assert would raise
+    # ``SamplePrivacyError`` on the raw values and kill the import outright.
+    for table in safe_tables if redact_pii else []:
         column_types = {
             str(col.get("name", "")): str(col.get("data_type", "unknown"))
             for col in table.get("columns", [])
@@ -634,10 +639,15 @@ def write_source_dir(
         "extracted_at": datetime.now(timezone.utc).isoformat(),
         "connection": {},
         "tables": [t["name"] for t in safe_tables],
-        "sample_privacy": {
-            "policy": SAMPLE_PRIVACY_POLICY,
-            "version": SAMPLE_PRIVACY_VERSION,
-        },
+        # State the policy actually applied. Stamping ``redact-detected-pii`` on artifacts
+        # written without it would be the same overstatement DD-075's first amendment exists
+        # to prevent -- and the version is omitted with it, since there is no policy version
+        # to record when no policy ran.
+        "sample_privacy": (
+            {"policy": SAMPLE_PRIVACY_POLICY, "version": SAMPLE_PRIVACY_VERSION}
+            if redact_pii
+            else {"policy": "none"}
+        ),
     }
     with open(output_dir / "_manifest.yaml", "w", encoding="utf-8") as f:
         yaml.dump(manifest, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
@@ -862,6 +872,7 @@ def run_import_flatfile(
     keep_technical: bool = False,
     return_count: bool = False,
     recursive: bool = False,
+    redact_pii: bool = False,
 ) -> Path | tuple[Path, int, int, list[tuple[str, str]]]:
     """Orchestrate the flatfile import workflow.
 
@@ -1004,7 +1015,7 @@ def run_import_flatfile(
 
     write_raw_samples(find_hub_root(), system_name, extract_raw_samples_from_tables(tables))
 
-    result_dir = write_source_dir(tables, system_name, output_dir)
+    result_dir = write_source_dir(tables, system_name, output_dir, redact_pii=redact_pii)
     if return_count:
         sample_count = sum(1 for table in tables if table.get("sample_rows"))
         return result_dir, len(tables), sample_count, failures
