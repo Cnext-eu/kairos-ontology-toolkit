@@ -64,6 +64,20 @@ def scaffold_contract_cmd(domain: str, out_path: Path | None, force: bool, dry_r
         return
 
     destination = out_path or (hub / "model" / "contracts" / f"{domain}.contract.yaml")
+    if out_path is None:
+        # `domain` is user input and reaches a filesystem path here. `build_compile_plan`
+        # above would already have failed on a traversing value (no matching ontology
+        # resolves), but a write is worth containing explicitly rather than relying on an
+        # upstream check staying in place.
+        resolved = destination.resolve()
+        contracts_root = (hub / "model" / "contracts").resolve()
+        if not resolved.is_relative_to(contracts_root):
+            click.echo(
+                f"refusing to write outside {contracts_root}: domain '{domain}' resolves to "
+                f"{resolved}",
+                err=True,
+            )
+            raise SystemExit(1)
     if destination.exists() and not force:
         click.echo(f"{destination} already exists; pass --force to overwrite", err=True)
         raise SystemExit(1)
