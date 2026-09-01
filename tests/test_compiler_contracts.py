@@ -768,6 +768,10 @@ class TestConformanceRelaxation:
         the class of instability DD-213 exists to catch, and the check is deliberately left
         strict rather than relaxed to accommodate it: the widening is real and a consumer
         would feel it.
+
+        Tracked as issue #681. This test asserts the CURRENT behaviour, so it will fail once
+        the union preserves its branches' length -- at which point flip it to assert the
+        types agree rather than deleting it.
         """
         binding_dir = _write_hub(tmp_path)
         _adopt_contract(tmp_path)

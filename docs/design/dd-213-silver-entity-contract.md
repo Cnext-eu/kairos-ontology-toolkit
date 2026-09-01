@@ -472,10 +472,20 @@ than the defect. The consequence is that a governed class gaining its second sou
 type mismatch until an operator either accepts the widening (edit the contract to `string`,
 which Gate B classifies as breaking) or the underlying width loss is fixed.
 
-Fixing it — having the union preserve a length its branches agree on — is a change to
-pre-existing normalization semantics, outside this design's scope, and should be its own
-issue. `tests/test_compiler_contracts.py::test_gaining_a_second_source_widens_the_column_type`
-pins the current behaviour so the fix has a failing test waiting for it.
+Root cause, traced by instrumenting `merge_bound_sources` and `shape_project`: both the union
+and its branches leave `merge_bound_sources` unparameterized, and the type *parameters* are
+restored later from each column's mapping resource. The union's columns have
+`mapping_resource_uri` blanked when it is constructed (`replace(column,
+mapping_resource_uri="", expression=column.name)` in `kernel.py`) — deliberately, since a union
+selects from its branches rather than a source relation — so nothing is left to resolve the
+declared width from, and only the branches recover theirs.
+
+Fixing it — carrying the resolved `canonical_type` forward at that point, which is safe because
+`conformance.property-incompatible` already requires identical type contracts across a group —
+is a change to pre-existing normalization semantics, outside this design's scope. Tracked as
+[issue #681](https://github.com/Cnext-eu/kairos-ontology-toolkit/issues/681).
+`tests/test_compiler_contracts.py::test_gaining_a_second_source_widens_the_column_type` pins the
+current behaviour so the fix has a failing test waiting for it.
 
 ## 10. Implementation slices
 
