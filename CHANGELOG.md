@@ -16,6 +16,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A NULL in a PII-named column was reported as unredacted PII, and the report could
+  not be cleared.** `detect_sample_pii_kind` ran `_kind_from_name` before it looked at
+  the value, so `GS_HomePhone = NULL` was convicted on the column name alone. The
+  verdict was unfixable by construction: `redact_sample_value` returns NULL untouched,
+  so the residual check in `sanitize_samples_document` re-raised on the same cells and
+  `source-privacy --fix` spun without converging. `import-source` therefore refused an
+  extract that was already fully redacted — a 74-table CargoWise bronze profile was
+  blocked by 2197 NULLs across 136 columns, with zero real values among them. Worse,
+  the refusal happened mid-write: 77 files had already been created and 76 modified
+  before the gate fired, leaving the hub's source directory in a partially-imported
+  state. Absent values (NULL, blank string, empty container) are no longer classified;
+  `0` stays in scope, because it is a value rather than an absence.
+- **`update --check` reported the same `.claude/settings.json` finding differently on
+  Windows and Linux, and only Windows overwrote the file (issue #684).** Three entries in
+  the known-generation table were LF hashes; the fourth was the CRLF rendering of the
+  pre-#659 generation. Since the comparison hashed raw bytes, a hub carrying that
+  generation was classified by line ending rather than by content: Git for Windows checks
+  out CRLF, so `update --check` exited 1 there and 0 on Linux for the identical commit,
+  and only the Windows path went on to replace the file. Hashes are now LF-normalized --
+  the same normalization the retired-managed-file loop already applied -- and the entry is
+  corrected. Note the consequence: hubs still holding the pre-#659 generation will now be
+  advanced on **every** platform, which is the #659 fix being delivered rather than a
+  regression. Those twelve `Read(...)` deny rules are the pre-#659 shipped file verbatim,
+  not local customization, and #659 removed them because denying `Read` also disables
+  `Edit`, making `kairos-design-domain`'s authoring steps impossible. A genuinely
+  hand-extended settings file still matches no known hash and is still left alone.
+- **A `.claude/settings.json` refresh described the wrong change, and dropped deny rules
+  silently (issue #684).** All four report sites hard-coded one sentence about the DD-103
+  boundary being "broadened (.ttl/.rdf/.owl, not just .ttl)" — true only of the oldest of
+  four registered generations. A hub on the #659 generation was told its pending change
+  concerned file extensions when it was actually the removal of twelve `Read` denies,
+  which is why the overwrite read as destroying local edits. The table now maps each
+  generation to what changed after it, and every replacement prints the `permissions.deny`
+  rules it removes and adds.
+- **A duplicate generated dbt model name was a non-blocking warning, so an unparseable
+  project reached tracked publish output (issue #685).** A Gold product whose
+  `goldTableName` equalled its `goldSourceModel` emitted `models/silver/<d>/x.sql` and
+  `models/gold/<d>/x.sql`; `dbt parse` rejects that outright, but `compile --check` passed
+  and `--emit` wrote it, logging only `self-referential ref(...)` — which named the symptom
+  in the generated Gold SQL and read as though dbt would resolve it. Duplicate stems are
+  now a blocking render error naming both paths and the authoring fix. The check runs over
+  the rendered artifact paths rather than authored names, so it also catches the derived
+  names no authoring-time check can see (dual-current views, the shared `dim_date`
+  calendar, DQ quarantine models); it is scoped to `models/` because macros are also `.sql`
+  but occupy a separate dbt resource namespace. Cross-domain collisions are rejected at
+  emit, since Gold shaping is per-domain while every domain emits into one dbt project —
+  and one Gold extension per owning domain is the recommended pattern.
+- **`extract-schema` reported a table count that included previous runs and double-counted
+  every table (issue #679).** The success message globbed `*.yaml` in the output directory,
+  which accumulates across runs and holds two files per table (`<table>.yaml` and
+  `<table>.samples.yaml`), so `--tables invoices` against a directory with four existing
+  tables reported "Extracted 8 tables" for one table's work. `run_extract_schema` now
+  returns the tables it actually extracted. The related `_manifest.yaml` clobber was
+  already fixed in 5.15.0rc12 (issue #672).
+
 ## [5.15.0rc13] — 2026-09-01
 
 ### Added

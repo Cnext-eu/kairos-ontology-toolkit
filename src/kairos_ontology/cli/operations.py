@@ -77,7 +77,9 @@ def _lf_normalized_bytes(path: Path) -> bytes:
     return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
-def _deny_rule_diff(local_path: Path, shipped_path: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _deny_rule_diff(
+    local_path: Path, shipped_path: Path
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return ``(removed, added)`` ``permissions.deny`` rules going local -> shipped.
 
     Reported so a settings.json replacement is never silent about which rules it changes
@@ -91,7 +93,9 @@ def _deny_rule_diff(local_path: Path, shipped_path: Path) -> tuple[tuple[str, ..
             document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return set()
-        rules = document.get("permissions", {}).get("deny", []) if isinstance(document, dict) else []
+        rules = (
+            document.get("permissions", {}).get("deny", []) if isinstance(document, dict) else []
+        )
         return {rule for rule in rules if isinstance(rule, str)}
 
     local, shipped = _deny(local_path), _deny(shipped_path)

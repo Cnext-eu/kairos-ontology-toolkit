@@ -287,6 +287,84 @@ def test_generic_name_column_not_flagged_on_non_person_table(tmp_path):
     assert detect_sample_pii_kind("Name", "Loading place", context_name="TransportStop") is None
 
 
+def test_null_value_in_pii_named_column_is_not_flagged(tmp_path):
+    """A NULL in a PII-named column must not be classified as unredacted PII.
+
+    Regression: ``detect_sample_pii_kind`` ran ``_kind_from_name`` before looking at
+    the value, so ``GS_HomePhone = NULL`` was convicted on the column name alone. The
+    verdict was also unfixable — ``redact_sample_value`` returns NULL untouched, so the
+    residual check in ``sanitize_samples_document`` could never clear it. That made
+    ``source-privacy --fix`` spin without converging and blocked ``import-source``
+    outright on an extract that was already fully redacted.
+    """
+    from kairos_ontology.core._samples import detect_sample_pii_kind
+
+    for absent in (None, "", "   ", [], {}):
+        assert detect_sample_pii_kind("GS_HomePhone", absent, context_name="glbstaff") is None
+        assert detect_sample_pii_kind("InvoiceAddressOverride", absent) is None
+
+    # The gate keeps its teeth on values that are actually present.
+    assert detect_sample_pii_kind("GS_HomePhone", "+32 470 12 34 56") == "phone"
+    # ``0`` is a value, not an absence.
+    assert detect_sample_pii_kind("GS_HomePhone", 0) is not None
+
+
+def test_sanitize_samples_document_converges_on_null_pii_columns():
+    """Sanitizing rows whose PII columns are NULL must succeed, not raise."""
+    from kairos_ontology.core.source_privacy import sanitize_samples_document
+
+    document = {
+        "table": "glbstaff",
+        "schema": "bronze",
+        "rows": [
+            {"GS_Code": "AAA", "GS_HomePhone": None, "GS_NextOfKinEmail": ""},
+            {"GS_Code": "BBB", "GS_HomePhone": None, "GS_NextOfKinEmail": None},
+        ],
+    }
+
+    safe, findings = sanitize_samples_document(document, table="glbstaff")
+
+    assert findings == []
+    assert [row["GS_HomePhone"] for row in safe["rows"]] == [None, None]
+    assert safe["rows"][0]["GS_Code"] == "AAA"
+
+
+def test_run_source_privacy_passes_when_pii_columns_are_all_null(tmp_path):
+    """An end-to-end scan of a fully-redacted extract must report clean."""
+    source_dir = tmp_path / "integration" / "sources" / "hr"
+    source_dir.mkdir(parents=True)
+    (source_dir / "staff.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "staff",
+                "schema": "bronze",
+                "columns": [
+                    {"name": "GS_Code", "data_type": "varchar(10)", "samples": ["AAA"]},
+                    {"name": "GS_HomePhone", "data_type": "varchar(max)", "samples": []},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (source_dir / "staff.samples.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "table": "staff",
+                "schema": "bronze",
+                "rows": [{"GS_Code": "AAA", "GS_HomePhone": None}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_source_privacy(source_dir)
+
+    assert report.passed
+    assert report.findings == []
+
+
 class TestAnalyseSourcesPiiGate:
     """DD-166: analyse-sources must not ship unredacted samples to a third party.
 

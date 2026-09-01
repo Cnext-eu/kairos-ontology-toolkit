@@ -409,6 +409,25 @@ def _kind_from_location(column_name: str | None, value: Any) -> str | None:
     return None
 
 
+def _is_absent_value(value: Any) -> bool:
+    """Return whether *value* carries no content that could be PII.
+
+    A NULL, a blank string or an empty container is the absence of data. Classifying
+    it would let ``_kind_from_name`` convict a column on its name alone, so a sample
+    row holding ``GS_HomePhone = NULL`` would read as unredacted PII. That verdict is
+    also unfixable: ``redact_sample_value`` returns NULL untouched, so the residual
+    check in ``sanitize_samples_document`` can never clear it and ``--fix`` spins
+    without converging. Numbers stay in scope — ``0`` is a value, not an absence.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return not value
+    return False
+
+
 def _kind_from_nested(value: Any) -> str | None:
     if isinstance(value, dict):
         for key, nested in value.items():
@@ -447,6 +466,8 @@ def detect_sample_pii_kind(
     reads ``email``). It is deliberately NOT part of ``_kind_from_name`` so the
     display/suggestion paths (``is_pii_column``) never gain location awareness.
     """
+    if _is_absent_value(value):
+        return None
     return (
         _kind_from_name(column_name, context_name=context_name)
         or _kind_from_location(column_name, value)
