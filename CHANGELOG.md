@@ -16,6 +16,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0rc13] — 2026-09-01
+
+### Added
+- **Declared Silver contract — bindings conform to it instead of constituting it
+  (DD-213, PR #682).** The canonical Silver model was never declared anywhere: model
+  name came from `_slug(class)`, column name from `camel_to_snake(property)`, the column
+  set from whatever properties a binding happened to map, and column order from the
+  authored `fields:` sequence. Ordinary authoring therefore rewrote a published contract
+  — deleting a `fields:` entry dropped a column, reordering it changed the parity
+  fingerprint, renaming an ontology property renamed the physical column — and onboarding
+  a *second* source could not leave the model alone, because
+  `conformance.property-incompatible` demanded identical property sets across a group.
+
+  A new authored input, `model/contracts/<domain>.contract.yaml`, sits between the
+  ontology (meaning) and the bindings (source fulfilment) and declares the model name,
+  the ordered property list with pinned `columnName`, canonical type, nullability and
+  `requirement: required | optional`, the governed technical and relationship columns,
+  grain and identity, per-entity `stability`/`closed`, and per-column deprecation.
+  Two gates enforce it: a compile-time `contract.*` family extending the DD-133 §5 safety
+  kernel, and (later) release-time comparison. `scaffold-contract <domain>` generates a
+  contract from the current compile plan, and adopting it is a provable no-op.
+
+  A source that cannot supply an optional property now declares the gap under the new
+  `unmapped:` binding key and still emits the column as a typed NULL, so a genuinely
+  partial source can join an established conformance group without reshaping Silver or
+  touching any existing binding. Padded columns are excluded from SCD2 change detection,
+  so the day a source starts supplying one it does not re-version the whole entity.
+
+  **A domain with no contract compiles exactly as before** — verified byte-identical.
+  Adoption is incremental; there is no migration and no clean break.
+
+### Known issues
+- **The conformance union drops the string length its branches keep (issue #681).** A
+  column typed `string(50)` on every branch emits as unsized `string` on the union, so a
+  class's consumer-facing column type silently widens the moment it gains a second
+  source. Pre-existing and reproducible with no contract present; surfaced by the new
+  `contract.type-mismatch` check, which is deliberately left strict rather than relaxed
+  to hide it. Not fixed in this release.
+
 ## [5.15.0rc12] — 2026-08-31
 
 ### Fixed
