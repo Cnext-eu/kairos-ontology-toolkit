@@ -818,16 +818,19 @@ class TestClaudeSettingsReconciliation:
     test that could have failed.
     """
 
-    _PRE_659 = "01c1cae"  # last generation that still denied `Read` on ontologies/shapes
+    #: The last generation that still denied ``Read`` on ontologies/shapes, vendored rather
+    #: than resolved from git: CI checks out at ``fetch-depth: 1``, so ``git show <old-sha>``
+    #: is unavailable there -- a history-dependent test passes locally and fails only in CI.
+    _PRE_659 = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "claude-settings-generations"
+        / "04-pre-659-read-denies.json"
+    )
 
     def _historical_settings(self) -> bytes:
         """The pre-#659 scaffold generation, as committed (LF)."""
-        return subprocess.run(
-            ["git", "show", f"{self._PRE_659}:src/kairos_ontology/scaffold/claude-settings.json"],
-            cwd=Path(__file__).resolve().parent.parent,
-            capture_output=True,
-            check=True,
-        ).stdout.replace(b"\r\n", b"\n")
+        return self._PRE_659.read_bytes()
 
     def _stage(self, td, settings_bytes: bytes) -> None:
         from kairos_ontology import __version__ as ver

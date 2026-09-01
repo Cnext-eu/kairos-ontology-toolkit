@@ -35,13 +35,11 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
-import subprocess
 from pathlib import Path
 
 from kairos_ontology.cli.shared import _KNOWN_CLAUDE_SETTINGS_HASHES
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_SCAFFOLD_REL = "src/kairos_ontology/scaffold/claude-settings.json"
+_GENERATIONS_DIR = Path(__file__).resolve().parent / "fixtures" / "claude-settings-generations"
 
 _SCAFFOLD_SETTINGS = (
     Path(__file__).resolve().parent.parent
@@ -187,30 +185,58 @@ def test_every_registered_hash_is_line_ending_normalized():
     alone" on Linux. Nothing else in the suite would notice, because both branches are
     plausible in isolation -- which is exactly how the previous entry survived.
 
-    Every registered hash must therefore equal the LF hash of some real historical revision of
-    the scaffold file. Resolved from git so the assertion cannot drift as generations are added.
+    Checked against vendored fixtures rather than git history: CI checks out at
+    ``fetch-depth: 1``, so a test that reached for old revisions passed locally and failed
+    only in CI.
     """
-    revisions = subprocess.run(
-        ["git", "log", "--format=%H", "--", _SCAFFOLD_REL],
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert revisions, "no git history for the scaffold settings file"
+    fixtures = sorted(_GENERATIONS_DIR.glob("*.json"))
+    assert fixtures, f"no vendored generations in {_GENERATIONS_DIR}"
 
-    historical_lf_hashes = set()
-    for revision in revisions:
-        blob = subprocess.run(
-            ["git", "show", f"{revision}:{_SCAFFOLD_REL}"],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            check=True,
-        ).stdout
-        historical_lf_hashes.add(_lf_hash(blob))
+    lf_hashes = {_lf_hash(path.read_bytes()): path.name for path in fixtures}
+    # Raw sha256 of the CRLF rendering -- deliberately NOT `_lf_hash`, which normalizes and
+    # would just hand back the LF digest, making this check vacuous.
+    crlf_hashes = {
+        hashlib.sha256(path.read_bytes().replace(b"\n", b"\r\n")).hexdigest(): path.name
+        for path in fixtures
+    }
 
-    unexplained = set(_KNOWN_CLAUDE_SETTINGS_HASHES) - historical_lf_hashes
+    unexplained = set(_KNOWN_CLAUDE_SETTINGS_HASHES) - set(lf_hashes)
     assert not unexplained, (
-        "registered hash(es) match no historical revision's LF-normalized content -- most "
-        f"likely captured from a CRLF checkout: {sorted(unexplained)}"
+        "registered hash(es) match no vendored generation's LF content. If a generation was "
+        "just added, vendor it under tests/fixtures/claude-settings-generations/; otherwise "
+        f"the entry was likely captured from a CRLF checkout: {sorted(unexplained)}"
     )
+
+    crlf_entries = {
+        digest: crlf_hashes[digest]
+        for digest in _KNOWN_CLAUDE_SETTINGS_HASHES
+        if digest in crlf_hashes
+    }
+    assert not crlf_entries, (
+        f"registered hash(es) are the CRLF rendering of a generation: {crlf_entries}"
+    )
+
+
+def test_every_vendored_generation_is_stored_with_lf_endings():
+    """A CRLF fixture would re-introduce the bug these fixtures exist to pin."""
+    for path in sorted(_GENERATIONS_DIR.glob("*.json")):
+        assert b"\r" not in path.read_bytes(), f"{path.name} must be stored with LF endings"
+
+
+def test_the_pre_659_generation_is_the_one_that_denied_read():
+    """Pins what the #659 change actually was, which the report must be able to state.
+
+    The twelve ``Read(...)`` denies are the *shipped* pre-#659 file, not a hub customization
+    -- which is why `update` replacing them is the fix being delivered rather than data loss.
+    """
+    pre_659 = json.loads(
+        (_GENERATIONS_DIR / "04-pre-659-read-denies.json").read_text(encoding="utf-8")
+    )
+    read_rules = [rule for rule in pre_659["permissions"]["deny"] if rule.startswith("Read(")]
+    assert len(read_rules) == 12
+    # 2 guarded paths x 3 extensions x 2 anchorings.
+    assert len(_GUARDED_PATHS) * len(_GUARDED_EXTENSIONS) * len(_GUARDED_ANCHORS) == 12
+    # And they are gone from what ships today.
+    assert not [
+        rule for rule in _load_settings()["permissions"]["deny"] if rule.startswith("Read(")
+    ]
