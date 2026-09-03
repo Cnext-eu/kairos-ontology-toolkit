@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from .capabilities import physical_canonical_type
+from .capabilities import has_native_boolean, physical_canonical_type
 from .mapping_specs import (
     CaseExpression,
     FunctionExpression,
@@ -35,6 +35,25 @@ _BINARY_OPERATORS = {
     "and": "AND",
     "or": "OR",
 }
+
+#: Operators whose operands are conditions rather than values.
+_LOGICAL_OPERATORS = frozenset({"and", "or", "not"})
+
+#: Operators that already render as a native SQL predicate. Everything else renders as a
+#: value -- which, on an adapter with no native boolean, is a bit column rather than a
+#: condition. See :class:`~.policy_specs.AdapterDialectSpec` (DD-215).
+_PREDICATE_OPERATORS = _LOGICAL_OPERATORS | frozenset(
+    {
+        "equal",
+        "not-equal",
+        "less-than",
+        "less-or-equal",
+        "greater-than",
+        "greater-or-equal",
+        "is-null",
+        "is-not-null",
+    }
+)
 
 
 def _error(expression: MappingExpression, message: str) -> MappingContractError:
@@ -127,6 +146,67 @@ def _literal(expression: LiteralExpression, adapter: str) -> str:
     )
 
 
+def _is_predicate_shaped(expression: MappingExpression) -> bool:
+    """Whether this node already renders as a native SQL predicate rather than a value."""
+
+    return (
+        isinstance(expression, OperatorExpression) and expression.operator in _PREDICATE_OPERATORS
+    )
+
+
+def _is_boolean(expression: MappingExpression) -> bool:
+    return expression.metadata.output_type.kind is CanonicalTypeKind.BOOLEAN
+
+
+def _render_predicate(
+    expression: MappingExpression,
+    adapter: str,
+    sources: tuple[SourceBindingSpec, ...],
+    *,
+    depth: int = 1,
+) -> str:
+    """Render where SQL expects a condition (WHERE, CASE WHEN, AND/OR/NOT operand).
+
+    On an adapter with no native boolean the canonical BOOLEAN type is a bit column, and
+    T-SQL rejects ``where is_debtor`` with "An expression of non-boolean type specified in
+    a context where a condition is expected". Comparing to ``1`` is also the correct null
+    semantics: a role exists only where the flag is explicitly set, so NULL must not pass.
+    """
+
+    rendered = _render(expression, adapter, sources, depth=depth)
+    if _is_predicate_shaped(expression) or has_native_boolean(adapter):
+        return rendered
+    if not _is_boolean(expression):
+        raise _error(
+            expression,
+            "non-boolean expression rendered where a condition is expected",
+        )
+    return f"({rendered} = 1)"
+
+
+def _render_value(
+    expression: MappingExpression,
+    adapter: str,
+    sources: tuple[SourceBindingSpec, ...],
+    *,
+    depth: int = 1,
+) -> str:
+    """Render where SQL expects a value (select list, function argument, CASE result).
+
+    The mirror of :func:`_render_predicate`: T-SQL has no boolean *value*, so a native
+    predicate such as ``(a IS NULL)`` cannot stand in a select list either. The
+    three-valued form is used when the predicate can itself be NULL, so that unknown does
+    not collapse to false.
+    """
+
+    rendered = _render(expression, adapter, sources, depth=depth)
+    if not _is_predicate_shaped(expression) or has_native_boolean(adapter):
+        return rendered
+    if expression.metadata.nullable:
+        return f"CASE WHEN {rendered} THEN 1 WHEN NOT {rendered} THEN 0 ELSE NULL END"
+    return f"CASE WHEN {rendered} THEN 1 ELSE 0 END"
+
+
 def _render(
     expression: MappingExpression,
     adapter: str,
@@ -155,8 +235,15 @@ def _render(
     if isinstance(expression, NullExpression):
         return f"CAST(NULL AS {_physical_type(expression, adapter)})"
     if isinstance(expression, OperatorExpression):
+        # AND/OR/NOT take conditions, every other operator takes values. The two need
+        # different SQL on an adapter without a native boolean, so the operands cannot
+        # all be rendered through one path.
+        render_argument = (
+            _render_predicate if expression.operator in _LOGICAL_OPERATORS else _render_value
+        )
         arguments = tuple(
-            _render(item, adapter, sources, depth=depth + 1) for item in expression.arguments
+            render_argument(item, adapter, sources, depth=depth + 1)
+            for item in expression.arguments
         )
         if expression.operator in _BINARY_OPERATORS:
             return f"({arguments[0]} {_BINARY_OPERATORS[expression.operator]} {arguments[1]})"
@@ -171,7 +258,7 @@ def _render(
         raise _error(expression, f"operator {expression.operator!r} is not renderable")
     if isinstance(expression, FunctionExpression):
         arguments = tuple(
-            _render(item, adapter, sources, depth=depth + 1) for item in expression.arguments
+            _render_value(item, adapter, sources, depth=depth + 1) for item in expression.arguments
         )
         if expression.function == "cast":
             return f"CAST({arguments[0]} AS {_physical_type(expression, adapter)})"
@@ -210,12 +297,12 @@ def _render(
     if isinstance(expression, CaseExpression):
         branches = " ".join(
             (
-                f"WHEN {_render(branch.condition, adapter, sources, depth=depth + 1)} "
-                f"THEN {_render(branch.result, adapter, sources, depth=depth + 1)}"
+                f"WHEN {_render_predicate(branch.condition, adapter, sources, depth=depth + 1)} "
+                f"THEN {_render_value(branch.result, adapter, sources, depth=depth + 1)}"
             )
             for branch in expression.branches
         )
-        otherwise = _render(
+        otherwise = _render_value(
             expression.else_expression,
             adapter,
             sources,
@@ -224,7 +311,7 @@ def _render(
         return f"CASE {branches} ELSE {otherwise} END"
     if isinstance(expression, MacroExpression):
         arguments = ", ".join(
-            _render(item, adapter, sources, depth=depth + 1) for item in expression.arguments
+            _render_value(item, adapter, sources, depth=depth + 1) for item in expression.arguments
         )
         return f"{{{{ {expression.macro_name}({arguments}) }}}}"
     raise _error(expression, f"unknown validated node {type(expression).__name__}")
@@ -297,9 +384,19 @@ def render_mapping_expression(
     *,
     adapter: str,
     sources: tuple[SourceBindingSpec, ...],
+    position: str = "value",
 ) -> str:
-    """Render one validated expression with bound symbols and safe literals only."""
+    """Render one validated expression with bound symbols and safe literals only.
 
-    if adapter not in {"fabric", "databricks"}:
+    ``position`` declares what the surrounding SQL expects: ``"value"`` for a select-list
+    or argument slot, ``"predicate"`` for a WHERE/ON slot. It is not cosmetic -- on an
+    adapter with no native boolean the same AST node renders differently in each (DD-215).
+    """
+
+    if adapter not in {item.value for item in AdapterName}:
         raise _error(expression, f"unknown adapter {adapter!r}")
-    return _render(expression, adapter, sources)
+    if position == "predicate":
+        return _render_predicate(expression, adapter, sources)
+    if position != "value":
+        raise _error(expression, f"unknown render position {position!r}")
+    return _render_value(expression, adapter, sources)

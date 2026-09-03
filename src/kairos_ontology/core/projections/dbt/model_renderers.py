@@ -129,6 +129,8 @@ def _source_context(source: SourceBindingSpec, adapter: str) -> dict[str, object
             source.filter_expression,
             adapter=adapter,
             sources=(source,),
+            # Lands in `where {{ cte.filter }}` -- a condition, not a value (DD-215).
+            position="predicate",
         )
         if source.filter_expression is not None
         else source.filter_condition

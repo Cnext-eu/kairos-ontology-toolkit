@@ -9,6 +9,7 @@ from datetime import date
 
 from .policy_specs import (
     AdapterCapability,
+    AdapterDialectSpec,
     AdapterCapabilityRegistry,
     AdapterCapabilitySpec,
     AdapterName,
@@ -411,6 +412,13 @@ def _fabric() -> AdapterSpec:
         ),
         reserved_identifiers=_FABRIC_RESERVED,
         preparation_features=_COMMON_PREPARATION_FEATURES,
+        dialect=AdapterDialectSpec(
+            native_boolean=False,
+            evidence=(
+                f"{evidence}: BOOLEAN maps to BIT and T-SQL rejects a bare bit column "
+                "wherever a condition is expected",
+            ),
+        ),
     )
 
 
@@ -470,6 +478,10 @@ def _databricks() -> AdapterSpec:
         ),
         reserved_identifiers=_DATABRICKS_RESERVED,
         preparation_features=_COMMON_PREPARATION_FEATURES,
+        dialect=AdapterDialectSpec(
+            native_boolean=True,
+            evidence=(f"{evidence}: Spark SQL has a first-class BOOLEAN type",),
+        ),
     )
 
 
@@ -501,6 +513,19 @@ def is_reserved_identifier(
 ) -> bool:
     """Return whether an unquoted identifier is reserved by the exact adapter."""
     return identifier.lower() in adapter_spec(adapter, registry).reserved_identifiers
+
+
+def has_native_boolean(
+    adapter: str | AdapterName,
+    registry: AdapterCapabilityRegistry = ADAPTER_CAPABILITY_REGISTRY,
+) -> bool:
+    """Return whether the exact adapter has a first-class boolean type (DD-215).
+
+    ``False`` means a canonically-BOOLEAN expression is a bit/integer value on this
+    adapter, so it must be coerced when it lands in a condition -- and a native SQL
+    predicate must be coerced when it lands in a value position.
+    """
+    return adapter_spec(adapter, registry).dialect.native_boolean
 
 
 def physical_canonical_type(

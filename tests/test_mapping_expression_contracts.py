@@ -676,3 +676,173 @@ def test_scenario_mapping_parse_is_deterministic():
     first = bind_mapping_documents(MAPPINGS_DIR)
     second = bind_mapping_documents(MAPPINGS_DIR)
     assert first == second
+
+
+# --- DD-215: boolean coercion on adapters with no native boolean type ---------------
+#
+# Fabric maps the canonical BOOLEAN type to BIT, and T-SQL rejects a bare bit column
+# wherever a condition is expected ("An expression of non-boolean type specified in a
+# context where a condition is expected"). The typed AST alone does not prevent this:
+# a bare source column bound to a bit column *is* canonically BOOLEAN, so it satisfies
+# `_require_types({BOOLEAN})` for a case condition, a logical operand, or a row filter,
+# and used to render unwrapped. These pin both directions of the coercion.
+
+
+def _boolean_input(name: str = "is_debtor") -> MappingInputSpec:
+    return MappingInputSpec(
+        source_column_uri=f"urn:source#{name}",
+        source_table_uri="urn:source#table",
+        source_name="source",
+        authored_name="OB_IsDebtor",
+        physical_name=name,
+        data_type=CanonicalTypeSpec(CanonicalTypeKind.BOOLEAN),
+        nullable=True,
+        origin="raw",
+    )
+
+
+def _boolean_source_fact(name: str = "is_debtor") -> AuthoredExpressionFact:
+    return _metadata(
+        f"urn:expr#{name}",
+        "source-column",
+        "boolean",
+        True,
+        "propagate",
+        "source-column",
+        source_column_uri=f"urn:source#{name}",
+    )
+
+
+_SOURCES = (SourceBindingSpec("src", table_uri="urn:source#table"),)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "expected"),
+    [
+        ("fabric", "([src].[is_debtor] = 1)"),
+        ("databricks", "`src`.`is_debtor`"),
+    ],
+)
+def test_boolean_column_in_predicate_position_is_coerced_per_adapter(
+    adapter: str,
+    expected: str,
+):
+    """The client-reported failure: `where is_debtor` on a T-SQL bit column."""
+
+    expression = _normalize(_boolean_source_fact(), _boolean_input())
+    rendered = render_mapping_expression(
+        expression,
+        adapter=adapter,
+        sources=_SOURCES,
+        position="predicate",
+    )
+    assert rendered == expected
+
+
+@pytest.mark.parametrize("adapter", ["fabric", "databricks"])
+def test_boolean_column_in_value_position_is_never_coerced(adapter: str):
+    """A bit column is already a value; only predicate position needs the wrapper."""
+
+    expression = _normalize(_boolean_source_fact(), _boolean_input())
+    rendered = render_mapping_expression(expression, adapter=adapter, sources=_SOURCES)
+    assert rendered in {"[src].[is_debtor]", "`src`.`is_debtor`"}
+    assert "= 1" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("adapter", "expected"),
+    [
+        ("fabric", "(([src].[is_debtor] = 1) AND ([src].[is_creditor] = 1))"),
+        ("databricks", "(`src`.`is_debtor` AND `src`.`is_creditor`)"),
+    ],
+)
+def test_boolean_columns_as_logical_operands_are_coerced_per_adapter(
+    adapter: str,
+    expected: str,
+):
+    conjunction = _metadata(
+        "urn:expr#and",
+        "operator",
+        "boolean",
+        True,
+        "three-valued",
+        "scalar-operator",
+        operation="and",
+        arguments=(_boolean_source_fact("is_debtor"), _boolean_source_fact("is_creditor")),
+    )
+    expression = _normalize(
+        conjunction,
+        _boolean_input("is_debtor"),
+        _boolean_input("is_creditor"),
+    )
+    rendered = render_mapping_expression(
+        expression,
+        adapter=adapter,
+        sources=_SOURCES,
+        position="predicate",
+    )
+    assert rendered == expected
+
+
+@pytest.mark.parametrize(
+    ("adapter", "expected_condition"),
+    [
+        ("fabric", "CASE WHEN ([src].[is_debtor] = 1) THEN "),
+        ("databricks", "CASE WHEN `src`.`is_debtor` THEN "),
+    ],
+)
+def test_boolean_column_as_case_condition_is_coerced_per_adapter(
+    adapter: str,
+    expected_condition: str,
+):
+    case = _metadata(
+        "urn:expr#case",
+        "case",
+        "string",
+        False,
+        "branch",
+        "case-expression",
+        branches=(
+            AuthoredCaseBranchFact("urn:expr#branch", _boolean_source_fact(), _literal("debtor")),
+        ),
+        else_expression=_literal("other"),
+    )
+    expression = _normalize(case, _boolean_input())
+    rendered = render_mapping_expression(expression, adapter=adapter, sources=_SOURCES)
+    assert rendered.startswith(expected_condition)
+
+
+@pytest.mark.parametrize(
+    ("adapter", "expected"),
+    [
+        ("fabric", "CASE WHEN ([src].[is_debtor] IS NULL) THEN 1 ELSE 0 END"),
+        ("databricks", "(`src`.`is_debtor` IS NULL)"),
+    ],
+)
+def test_predicate_in_value_position_is_coerced_per_adapter(adapter: str, expected: str):
+    """The mirror case: T-SQL has no boolean value either, so `select (a IS NULL)` fails."""
+
+    is_null = _metadata(
+        "urn:expr#is-null",
+        "operator",
+        "boolean",
+        False,
+        "never-null",
+        "scalar-operator",
+        operation="is-null",
+        arguments=(_boolean_source_fact(),),
+    )
+    expression = _normalize(is_null, _boolean_input())
+    rendered = render_mapping_expression(expression, adapter=adapter, sources=_SOURCES)
+    assert rendered == expected
+
+
+def test_unknown_render_position_is_rejected():
+    expression = _normalize(_boolean_source_fact(), _boolean_input())
+    with pytest.raises(MappingContractError, match="unknown render position"):
+        render_mapping_expression(
+            expression,
+            adapter="fabric",
+            sources=_SOURCES,
+            position="somewhere",
+        )

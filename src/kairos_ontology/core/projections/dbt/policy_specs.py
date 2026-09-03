@@ -1085,6 +1085,23 @@ class AdapterCapabilitySpec:
 
 
 @dataclass(frozen=True, slots=True)
+class AdapterDialectSpec:
+    """Declarative SQL-dialect facts the renderers must branch on (DD-215).
+
+    Distinct from :class:`AdapterCapabilitySpec`, which answers "can this adapter do X
+    at all"; a dialect fact answers "what shape must the SQL take on this adapter".
+    ``native_boolean`` is the one that bites: Fabric maps the canonical BOOLEAN type to
+    ``BIT`` (see :func:`~.capabilities._fabric`), and T-SQL rejects a bare bit column in
+    any position where a condition is expected. Rendering therefore has to know whether
+    it is emitting a predicate or a value -- see
+    :func:`~.mapping_renderers.render_mapping_expression`.
+    """
+
+    native_boolean: bool
+    evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterSpec:
     name: AdapterName
     version: str
@@ -1092,6 +1109,9 @@ class AdapterSpec:
     capabilities: tuple[AdapterCapabilitySpec, ...]
     reserved_identifiers: frozenset[str] = frozenset()
     preparation_features: frozenset[str] = frozenset()
+    #: Defaults to the permissive shape so an adapter profile that predates DD-215
+    #: cannot silently acquire Fabric's bit-column restriction.
+    dialect: AdapterDialectSpec = AdapterDialectSpec(native_boolean=True)
 
 
 @dataclass(frozen=True, slots=True)
