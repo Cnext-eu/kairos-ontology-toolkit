@@ -17,6 +17,7 @@ import yaml
 from kairos_ontology import __version__
 
 from ..adapters import UnsupportedAdapterError, resolve_adapter
+from ..hub_config import HubConfigError, load_hub_config
 from ..ontology_loader import SemanticProfile, load_ontology
 from ..ontology_ops import PropertyInfo, list_classes
 from ..projections.uri_utils import camel_to_snake, dbt_source_name
@@ -947,7 +948,18 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
                     path.read_text(encoding="utf-8"),
                 )
             )
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    try:
+        config = load_hub_config(root, strict=True)
+    except HubConfigError as exc:
+        raise CompileError(
+            [
+                CompileDiagnostic(
+                    code="safety.adapter-unsupported",
+                    message=str(exc),
+                    location=SourceLocation(path=str(config_path)),
+                )
+            ]
+        ) from exc
     authored_adapter = str(config.get("adapter", ""))
     try:
         # DD-215: resolves the deprecated `fabric` spelling and rejects everything else
