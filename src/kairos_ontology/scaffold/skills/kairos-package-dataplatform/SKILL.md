@@ -21,6 +21,12 @@ Treat the ontology hub as the producer and the dataplatform as the runtime consu
    them verified for that SHA. Both checks belong in the same `bump/hub-*` PR that adopts the new SHA,
    alongside `dbt parse`, `dbt compile`, and the isolated `dbt build --target ci` — see `CICD.md`.
 4. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` with the target adapter.
+   Include `dbt build --empty` on every `bump/hub-*` PR. It runs each model at `limit 0`,
+   so the warehouse parses and binds the real SQL for essentially no compute — and it is
+   the **only** check anywhere in the pipeline that catches SQL-dialect errors. dbt hands
+   a model body to the engine verbatim, so `dbt parse` and `dbt compile` never inspect it
+   and no offline gate in the hub can. A T-SQL dialect error in newly emitted SQL reaches
+   production without this step (DD-215).
 5. Reference emitted models with package-qualified `ref()` and keep downstream-only business logic
    in ordinary contracted dbt models.
 6. Report compiler errors to the binding owner and runtime/data-test errors to the dataplatform

@@ -32,6 +32,8 @@ list, and consumers echo counts.
 
 from __future__ import annotations
 
+from .hub_config import load_hub_config
+
 import logging
 import re
 from pathlib import Path
@@ -79,12 +81,8 @@ def read_data_maturity(hub_root: Path | None) -> str:
     """
     if hub_root is None:
         return "unspecified"
-    for candidate in (hub_root / "kairos.yaml", hub_root.parent / "kairos.yaml"):
-        try:
-            config = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
-        except OSError:
-            continue
-        value = str(config.get("data_maturity") or "").strip().lower()
+    for candidate in (hub_root, hub_root.parent):
+        value = str(load_hub_config(candidate).get("data_maturity") or "").strip().lower()
         if value:
             return value if value in {"production", "test"} else "unspecified"
     return "unspecified"

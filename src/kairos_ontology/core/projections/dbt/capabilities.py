@@ -9,6 +9,7 @@ from datetime import date
 
 from .policy_specs import (
     AdapterCapability,
+    AdapterDialectSpec,
     AdapterCapabilityRegistry,
     AdapterCapabilitySpec,
     AdapterName,
@@ -278,7 +279,7 @@ def _stage2_capabilities(
     evidence: str,
 ) -> tuple[AdapterCapabilitySpec, ...]:
     merge = {
-        AdapterName.FABRIC: "Fabric Warehouse MERGE",
+        AdapterName.FABRIC_WAREHOUSE: "Fabric Warehouse MERGE",
         AdapterName.DATABRICKS: "Delta MERGE",
     }.get(adapter)
     if merge is None:
@@ -350,7 +351,7 @@ def _stage2_capabilities(
 def _fabric() -> AdapterSpec:
     evidence = "fabric-warehouse-capability-profile-v1"
     return AdapterSpec(
-        name=AdapterName.FABRIC,
+        name=AdapterName.FABRIC_WAREHOUSE,
         version="1.0",
         type_mappings=(
             _type(
@@ -387,7 +388,7 @@ def _fabric() -> AdapterSpec:
             ),
         ),
         capabilities=_COMMON_CAPABILITIES
-        + _stage2_capabilities(AdapterName.FABRIC, evidence)
+        + _stage2_capabilities(AdapterName.FABRIC_WAREHOUSE, evidence)
         + (
             _capability(
                 AdapterCapability.CONSTRAINTS,
@@ -411,6 +412,13 @@ def _fabric() -> AdapterSpec:
         ),
         reserved_identifiers=_FABRIC_RESERVED,
         preparation_features=_COMMON_PREPARATION_FEATURES,
+        dialect=AdapterDialectSpec(
+            native_boolean=False,
+            evidence=(
+                f"{evidence}: BOOLEAN maps to BIT and T-SQL rejects a bare bit column "
+                "wherever a condition is expected",
+            ),
+        ),
     )
 
 
@@ -470,6 +478,10 @@ def _databricks() -> AdapterSpec:
         ),
         reserved_identifiers=_DATABRICKS_RESERVED,
         preparation_features=_COMMON_PREPARATION_FEATURES,
+        dialect=AdapterDialectSpec(
+            native_boolean=True,
+            evidence=(f"{evidence}: Spark SQL has a first-class BOOLEAN type",),
+        ),
     )
 
 
@@ -503,6 +515,19 @@ def is_reserved_identifier(
     return identifier.lower() in adapter_spec(adapter, registry).reserved_identifiers
 
 
+def has_native_boolean(
+    adapter: str | AdapterName,
+    registry: AdapterCapabilityRegistry = ADAPTER_CAPABILITY_REGISTRY,
+) -> bool:
+    """Return whether the exact adapter has a first-class boolean type (DD-215).
+
+    ``False`` means a canonically-BOOLEAN expression is a bit/integer value on this
+    adapter, so it must be coerced when it lands in a condition -- and a native SQL
+    predicate must be coerced when it lands in a value position.
+    """
+    return adapter_spec(adapter, registry).dialect.native_boolean
+
+
 def physical_canonical_type(
     adapter: str | AdapterName,
     value: CanonicalTypeSpec,
@@ -525,12 +550,14 @@ def physical_canonical_type(
             )
         return f"DECIMAL({precision},{scale})"
     if value.kind is CanonicalTypeKind.STRING and value.length:
-        if profile.name is AdapterName.FABRIC and value.length > 8000:
+        if profile.name is AdapterName.FABRIC_WAREHOUSE and value.length > 8000:
             raise ValueError(
                 "Fabric preparation strings require an authored length of 8000 "
                 f"or less, not {value.length}"
             )
-        return f"VARCHAR({value.length})" if profile.name is AdapterName.FABRIC else "STRING"
+        return (
+            f"VARCHAR({value.length})" if profile.name is AdapterName.FABRIC_WAREHOUSE else "STRING"
+        )
     return mapping.physical_type
 
 

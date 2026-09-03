@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -434,3 +435,91 @@ def test_success_is_not_invalidated_by_best_effort_backup_cleanup(tmp_path: Path
 
     assert result.target_dir == target.resolve()
     assert (target / "models/customer.sql").read_text() == "replacement"
+
+
+# --- DD-215: Windows sharing-violation handling on the staged swap -------------------
+#
+# There is no Windows CI (ci.yml is ubuntu-only), so the Windows branch had never been
+# executed by any test. These force the branch rather than depending on the host platform.
+# The switch has to be `sys.platform`, never `os.name`: `os` is one shared module object,
+# and `pathlib` reads `os.name` to pick between `PosixPath` and `WindowsPath` on every
+# `Path()` call, so patching it makes emit's own path construction raise
+# `NotImplementedError: cannot instantiate 'WindowsPath'` on a non-Windows host.
+
+
+def _sharing_violation(winerror: int) -> OSError:
+    error = OSError("simulated sharing violation")
+    error.winerror = winerror
+    return error
+
+
+@pytest.mark.parametrize("winerror", [5, 32, 145])
+def test_transient_sharing_violation_is_retried_until_it_clears(
+    tmp_path: Path,
+    monkeypatch,
+    winerror: int,
+):
+    """The reported failure was a handle held for a moment by an external scanner."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(emit_module.time, "sleep", lambda _: None)
+    target = tmp_path / "party"
+    original_replace = os.replace
+    failures = 3
+
+    def fail_then_succeed(source, destination):
+        nonlocal failures
+        if failures:
+            failures -= 1
+            raise _sharing_violation(winerror)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(emit_module.os, "replace", fail_then_succeed)
+    emit_artifacts({"models/customer.sql": "generated"}, target)
+
+    assert failures == 0
+    assert (target / "models/customer.sql").read_text() == "generated"
+
+
+def test_permanent_error_is_not_retried(tmp_path: Path, monkeypatch):
+    """Retrying a permanent failure only adds seconds of sleeping before the same error."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    slept: list[float] = []
+    monkeypatch.setattr(emit_module.time, "sleep", slept.append)
+    target = tmp_path / "party"
+    original_replace = os.replace
+    attempts = 0
+
+    def fail_permanently(source, destination):
+        nonlocal attempts
+        if str(destination) == str(target):
+            attempts += 1
+            raise _sharing_violation(2)  # ERROR_FILE_NOT_FOUND
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(emit_module.os, "replace", fail_permanently)
+    with pytest.raises(EmissionError):
+        emit_artifacts({"models/customer.sql": "generated"}, target)
+
+    assert attempts == 1
+    assert slept == []
+
+
+def test_windows_swap_failure_names_the_path_and_the_likely_holder(tmp_path: Path, monkeypatch):
+    """The original message named neither, which is what made this expensive to diagnose."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(emit_module.time, "sleep", lambda _: None)
+    target = tmp_path / "party"
+    original_replace = os.replace
+
+    def always_blocked(source, destination):
+        if str(destination) == str(target):
+            raise _sharing_violation(32)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(emit_module.os, "replace", always_blocked)
+    with pytest.raises(EmissionError) as excinfo:
+        emit_artifacts({"models/customer.sql": "generated"}, target)
+
+    message = str(excinfo.value)
+    assert "kairos-stage-" in message  # the blocked path, not just the target
+    assert "antivirus" in message and "--log-file" in message

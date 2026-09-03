@@ -305,6 +305,39 @@ def test_unsupported_adapter_fails_closed(tmp_path):
     assert result.diagnostics.items[0].code == "safety.adapter-unsupported"
 
 
+def test_fabric_lakehouse_is_rejected_rather_than_compiled_as_t_sql(tmp_path):
+    """DD-215: recognised, unsupported.
+
+    Silently emitting T-SQL for a Spark engine is worse than failing, because it compiles
+    clean and only breaks on the first warehouse run.
+    """
+    hub = _hub(tmp_path)
+    (hub / "kairos.yaml").write_text("adapter: fabric-lakehouse\n", encoding="utf-8")
+    result = compile_domain(hub, "party")
+    assert not result.succeeded
+    diagnostic = result.diagnostics.items[0]
+    assert diagnostic.code == "safety.adapter-unsupported"
+    assert "Spark SQL" in diagnostic.message
+
+
+def test_deprecated_fabric_spelling_still_compiles(tmp_path):
+    """Every hub in the field was scaffolded with `adapter: fabric`."""
+    hub = _hub(tmp_path)
+    assert (hub / "kairos.yaml").read_text(encoding="utf-8") == "adapter: fabric\n"
+    assert compile_domain(hub, "party").succeeded
+
+
+def test_canonical_adapter_id_changes_the_provenance_hash(tmp_path):
+    """The adapter is part of BuildScope, so adopting the canonical id re-emits once."""
+    hub = _hub(tmp_path)
+    aliased = compile_domain(hub, "party")
+    (hub / "kairos.yaml").write_text("adapter: fabric-warehouse\n", encoding="utf-8")
+    canonical = compile_domain(hub, "party")
+    assert aliased.succeeded and canonical.succeeded
+    assert aliased.provenance_hash and canonical.provenance_hash
+    assert aliased.provenance_hash != canonical.provenance_hash
+
+
 def test_empty_selected_domain_is_non_emittable(tmp_path):
     hub = _hub(tmp_path)
     binding = hub / "integration" / "bindings" / "customer.binding.yaml"

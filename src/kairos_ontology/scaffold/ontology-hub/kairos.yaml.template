@@ -1,6 +1,9 @@
 version: 5
 name: {repo_name}
-adapter: fabric
+# Target platform. Names the engine, not the vendor: Fabric Warehouse is T-SQL and
+# Fabric Lakehouse is Spark SQL, and the compiler emits different SQL for each.
+# Supported: fabric-warehouse | databricks. Set it with `init --adapter`.
+adapter: {adapter}
 # Optional: declare which hub modes are served. When absent or empty, ALL modes
 # are served (backward compatible). Mode-specific managed imports whose
 # activation mode is not in this list are skipped during validation and

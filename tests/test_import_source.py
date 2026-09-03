@@ -856,7 +856,7 @@ class TestParseSourceSchemaDir:
         manifest = {
             "version": "1.1",
             "system": "testapp",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "tables": ["tblClient"],
         }
         (system_dir / "_manifest.yaml").write_text(
@@ -916,7 +916,7 @@ class TestParseSourceSchemaDir:
         manifest = {
             "version": "1.1",
             "system": "testapp",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "tables": ["tblClient"],
         }
         (system_dir / "_manifest.yaml").write_text(
@@ -950,7 +950,7 @@ class TestParseSourceSchemaDir:
         manifest = {
             "version": "1.1",
             "system": "testapp",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "tables": ["tblClient"],
         }
         (system_dir / "_manifest.yaml").write_text(
@@ -986,7 +986,7 @@ class TestParseSourceSchemaDir:
         manifest = {
             "version": "1.1",
             "system": "testapp",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "tables": ["tblClient"],
         }
         (system_dir / "_manifest.yaml").write_text(
@@ -1026,7 +1026,7 @@ class TestParseSourceSchemaDir:
         manifest = {
             "version": "1.1",
             "system": "testapp",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "tables": ["tblClient"],
         }
         (system_dir / "_manifest.yaml").write_text(
@@ -1064,7 +1064,7 @@ class TestParseSourceSchemaDir:
         manifest = {
             "version": "1.1",
             "system": "testapp",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "tables": ["tblClient"],
         }
         (system_dir / "_manifest.yaml").write_text(
@@ -1246,7 +1246,7 @@ class TestNoExamplesComment:
         data = {
             "version": "1.0",
             "system": "test",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "extracted_at": "2026-01-01T00:00:00Z",
             "connection": {},
             "tables": [
@@ -1278,7 +1278,7 @@ class TestNoExamplesComment:
         data = {
             "version": "1.1",
             "system": "test",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "extracted_at": "2026-01-01T00:00:00Z",
             "connection": {},
             "tables": [
@@ -1309,7 +1309,7 @@ class TestNoExamplesComment:
         data = {
             "version": "1.0",
             "system": "test",
-            "platform": "fabric",
+            "platform": "fabric-warehouse",
             "extracted_at": "2026-01-01T00:00:00Z",
             "connection": {},
             "tables": [

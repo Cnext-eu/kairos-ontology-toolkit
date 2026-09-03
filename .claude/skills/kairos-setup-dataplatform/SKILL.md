@@ -12,17 +12,23 @@ deployment configuration, and runtime tests.
    domain and resolve all errors.
 2. Set `KAIROS_SKILL_CONTEXT=1`, then run
    `kairos-ontology init-dataplatform <name> --platform <platform>`
-   (`fabric-lakehouse`, `fabric-warehouse`, or `databricks`). This also scaffolds the
+   (`fabric-warehouse` or `databricks` — the same vocabulary the hub's `kairos.yaml`
+   uses, and normally the same value; `fabric-lakehouse` is no longer offered because
+   the compiler has no Spark SQL profile for it, see DD-215). This also scaffolds the
    managed root `CICD.md` and `CONTRIBUTING.md` — confirm both exist and point users
    to them for the CI target, promotion, rollback, and hotfix workflow.
 3. `.dbt/profiles.yml.example` is already pre-activated for the chosen `--platform` — its block
-   is uncommented under `dev:`, the other two platforms remain as commented reference blocks.
+   is uncommented under `dev:`, the other platform remains as a commented reference block.
    Copy it to `.dbt/profiles.yml` and fill in real connection details/credentials only; no
    manual comment-toggling between platforms is required.
-   `--platform` only picks where **this dbt project's own silver/gold models write** and
-   which adapter is templated — bronze source data can live in any same-workspace item
-   (e.g. a Fabric Lakehouse) regardless of the chosen platform; bind it via `database:` in
+   `--platform` picks where **this dbt project's own silver/gold models write** and which
+   adapter is templated — bronze source data can live in any same-workspace item (e.g. a
+   Fabric Lakehouse) regardless of the chosen platform; bind it via `database:` in
    `_sources.yml` using the platform's native cross-item SQL, no second connection needed.
+   **Read the hub's `kairos.yaml` `adapter:` and use the same value unless the user
+   deliberately wants otherwise.** Nothing verifies that the two agree, and a mismatch
+   surfaces only as an opaque SQL error on the first real run — the hub's emitted SQL is
+   written for the hub's adapter, not this project's.
 4. Bind physical databases, schemas, and source relations in the downstream dbt project.
 5. Consume the compiler-emitted dbt package at an immutable Git revision or artifact version.
 6. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` against the target adapter.

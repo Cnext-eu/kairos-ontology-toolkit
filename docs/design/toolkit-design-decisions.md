@@ -60,7 +60,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-006](#dd-006-column-level-json-not-table-level-physicalstorage) | Column-Level JSON, Not Table-Level physicalStorage | Accepted | 2026-04-30 |
 | [DD-007](#dd-007-extend-kairos-ext-namespace) | Extend kairos-ext Namespace | Accepted | 2026-04-30 |
 | [DD-008](#dd-008-generated-macros-alongside-models) | Generated Macros Alongside Models | Accepted | 2026-04-30 |
-| [DD-009](#dd-009-fabric-first-default-platform) | Fabric-First Default Platform | Accepted | 2026-04-30 |
+| [DD-009](#dd-009-fabric-first-default-platform) | Fabric-First Default Platform | ~~Superseded by DD-215~~ | 2026-04-30 |
 | [DD-010](#dd-010-branch-protection-on-new-repo) | Branch Protection on new-repo | Accepted | 2026-04-30 |
 | [DD-011](#dd-011-silver-output-inside-dbt-tree) | Silver Output Inside dbt Tree | Accepted | 2026-04-28 |
 | [DD-012](#dd-012-non-fatal-github-operations) | Non-Fatal GitHub Operations | Accepted | 2026-04-30 |
@@ -266,6 +266,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-212](#dd-212-the-canonical-erd-target-renders-a-mermaid-classdiagram-instead-of-erdiagram-and-gains-a-plumbing-only-overlay-hook) | The canonical `erd` target renders a Mermaid `classDiagram` instead of `erDiagram`, and gains a plumbing-only overlay hook | Accepted | 2026-08-30 |
 | [DD-213](#dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it) | The Silver contract is declared, not derived — bindings conform to it | Proposed | 2026-09-01 |
 | [DD-214](#dd-214-sample-redaction-is-opt-in-at-import-the-pre-send-scan-advises-instead-of-refusing) | Sample redaction is opt-in at import; the pre-send scan advises instead of refusing | Accepted | 2026-09-01 |
+| [DD-215](#dd-215-the-target-platform-names-the-engine-and-boolean-ness-is-rendered-per-adapter) | The target platform names the engine, and boolean-ness is rendered per adapter | Accepted | 2026-09-03 |
 
 ---
 
@@ -316,7 +317,7 @@ dim_legal_entity (party_sk PK+FK, registration_number, ...)
 
 ## DD-002: dbt SQL Dialect — Platform-Specific Generation
 
-**Status:** Accepted
+**Status:** Accepted (amended by [DD-215](#dd-215-the-target-platform-names-the-engine-and-boolean-ness-is-rendered-per-adapter))
 **Date:** 2026-04-30
 **Affects:** `medallion_dbt_projector.py`, silver/gold templates, type maps
 **Implementation:** Type maps `_SOURCE_TO_FABRIC`, `_SOURCE_TO_DATABRICKS`, `_PLATFORM_TYPE_MAPS`
@@ -349,6 +350,15 @@ Generate **platform-specific SQL** controlled by a `target_platform` parameter:
 | Timestamp | DATETIME2 | TIMESTAMP |
 | JSON array | `CROSS APPLY OPENJSON(col) WITH (...)` | `LATERAL VIEW EXPLODE(FROM_JSON(col, schema))` |
 | JSON value | `JSON_VALUE(col, '$.path')` | `GET_JSON_OBJECT(col, '$.path')` |
+
+### Amendment (DD-215): the Boolean row is a rendering rule, not only a type map
+
+This decision was enforced for **type names** — `_PLATFORM_TYPE_MAPS` — but not for
+**positions**. Because Fabric has no boolean type, the `BIT` row above also means a
+canonically-BOOLEAN expression cannot stand alone wherever a condition is expected
+(`WHERE`, `HAVING`, `ON`, `CASE WHEN`, an `AND`/`OR`/`NOT` operand), and conversely a
+native predicate cannot stand in a value position. See
+[DD-215](#dd-215-the-target-platform-names-the-engine-and-boolean-ness-is-rendered-per-adapter).
 
 ---
 
@@ -495,10 +505,17 @@ Macros use `{% if target.type == '...' %}` for platform dispatch.
 
 ## DD-009: Fabric-First Default Platform
 
-**Status:** Accepted
+**Status:** ~~Superseded by [DD-215](#dd-215-the-target-platform-names-the-engine-and-boolean-ness-is-rendered-per-adapter)~~
 **Date:** 2026-04-30
 **Affects:** `DEFAULT_PLATFORM` constant, dbt_project.yml scaffold
-**Implementation:** `medallion_dbt_projector.py: DEFAULT_PLATFORM = "fabric"`
+**Implementation:** `medallion_dbt_projector.py: DEFAULT_PLATFORM` (retired v4 projector only)
+
+> **Superseded.** The v5 compile path applies **no** default: it reads `adapter:` from
+> `kairos.yaml` and fails closed when it is absent or unsupported, so nothing is ever
+> silently compiled as Fabric. `init --adapter` makes the choice explicit at scaffold
+> time instead of inheriting one. The `DEFAULT_PLATFORM` constant this decision named
+> survives only in the retired v4 projector. DD-111 had already narrowed it
+> ("Platform generation is governed by DD-111 capabilities"); DD-215 retires it.
 
 ### Context
 
@@ -15399,3 +15416,101 @@ dates and identifiers intact and only a genuine detection becomes a token.
 
 `import-source`'s mid-write non-atomicity is a separate latent defect. Turning redaction off removes
 the common trigger but not the defect: any future raising gate can still leave a half-imported hub.
+
+---
+
+## DD-215: The target platform names the engine, and boolean-ness is rendered per adapter
+
+**Status:** Accepted
+**Date:** 2026-09-03
+**Affects:** `compile`, `init`, `new-repo`, `init-dataplatform`, `validate-dbt`,
+`validate-dbt-contracts`, hub and dataplatform scaffolds, kairos-develop-dbt-transformation,
+kairos-setup-config, kairos-execute-validate
+**Implementation:** `core/adapters.py`, `core/hub_config.py`,
+`core/projections/dbt/{policy_specs,capabilities,mapping_renderers,model_renderers}.py`,
+`core/compiler/kernel.py`, `core/dbt_contract_lint.py`, `cli/{setup,validation,projections}.py`
+**Amends:** DD-002 (adds the boolean-position rule its own table already implied)
+**Supersedes:** DD-009 (Fabric-First Default Platform)
+
+### Context
+
+A client hub's first real warehouse run failed. `silver.partyrole` could not build because a
+hand-authored model aliased a T-SQL `bit` column and then filtered on it bare:
+
+```sql
+OB_IsDebtor as is_debtor,
+...
+where is_debtor          -- An expression of non-boolean type specified in a
+                         -- context where a condition is expected
+```
+
+Fabric has no boolean type. Postgres, Snowflake and Databricks all accept the bare form, which is
+where the habit comes from. Investigating it surfaced three problems, of which the authored SQL was
+the least important.
+
+**1. The compiler could emit the same thing.** `mapping_normalize` requires a CASE condition, a
+logical operand and a `rowFilter` to be canonically `BOOLEAN` — and a bare source column bound to a
+Fabric `BIT` column satisfies that, so it passed the type gate and `mapping_renderers` emitted it
+unwrapped. The mirror case was equally broken: a native predicate such as `(a IS NULL)` in a select
+list, which T-SQL also rejects. The guard had been placed in *typing*, but boolean-in-predicate is a
+*rendering* concern.
+
+**2. `adapter: fabric` could not say which engine it meant.** Fabric Warehouse is T-SQL and Fabric
+Lakehouse is Spark SQL. Both `fabric-lakehouse` and `fabric-warehouse` collapsed to `fabric` and
+received the T-SQL profile. The scaffold's own `fabric-lakehouse` profile block was in fact a
+Warehouse connection (`type: fabric` against `datawarehouse.fabric.microsoft.com`) under a Lakehouse
+label, which is also why `extract-schema` could never round-trip the slug.
+
+**3. Nothing made the target easy to declare, or consistent.** `init` had no `--adapter`, so every
+hub was born `fabric` from a template line. The two-value set was redeclared in eight places, none of
+which imported `AdapterName`. Seven call sites each parsed `kairos.yaml` themselves.
+
+### Decision
+
+**Canonical ids name the engine.** `fabric-warehouse` and `databricks` are supported;
+`fabric-lakehouse` is *recognised and rejected* with its own reason rather than falling back. `fabric`
+resolves as a deprecated alias and says so once, where `kairos.yaml` is read — hubs are client
+repositories and an upgrade must not break one outright. `core/adapters.py` is the single
+declaration, and makes explicit two mappings that were previously inlined assumptions: canonical id
+to dbt's `profiles.yml` `type:` key, and to the pip package. dbt's vocabulary is not ours —
+`dbt-fabric` calls itself `fabric` whichever engine it points at.
+
+**Rendering is position-aware.** `AdapterSpec.dialect.native_boolean` states whether the adapter has a
+first-class boolean. When it does not, a canonically-BOOLEAN value in predicate position renders
+`(x = 1)`, and a native predicate in value position renders a `CASE`, three-valued when the predicate
+can itself be NULL. This follows the adapter split `canonical_hash.py` already used and the `= 1`
+convention every hand-written predicate in the repo already followed.
+
+**Hand-authored SQL is written for one declared target, not made portable by hand.** The client's own
+fix, `where is_debtor = 1`, is Fabric-only: Spark rejects `boolean = int`. The two targets' correct
+spellings are mutually exclusive, so hand-portable SQL is reliably correct on neither. Anything that
+must be portable belongs in the mapping AST, which renders per adapter — that is now an explicit
+routing criterion alongside DD-092/DD-107's grain, joins and windows.
+
+### Consequences
+
+**One-time re-emit.** The adapter is part of `BuildScope`, so it feeds `provenance_hash`. Adopting
+the canonical id changes that hash for every hub, and each one's `pr-validate.yml` drift check fails
+until it re-emits. This is the same re-emit a toolkit bump already requires, but it must be
+communicated rather than discovered.
+
+### Out of scope
+
+**A SQL parser.** Identifying a bare bit column in *authored* SQL requires knowing predicate
+position, which requires a real parser (sqlglot). It was considered and deliberately deferred: one
+confirmed occurrence across 67 emitted models does not yet earn the dependency, dbt models are Jinja
+so a parser must lint compiled output or stub the templating, and parse failures on constructs a
+dialect does not model become their own false-positive source. The `dbt-contract.dialect-*` family
+therefore holds only rules that are deterministic from the text — today, `dbt-fabric`'s
+substring-counting nested-CTE detector. Revisit if hand-authored dialect defects recur.
+
+**The complete gate lives downstream.** `dbt build --empty` runs every model at `limit 0`, so the
+warehouse parses and binds real SQL for essentially no compute. It is the only check that catches
+every dialect error rather than the ones a rule anticipated, it needs credentials, and it therefore
+belongs on the dataplatform's `bump/hub-*` PRs, not in the hub's offline CI.
+
+**A hub↔dataplatform adapter handshake.** Nothing yet compares the adapter a hub compiled for
+against the dbt adapter the dataplatform installs, and `bump-hub` does not check it even though
+`metadata/<domain>-release-review.json` already carries `adapter.name`. Likewise the v4 check of a
+contracted model's `supported_adapters` against the hub's own adapter, dropped in v5, is not
+reinstated here.

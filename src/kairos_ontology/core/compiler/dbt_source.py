@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from ..dbt_contracts import SUPPORTED_ADAPTERS
+from ..dbt_contracts import SUPPORTED_ADAPTERS, canonical_adapters
 from ..projections.dbt.policy_normalize import _source_type
 from .adapter import ResolvedColumn, ResolvedRelation
 from .bindings import EntityBinding
@@ -607,7 +607,7 @@ def resolve_dbt_model_source(
         or not supported_adapters
         or any(not isinstance(item, str) or not item.strip() for item in supported_adapters)
         or len(set(supported_adapters)) != len(supported_adapters)
-        or not set(supported_adapters) <= SUPPORTED_ADAPTERS
+        or canonical_adapters(supported_adapters) is None
     ):
         raise _failure(
             binding,

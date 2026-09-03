@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-import yaml
 from pyshacl import validate as shacl_validate
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
@@ -19,6 +18,7 @@ from rdflib.namespace import OWL, RDF, RDFS, XSD
 from ._samples import PII_KEYWORDS, _normalize
 from .archetype_loader import ArchetypeError
 from .catalog_utils import _declared_ontology_iri
+from .hub_config import load_hub_config
 from .compiler.kernel import (
     _binding_domain,
     _binding_source_ref,
@@ -719,14 +719,7 @@ def load_hub_source_system_names(ontologies_path: Path) -> tuple[str, ...] | Non
     """
     try:
         hub_root = Path(ontologies_path).resolve().parent.parent
-        config_path = hub_root / "kairos.yaml"
-        if not config_path.is_file():
-            return None
-        with open(config_path, encoding="utf-8") as handle:
-            config = yaml.safe_load(handle)
-        if not isinstance(config, dict):
-            return None
-        validation = config.get("validation")
+        validation = load_hub_config(hub_root).get("validation")
         if not isinstance(validation, dict) or "source_system_names" not in validation:
             return None
         names = validation.get("source_system_names")

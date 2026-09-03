@@ -61,7 +61,7 @@ def test_validate_dbt_surfaces_validation_error(tmp_path: Path, monkeypatch) -> 
         [
             "validate-dbt",
             "--platform",
-            "fabric",
+            "fabric-warehouse",
             "--project-dir",
             str(tmp_path),
         ],

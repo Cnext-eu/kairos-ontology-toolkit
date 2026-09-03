@@ -22,7 +22,7 @@ optional Gold/MDM consumers.
 
 ```text
 ontology-hub/                           # authored inputs
-├── kairos.yaml                         # adapter: fabric | databricks
+├── kairos.yaml                         # adapter: fabric-warehouse | databricks
 ├── catalog-v001.xml
 ├── model/
 │   ├── ontologies/                     # canonical TTL

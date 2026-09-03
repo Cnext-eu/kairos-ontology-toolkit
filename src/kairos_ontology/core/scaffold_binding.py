@@ -35,6 +35,8 @@ supplies the real answer -- no new compiler enforcement is needed.
 
 from __future__ import annotations
 
+from .adapters import FABRIC_WAREHOUSE
+
 import re
 import tempfile
 from dataclasses import dataclass
@@ -985,7 +987,7 @@ def _expression_to_yaml_value(expr: Expression) -> Any:
 # dbt staging model (passthrough only).
 # --------------------------------------------------------------------------------------
 def render_staging_sql(
-    system: str, table: str, columns: tuple[SourceColumn, ...], *, platform: str = "fabric"
+    system: str, table: str, columns: tuple[SourceColumn, ...], *, platform: str = FABRIC_WAREHOUSE
 ) -> str:
     """Render a conservative dbt staging SELECT for one Bronze table.
 
@@ -1204,7 +1206,7 @@ def run_scaffold_binding(
     catalog_path: Path | None = None,
     accelerator: str | None = None,
     analysis_dir: Path | None = None,
-    platform: str = "fabric",
+    platform: str = FABRIC_WAREHOUSE,
     dry_run: bool = False,
     column_prefix: str | None = None,
 ) -> ScaffoldBindingResult:

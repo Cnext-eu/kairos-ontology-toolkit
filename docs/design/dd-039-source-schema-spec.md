@@ -92,6 +92,11 @@ tables:
 
 ## Platform Types
 
+These describe the **source system being introspected**, which is a superset of the
+platforms the compiler can emit for: `snowflake` and `postgres` are readable sources, not
+compile targets. The two vocabularies overlap by name and agree where they overlap; the
+compile-target set is owned by `core/adapters.py` (DD-215).
+
 | Platform ID | Description | dbt Adapter |
 |-------------|-------------|-------------|
 | `fabric-lakehouse` | Microsoft Fabric Lakehouse (Spark/Delta) | `dbt-fabric` |

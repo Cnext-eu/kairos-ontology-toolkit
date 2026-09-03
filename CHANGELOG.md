@@ -16,7 +16,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A canonically-BOOLEAN expression is now rendered per adapter in predicate and value
+  position (DD-215).** Fabric maps BOOLEAN to `BIT`, and T-SQL rejects a bare bit column
+  wherever a condition is expected. The DD-107 typed AST did not prevent this: a bare
+  source column bound to a bit column *is* canonically BOOLEAN, so it satisfied the type
+  gate for a `CASE WHEN` condition, an `AND`/`OR`/`NOT` operand, or a `rowFilter`, and
+  then rendered unwrapped. The guard had been placed in typing, but this is a rendering
+  concern. Also fixes the mirror case — a native predicate such as `(a IS NULL)` in a
+  select list, which T-SQL rejects too. Reported from a client hub whose
+  `silver.partyrole` could not build.
+- **`compile --emit` survives a transient Windows sharing violation, and explains itself
+  when it does not.** Total backoff on the staged directory swap was 0.75s, inside the
+  window an antivirus or sync client typically needs to release files `copytree` created
+  microseconds earlier; it is now ~5.4s. Only `PermissionError` was retried, so
+  `ERROR_DIR_NOT_EMPTY` (WinError 145) — exactly what a directory rename raises when a
+  handle is open inside it — got zero attempts, and the pre-swap and rollback renames had
+  no retry at all. The error now names the blocked path and the usual holders, including a
+  `--log-file` pointed inside the emission target.
+
 ### Changed
+- **The target platform names the engine, not the vendor (DD-215).** `adapter:` in
+  `kairos.yaml` is now `fabric-warehouse` or `databricks`. `fabric` still resolves, with a
+  deprecation warning; `fabric-lakehouse` is recognised and **rejected** rather than
+  compiled as T-SQL, because it is Spark SQL and there is no profile for it.
+  `init`/`new-repo` gain `--adapter`, so a hub is no longer born `fabric` from a hardcoded
+  template line with no flag to change it, and `init-dataplatform --platform` uses the same
+  vocabulary instead of a parallel one that collapsed into it via a bare `else`.
+  `validate-dbt` defaults `--platform` to the hub's own adapter instead of ignoring it.
+
+  **This requires one re-emit per hub.** The adapter is part of `BuildScope`, so it feeds
+  the provenance hash; each hub's `pr-validate.yml` drift check will fail until it runs
+  `compile --all --emit --confirm-emit` once. Authored `fabric` in `kairos.yaml` and in dbt
+  contracts' `supported_adapters` keeps working.
+
+### Added
+- **`dbt-contract.dialect-*` lint findings, and the guidance that prevents needing them
+  (DD-215).** `validate-dbt-contracts` now checks authored model SQL against the hub's
+  adapter and runs in hub CI, where it was absent. The one rule today is `dbt-fabric`'s
+  nested-CTE detector, which counts the substring `"with "` across the whole file including
+  comments rather than parsing. `kairos-develop-dbt-transformation` now states the target's
+  dialect rules — it previously never mentioned T-SQL, dialect, platform, or Fabric at all,
+  so the skill writing the SQL was never told what engine it was writing for. The complete
+  gate is `dbt build --empty` on the dataplatform's `bump/hub-*` PRs, now documented in
+  `CICD.md`: it runs every model at `limit 0`, and is the only check that catches dialect
+  errors, since dbt hands a model body to the engine verbatim.
 - **Sample redaction is now opt-in on every import path (DD-214, issue #692).**
   `extract-schema`, `import-source` and `import-flatfile` write sample values as-is
   unless `--redact-pii` is passed. The control was costing more than it bought: a

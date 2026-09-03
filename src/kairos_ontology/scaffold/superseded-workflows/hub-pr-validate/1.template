@@ -52,17 +52,6 @@ jobs:
         run: |
           uv run kairos-ontology compile --all --check --format json
 
-      # DD-215: lints the *hand-authored* dbt transform tree -- meta.kairos
-      # completeness, grain_key, and adapter dialect rules. Offline: no dbt
-      # install, no adapter, no warehouse. Runs before emit because a broken
-      # authored contract would otherwise surface as a confusing compile error.
-      # Skipped cleanly when the hub authors no dbt transforms at all.
-      - name: Lint hand-authored dbt transforms
-        env:
-          KAIROS_SKILL_CONTEXT: "1"
-        run: |
-          uv run kairos-ontology validate-dbt-contracts --format json
-
       # DD-206 §4.2: "regenerates the tracked publish output" / "fails if the
       # committed output differs from regenerated output". Only
       # ontology-hub-publish/medallion/dbt and ontology-hub-publish/powerbi are

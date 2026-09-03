@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import time
 import uuid
@@ -450,7 +451,7 @@ def _stale_lock(path: Path) -> bool:
             return time.time() - path.stat().st_mtime > 60
         except OSError:
             return False
-    if os.name == "nt":
+    if sys.platform == "win32":
         import ctypes
 
         process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
@@ -500,6 +501,51 @@ def _unique_backup_path(target: Path) -> Path:
             return candidate
 
 
+#: Backoff schedule for a directory rename that loses a race with another process, in
+#: seconds. Windows is the only platform that fails a rename because a handle is open, and
+#: the holder is typically transient -- an antivirus or sync client scanning the files
+#: `shutil.copytree` created microseconds earlier. The former 0.75s total was inside that
+#: window; this is not, while still failing fast enough to stay usable interactively.
+_SWAP_BACKOFF_SECONDS = (0.05, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0)
+
+#: What a Windows sharing violation on a *directory* rename usually means. Named in the
+#: error because the failure otherwise says nothing about where to look: one real
+#: investigation lost a day to two wrong guesses before finding the holder.
+_WINDOWS_SWAP_HINT = (
+    "on Windows this is a sharing violation: some process holds an open handle inside "
+    "the directory. Common holders are real-time antivirus or a file-sync client "
+    "scanning the just-written files, an editor or IDE extension with the folder open, "
+    "or a --log-file pointed inside the emission target (which this process would hold "
+    "open for its whole lifetime, so no amount of retrying can clear it)"
+)
+
+
+#: Windows error codes that mean "someone else is holding this right now" rather than
+#: "this can never work". ``ERROR_ACCESS_DENIED`` (5) and ``ERROR_SHARING_VIOLATION`` (32)
+#: arrive as ``PermissionError``; ``ERROR_DIR_NOT_EMPTY`` (145) is raised for a directory
+#: rename whose target still has a handle open and arrives as a plain ``OSError``, which
+#: previously got no retries at all. Anything else is permanent -- retrying it would only
+#: add seconds of sleeping before the same failure.
+_RETRYABLE_WINDOWS_ERRORS = frozenset({5, 32, 145})
+
+
+def _is_transient_swap_error(error: OSError) -> bool:
+    return sys.platform == "win32" and getattr(error, "winerror", None) in _RETRYABLE_WINDOWS_ERRORS
+
+
+def _rename_with_retry(source: Path, destination: Path) -> None:
+    """Rename, retrying only a Windows sharing violation."""
+    for delay in _SWAP_BACKOFF_SECONDS:
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            if not _is_transient_swap_error(error):
+                raise
+            time.sleep(delay)
+    os.replace(source, destination)
+
+
 def _commit_stage(stage: Path, target: Path) -> Path | None:
     backup: Path | None = None
     previous_moved = False
@@ -508,29 +554,19 @@ def _commit_stage(stage: Path, target: Path) -> Path | None:
             raise EmissionError(f"emission target must be a directory: {target}")
         backup = _unique_backup_path(target)
         try:
-            os.replace(target, backup)
+            _rename_with_retry(target, backup)
             previous_moved = True
         except OSError as exc:
-            raise EmissionError(f"could not move emission target to backup: {target}") from exc
+            raise EmissionError(
+                f"could not move emission target to backup: {target} ({exc})"
+            ) from exc
 
     try:
-        last_error: OSError | None = None
-        for attempt in range(6):
-            try:
-                os.replace(stage, target)
-                last_error = None
-                break
-            except PermissionError as exc:
-                last_error = exc
-                if os.name != "nt" or attempt == 5:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-        if last_error is not None:
-            raise last_error
+        _rename_with_retry(stage, target)
     except OSError as swap_error:
         if previous_moved and backup is not None:
             try:
-                os.replace(backup, target)
+                _rename_with_retry(backup, target)
             except OSError as rollback_error:
                 raise EmissionRollbackError(
                     "emission swap failed and rollback was incomplete; "
@@ -538,7 +574,12 @@ def _commit_stage(stage: Path, target: Path) -> Path | None:
                     backup_path=backup,
                 ) from rollback_error
             logger.debug("emit commit: rollback restored target from backup: %s", target.name)
-        raise EmissionError(f"could not swap staged artifacts into {target}") from swap_error
+        # The rename that failed is stage -> target, and target no longer exists at this
+        # point, so the blocked path is the staging directory itself.
+        detail = f"could not swap staged artifacts from {stage} into {target}: {swap_error}"
+        if sys.platform == "win32":
+            detail = f"{detail}. {_WINDOWS_SWAP_HINT}"
+        raise EmissionError(detail) from swap_error
     return backup
 
 

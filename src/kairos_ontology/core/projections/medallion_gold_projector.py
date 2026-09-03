@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ..adapters import FABRIC_WAREHOUSE
+
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
@@ -131,7 +133,7 @@ def generate_gold_artifacts(
     ref_model_defaults: list | None = None,
     peer_ext_paths: list | None = None,
     peer_ontology_paths: list | None = None,
-    target_platform: str = "fabric",
+    target_platform: str = FABRIC_WAREHOUSE,
     contract_registry: Mapping[str, object] | None = None,
     hub_root: Path | None = None,
 ) -> dict[str, str]:

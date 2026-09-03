@@ -26,9 +26,31 @@ execution authority. Complex joins, windows, aggregations, JSON expansion, fallb
 changes belong in ordinary contracted dbt SQL and properties YAML, then are referenced by
 `source.dbtModel`. `../ontology-hub-publish/` (a sibling of the hub) is derived and safe to regenerate.
 
-Configure namespace, catalog, adapters, and selected roots in `kairos.yaml`. Keep each domain in an
+Configure namespace, catalog, adapter, and selected roots in `kairos.yaml`. Keep each domain in an
 OWL ontology with labels/comments and explicit imports. Add optional SHACL in `model/shapes/`.
 Validate ontology inputs, then run `compile --check` before emission.
+
+## Target platform (`adapter:`)
+
+This is the single most consequential line in `kairos.yaml`: it decides the SQL dialect the
+compiler emits, and the dialect any hand-authored dbt model must be written in.
+
+| Value | Engine | Dialect | dbt adapter |
+|---|---|---|---|
+| `fabric-warehouse` | Microsoft Fabric Warehouse | T-SQL | `dbt-fabric` |
+| `databricks` | Azure Databricks | Spark SQL | `dbt-databricks` |
+
+Prefer setting it at scaffold time — `kairos-ontology init --adapter <value>` — so a hub is never
+born with the wrong one. There is **no default**: the compiler fails closed when `adapter:` is
+absent or unsupported, so nothing is ever silently emitted as Fabric.
+
+The id names the engine, not the vendor. `fabric-lakehouse` is recognised and **rejected**: it is
+Spark SQL, there is no profile for it, and emitting T-SQL would compile cleanly and then fail on the
+first warehouse run. `fabric` still resolves to `fabric-warehouse` with a deprecation warning
+(DD-215).
+
+Changing `adapter:` on an existing hub changes its provenance hash, so the next compile reports
+drift until the hub re-emits. That is expected — tell the user before they change it, not after.
 
 ## Databricks Gold semantic-model connection
 

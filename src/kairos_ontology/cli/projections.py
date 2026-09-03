@@ -3,6 +3,8 @@
 """Focused projections CLI commands."""
 
 import click
+
+from ..core.adapters import ADAPTER_CHOICES, FABRIC_WAREHOUSE
 from pathlib import Path
 
 
@@ -71,8 +73,8 @@ from .shared import (
 @click.option(
     "--platform",
     "--adapter",
-    type=click.Choice(["fabric", "databricks"]),
-    default="fabric",
+    type=click.Choice(ADAPTER_CHOICES),
+    default=FABRIC_WAREHOUSE,
     show_default=True,
     help="SQL platform for dbt projection.",
 )
@@ -121,7 +123,7 @@ def project(
             "kairos_ontology.mdm.profile_projector.generate_mdm_profile_from_compile_plan)."
         )
     cwd = Path.cwd()
-    if platform != "fabric" and target not in {"dbt", "all"}:
+    if platform != FABRIC_WAREHOUSE and target not in {"dbt", "all"}:
         raise click.UsageError("--platform applies only to --target dbt or --target all")
     (
         ontologies_path,

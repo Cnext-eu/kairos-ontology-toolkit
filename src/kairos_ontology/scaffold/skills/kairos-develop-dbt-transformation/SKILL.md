@@ -204,20 +204,48 @@ entry for an `int_merged__` model, and returning to kairos-design-mapping to wir
    error behavior, deterministic ordering, and adapter assumptions. Obtain the
    active mode's checkpoint decision.
 4. Author SQL with `source()` and `ref()`; do not hard-code physical relation names.
+
+   **Write for the hub's declared target, and check which one it is first.** dbt does
+   not abstract SQL dialects: your model body is passed to the engine verbatim, so
+   `dbt parse` and `dbt compile` will not catch a dialect error. Read `adapter:` from
+   `ontology-hub/kairos.yaml` before writing SQL.
+
+   `fabric-warehouse` (T-SQL) rules that differ from Postgres/Snowflake/Databricks,
+   which is where most SQL habits come from:
+
+   - **A `bit` column is not a condition.** `where is_debtor` is invalid; write
+     `where is_debtor = 1`. Same in `case when`, and in any `and`/`or`/`not` operand.
+     This is a real reported production failure, not a hypothetical. Note that `= 1`
+     also excludes NULL, which is usually what a flag column means.
+   - **A condition is not a value.** `select (x is null) as flag` is invalid; write
+     `select case when x is null then 1 else 0 end as flag`.
+   - `LEN`, not `LENGTH`. `ROUND` requires two arguments. `GETDATE()`, not `NOW()`.
+   - Prefer dbt's cross-database macros over raw functions where one exists --
+     `{{ dbt.length(...) }}`, `{{ dbt.dateadd(...) }}`, `{{ dbt.safe_cast(...) }}`.
+     They are the one portability surface someone else maintains per adapter.
+
+   `databricks` (Spark SQL) accepts a bare boolean column as a condition, and rejects
+   `boolean = 1`. The two targets' correct spellings are mutually exclusive, so do not
+   try to write one file that satisfies both -- write for the declared target. If a
+   model genuinely needs to serve two targets, that is the signal to move the logic
+   into the binding, which the compiler renders per adapter.
+
+   Fabric Lakehouse is not a supported target: it is Spark SQL and the compiler has
+   no profile for it (DD-215).
 5. Author `version: 2` properties YAML with `config.contract.enforced: true`, every
    output column name/type, focused dbt tests, and `meta.kairos` containing grain,
    `grain_key`, target class, `virtual_source_iri`, and supported adapters. The
    legacy-named IRI identifies the contracted model output only; do not generate a
    separate virtual-source artifact or registry.
 
-   **`fabric` adapter caveat:** when `supported_adapters` includes `fabric` and
+   **`fabric-warehouse` adapter caveat:** when `supported_adapters` includes `fabric-warehouse` and
    `config.contract.enforced: true`, `dbt-fabric`'s materialization macro rejects the
    model if it detects a "nested CTE" — but its detector just counts literal
    occurrences of the substring `"with "` (case-insensitive) across the *entire*
    compiled SQL text, including `--` comments, not an actual parse of `WITH` clauses.
    A model with zero real CTEs can still fail to build if its own comments happen to
    use the word "with" twice. Keep that substring to at most one occurrence anywhere
-   in the model file — SQL and comments alike — when targeting `fabric`. This is
+   in the model file — SQL and comments alike — when targeting Fabric. This is
    upstream `dbt-fabric` behavior, not a real SQL constraint.
 6. Validate the contract you just authored, **before** binding it:
 

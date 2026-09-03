@@ -10,12 +10,18 @@ re-resolve TTL, source vocabularies, bindings, or policies.
    versioned artifact location.
 2. Pin that immutable revision in `packages.yml`.
 3. Run `dbt deps`, `dbt parse`, `dbt build`, and `dbt test` with the matching adapter.
+   Add `dbt build --empty` to pull-request CI: it runs every model at `limit 0`, so the
+   warehouse parses and binds the real SQL for essentially no compute. It is the only
+   check that catches SQL-dialect errors — `dbt parse` and `dbt compile` never inspect a
+   model body, and no offline gate in the hub can.
 4. Reference generated models with package-qualified `ref()`.
 5. Put downstream-only logic in ordinary dbt models and never edit compiler-owned output.
 
-Compiler adapters are `fabric` and `databricks`. Dataplatform scaffolding exposes
-`fabric-lakehouse`, `fabric-warehouse`, and `databricks` deployment profiles, both Fabric
-profiles consuming Fabric compiler SQL.
+Compiler adapters are `fabric-warehouse` and `databricks`, and `init-dataplatform
+--platform` now takes the same values — one vocabulary across both repositories. Use the
+value the hub declares in its `kairos.yaml` unless this project deliberately writes
+elsewhere; nothing verifies the two agree, and a mismatch surfaces only as an opaque SQL
+error on the first real run.
 
 ## Gold and MDM
 

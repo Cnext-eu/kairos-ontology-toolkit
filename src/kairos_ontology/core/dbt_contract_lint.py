@@ -23,6 +23,7 @@ Leaf module: no :mod:`kairos_ontology.cli` imports, so it stays unit-testable wi
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,13 @@ from typing import Any
 
 import yaml
 
-from .dbt_contracts import DbtContractError, DbtContractModel, scan_dbt_contracts
+from .adapters import FABRIC_WAREHOUSE
+from .dbt_contracts import (
+    DbtContractError,
+    DbtContractModel,
+    canonical_adapters,
+    scan_dbt_contracts,
+)
 from .hub_utils import is_scaffold_placeholder_text
 
 SCHEMA_VERSION = 1
@@ -181,6 +188,58 @@ def _sentinel_fields(kairos_meta: Any) -> tuple[str, ...]:
                 if is_scaffold_placeholder_text(item)
             )
     return tuple(unconfirmed)
+
+
+#: Case-insensitive occurrences of this substring are what `dbt-fabric`'s materialization
+#: macro counts when it decides a model has a "nested CTE". It is a substring count over
+#: the whole compiled text, comments included -- not a parse -- so two mentions of the
+#: word "with" in a comment fail a model with no CTEs at all.
+_FABRIC_WITH_SUBSTRING = re.compile(r"with\s", re.IGNORECASE)
+
+
+def _dialect_findings(scan, hub_root: Path) -> list[DbtContractFinding]:
+    """Adapter-dialect rules over hand-authored model SQL (DD-215).
+
+    Deliberately narrow. dbt does not abstract SQL dialects -- a model body is passed to
+    the engine verbatim, and neither ``dbt parse`` nor ``dbt compile`` looks at it -- so
+    the hub has no offline way to catch a dialect error in general. Identifying, say, a
+    bare bit column in predicate position needs to know *predicate position*, which needs
+    a real parser; that is a deliberate non-goal here rather than an oversight, and the
+    complete gate for it is ``dbt build --empty`` against a real warehouse downstream.
+
+    What belongs here is the narrow class of rules that are deterministic from the text
+    alone. Today that is exactly one: `dbt-fabric`'s own substring-counting nested-CTE
+    detector, which is a property of the adapter's macro rather than of SQL.
+    """
+    findings: list[DbtContractFinding] = []
+    for model in scan.models:
+        # Every scanned model already enforces its contract -- `_parse_contract` rejects
+        # one that does not -- so reaching dbt-fabric's macro is a given here.
+        if FABRIC_WAREHOUSE not in (canonical_adapters(model.supported_adapters) or ()):
+            continue
+        try:
+            sql = model.sql_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        occurrences = len(_FABRIC_WITH_SUBSTRING.findall(sql))
+        if occurrences > 1:
+            findings.append(
+                DbtContractFinding(
+                    code="dbt-contract.dialect-fabric-nested-cte",
+                    severity=SEVERITY_ERROR,
+                    message=(
+                        f"model {model.name!r} contains {occurrences} case-insensitive "
+                        "occurrences of 'with ' and enforces its contract on "
+                        "fabric-warehouse. dbt-fabric's materialization macro counts that "
+                        "substring across the whole file -- comments included -- to detect "
+                        "a nested CTE, and refuses to build the model. Reduce it to at most "
+                        "one, rewording comments if that is where the extras are."
+                    ),
+                    path=_relative(model.sql_path, hub_root),
+                    model=model.name,
+                )
+            )
+    return findings
 
 
 def _authored_seed_csvs(transforms_dir: Path) -> list[Path]:
@@ -527,6 +586,9 @@ def run_dbt_contract_lint(
                     model=model.name,
                 )
             )
+
+    # --- adapter dialect rules over the authored SQL (DD-215) ------------------------------
+    findings.extend(_dialect_findings(scan, hub_root))
 
     # --- authored seeds (#586 stage b) -----------------------------------------------------
     findings.extend(_seed_findings(transforms_dir, hub_root))

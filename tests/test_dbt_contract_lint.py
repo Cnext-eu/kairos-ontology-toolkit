@@ -33,7 +33,7 @@ def _contract(name: str, **overrides) -> dict:
                 "virtual_source_iri": f"https://example.test/virtual/{name}",
                 "grain": "one row per customer",
                 "grain_key": ["customer_id"],
-                "supported_adapters": ["fabric"],
+                "supported_adapters": ["fabric-warehouse"],
             }
         },
         "columns": [
@@ -378,3 +378,51 @@ def test_matching_seed_docs_produce_no_findings(tmp_path: Path) -> None:
     report = run_dbt_contract_lint(hub, resolve_target_class=_resolver())
 
     assert not {code for code in _codes(report) if code.startswith("dbt-contract.seed-")}
+
+
+# --- DD-215: adapter dialect rules over authored SQL ---------------------------------
+
+
+def _write_sql(hub: Path, name: str, body: str) -> None:
+    (_models_dir(hub) / f"{name}.sql").write_text(body, encoding="utf-8")
+
+
+def test_fabric_nested_cte_substring_is_reported(tmp_path):
+    """dbt-fabric counts the substring, comments included -- it does not parse."""
+    _write(tmp_path, _contract("int_merged__customer"))
+    _write_sql(
+        tmp_path,
+        "int_merged__customer",
+        "-- joins customers with orders, with care\nselect 1\n",
+    )
+    report = run_dbt_contract_lint(tmp_path)
+    assert "dbt-contract.dialect-fabric-nested-cte" in _codes(report)
+    assert not report.passed
+
+
+def test_one_occurrence_is_allowed(tmp_path):
+    _write(tmp_path, _contract("int_merged__customer"))
+    _write_sql(tmp_path, "int_merged__customer", "with base as (select 1)\nselect * from base\n")
+    assert "dbt-contract.dialect-fabric-nested-cte" not in _codes(run_dbt_contract_lint(tmp_path))
+
+
+def test_rule_does_not_apply_to_a_databricks_only_model(tmp_path):
+    """It is a property of dbt-fabric's macro, not of SQL."""
+    _write(tmp_path, _contract("int_merged__customer", supported_adapters=["databricks"]))
+    _write_sql(
+        tmp_path,
+        "int_merged__customer",
+        "-- joins customers with orders, with care\nselect 1\n",
+    )
+    assert "dbt-contract.dialect-fabric-nested-cte" not in _codes(run_dbt_contract_lint(tmp_path))
+
+
+def test_rule_still_applies_to_the_deprecated_fabric_spelling(tmp_path):
+    """Authored contracts in the field still say `supported_adapters: [fabric]`."""
+    _write(tmp_path, _contract("int_merged__customer", supported_adapters=["fabric"]))
+    _write_sql(
+        tmp_path,
+        "int_merged__customer",
+        "-- joins customers with orders, with care\nselect 1\n",
+    )
+    assert "dbt-contract.dialect-fabric-nested-cte" in _codes(run_dbt_contract_lint(tmp_path))

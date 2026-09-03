@@ -43,13 +43,15 @@ def _run(inputs=None):
     return contract, shaped, plan, render_project(shaped, plan)
 
 
-@pytest.mark.parametrize("adapter", ("fabric", "databricks"))
+@pytest.mark.parametrize("adapter", ("fabric-warehouse", "databricks"))
 def test_both_adapters_use_exact_shared_column_order_and_types(adapter):
     contract, shaped, plan, artifacts = _run(
         replace(
             _client_inputs(),
             target_platform=adapter,
-            gold_extension=(_client_inputs().gold_extension if adapter == "fabric" else None),
+            gold_extension=(
+                _client_inputs().gold_extension if adapter == "fabric-warehouse" else None
+            ),
         )
     )
     assert contract.project.target_platform == adapter
@@ -142,7 +144,7 @@ def test_constraints_are_unenforced_collision_safe_and_adapter_bounded():
     assert "UNENFORCED" in artifacts[plan.silver.ddl_artifact_path]
 
     first = _bounded_identifier(
-        "fabric",
+        "fabric-warehouse",
         "fk",
         "silver",
         "a" * 200,
@@ -150,7 +152,7 @@ def test_constraints_are_unenforced_collision_safe_and_adapter_bounded():
         "target-a",
     )
     second = _bounded_identifier(
-        "fabric",
+        "fabric-warehouse",
         "fk",
         "silver",
         "a" * 200,
@@ -160,7 +162,7 @@ def test_constraints_are_unenforced_collision_safe_and_adapter_bounded():
     assert first != second
     assert len(first) <= 128
     assert first == _bounded_identifier(
-        "fabric",
+        "fabric-warehouse",
         "fk",
         "silver",
         "a" * 200,

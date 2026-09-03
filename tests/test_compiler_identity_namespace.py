@@ -48,7 +48,7 @@ def _context() -> ResolutionContext:
         ontology_iri=_IRI,
         ontology_version="0.1.0",
         template_root=_TEMPLATE_ROOT,
-        target_platform="fabric",
+        target_platform="fabric-warehouse",
         relations=(
             ResolvedRelation(
                 ref="ops.orders",

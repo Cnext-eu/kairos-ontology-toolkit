@@ -2457,7 +2457,15 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
     # Pre-#650 generation, before `pr-validate.yml` gained its guard against
     # `local:` dbt package pins. This is the concrete fix #658 was filed about:
     # it shipped in a release that no existing dataplatform could receive.
-    ".github/workflows/pr-validate.yml": ("dataplatform-pr-validate/1.template",),
+    # The destination path is the same for a hub and a dataplatform, so both repo
+    # kinds' outgoing generations live under this one key.
+    ".github/workflows/pr-validate.yml": (
+        "dataplatform-pr-validate/1.template",
+        # Pre-DD-215 dataplatform generation, before the `dbt build --empty` guidance.
+        "dataplatform-pr-validate/2.template",
+        # Pre-DD-215 hub generation, before `validate-dbt-contracts` became a CI gate.
+        "hub-pr-validate/1.template",
+    ),
 }
 
 

@@ -60,6 +60,27 @@ fail closed before any warehouse execution when a package source lacks a real ph
 the binding is unknown, duplicate, or stale — and it needs no credentials either, since it only
 compares package source usage against `models/_sources.yml`.
 
+### Opt-in: `dbt build --empty` — the only gate that catches SQL-dialect errors
+
+Add this before you consider a full build. It is cheap, and it closes a real gap that
+nothing else in either repository can.
+
+dbt does **not** abstract SQL dialects: a model body is handed to the engine verbatim,
+so `dbt parse` and `dbt compile` never inspect it, and neither does any offline gate in
+the ontology hub. `--empty` runs every model with `limit 0` — the warehouse parses,
+binds and plans the SQL but reads no rows and writes nothing — which makes it the first
+point in the whole pipeline where dialect errors surface, and it catches all of them,
+including ones nobody wrote a rule for.
+
+```powershell
+uv run dbt build --empty --profiles-dir .dbt --target ci
+```
+
+It needs the same real, credential-isolated `ci` target the full build does (below), but
+essentially no warehouse compute. Make it a required check on `bump/hub-*` pull requests:
+that is the PR that adopts a new hub SHA, and therefore the first moment newly emitted SQL
+could be wrong.
+
 ### Opt-in: full `dbt build`
 
 Add a full, isolated `dbt build --profiles-dir .dbt --target ci` step only once this repository has

@@ -30,7 +30,9 @@ uv run kairos-ontology compile <domain> --explain --format json
 uv run kairos-ontology compile <domain> --emit
 ```
 
-The adapter is selected in `kairos.yaml` (`fabric` or `databricks`). Every invocation
+The adapter is selected in `kairos.yaml` (`fabric-warehouse` or `databricks`, set with
+`init --adapter`). It names the target engine because that is what decides the SQL
+dialect. Every invocation
 builds one immutable `CompilePlan`; check and explain do not write. Bare `--emit`
 writes the unified dbt project to `ontology-hub-publish/medallion/dbt`.
 

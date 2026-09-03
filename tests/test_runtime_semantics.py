@@ -13,6 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from kairos_ontology.core.adapters import dbt_profile_type
 from jinja2 import Environment
 
 from kairos_ontology.core.projections.dbt.canonical_hash import (
@@ -178,7 +180,7 @@ def test_fabric_and_databricks_hash_sql_share_contract_without_legacy_ambiguity(
         ),
         CanonicalHashSqlInput("event_at", TIMESTAMP),
     )
-    fabric = render_canonical_hash_sql_v1(inputs, "fabric")
+    fabric = render_canonical_hash_sql_v1(inputs, "fabric-warehouse")
     databricks = render_canonical_hash_sql_v1(inputs, "databricks")
     for sql in (fabric, databricks):
         lowered = sql.lower()
@@ -198,7 +200,7 @@ def test_fabric_and_databricks_hash_sql_share_contract_without_legacy_ambiguity(
     assert "to_utc_timestamp" not in databricks.lower()
 
 
-@pytest.mark.parametrize("adapter", ["fabric", "databricks"])
+@pytest.mark.parametrize("adapter", ["fabric-warehouse", "databricks"])
 def test_packaged_macro_and_python_renderer_do_not_drift(adapter):
     inputs = (
         CanonicalHashSqlInput("business_id", STRING),
@@ -219,7 +221,7 @@ def test_packaged_macro_and_python_renderer_do_not_drift(adapter):
     )
     env = Environment()
     env.globals.update(
-        target=SimpleNamespace(type=adapter),
+        target=SimpleNamespace(type=dbt_profile_type(adapter)),
         exceptions=SimpleNamespace(
             raise_compiler_error=lambda message: (_ for _ in ()).throw(CanonicalHashError(message))
         ),
@@ -240,7 +242,7 @@ def test_packaged_macro_and_python_renderer_do_not_drift(adapter):
 @pytest.mark.parametrize(
     ("adapter", "token"),
     [
-        ("fabric", "SHA2(value, 256)"),
+        ("fabric-warehouse", "SHA2(value, 256)"),
         ("databricks", "HASHBYTES('SHA2_256', value)"),
         ("databricks", "value COLLATE Latin1_General_100_BIN2_UTF8"),
     ],

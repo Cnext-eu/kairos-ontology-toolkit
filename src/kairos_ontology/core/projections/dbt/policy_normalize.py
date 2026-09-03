@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import FABRIC_WAREHOUSE
+
 import hashlib
 import json
 import re
@@ -4428,7 +4430,7 @@ def normalize_medallion_policy(
     mappings: SourceMappings,
     silver_candidates: tuple[BoundSilverModel, ...],
     fk_policy: ForeignKeyPolicy,
-    target_adapter: str = "fabric",
+    target_adapter: str = FABRIC_WAREHOUSE,
     target_source: PolicySource = PolicySource.DEFAULT,
     mode: ExecutionMode = ExecutionMode.FAIL_FAST,
     contracts: tuple[tuple[str, ContractFact], ...] = (),

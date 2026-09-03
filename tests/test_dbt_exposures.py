@@ -95,7 +95,7 @@ def _generate_gold(domain: str) -> dict[str, str]:
         gold_ext_path=EXTENSIONS_DIR / f"{domain}-gold-ext.ttl",
         silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
         peer_ext_paths=peers,
-        target_platform="fabric",
+        target_platform="fabric-warehouse",
     )
     return render_gold_dbt_artifacts(shaped.gold_product, plan.gold)
 
@@ -121,7 +121,7 @@ def _gold_product_report(domain: str) -> dict:
         gold_ext_path=EXTENSIONS_DIR / f"{domain}-gold-ext.ttl",
         silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
         peer_ext_paths=peers,
-        target_platform="fabric",
+        target_platform="fabric-warehouse",
         hub_root=_DIRECT_LAKE_HUB_ROOT,
     )
     return json.loads(artifacts[f"{domain}/{domain}-gold-product.json"])

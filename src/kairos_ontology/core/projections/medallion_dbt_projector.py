@@ -25,6 +25,8 @@ Namespace:  kairos-map:     https://kairos.cnext.eu/mapping#
 
 from __future__ import annotations
 
+from ..adapters import FABRIC_WAREHOUSE
+
 import logging
 import re
 from collections import Counter
@@ -211,12 +213,13 @@ _XSD_TO_DATABRICKS: dict[str, str] = {
 
 # Platform selection: maps platform name to (source_type_map, xsd_type_map)
 _PLATFORM_TYPE_MAPS: dict[str, tuple[dict[str, str], dict[str, str]]] = {
-    "fabric": (_SOURCE_TO_FABRIC, _XSD_TO_FABRIC),
+    FABRIC_WAREHOUSE: (_SOURCE_TO_FABRIC, _XSD_TO_FABRIC),
     "databricks": (_SOURCE_TO_DATABRICKS, _XSD_TO_DATABRICKS),
 }
 
-# Default platform — valid values: "fabric", "databricks"
-DEFAULT_PLATFORM = "fabric"
+# Default platform for the retired v4 projector only. The v5 compile path applies no
+# default at all -- it fails closed on kairos.yaml (DD-215 supersedes DD-009).
+DEFAULT_PLATFORM = FABRIC_WAREHOUSE
 
 # Issue #220: conformed/shared gold artifacts (e.g. dim_date) are emitted by every
 # domain that produces gold, but they are package-level, not domain-owned. They must be
@@ -3644,7 +3647,7 @@ def generate_dbt_artifacts(
         mappings_dir: Path to ``mappings/`` directory with SKOS mapping TTLs.
         gold_ext_path: Optional path to ``*-gold-ext.ttl`` for gold model generation.
         target_platform: Target SQL platform for type mapping.
-            Options: ``"fabric"`` (default) or ``"databricks"``.
+            Options: ``"fabric-warehouse"`` (default) or ``"databricks"``.
         silver_ext_path: Optional path to ``*-silver-ext.ttl`` for naturalKey and
             other silver annotations used by the dbt silver layer.
         peer_ext_paths: Optional list of paths to other domain ``*-silver-ext.ttl``

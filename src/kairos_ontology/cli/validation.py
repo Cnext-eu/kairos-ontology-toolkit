@@ -4,6 +4,8 @@
 
 import json
 import click
+
+from ..core.adapters import ADAPTER_CHOICES, FABRIC_WAREHOUSE, resolve_adapter
 from pathlib import Path
 
 
@@ -30,9 +32,10 @@ from .shared import (
 @click.command(name="validate-dbt")
 @click.option(
     "--platform",
-    type=click.Choice(["fabric", "databricks"]),
+    type=click.Choice(ADAPTER_CHOICES),
     default=None,
-    help="Adapter used to parse and compile the generated project. Required "
+    help="Adapter used to parse and compile the generated project. Defaults to the "
+    "hub's own 'adapter:' from kairos.yaml; pass this only to override it. Required "
     "unless --structural-only is set (the structural scan needs no adapter).",
 )
 @click.option(
@@ -59,15 +62,26 @@ def validate_dbt_cmd(platform, project_dir, profiles_dir, structural_only):
     the remaining phases still require `dbt` itself, unless --structural-only.
     """
     from ..core.dbt_validation import DbtValidationError, validate_dbt_project
+    from ..core.hub_inspection import _configured_adapter
     from ..core.hub_utils import find_hub_root, publish_root
-
-    if platform is None:
-        if not structural_only:
-            raise click.UsageError("--platform is required unless --structural-only is set")
-        platform = "fabric"  # inert placeholder; structural-only never invokes an adapter
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd, require_model=False) or cwd
+
+    if platform is None:
+        # DD-215: the hub already declares its target in kairos.yaml. Reading it here
+        # removes the mismatch this command used to institutionalise, where the flag and
+        # the configured adapter could disagree with nothing to notice.
+        platform = _configured_adapter(hub_root)
+        if not platform and not structural_only:
+            raise click.UsageError(
+                "--platform is required unless --structural-only is set, or the hub "
+                "declares 'adapter:' in kairos.yaml"
+            )
+        platform = platform or FABRIC_WAREHOUSE  # inert; structural-only uses no adapter
+    platform, deprecation = resolve_adapter(platform)
+    if deprecation is not None:
+        click.echo(f"   ⚠ {deprecation}", err=True)
 
     def resolve(value, default):
         path = Path(value) if value is not None else default

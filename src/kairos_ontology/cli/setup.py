@@ -3,6 +3,14 @@
 """Focused setup CLI commands."""
 
 import click
+
+from ..core.adapters import (
+    ADAPTER_CHOICES,
+    DBT_ADAPTER_PACKAGES,
+    FABRIC_WAREHOUSE,
+    SUPPORTED_ADAPTER_IDS,
+    resolve_adapter,
+)
 import json
 import re
 import shutil
@@ -200,7 +208,20 @@ def _registration_import_gate(
     help="Toolkit release channel to pin: 'stable' (latest GA) or 'preview' (latest rc/beta). "
     "Defaults to auto-detection from the running toolkit version.",
 )
-def init(domain, company_domain, force, skip_refmodels, ref_models_version, degraded, channel):
+@click.option(
+    "--adapter",
+    "adapter",
+    type=click.Choice(ADAPTER_CHOICES),
+    default=FABRIC_WAREHOUSE,
+    show_default=True,
+    help="Target platform written to kairos.yaml. Names the engine, not the vendor: "
+    "Fabric Warehouse is T-SQL, Fabric Lakehouse is Spark SQL, and the compiler emits "
+    "different SQL for each.",
+)
+def init(
+    domain, company_domain, force, skip_refmodels, ref_models_version, degraded,
+    channel, adapter,
+):
     """Initialize a Kairos ontology hub in the current directory.
 
     Creates the standard folder structure, installs Copilot skills, and
@@ -580,7 +601,11 @@ def init(domain, company_domain, force, skip_refmodels, ref_models_version, degr
     config_src = _SCAFFOLD_DIR / "ontology-hub" / "kairos.yaml.template"
     config_dst = hub / "kairos.yaml"
     if config_src.is_file() and (not config_dst.exists() or force):
-        content = config_src.read_text(encoding="utf-8").replace("{repo_name}", cwd.name)
+        content = (
+            config_src.read_text(encoding="utf-8")
+            .replace("{repo_name}", cwd.name)
+            .replace("{adapter}", resolve_adapter(adapter)[0])
+        )
         if domain:
             content += f"default_domain: {domain}\n"
         config_dst.write_text(content, encoding="utf-8")
@@ -964,9 +989,19 @@ def migrate(check, dry_run, hub_path):
     help="Scaffold and git-init on disk without creating or pushing a GitHub remote. "
     "For throwaway hubs used to exercise the toolkit; a client hub belongs on GitHub.",
 )
+@click.option(
+    "--adapter",
+    "adapter",
+    type=click.Choice(ADAPTER_CHOICES),
+    default=FABRIC_WAREHOUSE,
+    show_default=True,
+    help="Target platform written to kairos.yaml. Names the engine, not the vendor: "
+    "Fabric Warehouse is T-SQL, Fabric Lakehouse is Spark SQL, and the compiler emits "
+    "different SQL for each.",
+)
 def new_repo(
     name, desc, dest, org, is_private, ref_models_version, company_domain, skip_protection,
-    channel, local_only,
+    channel, local_only, adapter,
 ):
     """Create a new ontology hub GitHub repository.
 
@@ -1160,7 +1195,11 @@ def new_repo(
 
     config_src = _SCAFFOLD_DIR / "ontology-hub" / "kairos.yaml.template"
     if config_src.is_file():
-        content = config_src.read_text(encoding="utf-8").replace("{repo_name}", repo_slug)
+        content = (
+            config_src.read_text(encoding="utf-8")
+            .replace("{repo_name}", repo_slug)
+            .replace("{adapter}", resolve_adapter(adapter)[0])
+        )
         (hub / "kairos.yaml").write_text(content, encoding="utf-8")
         print("  ✓ ontology-hub/kairos.yaml")
 
@@ -1402,7 +1441,7 @@ def _ci_profile_yaml_block(profile_name: str, platform: str, *, indent: str = " 
     """
     from ..core.dbt_validation import _offline_profile
 
-    adapter = "databricks" if platform == "databricks" else "fabric"
+    adapter, _ = resolve_adapter(platform)
     output = _offline_profile(adapter)["outputs"]["offline"]
     document = {profile_name: {"target": "ci", "outputs": {"ci": output}}}
     rendered = yaml.safe_dump(document, sort_keys=False).rstrip("\n")
@@ -1514,9 +1553,11 @@ def _write_or_update_code_workspace(workspace_path: Path, folder_paths: tuple[Pa
 )
 @click.option(
     "--platform",
-    type=click.Choice(["fabric-lakehouse", "fabric-warehouse", "databricks"]),
-    default="fabric-lakehouse",
-    help="Target platform for dbt adapter configuration.",
+    type=click.Choice(ADAPTER_CHOICES),
+    default=FABRIC_WAREHOUSE,
+    show_default=True,
+    help="Target platform for dbt adapter configuration. Use the same value the hub "
+    "declares in kairos.yaml unless this project deliberately writes elsewhere.",
 )
 @click.option(
     "--org",
@@ -1615,9 +1656,8 @@ def init_dataplatform(name, dest, platform, org_override):
     # resolve into it. Revisit this ceiling once the adapters publish 2.0-line releases and
     # the generated dbt project has been validated against the new spec.
     adapter_map = {
-        "fabric-lakehouse": "dbt-fabric>=1.9.0,<2.0.0",
-        "fabric-warehouse": "dbt-fabric>=1.9.0,<2.0.0",
-        "databricks": "dbt-databricks>=1.9.0,<2.0.0",
+        adapter: f"{DBT_ADAPTER_PACKAGES[adapter]}>=1.9.0,<2.0.0"
+        for adapter in SUPPORTED_ADAPTER_IDS
     }
     # Same channel-based toolkit pin the hub scaffold uses (issue: dataplatform
     # `update --upgrade` previously had no [tool.kairos] channel to resolve against
@@ -1631,7 +1671,9 @@ def init_dataplatform(name, dest, platform, org_override):
         "{HUB_VERSION}": hub_version,
         "{DATABASE}": "your_bronze_database",
         "{SCHEMA}": "your_bronze_schema",
-        "{DBT_ADAPTER}": adapter_map.get(platform, "dbt-fabric>=1.9.0,<2.0.0"),
+        # No `.get` default: an unmapped platform must fail loudly rather than pin the
+        # Fabric adapter into a project that does not target Fabric (DD-215).
+        "{DBT_ADAPTER}": adapter_map[resolve_adapter(platform)[0]],
         "{DBT_CI_PROFILE_YAML}": _ci_profile_yaml_block(project_name, platform),
         "{toolkit_ref}": toolkit_ref,
         "{toolkit_version}": toolkit_version,

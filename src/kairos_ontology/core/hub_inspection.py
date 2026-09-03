@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .hub_config import configured_adapter, load_hub_config
+
 import yaml
 
 from .compiler import (
@@ -315,15 +317,8 @@ def _registered_concepts_unbound(root: Path) -> int:
 
 
 def _configured_adapter(root: Path) -> str:
-    """Return the supported adapter from kairos.yaml, or '' when absent/unsupported."""
-    import yaml
-
-    try:
-        config = yaml.safe_load((root / "kairos.yaml").read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return ""
-    adapter = config.get("adapter", "") if isinstance(config, dict) else ""
-    return str(adapter) if adapter in ("fabric", "databricks") else ""
+    """Return the canonical adapter from kairos.yaml, or '' when absent/unsupported."""
+    return configured_adapter(root) or ""
 
 
 def configured_modes_served(root: Path) -> list[str] | None:
@@ -333,15 +328,7 @@ def configured_modes_served(root: Path) -> list[str] | None:
     (meaning "all modes served"). Duplicates are stripped and values are stripped
     of surrounding whitespace.
     """
-    import yaml
-
-    try:
-        config = yaml.safe_load((root / "kairos.yaml").read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return None
-    if not isinstance(config, dict):
-        return None
-    raw = config.get("modes_served")
+    raw = load_hub_config(root).get("modes_served")
     if raw is None:
         return None
     if isinstance(raw, str):

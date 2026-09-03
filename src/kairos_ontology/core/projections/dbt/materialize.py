@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import FABRIC_WAREHOUSE
+
 import hashlib
 import re
 
@@ -388,7 +390,7 @@ def _runtime_physical_plan(
         adapter=adapter_name.value,
         strategy=f"scd{runtime.authority.history.scd_type.value.value}",
         merge_strategy=(
-            "fabric-merge" if adapter_name.value == "fabric" else "databricks-delta-merge"
+            "fabric-merge" if adapter_name.value == FABRIC_WAREHOUSE else "databricks-delta-merge"
         ),
         delete_strategy=(
             f"hard:{incremental.hard_delete.value.value};soft:{incremental.soft_delete.value.value}"
@@ -418,7 +420,7 @@ def _bounded_identifier(
     referenced_model: str = "",
 ) -> str:
     """Return a collision-safe deterministic adapter-bounded identifier."""
-    maximum = 128 if adapter == "fabric" else 255
+    maximum = 128 if adapter == FABRIC_WAREHOUSE else 255
     identity = "|".join((adapter, kind, schema, model, *columns, referenced_model))
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
     base = re.sub(

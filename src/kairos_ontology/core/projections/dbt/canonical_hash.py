@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import FABRIC_WAREHOUSE
+
 import hashlib
 import json
 import re
@@ -409,7 +411,7 @@ def _canonical_lexical_sql(
     expression = value.expression
     label = _sql_type_label(value.data_type)
     kind = value.data_type.kind
-    if adapter == "fabric":
+    if adapter == FABRIC_WAREHOUSE:
         if kind is CanonicalTypeKind.STRING:
             return f"CAST({expression} AS VARCHAR(MAX))"
         if kind is CanonicalTypeKind.BOOLEAN:
@@ -469,7 +471,7 @@ def render_canonical_hash_sql_v1(
     for item in inputs:
         label = _sql_type_label(item.data_type)
         lexical = _canonical_lexical_sql(item, adapter)
-        if adapter == "fabric":
+        if adapter == FABRIC_WAREHOUSE:
             encoded = (
                 "CONVERT(VARBINARY(MAX), "
                 f"CAST({lexical} AS VARCHAR(MAX)) "
@@ -489,7 +491,7 @@ def render_canonical_hash_sql_v1(
             )
         fields.append(field)
     stream = "CONCAT('KAIROS-CANONICAL-HASH|v1|', " + ", ".join(fields) + ")"
-    if adapter == "fabric":
+    if adapter == FABRIC_WAREHOUSE:
         return (
             "LOWER(CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', "
             f"CONVERT(VARBINARY(MAX), {stream})), 2))"
@@ -504,7 +506,7 @@ def validate_runtime_sql_static(sql: str, adapter: str) -> None:
         r"\bconcat_ws\s*\(",
         r"\bkairos_row_hash\b",
     )
-    if adapter == "fabric":
+    if adapter == FABRIC_WAREHOUSE:
         forbidden = (
             r"\bsha2\s*\(",
             r"\bencode\s*\(",

@@ -7,8 +7,7 @@
 # scaffold has no warehouse CI credentials configured, so a literal "full
 # build by default" would fail out of the box for every new hub. See
 # CICD.md's "Pull-request checks" section for the additional opt-in
-# `dbt build --empty --target ci` step (see below -- it is the only gate that
-# catches SQL-dialect errors), which does need a real, credential-isolated
+# `dbt build --target ci` step, which does need a real, credential-isolated
 # `ci` target configured as a GitHub Environment secret.
 
 name: PR Validation
@@ -99,23 +98,8 @@ jobs:
             --project-dir . \
             --format json
 
-      # Opt-in, and the single highest-value gate available here (DD-215).
-      #
-      # `--empty` runs every model with `limit 0`: the warehouse still parses,
-      # binds, and plans the SQL, but reads no rows and writes no data. That
-      # makes it the only check that catches *dialect* errors, which nothing
-      # upstream can. dbt does not abstract SQL dialects -- a model body is sent
-      # to the engine verbatim -- so `dbt parse` and `dbt compile` above never
-      # look at it, and neither does any offline gate in the hub. A hand-authored
-      # `where is_debtor` against a T-SQL bit column reaches production without
-      # this step; it did, once.
-      #
-      # Cost is close to zero, so prefer it over a full `dbt build` for PR CI.
-      # Both need a real, credential-isolated `ci` target (a GitHub Environment
-      # secret, never committed) and the placeholder-profile step above removed
-      # or skipped. See CICD.md.
-      # - name: dbt build --empty (opt-in, needs real ci credentials)
-      #   run: uv run dbt build --empty --profiles-dir .dbt --target ci
-      #
-      # - name: dbt build (opt-in, full run with data)
+      # Opt-in only -- uncomment after adding a real, credential-isolated `ci`
+      # target (a GitHub Environment secret, never committed) and removing or
+      # skipping the placeholder-profile step above. See CICD.md.
+      # - name: dbt build (opt-in, needs real ci credentials)
       #   run: uv run dbt build --profiles-dir .dbt --target ci

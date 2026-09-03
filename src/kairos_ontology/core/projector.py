@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from .adapters import FABRIC_WAREHOUSE
+
 import json
 import logging
 import traceback as _tb
@@ -761,7 +763,7 @@ def run_projections(
     output_path: Path,
     target: str,
     namespace: str = None,
-    platform: str = "fabric",
+    platform: str = FABRIC_WAREHOUSE,
     degraded: bool = False,
     ref_models_dir: Path | None = None,
     accelerator: str | None = None,
@@ -1825,7 +1827,7 @@ def _run_projection(
     hub_domain_namespaces: Optional[set] = None,
     ref_model_defaults: Optional[list] = None,
     peer_ext_paths: Optional[list] = None,
-    target_platform: str = "fabric",
+    target_platform: str = FABRIC_WAREHOUSE,
     contract_registry: Optional[dict] = None,
     semantic_index=None,
     plan_only: bool = False,

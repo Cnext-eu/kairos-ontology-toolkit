@@ -299,7 +299,7 @@ def _scope_with_inputs(*inputs: ProvenanceInput) -> BuildScope:
         domain="party",
         hub_root=".",
         api_version="kairos.eu/v5",
-        adapter="fabric",
+        adapter="fabric-warehouse",
         namespace="https://example.test/party#",
         toolkit_version="0",
         inputs=inputs,

@@ -10,9 +10,13 @@
 #
 # This example was generated for the platform you passed to `init-dataplatform
 # --platform <platform>`: its block below is active (uncommented) under `dev:`.
-# The other two supported platforms are kept below as commented reference blocks
-# in case you switch platforms later — just comment out the active block and
-# uncomment the one you want instead.
+# The other supported platform is kept below as a commented reference block in case
+# you switch platforms later — just comment out the active block and uncomment the
+# one you want instead.
+#
+# Fabric Lakehouse is deliberately absent: it is Spark SQL, the compiler has no
+# profile for it, and the block that used to sit here was a Warehouse connection
+# under a Lakehouse label (DD-215).
 #
 # See: https://docs.getdbt.com/docs/core/connect-data-platform
 
@@ -20,46 +24,6 @@
   target: dev
   outputs:
 
-# --- PLATFORM: fabric-lakehouse ---
-    # Microsoft Fabric Lakehouse (via Spark)
-    # Requires: pip install dbt-fabric
-    # @config
-    dev:
-      type: fabric
-      driver: "ODBC Driver 18 for SQL Server"
-      server: "{your-workspace}.datawarehouse.fabric.microsoft.com"
-      database: "{your-lakehouse-name}"
-      schema: "dbo"
-      authentication: CLI  # or ServicePrincipal
-    # @endconfig
-      # For Service Principal auth, replace the 3 lines above with:
-      # authentication: ServicePrincipal
-      # tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
-      # client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
-      # client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
-      # --- Promotion targets (uncomment/adjust for a multi-environment setup,
-      # e.g. one Fabric workspace per environment) — run with: dbt run --target uat
-      # uat:
-      #   type: fabric
-      #   driver: "ODBC Driver 18 for SQL Server"
-      #   server: "{your-uat-workspace}.datawarehouse.fabric.microsoft.com"
-      #   database: "{your-lakehouse-name}"
-      #   schema: "dbo"
-      #   authentication: ServicePrincipal
-      #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
-      #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
-      #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
-      # prod:
-      #   type: fabric
-      #   driver: "ODBC Driver 18 for SQL Server"
-      #   server: "{your-prod-workspace}.datawarehouse.fabric.microsoft.com"
-      #   database: "{your-lakehouse-name}"
-      #   schema: "dbo"
-      #   authentication: ServicePrincipal
-      #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
-      #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
-      #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
-# --- END PLATFORM ---
 
 # --- PLATFORM: fabric-warehouse ---
     # Microsoft Fabric Warehouse

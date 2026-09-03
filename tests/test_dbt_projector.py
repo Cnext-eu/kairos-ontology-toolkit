@@ -238,15 +238,15 @@ class TestHelpers:
 
     def test_source_type_to_fabric_datetime_has_precision(self):
         # Regression: Fabric SQL rejects bare DATETIME2 — must include precision (error 24597)
-        assert _source_type_to_target("datetime", "fabric") == "DATETIME2(6)"
-        assert _source_type_to_target("datetime2", "fabric") == "DATETIME2(6)"
-        assert _source_type_to_target("datetime2(7)", "fabric") == "DATETIME2(6)"
+        assert _source_type_to_target("datetime", "fabric-warehouse") == "DATETIME2(6)"
+        assert _source_type_to_target("datetime2", "fabric-warehouse") == "DATETIME2(6)"
+        assert _source_type_to_target("datetime2(7)", "fabric-warehouse") == "DATETIME2(6)"
 
     def test_xsd_datetime_to_fabric_has_precision(self):
         # Regression: xsd:dateTime must map to DATETIME2(6) for Fabric, not bare DATETIME2
         from rdflib.namespace import XSD
 
-        assert _xsd_to_target(XSD.dateTime, "fabric") == "DATETIME2(6)"
+        assert _xsd_to_target(XSD.dateTime, "fabric-warehouse") == "DATETIME2(6)"
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +299,7 @@ class TestBronzeParsing:
             systems,
             ("adminpulse", "tbl_client", systems[0]["tables"][0]["uri"]),
             "src",
-            "fabric",
+            "fabric-warehouse",
         )
         assert expression == (
             "{{ dbt_utils.generate_surrogate_key([\"'tblClient'\", 'src.ClientID']) }}"
@@ -326,7 +326,7 @@ class TestBronzeParsing:
                 systems,
                 ("source", "rows", "https://example.org/bronze#rows"),
                 "src",
-                "fabric",
+                "fabric-warehouse",
             )
 
 

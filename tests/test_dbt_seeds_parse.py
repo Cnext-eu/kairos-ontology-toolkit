@@ -38,7 +38,7 @@ def _render_artifacts(adapter: str) -> dict[str, str]:
     inputs = replace(
         base_inputs,
         target_platform=adapter,
-        gold_extension=base_inputs.gold_extension if adapter == "fabric" else None,
+        gold_extension=base_inputs.gold_extension if adapter == "fabric-warehouse" else None,
     )
     bound = bind_sources(inputs)
     contract = normalize_contract(bound)
@@ -47,7 +47,7 @@ def _render_artifacts(adapter: str) -> dict[str, str]:
     return render_project(shaped, plan)
 
 
-@pytest.fixture(params=("fabric", "databricks"))
+@pytest.fixture(params=("fabric-warehouse", "databricks"))
 def seeds_dbt_project(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Path, str]:
     """A real, template-rendered project (with the new seeds: block) plus one seed CSV."""
     pytest.importorskip("dbt")
@@ -75,7 +75,7 @@ def seeds_dbt_project(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[P
     (project / "seeds" / "country_lookup.csv").write_text(
         "code,name\nBE,Belgium\nNL,Netherlands\n", encoding="utf-8"
     )
-    if adapter == "fabric":
+    if adapter == "fabric-warehouse":
         profile_output = (
             "      type: fabric\n"
             "      driver: ODBC Driver 18 for SQL Server\n"
