@@ -45,7 +45,7 @@ def _write_contract(hub: Path, name: str, **overrides) -> None:
         "virtual_source_iri": f"https://example.test/virtual/{name}",
         "grain": "one row per customer",
         "grain_key": ["customer_id"],
-        "supported_adapters": ["fabric"],
+        "supported_adapters": ["fabric-warehouse"],
     }
     kairos.update(overrides)
     (models / f"{name}.yml").write_text(

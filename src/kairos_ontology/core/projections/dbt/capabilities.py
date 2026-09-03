@@ -279,7 +279,7 @@ def _stage2_capabilities(
     evidence: str,
 ) -> tuple[AdapterCapabilitySpec, ...]:
     merge = {
-        AdapterName.FABRIC: "Fabric Warehouse MERGE",
+        AdapterName.FABRIC_WAREHOUSE: "Fabric Warehouse MERGE",
         AdapterName.DATABRICKS: "Delta MERGE",
     }.get(adapter)
     if merge is None:
@@ -351,7 +351,7 @@ def _stage2_capabilities(
 def _fabric() -> AdapterSpec:
     evidence = "fabric-warehouse-capability-profile-v1"
     return AdapterSpec(
-        name=AdapterName.FABRIC,
+        name=AdapterName.FABRIC_WAREHOUSE,
         version="1.0",
         type_mappings=(
             _type(
@@ -388,7 +388,7 @@ def _fabric() -> AdapterSpec:
             ),
         ),
         capabilities=_COMMON_CAPABILITIES
-        + _stage2_capabilities(AdapterName.FABRIC, evidence)
+        + _stage2_capabilities(AdapterName.FABRIC_WAREHOUSE, evidence)
         + (
             _capability(
                 AdapterCapability.CONSTRAINTS,
@@ -550,12 +550,12 @@ def physical_canonical_type(
             )
         return f"DECIMAL({precision},{scale})"
     if value.kind is CanonicalTypeKind.STRING and value.length:
-        if profile.name is AdapterName.FABRIC and value.length > 8000:
+        if profile.name is AdapterName.FABRIC_WAREHOUSE and value.length > 8000:
             raise ValueError(
                 "Fabric preparation strings require an authored length of 8000 "
                 f"or less, not {value.length}"
             )
-        return f"VARCHAR({value.length})" if profile.name is AdapterName.FABRIC else "STRING"
+        return f"VARCHAR({value.length})" if profile.name is AdapterName.FABRIC_WAREHOUSE else "STRING"
     return mapping.physical_type
 
 

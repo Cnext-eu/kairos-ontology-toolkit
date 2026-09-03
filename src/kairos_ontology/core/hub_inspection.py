@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .adapters import UnsupportedAdapterError, resolve_adapter
+
 import yaml
 
 from .compiler import (
@@ -323,7 +325,11 @@ def _configured_adapter(root: Path) -> str:
     except (OSError, yaml.YAMLError):
         return ""
     adapter = config.get("adapter", "") if isinstance(config, dict) else ""
-    return str(adapter) if adapter in ("fabric", "databricks") else ""
+    try:
+        canonical, _ = resolve_adapter(str(adapter))
+    except UnsupportedAdapterError:
+        return ""
+    return canonical
 
 
 def configured_modes_served(root: Path) -> list[str] | None:

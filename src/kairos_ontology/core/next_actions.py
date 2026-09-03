@@ -780,7 +780,7 @@ def _emit_gate_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                     "ontology-hub-publish/medallion/dbt is present but unreadable; resolve "
                     "access before running the offline dbt gate."
                 ),
-                command="kairos-ontology validate-dbt --platform <fabric|databricks>",
+                command="kairos-ontology validate-dbt",
                 priority=500,
             )
         ]
@@ -788,7 +788,7 @@ def _emit_gate_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
         return []
     if not any(domain.compile_status is CompileStatus.PASSED for domain in snapshot.domains):
         return []
-    platform = snapshot.adapter or "<fabric|databricks>"
+
     return [
         _action(
             "validate-dbt",
@@ -798,7 +798,7 @@ def _emit_gate_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 "run the hub-wide offline gate (deps → parse → manifest → compile); it needs no "
                 "warehouse and is not a runtime/release guarantee."
             ),
-            command=f"kairos-ontology validate-dbt --platform {platform}",
+            command="kairos-ontology validate-dbt",
             priority=500,
         )
     ]

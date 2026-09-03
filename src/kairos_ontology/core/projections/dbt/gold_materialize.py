@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import FABRIC_WAREHOUSE
+
 from .capabilities import physical_canonical_type
 from .gold_specs import (
     DimensionalGoldSpec,
@@ -114,7 +116,7 @@ def _materialize_dimensional_powerbi(
         profile_version=spec.profile_version,
         adapter=spec.adapter,
         adapter_version=adapter_version,
-        semantic_mode="directLake" if spec.adapter == "fabric" else "directQuery",
+        semantic_mode="directLake" if spec.adapter == FABRIC_WAREHOUSE else "directQuery",
         tables=tuple(tables),
         approved_deviations=deviations,
         ddl_artifact_path=f"{domain}/{domain}-gold-ddl.sql",

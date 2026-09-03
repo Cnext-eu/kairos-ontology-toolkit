@@ -23,6 +23,8 @@ and by deferred stages 2+.
 
 from __future__ import annotations
 
+from ..adapters import FABRIC_WAREHOUSE
+
 from dataclasses import dataclass, field, replace
 
 from ..projections.dbt import BoundSources
@@ -173,7 +175,7 @@ class ResolutionContext:
     ontology_iri: str
     ontology_version: str
     template_root: str
-    target_platform: str = "fabric"
+    target_platform: str = FABRIC_WAREHOUSE
     schema_name: str = "silver"
     relations: tuple[ResolvedRelation, ...] = ()
     classes: tuple[ResolvedClass, ...] = ()

@@ -83,7 +83,7 @@ def _result(returncode: int = 0, stdout: str = "", stderr: str = ""):
 
 
 def test_fabric_offline_profile_fails_connection_fast() -> None:
-    output = _offline_profile("fabric")["outputs"]["offline"]
+    output = _offline_profile("fabric-warehouse")["outputs"]["offline"]
 
     assert output["authentication"] == "ServicePrincipal"
     assert output["retries"] == 0
@@ -101,7 +101,7 @@ def test_validate_dbt_project_runs_required_sequence(tmp_path: Path) -> None:
         assert kwargs["cwd"] == project.resolve()
         return _result()
 
-    result = validate_dbt_project(project, "fabric", runner=runner)
+    result = validate_dbt_project(project, "fabric-warehouse", runner=runner)
 
     assert [call[1] for call in calls] == ["deps", "parse", "compile"]
     assert result.compile_status == "passed"
@@ -120,7 +120,7 @@ def test_structural_check_catches_dangling_ref(tmp_path: Path) -> None:
         raise AssertionError("dbt must not run once the structural scan fails")
 
     with pytest.raises(DbtValidationError, match="dbt structural failed"):
-        validate_dbt_project(project, "fabric", runner=runner)
+        validate_dbt_project(project, "fabric-warehouse", runner=runner)
 
 
 def test_structural_check_passes_with_resolvable_refs(tmp_path: Path) -> None:
@@ -136,7 +136,7 @@ def test_structural_check_passes_with_resolvable_refs(tmp_path: Path) -> None:
         "select 1", encoding="utf-8"
     )
 
-    result = validate_dbt_project(project, "fabric", runner=lambda *a, **k: _result())
+    result = validate_dbt_project(project, "fabric-warehouse", runner=lambda *a, **k: _result())
 
     assert result.compile_status == "passed"
 
@@ -150,7 +150,7 @@ def test_structural_only_never_invokes_dbt(tmp_path: Path) -> None:
     def runner(args, **kwargs):
         raise AssertionError("structural_only must never shell out to dbt")
 
-    result = validate_dbt_project(project, "fabric", runner=runner, structural_only=True)
+    result = validate_dbt_project(project, "fabric-warehouse", runner=runner, structural_only=True)
 
     assert result.compile_status == "skipped"
 
@@ -178,7 +178,7 @@ def test_parse_and_sql_compile_failures_are_blocking(tmp_path: Path) -> None:
         return _result(1, stderr="Parsing Error") if args[1] == "parse" else _result()
 
     with pytest.raises(DbtValidationError, match="dbt parse failed"):
-        validate_dbt_project(project, "fabric", runner=parse_failure)
+        validate_dbt_project(project, "fabric-warehouse", runner=parse_failure)
 
     def compile_failure(args, **kwargs):
         if args[1] == "compile":
@@ -186,7 +186,7 @@ def test_parse_and_sql_compile_failures_are_blocking(tmp_path: Path) -> None:
         return _result()
 
     with pytest.raises(DbtValidationError, match="dbt compile failed"):
-        validate_dbt_project(project, "fabric", runner=compile_failure)
+        validate_dbt_project(project, "fabric-warehouse", runner=compile_failure)
 
 
 @pytest.mark.parametrize(
@@ -224,7 +224,7 @@ def test_cursor_compile_failure_is_environment_blocked(tmp_path: Path) -> None:
             return _result(1, stderr="'NoneType' object has no attribute 'cursor'")
         return _result()
 
-    result = validate_dbt_project(project, "fabric", runner=runner)
+    result = validate_dbt_project(project, "fabric-warehouse", runner=runner)
 
     assert result.compile_status == "environment_blocked"
 
@@ -253,7 +253,7 @@ def test_rejects_invalid_platform_and_project(tmp_path: Path) -> None:
     with pytest.raises(DbtValidationError, match="no dbt_project.yml"):
         validate_dbt_project(
             tmp_path / "missing",
-            "fabric",
+            "fabric-warehouse",
             runner=lambda *args, **kwargs: _result(),
         )
 
@@ -266,7 +266,7 @@ def test_explicit_profiles_directory_must_contain_profile(tmp_path: Path) -> Non
     with pytest.raises(DbtValidationError, match="no profiles.yml"):
         validate_dbt_project(
             project,
-            "fabric",
+            "fabric-warehouse",
             profiles_dir=profiles,
             runner=lambda *args, **kwargs: _result(),
         )

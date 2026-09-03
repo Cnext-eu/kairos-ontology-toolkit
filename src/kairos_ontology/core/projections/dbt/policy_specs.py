@@ -4,6 +4,11 @@
 
 from __future__ import annotations
 
+# AdapterName lives in kairos_ontology.core.adapters, which owns the canonical target
+# vocabulary (DD-215). Imported -- and therefore still re-exported -- here because most
+# of the projection layer already reaches for it through this module.
+from ...adapters import AdapterName
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, TypeVar
@@ -1014,11 +1019,6 @@ class GoldProductSpec:
     calendar: CalendarProfileSpec | None
     security: SecurityPolicySpec | None
     perspectives: tuple[PerspectiveSpec, ...]
-
-
-class AdapterName(str, Enum):
-    FABRIC = "fabric"
-    DATABRICKS = "databricks"
 
 
 class AdapterCapability(str, Enum):

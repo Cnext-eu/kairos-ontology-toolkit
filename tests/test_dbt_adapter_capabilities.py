@@ -150,7 +150,7 @@ def test_stage2_profile_covers_every_declared_capability_once(adapter: AdapterNa
 
 
 def test_unsupported_stage2_combination_blocks_without_fallback() -> None:
-    fabric = ADAPTER_CAPABILITY_REGISTRY.adapter(AdapterName.FABRIC)
+    fabric = ADAPTER_CAPABILITY_REGISTRY.adapter(AdapterName.FABRIC_WAREHOUSE)
     capabilities = tuple(
         (
             dataclasses.replace(item, support=CapabilitySupport.UNSUPPORTED)
@@ -170,7 +170,7 @@ def test_unsupported_stage2_combination_blocks_without_fallback() -> None:
     )
 
     result = negotiate_capabilities(
-        AdapterName.FABRIC, (requirement,), registry=registry, current_date=_SOME_DATE
+        AdapterName.FABRIC_WAREHOUSE, (requirement,), registry=registry, current_date=_SOME_DATE
     )
 
     assert result[0].disposition is CapabilityDisposition.BLOCKING
@@ -189,7 +189,7 @@ def test_expired_deviation_no_longer_authorizes_the_degradation() -> None:
     deviation = _deviation(expiry_date="2020-01-01")
 
     result = negotiate_capabilities(
-        AdapterName.FABRIC,
+        AdapterName.FABRIC_WAREHOUSE,
         (_CONSTRAINTS_REQUIREMENT,),
         (deviation,),
         current_date=date(2026, 1, 1),
@@ -209,7 +209,7 @@ def test_unexpired_deviation_still_authorizes_the_degradation() -> None:
     deviation = _deviation(expiry_date="2099-01-01")
 
     result = negotiate_capabilities(
-        AdapterName.FABRIC,
+        AdapterName.FABRIC_WAREHOUSE,
         (_CONSTRAINTS_REQUIREMENT,),
         (deviation,),
         current_date=date(2026, 1, 1),
@@ -239,7 +239,7 @@ def test_deviation_expiry_is_case_deterministic_via_kairos_generated_at(
     assert pinned_now.date() == date(2026, 1, 1)
 
     result = negotiate_capabilities(
-        AdapterName.FABRIC,
+        AdapterName.FABRIC_WAREHOUSE,
         (_CONSTRAINTS_REQUIREMENT,),
         (deviation,),
         current_date=pinned_now.date(),

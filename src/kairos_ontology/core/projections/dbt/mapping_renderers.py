@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import FABRIC_WAREHOUSE
+
 from .capabilities import has_native_boolean, physical_canonical_type
 from .mapping_specs import (
     CaseExpression,
@@ -68,7 +70,7 @@ def _error(expression: MappingExpression, message: str) -> MappingContractError:
 def quote_mapping_identifier(value: str, adapter: str) -> str:
     if "\x00" in value or not value:
         raise ValueError("SQL identifiers must be non-empty and contain no NUL")
-    if adapter == "fabric":
+    if adapter == FABRIC_WAREHOUSE:
         return f"[{value.replace(']', ']]')}]"
     if adapter == "databricks":
         return f"`{value.replace('`', '``')}`"
@@ -85,7 +87,7 @@ def _physical_type(expression: MappingExpression, adapter: str) -> str:
 def _text_literal(lexical: str, adapter: str) -> str:
     """Encode authored text as data so parser escape rules cannot reinterpret it."""
 
-    if adapter == "fabric":
+    if adapter == FABRIC_WAREHOUSE:
         payload = lexical.encode("utf-8").hex().upper()
         return f"CONVERT(VARCHAR(8000), 0x{payload})" if payload else "CAST('' AS VARCHAR(8000))"
     if adapter == "databricks":
@@ -121,7 +123,7 @@ def _literal(expression: LiteralExpression, adapter: str) -> str:
         truthy = lexical in {"true", "1"}
         return (
             f"CAST({1 if truthy else 0} AS BIT)"
-            if adapter == "fabric"
+            if adapter == FABRIC_WAREHOUSE
             else "TRUE"
             if truthy
             else "FALSE"
@@ -267,7 +269,7 @@ def _render(
         if expression.function == "nullif":
             return f"NULLIF({arguments[0]}, {arguments[1]})"
         if expression.function == "length":
-            if adapter == "fabric":
+            if adapter == FABRIC_WAREHOUSE:
                 return (
                     f"CAST(LEN({arguments[0]}) + "
                     f"(DATALENGTH({arguments[0]}) - "
@@ -289,7 +291,7 @@ def _render(
                     f"ELSE {body} END"
                 )
             return body
-        if expression.function == "round" and adapter == "fabric" and len(arguments) == 1:
+        if expression.function == "round" and adapter == FABRIC_WAREHOUSE and len(arguments) == 1:
             return f"ROUND({arguments[0]}, 0)"
         if expression.function in {"abs", "round", "upper", "lower"}:
             return f"{expression.function.upper()}({', '.join(arguments)})"
@@ -361,7 +363,7 @@ def render_mapping_join_condition(join: JoinSpec, *, adapter: str) -> str:
         as_of = f"{source_alias}.{quote_mapping_identifier(join.as_of_column, adapter)}"
         as_of = (
             f"CAST({as_of} AS DATETIME2(6))"
-            if adapter == "fabric"
+            if adapter == FABRIC_WAREHOUSE
             else f"CAST({as_of} AS TIMESTAMP)"
         )
         valid_from = (

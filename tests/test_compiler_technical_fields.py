@@ -229,7 +229,7 @@ def _context() -> ResolutionContext:
         template_root=str(
             Path(__file__).resolve().parents[1] / "src" / "kairos_ontology" / "templates" / "dbt"
         ),
-        target_platform="fabric",
+        target_platform="fabric-warehouse",
         relations=(
             ResolvedRelation(
                 ref="crm.customers",
@@ -337,7 +337,7 @@ def test_uppercase_technical_field_identity_key_matches_case_insensitively() -> 
         template_root=str(
             Path(__file__).resolve().parents[1] / "src" / "kairos_ontology" / "templates" / "dbt"
         ),
-        target_platform="fabric",
+        target_platform="fabric-warehouse",
         relations=(
             ResolvedRelation(
                 ref="crm.customers",
@@ -451,7 +451,7 @@ def test_technical_field_canonical_kind_token_compiles_for_integer_source() -> N
         template_root=str(
             Path(__file__).resolve().parents[1] / "src" / "kairos_ontology" / "templates" / "dbt"
         ),
-        target_platform="fabric",
+        target_platform="fabric-warehouse",
         relations=(
             ResolvedRelation(
                 ref="crm.customers",

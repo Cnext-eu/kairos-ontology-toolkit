@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import FABRIC_WAREHOUSE
+
 from collections.abc import Iterable
 
 from jinja2 import Environment
@@ -320,7 +322,7 @@ def _runtime_context(
     return {
         "runtime": {
             "model_kind": spec.kind.value,
-            "timestamp_type": "DATETIME2(6)" if adapter == "fabric" else "TIMESTAMP",
+            "timestamp_type": "DATETIME2(6)" if adapter == FABRIC_WAREHOUSE else "TIMESTAMP",
             "scd_type": history.scd_type.value.value,
             "time_basis": (
                 history.time_basis.value.value
@@ -336,7 +338,7 @@ def _runtime_context(
             "newer_predicate": " OR ".join(newer_terms),
             "contradictory_tie_failure": (
                 "CAST('DD-109 contradictory exact replay tie' AS INTEGER)"
-                if adapter == "fabric"
+                if adapter == FABRIC_WAREHOUSE
                 else "RAISE_ERROR('DD-109 contradictory exact replay tie')"
             ),
             "tie_breakers": list(incremental.ordering.tie_breakers.value),

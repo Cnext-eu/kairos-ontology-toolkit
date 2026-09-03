@@ -33,7 +33,7 @@ def _contract(name: str, **overrides) -> dict:
                 "virtual_source_iri": f"https://example.test/virtual/{name}",
                 "grain": "one row per customer",
                 "grain_key": ["customer_id"],
-                "supported_adapters": ["fabric"],
+                "supported_adapters": ["fabric-warehouse"],
             }
         },
         "columns": [

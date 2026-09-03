@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import SUPPORTED_ADAPTER_IDS
+
 import math
 import re
 from dataclasses import replace
@@ -149,7 +151,7 @@ _APPROVED_MACROS = {
     f"{_MACRO_NAMESPACE}monthName": "kairos_month_name",
     f"{_MACRO_NAMESPACE}quarter": "kairos_quarter",
 }
-_CAPABILITY_ADAPTERS = {capability: ("fabric", "databricks") for capability in MappingCapability}
+_CAPABILITY_ADAPTERS = {capability: SUPPORTED_ADAPTER_IDS for capability in MappingCapability}
 _TIME_LEXICAL = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,7})?")
 
 
@@ -1032,7 +1034,7 @@ def _capability_results(
 
     def collect(resource_uri: str, expression: MappingExpression) -> None:
         for capability in expression.metadata.capability_requirements:
-            for adapter in ("fabric", "databricks"):
+            for adapter in SUPPORTED_ADAPTER_IDS:
                 values.add((resource_uri, adapter, capability))
         if isinstance(expression, (OperatorExpression, FunctionExpression, MacroExpression)):
             for argument in expression.arguments:
@@ -1235,7 +1237,7 @@ def normalize_mapping_contract(
                 determinism=MappingDeterminism.DETERMINISTIC,
                 referenced_inputs=(source,),
                 capability_requirements=(MappingCapability.SOURCE_COLUMN,),
-                supported_adapters=("fabric", "databricks"),
+                supported_adapters=SUPPORTED_ADAPTER_IDS,
                 provenance=MappingExpressionProvenance(
                     mapping_resource_uri=fact.resource_uri,
                     expression_resource_uri=f"{fact.resource_uri}/direct",

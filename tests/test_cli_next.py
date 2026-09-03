@@ -116,7 +116,7 @@ def test_gather_snapshot_flags_binding_without_ontology(hub):
 def test_gather_snapshot_observes_emitted_project_and_adapter(hub):
     without = gather_hub_input_snapshot(hub)
     assert without.emitted_dbt_project is InputStatus.MISSING
-    assert without.adapter == "fabric"
+    assert without.adapter == "fabric-warehouse"
 
     project = hub.parent / "ontology-hub-publish" / "medallion" / "dbt"
     project.mkdir(parents=True)
@@ -212,7 +212,7 @@ def test_next_surfaces_optional_validate_dbt_after_emit(hub, monkeypatch):
     payload = _stdout_json(result)
     gate = next(a for a in payload["actions"] if a["kind"] == "validate-dbt")
     assert gate["status"] == "optional"
-    assert gate["command"] == "kairos-ontology validate-dbt --platform fabric"
+    assert gate["command"] == "kairos-ontology validate-dbt"
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ def _render_artifacts(adapter: str) -> dict[str, str]:
     inputs = replace(
         base_inputs,
         target_platform=adapter,
-        gold_extension=base_inputs.gold_extension if adapter == "fabric" else None,
+        gold_extension=base_inputs.gold_extension if adapter == "fabric-warehouse" else None,
     )
     bound = bind_sources(inputs)
     contract = normalize_contract(bound)
@@ -54,7 +54,7 @@ def test_new_macro_files_exist_and_define_macro(macro_name: str) -> None:
     assert f"{{% macro {macro_name}(" in path.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("adapter", ("fabric", "databricks"))
+@pytest.mark.parametrize("adapter", ("fabric-warehouse", "databricks"))
 def test_new_macros_are_emitted_for_supported_adapters(adapter: str) -> None:
     artifacts = _render_artifacts(adapter)
 
@@ -98,7 +98,7 @@ def _adapter_available(adapter: str) -> bool:
     return importlib.util.find_spec(f"dbt.adapters.{adapter}") is not None
 
 
-@pytest.fixture(params=("fabric", "databricks"))
+@pytest.fixture(params=("fabric-warehouse", "databricks"))
 def dbt_project(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Path, str]:
     """Create a minimal project for best-effort real dbt adapter parsing."""
     pytest.importorskip("dbt")
@@ -136,7 +136,7 @@ def dbt_project(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Path, s
         "1 as source_priority, 1 as ingest_sequence) as source_data\n",
         encoding="utf-8",
     )
-    if adapter == "fabric":
+    if adapter == "fabric-warehouse":
         profile_output = (
             "      type: fabric\n"
             "      driver: ODBC Driver 18 for SQL Server\n"

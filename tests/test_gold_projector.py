@@ -58,7 +58,7 @@ def _gold_text(domain: str) -> str:
 
 # #619 Bugs 4/6: every Direct Lake product now requires gold.direct_lake_connection
 # (mirroring the existing databricks_connection fail-closed requirement, issue #283).
-# Every "fabric" test in this module (the default *platform*) needs one authored
+# Every "fabric-warehouse" test in this module (the default *platform*) needs one authored
 # somewhere, so this stands in for a hub whenever a test doesn't author its own.
 _DIRECT_LAKE_HUB_ROOT = Path(tempfile.mkdtemp(prefix="kairos-gold-direct-lake-hub-"))
 (_DIRECT_LAKE_HUB_ROOT / "kairos.yaml").write_text(
@@ -76,7 +76,7 @@ def _generate(
     domain: str,
     *,
     gold_path: Path | None = None,
-    platform: str = "fabric",
+    platform: str = "fabric-warehouse",
     hub_root: Path | None = None,
 ) -> dict[str, str]:
     graph, namespace, classes = _load_ontology(domain)
@@ -189,7 +189,7 @@ def _gold_dbt(domain: str, *, gold_path: Path | None = None) -> dict[str, str]:
         ),
         silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
         peer_ext_paths=peers,
-        target_platform="fabric",
+        target_platform="fabric-warehouse",
     )
     return render_gold_dbt_artifacts(shaped.gold_product, plan.gold)
 
@@ -246,7 +246,7 @@ def test_profile_materializer_registry_accepts_future_logical_spec_types(monkeyp
         profile_version="future-v1",
         ontology_name="future",
         ontology_version="1.0.0",
-        adapter="fabric",
+        adapter="fabric-warehouse",
     )
     physical = SimpleNamespace(
         profile=logical.profile,

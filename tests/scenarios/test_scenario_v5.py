@@ -23,7 +23,7 @@ from kairos_ontology.core.dbt_validation import validate_dbt_project
 _HUB = Path(__file__).parent / "v5-hub"
 
 
-def _copy_hub(tmp_path: Path, *, adapter: str = "fabric") -> Path:
+def _copy_hub(tmp_path: Path, *, adapter: str = "fabric-warehouse") -> Path:
     hub = tmp_path / "hub"
     shutil.copytree(_HUB, hub)
     (hub / "kairos.yaml").write_text(f"adapter: {adapter}\n", encoding="utf-8")
@@ -598,7 +598,7 @@ def test_v5_reemit_prunes_stale_noncanonical_manifest_artifacts(tmp_path):
     assert not manifest_paths.intersection(obsolete.keys() - result.artifact_dict().keys())
 
 
-@pytest.mark.parametrize("adapter", ["fabric", "databricks"])
+@pytest.mark.parametrize("adapter", ["fabric-warehouse", "databricks"])
 def test_stage2_full_refresh_remains_unchanged_on_both_adapters(tmp_path, adapter):
     result = compile_domain(_copy_hub(tmp_path, adapter=adapter), "party", CompileMode.EXPLAIN)
 
@@ -618,7 +618,7 @@ def test_stage2_full_refresh_remains_unchanged_on_both_adapters(tmp_path, adapte
         assert "`src`" not in customer_sql
 
 
-@pytest.mark.parametrize(("adapter", "scd"), [("fabric", 1), ("databricks", 2)])
+@pytest.mark.parametrize(("adapter", "scd"), [("fabric-warehouse", 1), ("databricks", 2)])
 def test_stage2_incremental_scd_contract_reaches_adapter_sql(tmp_path, adapter, scd):
     hub = _copy_hub(tmp_path, adapter=adapter)
     _incremental_customer(hub, scd)
@@ -788,7 +788,7 @@ def test_stage5_emit_reconciles_contracted_dependencies_across_domains(tmp_path,
         "models/intermediate/shared/stg_shared.sql",
     }
     assert all(target.joinpath(*path.split("/")).is_file() for path in expected_dependencies)
-    validate_dbt_project(target, "fabric", structural_only=True)
+    validate_dbt_project(target, "fabric-warehouse", structural_only=True)
 
     shared.write_text(
         shared_sql.replace("customer_name", "customer_name as name"), encoding="utf-8"
@@ -814,7 +814,7 @@ def test_stage5_emit_reconciles_contracted_dependencies_across_domains(tmp_path,
     assert not (target / "models" / "schema.yml").exists()
     assert (target / "models" / "intermediate" / "shared" / "stg_shared.sql").is_file()
     assert (target / "models" / "intermediate" / "billing" / "account_stage.sql").is_file()
-    validate_dbt_project(target, "fabric", structural_only=True)
+    validate_dbt_project(target, "fabric-warehouse", structural_only=True)
 
 
 @pytest.mark.parametrize(

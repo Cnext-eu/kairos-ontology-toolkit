@@ -146,7 +146,7 @@ def _normalize(fact: AuthoredExpressionFact, *inputs: MappingInputSpec):
     )
 
 
-def _domain_contract(domain: str, adapter: str = "fabric"):
+def _domain_contract(domain: str, adapter: str = "fabric-warehouse"):
     graph, namespace, classes = _load_ontology(domain)
     peers = [EXTENSIONS_DIR / "client-silver-ext.ttl"] if domain == "invoice" else []
     from kairos_ontology.core.projections.dbt import DbtInputs
@@ -254,7 +254,7 @@ def test_case_and_null_semantics_are_typed_and_immutable():
 @pytest.mark.parametrize(
     ("adapter", "quoted"),
     [
-        ("fabric", "[src].[prepared_name]"),
+        ("fabric-warehouse", "[src].[prepared_name]"),
         ("databricks", "`src`.`prepared_name`"),
     ],
 )
@@ -279,12 +279,12 @@ def test_fk_join_uses_bound_prep_symbol_not_string_rewrite():
         source_inputs=(source,),
         target_columns=("parent_id",),
     )
-    assert render_mapping_join_condition(join, adapter="fabric") == (
+    assert render_mapping_join_condition(join, adapter="fabric-warehouse") == (
         "[src].[renamed_fk] = [parent].[parent_id]"
     )
 
 
-@pytest.mark.parametrize("adapter", ["fabric", "databricks"])
+@pytest.mark.parametrize("adapter", ["fabric-warehouse", "databricks"])
 def test_typed_literal_codec_preserves_complex_text_without_breakout(adapter: str):
     value = "C:\\work\\new\\file, O'Brien, \\n literal\r\nactual\tcontrols\b\f — café"
     expression = _normalize(_literal(value))
@@ -295,7 +295,7 @@ def test_typed_literal_codec_preserves_complex_text_without_breakout(adapter: st
     )
 
     assert value not in rendered
-    if adapter == "fabric":
+    if adapter == "fabric-warehouse":
         payload = rendered.removeprefix("CONVERT(VARCHAR(8000), 0x").removesuffix(")")
         decoded = bytes.fromhex(payload).decode("utf-8")
     else:
@@ -307,12 +307,12 @@ def test_typed_literal_codec_preserves_complex_text_without_breakout(adapter: st
 @pytest.mark.parametrize(
     ("adapter", "output_type", "datatype_uri", "lexical", "physical_type"),
     [
-        ("fabric", "date", str(XSD.date), "2026-07-25", "DATE"),
+        ("fabric-warehouse", "date", str(XSD.date), "2026-07-25", "DATE"),
         ("databricks", "date", str(XSD.date), "2026-07-25", "DATE"),
-        ("fabric", "time", str(XSD.time), "16:27:37.1234567", "TIME"),
+        ("fabric-warehouse", "time", str(XSD.time), "16:27:37.1234567", "TIME"),
         ("databricks", "time", str(XSD.time), "16:27:37.1234567", "STRING"),
         (
-            "fabric",
+            "fabric-warehouse",
             "timestamp",
             str(XSD.dateTime),
             "2026-07-25T16:27:37.123456",
@@ -342,7 +342,7 @@ def test_temporal_literals_use_the_adapter_codec(
     assert rendered.endswith(f" AS {physical_type})")
     expected_payload = (
         lexical.encode("utf-8").hex().upper()
-        if adapter == "fabric"
+        if adapter == "fabric-warehouse"
         else lexical.encode("utf-8").hex().upper()
     )
     assert expected_payload in rendered
@@ -380,8 +380,8 @@ def test_boolean_literal_accepts_lowercase_false():
 @pytest.mark.parametrize(
     ("adapter", "argument_count", "expected"),
     [
-        ("fabric", 1, "ROUND(7, 0)"),
-        ("fabric", 2, "ROUND(7, 2)"),
+        ("fabric-warehouse", 1, "ROUND(7, 0)"),
+        ("fabric-warehouse", 2, "ROUND(7, 2)"),
         ("databricks", 1, "ROUND(7)"),
         ("databricks", 2, "ROUND(7, 2)"),
     ],
@@ -413,7 +413,7 @@ def test_round_is_portable_on_both_adapters(
     ("adapter", "expected"),
     [
         (
-            "fabric",
+            "fabric-warehouse",
             "CAST(LEN([src].[source_name]) + "
             "(DATALENGTH([src].[source_name]) - "
             "DATALENGTH(RTRIM([src].[source_name]))) AS BIGINT)",
@@ -719,7 +719,7 @@ _SOURCES = (SourceBindingSpec("src", table_uri="urn:source#table"),)
 @pytest.mark.parametrize(
     ("adapter", "expected"),
     [
-        ("fabric", "([src].[is_debtor] = 1)"),
+        ("fabric-warehouse", "([src].[is_debtor] = 1)"),
         ("databricks", "`src`.`is_debtor`"),
     ],
 )
@@ -739,7 +739,7 @@ def test_boolean_column_in_predicate_position_is_coerced_per_adapter(
     assert rendered == expected
 
 
-@pytest.mark.parametrize("adapter", ["fabric", "databricks"])
+@pytest.mark.parametrize("adapter", ["fabric-warehouse", "databricks"])
 def test_boolean_column_in_value_position_is_never_coerced(adapter: str):
     """A bit column is already a value; only predicate position needs the wrapper."""
 
@@ -752,7 +752,7 @@ def test_boolean_column_in_value_position_is_never_coerced(adapter: str):
 @pytest.mark.parametrize(
     ("adapter", "expected"),
     [
-        ("fabric", "(([src].[is_debtor] = 1) AND ([src].[is_creditor] = 1))"),
+        ("fabric-warehouse", "(([src].[is_debtor] = 1) AND ([src].[is_creditor] = 1))"),
         ("databricks", "(`src`.`is_debtor` AND `src`.`is_creditor`)"),
     ],
 )
@@ -787,7 +787,7 @@ def test_boolean_columns_as_logical_operands_are_coerced_per_adapter(
 @pytest.mark.parametrize(
     ("adapter", "expected_condition"),
     [
-        ("fabric", "CASE WHEN ([src].[is_debtor] = 1) THEN "),
+        ("fabric-warehouse", "CASE WHEN ([src].[is_debtor] = 1) THEN "),
         ("databricks", "CASE WHEN `src`.`is_debtor` THEN "),
     ],
 )
@@ -815,7 +815,7 @@ def test_boolean_column_as_case_condition_is_coerced_per_adapter(
 @pytest.mark.parametrize(
     ("adapter", "expected"),
     [
-        ("fabric", "CASE WHEN ([src].[is_debtor] IS NULL) THEN 1 ELSE 0 END"),
+        ("fabric-warehouse", "CASE WHEN ([src].[is_debtor] IS NULL) THEN 1 ELSE 0 END"),
         ("databricks", "(`src`.`is_debtor` IS NULL)"),
     ],
 )
@@ -842,7 +842,7 @@ def test_unknown_render_position_is_rejected():
     with pytest.raises(MappingContractError, match="unknown render position"):
         render_mapping_expression(
             expression,
-            adapter="fabric",
+            adapter="fabric-warehouse",
             sources=_SOURCES,
             position="somewhere",
         )

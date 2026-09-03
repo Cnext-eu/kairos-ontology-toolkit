@@ -101,7 +101,7 @@ def _client_inputs() -> DbtInputs:
         bronze_dir=SOURCES_DIR,
         sources_dir=SOURCES_DIR,
         mappings_dir=MAPPINGS_DIR,
-        target_platform="fabric",
+        target_platform="fabric-warehouse",
         gold_ext_path=EXTENSIONS_DIR / "client-gold-ext.ttl",
         silver_ext_path=EXTENSIONS_DIR / "client-silver-ext.ttl",
     )
@@ -257,7 +257,7 @@ def test_materialize_selects_physical_adapter_models_dependencies_and_release():
     contract = normalize_contract(bound)
     shaped = shape_project(contract)
     plan = plan_materialization(contract, shaped)
-    assert plan.adapter.platform == "fabric"
+    assert plan.adapter.platform == "fabric-warehouse"
     assert plan.models
     assert all(isinstance(item, ModelPhysicalPlan) for item in plan.models)
     assert all(item.template_name for item in plan.models)

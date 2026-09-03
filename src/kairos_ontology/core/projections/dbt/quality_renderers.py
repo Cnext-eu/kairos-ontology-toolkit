@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import FABRIC_WAREHOUSE
+
 import json
 
 from .policy_specs import (
@@ -95,7 +97,7 @@ def render_dq_result(
     """Render one persistent downstream result relation; no result is fabricated."""
     rule = plan.rule
     evidence = "|".join(rule.evidence.value)
-    text_type = "VARCHAR(8000)" if adapter == "fabric" else "STRING"
+    text_type = "VARCHAR(8000)" if adapter == FABRIC_WAREHOUSE else "STRING"
     return (
         f"-- DD-115 executable result contract for {rule.rule_id.value}.\n"
         "-- The toolkit emits this contract; execution and monitoring remain downstream.\n"
@@ -194,7 +196,7 @@ def _observed_value(
     adapter: str,
 ) -> tuple[str, str]:
     params = _parameters(plan)
-    text_type = "VARCHAR(8000)" if adapter == "fabric" else "STRING"
+    text_type = "VARCHAR(8000)" if adapter == FABRIC_WAREHOUSE else "STRING"
     fields = (
         params.get("left", ()) + params.get("right", ())
         if plan.rule.check.check_kind.value is DqCheckKind.CROSS_FIELD
@@ -246,7 +248,7 @@ def _column_or_null(
 ) -> str:
     if name in columns:
         return _quoted("source", name)
-    timestamp_type = "DATETIME2(6)" if adapter == "fabric" else "TIMESTAMP"
+    timestamp_type = "DATETIME2(6)" if adapter == FABRIC_WAREHOUSE else "TIMESTAMP"
     return f"cast(null as {timestamp_type})"
 
 

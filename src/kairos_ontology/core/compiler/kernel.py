@@ -16,6 +16,7 @@ import yaml
 
 from kairos_ontology import __version__
 
+from ..adapters import UnsupportedAdapterError, resolve_adapter
 from ..ontology_loader import SemanticProfile, load_ontology
 from ..ontology_ops import PropertyInfo, list_classes
 from ..projections.uri_utils import camel_to_snake, dbt_source_name
@@ -947,17 +948,24 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
                 )
             )
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    adapter = str(config.get("adapter", ""))
-    if adapter not in {"fabric", "databricks"}:
+    authored_adapter = str(config.get("adapter", ""))
+    try:
+        # DD-215: resolves the deprecated `fabric` spelling and rejects everything else
+        # without a fallback -- notably `fabric-lakehouse`, which must never be handed
+        # the T-SQL profile just because it is also Fabric.
+        adapter, deprecation = resolve_adapter(authored_adapter)
+    except UnsupportedAdapterError as exc:
         raise CompileError(
             [
                 CompileDiagnostic(
                     code="safety.adapter-unsupported",
-                    message=f"adapter '{adapter}' is not supported by the v5 compiler",
+                    message=str(exc),
                     location=SourceLocation(path=str(config_path)),
                 )
             ]
-        )
+        ) from exc
+    if deprecation is not None:
+        logger.warning("kairos.yaml %s", deprecation)
     inputs.append(ProvenanceInput("kairos.yaml", config_path.read_text(encoding="utf-8")))
     # DD-213: declared Silver contracts join the closure, including foreign-domain ones a
     # cross-domain relationship points at. They are provenance inputs because they decide

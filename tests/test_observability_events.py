@@ -83,7 +83,7 @@ def _events(cap: _Capture) -> list[str]:
 
 def test_happy_path_emits_phase_completed_for_each_phase(tmp_path, monkeypatch, _capture):
     project = _project(tmp_path)
-    result = validate_dbt_project(project, "fabric", runner=lambda *a, **k: _result())
+    result = validate_dbt_project(project, "fabric-warehouse", runner=lambda *a, **k: _result())
     assert result.compile_status == "passed"
     events = _events(_capture)
     assert DBT_PHASE_STARTED in events
@@ -99,7 +99,7 @@ def test_parse_failure_emits_phase_failed_not_retryable(tmp_path, monkeypatch, _
         return _result()
 
     with pytest.raises(DbtValidationError, match="dbt parse failed"):
-        validate_dbt_project(project, "fabric", runner=runner)
+        validate_dbt_project(project, "fabric-warehouse", runner=runner)
     events = _events(_capture)
     assert DBT_PHASE_FAILED in events
     failed = [r for r in _capture.records if r.__dict__.get("event") == DBT_PHASE_FAILED]
@@ -131,7 +131,7 @@ def test_retryable_classification_is_not_set_for_genuine_artifact_failure(tmp_pa
         return _result()
 
     with pytest.raises(DbtValidationError, match="dbt compile failed"):
-        validate_dbt_project(project, "fabric", runner=runner)
+        validate_dbt_project(project, "fabric-warehouse", runner=runner)
     failed = [r for r in _capture.records if r.__dict__.get("event") == DBT_PHASE_FAILED]
     assert failed
     # genuine artifact failure is NOT retryable
@@ -147,7 +147,7 @@ def test_phase_events_carry_phase_and_operation_attributes(tmp_path, monkeypatch
     )
     token = set_operation_context(OperationContext(operation_id="op-test"))
     try:
-        validate_dbt_project(project, "fabric", runner=lambda *a, **k: _result())
+        validate_dbt_project(project, "fabric-warehouse", runner=lambda *a, **k: _result())
     finally:
         reset_operation_context(token)
     completed = [r for r in _capture.records if r.__dict__.get("event") == DBT_PHASE_COMPLETED]

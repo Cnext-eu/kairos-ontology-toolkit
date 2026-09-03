@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ..adapters import FABRIC_WAREHOUSE
+
 import hashlib
 import json
 import logging
@@ -99,7 +101,7 @@ def _render_ddl(plan: SilverPhysicalPlan, models: tuple[SilverModelSpec, ...]) -
         "",
     ]
     for schema in schemas:
-        if plan.adapter == "fabric":
+        if plan.adapter == FABRIC_WAREHOUSE:
             lines.extend(
                 (
                     f"IF SCHEMA_ID('{schema}') IS NULL",
@@ -135,7 +137,7 @@ def _render_ddl(plan: SilverPhysicalPlan, models: tuple[SilverModelSpec, ...]) -
         else:
             create = (
                 f"CREATE TABLE {physical.schema_name}.{physical.model_name} ("
-                if plan.adapter == "fabric"
+                if plan.adapter == FABRIC_WAREHOUSE
                 else (f"CREATE TABLE IF NOT EXISTS {physical.schema_name}.{physical.model_name} (")
             )
             lines.append(create)

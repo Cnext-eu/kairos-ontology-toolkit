@@ -21,7 +21,10 @@ from .observability.events import (
 
 import yaml
 
-SUPPORTED_PLATFORMS = ("fabric", "databricks")
+from .adapters import FABRIC_WAREHOUSE, SUPPORTED_ADAPTER_IDS, dbt_profile_type
+
+#: Canonical vocabulary owned by :mod:`kairos_ontology.core.adapters` (DD-215).
+SUPPORTED_PLATFORMS = SUPPORTED_ADAPTER_IDS
 
 _ENVIRONMENT_BLOCK_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
@@ -82,9 +85,9 @@ def _profile_name(project_dir: Path) -> str:
 
 
 def _offline_profile(platform: str) -> dict[str, object]:
-    if platform == "fabric":
+    if platform == FABRIC_WAREHOUSE:
         output = {
-            "type": "fabric",
+            "type": dbt_profile_type(platform),
             "driver": "ODBC Driver 18 for SQL Server",
             "server": "offline.invalid",
             "database": "offline",
@@ -100,7 +103,7 @@ def _offline_profile(platform: str) -> dict[str, object]:
         }
     else:
         output = {
-            "type": "databricks",
+            "type": dbt_profile_type(platform),
             "host": "https://offline.invalid",
             "http_path": "/sql/1.0/warehouses/offline",
             "token": "offline",

@@ -28,13 +28,13 @@ def _source_column_fact(uri: str) -> AuthoredExpressionFact:
 @pytest.mark.parametrize(
     ("identifier", "adapter", "expected"),
     [
-        ("order", "fabric", "{{ kairos_quote_identifier('order') }}"),
+        ("order", "fabric-warehouse", "{{ kairos_quote_identifier('order') }}"),
         ("order", "databricks", "{{ kairos_quote_identifier('order') }}"),
-        ("from", "fabric", "{{ kairos_quote_identifier('from') }}"),
+        ("from", "fabric-warehouse", "{{ kairos_quote_identifier('from') }}"),
         ("from", "databricks", "{{ kairos_quote_identifier('from') }}"),
-        ("join", "fabric", "join"),
+        ("join", "fabric-warehouse", "join"),
         ("join", "databricks", "{{ kairos_quote_identifier('join') }}"),
-        ("customer_id", "fabric", "customer_id"),
+        ("customer_id", "fabric-warehouse", "customer_id"),
         ("customer_id", "databricks", "customer_id"),
     ],
 )
@@ -64,7 +64,7 @@ def test_recursive_mapping_expression_hint_threads_adapter_to_children():
         join_col: {"name": "join"},
     }
 
-    assert _mapping_expression_hint(expression, lookup, "fabric") == (
+    assert _mapping_expression_hint(expression, lookup, "fabric-warehouse") == (
         "({{ kairos_quote_identifier('order') }} = join)"
     )
     assert _mapping_expression_hint(expression, lookup, "databricks") == (
@@ -91,7 +91,7 @@ def test_source_record_key_expression_threads_adapter_to_primary_key_columns():
         systems,
         source_ref,
         "src",
-        "fabric",
+        "fabric-warehouse",
     )
     databricks_expression, databricks_after_mapping = _source_record_key_expression(
         systems,

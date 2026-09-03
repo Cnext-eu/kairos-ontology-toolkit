@@ -40,6 +40,8 @@ heuristic is wrong.
 
 from __future__ import annotations
 
+from .adapters import FABRIC_WAREHOUSE
+
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -304,7 +306,7 @@ def run_scaffold_system(
     ref_models_dir: Path | None = None,
     catalog_path: Path | None = None,
     analysis_dir: Path | None = None,
-    platform: str = "fabric",
+    platform: str = FABRIC_WAREHOUSE,
     dry_run: bool = False,
 ) -> ScaffoldSystemResult:
     """Scaffold every good ``passthrough`` candidate under ``integration/sources/<system>/``.

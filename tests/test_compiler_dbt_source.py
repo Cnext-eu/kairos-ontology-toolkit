@@ -57,7 +57,7 @@ def _model() -> dict:
                 "virtual_source_iri": "https://example.com/source/dbt#intCustomer",
                 "grain": "one row per customer",
                 "grain_key": ["customer_id"],
-                "supported_adapters": ["fabric"],
+                "supported_adapters": ["fabric-warehouse"],
             }
         },
         "columns": [
@@ -162,7 +162,7 @@ def test_relation_binding_is_rejected_with_stable_missing_model_code(tmp_path: P
             "dbt-source.contract-invalid",
         ),
         (
-            lambda model: model["meta"]["kairos"].update(supported_adapters=["fabric", "fabric"]),
+            lambda model: model["meta"]["kairos"].update(supported_adapters=["fabric-warehouse", "fabric-warehouse"]),
             "dbt-source.contract-invalid",
         ),
         # #503: target_class was declared by the contract and written as a sentinel by

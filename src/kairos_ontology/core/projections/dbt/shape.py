@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from ...adapters import FABRIC_WAREHOUSE
+
 import re
 from dataclasses import replace
 
@@ -142,7 +144,7 @@ def _timestamp_expression(
         else timestamp.source_column
     )
     if source_column is None:
-        target_type = "DATETIME2" if platform == "fabric" else "TIMESTAMP"
+        target_type = "DATETIME2" if platform == FABRIC_WAREHOUSE else "TIMESTAMP"
         return f"CAST(NULL AS {target_type})"
     existing = next(
         (column for column in columns if column.name == source_column),

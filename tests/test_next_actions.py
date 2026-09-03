@@ -193,7 +193,7 @@ def test_emitted_project_surfaces_optional_validate_dbt_gate():
         _hub(
             domains=(_domain("party"),),
             emitted_dbt_project=InputStatus.PRESENT,
-            adapter="fabric",
+            adapter="fabric-warehouse",
         )
     )
     kinds = _kinds(proposal)
@@ -202,7 +202,7 @@ def test_emitted_project_surfaces_optional_validate_dbt_gate():
     assert gate.status is ActionStatus.OPTIONAL
     assert gate.blocking is False
     assert gate.skill == "kairos-execute-validate"
-    assert gate.command == "kairos-ontology validate-dbt --platform fabric"
+    assert gate.command == "kairos-ontology validate-dbt"
 
 
 def test_validate_dbt_gate_absent_without_emitted_project():
@@ -227,7 +227,7 @@ def test_validate_dbt_gate_uses_placeholder_platform_when_adapter_unknown():
         _hub(domains=(_domain("party"),), emitted_dbt_project=InputStatus.PRESENT)
     )
     gate = next(a for a in proposal.actions if a.kind == "validate-dbt")
-    assert gate.command == "kairos-ontology validate-dbt --platform <fabric|databricks>"
+    assert gate.command == "kairos-ontology validate-dbt"
 
 
 def test_unreadable_emitted_project_requires_human_decision():

@@ -237,7 +237,7 @@ def _scope(inputs):
         domain="party",
         hub_root="/hub",
         api_version="kairos.eu/v5",
-        adapter="fabric",
+        adapter="fabric-warehouse",
         namespace="https://example.test/",
         toolkit_version="0.0.0",
         inputs=tuple(inputs),

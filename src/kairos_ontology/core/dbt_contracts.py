@@ -8,13 +8,16 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 import yaml
 
+from .adapters import SUPPORTED_ADAPTER_IDS, UnsupportedAdapterError, resolve_adapter
+
 SUPPORTED_MATERIALIZATIONS = frozenset({"table", "view", "incremental"})
-SUPPORTED_ADAPTERS = frozenset({"fabric", "databricks"})
+#: Canonical vocabulary owned by :mod:`kairos_ontology.core.adapters` (DD-215).
+SUPPORTED_ADAPTERS = frozenset(SUPPORTED_ADAPTER_IDS)
 APPROVED_DBT_PACKAGES: Mapping[str, tuple[str, str]] = MappingProxyType(
     {
         "dbt-labs/dbt_utils": (">=1.0.0", "<2.0.0"),
@@ -24,6 +27,22 @@ APPROVED_DBT_PACKAGES: Mapping[str, tuple[str, str]] = MappingProxyType(
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MACRO_RE = re.compile(r"^(?!kairos_)[a-z][a-z0-9_]*__[a-z][a-z0-9_]*$")
+
+
+def canonical_adapters(values: Iterable[str]) -> tuple[str, ...] | None:
+    """Resolve authored adapter ids, or ``None`` when any of them is unsupported.
+
+    Authored contracts are client content, so the deprecated ``fabric`` spelling must keep
+    resolving here exactly as it does for ``kairos.yaml`` (DD-215).
+    """
+    resolved: list[str] = []
+    for value in values:
+        try:
+            canonical, _ = resolve_adapter(value)
+        except UnsupportedAdapterError:
+            return None
+        resolved.append(canonical)
+    return tuple(resolved)
 
 
 class DbtContractError(ValueError):
@@ -185,7 +204,7 @@ def _parse_contract(
         f"model {name!r}.meta.kairos.supported_adapters",
         non_empty=True,
     )
-    if len(set(adapters)) != len(adapters) or not set(adapters) <= SUPPORTED_ADAPTERS:
+    if len(set(adapters)) != len(adapters) or not canonical_adapters(adapters):
         raise _error(path, f"model {name!r} has invalid supported_adapters")
     packages = _string_list(
         meta.get("required_packages", []),
