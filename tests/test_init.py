@@ -141,7 +141,7 @@ def test_init_creates_hub_structure(tmp_path):
             assert Path("ontology-hub/model/shapes/README.md").is_file()
             config = Path("ontology-hub/kairos.yaml").read_text(encoding="utf-8")
             assert "version: 5" in config
-            assert "adapter: fabric" in config
+            assert "adapter: fabric-warehouse" in config
             assert "default_domain: order" in config
 
             # Check skills installed
@@ -201,6 +201,40 @@ def test_init_without_domain(tmp_path):
             ttl_files = sorted(Path("ontology-hub/model/ontologies").glob("*.ttl"))
             assert len(ttl_files) == 2
             assert [f.name for f in ttl_files] == ["_foundation.ttl", "_master.ttl"]
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [
+        ("databricks", "adapter: databricks"),
+        ("fabric-warehouse", "adapter: fabric-warehouse"),
+        # A deprecated spelling on the flag still lands as the canonical id in the file,
+        # so a hub is never born carrying the ambiguous name (DD-215).
+        ("fabric", "adapter: fabric-warehouse"),
+    ],
+)
+def test_init_writes_the_selected_adapter(tmp_path, flag: str, expected: str):
+    """Before DD-215 every hub was born `fabric` with no flag to change it."""
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--adapter", flag]
+            )
+            assert result.exit_code == 0, result.output
+            config = Path("ontology-hub/kairos.yaml").read_text(encoding="utf-8")
+            assert expected in config
+
+
+def test_init_rejects_fabric_lakehouse(tmp_path):
+    """Lakehouse is Spark SQL; scaffolding it would promise a profile we do not have."""
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(
+            cli, ["init", "--company-domain", "test.com", "--adapter", "fabric-lakehouse"]
+        )
+        assert result.exit_code != 0
 
 
 def test_init_scaffold_template_only_discovery_is_missing_end_to_end(tmp_path):
@@ -402,7 +436,8 @@ def test_new_repo_creates_full_structure(tmp_path):
     _assert_v5_hub_contract(repo / "ontology-hub")
     assert (repo / "ontology-hub" / "integration" / "transforms" / "dbt" / "README.md").is_file()
     config = (repo / "ontology-hub" / "kairos.yaml").read_text(encoding="utf-8")
-    assert config.startswith("version: 5\nname: contoso-ontology-hub\nadapter: fabric\n")
+    assert config.startswith("version: 5\nname: contoso-ontology-hub\n")
+    assert "adapter: fabric-warehouse" in config
     assert "modes_served" in config  # documented as a commented template field
 
     # Business discovery (DD-048/DD-056): glossary under hub, .import at repo root

@@ -569,11 +569,13 @@ class TestProfilesExamplePlatformSelection:
             if (m := re.match(r"^\s*type:\s*(\S+)", line))
         }
 
-    def test_default_platform_activates_fabric_lakehouse(self, mock_hub):
+    def test_default_platform_activates_fabric_warehouse(self, mock_hub):
+        """DD-215: the default is Warehouse, and Lakehouse is no longer offered at all."""
         content = self._profiles_example(mock_hub, "dp-default")
         assert self._active_types(content) == {"fabric"}
-        assert '"{your-lakehouse-name}"' in content
-        assert "authentication: CLI" in content
+        assert '"{your-warehouse-name}"' in content
+        assert "fabric-lakehouse" not in content
+        assert '"{your-lakehouse-name}"' not in content
 
     def test_fabric_warehouse_platform_activates_warehouse_block(self, mock_hub):
         content = self._profiles_example(mock_hub, "dp-fabric-wh", platform="fabric-warehouse")
@@ -596,17 +598,17 @@ class TestProfilesExamplePlatformSelection:
         assert outputs["dev"]["type"] == "databricks"
 
     def test_no_leftover_marker_lines(self, mock_hub):
-        content = self._profiles_example(mock_hub, "dp-markers", platform="fabric-lakehouse")
+        content = self._profiles_example(mock_hub, "dp-markers", platform="fabric-warehouse")
         assert "@config" not in content
         assert "PLATFORM:" not in content
 
     def test_example_includes_cross_platform_profiles_dir_guidance(self, mock_hub):
-        content = self._profiles_example(mock_hub, "dp-guidance", platform="fabric-lakehouse")
+        content = self._profiles_example(mock_hub, "dp-guidance", platform="fabric-warehouse")
         assert 'PowerShell: $env:DBT_PROFILES_DIR = ".dbt"' in content
         assert "bash/zsh:   export DBT_PROFILES_DIR=.dbt" in content
 
     def test_includes_uat_prod_target_stubs(self, mock_hub):
-        content = self._profiles_example(mock_hub, "dp-promotion", platform="fabric-lakehouse")
+        content = self._profiles_example(mock_hub, "dp-promotion", platform="fabric-warehouse")
         assert "# uat:" in content
         assert "# prod:" in content
         assert "dbt run --target uat" in content
