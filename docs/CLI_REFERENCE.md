@@ -37,7 +37,9 @@ design — `validate` is an advisory command, not a machine-output command.
 | `emit-gold DOMAIN [--confirm-emit]` | Project the domain's Gold/PowerBI product (TMDL, PBIP, DAX, ERD) from the same `CompilePlan` and atomically write it to the fixed `ontology-hub-publish/powerbi` (not configurable, and never inside the dbt publish tree). Without `--confirm-emit`, reports what would be written without touching disk. Requires an authored Gold profile and, for Direct Lake/Databricks products, the matching `gold.direct_lake_connection`/`gold.databricks_connection` block in `kairos.yaml`. |
 
 The modes are mutually exclusive. The compiler reads the adapter from `kairos.yaml`;
-supported values are `fabric` and `databricks`.
+supported values are `fabric-warehouse` and `databricks`. `fabric` still resolves, to
+`fabric-warehouse`, with a deprecation warning; `fabric-lakehouse` is recognised and
+rejected rather than compiled as T-SQL. There is no default (DD-215).
 
 `project` remains registered for retained non-compiler projections. Its `dbt` and `silver`
 targets reject use and direct authors to `compile`. Its `powerbi`/`gold` targets direct
@@ -127,7 +129,7 @@ Two different trees, two different lifecycle stages. Neither subsumes the other.
 |---|---|---|
 | Validates | `integration/transforms/dbt/models/` and `integration/transforms/dbt/seeds/` — the **hand-authored** intermediate layer | `ontology-hub-publish/medallion/dbt` — the **emitted** Silver project |
 | Needs dbt installed | No | Yes (except `--structural-only`) |
-| Needs an adapter | No | Yes (`--platform fabric\|databricks`) |
+| Needs an adapter | No | Yes — defaults to the hub's `adapter:`, override with `--platform` |
 | Runs at | Stage 4, while authoring `int_*` models, *before* binding them | Stage 5, after `compile --emit` |
 | Owning skill | `kairos-develop-dbt-transformation` | `kairos-execute-validate` |
 

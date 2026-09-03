@@ -35,16 +35,20 @@ Passing tier 1 diagnostics do not parse the emitted dbt project — that's what 
 Passing tier 2 does not mean data is correct — that's tier 3, which requires a real warehouse
 connection and lives entirely outside the hub.
 
-### Ask which platform to target before the first tier-2 run
+### The platform comes from the hub, not from you
 
-`--platform` is required and has no default — the CLI will not guess it. Currently only two
-platforms are supported: **Microsoft Fabric** and **Databricks**. The hub's `kairos.yaml`
-`adapter:` field is a hint (the platform the compiler emits for), but on the first `validate-dbt`
-invocation in a session, confirm the target with the user rather than assuming — a hub can be
-configured for one adapter while the user actually wants to validate against another, or may not
-have set one yet. Ask once (e.g. "Which dataplatform should I validate the dbt project against —
-Microsoft Fabric or Databricks?"), then reuse that answer for the rest of the session; do not
-re-ask on every subsequent tier-2 run unless the user changes scope or `kairos.yaml` disagrees.
+`validate-dbt` defaults `--platform` to the hub's own `adapter:` in `kairos.yaml`. Do **not**
+ask the user which platform to target: the hub already declares it, and the emitted project you
+are validating was compiled for exactly that adapter. Validating it against the other one tells
+you nothing useful.
+
+Supported values are `fabric-warehouse` and `databricks` (`fabric` still resolves to the former
+with a deprecation warning; `fabric-lakehouse` is rejected — see DD-215).
+
+Pass `--platform` only when the user explicitly asks to validate against something other than
+the hub's declared adapter, and say plainly that you are overriding the hub's own configuration
+when you do. If the hub declares no adapter at all, that is the thing to fix — point the user at
+`kairos-setup-config` rather than guessing a platform for them.
 
 ### Prerequisites for tier 2 (`validate-dbt`)
 
@@ -54,7 +58,7 @@ platform is confirmed, check whether it is already synced; if `kairos-ontology v
 fails preflight with "not installed", the fix is always one of:
 
 ```powershell
-uv sync --extra dbt-validate-fabric      # dbt-core + dbt-fabric
+uv sync --extra dbt-validate-fabric      # dbt-core + dbt-fabric (fabric-warehouse)
 uv sync --extra dbt-validate-databricks  # dbt-core + dbt-databricks
 uv sync --extra dbt-validate             # dbt-core + dbt-fabric (generic/default)
 ```

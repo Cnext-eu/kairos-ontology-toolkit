@@ -128,8 +128,9 @@ uv run kairos-ontology compile customer --emit
 `compile` resolves the hub from `kairos.yaml` and creates one immutable
 `CompilePlan`. Check, explain, emit, Gold, and MDM all consume that same plan.
 `--check` and `--explain` are write-free; `--emit` uses a same-volume
-stage-and-swap transaction. Supported compiler adapters are `fabric` and
-`databricks`.
+stage-and-swap transaction. Supported compiler adapters are `fabric-warehouse`
+and `databricks`, chosen with `init --adapter` and recorded in `kairos.yaml`.
+The id names the target engine because that is what decides the SQL dialect.
 
 Passing compilation does not replace downstream dbt, adapter, deployment,
 security, or data tests.

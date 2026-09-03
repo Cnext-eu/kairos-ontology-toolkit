@@ -60,11 +60,38 @@ transformation evidence registries, release baselines, or generated output.
 ```yaml
 version: 5
 name: sample-ontology-hub
-adapter: fabric
+adapter: fabric-warehouse
 ```
 
-Compiler adapters are `fabric` and `databricks`. An unsupported value is rejected; it is
-never silently mapped to another dialect.
+Set it at scaffold time so you never have to remember to:
+
+```powershell
+kairos-ontology init --adapter databricks --company-domain acme.com
+```
+
+| Adapter | Engine | SQL dialect | dbt adapter |
+|---|---|---|---|
+| `fabric-warehouse` | Microsoft Fabric Warehouse | T-SQL | `dbt-fabric` |
+| `databricks` | Azure Databricks | Spark SQL | `dbt-databricks` |
+
+The id names the **engine**, not the vendor, because that is what decides the SQL. Fabric
+Lakehouse is Spark SQL rather than T-SQL, so `fabric-lakehouse` is recognised and
+rejected rather than compiled as Fabric Warehouse — there is no Spark SQL profile for it
+yet, and emitting T-SQL would produce a project that compiles cleanly and fails on its
+first warehouse run. Any other value is rejected too; nothing is ever silently mapped to
+another dialect, and there is no default (DD-215).
+
+> **`adapter: fabric` still works** and resolves to `fabric-warehouse`, with a warning.
+> Adopting the canonical id changes the hub's provenance hash, so the first compile after
+> you change it will report drift until you re-emit — the same re-emit a toolkit upgrade
+> already asks for.
+
+The adapter also decides the SQL the compiler emits, and the SQL you may hand-write in
+`integration/transforms/dbt/`. The dialects are not interchangeable: on
+`fabric-warehouse` a `bit` column needs `where flag = 1`, while on `databricks` the same
+column needs a bare `where flag` and rejects `= 1`. Write for the target the hub declares
+rather than trying to satisfy both; if some logic genuinely must serve both, express it in
+the binding, which the compiler renders per adapter.
 
 On `databricks`, the Gold Power BI semantic model is generated as `directQuery` over a
 Databricks SQL warehouse, so it needs connection coordinates the ontology cannot supply.

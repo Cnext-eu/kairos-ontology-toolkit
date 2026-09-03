@@ -29,14 +29,20 @@ in the hub.
 
 ## Adapters
 
-Dataplatform setup supports `fabric-lakehouse`, `fabric-warehouse`, and `databricks`.
-The corresponding compiler adapters are `fabric` and `databricks`. This choice only
-picks where **this dbt project's own silver/gold models write** and which adapter is
-templated — it says nothing about where bronze source data lives. On Fabric, bronze can
-sit in any same-workspace item (e.g. a Lakehouse) regardless of the chosen platform:
-Fabric's native cross-item SQL (three-part naming) already reaches it, so `_sources.yml`
-just needs `database:` pointed at that item's own name — no second connection, no
-`fabric-lakehouse` adapter required just because bronze happens to live in a Lakehouse.
+Dataplatform setup supports `fabric-warehouse` and `databricks` — the same vocabulary
+the hub declares in its `kairos.yaml` `adapter:`. Normally use the same value: the hub's
+emitted SQL is written for the hub's adapter, and nothing verifies that the two repos
+agree, so a mismatch surfaces only as an opaque SQL error on the first real run.
+
+Fabric Lakehouse is not offered: it is Spark SQL and the compiler has no profile for it
+(DD-215).
+
+The choice picks where **this dbt project's own silver/gold models write** and which
+adapter is templated — it says nothing about where bronze source data lives. On Fabric,
+bronze can sit in any same-workspace item (e.g. a Lakehouse) regardless: Fabric's native
+cross-item SQL (three-part naming) already reaches it, so `_sources.yml` just needs
+`database:` pointed at that item's own name — no second connection, and no Lakehouse
+adapter required just because bronze happens to live in a Lakehouse.
 
 ## Refreshing a source vocabulary
 
