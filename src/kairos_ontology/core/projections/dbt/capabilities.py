@@ -555,7 +555,9 @@ def physical_canonical_type(
                 "Fabric preparation strings require an authored length of 8000 "
                 f"or less, not {value.length}"
             )
-        return f"VARCHAR({value.length})" if profile.name is AdapterName.FABRIC_WAREHOUSE else "STRING"
+        return (
+            f"VARCHAR({value.length})" if profile.name is AdapterName.FABRIC_WAREHOUSE else "STRING"
+        )
     return mapping.physical_type
 
 

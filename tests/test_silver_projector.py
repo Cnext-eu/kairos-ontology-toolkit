@@ -49,7 +49,9 @@ def test_both_adapters_use_exact_shared_column_order_and_types(adapter):
         replace(
             _client_inputs(),
             target_platform=adapter,
-            gold_extension=(_client_inputs().gold_extension if adapter == "fabric-warehouse" else None),
+            gold_extension=(
+                _client_inputs().gold_extension if adapter == "fabric-warehouse" else None
+            ),
         )
     )
     assert contract.project.target_platform == adapter
