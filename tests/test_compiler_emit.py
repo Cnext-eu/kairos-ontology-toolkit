@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -438,9 +439,12 @@ def test_success_is_not_invalidated_by_best_effort_backup_cleanup(tmp_path: Path
 
 # --- DD-215: Windows sharing-violation handling on the staged swap -------------------
 #
-# There is no Windows CI (ci.yml is ubuntu-only), so the `os.name == "nt"` branch had
-# never been executed by any test. These force the branch rather than depending on the
-# host platform.
+# There is no Windows CI (ci.yml is ubuntu-only), so the Windows branch had never been
+# executed by any test. These force the branch rather than depending on the host platform.
+# The switch has to be `sys.platform`, never `os.name`: `os` is one shared module object,
+# and `pathlib` reads `os.name` to pick between `PosixPath` and `WindowsPath` on every
+# `Path()` call, so patching it makes emit's own path construction raise
+# `NotImplementedError: cannot instantiate 'WindowsPath'` on a non-Windows host.
 
 
 def _sharing_violation(winerror: int) -> OSError:
@@ -456,7 +460,7 @@ def test_transient_sharing_violation_is_retried_until_it_clears(
     winerror: int,
 ):
     """The reported failure was a handle held for a moment by an external scanner."""
-    monkeypatch.setattr(emit_module.os, "name", "nt")
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(emit_module.time, "sleep", lambda _: None)
     target = tmp_path / "party"
     original_replace = os.replace
@@ -478,7 +482,7 @@ def test_transient_sharing_violation_is_retried_until_it_clears(
 
 def test_permanent_error_is_not_retried(tmp_path: Path, monkeypatch):
     """Retrying a permanent failure only adds seconds of sleeping before the same error."""
-    monkeypatch.setattr(emit_module.os, "name", "nt")
+    monkeypatch.setattr(sys, "platform", "win32")
     slept: list[float] = []
     monkeypatch.setattr(emit_module.time, "sleep", slept.append)
     target = tmp_path / "party"
@@ -502,7 +506,7 @@ def test_permanent_error_is_not_retried(tmp_path: Path, monkeypatch):
 
 def test_windows_swap_failure_names_the_path_and_the_likely_holder(tmp_path: Path, monkeypatch):
     """The original message named neither, which is what made this expensive to diagnose."""
-    monkeypatch.setattr(emit_module.os, "name", "nt")
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(emit_module.time, "sleep", lambda _: None)
     target = tmp_path / "party"
     original_replace = os.replace

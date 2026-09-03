@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import time
 import uuid
@@ -450,7 +451,7 @@ def _stale_lock(path: Path) -> bool:
             return time.time() - path.stat().st_mtime > 60
         except OSError:
             return False
-    if os.name == "nt":
+    if sys.platform == "win32":
         import ctypes
 
         process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
@@ -529,7 +530,7 @@ _RETRYABLE_WINDOWS_ERRORS = frozenset({5, 32, 145})
 
 
 def _is_transient_swap_error(error: OSError) -> bool:
-    return os.name == "nt" and getattr(error, "winerror", None) in _RETRYABLE_WINDOWS_ERRORS
+    return sys.platform == "win32" and getattr(error, "winerror", None) in _RETRYABLE_WINDOWS_ERRORS
 
 
 def _rename_with_retry(source: Path, destination: Path) -> None:
@@ -576,7 +577,7 @@ def _commit_stage(stage: Path, target: Path) -> Path | None:
         # The rename that failed is stage -> target, and target no longer exists at this
         # point, so the blocked path is the staging directory itself.
         detail = f"could not swap staged artifacts from {stage} into {target}: {swap_error}"
-        if os.name == "nt":
+        if sys.platform == "win32":
             detail = f"{detail}. {_WINDOWS_SWAP_HINT}"
         raise EmissionError(detail) from swap_error
     return backup
