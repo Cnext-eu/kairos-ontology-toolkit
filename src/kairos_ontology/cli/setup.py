@@ -23,6 +23,7 @@ from typing import Any
 from ..core._provenance import provenance_comment
 from ..core.analyse_sources import load_data_domains
 from ..core.catalog_utils import sync_domain_catalog_entry
+from ..core.projections.dbt.specs import HUB_DBT_PACKAGE_NAME
 from ..core.decision_records import build_index_markdown
 from ..core.feedback_records import build_index_markdown as build_feedback_index_markdown
 from ..core.hub_utils import publish_root
@@ -479,6 +480,19 @@ def init(
         else:
             shutil.copy2(gitignore_src, gitignore_dst)
             print("  ✓ Installed .gitignore")
+
+    # 4d-i. Copy .gitattributes (#699). Without it, a contributor on
+    # core.autocrlf=true checks the tracked publish tree out as CRLF, and the next
+    # `compile --all --emit` -- which writes LF on every platform -- reports the whole
+    # tree as modified while every file is byte-identical to its index blob.
+    gitattributes_src = _SCAFFOLD_DIR / "gitattributes.template"
+    gitattributes_dst = cwd / ".gitattributes"
+    if gitattributes_src.is_file():
+        if gitattributes_dst.exists() and not force:
+            print("  ⏭  .gitattributes already exists (use --force to overwrite)")
+        else:
+            shutil.copy2(gitattributes_src, gitattributes_dst)
+            print("  ✓ Installed .gitattributes")
 
     # 4d-ii. Copy .claude/settings.json (denies raw TTL Read/Grep — DD-103)
     claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
@@ -1301,6 +1315,12 @@ def new_repo(
         shutil.copy2(gitignore_src, repo_dir / ".gitignore")
         print("  ✓ .gitignore")
 
+    # .gitattributes (#699) -- see the init path for why this is load-bearing.
+    gitattributes_src = _SCAFFOLD_DIR / "gitattributes.template"
+    if gitattributes_src.is_file():
+        shutil.copy2(gitattributes_src, repo_dir / ".gitattributes")
+        print("  ✓ .gitattributes")
+
     # .claude/settings.json (denies raw TTL Read/Grep — DD-103)
     claude_settings_src = _SCAFFOLD_DIR / "claude-settings.json"
     if claude_settings_src.is_file():
@@ -1730,6 +1750,9 @@ def init_dataplatform(name, dest, platform, org_override):
         for sys_name in ctx["source_systems"]:
             sources_content += f"  - name: {sys_name}\n"
             sources_content += f'    description: "Bronze source: {sys_name}"\n'
+            # Load-bearing: without it this is a second, unrelated source node and the
+            # hub package keeps resolving to its own placeholder values (#701).
+            sources_content += f"    overrides: {HUB_DBT_PACKAGE_NAME}\n"
             sources_content += '    database: "your_bronze_database"\n'
             sources_content += f'    schema: "raw_{sys_name}"\n'
 

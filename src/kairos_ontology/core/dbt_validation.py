@@ -21,7 +21,12 @@ from .observability.events import (
 
 import yaml
 
-from .adapters import FABRIC_WAREHOUSE, SUPPORTED_ADAPTER_IDS, dbt_profile_type
+from .adapters import (
+    FABRIC_WAREHOUSE,
+    SUPPORTED_ADAPTER_IDS,
+    dbt_profile_type,
+    dbt_validate_extra,
+)
 
 #: Canonical vocabulary owned by :mod:`kairos_ontology.core.adapters` (DD-215).
 SUPPORTED_PLATFORMS = SUPPORTED_ADAPTER_IDS
@@ -92,7 +97,12 @@ def _offline_profile(platform: str) -> dict[str, object]:
             "server": "offline.invalid",
             "database": "offline",
             "schema": "dbo",
-            "authentication": "ServicePrincipal",
+            # dbt-fabric dispatches on this value case-insensitively against a closed
+            # set (`fabric_token_provider.py`) that does not contain "ServicePrincipal";
+            # the spelling it accepts is "ActiveDirectoryServicePrincipal" (#705). The
+            # wrong value surfaced only at `dbt compile` as
+            # "Unsupported authentication method", never at parse.
+            "authentication": "ActiveDirectoryServicePrincipal",
             "tenant_id": "00000000-0000-0000-0000-000000000000",
             "client_id": "00000000-0000-0000-0000-000000000000",
             "client_secret": "offline",
@@ -345,7 +355,10 @@ def validate_dbt_project(
         )
 
     if runner is subprocess.run and shutil.which(executable) is None:
-        extra = f"dbt-validate-{platform}"
+        # Not f"dbt-validate-{platform}": DD-215 renamed the canonical adapter id to
+        # `fabric-warehouse` while the hub extra stayed `dbt-validate-fabric`, so the
+        # composed name pointed at an extra no hub declares (#686).
+        extra = dbt_validate_extra(platform)
         raise DbtValidationError(
             "preflight",
             f"'{executable}' is not installed; run `uv sync --extra {extra}`",

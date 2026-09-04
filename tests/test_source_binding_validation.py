@@ -20,9 +20,11 @@ import yaml
 from click.testing import CliRunner
 
 from kairos_ontology.cli.main import _rewrite_hub_package_pin, cli
+from kairos_ontology.core.projections.dbt.specs import HUB_DBT_PACKAGE_NAME
 from kairos_ontology.core.source_binding_validation import (
     FINDING_DUPLICATE,
     FINDING_MISSING,
+    FINDING_MISSING_OVERRIDE,
     FINDING_STALE,
     FINDING_UNKNOWN,
     SourceBindingDiscoveryError,
@@ -87,12 +89,17 @@ def _binding_file(
     schema: str = "dbo",
     tables: tuple[str, ...] = ("customers",),
     verified_hub_sha: str | None = None,
+    overrides: str | None = HUB_DBT_PACKAGE_NAME,
 ) -> Path:
     """Write one dataplatform-owned physical source-binding YAML file.
 
     *verified_hub_sha*, when given, adds the DD-206 §5 staleness-tracking
     ``meta.kairos.verified_hub_sha`` key at the source level (native dbt ``meta:``,
     just a new key read from under it -- see ``_sources.yml.template``'s header).
+
+    *overrides* defaults to the hub package name because that is what a correctly
+    authored binding carries: without it dbt does not rebind the package's source at
+    all (#701). Pass ``None`` to reproduce the inert shape.
     """
     path = project_root / relative_path
     lines = [
@@ -101,6 +108,10 @@ def _binding_file(
         "sources:",
         f"  - name: {source_name}",
         f'    description: "Bronze source: {source_name}"',
+    ]
+    if overrides is not None:
+        lines.append(f"    overrides: {overrides}")
+    lines += [
         f'    database: "{database}"',
         f'    schema: "{schema}"',
     ]
@@ -168,6 +179,62 @@ def test_unknown_extra_binding_is_reported(project):
     assert unknown[0].source_name == "crm"
     assert unknown[0].table_name == "invoices"
     assert "does not use it" in unknown[0].message
+
+
+def test_a_rebinding_source_without_overrides_is_reported(project):
+    """#701: the gate could be fully green while the pipeline pointed at nothing.
+
+    dbt needs `overrides: <package>` to *redirect* a package's source. Without it a
+    same-named root-project source is a second, unrelated node: `dbt parse` passes, the
+    hub's models keep resolving to the values the hub itself declared, DD-206 §5
+    name-matching is satisfied, and the first symptom is a missing relation at
+    `dbt run`, far from the cause. Measured on a real pair as 34 tables silently
+    resolving to a database holding no data.
+    """
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",), overrides=None)
+
+    report = validate_source_bindings(project)
+
+    assert not report.passed
+    findings = [f for f in report.findings if f.kind == FINDING_MISSING_OVERRIDE]
+    assert len(findings) == 1
+    assert findings[0].source_name == "crm"
+    assert "overrides: kairos_medallion_project" in findings[0].message
+    # Not counted as validated: the binding does not take effect.
+    assert report.validated_pairs == 0
+
+
+def test_a_correctly_overridden_source_reports_nothing(project):
+    """Non-vacuity guard for the check above."""
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))
+
+    report = validate_source_bindings(project)
+
+    assert report.passed
+    assert not [f for f in report.findings if f.kind == FINDING_MISSING_OVERRIDE]
+
+
+def test_a_source_the_package_does_not_use_needs_no_overrides(project):
+    """Scoped to sources that actually shadow a package source.
+
+    A dataplatform declaring its own Bronze catalogs for its own models is ordinary and
+    must not be told to add `overrides:` to them.
+    """
+    _declared_catalog(project, tables=("customers",))
+    _binding_file(project, "models/_sources.yml", tables=("customers",))
+    _binding_file(
+        project,
+        "models/own/_local.yml",
+        source_name="local_raw",
+        tables=("events",),
+        overrides=None,
+    )
+
+    report = validate_source_bindings(project)
+
+    assert not [f for f in report.findings if f.kind == FINDING_MISSING_OVERRIDE]
 
 
 def test_duplicate_binding_with_conflicting_values_is_reported(project):

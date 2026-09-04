@@ -55,6 +55,7 @@ from typing import Any
 import yaml
 
 from .hub_utils import is_scaffold_placeholder_text
+from .projections.dbt.specs import HUB_DBT_PACKAGE_NAME as _HUB_PACKAGE_NAME
 
 SCHEMA_VERSION = 1
 
@@ -65,6 +66,7 @@ FINDING_UNKNOWN = "unknown"
 FINDING_DUPLICATE = "duplicate"
 FINDING_STALE = "stale"
 FINDING_PARSE_ERROR = "parse-error"
+FINDING_MISSING_OVERRIDE = "missing-override"
 
 #: Matches a full lowercase 40-character git commit SHA. Deliberately a local,
 #: duplicate-but-tiny copy of ``cli/shared.py``'s ``_COMMIT_SHA_RE`` rather than an
@@ -149,6 +151,10 @@ class PhysicalSourceBinding:
     schema: str
     origin: str
     verified_hub_sha: str | None = None
+    #: The dbt package this source block redirects, from its ``overrides:`` key. dbt
+    #: needs it to *rebind* a package's source; without it a same-named root-project
+    #: source is a second, unrelated node and the package keeps its own values (#701).
+    overrides: str = ""
 
     @property
     def is_placeholder(self) -> bool:
@@ -313,6 +319,7 @@ def discover_physical_bindings(
             database = "" if database is None else str(database)
             schema = "" if schema is None else str(schema)
             verified_hub_sha = _extract_verified_hub_sha(block)
+            overrides = str(block.get("overrides") or "").strip()
             for table in block.get("tables") or []:
                 if not isinstance(table, dict):
                     continue
@@ -321,7 +328,13 @@ def discover_physical_bindings(
                     continue
                 bindings.append(
                     PhysicalSourceBinding(
-                        source_name, table_name, database, schema, rel, verified_hub_sha
+                        source_name,
+                        table_name,
+                        database,
+                        schema,
+                        rel,
+                        verified_hub_sha,
+                        overrides,
                     )
                 )
     return tuple(bindings), tuple(findings)
@@ -453,6 +466,32 @@ def validate_source_bindings(
                         f"source '{pair.source_name}' table '{pair.table_name}' has a physical "
                         f"binding entry in {origins}, but its database/schema is still empty "
                         "or an unedited scaffold placeholder."
+                    ),
+                )
+            )
+            continue
+
+        # The check DD-206 §5 names as the actual contract, since `overrides:` itself is
+        # deprecated in dbt and cannot be one (#701). This pair IS used by the hub
+        # package -- it is in `declared_pairs` -- so a root-project block that omits
+        # `overrides:` does not rebind it: dbt keeps two same-named source nodes, the
+        # package resolves to its own declared values, `dbt parse` passes, name-matching
+        # above is satisfied, and the first symptom is a missing relation at `dbt run`.
+        if any(not binding.overrides for binding in group):
+            origins = ", ".join(
+                sorted({binding.origin for binding in group if not binding.overrides})
+            )
+            findings.append(
+                SourceBindingFinding(
+                    kind=FINDING_MISSING_OVERRIDE,
+                    source_name=pair.source_name,
+                    table_name=pair.table_name,
+                    message=(
+                        f"source '{pair.source_name}' in {origins} rebinds a source the "
+                        "installed hub package declares, but carries no 'overrides:' key, "
+                        "so dbt treats it as a second unrelated source and the package "
+                        "keeps its own database/schema. Add "
+                        f"'overrides: {_HUB_PACKAGE_NAME}' to the source block."
                     ),
                 )
             )

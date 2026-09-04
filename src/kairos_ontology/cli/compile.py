@@ -182,11 +182,12 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
     plan = result.plan.materialization_plan if result.plan is not None else None
     if plan is not None and plan.project.emit:
         from ..core.projections.dbt.render import render_project_config
+        from ..core.projections.dbt.specs import HUB_DBT_PACKAGE_NAME
 
         domains = _existing_domains(target, result.domain)
         project = replace(
             plan.project,
-            project_name="kairos_medallion_project",
+            project_name=HUB_DBT_PACKAGE_NAME,
             domains=domains,
             gold_domains=_existing_gold_domains(target, domains, plan.project.gold_domains),
         )

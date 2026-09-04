@@ -10,6 +10,8 @@ import click
 import hashlib
 import shutil
 import subprocess
+
+import yaml
 import importlib.metadata
 from dataclasses import replace
 from pathlib import Path
@@ -21,7 +23,9 @@ from .. import __version__ as _toolkit_version
 # projection target with the core projector (registry pattern, MDM-DD-002).
 # The CLI is the layer that legitimately depends on both core and mdm.
 from .. import mdm as _mdm  # noqa: F401  (import for side-effect: target registration)
+from ..core.adapters import DBT_ADAPTER_PACKAGES
 
+from .workflow_refresh import _PLACEHOLDER, _SHELL_ESCAPED
 from .workflow_refresh import classify as classify_workflow
 from .workflow_refresh import render as render_workflow
 from .shared import (
@@ -113,6 +117,120 @@ def _print_deny_rule_diff(removed: tuple[str, ...], added: tuple[str, ...]) -> N
         print(f"     - {rule}")
     for rule in added:
         print(f"     + {rule}")
+
+
+#: Git-hygiene files the scaffold ships but `update` must never overwrite. A hub
+#: legitimately extends both (#699), so they are additive-only: created when absent,
+#: and otherwise *reported* against the template rather than merged or replaced.
+_GIT_HYGIENE_FILES: tuple[tuple[str, str], ...] = (
+    (".gitignore", "gitignore.template"),
+    (".gitattributes", "gitattributes.template"),
+)
+
+
+def _git_hygiene_gaps(repo_root: Path) -> list[tuple[str, list[str]]]:
+    """Return ``[(path, template rules the local file lacks)]``.
+
+    Neither file is in ``_managed_scaffold_map()``, and deliberately so: they carry no
+    managed marker and a hub is expected to add its own rules, so the usual
+    replace-on-version-bump handling would discard local edits.
+
+    The cost of leaving them out entirely was silence. A hub scaffolded before a rule
+    existed never received it while ``update --check`` reported "All managed files are up
+    to date" -- one real hub sat 36 lines against the template's 52, missing both the
+    ``ontology-hub-publish/**`` allowlist and the ``**/.import/*`` block whose stated
+    purpose is keeping PII-adjacent client evidence out of Git, with 3617 files tracked
+    under ``.import/`` as a result. A rule that exists to keep client data out of a
+    repository cannot apply only to hubs created after it shipped.
+    """
+    gaps: list[tuple[str, list[str]]] = []
+    for rel_path, template_name in _GIT_HYGIENE_FILES:
+        template = _SCAFFOLD_DIR / template_name
+        local = repo_root / rel_path
+        if not template.is_file() or not local.is_file():
+            continue
+        present = {
+            line.strip()
+            for line in local.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        missing = [
+            line.strip()
+            for line in template.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and line.strip() not in present
+        ]
+        if missing:
+            gaps.append((rel_path, missing))
+    return gaps
+
+
+def _create_missing_git_hygiene(repo_root: Path) -> list[str]:
+    """Write any Git-hygiene file the repo does not have yet. Never overwrites."""
+    created: list[str] = []
+    for rel_path, template_name in _GIT_HYGIENE_FILES:
+        template = _SCAFFOLD_DIR / template_name
+        local = repo_root / rel_path
+        if template.is_file() and not local.exists():
+            shutil.copy2(template, local)
+            created.append(rel_path)
+    return created
+
+
+def _report_git_hygiene_gaps(gaps: list[tuple[str, list[str]]]) -> None:
+    for rel_path, missing in gaps:
+        print(f"⚠  {rel_path} is missing {len(missing)} rule(s) the template ships:")
+        # Every rule, not a head slice: the ones that matter most on a real hub -- the
+        # `ontology-hub-publish/**` allowlist and the `**/.import/*` client-evidence
+        # block -- sort late in the template, so truncating hid exactly the lines the
+        # operator needed to see.
+        for rule in missing:
+            print(f"   {rule}")
+        print(
+            "   Not applied automatically: this file is yours to extend, so merge the "
+            "rules you want by hand. See scaffold guidance in CICD.md."
+        )
+
+
+def _derived_workflow_substitutions(repo_root: Path) -> dict[str, str]:
+    """Return workflow placeholders derivable from an existing repo, or ``{}``.
+
+    Only ``DBT_CI_PROFILE_YAML``, and only for a dataplatform. It is the one value that
+    kept `--refresh-workflows` from installing a *missing* PR gate (#705), and both of
+    its inputs are already on disk: the profile name in ``dbt_project.yml`` and the
+    adapter in the ``dbt-*`` pin the scaffold wrote into ``pyproject.toml``. Reporting a
+    gap the operator has no supported way to close is worse than the gap.
+
+    Returns ``{}`` rather than guessing whenever either input is unreadable, which
+    leaves the caller's existing report-and-skip path in charge.
+    """
+    project_file = repo_root / "dbt_project.yml"
+    pyproject = repo_root / "pyproject.toml"
+    if not project_file.is_file() or not pyproject.is_file():
+        return {}
+    try:
+        document = yaml.safe_load(project_file.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    profile = (document or {}).get("profile") if isinstance(document, dict) else None
+    if not isinstance(profile, str) or not profile.strip():
+        return {}
+    try:
+        pins = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    adapter = next(
+        (
+            canonical
+            for canonical, distribution in DBT_ADAPTER_PACKAGES.items()
+            if distribution in pins
+        ),
+        None,
+    )
+    if adapter is None:
+        return {}
+    from .setup import _ci_profile_yaml_block
+
+    return {"DBT_CI_PROFILE_YAML": _ci_profile_yaml_block(profile.strip(), adapter)}
 
 
 def _migrate_dataplatform_custom_models(repo_root: Path, check: bool) -> None:
@@ -659,9 +777,21 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
         if check or not refresh_workflows or not status.refreshable:
             continue
         if status.state == "missing" and template_path.name.endswith(".template"):
-            # A templated workflow needs substitution values this command does not
-            # have; only `init-dataplatform` knows them. Report instead of writing
-            # a file still full of {ORG} placeholders.
+            # A templated workflow generally needs substitution values only
+            # `init-dataplatform` has, so writing it would leave {ORG} placeholders on
+            # disk. But a *detected* gap with no remedy is its own problem (#705): the
+            # dataplatform PR gate's sole placeholder is {DBT_CI_PROFILE_YAML}, and both
+            # inputs are readable from the repo. Derive it, and fall back to reporting
+            # only if anything is still unresolved afterwards.
+            derived = _derived_workflow_substitutions(repo_root)
+            if not derived:
+                continue
+            candidate = render_workflow(template_path.read_text(encoding="utf-8"), derived)
+            if _PLACEHOLDER.search(_SHELL_ESCAPED.sub("", candidate)):
+                continue
+            (repo_root / destination).parent.mkdir(parents=True, exist_ok=True)
+            (repo_root / destination).write_text(candidate, encoding="utf-8")
+            refreshed_workflows.append(destination)
             continue
         rendered = render_workflow(
             template_path.read_text(encoding="utf-8"), status.substitutions or {}
@@ -672,7 +802,14 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
 
     outdated_workflows = [item.path for item in workflow_statuses if item.state == "outdated"]
     customized_workflows = [item.path for item in workflow_statuses if item.state == "customized"]
-    missing_workflows = [item.path for item in workflow_statuses if item.state == "missing"]
+    missing_workflows = [
+        item.path
+        for item in workflow_statuses
+        if item.state == "missing" and item.path not in refreshed_workflows
+    ]
+
+    git_hygiene_created = [] if check else _create_missing_git_hygiene(repo_root)
+    git_hygiene_gaps = _git_hygiene_gaps(repo_root)
 
     # --- Report -------------------------------------------------------------
     if check:
@@ -715,6 +852,12 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
                 "ships) and were left alone. Diff them against the current template "
                 "by hand if you want a recent fix."
             )
+        _report_git_hygiene_gaps(git_hygiene_gaps)
+        for rel_path, template_name in _GIT_HYGIENE_FILES:
+            if (_SCAFFOLD_DIR / template_name).is_file() and not (repo_root / rel_path).is_file():
+                print(
+                    f"ℹ  {rel_path} not present — run `update` (without --check) to create it."
+                )
         if claude_settings_status == "missing":
             print(
                 f"ℹ  {claude_settings_rel} not present — run `update` (without --check) to create it."
@@ -736,6 +879,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
             and not retired_assets
             and not outdated_workflows
             and not missing_workflows
+            and not git_hygiene_gaps
             and claude_settings_status != "outdated"
         ):
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
@@ -788,6 +932,9 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
             for path in customized_workflows:
                 print(f"   {path}")
             print("   Left alone: they carry local edits, or a generation no longer shipped.")
+        for rel_path in git_hygiene_created:
+            print(f"  ✓ Created {rel_path}")
+        _report_git_hygiene_gaps(git_hygiene_gaps)
         if claude_settings_status == "missing":
             print(f"  ✓ Created {claude_settings_rel} (denies raw ttl/rdf/owl Grep)")
         elif claude_settings_status == "outdated":
@@ -800,7 +947,14 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
                 f" alone — please review and merge the updated deny rules by hand."
             )
             _print_deny_rule_diff(claude_settings_removed, claude_settings_added)
-        if not updated and not created and not removed and not removed_assets:
+        if (
+            not updated
+            and not created
+            and not removed
+            and not removed_assets
+            and not git_hygiene_created
+            and not git_hygiene_gaps
+        ):
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
 
     # --- Ensure package.json exists (Mermaid CLI for SVG export) -------------
@@ -949,7 +1103,7 @@ def bump_hub(ref):
         print(f"❌ {exc}")
         raise SystemExit(1)
 
-    sha = _resolve_hub_ref_sha(ref, pin.org_repo)
+    sha = _resolve_hub_ref_sha(ref, pin.org_repo, pin.host)
     if sha is None:
         print(
             f"❌ Could not resolve hub ref {ref!r} against {pin.org_repo} to an immutable\n"

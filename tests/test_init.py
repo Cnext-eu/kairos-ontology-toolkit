@@ -974,11 +974,111 @@ def test_update_noop_when_current(tmp_path):
             content = scaffold_src.read_text(encoding="utf-8")
             dst.write_text(_stamp_managed(content, ver), encoding="utf-8")
         _stage_current_hub_workflows(td)
+        _stage_git_hygiene(td)
 
         result = runner.invoke(cli, ["update"])
 
     assert result.exit_code == 0, result.output
     assert "up to date" in result.output
+
+
+def _stage_git_hygiene(td) -> None:
+    """Copy the shipped .gitignore/.gitattributes verbatim into a fixture repo.
+
+    `update` now creates either when absent and reports template rules an existing one
+    lacks (#699), so a fixture that omits them is no longer "current".
+    """
+    for rel_path, template_name in (
+        (".gitignore", "gitignore.template"),
+        (".gitattributes", "gitattributes.template"),
+    ):
+        template = _SCAFFOLD_DIR / template_name
+        if template.is_file():
+            (Path(td) / rel_path).write_text(
+                template.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+
+def test_update_creates_missing_git_hygiene_files(tmp_path):
+    """#699: a hub scaffolded before these existed never received them.
+
+    `.gitignore` is written only by `init`/`new-repo` and is absent from
+    `_managed_scaffold_map()`, so `update --check` reported "All managed files are up to
+    date" while the local file was materially behind -- on one real hub, missing both the
+    `ontology-hub-publish/**` allowlist and the `**/.import/*` block whose stated purpose
+    is keeping PII-adjacent client evidence out of Git.
+    """
+    from kairos_ontology import __version__ as ver
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        for rel_path, scaffold_src in _managed_scaffold_map().items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(
+                _stamp_managed(scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
+            )
+        _stage_current_hub_workflows(td)
+
+        result = runner.invoke(cli, ["update"])
+
+        assert result.exit_code == 0, result.output
+        assert (Path(td) / ".gitattributes").is_file()
+        assert (Path(td) / ".gitignore").is_file()
+        assert "eol=lf" in (Path(td) / ".gitattributes").read_text(encoding="utf-8")
+
+
+def test_update_check_reports_an_outdated_gitignore_instead_of_claiming_success(tmp_path):
+    """The part that hurt most: silence (#699).
+
+    An existing file is never overwritten -- a hub is expected to add its own rules --
+    but the gap must be reported, and must not exit 0.
+    """
+    from kairos_ontology import __version__ as ver
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        for rel_path, scaffold_src in _managed_scaffold_map().items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(
+                _stamp_managed(scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
+            )
+        _stage_current_hub_workflows(td)
+        _stage_git_hygiene(td)
+        # A hub predating the `.import` block: its own rules kept, the template's lost.
+        (Path(td) / ".gitignore").write_text(".env\n__pycache__/\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["update", "--check"])
+
+        assert result.exit_code == 1, result.output
+        assert ".gitignore is missing" in result.output
+        assert "**/.import/*" in result.output
+        assert "up to date" not in result.output
+
+
+def test_update_never_overwrites_a_customized_gitignore(tmp_path):
+    from kairos_ontology import __version__ as ver
+
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        for rel_path, scaffold_src in _managed_scaffold_map().items():
+            dst = Path(td) / rel_path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(
+                _stamp_managed(scaffold_src.read_text(encoding="utf-8"), ver), encoding="utf-8"
+            )
+        _stage_current_hub_workflows(td)
+        _stage_git_hygiene(td)
+        gitignore = Path(td) / ".gitignore"
+        gitignore.write_text(
+            gitignore.read_text(encoding="utf-8") + "\n# hub-specific\nlocal-scratch/\n",
+            encoding="utf-8",
+        )
+
+        runner.invoke(cli, ["update"])
+
+        assert "local-scratch/" in gitignore.read_text(encoding="utf-8")
 
 
 def test_update_check_reports_missing_workflow_as_drift(tmp_path):
@@ -1322,8 +1422,19 @@ def test_init_pr_validate_workflow_content(tmp_path):
             assert "ontology-hub-publish/medallion/dbt" in content
             assert "ontology-hub-publish/powerbi" in content
 
-            # Assembled dbt package validation.
-            assert "kairos-ontology validate-dbt --structural-only" in content
+            # Assembled dbt package validation: the FULL offline gate, not
+            # --structural-only, which stops after the ref() scan and so cannot detect a
+            # project dbt refuses to parse (#686). Still credential-free -- only the
+            # final `dbt compile` wants a warehouse, and it degrades.
+            assert "kairos-ontology validate-dbt" in content
+            # The invocation, not the prose: the comment above the step explains why the
+            # flag was dropped and legitimately names it.
+            assert "validate-dbt --structural-only" not in content
+            assert "dbt_validate_extra" in content  # extra resolved, never composed
+
+            # The drift gate must fail closed: `git diff --exit-code -- <path>` exits 0
+            # when nothing at that path is tracked (#699).
+            assert "is not tracked" in content
 
             # This workflow runs alongside managed-check.yml, not instead of it.
             assert "alongside" in content
@@ -1363,7 +1474,8 @@ def test_init_release_workflow_uses_supported_project_options(tmp_path):
             # workflow) is what regenerates and diffs that output, before merge.
             assert "rm -rf ontology-hub-publish/medallion/dbt" not in content
             assert "compile --all --emit" not in content
-            assert "validate-dbt --structural-only" in content
+            assert "validate-dbt" in content
+            assert "validate-dbt --structural-only" not in content  # full gate (#686)
             assert "read-only, no regeneration" in content
             # #589: same GHES setup-uv/lockfile fixes as managed-check.yml.
             assert "astral-sh/setup-uv@v10.0.1" in content

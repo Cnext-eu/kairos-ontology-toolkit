@@ -731,7 +731,7 @@ def _toolkit_git_sha_source(sha: str) -> str:
     return f"{_TOOLKIT_GIT_URL}@{normalized}"
 
 
-def _resolve_hub_ref_sha(ref: str, hub_repo: str) -> str | None:
+def _resolve_hub_ref_sha(ref: str, hub_repo: str, host: str = "github.com") -> str | None:
     """Resolve a hub GitHub ref to an immutable, lowercase commit SHA.
 
     Sibling of :func:`_resolve_toolkit_ref_sha` (DD-206 §12 item 4), resolving
@@ -744,11 +744,16 @@ def _resolve_hub_ref_sha(ref: str, hub_repo: str) -> str | None:
     ref = ref.strip()
     if not ref:
         return None
+    # --hostname routes the call at the host the pin actually names, so a GitHub
+    # Enterprise Server hub resolves against its own API rather than github.com (#702).
+    hostname = (host or "github.com").strip() or "github.com"
     try:
         result = subprocess.run(
             [
                 "gh",
                 "api",
+                "--hostname",
+                hostname,
                 f"/repos/{hub_repo}/commits/{quote(ref, safe='')}",
                 "--jq",
                 ".sha",
@@ -772,6 +777,9 @@ class _HubPackagePin:
     org_repo: str
     previous_revision: str
     was_commented: bool
+    #: The host the pin points at. Captured rather than assumed, so a GitHub Enterprise
+    #: Server hub is supported (#702) and `gh api` can be routed to it via --hostname.
+    host: str = "github.com"
 
 
 # Matches the exact three-line hub package block the dataplatform scaffold writes
@@ -781,7 +789,7 @@ class _HubPackagePin:
 # line -- this repo's tree is mixed, and a blanket normalization explodes diffs.
 _HUB_PACKAGE_BLOCK_RE = re.compile(
     r'(?P<indent>[ \t]*)(?P<hash1>#[ \t]*)?-[ \t]*git:[ \t]*"'
-    r'(?P<url>https://github\.com/(?P<org>[^/"]+)/(?P<repo>[^"]+?)(?:\.git)?)"[ \t]*'
+    r'(?P<url>https://(?P<host>[^/"]+)/(?P<org>[^/"]+)/(?P<repo>[^"]+?)(?:\.git)?)"[ \t]*'
     r"(?P<eol1>\r?\n)"
     r'[ \t]*(?P<hash2>#[ \t]*)?revision:[ \t]*"(?P<rev>[^"]*)"[^\r\n]*(?P<eol2>\r?\n)'
     r"[ \t]*(?P<hash3>#[ \t]*)?subdirectory:[ \t]*(?P<subdir>[^\r\n]+?)[ \t]*(?P<eol3>\r?\n)?"
@@ -805,6 +813,7 @@ def _parse_hub_package_pin(content: str) -> _HubPackagePin:
         org_repo=f"{match.group('org')}/{match.group('repo')}",
         previous_revision=match.group("rev"),
         was_commented=match.group("hash1") is not None,
+        host=match.group("host"),
     )
 
 

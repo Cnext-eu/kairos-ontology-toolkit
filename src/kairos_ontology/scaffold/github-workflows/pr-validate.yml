@@ -68,16 +68,57 @@ jobs:
       # ontology-hub-publish/medallion/dbt and ontology-hub-publish/powerbi are
       # Git-tracked (see gitignore.template) -- every other projection target
       # stays ignored, so the diff below is scoped to exactly those two paths.
+      #
+      # The tracked-ness assertion is load-bearing (#699). `git diff --exit-code --
+      # <path>` exits 0 when *nothing at that path is tracked*, so the natural
+      # reaction to line-ending churn -- gitignoring the generated tree and running
+      # `git rm -r --cached` -- turns this gate into a permanent green light with no
+      # error, no warning, and nothing in the log. It fails open, undetectably.
+      # Especially load-bearing because a dataplatform pins
+      # `subdirectory: ontology-hub-publish/medallion/dbt` at a SHA: an untracked
+      # package path also silently disables `verified_hub_sha` staleness checking.
       - name: Regenerate tracked publish output and fail on drift
         run: |
+          set -euo pipefail
           uv run kairos-ontology compile --all --emit --confirm-emit
+          for path in ontology-hub-publish/medallion/dbt ontology-hub-publish/powerbi; do
+            if [ -d "$path" ] && [ -z "$(git ls-files "$path")" ]; then
+              echo "::error::$path exists but is not tracked - the drift gate cannot verify it."
+              exit 1
+            fi
+          done
           git diff --exit-code -- \
             ontology-hub-publish/medallion/dbt \
             ontology-hub-publish/powerbi
 
-      # DD-206 §4.2: "validates the assembled dbt package". Structural-only
-      # needs no dbt install and no adapter -- it just scans the regenerated
-      # project on disk for dangling cross-domain ref()s (#342).
+      # DD-206 §4.2: "validates the assembled dbt package".
+      #
+      # The full gate, not `--structural-only` (#686). Structural-only stops after the
+      # ref() scan, so it cannot detect a project dbt refuses to parse -- a duplicate
+      # model name passed every step of this workflow while `dbt parse` reported
+      # "found two models with the name ...". `dbt parse` covers a far wider class than
+      # anything re-implemented here, which is the actual argument for running it.
+      #
+      # Still offline and credential-free: only the final `dbt compile` needs a
+      # warehouse, and it degrades to `environment-blocked` rather than failing.
+      # `--platform` is resolved from `adapter:` in ontology-hub/kairos.yaml, so this
+      # step needs no per-hub templating -- but `dbt deps`/`dbt parse` *hard-fail* when
+      # the adapter is absent, so the extra must be installed first.
+      #
+      # The extra name is resolved by the toolkit, never composed here: DD-215 renamed
+      # the canonical adapter id to `fabric-warehouse` while the hub extra stayed
+      # `dbt-validate-fabric`, so `dbt-validate-$adapter` names an extra no hub declares.
+      - name: Install dbt adapter for the full offline gate
+        run: |
+          set -euo pipefail
+          extra="$(uv run python -c 'import re,pathlib;from kairos_ontology.core.adapters import dbt_validate_extra;t=pathlib.Path("ontology-hub/kairos.yaml").read_text(encoding="utf-8");m=re.search(r"^adapter:\s*([A-Za-z0-9._-]+)",t,re.M);print(dbt_validate_extra(m.group(1)) if m else "")')"
+          if [ -z "$extra" ]; then
+            echo "::error::ontology-hub/kairos.yaml declares no 'adapter:' - the dbt gate cannot run."
+            exit 1
+          fi
+          uv sync --extra "$extra"
+
+      # No --platform: validate-dbt resolves it from ontology-hub/kairos.yaml itself.
       - name: Validate assembled dbt package
         run: |
-          uv run kairos-ontology validate-dbt --structural-only
+          uv run kairos-ontology validate-dbt

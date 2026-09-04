@@ -1,8 +1,22 @@
 # Physical Source Bindings
 #
 # This file defines the physical database/schema location for bronze source tables.
-# The ontology-hub generates dbt models with logical {{ source() }} references;
-# this file resolves them to actual lakehouse/warehouse locations.
+# The ontology-hub generates dbt models with logical {{ source() }} references; this
+# file redirects them to actual lakehouse/warehouse locations.
+#
+# `overrides: {PACKAGE_NAME}` is LOAD-BEARING (#701). Without it a same-named source in
+# the root project is simply a *second, unrelated* node: dbt parses cleanly, the hub's
+# models keep resolving to the values the hub declared, and nothing fails until `dbt run`
+# reports a missing relation far from the cause. Measured on a real pair: 34 tables
+# resolving to `Global_Warehouse.bronze` (the hub's own placeholder) instead of the real
+# `Global_Lakehouse.bronze`, with `validate-source-bindings` reporting zero findings
+# because DD-206 §5 name-matching was satisfied. Keep the key on every source that
+# rebinds a hub-package source.
+#
+# DD-206 §5 notes that `overrides:` is deprecated in dbt and "not the long-term
+# validation contract" -- the validation step is. Both apply: the override is what makes
+# the binding take effect today, and `validate-source-bindings` is what proves it is
+# present and correct. It now fails when a source shadows a package source without one.
 #
 # Update this file when:
 # - Adding a new source system
@@ -37,6 +51,7 @@ version: 2
 sources:
   - name: {SOURCE_NAME}
     description: "Bronze source: {SOURCE_LABEL}"
+    overrides: {PACKAGE_NAME}
     database: "{DATABASE}"
     schema: "{SCHEMA}"
     tables: []

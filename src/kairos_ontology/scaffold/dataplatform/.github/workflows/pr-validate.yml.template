@@ -35,7 +35,7 @@ jobs:
       # breaks on every other clone/CI runner and bypasses the staleness-
       # tracking mechanism entirely -- fail closed here instead of letting it
       # reach main.
-      - name: Guard against local: package pins
+      - name: "Guard against local: package pins"
         run: |
           if grep -qE '^\s*-?\s*local:' packages.yml; then
             echo "::error file=packages.yml::packages.yml pins a package via 'local:'." \
@@ -57,6 +57,27 @@ jobs:
 
       - name: Install toolkit and dbt adapter
         run: uv sync --locked
+
+      # `dbt deps` clones the hub package named in packages.yml. That needs no
+      # credentials only for a public github.com hub; against a private or
+      # Enterprise-hosted one it fails with "could not read Username" (#705).
+      # actions/checkout authenticates only *this* repository, and the default
+      # GITHUB_TOKEN is repo-scoped -- adding it changes the error to "Repository not
+      # found", not success -- so a cross-repository PAT or App token is required.
+      # HUB_REPO_TOKEN follows the convention deploy-powerbi-semantic-model.yml already
+      # uses for its cross-repo `gh release download`. A public hub needs no secret, and
+      # this step is then a no-op.
+      - name: Authenticate to the hub package repository
+        env:
+          HUB_REPO_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HUB_REPO_TOKEN:-}" ]; then
+            echo "HUB_REPO_TOKEN is not set - assuming a public hub package."
+            exit 0
+          fi
+          host="$(uv run python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;print(_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).host)')"
+          git config --global url."https://x-access-token:${HUB_REPO_TOKEN}@${host}/".insteadOf "https://${host}/"
 
       - name: dbt deps
         run: uv run dbt deps
@@ -80,8 +101,18 @@ jobs:
       - name: dbt parse
         run: uv run dbt parse --profiles-dir .dbt --target ci
 
-      - name: dbt compile
-        run: uv run dbt compile --profiles-dir .dbt --target ci
+      # `dbt compile` is deliberately NOT run here (#705). The premise stated above --
+      # that neither parse nor compile opens a real connection -- does not hold for
+      # dbt-fabric, which resolves an Azure credential eagerly during compile. Measured
+      # against the placeholder profile: `ServicePrincipal` fails with "Unsupported
+      # authentication method", the correct `ActiveDirectoryServicePrincipal` fails with
+      # "Connection string parsing failed", and `cli` works only where `az login` has
+      # already run -- which a GitHub runner has not. `dbt parse` passes in every case.
+      #
+      # Re-enable it alongside the opt-in `dbt build` steps below, which need a real,
+      # credential-isolated `ci` target anyway.
+      # - name: dbt compile
+      #   run: uv run dbt compile --profiles-dir .dbt --target ci
 
       # DD-206 §5: physical source-binding validation must fail before any
       # warehouse execution when a logical source used by the package lacks a
@@ -93,10 +124,18 @@ jobs:
       # ships, this step fails with "no such command". Once merged, it needs
       # no warehouse credentials either: it compares package source usage
       # against models/_sources.yml, not a live connection.
+      #
+      # Scoped with --models-dir (#705). Unscoped, this walks every `sources:` catalog
+      # under models/, so a dataplatform that also declares its own Bronze/raw catalogs
+      # for its own models gets one `unknown` finding per non-package entry, at severity
+      # error -- 150 findings on one real repo, every one of them DD-206 §5 behaving
+      # correctly but applied to the wrong scope. Point it at the hub binding catalog;
+      # change the path if yours lives elsewhere.
       - name: Validate physical source bindings
         run: |
           uv run kairos-ontology validate-source-bindings \
             --project-dir . \
+            --models-dir models/hub \
             --format json
 
       # Opt-in, and the single highest-value gate available here (DD-215).
