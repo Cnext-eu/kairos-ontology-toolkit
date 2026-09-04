@@ -20,6 +20,14 @@ class ConformanceTypeContract:
     grain: tuple[str, ...]
     identity: tuple[str, ...]
     properties: tuple[tuple[str, str], ...]
+    #: ``(property, canonical type label)`` for each mapped field whose expression is a
+    #: plain source column, carrying **bounded type parameters** -- ``string(50)`` rather
+    #: than ``string``. Held separately from ``properties`` above, which deliberately
+    #: compares type *kind* only and must keep doing so: widening its comparison would
+    #: newly reject long-standing ungoverned groups on a width difference alone.
+    #: An entry is omitted when the expression is not a bare column (a function or CASE
+    #: has no single source width to speak of) or the source type declares no parameter.
+    property_parameters: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +179,30 @@ def _compare_group_contracts(
                 "/identity",
             )
         )
+    # Bounded type parameters are compared on the properties the two bindings share, and
+    # *regardless* of `governed` (issue #681). The union takes its width from its branches,
+    # so two branches that genuinely disagree -- varchar(50) against varchar(100) -- have no
+    # single width the union can carry, and it would otherwise fall back to an unbounded
+    # type: the exact silent widening this check exists to prevent. Scoped to the shared
+    # properties because a governed partial source legitimately omits some, and to entries
+    # both sides parameterize because an absent parameter means "unknown", not "unbounded".
+    canonical_parameters = dict(canonical_contract.property_parameters)
+    for prop, label in contract.property_parameters:
+        other = canonical_parameters.get(prop)
+        if other and label and other != label:
+            diagnostics.append(
+                _diagnostic(
+                    binding,
+                    "conformance.type-parameter-incompatible",
+                    (
+                        f"property '{prop}' resolves to '{label}' here but '{other}' in "
+                        f"binding '{canonical.name}'; a conformance union carries one "
+                        "width for the column, so reconcile the sources with a contracted "
+                        f"dbt model via source.dbtModel — {_CONFORMANCE_RESOLUTION_HINT}"
+                    ),
+                    "/fields",
+                )
+            )
     # DD-213: for a contract-governed class the identical-property-set rule is *replaced* by
     # contract conformance -- each binding's properties must be a subset of the contract,
     # every required one covered, and each gap declared under `unmapped:`. Holding peers to

@@ -939,26 +939,106 @@ class TestConformanceRelaxation:
         _add_second_source(tmp_path, binding_dir, partial=True)
         assert "conformance.property-incompatible" in _diagnostics(tmp_path)
 
-    def test_gaining_a_second_source_widens_the_column_type(self, tmp_path):
-        """A pre-existing toolkit defect, surfaced by Gate A on first contact.
+    def test_gaining_a_second_source_preserves_the_column_type(self, tmp_path):
+        """Issue #681, fixed: a second source must not silently widen a published column.
 
-        The conformance UNION drops the string length its branches keep -- ``string(50)``
-        becomes unsized ``string`` -- so a class's published column type silently widens the
-        moment it gains a second source, with no ontology or binding change. This is exactly
-        the class of instability DD-213 exists to catch, and the check is deliberately left
-        strict rather than relaxed to accommodate it: the widening is real and a consumer
-        would feel it.
+        The conformance UNION used to drop the string length its branches keep --
+        ``string(50)`` became unsized ``string`` -- so a class's consumer-facing column
+        type changed the moment it gained a second source, with no ontology change, no
+        binding change and nothing to review. Gate A surfaced it as
+        ``contract.type-mismatch`` and was deliberately left strict rather than relaxed
+        to accommodate it.
 
-        Tracked as issue #681. This test asserts the CURRENT behaviour, so it will fail once
-        the union preserves its branches' length -- at which point flip it to assert the
-        types agree rather than deleting it.
+        This is the flipped form of the test that pinned the defect: adopting a contract
+        and then adding a second source is now a no-op for every declared type.
         """
         binding_dir = _write_hub(tmp_path)
         _adopt_contract(tmp_path)
         _add_second_source(tmp_path, binding_dir, partial=False)
-        finding = _diagnostics(tmp_path).get("contract.type-mismatch")
+        assert "contract.type-mismatch" not in _diagnostics(tmp_path)
+
+    def test_the_union_carries_the_same_types_as_its_branches(self, tmp_path):
+        """The defect stated directly, independent of any contract (#681).
+
+        Verified with no contract present at all, because the widening predates DD-213
+        and must not be re-read as a contract-emission artifact.
+        """
+        binding_dir = _write_hub(tmp_path)
+        _add_second_source(tmp_path, binding_dir, partial=False)
+        plan = build_compile_plan(tmp_path, "party")
+        models = {
+            item.identity.model_name: item for item in plan.shaped_project.silver_models
+        }
+        union = models["customer"]
+        assert union.kind.value == "union"
+        assert union.source_models, "the union must name its branches"
+
+        def types(model):
+            return {
+                column.name: column.canonical_type
+                for column in model.columns
+                if column.name in {"customer_id", "customer_name"}
+            }
+
+        expected = types(models[union.source_models[0]])
+        assert expected["customer_id"].length == 50
+        assert expected["customer_name"].length == 200
+        for branch_name in union.source_models:
+            assert types(models[branch_name]) == expected
+        assert types(union) == expected
+
+    def test_genuinely_divergent_widths_are_reported(self, tmp_path):
+        """The other half of #681: branches that disagree have no width to adopt.
+
+        `conformance.property-incompatible` cannot catch this -- it compares type *kind*
+        only, and DD-213 slice 4 skips it entirely for a governed class -- so two sources
+        at varchar(200) and varchar(100) passed every check while the union quietly fell
+        back to an unbounded type. Reported rather than resolved by widest-wins, because
+        picking a width for the author is the silent change the fix exists to stop.
+        """
+        binding_dir = _write_hub(tmp_path)
+        _add_second_source(tmp_path, binding_dir, partial=False)
+        vocabulary = tmp_path / "integration" / "sources" / "erp" / "erp.vocabulary.ttl"
+        vocabulary.write_text(
+            vocabulary.read_text(encoding="utf-8").replace('"varchar(200)"', '"varchar(100)"'),
+            encoding="utf-8",
+        )
+        finding = _diagnostics(tmp_path).get("conformance.type-parameter-incompatible")
         assert finding is not None
-        assert "string" in finding.message
+        assert finding.severity.value == "error"
+        assert "string(100)" in finding.message and "string(200)" in finding.message
+
+    def test_matching_widths_report_no_parameter_divergence(self, tmp_path):
+        """Non-vacuity guard for the check above: agreement must stay silent."""
+        binding_dir = _write_hub(tmp_path)
+        _add_second_source(tmp_path, binding_dir, partial=False)
+        assert "conformance.type-parameter-incompatible" not in _diagnostics(tmp_path)
+
+    def test_a_padded_optional_property_is_not_a_width_divergence(self, tmp_path):
+        """A branch padding a typed NULL has *unknown* width, not a conflicting one.
+
+        Treating it as a divergence would block exactly what DD-213 §4 enables -- a
+        partial source joining an established group -- so the union adopts the width the
+        supplying branch declares.
+        """
+        binding_dir = _write_hub(tmp_path)
+
+        def govern(document):
+            entity = document["entities"][0]
+            entity["properties"][1]["requirement"] = "optional"
+            entity["properties"][1]["nullable"] = True
+
+        _adopt_contract(tmp_path, govern)
+        _add_second_source(tmp_path, binding_dir, partial=True)
+        codes = _diagnostics(tmp_path)
+        assert "conformance.type-parameter-incompatible" not in codes
+        union = next(
+            item
+            for item in build_compile_plan(tmp_path, "party").shaped_project.silver_models
+            if item.identity.model_name == "customer"
+        )
+        widths = {column.name: column.canonical_type for column in union.columns}
+        assert widths["customer_name"].length == 200
 
     def test_a_partial_second_source_joins_a_governed_group(self, tmp_path):
         """DD-213's headline: a new source binds to the Silver model by declaring its gap,
@@ -969,10 +1049,9 @@ class TestConformanceRelaxation:
             entity = document["entities"][0]
             entity["properties"][1]["requirement"] = "optional"
             entity["properties"][1]["nullable"] = True
-            # The union emits unsized string (see the widening test above), so this is the
-            # contract an operator lands once the class is multi-source.
-            for item in entity["properties"]:
-                item["type"] = "string"
+            # Types are left exactly as scaffolded. They used to be flattened to bare
+            # `string` here to accommodate #681's widening; with the union preserving its
+            # branches' width, flattening would now be the mismatch.
 
         _adopt_contract(tmp_path, govern)
         _add_second_source(tmp_path, binding_dir, partial=True)
@@ -991,8 +1070,6 @@ class TestConformanceRelaxation:
             entity = document["entities"][0]
             entity["properties"][1]["requirement"] = "optional"
             entity["properties"][1]["nullable"] = True
-            for item in entity["properties"]:
-                item["type"] = "string"
 
         _adopt_contract(tmp_path, govern)
         _add_second_source(tmp_path, binding_dir, partial=True)

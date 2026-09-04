@@ -7,6 +7,7 @@ from __future__ import annotations
 from ...adapters import FABRIC_WAREHOUSE
 
 import re
+from collections.abc import Mapping
 from dataclasses import replace
 
 from .builders import (
@@ -1251,6 +1252,31 @@ def _referenced_model(value: str) -> str:
     return match.group(1) if match else value.strip()
 
 
+def _is_unparameterized(spec: CanonicalTypeSpec) -> bool:
+    """True when a type carries no bounded parameter (bare ``string``, ``decimal``)."""
+    return spec.length is None and spec.precision is None and spec.scale is None
+
+
+def _branch_types(
+    model: SilverModelSpec, by_name: Mapping[str, SilverModelSpec]
+) -> dict[str, set[CanonicalTypeSpec]]:
+    """Return ``{column name: types its own SOURCE_BRANCH models resolved}``.
+
+    Linked through ``source_models``, which the kernel populates with exactly this
+    union's branch names -- not by re-deriving the ``__from_<source>__<table>`` naming
+    convention.
+    """
+    types: dict[str, set[CanonicalTypeSpec]] = {}
+    for branch_name in model.source_models:
+        branch = by_name.get(branch_name)
+        if branch is None or branch.kind is not SilverModelKind.SOURCE_BRANCH:
+            continue
+        for column in branch.columns:
+            if column.canonical_type is not None:
+                types.setdefault(column.name, set()).add(column.canonical_type)
+    return types
+
+
 def _finalize_silver_contracts(
     models: tuple[SilverModelSpec, ...],
 ) -> tuple[SilverModelSpec, ...]:
@@ -1260,13 +1286,57 @@ def _finalize_silver_contracts(
         for column in item.columns:
             if column.canonical_type is not None:
                 type_by_name.setdefault(column.name, set()).add(column.canonical_type)
+    by_name = {item.identity.model_name: item for item in models}
     result: list[SilverModelSpec] = []
     for model in models:
         authority = model.authority
         identity = authority.entity_identity if authority is not None else None
+        # A UNION selects from its branches, so its columns must carry the branches'
+        # declared width -- see the loop below (issue #681).
+        branch_types = (
+            _branch_types(model, by_name) if model.kind is SilverModelKind.UNION else {}
+        )
         normalized_columns: list[ColumnSpec] = []
         for column in model.columns:
             canonical_type = column.canonical_type
+            # A conformance UNION reached here unparameterized while its own branches
+            # kept `string(50)`, so a class silently widened its published column type
+            # the moment it gained a second source -- no ontology change, no binding
+            # change, no review (issue #681).
+            #
+            # The width only ever existed on the mapping expression's resolved
+            # `output_type`, and the union's `mapping_resource_uri` is deliberately
+            # blanked at construction (`kernel.py`, `merge_bound_sources`) because it
+            # selects from branches rather than a source relation. That blanking is
+            # load-bearing: `model_renderers` renders `mapping_expression` *instead of*
+            # `expression` when it is present, so keeping the URI would make the union
+            # re-render the source-relation expression. The ontology fallback cannot
+            # help either -- `column.data_type` there is the property's `xsd:string`,
+            # which has no width by construction. Recovering it from the branches is
+            # what is left.
+            #
+            # Scoped to this union's own `source_models` rather than the project-wide
+            # `type_by_name` below, which cannot serve: it holds *both* the branches'
+            # `string(50)` and the union's bare `string`, so `len(candidates) == 1` is
+            # false and the generic recovery never fires.
+            #
+            # An *unparameterized* branch type means "width unknown", not "width
+            # unbounded", so it does not veto. The common case is a branch padding a
+            # contract-optional property with a typed NULL (DD-213 §4) -- counting that
+            # as a conflict would block the exact scenario the contract exists to
+            # enable, a partial source joining an established group. Only two
+            # genuinely different *parameterized* widths are a real divergence; those
+            # are left alone here and reported as
+            # `conformance.type-parameter-incompatible`.
+            agreed = branch_types.get(column.name, set())
+            parameterized = {spec for spec in agreed if not _is_unparameterized(spec)}
+            if len({spec.kind for spec in agreed}) == 1 and len(parameterized) == 1:
+                from_branches = next(iter(parameterized))
+                if canonical_type is None or (
+                    canonical_type.kind is from_branches.kind
+                    and _is_unparameterized(canonical_type)
+                ):
+                    canonical_type = from_branches
             candidates = type_by_name.get(column.name, set())
             if canonical_type is None and len(candidates) == 1:
                 canonical_type = next(iter(candidates))

@@ -36,6 +36,7 @@ from ..projections.dbt.mapping_renderers import quote_mapping_identifier
 from ..projections.dbt.policy_bind import EXT as _EXT_NS
 from ..projections.dbt.policy_bind import _data_quality_rules, bind_policy_facts
 from ..projections.dbt.policy_normalize import PolicyNormalizationError, _source_type
+from ..projections.dbt.silver_contract import canonical_type_label
 from ..projections.dbt.policy_specs import (
     AuthoredValuesFact,
     CanonicalTypeKind,
@@ -1179,10 +1180,31 @@ def _conformance_contract(
             for prop in (context.property(field.property),)
         )
     )
+    # Bounded parameters, read from the SOURCE column rather than the ontology property
+    # (issue #681). `properties` above deliberately uses `prop.data_type`, which is the
+    # declared range -- `xsd:string`, which has no width by construction -- so the width a
+    # union has to carry only exists here.
+    property_parameters = tuple(
+        sorted(
+            (field.property, canonical_type_label(source_type))
+            for field in binding.fields
+            if isinstance(field.expression, ExprColumn)
+            for column in (columns.get(field.expression.column),)
+            if column is not None
+            for source_type in (_source_type(column.data_type),)
+            if source_type is not None
+            and (
+                source_type.length is not None
+                or source_type.precision is not None
+                or source_type.scale is not None
+            )
+        )
+    )
     return ConformanceTypeContract(
         grain=source_types(binding.grain.columns),
         identity=source_types(binding.identity.source_key),
         properties=properties,
+        property_parameters=property_parameters,
     )
 
 

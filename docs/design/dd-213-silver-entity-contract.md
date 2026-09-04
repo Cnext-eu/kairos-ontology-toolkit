@@ -517,6 +517,44 @@ is a change to pre-existing normalization semantics, outside this design's scope
 `tests/test_compiler_contracts.py::test_gaining_a_second_source_widens_the_column_type` pins the
 current behaviour so the fix has a failing test waiting for it.
 
+### Resolved (#681)
+
+Fixed, but **not** the way the paragraph above proposes, and its safety argument was wrong.
+
+Three corrections to the diagnosis recorded here:
+
+1. **`conformance.property-incompatible` does not require identical type contracts.** It
+   compares type *kind* only (`kernel.py::_conformance_contract` stores
+   `_source_type(...).kind.value`), and slice 4 above skips it entirely for a governed
+   class. Two branches may legitimately be `varchar(50)` and `varchar(100)` today, so
+   "carry the canonical type forward" had no single value to carry.
+2. **The `canonical_type` cannot be carried forward at that point** — `adapter.py` leaves it
+   unset, so it is still `None` when `merge_bound_sources` builds the union.
+3. **Keeping `mapping_resource_uri` on the union is not an option either.** The blanking is
+   load-bearing beyond provenance: `model_renderers` renders `mapping_expression` *instead
+   of* `expression` whenever it is present, so retaining the URI would make the union
+   re-render the source-relation expression rather than select from its branches.
+
+What was implemented instead: `shape.py::_finalize_silver_contracts` recovers the width from
+the union's own branches, linked through `source_models` (which the kernel already populates
+with exactly this union's branch names). The project-wide `type_by_name` recovery beside it
+cannot serve — it holds both the branches' `string(50)` and the union's bare `string`, so its
+`len(candidates) == 1` guard is false and it never fires.
+
+An *unparameterized* branch type means "width unknown", not "width unbounded", so it does not
+veto: a branch padding a contract-optional property with a typed NULL (§4) must not read as a
+conflict, or the partial-source case this design exists to enable would break. Only two
+different *parameterized* widths are a genuine divergence, and those are reported as the new
+**`conformance.type-parameter-incompatible`** rather than resolved by widest-wins — choosing a
+width on the author's behalf is the same silent change the fix removes. That check compares the
+**source** column's type, since the ontology range (`xsd:string`) carries no width, and it runs
+for governed classes too.
+
+`contract.type-mismatch` stays strict, as decided above; it simply stops firing on this cause.
+The pinning test is flipped to `test_gaining_a_second_source_preserves_the_column_type`, and the
+two neighbouring tests that had baked `item["type"] = "string"` into their fixtures to work
+around the widening are repaired rather than deleted.
+
 ## 10. Implementation slices
 
 Four slices, strictly ordered. Each is independently shippable and independently revertible.
