@@ -94,6 +94,28 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     ones no reference class fits. `propose-alignment` consumes the anchors and regroups
     tables into their derived domains, so run this *before* alignment, not after.
 
+    Where the model gets a table wrong, **record the correction as a design ruling, not
+    as a hand-edit** (DD-192). `integration/discovery/design-rulings.yaml` is the durable,
+    transferable seam: `anchor-tables` renders the applicable rulings into its prompt as
+    accumulated human authority that *outranks* the model's own reading, and records
+    `rulings_applied` in `table-anchors.yaml` for provenance.
+
+    ```yaml
+    # integration/discovery/design-rulings.yaml
+    - kind: disambiguation        # disambiguation | rejection | preference
+      scope:
+        class_pair: [Shipment, Consignment]
+        applies_when: "the table carries a house bill reference and no master bill"
+      ruling: Consignment
+      rationale: "House-level rows are consignments; the master bill is the shipment."
+      decided_by: user            # anything else is inert and reported (DD-192)
+    ```
+
+    This matters because a hand-edited anchor is undone by the next re-run, which is what
+    makes people stop re-running analysis at all. Three boundaries: a ruling is always
+    human-decided, never introduces a class, and never maps columns. An absent file is a
+    silent no-op, and skipped entries are echoed with reasons.
+
 14. After `propose-alignment`, close the DD-169 gap gate before entity binding. Do not
     review the raw column list — on a real hub that is well over a thousand rows, which
     is attrition rather than review. Instead (DD-186):

@@ -250,6 +250,12 @@ kairos-ext:goldInclude a owl:AnnotationProperty ;
     rdfs:domain owl:Class ;
     rdfs:range xsd:boolean .
 
+kairos-ext:goldExcludeColumn a owl:AnnotationProperty ;
+    rdfs:label "gold exclude column"@en ;
+    rdfs:comment "Keep one emitted Silver column out of the Gold product, as \"Table.column\" (issue #703). A Gold dimension otherwise mirrors its Silver model's full column set, so directly identifying personal data reaching Silver for legitimate operational use also reaches Power BI with no authorable way to stop it. Repeatable; set on the owl:Ontology resource. Fail-closed: a value naming no emitted Gold column is rejected (gold.unknown-excluded-column), so a Silver rename cannot silently re-expose the column. This is a projection boundary, not access control -- use kairos-ext:securityPolicy for role-based hiding of a column Gold should still carry."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
 kairos-ext:goldIncludeImports a owl:AnnotationProperty ;
     rdfs:label "gold include imports"@en ;
     rdfs:comment "Bulk-claim all first-level imported classes for gold projection (DD-021). Set on the owl:Ontology resource. Peer hub domain imports are excluded."@en ;

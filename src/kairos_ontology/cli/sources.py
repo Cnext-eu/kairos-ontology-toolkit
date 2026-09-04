@@ -129,6 +129,58 @@ def show_source_schema_cmd(system, sources):
     )
 
 
+def _sanitized_samples(source_path: Path, *, redact_pii: bool) -> dict[str, str]:
+    """Return ``{filename: rendered YAML}`` for every ``*.samples.yaml`` in *source_path*.
+
+    Pure: reads the extract directory and returns content. Writing nothing is the whole
+    point (#688) -- ``sanitize_samples_document`` is fail-closed and raises
+    ``SamplePrivacyError`` on residual PII, so running the entire batch before the first
+    write turns a designed refusal into a clean no-op instead of a half-finished import.
+
+    Returns ``{}`` for a single-file input, which carries no separate samples sidecars.
+    """
+    if not source_path.is_dir():
+        return {}
+
+    import yaml as _yaml
+
+    from ..core.source_privacy import sanitize_samples_document
+
+    rendered: dict[str, str] = {}
+    for samples_file in sorted(source_path.glob("*.samples.yaml")):
+        document = _yaml.safe_load(samples_file.read_text(encoding="utf-8"))
+        table = (
+            str(document.get("table"))
+            if isinstance(document, dict) and document.get("table")
+            else samples_file.name.removesuffix(".samples.yaml")
+        )
+        table_file = source_path / f"{table}.yaml"
+        table_data = (
+            _yaml.safe_load(table_file.read_text(encoding="utf-8"))
+            if table_file.is_file()
+            else {}
+        ) or {}
+        column_types = {
+            str(column.get("name", "")): str(column.get("data_type", "unknown"))
+            for column in table_data.get("columns", [])
+        }
+        if redact_pii:
+            safe_document, _ = sanitize_samples_document(
+                document, table=table, column_types=column_types
+            )
+        else:
+            # Copy verbatim, keeping whatever `sample_privacy` the extract recorded.
+            # Re-stamping it here is what silently reverted
+            # `extract-schema --no-redact-pii`, and overwriting a truthful
+            # `redact-detected-pii` with `none` would be just as wrong: an extract
+            # that *did* redact holds tokens, and its label describes them correctly.
+            safe_document = document
+        rendered[samples_file.name] = _yaml.safe_dump(
+            safe_document, allow_unicode=True, sort_keys=False
+        )
+    return rendered
+
+
 @click.command(name="import-source")
 @click.option(
     "--from",
@@ -269,6 +321,20 @@ def import_source(
     # gitignore or hub policy reaches it. With redaction now off by default those rows
     # are raw.
     try:
+        # Sanitize every samples document BEFORE anything is written (#688).
+        #
+        # `sanitize_samples_document` is fail-closed by design and *should* refuse. The
+        # defect was the ordering: the vocabulary was published first and the samples
+        # were written one at a time afterwards, so a refusal on table N left the hub
+        # with all 74 vocabularies, 74 relations marked deprecated, and 3 of 74 samples
+        # -- a state no command produces deliberately, announced only by a traceback,
+        # and recoverable only via `git restore` on a hub that happened to be clean.
+        #
+        # Sanitization reads the *input* directory only, so it can run first. A refusal
+        # is now a clean no-op: nothing has been touched yet. Publication of both stages
+        # is atomic per stage (`publish_candidates`).
+        pending_samples = _sanitized_samples(source_path, redact_pii=redact_pii)
+
         try:
             result_path, report = run_import_source(
                 yaml_path=yaml_path,
@@ -323,59 +389,19 @@ def import_source(
                     n_files = len(list(vocab_dir.glob("*.vocabulary.ttl")))
                     click.echo(f"   📂 Also written {n_files} per-table files to: {vocab_dir}")
 
-            # Persist privacy-safe row-context files from directory inputs.
-            if source_path.is_dir() and result_path:
-                import yaml as _yaml
+            # Persist the row-context files sanitized before any write began (#688).
+            if source_path.is_dir() and result_path and pending_samples:
+                from ..core.source_privacy import publish_candidates
 
-                from ..core.source_privacy import sanitize_samples_document
-
-                dest_dir = result_path.parent if not split_tables else result_path.parent
-                samples_copied = 0
-                for samples_file in source_path.glob("*.samples.yaml"):
-                    dest_file = dest_dir / samples_file.name
-                    document = _yaml.safe_load(samples_file.read_text(encoding="utf-8"))
-                    table = (
-                        str(document.get("table"))
-                        if isinstance(document, dict) and document.get("table")
-                        else samples_file.name.removesuffix(".samples.yaml")
-                    )
-                    table_file = source_path / f"{table}.yaml"
-                    table_data = (
-                        _yaml.safe_load(table_file.read_text(encoding="utf-8"))
-                        if table_file.is_file()
-                        else {}
-                    ) or {}
-                    column_types = {
-                        str(column.get("name", "")): str(column.get("data_type", "unknown"))
-                        for column in table_data.get("columns", [])
-                    }
-                    if redact_pii:
-                        safe_document, _ = sanitize_samples_document(
-                            document,
-                            table=table,
-                            column_types=column_types,
-                        )
-                    else:
-                        # Copy verbatim, keeping whatever `sample_privacy` the extract recorded.
-                        # Re-stamping it here is what silently reverted
-                        # `extract-schema --no-redact-pii`, and overwriting a truthful
-                        # `redact-detected-pii` with `none` would be just as wrong: an extract
-                        # that *did* redact holds tokens, and its label describes them correctly.
-                        safe_document = document
-                    dest_file.write_text(
-                        _yaml.safe_dump(
-                            safe_document,
-                            allow_unicode=True,
-                            sort_keys=False,
-                        ),
-                        encoding="utf-8",
-                    )
-                    samples_copied += 1
-                if samples_copied:
-                    click.echo(
-                        f"   📋 Persisted {samples_copied} privacy-safe "
-                        ".samples.yaml file(s) for row-level context"
-                    )
+                dest_dir = result_path.parent
+                publish_candidates(
+                    {dest_dir / name: content for name, content in pending_samples.items()},
+                    label="Source sample publication",
+                )
+                click.echo(
+                    f"   📋 Persisted {len(pending_samples)} privacy-safe "
+                    ".samples.yaml file(s) for row-level context"
+                )
 
     finally:
         if tmp_cleanup and tmp_cleanup.exists():

@@ -91,9 +91,36 @@ def _primary_key(model: SilverModelSpec) -> str:
     return model.columns[0].name if model.columns else ""
 
 
-def _columns(model: SilverModelSpec, resource_uri: str) -> tuple[GoldColumnSpec, ...]:
+def _excluded_column_names(policy, table_name: str) -> frozenset[str]:
+    """Return the column names ``goldExcludeColumn`` keeps out of *table_name*.
+
+    ``kairos-ext:goldExcludeColumn`` is the column-level projection control a Gold
+    product had no way to express (#703): `_columns` mirrored the Silver model's full
+    set, so `contact_email`/`contact_phone` reached a Power BI semantic model with no
+    authorable way to stop them. Every alternative was worse -- unbinding the fields
+    removes them from Silver too, dropping the dimension loses everything else in it, and
+    a `securityPolicy` is the right tool for role-based hiding, not for "this column
+    should never leave Silver".
+
+    Matching is case-insensitive on the table, mirroring `_table_aliases`.
+    """
+    values = tuple(getattr(policy.gold, "excluded_columns", ()) or ())
+    prefix = f"{table_name.casefold()}."
+    excluded = frozenset(
+        value.split(".", 1)[1]
+        for value in values
+        if value.casefold().startswith(prefix) and "." in value
+    )
+    return excluded
+
+
+def _columns(
+    model: SilverModelSpec, resource_uri: str, excluded: frozenset[str] = frozenset()
+) -> tuple[GoldColumnSpec, ...]:
     result: list[GoldColumnSpec] = []
     for column in model.columns:
+        if column.name in excluded:
+            continue
         if column.canonical_type is None or column.nullable is None:
             _fail(
                 "gold.silver-column-contract-incomplete",
@@ -380,6 +407,37 @@ def _shape_calendar(
     )
 
 
+def _check_excluded_columns(policy, matched: frozenset[str]) -> None:
+    """Reject a ``goldExcludeColumn`` value that names nothing (#703).
+
+    Fail-closed on purpose, mirroring ``security.missing-column-binding``: the whole
+    value of the term is that a column stays out of Gold, so a stale entry -- after a
+    Silver rename, or a typo -- must not read as "successfully excluded" while the column
+    is being emitted again.
+
+    *matched* is every authored value that actually removed a column, collected while the
+    tables were built. The emitted set cannot answer this on its own: a correctly excluded
+    column is absent from it for exactly the same reason a misspelt one is.
+    """
+    values = tuple(getattr(policy.gold, "excluded_columns", ()) or ())
+    if not values:
+        return
+    # Compared case-insensitively, because `_excluded_column_names` folds the table part
+    # (mirroring `_table_aliases`) while `matched` is rebuilt from the emitted table name.
+    seen = {item.casefold() for item in matched}
+    for value in sorted({item for item in values if item.casefold() not in seen}):
+        _fail(
+            "gold.unknown-excluded-column",
+            (
+                f"goldExcludeColumn {value!r} excluded no emitted column "
+                '(expected "Table.column", naming a Gold table and one of its '
+                "Silver columns)"
+            ),
+            rule_id="DD-217-gold-column",
+            resource_uri=policy.gold.ontology_uri,
+        )
+
+
 def _shape_security(
     policy: MedallionPolicySpec,
     tables: tuple[GoldTableSpec, ...],
@@ -630,6 +688,8 @@ def _shape_dimensional(
     }
     tables: list[GoldTableSpec] = []
     used_names: set[str] = set()
+    #: Authored `goldExcludeColumn` values that actually removed a column (#703).
+    excluded_matched: set[str] = set()
     for authored in policy.gold.tables:
         if not _IDENTIFIER.fullmatch(authored.table_name.value):
             _fail(
@@ -786,6 +846,12 @@ def _shape_dimensional(
                     rule_id="DD-112-bridge",
                     resource_uri=authored.resource_uri,
                 )
+        table_excluded = _excluded_column_names(policy, authored.table_name.value)
+        excluded_matched.update(
+            f"{authored.table_name.value}.{name}"
+            for name in table_excluded
+            if any(column.name == name for column in model.columns)
+        )
         tables.append(
             GoldTableSpec(
                 resource_uri=authored.resource_uri,
@@ -794,7 +860,7 @@ def _shape_dimensional(
                 role=authored.role.value,
                 source_model=actual_name,
                 source_version=actual_version,
-                columns=_columns(model, authored.resource_uri),
+                columns=_columns(model, authored.resource_uri, table_excluded),
                 primary_key=_primary_key(model),
                 fact_grain=(authored.fact_grain.value if authored.fact_grain is not None else ""),
                 fact_type=(authored.fact_type.value if authored.fact_type is not None else None),
@@ -838,6 +904,7 @@ def _shape_dimensional(
             )
         )
     ordered = tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
+    _check_excluded_columns(policy, frozenset(excluded_matched))
     included = {table.resource_uri for table in ordered}
     for table in ordered:
         if table.role is GoldTableRole.BRIDGE and (

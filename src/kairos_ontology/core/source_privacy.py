@@ -338,25 +338,51 @@ def _table_types(table_path: Path) -> dict[str, str]:
     }
 
 
-def _publish_candidates(candidates: dict[Path, str]) -> None:
-    """Publish staged rewrites and restore every original if publication fails."""
+def publish_candidates(candidates: dict[Path, str], *, label: str = "Source privacy") -> None:
+    """Publish a whole batch of file writes, or leave the tree exactly as it was.
+
+    Every write is staged to a temporary file in its own destination directory (so the
+    final ``os.replace`` is an atomic same-filesystem rename), every pre-existing target
+    is backed up first, and any failure mid-publication restores what was already
+    published in reverse order.
+
+    A path that does **not** exist yet is supported: it has no mode to copy and no
+    content to back up, so rollback unlinks it instead of restoring it, and its parent
+    directories are created. That is what makes this reusable by ``import-source``,
+    which mostly creates files rather than rewriting them (#688) -- previously it wrote
+    each output as it went, so a fail-closed privacy refusal on table N left the hub with
+    74 vocabularies, 74 deprecation marks and 3 of 74 samples on disk, in a state no
+    command produces deliberately and with nothing but a traceback to say so.
+
+    *label* names the operation in the incomplete-rollback error, which is the one
+    outcome the caller cannot simply retry.
+    """
     staged: dict[Path, Path] = {}
     backups: dict[Path, Path] = {}
+    created: list[Path] = []
     published: list[Path] = []
     try:
         for path, content in candidates.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            existed = path.exists()
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
+                newline="",
                 dir=path.parent,
-                prefix=f".{path.name}.privacy-",
+                prefix=f".{path.name}.staged-",
                 delete=False,
             ) as handle:
                 handle.write(content)
                 staged[path] = Path(handle.name)
-            shutil.copymode(path, staged[path])
+            if existed:
+                shutil.copymode(path, staged[path])
+            else:
+                created.append(path)
 
         for path in candidates:
+            if path in created:
+                continue
             with tempfile.NamedTemporaryFile(
                 dir=path.parent,
                 prefix=f".{path.name}.backup-",
@@ -374,19 +400,26 @@ def _publish_candidates(candidates: dict[Path, str]) -> None:
             restore_failures: list[str] = []
             for path in reversed(published):
                 try:
-                    os.replace(backups[path], path)
-                    backups.pop(path)
+                    if path in created:
+                        path.unlink(missing_ok=True)
+                    else:
+                        os.replace(backups[path], path)
+                        backups.pop(path)
                 except OSError as exc:
                     restore_failures.append(f"{path}: {exc}")
             if restore_failures:
                 raise RuntimeError(
-                    "Source privacy publication failed and rollback was incomplete: "
+                    f"{label} publication failed and rollback was incomplete: "
                     + "; ".join(restore_failures)
                 )
             raise
     finally:
         for temporary in [*staged.values(), *backups.values()]:
             temporary.unlink(missing_ok=True)
+
+
+#: Retained name for the in-module callers; the behaviour is identical.
+_publish_candidates = publish_candidates
 
 
 def run_source_privacy(

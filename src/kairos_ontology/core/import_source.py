@@ -25,7 +25,11 @@ from rdflib import XSD, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
 from ._provenance import prepend_provenance
-from .source_privacy import sanitize_source_data, sanitize_vocabulary_graph
+from .source_privacy import (
+    publish_candidates,
+    sanitize_source_data,
+    sanitize_vocabulary_graph,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1371,12 +1375,14 @@ def run_import_source(
             logger.info("Dry-run: would write per-table TTLs to %s", vocab_dir)
             return None, None
 
-        vocab_dir.mkdir(parents=True, exist_ok=True)
         per_table = generate_vocabulary_per_table(data, redact_pii=redact_pii)
-        for tbl_name, ttl_content in per_table.items():
-            tbl_file = vocab_dir / f"{tbl_name}.vocabulary.ttl"
-            tbl_file.write_text(ttl_content, encoding="utf-8")
-
+        publish_candidates(
+            {
+                vocab_dir / f"{tbl_name}.vocabulary.ttl": ttl_content
+                for tbl_name, ttl_content in per_table.items()
+            },
+            label="Source vocabulary publication",
+        )
         logger.info("Written %d per-table vocabulary files to %s", len(per_table), vocab_dir)
         return vocab_dir, None
 
@@ -1410,16 +1416,22 @@ def run_import_source(
     if dry_run:
         return None, report
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(ttl_content, encoding="utf-8")
-    logger.info("Written vocabulary to %s", output_file)
-
-    # Always generate per-table files alongside the monolithic file
+    # One transaction for the aggregate and its per-table projection together (#688).
+    # They are two views of one derivation (DD-182), so publishing half of them is never
+    # a state worth leaving behind: the per-table files are what the source catalog
+    # loads, and an aggregate without them does not load at all.
     vocab_dir = output_dir / "vocabulary"
-    vocab_dir.mkdir(parents=True, exist_ok=True)
-    for tbl_name, tbl_ttl in per_table.items():
-        tbl_file = vocab_dir / f"{tbl_name}.vocabulary.ttl"
-        tbl_file.write_text(tbl_ttl, encoding="utf-8")
+    publish_candidates(
+        {
+            output_file: ttl_content,
+            **{
+                vocab_dir / f"{tbl_name}.vocabulary.ttl": tbl_ttl
+                for tbl_name, tbl_ttl in per_table.items()
+            },
+        },
+        label="Source vocabulary publication",
+    )
+    logger.info("Written vocabulary to %s", output_file)
     logger.info("Written %d per-table vocabulary files to %s", len(per_table), vocab_dir)
 
     return output_file, report

@@ -5025,8 +5025,14 @@ def _propose_alignments(
         # rather than per table: on a 70-table hub the per-table line is noise,
         # but a domain where every pool came from the lexical scorer means the
         # anchors did not resolve, and that is worth seeing without --verbose.
+        # "cached" is not a pool origin, and labelling it as one was actively
+        # misleading (#696): a cache-hit entry simply carries no `pool_origin` key, so
+        # the fallback read as though a *cache* had decided the class pool -- which is
+        # why it still appeared under `--force`, where both cache layers are bypassed
+        # and the phrase could not possibly mean what it says. An entry that reused a
+        # previous verdict did not compute a pool at all; say that.
         origins = Counter(
-            str(e.get("pool_origin") or "cached")
+            str(e.get("pool_origin") or "reused (no pool computed)")
             for e in processed
             if e is not None
         )
@@ -5442,11 +5448,39 @@ def _propose_alignments(
             elif (
                 domain_total and domain_fallback_only == domain_total and not allow_fallback_output
             ):
+                # Declining to write is right; leaving the file it would have replaced
+                # standing is not (#696). After a source refresh, the previous
+                # `<domain>-alignment.yaml` describes tables that no longer exist, and
+                # nothing downstream can tell it is out of date -- on the reporting hub
+                # it became the sole source of 23 `alignment.undecided-gap-column`
+                # errors long after every other domain had been correctly regenerated,
+                # and the operator's fix was to delete it by hand.
+                #
+                # Removing generated output is safe to do and safe to undo: it is
+                # reproducible by re-running, and `--allow-fallback-output` keeps it in
+                # the first place. Deliberately different from the provider-failure
+                # branch above, which preserves a possibly-good file because a failed
+                # call says nothing about the previous content -- here the run *did*
+                # complete and its verdict is "this domain resolves to nothing".
+                stale_path = output_dir / f"{domain_id}-alignment.yaml"
+                removed = ""
+                if stale_path.exists():
+                    try:
+                        stale_path.unlink()
+                        removed = (
+                            f" Removed the previous {stale_path.name}, which this run "
+                            "would have replaced and no longer describes these tables."
+                        )
+                    except OSError as exc:  # pragma: no cover - defensive
+                        removed = (
+                            f" WARNING: {stale_path.name} is now stale and could not be "
+                            f"removed ({exc}); delete it by hand before running validate."
+                        )
                 report(
                     f"     ⛔ Skipped writing {domain_id}: no reference model "
                     f"resolved for any of its {domain_total} table(s) "
                     "(fallback-only, incomplete). Pass --allow-fallback-output "
-                    "to write it anyway."
+                    f"to write it anyway.{removed}"
                 )
             else:
                 staged_outputs.append(
