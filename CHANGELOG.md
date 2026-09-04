@@ -17,6 +17,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A conformance `UNION` now carries the width its branches declare (#681).** A class's
+  published column type silently widened the moment it gained a second source —
+  `string(50)` on every branch emitted as unsized `string` on the union, with no ontology
+  change, no binding change and nothing to review. The width only ever existed on the
+  mapping expression's resolved output type, so it is recovered from the union's own
+  branches. Branches that genuinely disagree are reported as the new
+  `conformance.type-parameter-incompatible` rather than resolved by widest-wins, since
+  picking a width on the author's behalf is the same silent change this removes.
+- **`scaffold-contract` no longer generates a contract that fails its own compile gate
+  (#697).** It classified columns by `role` alone, but the kernel stamps `foreign-key` on
+  whatever `relationships[].join.local` names — conflating an authored DD-139 technical
+  field, an ordinary mapped field, and the compiler's own generated columns — then zipped
+  them positionally against the authored relationships. Adoption failed for *any* binding
+  declaring a relationship. The declaring surface now owns the column, and
+  `relationships:` declares the `(property, target)` pair only. A grain stated on such a
+  column also stopped `scaffold-contract` raising outright.
+- **`import-source` publishes everything or nothing (#688).** A fail-closed privacy
+  refusal on table N used to leave every vocabulary written, every relation marked
+  deprecated, and a handful of samples on disk — a state no command produces deliberately.
+  Samples are now sanitized before anything is written, and both publication stages go
+  through the staging helper `source-privacy --fix` already used.
+- **`project` writes LF on every platform.** `Path.write_text` rewrote LF to CRLF on
+  Windows, so byte-identical projector output landed differently per platform and churned
+  `git diff` on every regeneration. `compile --emit` was never affected; it writes bytes.
+- **The concept-mapping triage count can reach zero (#687).** It counted a row untriaged
+  on an empty `reference_model_match` and never read `action`, but `skip` and `new_class`
+  never carry a match — so every decision a modeler recorded left the number unchanged and
+  `next` recommended triage forever. Split into an *untriaged* count (drives `next`) and an
+  *unfilled* count (absence of BI weight evidence, reported by `design-landscape`).
+- **`kairos-design-source` documents a `check-ai-config --role` the CLI accepts (#689).**
+  The role was folded into `alignment` by #562; the documented DD-159 preflight had been
+  exiting with a usage error, whose natural workaround is to skip the preflight entirely.
+- **The scaffolded PR gate can now fail (#686, #699).** `validate-dbt --structural-only`
+  stops after the ref scan, so a project `dbt parse` refuses passed every step; the full
+  offline gate now runs, with the adapter extra resolved by the toolkit rather than
+  composed. The drift gate also failed open — `git diff --exit-code -- <path>` exits 0
+  when nothing at that path is tracked — and now asserts tracked-ness first.
+- **A dataplatform `_sources.yml` binds what it claims to (#701).** Without
+  `overrides: <package>` a same-named root-project source is a second, unrelated node:
+  dbt parses cleanly and the hub's models keep resolving to the hub's own placeholder
+  database until `dbt run` reports a missing relation. Emitted now, and
+  `validate-source-bindings` fails when a shadowing source omits it.
+- **`bump-hub` and staleness checking work on GitHub Enterprise Server (#702).** The pin
+  parser hardcoded `github.com`, so a GHES pin matched nothing — and
+  `validate-source-bindings` swallowed the resulting error into "0 stale", switching a
+  fail-closed DD-206 gate off with nothing in the output.
+- **The scaffolded dataplatform PR workflow can be installed (#705).** An unquoted step
+  name made it invalid YAML, so GitHub Actions rejected the whole file; `--refresh-workflows`
+  declined to install it; the offline fabric profile used an authentication value dbt-fabric
+  rejects; and `dbt compile` cannot run credential-free against dbt-fabric at all.
+- **`propose-alignment` no longer leaves a contradictory alignment file behind (#696).**
+  Declining to write a fallback-only domain left the previous file standing, describing
+  tables that no longer exist — on one hub the sole source of 23 validation errors long
+  after every other domain had been regenerated.
+- **Langfuse says when it is off (#694).** Credentials set but the package missing logged
+  at `info`, which the default level hides, so an explicit request for tracing was dropped
+  in silence. Now a warning, and reported by `check-ai-config` before a long stage rather
+  than during one. Long stages also stream: stdout is line-buffered, so a piped run no
+  longer emits zero bytes for 26 minutes.
+- **`safety.prefix-ambiguous` names the files that declare the colliding prefix (#699).**
 - **A canonically-BOOLEAN expression is now rendered per adapter in predicate and value
   position (DD-215).** Fabric maps BOOLEAN to `BIT`, and T-SQL rejects a bare bit column
   wherever a condition is expected. The DD-107 typed AST did not prevent this: a bare
@@ -51,6 +111,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contracts' `supported_adapters` keeps working.
 
 ### Added
+- **The canonical ERD renders inherited content (#678, #704, DD-212 amended).** For a hub
+  whose classes specialize imported reference models — the style `kairos-design-domain`
+  recommends — the diagram discarded nearly everything: on a real hub 1 of 29 inheritance
+  edges and 63 of 237 datatype properties rendered, leaving DD-212's stated reason for
+  choosing `classDiagram` inert. Scope is now *reachability* rather than the namespace: an
+  out-of-namespace class is drawn as a stereotyped stub where a domain class inherits from
+  or references it, inherited attributes appear on the subclass prefixed `#`, and an edge
+  survives when either end is domain-local. The header states what it omits.
+- **`project --target contract-erd` diagrams the declared Silver contract (#698, DD-216).**
+  The contract sits between the ontology and the bindings, both of which already had a
+  diagram; it was the one layer you had to read as raw YAML, and it is the published
+  promise. Renders `requirement`, declared nullability, `stability`, `closed`, per-column
+  deprecation and cross-domain reach — none of which the emitted-Silver ERD can express.
+- **`kairos-ext:goldExcludeColumn` keeps a column out of a Gold product (#703, DD-217).** A
+  Gold dimension mirrored its Silver model's full column set, so PII reaching Silver for
+  legitimate operational use also reached Power BI with no authorable way to stop it.
+  Fail-closed: a value that excluded nothing is rejected, so a Silver rename cannot
+  silently re-expose the column.
+- **Scaffolded hubs get a `.gitattributes`, and `update` reports Git-hygiene gaps (#699).**
+  Without it a contributor on `core.autocrlf=true` sees the whole tracked publish tree as
+  modified after an emit. `.gitignore` was written only at scaffold time, so a hub
+  predating a rule never received it while `update --check` reported everything up to
+  date — including the block whose purpose is keeping client evidence out of Git. Both are
+  additive-only: created when absent, otherwise the missing rules are reported, never
+  overwritten.
 - **`dbt-contract.dialect-*` lint findings, and the guidance that prevents needing them
   (DD-215).** `validate-dbt-contracts` now checks authored model SQL against the hub's
   adapter and runs in hub CI, where it was absent. The one rule today is `dbt-fabric`'s
