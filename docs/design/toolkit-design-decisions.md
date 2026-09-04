@@ -1186,7 +1186,7 @@ its own table).
 **Import-only domain (bulk):**
 ```turtle
 # party-silver-ext.ttl
-<https://frachtgroup.com/ont/party> kairos-ext:silverIncludeImports true .
+<https://acme.example/ont/party> kairos-ext:silverIncludeImports true .
 ```
 
 **Selective claiming:**
@@ -14110,7 +14110,7 @@ config-surface question, not a scoping bug, and wants its own decision.
 **Status:** Accepted
 **Date:** 2026-08-19
 **Affects:** `core/profile_sources.py` (`profile_table`)
-**Found on:** frachtv5 (real CargoWise extracts) — the first hub run of `profile-sources` against a corpus DD-189 was never built or tested against.
+**Found on:** a client hub (real client extracts) — the first hub run of `profile-sources` against a corpus DD-189 was never built or tested against.
 
 ### Context
 
@@ -14136,7 +14136,7 @@ candidacy is excluded.
 ### Consequences
 
 `profile-sources` no longer depends on the host having a timezone database
-for hubs whose sources carry timezone-aware timestamps (CargoWise does).
+for hubs whose sources carry timezone-aware timestamps (many source systems do).
 No behavioural change for identifier columns — the fix narrows an
 over-broad candidacy check, not the join-evidence mechanism itself.
 
@@ -14158,7 +14158,7 @@ updated to pass it through — a hub carrying real Langfuse credentials in
 `.env` had no way to `uv sync --extra langfuse` at all, and tracing would
 silently no-op (its own "off unless configured" path masks a missing
 dependency identically to a deliberately-disabled one). Found on a real
-client hub (frachtv5, 2026-08-19).
+client hub (2026-08-19).
 
 ### Decision
 
@@ -15372,7 +15372,7 @@ committed.
 
 Against real client data the control cost more than it bought:
 
-- A 74-table CargoWise bronze profile was refused over **2197 NULLs across 136 columns, with zero
+- A 74-table client bronze profile was refused over **2197 NULLs across 136 columns, with zero
   real values among them** -- a NULL in a PII-named column convicted on the column name alone, with a
   verdict `--fix` could not clear. Worse, the refusal fired mid-write: 77 files created and 76
   modified before it aborted, leaving the hub's source directory partially imported.

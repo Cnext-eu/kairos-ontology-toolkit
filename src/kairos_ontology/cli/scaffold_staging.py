@@ -49,7 +49,7 @@ def scaffold_staging_cmd(entity, domain, sources, force, dry_run):
     \b
     Examples:
       kairos-ontology scaffold-staging --entity party --domain party \\
-          --source cargowise.OrgCompanyData
+          --source tms.CompanyData
       kairos-ontology scaffold-staging --entity party --domain party \\
           --source crm.customers --source erp.parties
     """

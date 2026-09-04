@@ -300,7 +300,7 @@ def test_null_value_in_pii_named_column_is_not_flagged(tmp_path):
     from kairos_ontology.core._samples import detect_sample_pii_kind
 
     for absent in (None, "", "   ", [], {}):
-        assert detect_sample_pii_kind("GS_HomePhone", absent, context_name="glbstaff") is None
+        assert detect_sample_pii_kind("GS_HomePhone", absent, context_name="staffmember") is None
         assert detect_sample_pii_kind("InvoiceAddressOverride", absent) is None
 
     # The gate keeps its teeth on values that are actually present.
@@ -314,7 +314,7 @@ def test_sanitize_samples_document_converges_on_null_pii_columns():
     from kairos_ontology.core.source_privacy import sanitize_samples_document
 
     document = {
-        "table": "glbstaff",
+        "table": "staffmember",
         "schema": "bronze",
         "rows": [
             {"GS_Code": "AAA", "GS_HomePhone": None, "GS_NextOfKinEmail": ""},
@@ -322,7 +322,7 @@ def test_sanitize_samples_document_converges_on_null_pii_columns():
         ],
     }
 
-    safe, findings = sanitize_samples_document(document, table="glbstaff")
+    safe, findings = sanitize_samples_document(document, table="staffmember")
 
     assert findings == []
     assert [row["GS_HomePhone"] for row in safe["rows"]] == [None, None]

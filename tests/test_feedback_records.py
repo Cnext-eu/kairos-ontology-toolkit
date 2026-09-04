@@ -11,7 +11,7 @@ from kairos_ontology.core import feedback_records as fr
 _VALID_FRONTMATTER = (
     "type: Modeling Feedback\n"
     "id: HUB-FB-20260822-a1b2c3\n"
-    "title: CargoWise keys off Org\n"
+    "title: The TMS keys off Party\n"
     "area: party\n"
     "status: open\n"
     "generated: { by: kairos-ontology-toolkit/9.9.9, at: 2026-08-22T10:00:00Z }\n"
@@ -19,7 +19,7 @@ _VALID_FRONTMATTER = (
 
 _VALID_BODY = """# Observation
 
-CargoWise keys customer data off Org, not GlbCompany.
+The TMS keys customer data off Party, not Company.
 
 # Design implication
 

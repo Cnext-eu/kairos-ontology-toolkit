@@ -7,7 +7,7 @@ domain declares -- both properties declared directly on the class ("direct") and
 inherited from an ancestor class, whether that ancestor lives in the same file or an
 ``owl:imports``-ed foundation/reference module ("inherited") -- alongside its
 ontology-authored description and IRI, then joins it against the EntityBindings that map a
-chosen source system (e.g. ``cargowise``) onto that property -- embedding the mapped source
+chosen source system (e.g. ``tms``) onto that property -- embedding the mapped source
 column and a real sample value when source vocabulary/sample data is available.
 
 Object properties (relationships) are out of scope for this report: EntityBinding
@@ -470,7 +470,7 @@ def run_field_mapping_report(
     }
 
     # Filtered to *source_system* at the binding-declaration level (the relation's own
-    # first dot-segment, e.g. "cargowise" in "cargowise.GlbStaff.sample") rather than via
+    # first dot-segment, e.g. "tms" in "tms.StaffMember.sample") rather than via
     # the resolved SourceColumnSample.system: the relation is always present on a
     # resolvable binding, whereas a matching bronze SourceColumn/sample entry may not be
     # (issue #298) -- filtering on that instead would silently drop genuinely-mapped-but

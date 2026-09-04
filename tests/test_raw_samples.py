@@ -88,17 +88,17 @@ class TestExtractFromTables:
 class TestWriteAndReadRoundTrip:
     def test_round_trip(self, tmp_path):
         written = write_raw_samples(
-            tmp_path, "cargowise", {"JobHeader": {"consignee": ["Acme NV", "Globex"]}}
+            tmp_path, "tms", {"OrderHeader": {"consignee": ["Acme NV", "Globex"]}}
         )
         assert written is not None
-        assert written == tmp_path / ".import" / "raw-samples" / "cargowise.json"
+        assert written == tmp_path / ".import" / "raw-samples" / "tms.json"
 
-        columns = get_raw_columns(tmp_path, "cargowise", "JobHeader")
+        columns = get_raw_columns(tmp_path, "tms", "OrderHeader")
         assert columns == {"consignee": ["Acme NV", "Globex"]}
 
     def test_missing_table_returns_empty(self, tmp_path):
-        write_raw_samples(tmp_path, "cargowise", {"JobHeader": {"x": ["y"]}})
-        assert get_raw_columns(tmp_path, "cargowise", "OtherTable") == {}
+        write_raw_samples(tmp_path, "tms", {"OrderHeader": {"x": ["y"]}})
+        assert get_raw_columns(tmp_path, "tms", "OtherTable") == {}
 
     def test_missing_file_returns_empty(self, tmp_path):
         assert get_raw_columns(tmp_path, "nosuchsystem", "table") == {}

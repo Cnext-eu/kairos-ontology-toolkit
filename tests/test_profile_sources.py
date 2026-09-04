@@ -105,7 +105,7 @@ def test_test_maturity_never_excludes(import_dir, tmp_path):
 
 
 def test_unique_timezone_aware_timestamp_column_does_not_crash(tmp_path):
-    """Regression: frachtv5 CargoWise extract, a unique tz-aware timestamp
+    """Regression: a client hub extract, a unique tz-aware timestamp
     column. `to_pylist()` on a tz-aware timestamp needs a tz database, which
     is not guaranteed present (ArrowInvalid on a bare Windows Python without
     `tzdata`) -- and a timestamp was never a useful FK key-set candidate

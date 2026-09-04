@@ -255,10 +255,10 @@ def detect_column_prefix(columns: tuple[SourceColumn, ...]) -> str | None:
     """Return the dominant leading ``[A-Z0-9]{1,4}_`` table prefix across *columns*, or ``None``.
 
     The prefix is detected from the *columns themselves*, never derived from the table name:
-    on the 70-table CargoWise corpus only 17 of 70 prefixes appear in the table's CamelCase
+    on the 70-table client corpus only 17 of 70 prefixes appear in the table's CamelCase
     initials and exactly one equals its first two characters (``GlbCapability`` -> ``G4``,
     ``DtbBooking`` -> ``KM``, ``JobConsol`` -> ``JK``), and an initials rule maps both
-    ``GlbCapability`` and ``GlbCompany`` to ``GC`` while their real prefixes differ.
+    ``GlbCapability`` and ``Company`` to ``GC`` while their real prefixes differ.
 
     Ties break on the lexicographically smallest prefix so the result is deterministic. A
     prefix carried by a single column is not "dominant" and is ignored -- one incidentally
@@ -288,7 +288,7 @@ def _candidate_keys(column_name: str, prefix: str | None, class_local_name: str)
        authoring* convention -- properties named ``branchCode``/``contactName``, the class name
        prefixed to the attribute -- not a vendor quirk, so it generalises to any hub.
 
-    Measured on the 70-source / 3,087-column / 20-authored-binding CargoWise corpus: rung 1
+    Measured on the 70-source / 3,087-column / 20-authored-binding client corpus: rung 1
     alone matches 0; rungs 1-2 match 17 at 100% precision; rungs 1-3 match 25 at 100% precision
     (32% recall of the 77 authored field mappings).
 
@@ -1131,7 +1131,7 @@ def _commented_fields_block(
     ``fields:`` is ``required`` with ``minItems: 1`` in ``entity-binding.schema.json``, so a
     zero-match relation has no schema-valid ``*.binding.yaml`` to write at all -- there is
     literally nothing to put in ``fields:``. Bare refusal, though, leaves the author with an
-    empty directory: even with the full ladder, 8 of the 20 ground-truth CargoWise tables match
+    empty directory: even with the full ladder, 8 of the 20 ground-truth client tables match
     zero properties. So the skeleton is written to a sibling ``.draft`` file (which the
     compiler's ``*.binding.yaml`` glob does not pick up, so no invalid binding ever enters the
     build) and the run is failed loudly through :class:`ScaffoldBindingError`.

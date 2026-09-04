@@ -892,7 +892,7 @@ def test_prefixed_columns_match_via_single_strip_and_class_name_rungs(tmp_path):
     assert by_property[f"{_LOG_NAMESPACE}consignee"] == "SH_Consignee"
 
     # (d) The second prefix layer is NOT stripped: neither XX_YY_Name nor XX_YY_NKName reaches
-    # :consignee. Two strips collapse 6 real column pairs inside a single CargoWise table.
+    # :consignee. Two strips collapse 6 real column pairs inside a single source table.
     real_properties = {
         f["expression"]
         for f in doc["fields"]
@@ -1093,7 +1093,7 @@ def test_detect_column_prefix_ignores_a_single_incidentally_prefixed_column():
 
 
 def test_detect_column_prefix_is_never_derived_from_a_table_name():
-    # GlbCapability's real prefix is G4 and GlbCompany's is GC, but a CamelCase-initials rule
+    # GlbCapability's real prefix is G4 and Company's is GC, but a CamelCase-initials rule
     # maps both tables to GC. Detection reads the columns, so the two cannot collide.
     assert detect_column_prefix((_col("G4_PK"), _col("G4_Code"))) == "G4"
     assert detect_column_prefix((_col("GC_PK"), _col("GC_Code"))) == "GC"

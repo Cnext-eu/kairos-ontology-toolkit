@@ -181,7 +181,7 @@ def profile_table(path: Path) -> tuple[dict[str, Any], dict[str, set[str]]]:
         # is never a meaningful join (unlike an identifier), and a tz-aware
         # timestamp's `to_pylist()` needs a tz database Windows does not ship
         # by default (ArrowInvalid without the `tzdata` package) -- a crash
-        # on real data (frachtv5 CargoWise) that a temporal value could never
+        # on real client data that a temporal value could never
         # have usefully produced a key set for anyway.
         if ("unique" in tags and non_null and distinct <= KEY_SET_CAP
                 and not pa.types.is_temporal(arr.type)):

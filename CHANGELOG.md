@@ -64,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sample redaction is now opt-in on every import path (DD-214, issue #692).**
   `extract-schema`, `import-source` and `import-flatfile` write sample values as-is
   unless `--redact-pii` is passed. The control was costing more than it bought: a
-  74-table CargoWise bronze profile was refused over 2197 NULLs across 136 columns
+  74-table client bronze profile was refused over 2197 NULLs across 136 columns
   with zero real values among them (and aborted mid-write, leaving 77 files created
   and 76 modified), while money, datetime and business-ID columns reached the
   vocabulary TTL with *zero* sample evidence mislabelled `kind=phone` — with no
@@ -133,7 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verdict was unfixable by construction: `redact_sample_value` returns NULL untouched,
   so the residual check in `sanitize_samples_document` re-raised on the same cells and
   `source-privacy --fix` spun without converging. `import-source` therefore refused an
-  extract that was already fully redacted — a 74-table CargoWise bronze profile was
+  extract that was already fully redacted — a 74-table client bronze profile was
   blocked by 2197 NULLs across 136 columns, with zero real values among them. Worse,
   the refusal happened mid-write: 77 files had already been created and 76 modified
   before the gate fired, leaving the hub's source directory in a partially-imported
@@ -488,7 +488,7 @@ preserved below for history.
 
 ### Fixed
 - **Source profiling's class catalog is scoped to the resolved accelerator (DD-193, issue #558).** `build_class_catalog` (and thus `anchor-tables`) previously offered every module the whole installed reference-models package maps as an anchor candidate — on a logistics hub this put ~400 FIBO classes in front of the model as `UNOWNED` noise, with a real risk of a table falling back to an unrelated vendor class instead of being flagged for review. `read_reference_terms` gains an optional `module_scope` parameter (defaulting to the unrestricted legacy behaviour every other caller keeps); `build_class_catalog` seeds it with the resolved accelerator's own declared domain imports. A module the accelerator never reaches, directly or transitively, is excluded outright; a module reached only via `owl:imports` from an accelerator-declared module remains visible (transitivity is unaffected — only the seed set narrows). An unresolved accelerator keeps today's unrestricted behaviour rather than emptying the catalog.
-- **`profile-sources` no longer crashes on a unique timezone-aware timestamp column (DD-194).** Found on a real CargoWise extract: key-set construction ran `to_pylist()` on any `unique`-tagged column regardless of type, and a tz-aware timestamp needs a timezone database (`ArrowInvalid` on a bare Windows Python without `tzdata`). Temporal columns are now excluded from key-set candidacy outright — a timestamp was never a meaningful FK join signal — while keeping their `unique`/`date-like` profile tags unaffected.
+- **`profile-sources` no longer crashes on a unique timezone-aware timestamp column (DD-194).** Found on a real client extract: key-set construction ran `to_pylist()` on any `unique`-tagged column regardless of type, and a tz-aware timestamp needs a timezone database (`ArrowInvalid` on a bare Windows Python without `tzdata`). Temporal columns are now excluded from key-set candidacy outright — a timestamp was never a meaningful FK join signal — while keeping their `unique`/`date-like` profile tags unaffected.
 - **`coverage-report` (and every caller of `resolve_reference_models`) scanned archived reference-model snapshots and misattributed their pre-fix content to live modules (DD-196, issue #566).** An archived `.ttl` under `derived-ontologies/<vendor>/archive/**` shares its live module's permanent IRI, so a defect already resolved in the live file (e.g. a missing `owl:imports`, fixed upstream in referencemodels v1.32.0) still resolved from the frozen pre-fix snapshot and got reported as if it were live. Archived paths are now excluded unconditionally, matched on path segment rather than a caller-supplied glob — this was originally filed against the reference-models repo (#108) before the real cause (this toolkit's resolver, not the reference data) was identified.
 - **AI preflight surfaces a missing SDK as a missing dependency, with a uv-native fix (DD-198, issue #553).** `check-ai-config --probe` against a hub with `KAIROS_AI_PROVIDER` configured but the matching SDK not installed previously reported `unreachable` with a "verify network connectivity" remediation — misleading, since no network call was attempted, and it buried the real install hint. `_probe_client` now lets the underlying `NotConfigured` propagate instead of rewrapping it, and `preflight_ai_provider` reports a new `missing_dependency` status with the exact fix as remediation. The Foundry (×2) and Azure `NotConfigured` messages themselves, and the scaffolded `.env.example`'s install comments, now say `uv sync --extra foundry/azure` instead of `pip install kairos-ontology-toolkit[foundry/azure]`.
 - **`update-refmodels` silently did nothing, then reported success (DD-200, issue #551).** Reference models ship only as a GitHub Release wheel, never to a package index, so `uv pip install --upgrade kairos-ontology-referencemodels` (the default, no-`--version` path) had no package to find and installed nothing — this is how a real hub's pin sat thirteen minor versions behind (#541). The command now resolves the latest published release the same draft-filtered, version-ordered way scaffolding does, and always installs that exact wheel. Also fixed: an unprefixed `--version 1.33.1` produced a 404 pin (no `v`-prefix normalization) — now normalized like every other caller.
@@ -911,7 +911,7 @@ preserved below for history.
 ## [5.13.0rc9] — 2026-08-19
 
 ### Fixed
-- **`profile-sources` no longer crashes on a unique timezone-aware timestamp column (DD-194).** Found on a real CargoWise extract: key-set construction ran `to_pylist()` on any `unique`-tagged column regardless of type, and a tz-aware timestamp needs a timezone database (`ArrowInvalid` on a bare Windows Python without `tzdata`). Temporal columns are now excluded from key-set candidacy outright — a timestamp was never a meaningful FK join signal — while keeping their `unique`/`date-like` profile tags unaffected.
+- **`profile-sources` no longer crashes on a unique timezone-aware timestamp column (DD-194).** Found on a real client extract: key-set construction ran `to_pylist()` on any `unique`-tagged column regardless of type, and a tz-aware timestamp needs a timezone database (`ArrowInvalid` on a bare Windows Python without `tzdata`). Temporal columns are now excluded from key-set candidacy outright — a timestamp was never a meaningful FK join signal — while keeping their `unique`/`date-like` profile tags unaffected.
 
 ## [5.13.0rc8] — 2026-08-19
 
@@ -1779,7 +1779,7 @@ design decision (DD-163 … DD-185).
 - **`field-mapping-report`**: generates an Excel workbook (one worksheet per domain) listing
   every declared scalar `owl:DatatypeProperty` field with its ontology-authored description
   and IRI, cross-referenced against the EntityBindings that map a chosen `--source-system`
-  (e.g. `cargowise`) onto it -- embedding the mapped source column and a real sample value
+  (e.g. `tms`) onto it -- embedding the mapped source column and a real sample value
   when source vocabulary/sample data is available for it. Unmapped fields are shown with a
   blank source/sample rather than omitted, so coverage gaps stay visible instead of reading
   as complete. Reuses the compiler's own binding resolution (`resolve_scope`/`adapt_binding`,
@@ -1871,7 +1871,7 @@ design decision (DD-163 … DD-185).
   positives — `Address.addressCode` (a governed reference code, `xsd:string`) and
   `AddressRoleAssignment.isMainAddressRole` (`xsd:boolean`) both matched the `"address"` keyword —
   while missing the two classes a DPIA would actually care about (`party:Contact`/`party:StaffMember`,
-  sourced from 158 real CargoWise columns including birthdate/passport/next-of-kin), because their
+  sourced from 158 real client columns including birthdate/passport/next-of-kin), because their
   canonical property names happened not to contain a keyword substring. `core/validator.py`'s
   `validate_gdpr` now suppresses a name-keyword hit when the property's declared `rdfs:range` is
   `xsd:boolean` (no keyword describes a plausible boolean fact) or when the local name ends in a bare
@@ -2252,7 +2252,7 @@ design decision (DD-163 … DD-185).
 ### Fixed
 - **A relationship could not join on a surrogate key, so most foreign keys were unauthorable** (#334).
   `join.foreign` resolved only against `fields:`, and a surrogate GUID primary key carries no business
-  meaning so is never a mapped ontology property. On a real 70-table CargoWise hub only 3 of ~15
+  meaning so is never a mapped ontology property. On a real 70-table client hub only 3 of ~15
   evidenced foreign keys could be authored, and the `booking` domain compiled with **zero
   relationships** while carrying the raw foreign key as a column with no join beside it. This was not
   a design boundary: **DD-139 already declared that `join.local`/`join.foreign` resolve against
@@ -2638,7 +2638,7 @@ silently invalidates the evidence they produce.
   `timestamp[us, tz=America/New_York]` column through `zoneinfo` and raises
   `ZoneInfoNotFoundError` wherever no tz database is installed — stock Windows, and any slim
   container. Second, the directory loop had no per-file error handling, so that single raise
-  aborted the entire import and wrote nothing: a 70-table CargoWise export produced zero output
+  aborted the entire import and wrote nothing: a 70-table client export produced zero output
   (only the four tables whose tz-aware columns were entirely null survived, because an all-null
   column never constructs a `TimestampScalar`). tz-aware columns are now materialised via
   `_arrow_column_to_pylist()`, which normalises to UTC and renders RFC-3339 with an explicit

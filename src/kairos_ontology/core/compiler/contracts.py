@@ -368,7 +368,7 @@ def _entity_diagnostics(
     # Stated as emitted column names rather than canonical properties: a materialized grain
     # is a physical statement about the table, and real bindings routinely grain on a DD-139
     # technical identity column that is no semantic property at all (verified against
-    # fracht-client-ontology-hub, where `source_record_id` is the grain and a technicalField).
+    # a client ontology hub, where `source_record_id` is the grain and a technicalField).
     # Column names are still source-agnostic -- the contract declares them.
     by_column: dict[str, tuple[str, bool]] = {}
     for item in entity.properties:

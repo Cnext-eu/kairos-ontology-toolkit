@@ -157,7 +157,7 @@ def test_binding_referenced_columns_covers_every_reference_shape():
 
 def test_table_from_relation_keeps_dotted_suffix():
     assert _table_from_relation("app.customers") == "customers"
-    assert _table_from_relation("cargowise.JobShipment.sample") == "JobShipment.sample"
+    assert _table_from_relation("tms.Shipment.sample") == "Shipment.sample"
 
 
 def test_run_column_coverage_audit_flags_real_orphan_and_excludes_noise(tmp_path):

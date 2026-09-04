@@ -379,7 +379,7 @@ def test_measure_dax_referencing_unemitted_table_blocks(tmp_path: Path):
     # stale `dim_`-prefixed name) used to render silently instead of failing closed.
     text = _gold_text("invoice").replace(
         'kairos-ext:measureExpression "SUM([total_amount])" ;',
-        "kairos-ext:measureExpression \"SUM([total_amount]) + COUNTROWS('dim_frachtparty')\" ;",
+        "kairos-ext:measureExpression \"SUM([total_amount]) + COUNTROWS('dim_acmeparty')\" ;",
         1,
     )
     with pytest.raises(GoldContractError, match="unresolved-dax-table-reference"):
