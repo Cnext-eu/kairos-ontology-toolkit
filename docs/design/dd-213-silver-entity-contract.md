@@ -146,10 +146,9 @@ entities:
         type: string(64)
         requirement: optional
         nullable: true
-    relationships:                             # FK columns emitted by `relationships:`
+    relationships:                             # the (property, target) pair, declared
       - property: party:hasAccount
         target: party:Account
-        columnName: has_account_account        # optional; default kernel.py:1808 rule
 ```
 
 `EntityBinding` gains exactly one new optional key — an additive change to the closed schema,
@@ -205,6 +204,12 @@ generated surrogate/integration/IRI columns are compiler-owned and always emitte
 outside the contract's `closed` scope; the leading `_` prefix and the generated-key names stay
 reserved and a contract that declares one is rejected.
 
+This rule doubles as the discriminator for a relationship's join column (#697): every
+*generated* relationship column is reserved — the parent's `<parent>_sk` join key and the
+`_kairos_fk_*_match_count` DQ column — so a `role=foreign-key` column that is **not** reserved
+can only have been author-declared, and is claimed by `technicalColumns:` or `properties:`
+accordingly.
+
 ### Cross-domain relationship targets
 
 Relationship FK columns are named `{property_column}_{target_model}` (`kernel.py:1808`),
@@ -232,7 +237,7 @@ run before materialize/render like every other §5 rule. Codes use a new `contra
 |---|---|
 | `contract.property-unresolved` | A declared property does not resolve in the ontology import closure through the DD-103 semantic index under the `rdfs` profile, or resolves to more than one distinct URI. |
 | `contract.class-unresolved` | A declared `class` does not resolve, or is not a hub-namespace class. |
-| `contract.column-name-collision` | Two declared properties, technical columns, or relationships resolve to the same `columnName` (case-insensitive), or collide with a reserved name from §3. |
+| `contract.column-name-collision` | Two declared properties, technical columns, or relationships resolve to the same `columnName` (case-insensitive), or collide with a reserved name from §3. A relationship only participates when it pins a `columnName`, which `scaffold-contract` no longer does (#697); the check itself is unchanged. |
 | `contract.grain-not-required` | A `grain.properties` or `identity.businessKey` entry is not also declared in `properties:` with `requirement: required`. This makes grain and identity columns mapped-by-construction, so the DD-133 §8b source→output resolution always applies. |
 | `contract.closed-requires-preview` | `closed: false` on an entity whose `stability` is not `preview`. |
 | `contract.optional-not-nullable` | A `requirement: optional` property declares `nullable: false`. A source may leave it unmapped, in which case the column carries a padded NULL for that source's rows, so `optional` implies `nullable: true`. |
@@ -280,26 +285,51 @@ Concretely, the contract — not the binding — supplies:
   branch's binding listed under `unmapped:`, which are padded as a typed `NULL` for that source's
   rows. Padding at the branch level, not only in the union, is what keeps `union all` well-formed.
   *This is the mechanism that makes a partial new source bindable without reshaping Silver;*
-- the column **order**: `properties:` declared order, then `technicalColumns:`, then
-  `relationships:` — matching today's actual emission order (`adapter.py:874` then
-  `adapter.py:940`, with relationship FK columns added later at `kernel.py:1808`). Reordering
-  a binding's `fields:` becomes fingerprint-neutral;
+- the column **order**: `properties:` declared order, then `technicalColumns:` — matching
+  today's actual emission order (`adapter.py:874` then `adapter.py:940`). Reordering a
+  binding's `fields:` becomes fingerprint-neutral. `relationships:` contributes no ordered
+  column of its own: its emitted columns are either already declared by one of the two
+  surfaces above or compiler-owned and reserved (#697);
 - the column **name** (`columnName`, defaulting to today's `camel_to_snake` rule), decoupling
   ontology renames from physical renames and restoring the intent of the v4-only
   `kairos-ext:silverColumnName` inside a governed artifact;
 - the column **type** and **nullability**, which the binding must match rather than determine.
 
-**Which columns the contract governs is decided by `SilverColumnRole`, not by position.**
+**Which columns the contract governs is decided by what declared them, not by position.**
 `SilverModelSpec.columns` interleaves author-declared columns with compiler-owned ones: a
 generated surrogate join key (`surrogate-join-key`, emitted as `<model_name>_sk`) leads the
 list, and `_source_identity_ref` (`source-identity`) and `_loaded_at` (`audit`) follow the
-mapped columns. Only the `business` and `business-natural-key` roles are author-declared, plus
-`foreign-key` for relationships; those are the contract's scope. The rest are emitted
-unconditionally and sit outside `closed`. Two envelope columns — `_source_system` and
-`_source_record_key` — really are template-only and never appear in `SilverModelSpec.columns`
-at all, which is why `materialize.py:120-126` has to union them back in before validating
-quality-rule column references. Partitioning by role rather than by name or index is what
-keeps this correct as the envelope grows.
+mapped columns. The `business` and `business-natural-key` roles are author-declared; the rest
+are emitted unconditionally and sit outside `closed`. Two envelope columns — `_source_system`
+and `_source_record_key` — really are template-only and never appear in
+`SilverModelSpec.columns` at all, which is why `materialize.py:120-126` has to union them back
+in before validating quality-rule column references. Partitioning by declarer rather than by
+name or index is what keeps this correct as the envelope grows.
+
+> **Amended (#697).** This section originally read "decided by `SilverColumnRole`" and added
+> "plus `foreign-key` for relationships" to the governed set. Both were wrong, and together
+> they made `scaffold-contract` emit a contract that failed its own Gate A on adoption —
+> contradicting §6's no-op guarantee for **every** binding that declares a relationship.
+>
+> `foreign-key` is not a declarer. The kernel stamps it on whatever
+> `relationships[].join.local` names (`policy_normalize._column_role` against
+> `ForeignKeyAuthoringFact.silver_column_name`), which conflates three unrelated things: an
+> authored DD-139 `technicalFields:` entry, an ordinary mapped `fields:` entry whose emitted
+> name equals the source column, and the compiler's own generated columns — the parent's
+> `<parent>_sk` join key and the `_kairos_fk_*_match_count` DQ column.
+>
+> Only the first two are author-declared, and each already belongs to a surface that governs
+> it: `technicalColumns:` and `properties:` respectively. The generated pair is reserved by
+> the rule below, so it can never be declared at all. Grouping all four under `relationships:`
+> therefore pinned a `columnName` the loader rejects — the technical column duplicated
+> itself, and `<parent>_sk` tripped the reserved-suffix rule.
+>
+> Resolved in favour of DD-139, which states that an authored passthrough column *is* a
+> materialized Silver output participating in the schema contract: **the declaring surface
+> owns the column.** A `role=foreign-key` column that is not reserved was author-declared and
+> is claimed by `technicalColumns:` or `properties:`; a reserved one is compiler-owned and is
+> claimed by nobody. `relationships:` declares the `(property, target)` pair only — see the
+> amendment under §3's schema below.
 
 Every other `ColumnSpec` field stays binding-derived, and deliberately so — `expression`,
 `mapping_resource_uri`, `mapping_expression`, `description`, `tests`, `role`, `provenance`,

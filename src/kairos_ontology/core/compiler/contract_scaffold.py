@@ -8,11 +8,19 @@ so adopting it is a provable no-op. The reviewed edit that follows records *what
 promised* (marking properties optional, setting stability, pinning names).
 
 Emission order is authoritative and deliberate: mapped ``fields:`` first, then
-``technicalFields:`` (DD-139), then relationship foreign keys. That mirrors
-``adapter.py`` (semantic columns, then technical) and ``kernel.py`` (foreign keys appended
-last). Compiler-owned columns are filtered out by ``SilverColumnRole``, not by name or
-position: ``SilverModelSpec.columns`` interleaves a generated ``<model>_sk`` surrogate key and
-the ``_source_identity_ref``/``_loaded_at`` envelope with the author-declared columns.
+``technicalFields:`` (DD-139). That mirrors ``adapter.py`` (semantic columns, then
+technical).
+
+A column is claimed by **what declared it**, never by name or position:
+``SilverModelSpec.columns`` interleaves a generated ``<model>_sk`` surrogate key and the
+``_source_identity_ref``/``_loaded_at`` envelope with the author-declared columns. Role
+alone is not sufficient either -- see :func:`_partition`, where an authored
+``technicalFields:`` entry that a relationship joins on carries ``role=foreign-key`` and
+must still be claimed as technical (#697).
+
+Relationships are declared as ``(property, target)`` with no ``columnName``: every
+emitted relationship column is compiler-owned and carries a reserved name that DD-213 §3
+puts outside the contract's ``closed`` scope.
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ from ..projections.dbt.silver_contract import canonical_type_label
 from ..projections.dbt.specs import ColumnSpec, SilverModelKind, SilverModelSpec
 from .bindings import EntityBinding
 from .contract_conformance import models_by_class
+from .contracts import RESERVED_COLUMN_PREFIX, RESERVED_COLUMN_SUFFIX
 from .plan import CompilePlan
 
 #: Model kinds that carry the consumer-facing contract. A ``SOURCE_BRANCH`` is an internal
@@ -52,7 +61,6 @@ class _EntityColumns:
 
     semantic: tuple[ColumnSpec, ...]
     technical: tuple[ColumnSpec, ...]
-    foreign_keys: tuple[ColumnSpec, ...]
 
 
 def _column_type(column: ColumnSpec) -> str:
@@ -62,35 +70,65 @@ def _column_type(column: ColumnSpec) -> str:
     return column.data_type or "string"
 
 
-def _partition(model: SilverModelSpec, binding: EntityBinding) -> _EntityColumns:
-    """Split emitted columns into semantic, technical, and foreign-key groups.
+def _is_authored_foreign_key(column: ColumnSpec) -> bool:
+    """True when a ``role=foreign-key`` column was declared by the author, not generated.
 
-    Foreign keys are identified by ``role``, which the kernel sets explicitly; technical
-    columns by the authored ``technicalFields:`` names. Everything else is a mapped
-    ``fields:`` entry and must line up 1:1 with the binding, in order -- if it does not,
-    the plan does not have the shape this scaffolder assumes and we refuse rather than
+    The role is stamped onto whatever ``relationships[].join.local`` names, which may be
+    a mapped ``fields:`` entry whose emitted name happens to equal the source column.
+    Such a column is an ordinary semantic property that also happens to carry a join.
+
+    The discriminator is DD-213 §3's own reserved-name definition: every *generated*
+    relationship column is reserved -- the parent's ``<parent>_sk`` join key and the
+    ``_kairos_fk_*_match_count`` DQ column -- and a contract that declares a reserved
+    name is rejected. So a non-reserved foreign-key column can only have come from the
+    author.
+    """
+    if column.role != SilverColumnRole.FOREIGN_KEY.value:
+        return False
+    name = column.name
+    return not (
+        name.startswith(RESERVED_COLUMN_PREFIX) or name.casefold().endswith(RESERVED_COLUMN_SUFFIX)
+    )
+
+
+def _partition(model: SilverModelSpec, binding: EntityBinding) -> _EntityColumns:
+    """Split emitted columns into the two groups an author actually declared.
+
+    Partitioning is by **what declared the column**, not by ``role`` alone. The authored
+    ``technicalFields:`` names are therefore tested *first* (#697): the kernel stamps
+    ``role=foreign-key`` on whatever ``relationships[].join.local`` names
+    (``policy_normalize._column_role`` against ``ForeignKeyAuthoringFact.silver_column_name``),
+    and for the DD-139 shape that names an authored technical field. Testing ``role``
+    first classified that column as compiler-owned plumbing, so it never reached
+    ``technicalColumns:`` and ``contract.technical-field-not-declared`` fired the moment
+    the generated contract was adopted -- while ``_key_columns`` below also stopped
+    resolving a grain stated on it, refusing to scaffold the domain at all.
+
+    Everything still unclaimed after the two authored groups is compiler-owned and is
+    dropped: the ``<model>_sk`` surrogate, the parent's ``<parent>_sk`` join key, the
+    ``_kairos_fk_*_match_count`` DQ column, the entity IRI, and the DD-104 audit
+    envelope. All of those carry a reserved name (``_`` prefix or ``_sk`` suffix) that
+    DD-213 §3 places outside the contract's ``closed`` scope and that
+    ``contract.column-name-collision`` rejects outright, so none of them can be declared.
+
+    The mapped ``fields:`` set must still line up 1:1 with the binding, in order -- if it
+    does not, the plan lacks the shape this scaffolder assumes and we refuse rather than
     emit a contract that would silently change the emit.
     """
     technical_names = {item.name for item in binding.technical_fields}
     semantic: list[ColumnSpec] = []
     technical: list[ColumnSpec] = []
-    foreign_keys: list[ColumnSpec] = []
     for column in model.columns:
-        if column.role == SilverColumnRole.FOREIGN_KEY.value:
-            foreign_keys.append(column)
-        elif column.role not in _AUTHORED_ROLES:
-            # Compiler-owned: surrogate/integration keys, entity IRI, audit envelope.
-            continue
-        elif column.name in technical_names:
+        if column.name in technical_names:
             technical.append(column)
-        else:
+        elif column.role in _AUTHORED_ROLES or _is_authored_foreign_key(column):
             semantic.append(column)
     if len(semantic) != len(binding.fields):
         raise ContractScaffoldError(
             f"model '{model.identity.model_name}' emits {len(semantic)} mapped columns but "
             f"binding '{binding.name}' declares {len(binding.fields)} fields"
         )
-    return _EntityColumns(tuple(semantic), tuple(technical), tuple(foreign_keys))
+    return _EntityColumns(tuple(semantic), tuple(technical))
 
 
 def _models_by_class(plan: CompilePlan) -> dict[str, SilverModelSpec]:
@@ -148,18 +186,28 @@ def build_contract_document(plan: CompilePlan) -> dict:
             for column in columns.technical
         ]
 
+        # Declared as (property, target) only -- exactly the pair
+        # `contract.relationship-not-declared` matches on, taken from the binding so the
+        # authored spelling agrees by construction.
+        #
+        # No `columnName` (#697). This used to positionally `zip` the authored
+        # relationships against every `role=foreign-key` column, which pinned the wrong
+        # name in both shapes a real hub produces: the DD-139 technical column (already
+        # declared under `technicalColumns:`, so pinning it here collided with itself),
+        # or -- with no technical field at all -- the compiler-generated `<parent>_sk`,
+        # whose reserved suffix `contract.column-name-collision` rejects outright. Either
+        # way the generated contract failed on adoption, contradicting the no-op
+        # guarantee this module's header states.
+        #
+        # Nothing is lost by omitting it: `apply_contract_column_names`
+        # (`contract_emission.py`) pins **properties** only, so a relationship
+        # `columnName` never reached emission and governed nothing. Parent renames are
+        # handled the way DD-213 §3 settles them -- `BuildScope` resolves the foreign
+        # domain's contract and the parent's declared `modelName` is authoritative --
+        # not by pinning a reserved name in the child.
         relationships = [
-            {
-                "property": relationship.property,
-                "target": relationship.target,
-                # Pinned, not defaulted: the default embeds the *parent's* model name, so
-                # an unpinned child column would rename whenever a parent's `modelName`
-                # changed. Recording it here makes the child's contract self-contained.
-                "columnName": column.name,
-            }
-            for relationship, column in zip(
-                binding.relationships, columns.foreign_keys, strict=False
-            )
+            {"property": relationship.property, "target": relationship.target}
+            for relationship in binding.relationships
         ]
 
         grain_columns = _key_columns(binding, binding.grain.columns, columns)

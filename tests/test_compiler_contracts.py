@@ -291,6 +291,186 @@ def _write_hub(hub_root):
     return binding_dir
 
 
+def _add_related_entity(hub_root, *, via_technical_field: bool):
+    """Give the hub a second class and point a relationship at it (#697).
+
+    No fixture in this module had a ``relationships:`` entry, which is why the scaffold
+    round-trip stayed green while it emitted an unadoptable contract for *any* binding
+    that declares one.
+
+    ``via_technical_field`` selects the two shapes a real hub produces, since
+    ``join.local`` must be carried by *something*: a DD-139 ``technicalFields:`` entry
+    (what #697 reported), or an ordinary mapped ``fields:`` entry. Both used to pin an
+    unadoptable ``columnName`` -- the technical column itself in the first case, the
+    compiler-generated ``<parent>_sk`` in the second.
+    """
+    ontology_dir = hub_root / "model" / "ontologies"
+    source_dir = hub_root / "integration" / "sources" / "crm"
+    binding_dir = hub_root / "integration" / "bindings"
+
+    with (ontology_dir / "party.ttl").open("a", encoding="utf-8") as handle:
+        handle.write(
+            textwrap.dedent("""
+                party:LegalEntity a owl:Class ; rdfs:label "LegalEntity" .
+                party:legalEntityId a owl:DatatypeProperty ;
+                  rdfs:domain party:LegalEntity ; rdfs:range xsd:string .
+                party:legal_entity_reference a owl:DatatypeProperty ;
+                  rdfs:domain party:Customer ; rdfs:range xsd:string .
+                party:representsLegalEntity a owl:ObjectProperty ;
+                  rdfs:domain party:Customer ; rdfs:range party:LegalEntity .
+                """)
+        )
+    with (source_dir / "crm.vocabulary.ttl").open("a", encoding="utf-8") as handle:
+        handle.write(
+            textwrap.dedent("""
+                src:ler a kb:SourceColumn ; kb:sourceTable src:customers ;
+                  kb:columnName "legal_entity_reference" ; kb:dataType "varchar(50)" ;
+                  kb:nullable "true"^^xsd:boolean .
+                src:legalentities a kb:SourceTable ; kb:sourceSystem src:crm ;
+                  kb:tableName "legalentities" ; kb:primaryKeyColumns "legal_entity_id" .
+                src:leid a kb:SourceColumn ; kb:sourceTable src:legalentities ;
+                  kb:columnName "legal_entity_id" ; kb:dataType "varchar(50)" ;
+                  kb:nullable "false"^^xsd:boolean .
+                """)
+        )
+    (binding_dir / "legalentity.binding.yaml").write_text(
+        textwrap.dedent("""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: crm-legalentity
+              domain: party
+            source:
+              relation: crm.legalentities
+            target:
+              class: party:LegalEntity
+            grain:
+              columns: [legal_entity_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [legal_entity_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: party:legalEntityId
+                expression: legal_entity_id
+            """).strip(),
+        encoding="utf-8",
+    )
+
+    customer = binding_dir / "customer.binding.yaml"
+    text = customer.read_text(encoding="utf-8")
+    if via_technical_field:
+        text += textwrap.dedent("""
+            technicalFields:
+              - name: legal_entity_reference
+                expression: legal_entity_reference
+                type: string
+                nullable: true
+                purpose: relationship
+            """)
+    else:
+        # Carried by an ordinary mapped field instead. Deliberately NOT dedented: this
+        # continues the binding's `fields:` list, so it must keep that block's indent.
+        text += "\n  - property: party:legal_entity_reference\n    expression: legal_entity_reference\n"
+    customer.write_text(
+        text
+        + textwrap.dedent("""
+            relationships:
+              - property: party:representsLegalEntity
+                target: party:LegalEntity
+                join:
+                  - local: legal_entity_reference
+                    foreign: legal_entity_id
+                cardinality: many-to-one
+                mode: non-temporal
+                missingParent: "null"
+                ambiguousParent: error
+            """),
+        encoding="utf-8",
+    )
+
+
+class TestScaffoldingARelationship:
+    """#697: `scaffold-contract` emitted a contract that failed its own compile gate.
+
+    `_partition` classified columns by `role` alone, so every `role=foreign-key` column
+    landed in one bucket that was then positionally zipped against the authored
+    relationships. Both shapes below pinned a `columnName` the loader rejects.
+    """
+
+    def test_a_dd139_relationship_technical_field_becomes_a_technical_column(self, tmp_path):
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=True)
+        plan = build_compile_plan(tmp_path, "party")
+        entity = load_silver_contract(
+            render_contract_yaml(build_contract_document(plan))
+        ).entity_for("party:Customer")
+
+        # The kernel stamps role=foreign-key on the join.local column, but the author
+        # declared it under technicalFields:, so technicalColumns: is where it belongs.
+        assert [item.name for item in entity.technical_columns] == ["legal_entity_reference"]
+
+    @pytest.mark.parametrize("via_technical_field", [True, False], ids=["dd139", "mapped-field"])
+    def test_the_relationship_pins_no_column_name(self, tmp_path, via_technical_field):
+        """Every emitted relationship column is compiler-owned (DD-213 §3).
+
+        With a technical field the pinned name duplicated the technical column; with a
+        mapped field it was the generated `<parent>_sk`, whose reserved suffix the loader
+        rejects. Neither ever reached emission -- `apply_contract_column_names` pins
+        properties only -- so declaring the pair is the whole contract.
+        """
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=via_technical_field)
+        entity = load_silver_contract(
+            render_contract_yaml(build_contract_document(build_compile_plan(tmp_path, "party")))
+        ).entity_for("party:Customer")
+
+        assert [
+            (item.property, item.target, item.column_name) for item in entity.relationships
+        ] == [("party:representsLegalEntity", "party:LegalEntity", "")]
+
+    @pytest.mark.parametrize("via_technical_field", [True, False], ids=["dd139", "mapped-field"])
+    def test_adopting_the_generated_contract_is_a_no_op(self, tmp_path, via_technical_field):
+        """The guarantee the module header states, for the shape that broke it."""
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=via_technical_field)
+        _adopt_contract(tmp_path)
+        diagnostics = _diagnostics(tmp_path)
+        # Non-vacuity guard: a malformed fixture that got the binding rejected would
+        # leave no Customer entity and satisfy the contract assertion trivially.
+        assert not [code for code in diagnostics if code.startswith("binding.")]
+        contract = load_silver_contract(
+            (tmp_path / "model" / "contracts" / "party.contract.yaml").read_text(encoding="utf-8")
+        )
+        assert contract.entity_for("party:Customer") is not None
+        assert not [code for code in diagnostics if code.startswith("contract.")]
+
+    def test_a_grain_on_the_technical_field_still_scaffolds(self, tmp_path):
+        """Second defect behind the same misclassification.
+
+        `_key_columns` resolves grain against `columns.technical`. While the join column
+        was filed as a foreign key that set was empty, so a grain stated on it resolved
+        to nothing and `build_contract_document` raised outright -- the domain could not
+        be scaffolded at all, which is how a real hub met this before adoption.
+        """
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=True)
+        binding = tmp_path / "integration" / "bindings" / "customer.binding.yaml"
+        binding.write_text(
+            binding.read_text(encoding="utf-8").replace(
+                "grain:\n  columns: [customer_id]",
+                "grain:\n  columns: [customer_id, legal_entity_reference]",
+            ),
+            encoding="utf-8",
+        )
+        plan = build_compile_plan(tmp_path, "party")
+        entity = load_silver_contract(
+            render_contract_yaml(build_contract_document(plan))
+        ).entity_for("party:Customer")
+        assert list(entity.grain) == ["customer_id", "legal_entity_reference"]
+
+
 class TestContractScaffold:
     def test_scaffolds_a_loadable_contract_from_a_plan(self, tmp_path):
         _write_hub(tmp_path)
