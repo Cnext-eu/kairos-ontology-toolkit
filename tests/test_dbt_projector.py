@@ -5489,17 +5489,17 @@ class TestDuplicateGeneratedModelNames:
         from kairos_ontology.core.projections.dbt.render import DbtModelNameCollisionError
 
         artifacts = {
-            "models/silver/party/frachtparty.sql": "select 1",
-            "models/gold/party/frachtparty.sql": "select * from {{ ref('frachtparty') }}",
+            "models/silver/party/acmeparty.sql": "select 1",
+            "models/gold/party/acmeparty.sql": "select * from {{ ref('acmeparty') }}",
         }
         with pytest.raises(DbtModelNameCollisionError) as excinfo:
             self._check(artifacts)
 
         message = str(excinfo.value)
         # The issue asks for the colliding pair to be named, not just the condition.
-        assert "frachtparty" in message
-        assert "models/silver/party/frachtparty.sql" in message
-        assert "models/gold/party/frachtparty.sql" in message
+        assert "acmeparty" in message
+        assert "models/silver/party/acmeparty.sql" in message
+        assert "models/gold/party/acmeparty.sql" in message
         # And it must point at the authoring fix.
         assert "goldTableName" in message
 
@@ -5532,8 +5532,8 @@ class TestDuplicateGeneratedModelNames:
         with pytest.raises(DbtModelNameCollisionError):
             self._check(
                 {
-                    "models/silver/party/frachtparty.sql": "select 1",
-                    "models/gold/party/FrachtParty.sql": "select 1",
+                    "models/silver/party/acmeparty.sql": "select 1",
+                    "models/gold/party/AcmeParty.sql": "select 1",
                 }
             )
 
@@ -5549,9 +5549,9 @@ class TestDuplicateGeneratedModelNames:
     def test_distinct_names_across_layers_pass(self):
         self._check(
             {
-                "models/silver/party/frachtparty.sql": "select 1",
-                "models/gold/party/dim_frachtparty.sql": "select 1",
-                "models/quality/party/frachtparty__dq_quarantine.sql": "select 1",
+                "models/silver/party/acmeparty.sql": "select 1",
+                "models/gold/party/dim_acmeparty.sql": "select 1",
+                "models/quality/party/acmeparty__dq_quarantine.sql": "select 1",
                 "models/silver/party/_party__models.yml": "version: 2",
             }
         )

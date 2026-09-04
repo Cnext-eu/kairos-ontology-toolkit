@@ -1087,7 +1087,7 @@ class TestRealHubShapes:
     """Shapes found in real client hubs that synthetic fixtures did not cover.
 
     Both cases below were caught by running scaffold-contract against
-    fracht-client-ontology-hub, where the scaffolder produced documents its own loader
+    a client ontology hub, where the scaffolder produced documents its own loader
     rejected. Pinned here so a synthetic-only fixture cannot let them regress.
     """
 
@@ -1096,8 +1096,8 @@ class TestRealHubShapes:
         prefixed QNames."""
         document = _document()
         entity = _entity(document)
-        entity["class"] = "https://fracht.com/ont/party#FrachtParty"
-        entity["properties"][0]["property"] = "https://fracht.com/ont/party#partyReference"
+        entity["class"] = "https://acme.example/ont/party#AcmeParty"
+        entity["properties"][0]["property"] = "https://acme.example/ont/party#partyReference"
         entity["properties"][1]["property"] = (
             "https://www.kairosflow.ai/ont/bsp/party#partyIdentifier"
         )
@@ -1105,7 +1105,7 @@ class TestRealHubShapes:
         entity["grain"]["columns"] = ["party_reference"]
         entity["identity"]["businessKey"] = ["party_reference"]
         contract = load_silver_contract(_dump(document))
-        declared = contract.entity_for("https://fracht.com/ont/party#FrachtParty")
+        declared = contract.entity_for("https://acme.example/ont/party#AcmeParty")
         assert declared is not None
         assert [resolved_column_name(item) for item in declared.properties] == [
             "party_reference",
@@ -1114,7 +1114,7 @@ class TestRealHubShapes:
 
     def test_a_technical_column_may_carry_the_grain(self):
         """A materialized grain is routinely a DD-139 technical identity column that is no
-        semantic property at all -- e.g. `source_record_id` in fracht's bindings."""
+        semantic property at all -- e.g. `source_record_id` in a client's bindings."""
         document = _document()
         entity = _entity(document)
         entity["technicalColumns"][0] = {

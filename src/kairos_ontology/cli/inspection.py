@@ -957,7 +957,7 @@ def coverage_report_cmd(ontology, ref_models, sources, output, out_format):
 @click.option(
     "--source-system",
     required=True,
-    help="Source system to derive the mapping from (e.g. 'cargowise'), matched against the "
+    help="Source system to derive the mapping from (e.g. 'tms'), matched against the "
     "first dot-segment of each binding's source.relation.",
 )
 @click.option(
@@ -986,8 +986,8 @@ def field_mapping_report_cmd(ontologies, bindings, sources, source_system, domai
 
     \b
     Examples:
-      kairos-ontology field-mapping-report --source-system cargowise
-      kairos-ontology field-mapping-report --source-system cargowise --domain party
+      kairos-ontology field-mapping-report --source-system tms
+      kairos-ontology field-mapping-report --source-system tms --domain party
     """
     from ..core.field_mapping_report import run_field_mapping_report, write_field_mapping_workbook
     from ..core.hub_utils import find_hub_root, publish_root

@@ -253,7 +253,7 @@ def _key_columns(
 
     Three routes, because real bindings use all three: a semantic ``fields:`` entry whose
     expression is exactly that source column; a DD-139 ``technicalFields:`` entry whose
-    expression is exactly that source column (its emitted name often differs -- fracht
+    expression is exactly that source column (its emitted name often differs -- a client hub
     grains on ``BL_PK`` through a technical column named ``source_record_id``); or a
     technical entry whose name simply equals the source column.
     """

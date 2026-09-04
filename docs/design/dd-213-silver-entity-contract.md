@@ -171,7 +171,7 @@ fixture:
 
 - A materialized grain is a *physical* statement about the table, and real bindings routinely
   grain on a DD-139 **technical** column that is no semantic property at all — in
-  fracht-client-ontology-hub, `source_record_id` is both the grain and a `technicalFields:`
+  a client ontology hub, `source_record_id` is both the grain and a `technicalFields:`
   entry. A properties-only grain could not express that, and refused to scaffold 3 of 4
   domains.
 - The compiler already resolves identity this way: DD-133 §8b has `EntityIdentityFact.naturalKey`
@@ -185,17 +185,17 @@ supplied-by-construction so the §8b source→output resolution always applies.
 
 A key column is matched to its emitted column by three routes, because real bindings use all
 three: a `fields:` entry whose expression is exactly that source column; a `technicalFields:`
-entry whose expression is exactly that source column (its emitted name often differs — fracht
+entry whose expression is exactly that source column (its emitted name often differs — a client hub
 grains on `BL_PK` through a technical column named `source_record_id`); or a technical entry
 whose name equals the source column.
 
 ### Term references accept both authoring forms
 
 `class`, `property`, `target`, and `replacedBy` accept a prefixed QName (`party:Customer`) or
-an absolute IRI (`https://fracht.com/ont/party#FrachtParty`). Real hubs author full IRIs; a
+an absolute IRI (`https://acme.example/ont/party#AcmeParty`). Real hubs author full IRIs; a
 QName-only schema made the scaffolder emit documents its own loader rejected. The default
 column name takes the local part after `#`, else after the last `/`, else after `:` — a bare
-`split(":")` mangles an IRI into `//fracht.com/ont/party#partyReference`.
+`split(":")` mangles an IRI into `//acme.example/ont/party#partyReference`.
 
 ### Reserved names outside the contract
 

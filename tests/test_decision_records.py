@@ -214,9 +214,9 @@ def test_local_source_path_resolves_relative_to_hub_root_not_decisions_dir(
     citation is written (relative to the hub root, no leading ``../``) wrongly
     warns as unresolved.
     """
-    source_dir = tmp_path / "integration" / "sources" / "cargowise"
+    source_dir = tmp_path / "integration" / "sources" / "tms"
     source_dir.mkdir(parents=True)
-    (source_dir / "GlbStaff.sample.yaml").write_text("a: 1\n", encoding="utf-8")
+    (source_dir / "StaffMember.sample.yaml").write_text("a: 1\n", encoding="utf-8")
 
     fm = (
         "type: Decision Record\nid: HUB-DD-20260728-x\ntitle: T\n"
@@ -224,7 +224,7 @@ def test_local_source_path_resolves_relative_to_hub_root_not_decisions_dir(
         "materiality: [evidence-conflict]\n"
         "generated: { by: human:me }\n"
         "sources:\n"
-        "  - { resource: integration/sources/cargowise/GlbStaff.sample.yaml }\n"
+        "  - { resource: integration/sources/tms/StaffMember.sample.yaml }\n"
     )
     _write(bundle, "HUB-DD-20260728-x.md", fm)
     result = dr.validate_decision_bundle(bundle)

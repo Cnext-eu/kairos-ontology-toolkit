@@ -47,7 +47,7 @@ _CALENDAR_ROLE = re.compile(
 )
 _DAX_REFERENCE = re.compile(r"\[([^\]]+)\]")
 # #619 Bug 11: a DAX table reference is either a single-quoted name (DAX never uses single
-# quotes for string literals, only table names -- e.g. COUNTROWS('dim_frachtparty')) or a
+# quotes for string literals, only table names -- e.g. COUNTROWS('dim_acmeparty')) or a
 # bare identifier immediately before a column bracket (e.g. Sales[Amount]). This is a
 # heuristic over the expression text, not a full DAX parser, but it catches the exact
 # failure mode reported: a measureExpression naming a table that was never emitted.

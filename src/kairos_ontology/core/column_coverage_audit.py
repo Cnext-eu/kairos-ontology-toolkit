@@ -19,7 +19,7 @@ from this module's own first draft: ``source_updated_at`` is frequently exactly 
 audit-trail timestamp columns this same check would otherwise flag as an orphan.
 
 An adversarial pre-implementation review found that a naive "has real sample variation"
-threshold is unreliable in both directions on real CargoWise data: audit-trail
+threshold is unreliable in both directions on real client data: audit-trail
 ``*SystemLastEditTimeUtc`` columns often show LOW distinct/row-count ratios (batched edits
 cluster timestamps), while genuine business timestamps (e.g. an ETA/ETD) often show HIGH
 ratios -- so a cardinality-ratio cutoff both lets real audit noise through and suppresses
@@ -207,7 +207,7 @@ def _binding_referenced_columns(binding: EntityBinding) -> set[str]:
 def _table_from_relation(relation: str) -> str:
     """Return the bronze-vocabulary table name a binding's ``source.relation`` refers to.
 
-    ``relation`` is ``"<system>.<table>"`` (e.g. ``"cargowise.JobShipment.sample"``); the
+    ``relation`` is ``"<system>.<table>"`` (e.g. ``"tms.Shipment.sample"``); the
     bronze vocabulary's own ``kairos-bronze:tableName``/``SourceColumnSample.table_name``
     keeps the ``.sample``-style suffix intact, so only the leading system segment is
     stripped -- split once, not on every dot.

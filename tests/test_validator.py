@@ -1702,7 +1702,7 @@ metadata:
   name: hr-staff-to-party
   domain: party
 source:
-  relation: hr.GlbStaff
+  relation: hr.StaffMember
 target:
   class: party:StaffMember
 grain:
@@ -1726,21 +1726,21 @@ _STAFF_SOURCE_VOCAB_TTL = """\
 src:hr a kb:SourceSystem ; rdfs:label "hr" ;
   kb:database "hr_raw" ; kb:schema "dbo" ; kb:connectionType "jdbc" .
 
-src:GlbStaff a kb:SourceTable ; kb:sourceSystem src:hr ;
-  kb:tableName "GlbStaff" ; kb:primaryKeyColumns "staff_id" .
-src:staff_id a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+src:StaffMember a kb:SourceTable ; kb:sourceSystem src:hr ;
+  kb:tableName "StaffMember" ; kb:primaryKeyColumns "staff_id" .
+src:staff_id a kb:SourceColumn ; kb:sourceTable src:StaffMember ;
   kb:columnName "staff_id" ; kb:dataType "varchar(30)" ;
   kb:nullable "false"^^xsd:boolean .
-src:staff_role a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+src:staff_role a kb:SourceColumn ; kb:sourceTable src:StaffMember ;
   kb:columnName "role" ; kb:dataType "varchar(50)" ;
   kb:nullable "true"^^xsd:boolean .
-src:staff_dob a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+src:staff_dob a kb:SourceColumn ; kb:sourceTable src:StaffMember ;
   kb:columnName "DateOfBirth" ; kb:dataType "date" ;
   kb:nullable "true"^^xsd:boolean .
-src:staff_passport a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+src:staff_passport a kb:SourceColumn ; kb:sourceTable src:StaffMember ;
   kb:columnName "PassportNumber" ; kb:dataType "varchar(30)" ;
   kb:nullable "true"^^xsd:boolean .
-src:staff_kin a kb:SourceColumn ; kb:sourceTable src:GlbStaff ;
+src:staff_kin a kb:SourceColumn ; kb:sourceTable src:StaffMember ;
   kb:columnName "NextOfKinName" ; kb:dataType "varchar(200)" ;
   kb:nullable "true"^^xsd:boolean .
 """
@@ -1799,8 +1799,8 @@ class TestGdprDatatypeAndBindingEvidence:
         carries no PII keyword."""
         source_evidence = {
             "StaffMember": [
-                ("hr.GlbStaff", "DateOfBirth", "date_of_birth"),
-                ("hr.GlbStaff", "PassportNumber", "passport"),
+                ("hr.StaffMember", "DateOfBirth", "date_of_birth"),
+                ("hr.StaffMember", "PassportNumber", "passport"),
             ]
         }
         result = validate_gdpr(_ONTOLOGY_STAFF_MEMBER, source_evidence=source_evidence)
@@ -1818,7 +1818,7 @@ class TestGdprDatatypeAndBindingEvidence:
 party:StaffMemberPII
     kairos-ext:gdprSatelliteOf party:StaffMember .
 """
-        source_evidence = {"StaffMember": [("hr.GlbStaff", "PassportNumber", "passport")]}
+        source_evidence = {"StaffMember": [("hr.StaffMember", "PassportNumber", "passport")]}
         result = validate_gdpr(
             _ONTOLOGY_STAFF_MEMBER, extension, source_evidence=source_evidence
         )
@@ -1846,7 +1846,7 @@ party:StaffMemberPII
         captured = capsys.readouterr()
         assert total > 0
         assert "StaffMember" in captured.out
-        assert "hr.GlbStaff" in captured.out
+        assert "hr.StaffMember" in captured.out
 
     def test_binding_source_evidence_defaults_hub_root_from_ontologies_path(self, tmp_path):
         """When hub_root is omitted, the <hub>/model/ontologies convention is assumed."""

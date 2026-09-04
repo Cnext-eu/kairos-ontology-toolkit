@@ -428,7 +428,7 @@ def _binding_matches_system(text: str, source_system: str, *, hub_root: Path | N
     """True when *text*'s declared source belongs to *source_system*.
 
     A ``source.relation`` binding matches on the relation's first dot-segment (e.g.
-    ``"cargowise"`` in ``"cargowise.GlbStaff.sample"``) -- always present on a resolvable
+    ``"tms"`` in ``"tms.StaffMember.sample"``) -- always present on a resolvable
     binding, unlike a matching bronze ``SourceColumn``/sample entry, which issue #298
     documents may not exist for every declared column.
 

@@ -432,7 +432,7 @@ def _resolve_hub_root(decisions_path: Path) -> Path:
     falls back to the structural parent of *decisions_path* for a hub that has
     decisions but no ``model/`` yet. This is what ``sources[].resource`` local
     paths must be resolved against — not ``decisions_path`` itself — so a
-    citation like ``integration/sources/cargowise/GlbStaff.sample.yaml`` (relative
+    citation like ``integration/sources/tms/StaffMember.sample.yaml`` (relative
     to the hub root, the convention every other path citation in a hub follows)
     resolves without an unmotivated ``../`` (issue #349).
     """
