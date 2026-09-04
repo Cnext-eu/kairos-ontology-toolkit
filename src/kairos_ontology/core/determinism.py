@@ -118,9 +118,15 @@ def write_text_lf(path: Path, content: str) -> None:
     The timestamp above is not the only source of non-determinism. ``Path.write_text``
     opens in text mode, where Python's universal-newline translation rewrites every
     LF to CRLF on Windows -- so byte-identical projector output landed as CRLF on a
-    Windows contributor's machine and LF in Linux CI. That churns ``git diff`` on
-    every regeneration and breaks Mermaid, whose comment matcher rejects a ``%%``
-    line carrying a trailing carriage return.
+    Windows contributor's machine and LF in Linux CI, churning ``git diff`` on every
+    regeneration and defeating byte-comparison of generated trees.
+
+    Issue #698 also reported that a trailing carriage return breaks Mermaid's comment
+    matcher. That does **not** reproduce: mermaid-cli 11.12.0 renders a fully CRLF
+    ``.mmd`` without complaint. (A *bare* ``%%`` line with no text after it does break
+    the ``erDiagram`` parser -- that one is real, and is guarded in
+    ``contract_erd_projector``.) The determinism argument above is the whole
+    justification for this helper.
 
     ``compile --emit`` never had this problem because it writes bytes
     (``emit.py::_write_stage``). This is the same guarantee for the projection lane

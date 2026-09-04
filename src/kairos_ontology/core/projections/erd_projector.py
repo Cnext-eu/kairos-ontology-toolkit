@@ -123,64 +123,174 @@ def _collect_classes(graph: Graph, namespace: str) -> list[URIRef]:
     return sorted(classes, key=str)
 
 
+def _named_parents(graph: Graph, cls: URIRef) -> list[URIRef]:
+    """Return the direct, *named* superclasses of *cls*.
+
+    A blank-node ``rdfs:subClassOf`` object is an OWL restriction (property
+    cardinality), not a superclass, and is what :func:`_restriction_bounds` walks
+    separately; the two sets are disjoint by construction, since a triple's object is
+    either a URIRef or a blank node, never both.
+    """
+    return sorted(
+        (parent for parent in graph.objects(cls, RDFS.subClassOf) if isinstance(parent, URIRef)),
+        key=str,
+    )
+
+
+def _ancestors(graph: Graph, cls: URIRef) -> list[URIRef]:
+    """Return every transitive named superclass of *cls*, nearest first, cycle-safe.
+
+    An ontology may assert a ``subClassOf`` cycle (directly or through an import), and a
+    documentation projector must render it rather than recurse forever.
+    """
+    seen: set[URIRef] = {cls}
+    ordered: list[URIRef] = []
+    frontier = _named_parents(graph, cls)
+    while frontier:
+        parent = frontier.pop(0)
+        if parent in seen:
+            continue
+        seen.add(parent)
+        ordered.append(parent)
+        frontier.extend(_named_parents(graph, parent))
+    return ordered
+
+
+def _external_label(cls: URIRef) -> str:
+    """Return a short Mermaid stereotype naming the model an imported class came from.
+
+    The last two path segments read well for the reference models in practice --
+    ``https://kairosflow.ai/ont/bsp/party#TradeParty`` becomes ``bsp/party`` -- and are
+    enough to answer "which model does this come from?" without widening the box.
+    """
+    text = str(cls).split("://", 1)[-1]
+    text = text.split("#", 1)[0].rstrip("/")
+    segments = [segment for segment in text.split("/") if segment][1:]
+    label = "/".join(segments[-2:]) if segments else text
+    return re.sub(r"[^0-9A-Za-z_./-]", "_", label) or "imported"
+
+
 def _collect_relationships(
     graph: Graph, classes: list[URIRef]
-) -> list[tuple[URIRef, URIRef, URIRef]]:
-    """Return ``(property, domain_class, range_class)`` triples for domain-local classes.
+) -> list[tuple[URIRef, URIRef, URIRef, URIRef, bool]]:
+    """Return ``(left, declared_on, property, range, inherited)`` edges to render.
 
     Uses :func:`effective_domain_classes` (DD-131) so multi-class ``rdfs:domain``
     (``owl:unionOf``) and ``schema:domainIncludes`` are both honored -- the same
-    domain-resolution authority the silver/dbt projectors already use.
+    domain-resolution authority the silver/dbt projectors already use. That function is
+    deliberately **not** widened with ``rdfs:subClassOf`` entailment: it is the shared
+    authority the silver/dbt projectors read, so inherited properties would start
+    materializing as Silver columns project-wide. The inheritance walk lives here.
+
+    Three cases, where previously only the first was kept (#678/#704):
+
+    * the domain is domain-local -- the class's own relationship;
+    * the domain is a *superclass* of a domain-local class, so that class has the
+      relationship by inheritance. Rendered from the subclass, because that is the class
+      whose instances carry it, and flagged so the diagram can say so;
+    * neither, but the *range* is domain-local -- an imported class pointing **at** this
+      domain, which the domain-scoped view should not hide either.
+
+    ``declared_on`` is kept separate from ``left`` so :func:`_restriction_bounds` reads
+    the cardinality from the class that actually declares the restriction.
     """
     class_set = set(classes)
-    relationships: list[tuple[URIRef, URIRef, URIRef]] = []
+    ancestry = {cls: set(_ancestors(graph, cls)) for cls in classes}
+    edges: list[tuple[URIRef, URIRef, URIRef, URIRef, bool]] = []
     for prop in sorted(set(graph.subjects(RDF.type, OWL.ObjectProperty)), key=str):
         range_value = graph.value(prop, RDFS.range)
         if not isinstance(range_value, URIRef):
             continue
         for domain_cls in sorted(effective_domain_classes(graph, prop), key=str):
             if domain_cls in class_set:
-                relationships.append((prop, domain_cls, range_value))
-    relationships.sort(key=lambda item: tuple(str(part) for part in item))
-    return relationships
+                edges.append((domain_cls, domain_cls, prop, range_value, False))
+                continue
+            heirs = sorted(
+                (cls for cls in classes if domain_cls in ancestry[cls]),
+                key=str,
+            )
+            if heirs:
+                for heir in heirs:
+                    edges.append((heir, domain_cls, prop, range_value, True))
+            elif range_value in class_set:
+                edges.append((domain_cls, domain_cls, prop, range_value, False))
+    edges.sort(key=lambda item: (str(item[0]), str(item[2]), str(item[3]), str(item[1])))
+    return edges
 
 
 def _collect_inheritance(graph: Graph, classes: list[URIRef]) -> list[tuple[URIRef, URIRef]]:
-    """Return ``(superclass, subclass)`` pairs between two domain-local named classes.
+    """Return ``(superclass, subclass)`` pairs for every domain-local subclass.
 
-    Only direct, named ``rdfs:subClassOf`` assertions count -- a blank-node object is an
-    OWL restriction (property cardinality), not a superclass, and is what
-    :func:`_restriction_bounds` walks separately; the two sets of ``subClassOf`` triples
-    are disjoint by construction (a triple's object is either a URIRef or a blank node,
-    never both).
+    The superclass is no longer required to be domain-local (#678). Requiring it made
+    the edge unreachable for the modeling style ``kairos-design-domain`` recommends --
+    specializing an imported reference-model class -- which is precisely the case DD-212
+    chose ``classDiagram`` over ``erDiagram`` to serve.
     """
     class_set = set(classes)
     pairs: list[tuple[URIRef, URIRef]] = []
     for cls in classes:
-        for parent in graph.objects(cls, RDFS.subClassOf):
-            if isinstance(parent, URIRef) and parent in class_set:
+        for parent in _named_parents(graph, cls):
+            if parent != cls:
+                pairs.append((parent, cls))
+    # An imported subclass of a local class is inbound structure, kept for the same
+    # reason the inbound relationship case above is.
+    for cls in sorted(set(graph.subjects(RDFS.subClassOf, None)), key=str):
+        if not isinstance(cls, URIRef) or cls in class_set:
+            continue
+        for parent in _named_parents(graph, cls):
+            if parent in class_set:
                 pairs.append((parent, cls))
     pairs.sort(key=lambda item: tuple(str(part) for part in item))
     return pairs
 
 
-def _class_block(graph: Graph, cls: URIRef) -> str:
-    """Render one Mermaid ``classDiagram`` class block with its datatype attributes."""
-    node = _sanitize(extract_local_name(str(cls)))
-    props = sorted(
+def _datatype_properties(graph: Graph, owner: URIRef) -> list[URIRef]:
+    return sorted(
         (
             prop
             for prop in graph.subjects(RDF.type, OWL.DatatypeProperty)
-            if isinstance(prop, URIRef) and cls in effective_domain_classes(graph, prop)
+            if isinstance(prop, URIRef) and owner in effective_domain_classes(graph, prop)
         ),
         key=str,
     )
+
+
+def _class_block(graph: Graph, cls: URIRef, *, stub: bool = False) -> str:
+    """Render one Mermaid ``classDiagram`` class block.
+
+    A *stub* is a class outside the domain namespace, drawn only because a domain class
+    inherits from or references it. It carries a stereotype naming its source model and
+    no members: its own attributes are listed on the domain classes that inherit them,
+    so repeating them here would double every inherited attribute in the diagram.
+
+    For a domain class, attributes declared on a superclass are included and prefixed
+    ``#``. Without them a reviewer reads the box as the whole model -- the reported case
+    was a party class rendering 5 of its 14 attributes, so a reader reasonably concluded
+    the model had no party name or registration number (#678).
+    """
+    node = _sanitize(extract_local_name(str(cls)))
     lines = [f"    class {node} {{"]
-    if props:
-        for prop in props:
-            attr_name = _sanitize(extract_local_name(str(prop)))
-            lines.append(f"        {_attribute_type(graph, prop)} {attr_name}")
-    else:
+    if stub:
+        lines.append(f"        <<{_external_label(cls)}>>")
+        lines.append("    }")
+        return "\n".join(lines)
+
+    own = _datatype_properties(graph, cls)
+    seen = {str(prop) for prop in own}
+    inherited: list[URIRef] = []
+    for ancestor in _ancestors(graph, cls):
+        for prop in _datatype_properties(graph, ancestor):
+            if str(prop) not in seen:
+                seen.add(str(prop))
+                inherited.append(prop)
+
+    for prop in own:
+        lines.append(f"        {_attribute_type(graph, prop)} {_sanitize(extract_local_name(str(prop)))}")
+    for prop in sorted(inherited, key=str):
+        lines.append(
+            f"        #{_attribute_type(graph, prop)} {_sanitize(extract_local_name(str(prop)))}"
+        )
+    if not own and not inherited:
         # Every class renders with at least one attribute so the block is always a
         # valid, visible Mermaid class even for classes with no declared datatype
         # properties (e.g. pure relationship hubs, or classes only bound downstream).
@@ -224,23 +334,45 @@ def generate_erd_artifacts(
     relationships = _collect_relationships(working_graph, classes)
     inheritance = _collect_inheritance(working_graph, classes)
 
+    # Classes outside the namespace are drawn only where a domain class actually
+    # reaches them -- as a superclass, or as either end of a rendered edge. An
+    # unrelated imported class stays out, which is what keeps a domain-scoped diagram
+    # domain-scoped while still showing the whole of what the domain classes are.
+    local = set(classes)
+    external = {
+        node
+        for node in (
+            [parent for parent, _ in inheritance]
+            + [subclass for _, subclass in inheritance]
+            + [left for left, _, _, _, _ in relationships]
+            + [range_cls for _, _, _, range_cls, _ in relationships]
+        )
+        if node not in local
+    }
+
     lines = [
         "%% Canonical ontology class diagram (generated by kairos-ontology — do not edit)",
         "%% Binding-independent: reflects the ontology graph, not compile-plan coverage.",
+        "%% A class outside this domain's namespace is drawn as a stub -- stereotyped with",
+        "%% the model it comes from, and with no members of its own listed.",
+        "%% A member prefixed # is inherited from a superclass; an edge labelled",
+        "%% (inherited) is declared on a superclass and applies to this class.",
         "classDiagram",
     ]
     for cls in classes:
         lines.append(_class_block(working_graph, cls))
+    for cls in sorted(external, key=str):
+        lines.append(_class_block(working_graph, cls, stub=True))
 
     for superclass, subclass in inheritance:
         parent = _sanitize(extract_local_name(str(superclass)))
         child = _sanitize(extract_local_name(str(subclass)))
         lines.append(f"    {parent} <|-- {child}")
 
-    for prop, domain_cls, range_cls in relationships:
+    for domain_cls, declared_on, prop, range_cls, inherited in relationships:
         left = _sanitize(extract_local_name(str(domain_cls)))
         right = _sanitize(extract_local_name(str(range_cls)))
-        min_bound, max_bound = _restriction_bounds(working_graph, domain_cls, prop)
+        min_bound, max_bound = _restriction_bounds(working_graph, declared_on, prop)
         if max_bound is None and (prop, RDF.type, OWL.FunctionalProperty) in working_graph:
             max_bound = 1
         # The left (domain-class) side has no restriction to read directly from --
@@ -254,6 +386,8 @@ def generate_erd_artifacts(
         left_mult = _multiplicity(None, left_max)
         right_mult = _multiplicity(min_bound, max_bound)
         label = _sanitize(extract_local_name(str(prop)))
+        if inherited:
+            label = f"{label} (inherited)"
         lines.append(f'    {left} "{left_mult}" --> "{right_mult}" {right} : {label}')
 
     return {f"{domain}-erd.mmd": "\n".join(lines) + "\n"}

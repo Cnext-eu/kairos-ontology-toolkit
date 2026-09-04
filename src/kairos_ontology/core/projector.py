@@ -238,6 +238,7 @@ for _target_spec in (
     ),
     TargetSpec("ddd", "architecture/ddd", OutputCategory.ARCHITECTURE),
     TargetSpec("erd", "architecture/erd", OutputCategory.ARCHITECTURE),
+    TargetSpec("contract-erd", "architecture/contract-erd", OutputCategory.ARCHITECTURE),
 ):
     _register_target_spec(_target_spec)
 del _target_spec
@@ -888,6 +889,7 @@ def run_projections(
 
     # Look for source system reference docs (with bronze vocab) and SKOS mappings
     sources_dir = hub_root / "integration" / "sources" if hub_root else None
+    contracts_dir = hub_root / "model" / "contracts" if hub_root else None
     mappings_dir = hub_root / "model" / "mappings" if hub_root else None
     extensions_dir = hub_root / "model" / "extensions" if hub_root else None
     if ref_models_dir is None and hub_root:
@@ -1079,6 +1081,7 @@ def run_projections(
                     gold_ext_path=gold_ext_path,
                     ontology_metadata=onto_meta,
                     sources_dir=sources_dir,
+                    contracts_dir=contracts_dir,
                     mappings_dir=mappings_dir,
                     hub_domain_namespaces=hub_domain_namespaces,
                     ref_model_defaults=ref_defaults,
@@ -1823,6 +1826,7 @@ def _run_projection(
     gold_ext_path: Optional[Path] = None,
     ontology_metadata: Optional[dict] = None,
     sources_dir: Optional[Path] = None,
+    contracts_dir: Optional[Path] = None,
     mappings_dir: Optional[Path] = None,
     hub_domain_namespaces: Optional[set] = None,
     ref_model_defaults: Optional[list] = None,
@@ -1884,6 +1888,17 @@ def _run_projection(
             ontology_name=ontology_name or "domain",
             ontology_metadata=ontology_metadata or {},
             overlay_path=projection_ext_path,
+        )
+
+    # Declared Silver contract diagram (DD-216 / issue #698). Reads the authored
+    # contract document rather than the graph or a CompilePlan: the promise is what was
+    # declared, so it renders whether or not a binding fulfils it today.
+    if target == "contract-erd":
+        from .projections.contract_erd_projector import generate_contract_erd_artifacts
+
+        return generate_contract_erd_artifacts(
+            contracts_dir=contracts_dir,
+            ontology_name=ontology_name or "domain",
         )
 
     # Externally-registered targets (e.g. mdm-profile) — dispatched via the

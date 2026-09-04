@@ -267,6 +267,7 @@ This makes it immediately clear which decision they belong to. Files without a
 | [DD-213](#dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it) | The Silver contract is declared, not derived — bindings conform to it | Proposed | 2026-09-01 |
 | [DD-214](#dd-214-sample-redaction-is-opt-in-at-import-the-pre-send-scan-advises-instead-of-refusing) | Sample redaction is opt-in at import; the pre-send scan advises instead of refusing | Accepted | 2026-09-01 |
 | [DD-215](#dd-215-the-target-platform-names-the-engine-and-boolean-ness-is-rendered-per-adapter) | The target platform names the engine, and boolean-ness is rendered per adapter | Accepted | 2026-09-03 |
+| [DD-216](#dd-216-the-declared-silver-contract-gets-its-own-diagram) | The declared Silver contract gets its own diagram | Accepted | 2026-09-04 |
 
 ---
 
@@ -15174,6 +15175,46 @@ touching only `erd_projector.py`'s rendering logic — no further discovery/disp
 `subClassOf` is never mistaken for a superclass), multiplicity strings, and the overlay hook (both
 that overlay triples are merged and that a missing overlay path leaves output unchanged).
 
+### Amended (#678 / #704): scoped to *reachability*, not to the namespace
+
+As decided above, an inheritance edge rendered only between "two domain-local classes". That made
+this decision's own rationale inert in the case the toolkit exists for. A hub's classes specialize
+imported reference-model classes — the style `kairos-design-domain` recommends — so every superclass
+is out-of-namespace and every edge was discarded. Measured on a real hub: **1 of 29** `subClassOf`
+edges and **63 of 237** datatype properties rendered; one domain rendered 3 attributes and hid 49.
+The one diagram meant to show the canonical model's full shape drew a single inheritance arrow, and
+its header actively claimed it "reflects the ontology graph", so absence read as non-existence.
+
+Four filters caused it, not the two originally reported: the namespace filter on classes, the
+`parent in class_set` guard on inheritance, the same guard on relationship *domains*, and attribute
+collection via `effective_domain_classes`, which performs no `subClassOf` entailment.
+
+The scope rule becomes **reachability**: a class outside the namespace is drawn when a domain class
+inherits from it or an edge touches it, and only then. An unrelated imported class stays out, so the
+diagram remains domain-scoped. Concretely:
+
+- an out-of-namespace class renders as a **stub** — a stereotype naming its source model
+  (`<<bsp/party>>`), no members. Its attributes are listed on the classes that inherit them, so
+  repeating them would double every inherited attribute in the diagram;
+- a domain class lists **inherited** datatype properties alongside its own, prefixed `#`;
+- an inheritance or relationship edge survives when **either** end is domain-local, which also fixes
+  a latent asymmetry: an out-of-namespace *range* already rendered as a bare node with no class
+  block, while an out-of-namespace *domain* was dropped entirely;
+- a relationship declared on a superclass is drawn from the **subclass** — the class whose instances
+  carry it — and labelled `(inherited)`. Cardinality is still read from the declaring class;
+- the header states the stub and `#` conventions, so what is omitted is said rather than implied.
+
+`effective_domain_classes` is deliberately **not** widened with `subClassOf` entailment. It is the
+DD-131 authority the silver/dbt projectors and the semantic index share, so inherited properties
+would begin materializing as **Silver columns** project-wide. The inheritance walk lives in
+`erd_projector.py` alone, and is cycle-safe because an imported model may assert a `subClassOf`
+cycle.
+
+Verified against `mmdc` 11.12.0: the stereotype, the `#` member prefix and the `(inherited)` edge
+label all render. Both pre-existing scoping tests still pass unchanged —
+`test_only_domain_local_classes_are_rendered` uses an *orphan* foreign class (still excluded, since
+nothing reaches it) and the restriction test's parent is a blank node.
+
 ---
 
 ## DD-213: The Silver contract is declared, not derived — bindings conform to it
@@ -15514,3 +15555,64 @@ against the dbt adapter the dataplatform installs, and `bump-hub` does not check
 `metadata/<domain>-release-review.json` already carries `adapter.name`. Likewise the v4 check of a
 contracted model's `supported_adapters` against the hub's own adapter, dropped in v5, is not
 reinstated here.
+
+---
+
+## DD-216: The declared Silver contract gets its own diagram
+
+**Status:** Accepted
+**Date:** 2026-09-04
+**Affects:** new `core/projections/contract_erd_projector.py`, `core/projector.py` (new
+`TargetSpec("contract-erd", "architecture/contract-erd", ...)`, a `contracts_dir` parameter threaded
+to the dispatch), new `tests/test_contract_erd_projector.py`, `tests/test_target_registry.py`
+**Issue:** #698
+
+### Context
+
+DD-213 places the declared contract "between the ontology (meaning) and the bindings (source
+fulfilment)". Both neighbours have a diagram — `architecture/erd/<domain>-erd.mmd` for the ontology,
+`medallion/dbt/docs/diagrams/<domain>/<domain>-erd.mmd` for emitted Silver. The contract had none,
+which made it the only layer a consumer had to read as raw YAML, and it is the layer that *is* the
+published promise.
+
+The emitted-Silver ERD does not cover it: the two describe different things. For one real party
+entity the emitted diagram carried fifteen columns in adapter-physical types, five of them machinery
+(`<model>_sk`, `_source_identity_ref`, `_loaded_at`, a DQ match-count), against the ten
+canonical-typed columns actually promised. The emitted view also cannot express what the contract
+adds — `requirement`, declared nullability, `stability`, `closed`, per-column deprecation — and it
+hides cross-domain reach behind `_sk` columns.
+
+### Decision
+
+A new `contract-erd` projection target, registered beside `ddd` and `erd` so
+`projection_target_choices()`/`projection_targets_for_all()` pick it up with no separate CLI wiring.
+It reads the **authored contract document** (`model/contracts/<domain>.contract.yaml`) via
+`load_silver_contract`, never a `CompilePlan`: the promise is what was declared, so a contract no
+binding currently fulfils must still render. `CompilePlan` does not carry the `SilverContract`
+anyway — only `scope.contract_paths` — so a projection target is a far cheaper seam than a compiler
+artifact, which would additionally have to join `_planned_artifact_paths` and the emit manifest.
+
+`erDiagram` rather than the canonical target's `classDiagram`, by DD-212's own reasoning: a contract
+describes a physical Silver table, which has no class hierarchy. `requirement`, nullability and
+deprecation render in the quoted attribute comment; `stability` and `closed` in a per-entity comment;
+a relationship whose target is not declared in this domain is labelled `[external]`, since
+cross-domain reach is precisely what the emitted ERD hides.
+
+An ungoverned domain emits nothing — adopting a contract is opt-in (DD-213 §6), so a hub without one
+must not start producing empty diagrams. A contract that fails to load raises: `run_projections`
+already catches per domain and prints `✗ Failed`, so the operator is told rather than silently given
+no diagram.
+
+### Consequences
+
+The published promise is reviewable as a picture, including the three things only the contract knows
+(`requirement`, `stability`, `closed`). One more entry appears in every `--target all` run, but only
+for domains that have adopted a contract.
+
+Two rendering constraints from #698 were re-tested against `mmdc` 11.12.0 rather than taken on
+report. A **bare `%%`** line does fail the `erDiagram` parser outright, with a line number reported
+post-comment-stripping that points at the wrong line — so every comment this projector emits is
+guaranteed non-empty by a helper. The same issue's claim that **CRLF** breaks the parser does **not**
+reproduce; a fully CRLF `.mmd` renders fine. LF output is still guaranteed, but on determinism
+grounds (`determinism.write_text_lf`), not renderability — the docstrings asserting otherwise are
+corrected.
