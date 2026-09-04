@@ -130,6 +130,7 @@ helper, which always sets `rule_id="DD-133 §3c"`.
 | `conformance.source-missing` | error | DD-133 §3c | |
 | `conformance.target-mismatch` | error | DD-133 §3c | |
 | `conformance.type-contract-missing` | error | DD-133 §3c | |
+| `conformance.type-parameter-incompatible` | error | DD-133 §3c | Two bindings in a group resolve the same property to different **bounded type parameters** (`string(50)` vs `string(100)`). Compared on the source column, not the ontology range, and applies to governed classes too: a union carries one width per column, so a genuine divergence would otherwise silently fall back to an unbounded type (issue #681). Sibling of `conformance.property-incompatible`, which compares type *kind* only. |
 | `conformance.union-incompatible` | error | DD-133 §3c | |
 
 ## `contract_conformance.py` — Gate A, per-binding contract conformance (DD-213)

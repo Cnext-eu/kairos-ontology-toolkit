@@ -291,6 +291,186 @@ def _write_hub(hub_root):
     return binding_dir
 
 
+def _add_related_entity(hub_root, *, via_technical_field: bool):
+    """Give the hub a second class and point a relationship at it (#697).
+
+    No fixture in this module had a ``relationships:`` entry, which is why the scaffold
+    round-trip stayed green while it emitted an unadoptable contract for *any* binding
+    that declares one.
+
+    ``via_technical_field`` selects the two shapes a real hub produces, since
+    ``join.local`` must be carried by *something*: a DD-139 ``technicalFields:`` entry
+    (what #697 reported), or an ordinary mapped ``fields:`` entry. Both used to pin an
+    unadoptable ``columnName`` -- the technical column itself in the first case, the
+    compiler-generated ``<parent>_sk`` in the second.
+    """
+    ontology_dir = hub_root / "model" / "ontologies"
+    source_dir = hub_root / "integration" / "sources" / "crm"
+    binding_dir = hub_root / "integration" / "bindings"
+
+    with (ontology_dir / "party.ttl").open("a", encoding="utf-8") as handle:
+        handle.write(
+            textwrap.dedent("""
+                party:LegalEntity a owl:Class ; rdfs:label "LegalEntity" .
+                party:legalEntityId a owl:DatatypeProperty ;
+                  rdfs:domain party:LegalEntity ; rdfs:range xsd:string .
+                party:legal_entity_reference a owl:DatatypeProperty ;
+                  rdfs:domain party:Customer ; rdfs:range xsd:string .
+                party:representsLegalEntity a owl:ObjectProperty ;
+                  rdfs:domain party:Customer ; rdfs:range party:LegalEntity .
+                """)
+        )
+    with (source_dir / "crm.vocabulary.ttl").open("a", encoding="utf-8") as handle:
+        handle.write(
+            textwrap.dedent("""
+                src:ler a kb:SourceColumn ; kb:sourceTable src:customers ;
+                  kb:columnName "legal_entity_reference" ; kb:dataType "varchar(50)" ;
+                  kb:nullable "true"^^xsd:boolean .
+                src:legalentities a kb:SourceTable ; kb:sourceSystem src:crm ;
+                  kb:tableName "legalentities" ; kb:primaryKeyColumns "legal_entity_id" .
+                src:leid a kb:SourceColumn ; kb:sourceTable src:legalentities ;
+                  kb:columnName "legal_entity_id" ; kb:dataType "varchar(50)" ;
+                  kb:nullable "false"^^xsd:boolean .
+                """)
+        )
+    (binding_dir / "legalentity.binding.yaml").write_text(
+        textwrap.dedent("""
+            apiVersion: kairos.eu/v5
+            kind: EntityBinding
+            metadata:
+              name: crm-legalentity
+              domain: party
+            source:
+              relation: crm.legalentities
+            target:
+              class: party:LegalEntity
+            grain:
+              columns: [legal_entity_id]
+            identity:
+              strategy: source-natural
+              sourceKey: [legal_entity_id]
+            load:
+              mode: full-refresh
+            fields:
+              - property: party:legalEntityId
+                expression: legal_entity_id
+            """).strip(),
+        encoding="utf-8",
+    )
+
+    customer = binding_dir / "customer.binding.yaml"
+    text = customer.read_text(encoding="utf-8")
+    if via_technical_field:
+        text += textwrap.dedent("""
+            technicalFields:
+              - name: legal_entity_reference
+                expression: legal_entity_reference
+                type: string
+                nullable: true
+                purpose: relationship
+            """)
+    else:
+        # Carried by an ordinary mapped field instead. Deliberately NOT dedented: this
+        # continues the binding's `fields:` list, so it must keep that block's indent.
+        text += "\n  - property: party:legal_entity_reference\n    expression: legal_entity_reference\n"
+    customer.write_text(
+        text
+        + textwrap.dedent("""
+            relationships:
+              - property: party:representsLegalEntity
+                target: party:LegalEntity
+                join:
+                  - local: legal_entity_reference
+                    foreign: legal_entity_id
+                cardinality: many-to-one
+                mode: non-temporal
+                missingParent: "null"
+                ambiguousParent: error
+            """),
+        encoding="utf-8",
+    )
+
+
+class TestScaffoldingARelationship:
+    """#697: `scaffold-contract` emitted a contract that failed its own compile gate.
+
+    `_partition` classified columns by `role` alone, so every `role=foreign-key` column
+    landed in one bucket that was then positionally zipped against the authored
+    relationships. Both shapes below pinned a `columnName` the loader rejects.
+    """
+
+    def test_a_dd139_relationship_technical_field_becomes_a_technical_column(self, tmp_path):
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=True)
+        plan = build_compile_plan(tmp_path, "party")
+        entity = load_silver_contract(
+            render_contract_yaml(build_contract_document(plan))
+        ).entity_for("party:Customer")
+
+        # The kernel stamps role=foreign-key on the join.local column, but the author
+        # declared it under technicalFields:, so technicalColumns: is where it belongs.
+        assert [item.name for item in entity.technical_columns] == ["legal_entity_reference"]
+
+    @pytest.mark.parametrize("via_technical_field", [True, False], ids=["dd139", "mapped-field"])
+    def test_the_relationship_pins_no_column_name(self, tmp_path, via_technical_field):
+        """Every emitted relationship column is compiler-owned (DD-213 §3).
+
+        With a technical field the pinned name duplicated the technical column; with a
+        mapped field it was the generated `<parent>_sk`, whose reserved suffix the loader
+        rejects. Neither ever reached emission -- `apply_contract_column_names` pins
+        properties only -- so declaring the pair is the whole contract.
+        """
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=via_technical_field)
+        entity = load_silver_contract(
+            render_contract_yaml(build_contract_document(build_compile_plan(tmp_path, "party")))
+        ).entity_for("party:Customer")
+
+        assert [
+            (item.property, item.target, item.column_name) for item in entity.relationships
+        ] == [("party:representsLegalEntity", "party:LegalEntity", "")]
+
+    @pytest.mark.parametrize("via_technical_field", [True, False], ids=["dd139", "mapped-field"])
+    def test_adopting_the_generated_contract_is_a_no_op(self, tmp_path, via_technical_field):
+        """The guarantee the module header states, for the shape that broke it."""
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=via_technical_field)
+        _adopt_contract(tmp_path)
+        diagnostics = _diagnostics(tmp_path)
+        # Non-vacuity guard: a malformed fixture that got the binding rejected would
+        # leave no Customer entity and satisfy the contract assertion trivially.
+        assert not [code for code in diagnostics if code.startswith("binding.")]
+        contract = load_silver_contract(
+            (tmp_path / "model" / "contracts" / "party.contract.yaml").read_text(encoding="utf-8")
+        )
+        assert contract.entity_for("party:Customer") is not None
+        assert not [code for code in diagnostics if code.startswith("contract.")]
+
+    def test_a_grain_on_the_technical_field_still_scaffolds(self, tmp_path):
+        """Second defect behind the same misclassification.
+
+        `_key_columns` resolves grain against `columns.technical`. While the join column
+        was filed as a foreign key that set was empty, so a grain stated on it resolved
+        to nothing and `build_contract_document` raised outright -- the domain could not
+        be scaffolded at all, which is how a real hub met this before adoption.
+        """
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=True)
+        binding = tmp_path / "integration" / "bindings" / "customer.binding.yaml"
+        binding.write_text(
+            binding.read_text(encoding="utf-8").replace(
+                "grain:\n  columns: [customer_id]",
+                "grain:\n  columns: [customer_id, legal_entity_reference]",
+            ),
+            encoding="utf-8",
+        )
+        plan = build_compile_plan(tmp_path, "party")
+        entity = load_silver_contract(
+            render_contract_yaml(build_contract_document(plan))
+        ).entity_for("party:Customer")
+        assert list(entity.grain) == ["customer_id", "legal_entity_reference"]
+
+
 class TestContractScaffold:
     def test_scaffolds_a_loadable_contract_from_a_plan(self, tmp_path):
         _write_hub(tmp_path)
@@ -759,26 +939,106 @@ class TestConformanceRelaxation:
         _add_second_source(tmp_path, binding_dir, partial=True)
         assert "conformance.property-incompatible" in _diagnostics(tmp_path)
 
-    def test_gaining_a_second_source_widens_the_column_type(self, tmp_path):
-        """A pre-existing toolkit defect, surfaced by Gate A on first contact.
+    def test_gaining_a_second_source_preserves_the_column_type(self, tmp_path):
+        """Issue #681, fixed: a second source must not silently widen a published column.
 
-        The conformance UNION drops the string length its branches keep -- ``string(50)``
-        becomes unsized ``string`` -- so a class's published column type silently widens the
-        moment it gains a second source, with no ontology or binding change. This is exactly
-        the class of instability DD-213 exists to catch, and the check is deliberately left
-        strict rather than relaxed to accommodate it: the widening is real and a consumer
-        would feel it.
+        The conformance UNION used to drop the string length its branches keep --
+        ``string(50)`` became unsized ``string`` -- so a class's consumer-facing column
+        type changed the moment it gained a second source, with no ontology change, no
+        binding change and nothing to review. Gate A surfaced it as
+        ``contract.type-mismatch`` and was deliberately left strict rather than relaxed
+        to accommodate it.
 
-        Tracked as issue #681. This test asserts the CURRENT behaviour, so it will fail once
-        the union preserves its branches' length -- at which point flip it to assert the
-        types agree rather than deleting it.
+        This is the flipped form of the test that pinned the defect: adopting a contract
+        and then adding a second source is now a no-op for every declared type.
         """
         binding_dir = _write_hub(tmp_path)
         _adopt_contract(tmp_path)
         _add_second_source(tmp_path, binding_dir, partial=False)
-        finding = _diagnostics(tmp_path).get("contract.type-mismatch")
+        assert "contract.type-mismatch" not in _diagnostics(tmp_path)
+
+    def test_the_union_carries_the_same_types_as_its_branches(self, tmp_path):
+        """The defect stated directly, independent of any contract (#681).
+
+        Verified with no contract present at all, because the widening predates DD-213
+        and must not be re-read as a contract-emission artifact.
+        """
+        binding_dir = _write_hub(tmp_path)
+        _add_second_source(tmp_path, binding_dir, partial=False)
+        plan = build_compile_plan(tmp_path, "party")
+        models = {
+            item.identity.model_name: item for item in plan.shaped_project.silver_models
+        }
+        union = models["customer"]
+        assert union.kind.value == "union"
+        assert union.source_models, "the union must name its branches"
+
+        def types(model):
+            return {
+                column.name: column.canonical_type
+                for column in model.columns
+                if column.name in {"customer_id", "customer_name"}
+            }
+
+        expected = types(models[union.source_models[0]])
+        assert expected["customer_id"].length == 50
+        assert expected["customer_name"].length == 200
+        for branch_name in union.source_models:
+            assert types(models[branch_name]) == expected
+        assert types(union) == expected
+
+    def test_genuinely_divergent_widths_are_reported(self, tmp_path):
+        """The other half of #681: branches that disagree have no width to adopt.
+
+        `conformance.property-incompatible` cannot catch this -- it compares type *kind*
+        only, and DD-213 slice 4 skips it entirely for a governed class -- so two sources
+        at varchar(200) and varchar(100) passed every check while the union quietly fell
+        back to an unbounded type. Reported rather than resolved by widest-wins, because
+        picking a width for the author is the silent change the fix exists to stop.
+        """
+        binding_dir = _write_hub(tmp_path)
+        _add_second_source(tmp_path, binding_dir, partial=False)
+        vocabulary = tmp_path / "integration" / "sources" / "erp" / "erp.vocabulary.ttl"
+        vocabulary.write_text(
+            vocabulary.read_text(encoding="utf-8").replace('"varchar(200)"', '"varchar(100)"'),
+            encoding="utf-8",
+        )
+        finding = _diagnostics(tmp_path).get("conformance.type-parameter-incompatible")
         assert finding is not None
-        assert "string" in finding.message
+        assert finding.severity.value == "error"
+        assert "string(100)" in finding.message and "string(200)" in finding.message
+
+    def test_matching_widths_report_no_parameter_divergence(self, tmp_path):
+        """Non-vacuity guard for the check above: agreement must stay silent."""
+        binding_dir = _write_hub(tmp_path)
+        _add_second_source(tmp_path, binding_dir, partial=False)
+        assert "conformance.type-parameter-incompatible" not in _diagnostics(tmp_path)
+
+    def test_a_padded_optional_property_is_not_a_width_divergence(self, tmp_path):
+        """A branch padding a typed NULL has *unknown* width, not a conflicting one.
+
+        Treating it as a divergence would block exactly what DD-213 §4 enables -- a
+        partial source joining an established group -- so the union adopts the width the
+        supplying branch declares.
+        """
+        binding_dir = _write_hub(tmp_path)
+
+        def govern(document):
+            entity = document["entities"][0]
+            entity["properties"][1]["requirement"] = "optional"
+            entity["properties"][1]["nullable"] = True
+
+        _adopt_contract(tmp_path, govern)
+        _add_second_source(tmp_path, binding_dir, partial=True)
+        codes = _diagnostics(tmp_path)
+        assert "conformance.type-parameter-incompatible" not in codes
+        union = next(
+            item
+            for item in build_compile_plan(tmp_path, "party").shaped_project.silver_models
+            if item.identity.model_name == "customer"
+        )
+        widths = {column.name: column.canonical_type for column in union.columns}
+        assert widths["customer_name"].length == 200
 
     def test_a_partial_second_source_joins_a_governed_group(self, tmp_path):
         """DD-213's headline: a new source binds to the Silver model by declaring its gap,
@@ -789,10 +1049,9 @@ class TestConformanceRelaxation:
             entity = document["entities"][0]
             entity["properties"][1]["requirement"] = "optional"
             entity["properties"][1]["nullable"] = True
-            # The union emits unsized string (see the widening test above), so this is the
-            # contract an operator lands once the class is multi-source.
-            for item in entity["properties"]:
-                item["type"] = "string"
+            # Types are left exactly as scaffolded. They used to be flattened to bare
+            # `string` here to accommodate #681's widening; with the union preserving its
+            # branches' width, flattening would now be the mismatch.
 
         _adopt_contract(tmp_path, govern)
         _add_second_source(tmp_path, binding_dir, partial=True)
@@ -811,8 +1070,6 @@ class TestConformanceRelaxation:
             entity = document["entities"][0]
             entity["properties"][1]["requirement"] = "optional"
             entity["properties"][1]["nullable"] = True
-            for item in entity["properties"]:
-                item["type"] = "string"
 
         _adopt_contract(tmp_path, govern)
         _add_second_source(tmp_path, binding_dir, partial=True)
