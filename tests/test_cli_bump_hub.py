@@ -144,7 +144,10 @@ def test_resolve_hub_ref_sha_validates_and_encodes_ref(mock_run):
 
     assert _resolve_hub_ref_sha(" feature/test ref ", "acme/customer-ontology-hub") == SHA
     called_command = mock_run.call_args.args[0]
-    assert called_command[2] == "/repos/acme/customer-ontology-hub/commits/feature%2Ftest%20ref"
+    # Asserted by content, not index: the argv now carries `--hostname <host>` ahead of
+    # the path (#702), so pinning position would break on the next flag added.
+    assert "/repos/acme/customer-ontology-hub/commits/feature%2Ftest%20ref" in called_command
+    assert called_command[called_command.index("--hostname") + 1] == "github.com"
 
     mock_run.return_value = MagicMock(returncode=0, stdout="main\n")
     assert _resolve_hub_ref_sha("main", "acme/customer-ontology-hub") is None
@@ -187,7 +190,9 @@ def test_bump_hub_first_use_uncomments_and_pins(mock_resolve, tmp_path, monkeypa
     assert "acme/customer-ontology-hub" in result.output
     assert SHA in result.output
     assert "v1.0.0" in result.output  # previous (placeholder) value echoed for review
-    mock_resolve.assert_called_once_with("v1.4.0", "acme/customer-ontology-hub")
+    # The host travels with the pin so a GitHub Enterprise Server hub resolves against
+    # its own API rather than github.com (#702).
+    mock_resolve.assert_called_once_with("v1.4.0", "acme/customer-ontology-hub", "github.com")
     written = packages.read_text(encoding="utf-8")
     assert f'revision: "{SHA}"' in written
     assert "  # - git:" not in written

@@ -1,0 +1,37 @@
+# Line-ending policy for the generated tree (issue #699).
+#
+# `compile --all --emit` writes LF on every platform (the compiler emits bytes, and
+# `determinism.write_text_lf` covers the projection lane). Without this file a
+# contributor on `core.autocrlf=true` materialises the *tracked* publish tree as CRLF at
+# checkout, so the next emit rewrites every file back to LF and `git status` reports the
+# whole tree as modified while each file is byte-identical to its index blob. Measured on
+# a real hub: 168 files, and `git checkout <branch>` refusing to switch.
+#
+# That is not cosmetic. The documented recovery -- hand-curating the regeneration commit
+# to "skip line-ending-only noise" -- silently dropped genuinely new artifacts, and the
+# drift gate caught it two commits later.
+* text=auto eol=lf
+
+# Stated explicitly for the generated and authored text the hub tracks, so the policy
+# survives a future change to Git's `text=auto` heuristics.
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.ttl   text eol=lf
+*.rdf   text eol=lf
+*.owl   text eol=lf
+*.csv   text eol=lf
+*.mmd   text eol=lf
+
+# Binary, and load-bearing: a hub tracks source-sample extracts under
+# `.import/sources/**` and client workbooks. Line-ending conversion would corrupt them.
+*.parquet binary
+*.xlsx    binary
+*.xlsb    binary
+*.png     binary
+*.jpg     binary
+*.pdf     binary
+*.zip     binary
+*.pbix    binary

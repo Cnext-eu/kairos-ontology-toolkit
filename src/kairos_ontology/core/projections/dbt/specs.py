@@ -297,6 +297,12 @@ class ForeignKeyPolicy:
     outgoing_relationship_sources: tuple[str, ...]
 
 
+#: The dbt package name the hub emits, and therefore the name a dataplatform must give
+#: to `overrides:` when it rebinds one of the package's sources (#701). Shared so the
+#: emitter and the dataplatform scaffold cannot drift apart on it.
+HUB_DBT_PACKAGE_NAME = "kairos_medallion_project"
+
+
 @dataclass(frozen=True, slots=True)
 class ModelIdentity:
     """Stable identity and generation outcome for one logical model."""

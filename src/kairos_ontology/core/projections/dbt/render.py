@@ -1339,8 +1339,24 @@ def _check_refs(path: str, content: str, model_names: set[str]) -> None:
                 path,
             )
         elif target not in model_names:
+            # Deliberately not phrased as "dangling". This scan sees one domain's
+            # freshly-rendered artifacts plus the directly-bound contract names, and
+            # cannot see the manifest-owned dependency artifacts the compiler copies
+            # into `models/intermediate/` later (`cli/compile.py`'s
+            # `_reconciled_dbt_dependencies`). On a healthy project that produced 15
+            # confident-sounding warnings whose targets were all present and tracked --
+            # which is how authors learn to ignore `dbt validation:` output, including
+            # the line that matters (#699 part 4).
+            #
+            # The authoritative check is the whole-project on-disk scan in
+            # `core/dbt_validation._dangling_refs`, which globs `models/**/*.sql` and so
+            # does see them; the scaffolded PR gate runs it. Folding the planned
+            # dependency names into `known_models` here needs them plumbed from the
+            # kernel through bind/normalize/materialize and is left to a follow-up.
             logger.warning(
-                "dbt validation: ref('%s') in %s does not match any generated model",
+                "dbt validation: ref('%s') in %s matched no model in this domain's "
+                "render scope; if it names a copied intermediate this is expected -- "
+                "`validate-dbt` checks the assembled project authoritatively",
                 target,
                 path,
             )

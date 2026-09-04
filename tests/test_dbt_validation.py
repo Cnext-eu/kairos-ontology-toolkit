@@ -85,7 +85,9 @@ def _result(returncode: int = 0, stdout: str = "", stderr: str = ""):
 def test_fabric_offline_profile_fails_connection_fast() -> None:
     output = _offline_profile("fabric-warehouse")["outputs"]["offline"]
 
-    assert output["authentication"] == "ServicePrincipal"
+    # dbt-fabric dispatches case-insensitively against a closed set that does not
+    # include "ServicePrincipal"; the accepted spelling is the AD-qualified one (#705).
+    assert output["authentication"] == "ActiveDirectoryServicePrincipal"
     assert output["retries"] == 0
     assert output["login_timeout"] == 1
     assert output["query_timeout"] == 1

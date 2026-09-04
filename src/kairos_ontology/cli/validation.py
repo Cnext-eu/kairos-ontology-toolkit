@@ -214,6 +214,19 @@ def validate_source_bindings_cmd(
                 candidate = pin.previous_revision.strip().lower()
                 if _COMMIT_SHA_RE.fullmatch(candidate):
                     resolved_hub_sha = candidate
+            # Say so when the pin could not be read (#702). `resolved_hub_sha = None`
+            # silently switches `verified_hub_sha` staleness checking off, so the
+            # command reports "0 stale" -- not because every binding is re-confirmed
+            # against the current pin, but because the check never ran. A fail-closed
+            # DD-206 gate must not fail open without saying anything.
+            if resolved_hub_sha is None:
+                click.echo(
+                    "⚠  packages.yml is present but no hub commit SHA could be read from "
+                    "it, so meta.kairos.verified_hub_sha staleness checking is DISABLED "
+                    "for this run. Pin the hub with `kairos-ontology bump-hub <ref>`, or "
+                    "pass --hub-sha explicitly.",
+                    err=True,
+                )
 
     def _validate():
         try:

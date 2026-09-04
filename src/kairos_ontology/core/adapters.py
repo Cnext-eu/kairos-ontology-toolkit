@@ -86,6 +86,20 @@ def dbt_profile_type(adapter: str) -> str:
     return DBT_PROFILE_TYPES[canonical]
 
 
+def dbt_validate_extra(adapter: str) -> str:
+    """Return the hub's optional-dependency extra that installs this dbt adapter.
+
+    Keyed on dbt's vocabulary, not ours: the scaffolded ``pyproject.toml`` declares
+    ``dbt-validate-fabric`` because the distribution is ``dbt-fabric``. DD-215 renamed the
+    canonical adapter id to ``fabric-warehouse`` without renaming that extra, so composing
+    the name as ``dbt-validate-{canonical}`` yields ``dbt-validate-fabric-warehouse``,
+    which no hub declares -- and every hub already on disk declares the old spelling, so
+    renaming the extra is not available either. Mapping through
+    :data:`DBT_PROFILE_TYPES` is what keeps both working.
+    """
+    return f"dbt-validate-{dbt_profile_type(adapter)}"
+
+
 #: Every spelling a CLI option accepts: canonical ids plus still-resolving aliases.
 ADAPTER_CHOICES: tuple[str, ...] = SUPPORTED_ADAPTER_IDS + tuple(ADAPTER_ALIASES)
 

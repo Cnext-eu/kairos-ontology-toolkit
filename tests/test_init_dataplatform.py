@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 
+import re
+
 import pytest
 from click.testing import CliRunner
 
@@ -400,12 +402,39 @@ class TestInitDataplatform:
         assert "offline.invalid" in content
         assert "target: ci" in content
 
-    def test_pr_validate_workflow_no_credentials_needed(self, dataplatform_output):
-        """None of the four default steps may require warehouse credentials."""
+    def test_pr_validate_workflow_no_warehouse_credentials_needed(self, dataplatform_output):
+        """No default step may require *warehouse* credentials.
+
+        `secrets.HUB_REPO_TOKEN` is deliberately exempt (#705): it authenticates
+        `dbt deps` against a private or Enterprise-hosted hub *package repository*, not a
+        warehouse, and the step no-ops when the secret is absent so a public hub is
+        unaffected. Asserted by name rather than by banning the string `secrets.`, which
+        would have blocked the fix for a gap that made the workflow uninstallable.
+        """
         wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
         content = wf.read_text(encoding="utf-8")
-        for token in ("DBT_FABRIC_", "DBT_DATABRICKS_", "secrets."):
+        for token in ("DBT_FABRIC_", "DBT_DATABRICKS_"):
             assert token not in content, f"unexpected credential reference: {token}"
+        secret_refs = set(re.findall(r"secrets\.([A-Z_]+)", content))
+        assert secret_refs <= {"HUB_REPO_TOKEN"}, f"unexpected secrets: {secret_refs}"
+
+    def test_pr_validate_workflow_does_not_run_dbt_compile(self, dataplatform_output):
+        """#705: dbt-fabric resolves an Azure credential eagerly during compile.
+
+        Measured against the shipped placeholder profile, no credential-free
+        `authentication:` value lets `dbt compile` succeed, while `dbt parse` passes in
+        every case. Shipping it enabled made the workflow fail on every run.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        for line in wf.read_text(encoding="utf-8").splitlines():
+            if "dbt compile" in line:
+                assert line.strip().startswith("#"), f"dbt compile must stay disabled: {line!r}"
+
+    def test_pr_validate_workflow_scopes_source_binding_validation(self, dataplatform_output):
+        """Unscoped it walks every `sources:` catalog under models/, so a dataplatform's
+        own Bronze catalogs each produce an `unknown` finding at severity error (#705)."""
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        assert "--models-dir" in wf.read_text(encoding="utf-8")
 
     def test_pr_validate_workflow_guards_against_local_package_pins(self, dataplatform_output):
         """A `local:` packages.yml pin must fail CI, pointing at `bump-hub` instead."""
