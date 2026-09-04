@@ -339,6 +339,7 @@ def bind_policy_facts(
         measures=_measures(policy_graph),
         calendars=_calendars(policy_graph),
         security_policies=_security(policy_graph),
+        excluded_columns=_values(policy_graph, ontology, EXT.goldExcludeColumn),
     )
     return MedallionPolicyFacts(
         ontology_uri=ontology_uri,

@@ -905,6 +905,8 @@ class GoldProductFact:
     measures: tuple[MeasureFact, ...]
     calendars: tuple[CalendarFact, ...]
     security_policies: tuple[SecurityFact, ...]
+    #: ``kairos-ext:goldExcludeColumn`` values, each ``"Table.column"`` (#703).
+    excluded_columns: AuthoredValuesFact | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1019,6 +1021,12 @@ class GoldProductSpec:
     calendar: CalendarProfileSpec | None
     security: SecurityPolicySpec | None
     perspectives: tuple[PerspectiveSpec, ...]
+    #: ``kairos-ext:goldExcludeColumn`` values, each ``"Table.column"`` (#703). Carried
+    #: verbatim: the emitted column set they are checked against only exists once the
+    #: tables have been shaped.
+    excluded_columns: tuple[str, ...] = ()
+    #: The ontology this product was authored on, for diagnostics that have no table.
+    ontology_uri: str = ""
 
 
 class AdapterCapability(str, Enum):

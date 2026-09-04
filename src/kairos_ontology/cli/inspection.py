@@ -1103,6 +1103,7 @@ def _render_ai_config_text(report) -> None:
         if role_result.remediation:
             click.echo(f"     fix:      {role_result.remediation}")
         click.echo("")
+    _render_tracing_status()
     if report.is_blocking:
         click.echo("❌ AI provider check failed — one or more roles are not usable.")
     elif report.has_warnings:
@@ -1110,6 +1111,42 @@ def _render_ai_config_text(report) -> None:
     else:
         click.echo("✅ AI provider check passed.")
 
+
+
+def tracing_status() -> tuple[str, str]:
+    """Return ``(status, detail)`` for Langfuse tracing: configured? installed?
+
+    Reported alongside the provider roles because it fails the same way and is invisible
+    in the same way (#694). Tracing degrades rather than failing a run -- correctly -- but
+    a hub that set credentials and got no traces cannot distinguish "package missing"
+    from "Langfuse broken" without being told. `get_tracing_client` now warns when it
+    happens; this surfaces it *before* a 26-minute stage rather than during one.
+
+    Deliberately not solved by adding the extras to the scaffold pin: DD-195 made them
+    opt-in on purpose, and defaulting them would install azure-ai-projects and langfuse
+    into every hub that wants neither.
+    """
+    from ..core.tracing import tracing_configured
+
+    if not tracing_configured():
+        return "off", "no Langfuse credentials set (LANGFUSE_PUBLIC_KEY/SECRET_KEY/HOST)"
+    try:
+        import langfuse  # noqa: F401
+    except ImportError:
+        return (
+            "missing_dependency",
+            "credentials are set but the package is not installed; "
+            "run: uv sync --extra langfuse",
+        )
+    return "ok", "credentials set and package installed"
+
+
+def _render_tracing_status() -> None:
+    status, detail = tracing_status()
+    symbol = {"ok": "✅", "off": "ℹ ", "missing_dependency": "⚠"}[status]
+    click.echo(f"{symbol} tracing (langfuse): {status}")
+    click.echo(f"     {detail}")
+    click.echo("")
 
 
 @click.command(name="check-ai-config")

@@ -2208,6 +2208,75 @@ class TestTotalFailureNoWriteGuarantee:
         assert [f.name for f in second] == sorted(f.name for f in second)
 
 
+class TestFallbackOnlySkipLeavesNoStaleFile:
+    """#696: declining to write must not leave a contradictory artifact standing.
+
+    After a source refresh the previous `<domain>-alignment.yaml` describes tables that
+    no longer exist, and nothing downstream can tell it is out of date. On the reporting
+    hub it became the sole source of 23 `alignment.undecided-gap-column` errors long
+    after every other domain had been regenerated correctly.
+    """
+
+    def _no_ref_model(self, analysis_dir, sources_dir, out, **kwargs):
+        """Run with an empty reference-model inventory: every table is fallback-only."""
+        with (
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.require_ai_provider",
+                # A real string: the provenance block is YAML-serialized, and a bare
+                # MagicMock is not representable.
+                return_value=mock.Mock(provider="test-provider", model="test-model"),
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.get_ai_client",
+                return_value=mock.MagicMock(),
+            ),
+            mock.patch(
+                "kairos_ontology.core.propose_alignment.extract_ref_model_inventory",
+                return_value=[],
+            ),
+        ):
+            return run_propose_alignment(
+                analysis_dir=analysis_dir,
+                sources_dir=sources_dir,
+                catalog_path=None,
+                output_dir=out,
+                without_anchors=True,
+                **kwargs,
+            )
+
+    def test_the_previous_alignment_file_is_removed(self, analysis_dir, sources_dir, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        stale = out / "commercial-alignment.yaml"
+        stale.write_text("domain: commercial\ntables: []\n", encoding="utf-8")
+
+        self._no_ref_model(analysis_dir, sources_dir, out)
+
+        assert not stale.exists(), "a declined write must not leave the old file standing"
+
+    def test_opting_in_writes_the_domain_instead_of_removing_it(
+        self, analysis_dir, sources_dir, tmp_path
+    ):
+        """Non-vacuity guard: --allow-fallback-output still produces the file."""
+        out = tmp_path / "out"
+        out.mkdir()
+
+        self._no_ref_model(analysis_dir, sources_dir, out, allow_fallback_output=True)
+
+        assert (out / "commercial-alignment.yaml").exists()
+
+    def test_no_file_is_written_when_there_was_nothing_to_remove(
+        self, analysis_dir, sources_dir, tmp_path
+    ):
+        """The skip itself is unchanged: a fallback-only domain still writes nothing."""
+        out = tmp_path / "out"
+        out.mkdir()
+
+        self._no_ref_model(analysis_dir, sources_dir, out)
+
+        assert not (out / "commercial-alignment.yaml").exists()
+
+
 class TestModelPrecedence:
     """The caller/CLI-resolved model is authoritative; the per-role provider
     config (``KAIROS_AI_ALIGNMENT_MODEL``) is endpoint/auth/preflight metadata

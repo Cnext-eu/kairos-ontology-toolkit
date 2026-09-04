@@ -3400,6 +3400,10 @@ def _normalize_gold(
             for name in value.split():
                 perspectives.setdefault(name, []).append(table.resource_uri)
     return GoldProductSpec(
+        excluded_columns=(
+            tuple(fact.excluded_columns.values) if fact.excluded_columns is not None else ()
+        ),
+        ontology_uri=fact.ontology_uri,
         profile=profile,
         schema=(
             _text(fact.schema, "Gold schema", "DD-112-profile") if fact.schema is not None else None
