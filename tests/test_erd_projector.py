@@ -10,6 +10,8 @@ from kairos_ontology.core.projector import run_projections
 
 NS = "http://example.com/order#"
 ORDER = Namespace(NS)
+#: An imported reference model, outside the domain namespace.
+REF = Namespace("https://example.test/ont/ref#")
 
 
 def _base_graph() -> Graph:
@@ -91,6 +93,89 @@ class TestInheritance:
         content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
 
         assert "<|--" not in content
+
+
+class TestImportedReferenceModels:
+    """#678/#704: the modeling style `kairos-design-domain` recommends.
+
+    A hub's classes specialize imported reference-model classes, so every superclass
+    lives outside the domain namespace. Requiring both ends of an inheritance edge to be
+    namespace-local made the edge unreachable in exactly that case -- on a real hub, 1 of
+    29 edges and 63 of 237 properties rendered -- which left DD-212's stated reason for
+    choosing `classDiagram` over `erDiagram` inert.
+    """
+
+    @staticmethod
+    def _graph():
+        g = _base_graph()
+        g.add((REF.TradeParty, RDF.type, OWL.Class))
+        g.add((REF.legalName, RDF.type, OWL.DatatypeProperty))
+        g.add((REF.legalName, RDFS.domain, REF.TradeParty))
+        g.add((REF.legalName, RDFS.range, XSD.string))
+        g.add((REF.Address, RDF.type, OWL.Class))
+        g.add((REF.hasAddress, RDF.type, OWL.ObjectProperty))
+        g.add((REF.hasAddress, RDFS.domain, REF.TradeParty))
+        g.add((REF.hasAddress, RDFS.range, REF.Address))
+        g.add((ORDER.Customer, RDFS.subClassOf, REF.TradeParty))
+        return g
+
+    def _content(self):
+        return generate_erd_artifacts(self._graph(), NS, "order")["order-erd.mmd"]
+
+    def test_an_imported_superclass_renders_an_inheritance_edge(self):
+        assert "TradeParty <|-- Customer" in self._content()
+
+    def test_an_imported_superclass_renders_as_a_stereotyped_stub(self):
+        content = self._content()
+        assert "class TradeParty {" in content
+        assert "<<ont/ref>>" in content
+        # A stub lists no members of its own: they are shown on the classes that
+        # inherit them, so repeating them here would double every inherited attribute.
+        block = content.split("class TradeParty {")[1].split("}")[0]
+        assert "legalName" not in block
+
+    def test_inherited_attributes_are_rendered_and_marked(self):
+        content = self._content()
+        assert "        #string legalName" in content
+        # The subclass's own attribute stays unmarked.
+        assert "        string customerName" in content
+
+    def test_inherited_relationships_are_rendered_from_the_subclass(self):
+        """The subclass is the class whose instances carry the relationship."""
+        content = self._content()
+        assert "Customer" in content and "Address" in content
+        assert "hasAddress (inherited)" in content
+
+    def test_an_unrelated_imported_class_is_still_excluded(self):
+        """Scoping is by reachability, not by "render everything imported"."""
+        g = self._graph()
+        other = Namespace("http://example.com/other#")
+        g.add((other.Unrelated, RDF.type, OWL.Class))
+        assert "Unrelated" not in generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+
+    def test_an_inherited_attribute_is_not_repeated_when_also_declared_locally(self):
+        g = self._graph()
+        g.add((ORDER.legalName, RDF.type, OWL.DatatypeProperty))
+        g.add((ORDER.legalName, RDFS.domain, ORDER.Customer))
+        g.add((ORDER.legalName, RDFS.range, XSD.string))
+        content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+        assert content.count("legalName") == 2  # the local one, and the inherited one
+
+    def test_a_subclass_cycle_terminates(self):
+        """An imported model may assert a cycle; a documentation pass must not hang."""
+        g = self._graph()
+        g.add((REF.TradeParty, RDFS.subClassOf, REF.Party))
+        g.add((REF.Party, RDF.type, OWL.Class))
+        g.add((REF.Party, RDFS.subClassOf, REF.TradeParty))
+        assert "TradeParty <|-- Customer" in generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+
+    def test_the_header_states_what_the_stub_convention_means(self):
+        """The old header promised the diagram "reflects the ontology graph" while
+        silently dropping everything outside the namespace, so absence read as
+        non-existence. Whatever is omitted has to be stated."""
+        content = self._content()
+        assert "stub" in content
+        assert "inherited" in content
 
 
 class TestDeterminism:
@@ -214,9 +299,11 @@ class TestCliLevelProjection:
 
         ``Path.write_text`` opens in text mode, so Python rewrote every ``\\n`` to
         ``\\r\\n`` on Windows and left it alone on Linux -- the same inputs produced
-        different bytes per platform, which churns ``git diff`` on regeneration and
-        breaks Mermaid, whose comment matcher rejects a ``%%`` line ending in ``\\r``
-        (and this file opens with two ``%%`` lines).
+        different bytes per platform, churning ``git diff`` on every regeneration.
+
+        Determinism is the whole argument. Issue #698's further claim that CRLF breaks
+        Mermaid does not reproduce -- mermaid-cli 11.12.0 renders a fully CRLF ``.mmd``
+        fine -- so this test deliberately asserts bytes, not renderability.
         """
         output_dir = temp_dir / "output"
 
