@@ -29,15 +29,22 @@ from ..core.extract_schema import DEFAULT_SAMPLE_SIZE
 
 
 def _ensure_utf8_stdio() -> None:
-    """Reconfigure stdout/stderr to UTF-8 on Windows.
+    """Reconfigure stdout/stderr to UTF-8, line-buffered.
 
     The toolkit prints Unicode characters (✓, ✅, 🚀, etc.) which cannot be
     encoded by the default Windows console code pages (cp1252/cp437).  Calling
     this early in the process avoids ``UnicodeEncodeError`` at print time.
+
+    ``line_buffering=True`` is what makes a long-running stage observable when stdout
+    is a pipe rather than a terminal (issue #694). Python block-buffers a piped
+    stream, so a 26-minute ``propose-alignment`` run emitted **zero bytes** until it
+    finished -- from outside, a working run and a hung run were indistinguishable.
+    Set here rather than per-command: every command that reports progress has the
+    same exposure.
     """
     for stream in (sys.stdout, sys.stderr):
         if stream and hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 
 def _warn_if_outside_venv() -> None:

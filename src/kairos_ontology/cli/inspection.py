@@ -1859,8 +1859,10 @@ def _render_next_text(proposal, snapshot) -> None:
     click.echo(f"     inventory:      {snapshot.inventory_status.value}")
     if snapshot.bi_concept_mappings.tables_total:
         click.echo(
-            f"     bi worksheets:  {snapshot.bi_concept_mappings.tables_unfilled}/"
-            f"{snapshot.bi_concept_mappings.tables_total} concept-mapping table(s) unfilled"
+            f"     bi worksheets:  {snapshot.bi_concept_mappings.tables_untriaged}/"
+            f"{snapshot.bi_concept_mappings.tables_total} concept-mapping table(s) "
+            f"untriaged ({snapshot.bi_concept_mappings.tables_unfilled} with no "
+            "reference_model_match)"
         )
     if not proposal.actions:
         return
@@ -1942,6 +1944,7 @@ def next_action_cmd(domains, output_format, no_compile):
                 "bi_concept_mappings": {
                     "tables_total": snapshot.bi_concept_mappings.tables_total,
                     "tables_unfilled": snapshot.bi_concept_mappings.tables_unfilled,
+                    "tables_untriaged": snapshot.bi_concept_mappings.tables_untriaged,
                 },
             },
             "actions": [_next_action_dict(action) for action in proposal.actions],

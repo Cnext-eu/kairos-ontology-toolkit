@@ -22,6 +22,7 @@ from pathlib import Path
 import click
 
 from ..core.compiler import build_compile_plan
+from ..core.determinism import write_text_lf
 from ..core.hub_utils import find_hub_root, publish_root
 from ..core.projections.dbt.gold_connection import GOLD_CONNECTION_OVERRIDE_PATH
 from ..core.projections.dbt.gold_render import PARAMETER_ARTIFACT_PATH
@@ -193,7 +194,7 @@ def _regenerate_master_gold_erd(gold_output: Path, *, hub_name: str) -> None:
     master_mmd = generate_master_gold_erd(gold_output, hub_name=hub_name)
     if master_mmd is None:
         return
-    (gold_output / "master-gold-erd.mmd").write_text(master_mmd, encoding="utf-8")
+    write_text_lf(gold_output / "master-gold-erd.mmd", master_mmd)
 
 
 @click.command(name="apply-gold-connection")

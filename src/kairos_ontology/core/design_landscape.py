@@ -689,11 +689,22 @@ def run_design_landscape(
                 )
             )
         if scan.tables_unfilled:
+            # Reported as absent *evidence*, not as a backlog. A row triaged to `skip`
+            # or `new_class` correctly carries no reference_model_match, so this number
+            # legitimately never reaches zero; `scan.tables_untriaged` is the one that
+            # does, and only `next` recommends on it (issue #687).
+            decided = scan.tables_unfilled - scan.tables_untriaged
+            decided_note = (
+                f" {decided} of them already record an action (skip/new_class), for "
+                "which an empty match is the correct outcome."
+                if decided > 0
+                else ""
+            )
             gaps.append(
                 f"{scan.tables_unfilled} TMDL concept-mapping table(s) have an empty "
-                "reference_model_match (not yet filled in by a modeler); no BI weight "
-                "evidence is available for them. design-landscape never infers this "
-                "itself -- no LLM classification is performed in this pass."
+                "reference_model_match; no BI weight evidence is available for them."
+                f"{decided_note} design-landscape never infers this itself -- no LLM "
+                "classification is performed in this pass."
             )
     else:
         gaps.append(f"no {bi_dir} directory found; BI/report weight evidence is unavailable.")

@@ -193,8 +193,14 @@ class BiConceptMappingObservation:
 
     ``tables_total`` counts every table entry across ``*-concept-mapping.yaml``
     worksheets (current ``integration/discovery/bi/`` and the legacy
-    ``integration/sources/`` location); ``tables_unfilled`` is the subset whose
-    ``reference_model_match`` is still empty — demand evidence a human never triaged.
+    ``integration/sources/`` location).
+
+    ``tables_untriaged`` is the subset with no ``action`` recorded — the actual
+    backlog, and what the recommendation gates on. ``tables_unfilled`` is the subset
+    with no ``reference_model_match``; it is carried for context but must not drive a
+    recommendation, because ``action: skip`` and ``action: new_class`` both leave it
+    empty as their correct terminal state (issue #687).
+
     The zero-valued default is the no-observation state, so existing constructor call
     sites never start reporting a spurious action (same precedent as
     ``inventory_status``).
@@ -202,6 +208,7 @@ class BiConceptMappingObservation:
 
     tables_total: int = 0
     tables_unfilled: int = 0
+    tables_untriaged: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,18 +483,23 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 priority=22,
             )
         )
-    if snapshot.bi_concept_mappings.tables_unfilled > 0:
+    # Gated on tables_untriaged, not tables_unfilled: `action: skip` and
+    # `action: new_class` are complete triage outcomes that leave
+    # reference_model_match empty forever, so the old gate could never retire and kept
+    # this the top recommendation on a 91%-decided hub (issue #687).
+    if snapshot.bi_concept_mappings.tables_untriaged > 0:
         observation = snapshot.bi_concept_mappings
         actions.append(
             _action(
                 "triage-concept-mapping",
                 ActionStatus.HUMAN_DECISION_REQUIRED,
                 rationale=(
-                    f"{observation.tables_unfilled} of {observation.tables_total} BI "
+                    f"{observation.tables_untriaged} of {observation.tables_total} BI "
                     "concept-mapping table(s) under "
-                    "integration/discovery/bi/*-concept-mapping.yaml have an empty "
-                    "reference_model_match — import-tmdl generated demand evidence a "
-                    "human never triaged. Filled rows feed two deterministic consumers: "
+                    "integration/discovery/bi/*-concept-mapping.yaml record no "
+                    "action — import-tmdl generated demand evidence a human never "
+                    "triaged. Record use | specialize | new_class | skip on each. "
+                    "Rows matched to a class feed two deterministic consumers: "
                     "design-landscape (advisory bi_weight) and draft-model-report. "
                     "Triage belongs to the import-tmdl lifecycle (kairos-design-source); "
                     "it stays demand evidence, never business authority (DD-147)."

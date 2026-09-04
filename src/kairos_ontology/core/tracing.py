@@ -145,8 +145,16 @@ def tracing_configured() -> bool:
 def get_tracing_client() -> Any | None:
     """Return a configured Langfuse client, or ``None`` when tracing is off.
 
-    Resolved once per process. A missing package or a bad configuration logs at
-    info level and disables tracing — observability must never fail a run.
+    Resolved once per process. A missing package or a bad configuration disables
+    tracing — observability must never fail a run — but says so at *warning* level
+    (issue #694). Both failure branches below sit behind ``tracing_configured()``, so
+    reaching either means the hub explicitly asked for tracing and did not get it;
+    silence there is indistinguishable from Langfuse being broken. An unconfigured
+    hub stays silent.
+
+    This is the unfinished half of DD-195, whose own context named the failure mode
+    ("tracing would silently no-op ... masks a missing dependency identically to a
+    deliberately-disabled one") and fixed only the availability half.
     """
     global _client, _resolved
     if _resolved:
@@ -173,13 +181,16 @@ def get_tracing_client() -> Any | None:
 
         logger.info("Langfuse tracing enabled (host=%s)", host)
     except ImportError:
-        logger.info(
+        # uv-native remediation (DD-198): the hub declares a `langfuse` extra
+        # (DD-195), so `uv sync` is the fix -- a bare `uv pip install` is undone by
+        # the next sync.
+        logger.warning(
             "Langfuse credentials are set but the package is not installed; "
-            "tracing disabled. Install with: uv pip install langfuse"
+            "tracing disabled. Install with: uv sync --extra langfuse"
         )
         _client = None
     except Exception as exc:  # noqa: BLE001 - observability must not fail a run
-        logger.info("Langfuse tracing could not start (%s); continuing untraced.", exc)
+        logger.warning("Langfuse tracing could not start (%s); continuing untraced.", exc)
         _client = None
     return _client
 

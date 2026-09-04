@@ -431,11 +431,11 @@ def test_triage_concept_mapping_maps_to_design_source_skill():
     assert ACTION_SKILLS["triage-concept-mapping"] == "kairos-design-source"
 
 
-def test_unfilled_concept_mapping_yields_human_decision_required_action():
+def test_untriaged_concept_mapping_yields_human_decision_required_action():
     proposal = propose_next_actions(
         _hub(
             bi_concept_mappings=BiConceptMappingObservation(
-                tables_total=24, tables_unfilled=24
+                tables_total=24, tables_unfilled=24, tables_untriaged=24
             )
         )
     )
@@ -453,7 +453,28 @@ def test_unfilled_concept_mapping_yields_human_decision_required_action():
 
 def test_fully_triaged_concept_mapping_adds_no_action():
     proposal = propose_next_actions(
-        _hub(bi_concept_mappings=BiConceptMappingObservation(tables_total=5, tables_unfilled=0))
+        _hub(
+            bi_concept_mappings=BiConceptMappingObservation(
+                tables_total=5, tables_unfilled=0, tables_untriaged=0
+            )
+        )
+    )
+    assert "triage-concept-mapping" not in _kinds(proposal)
+
+
+def test_recorded_actions_retire_triage_even_with_no_reference_model_match():
+    """#687: the recommendation gates on `action`, never on reference_model_match.
+
+    A hub triaged entirely to `skip` leaves every match empty by definition. Gating
+    on the match made the count unreachable, so `next` kept recommending triage over
+    rows that were already decided -- which trains people to ignore the lead item.
+    """
+    proposal = propose_next_actions(
+        _hub(
+            bi_concept_mappings=BiConceptMappingObservation(
+                tables_total=348, tables_unfilled=348, tables_untriaged=0
+            )
+        )
     )
     assert "triage-concept-mapping" not in _kinds(proposal)
 

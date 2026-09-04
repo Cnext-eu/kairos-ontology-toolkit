@@ -511,6 +511,7 @@ def test_next_reports_unfilled_concept_mapping_worksheets(hub, monkeypatch):
     assert payload["inputs"]["bi_concept_mappings"] == {
         "tables_total": 2,
         "tables_unfilled": 1,
+        "tables_untriaged": 1,
     }
     actions = {action["kind"]: action for action in payload["actions"]}
     triage = actions["triage-concept-mapping"]
@@ -520,6 +521,44 @@ def test_next_reports_unfilled_concept_mapping_worksheets(hub, monkeypatch):
     assert "1 of 2" in triage["rationale"]
 
 
+def test_triaged_to_skip_retires_the_triage_action(hub, monkeypatch):
+    """#687: `action: skip` is a complete decision, so the backlog must reach zero.
+
+    Every row here is decided; none carries a reference_model_match, because for
+    `skip` (a measure-only rollup) and `new_class` an empty match is the correct
+    terminal state. Before the fix these three counted as untriaged forever and
+    `triage-concept-mapping` stayed the top recommendation on a fully-decided hub.
+    """
+    bi_dir = hub / "integration" / "discovery" / "bi"
+    bi_dir.mkdir(parents=True)
+    (bi_dir / "sales-concept-mapping.yaml").write_text(
+        "schema_version: '1'\n"
+        "model_name: Sales\n"
+        "tables:\n"
+        "  - tmdl_name: Carrier_RP_Table\n"
+        "    reference_model_match: ''\n"
+        "    action: skip\n"
+        "    notes: Derived responsible-party rollup, not a standalone entity.\n"
+        "  - tmdl_name: FactMargin\n"
+        "    reference_model_match: ''\n"
+        "    action: skip\n"
+        "  - tmdl_name: DimLocalThing\n"
+        "    reference_model_match: ''\n"
+        "    action: new_class\n",
+        encoding="utf-8",
+    )
+
+    payload = _stdout_json(_invoke(hub, monkeypatch, ["--format", "json"]))
+    assert payload["inputs"]["bi_concept_mappings"] == {
+        "tables_total": 3,
+        # Still 3: absence of BI weight evidence is real and is what
+        # design-landscape reports. It is not a backlog.
+        "tables_unfilled": 3,
+        "tables_untriaged": 0,
+    }
+    assert "triage-concept-mapping" not in {a["kind"] for a in payload["actions"]}
+
+
 def test_next_without_worksheets_reports_zero_counts_and_no_triage_action(hub, monkeypatch):
     result = _invoke(hub, monkeypatch, ["--format", "json"])
     assert result.exit_code == 0
@@ -527,6 +566,7 @@ def test_next_without_worksheets_reports_zero_counts_and_no_triage_action(hub, m
     assert payload["inputs"]["bi_concept_mappings"] == {
         "tables_total": 0,
         "tables_unfilled": 0,
+        "tables_untriaged": 0,
     }
     assert "triage-concept-mapping" not in {a["kind"] for a in payload["actions"]}
 

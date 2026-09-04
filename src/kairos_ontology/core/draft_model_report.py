@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 from ._cache import compute_entry_hash
+from .determinism import write_text_lf
 from .evidence_loaders import (
     load_affinity_by_domain,
     load_skos_links,
@@ -781,9 +782,9 @@ def write_draft_model_report(report: dict[str, Any], output_dir: Path) -> DraftM
         markdown = output_dir / "draft-model-report.md"
         mermaid = output_dir / "draft-model-erd.mmd"
 
-    summary_yaml.write_text(yaml.safe_dump(report, sort_keys=False, width=100), encoding="utf-8")
-    markdown.write_text(render_markdown_report(report), encoding="utf-8")
-    mermaid.write_text(_unfence_mermaid(report["cross_domain_erd"]), encoding="utf-8")
+    write_text_lf(summary_yaml, yaml.safe_dump(report, sort_keys=False, width=100))
+    write_text_lf(markdown, render_markdown_report(report))
+    write_text_lf(mermaid, _unfence_mermaid(report["cross_domain_erd"]))
 
     domain_yamls = []
     for domain, data in report["domains"].items():

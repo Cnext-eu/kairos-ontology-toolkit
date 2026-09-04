@@ -209,6 +209,30 @@ class TestCliLevelProjection:
         content = mmd_files[0].read_text(encoding="utf-8")
         assert "classDiagram" in content
 
+    def test_written_mmd_uses_lf_endings_on_every_platform(self, temp_dir, ontology_files):
+        """Projection output must be byte-identical across platforms.
+
+        ``Path.write_text`` opens in text mode, so Python rewrote every ``\\n`` to
+        ``\\r\\n`` on Windows and left it alone on Linux -- the same inputs produced
+        different bytes per platform, which churns ``git diff`` on regeneration and
+        breaks Mermaid, whose comment matcher rejects a ``%%`` line ending in ``\\r``
+        (and this file opens with two ``%%`` lines).
+        """
+        output_dir = temp_dir / "output"
+
+        run_projections(
+            ontologies_path=ontology_files["dir"],
+            catalog_path=None,
+            output_path=output_dir,
+            target="erd",
+        )
+
+        mmd_files = sorted((output_dir / "architecture" / "erd").glob("*-erd.mmd"))
+        assert mmd_files
+        raw = mmd_files[0].read_bytes()
+        assert raw.startswith(b"%%")
+        assert b"\r" not in raw
+
     def test_erd_is_included_in_target_all(self, temp_dir, ontology_files):
         output_dir = temp_dir / "output"
 
