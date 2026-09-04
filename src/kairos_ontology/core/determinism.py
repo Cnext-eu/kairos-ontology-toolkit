@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 #: Environment variables consulted, in priority order.
 ENV_GENERATED_AT = "KAIROS_GENERATED_AT"
@@ -109,3 +110,24 @@ def generated_at_iso(dt: datetime | None = None) -> str:
     """Return the canonical ``YYYY-MM-DDThh:mm:ssZ`` string for content stamps."""
     dt = resolve_generated_at() if dt is None else dt
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_text_lf(path: Path, content: str) -> None:
+    """Write *content* to *path* as UTF-8 with LF endings on every platform.
+
+    The timestamp above is not the only source of non-determinism. ``Path.write_text``
+    opens in text mode, where Python's universal-newline translation rewrites every
+    LF to CRLF on Windows -- so byte-identical projector output landed as CRLF on a
+    Windows contributor's machine and LF in Linux CI. That churns ``git diff`` on
+    every regeneration and breaks Mermaid, whose comment matcher rejects a ``%%``
+    line carrying a trailing carriage return.
+
+    ``compile --emit`` never had this problem because it writes bytes
+    (``emit.py::_write_stage``). This is the same guarantee for the projection lane
+    and for the ad-hoc ``.mmd`` writers outside it.
+
+    ``newline=""`` disables the translation -- the idiom already used for catalog and
+    master-ontology round-trips (``catalog_utils.py``, ``master_ontology.py``).
+    """
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(content)

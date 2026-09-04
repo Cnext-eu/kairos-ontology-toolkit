@@ -62,7 +62,7 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
     the same report from step 9.
 11. When semantic source analysis is requested, select and disclose the AI provider immediately
     before the call, obtain invocation-scoped consent, and run `analyse-sources`. First run
-    `kairos-ontology check-ai-config --role affinity`; if the role is `not_configured` or
+    `kairos-ontology check-ai-config --role alignment`; if the role is `not_configured` or
     `misconfigured`, stop and print the remediation — never auto-degrade to a heuristic or
     plausible-empty result (DD-159). Report provider, authentication mode, and variable names
     only—never secret values. Preserve deterministic imports when AI analysis is skipped.

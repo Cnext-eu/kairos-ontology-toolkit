@@ -198,7 +198,9 @@ def _bi_concept_mapping_status(root: Path) -> BiConceptMappingObservation:
     except Exception:
         return BiConceptMappingObservation()
     return BiConceptMappingObservation(
-        tables_total=scan.tables_total, tables_unfilled=scan.tables_unfilled
+        tables_total=scan.tables_total,
+        tables_unfilled=scan.tables_unfilled,
+        tables_untriaged=scan.tables_untriaged,
     )
 
 

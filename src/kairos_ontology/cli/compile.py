@@ -17,6 +17,7 @@ from ..core import ontology_loader
 from ..core.compiler import CompileMode, compile_domain
 from ..core.compiler.result import CompileDiagnostic
 from ..core.conformance_artifact import check_discovery_gate
+from ..core.determinism import write_text_lf
 from ..core.hub_utils import find_hub_root, publish_root
 from ..core.observability import current_operation_id
 
@@ -708,7 +709,7 @@ def _regenerate_master_silver_erd(hub: Path) -> None:
         return
     diagrams_dir = dbt_output / "docs" / "diagrams"
     diagrams_dir.mkdir(parents=True, exist_ok=True)
-    (diagrams_dir / "master-erd.mmd").write_text(master_mmd, encoding="utf-8")
+    write_text_lf(diagrams_dir / "master-erd.mmd", master_mmd)
 
 
 def _hub_domains(hub: Path) -> list[str]:

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
-from .determinism import generated_at_iso, resolve_generated_at
+from .determinism import generated_at_iso, resolve_generated_at, write_text_lf
 from .hub_utils import is_domain_ontology_stem
 from .projections.uri_utils import extract_local_name
 from .projections.shared import OntologyClassInfo
@@ -571,7 +571,7 @@ def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
     for file_path, content in artifacts.items():
         output_file = target_output / file_path
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text(content, encoding="utf-8")
+        write_text_lf(output_file, content)
     return len(artifacts)
 
 
@@ -623,9 +623,9 @@ def _reconcile_managed_output(target_output: Path, current_paths: Iterable[str])
             pass
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(
+    write_text_lf(
+        manifest_path,
         json.dumps({"files": current}, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
     return removed
 
@@ -1306,7 +1306,7 @@ def run_projections(
         report_count = 0
         for fname, html in report_artifacts.items():
             out_file = report_output / fname
-            out_file.write_text(html, encoding="utf-8")
+            write_text_lf(out_file, html)
             managed_detail_files.append(fname)
             report_count += 1
             print(f"  ✓ {fname}")
@@ -1323,7 +1323,7 @@ def run_projections(
             )
             for fname, content in overview_artifacts.items():
                 out_file = report_output / fname
-                out_file.write_text(content, encoding="utf-8")
+                write_text_lf(out_file, content)
                 managed_detail_files.append(fname)
                 report_count += 1
                 print(f"  ✓ {fname}")
@@ -1340,7 +1340,7 @@ def run_projections(
             )
             for fname, content in landscape_artifacts.items():
                 out_file = report_output / fname
-                out_file.write_text(content, encoding="utf-8")
+                write_text_lf(out_file, content)
                 managed_detail_files.append(fname)
                 report_count += 1
                 print(f"  ✓ {fname}")
@@ -1357,7 +1357,7 @@ def run_projections(
             )
             for fname, content in progress_artifacts.items():
                 out_file = report_output / fname
-                out_file.write_text(content, encoding="utf-8")
+                write_text_lf(out_file, content)
                 managed_detail_files.append(fname)
                 report_count += 1
                 print(f"  ✓ {fname}")

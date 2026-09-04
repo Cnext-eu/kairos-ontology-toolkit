@@ -186,15 +186,18 @@ def _declared_prefixes(source_path: str) -> dict[str, tuple[str, ...]]:
     return {prefix: tuple(namespaces) for prefix, namespaces in prefixes.items()}
 
 
-def _ambiguous_imported_prefixes(loaded, root_path: Path) -> dict[str, tuple[str, ...]]:
-    """Return imported prefixes (no root declaration) bound to 2+ distinct namespaces.
+def _ambiguous_imported_prefix_origins(
+    loaded, root_path: Path
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Return ambiguous imported prefixes as ``{prefix: {namespace: declaring paths}}``.
 
-    Shared by :func:`_prefix_diagnostics` (to raise ``safety.prefix-ambiguous``) and the
-    ``safety.class-unresolved`` cross-reference (#674): both need the same "which
-    prefixes are ambiguous, and which namespaces do they candidate for" data, computed
-    once so the two diagnostics can never disagree about it.
+    The single walk behind :func:`_ambiguous_imported_prefixes`. It also records *which
+    file* declared each candidate namespace: naming only the namespaces left diagnosing
+    a collision to grepping the vendored reference models by hand (#699), and
+    ``source.manifest.source_path`` is already in hand here, so the provenance costs
+    nothing to collect.
     """
-    imported: dict[str, set[str]] = {}
+    imported: dict[str, dict[str, set[str]]] = {}
     root = str(root_path.resolve())
     root_prefixes = {
         prefix
@@ -209,11 +212,29 @@ def _ambiguous_imported_prefixes(loaded, root_path: Path) -> dict[str, tuple[str
         for prefix, namespaces in _declared_prefixes(path).items():
             if prefix in root_prefixes:
                 continue
-            imported.setdefault(prefix, set()).update(namespaces)
+            for namespace in namespaces:
+                imported.setdefault(prefix, {}).setdefault(namespace, set()).add(path)
     return {
-        prefix: tuple(sorted(namespaces))
-        for prefix, namespaces in imported.items()
-        if len(namespaces) > 1
+        prefix: {
+            namespace: tuple(sorted(paths))
+            for namespace, paths in sorted(by_namespace.items())
+        }
+        for prefix, by_namespace in imported.items()
+        if len(by_namespace) > 1
+    }
+
+
+def _ambiguous_imported_prefixes(loaded, root_path: Path) -> dict[str, tuple[str, ...]]:
+    """Return imported prefixes (no root declaration) bound to 2+ distinct namespaces.
+
+    Shared by :func:`_prefix_diagnostics` (to raise ``safety.prefix-ambiguous``) and the
+    ``safety.class-unresolved`` cross-reference (#674): both need the same "which
+    prefixes are ambiguous, and which namespaces do they candidate for" data, computed
+    once so the two diagnostics can never disagree about it.
+    """
+    return {
+        prefix: tuple(by_namespace)
+        for prefix, by_namespace in _ambiguous_imported_prefix_origins(loaded, root_path).items()
     }
 
 
@@ -234,17 +255,26 @@ def _prefix_diagnostics(loaded, root_path: Path) -> tuple[CompileDiagnostic, ...
                         location=SourceLocation(path=path),
                     )
                 )
-    for prefix, namespaces in sorted(_ambiguous_imported_prefixes(loaded, root_path).items()):
+    origins_by_prefix = _ambiguous_imported_prefix_origins(loaded, root_path)
+    for prefix, origins in sorted(origins_by_prefix.items()):
         label = prefix or ":"
+        namespaces = tuple(origins)
         candidates = " ".join(
             f"@prefix {prefix}: <{namespace}> ." for namespace in namespaces
+        )
+        # Name the declaring files, not just the namespaces: without them, finding
+        # the collision meant grepping the vendored reference models by hand (#699).
+        declared_by = "; ".join(
+            f"{namespace} declared in {', '.join(paths)}"
+            for namespace, paths in origins.items()
         )
         diagnostics.append(
             CompileDiagnostic(
                 code="safety.prefix-ambiguous",
                 message=(
                     f"imported prefix '{label}' maps to multiple namespaces "
-                    f"without a root declaration: {', '.join(namespaces)}. "
+                    f"without a root declaration: {', '.join(namespaces)} "
+                    f"({declared_by}). "
                     f"The imported prefix is not bound for resolution; declare one "
                     f"candidate in the root ontology to disambiguate: {candidates}"
                 ),

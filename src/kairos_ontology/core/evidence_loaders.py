@@ -21,6 +21,12 @@ BI_DISCOVERY_RELPATH = Path("integration") / "discovery" / "bi"
 #: Legacy pre-DD-147 location where older toolkit versions wrote the same artifacts.
 LEGACY_BI_SOURCES_RELPATH = Path("integration") / "sources"
 
+#: The ``action`` values ``import-tmdl`` offers in the worksheet header it generates
+#: (``core/import_tmdl.py``). Any one of them is a recorded human decision, which is
+#: what makes a row triaged -- ``skip`` and ``new_class`` included, even though neither
+#: ever carries a ``reference_model_match`` (issue #687).
+CONCEPT_MAPPING_ACTIONS = frozenset({"use", "specialize", "new_class", "skip"})
+
 
 @dataclass(frozen=True)
 class ConceptMappingScan:
@@ -28,10 +34,22 @@ class ConceptMappingScan:
 
     ``tables`` pairs each table mapping with the worksheet file it came from;
     ``errors`` records unreadable worksheets as ``(path, message)``.
-    ``tables_unfilled`` is the single authority for the "N concept-mapping tables have
-    an empty reference_model_match" count — ``design-landscape``'s gap message and the
-    ``kairos-ontology next`` observation both consume it, so the two can never diverge
-    (issue #421).
+    Two counts, because the two consumers ask different questions (issue #687):
+
+    * ``tables_untriaged`` — rows with no ``action`` recorded. This is the backlog:
+      work a human still owes. It is what ``kairos-ontology next`` recommends on, and
+      it is *reachable* — recording any of ``use | specialize | new_class | skip``
+      decrements it.
+    * ``tables_unfilled`` — rows with an empty ``reference_model_match``. This is the
+      absence of BI weight *evidence*, which is what ``design-landscape`` reports. It
+      is deliberately **not** a backlog: for ``action: skip`` (a measure-only rollup)
+      and for ``action: new_class`` an empty match is the correct terminal state, so
+      it legitimately never reaches zero on a fully-triaged hub.
+
+    Conflating the two is what made ``next`` recommend ``triage-concept-mapping``
+    forever on a hub where 336 of 348 rows already carried an explicit ``skip`` and a
+    written rationale. Both still come from this one pass, so no two surfaces can
+    disagree about either (issue #421).
     """
 
     tables: tuple[tuple[Path, dict[str, Any]], ...]
@@ -39,6 +57,7 @@ class ConceptMappingScan:
     tables_total: int
     tables_unfilled: int
     directories_found: bool
+    tables_untriaged: int = 0
 
 
 def scan_concept_mapping_worksheets(hub_root: Path) -> ConceptMappingScan:
@@ -63,6 +82,7 @@ def scan_concept_mapping_worksheets(hub_root: Path) -> ConceptMappingScan:
     tables: list[tuple[Path, dict[str, Any]]] = []
     errors: list[tuple[Path, str]] = []
     unfilled = 0
+    untriaged = 0
     for mapping_path in sorted(set(mapping_files)):
         try:
             document = yaml.safe_load(mapping_path.read_text(encoding="utf-8"))
@@ -76,14 +96,22 @@ def scan_concept_mapping_worksheets(hub_root: Path) -> ConceptMappingScan:
                 continue
             tables.append((mapping_path, table_dict))
             if not str(table_dict.get("reference_model_match") or "").strip():
-                # Not a bug: import-tmdl leaves this blank for a human to fill in.
+                # Not a bug: import-tmdl leaves this blank for a human to fill in,
+                # and for `skip`/`new_class` it stays blank by definition.
                 unfilled += 1
+            action = str(table_dict.get("action") or "").strip()
+            if action not in CONCEPT_MAPPING_ACTIONS:
+                # No decision recorded yet. An unrecognised value counts as untriaged
+                # too: it is none of the four the worksheet template offers, so no
+                # downstream consumer can act on it either.
+                untriaged += 1
     return ConceptMappingScan(
         tables=tuple(tables),
         errors=tuple(errors),
         tables_total=len(tables),
         tables_unfilled=unfilled,
         directories_found=directories_found,
+        tables_untriaged=untriaged,
     )
 
 _SKOS_MATCH_PREDICATES = {
