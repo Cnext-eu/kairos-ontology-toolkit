@@ -71,6 +71,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   document's 709 lines were a delivery plan; they moved to `docs/design/roadmap.md`.
 
 ### Fixed
+- **`propose-relationships` no longer re-proposes what a binding already authors
+  (DD-220, #722).** The command counted a binding's `relationships:` entries but never
+  read them, so on a real 33-binding hub five of eight resolved proposals were verbatim
+  re-renders of entries already present — and because the rendered YAML hard-codes
+  `cardinality`, `mode`, `missingParent` and `ambiguousParent`, pasting one back as the
+  docs instruct replaced a deliberate, commented `missingParent: null` with `error`,
+  turning a tolerant lookup into a hard load failure for exactly the five uncatalogued
+  code types the comment named. A `(property, target)` pair the child already authors is
+  now skipped outright: counted in the header, listed under `already_authored` in JSON,
+  and never rendered, so there is nothing to paste over the author's policy.
+- **A child's own identity column is no longer matched as a join key (DD-220, #722).**
+  The tier-1 rule tried the child's `identity.sourceKey` columns first, so a hub using one
+  uniform surrogate identity name proposed `source_record_id = source_record_id` — a row
+  joined to itself across two relations — for every pair of relations, while ignoring
+  `parent_invoice_source_id`, the real FK. A candidate that constitutes the child's
+  *entire* identity is now excluded from name matching. Narrower than excluding every
+  identity column on purpose: a line-item child keyed `[order_id, line_no]` still
+  contributes `order_id`.
+- **`purpose: relationship` is now a join signal instead of being discarded (DD-220,
+  #722).** The annotation DD-139 makes authors write, and that
+  `relationship.unrealized-technical-field` points at this command to resolve, was parsed
+  out of the binding and thrown away before the matcher ran — so the command picked the
+  wrong column precisely in the cases the warning asks it to fix. Declared carriers are now
+  tried first (tier 0, reported as `join_evidence: "declared-fk"`) and are exempt from the
+  identity exclusion above; one that names no parent key is surfaced as a `join_candidates`
+  hint on the unresolved proposal rather than forced into a join. The text header now also
+  states how many proposals carry a resolved join, and `SCHEMA_VERSION` is 2.
 - **The compile provenance hash is now stable across platforms (#716).** `provenance_hash`
   covers each input's *name*, and two of the six `ProvenanceInput` sites did not normalise
   path separators — so on Windows bindings, source vocabularies and ontologies entered the

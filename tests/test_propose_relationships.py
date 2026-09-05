@@ -47,7 +47,23 @@ cross_domain_relationships:
 """
 
 
-def _binding(name: str, domain: str, target_class: str, source_key: str, extra: str = "") -> str:
+#: The `missingParent: "null"` is the point, not decoration: one real hub authors
+#: exactly this with a comment naming the code types it deliberately tolerates, and
+#: #722 reports the proposal re-rendering it as `missingParent: error`. Quoted because
+#: the schema enum is the *string* "null" while bare YAML `null` parses to None.
+_AUTHORED_RELATIONSHIP = f"""
+  - property: {_BRIDGE_PROPERTY}
+    target: {_CONSIGNMENT_CLASS}
+    join: [{{local: consignment_id, foreign: consignment_id}}]
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: "null"
+    ambiguousParent: error
+"""
+
+
+def _binding(name: str, domain: str, target_class: str, source_key: str, extra: str = "",
+             relationships: str = "[]") -> str:
     return (
         "apiVersion: kairos.eu/v5\n"
         "kind: EntityBinding\n"
@@ -66,7 +82,7 @@ def _binding(name: str, domain: str, target_class: str, source_key: str, extra: 
         "load:\n"
         "  mode: full-refresh\n"
         "fields: []\n"
-        "relationships: []\n" + extra
+        f"relationships: {relationships}\n" + extra
     )
 
 
@@ -224,6 +240,93 @@ class TestProposals:
         assert _report(hub).proposals == ()
 
 
+class TestAlreadyAuthored:
+    """#722: a relationship the binding already carries is not work, and not a proposal.
+
+    On the reporting hub five of eight resolved proposals were verbatim re-renders of
+    entries already present -- and because `to_yaml` hard-codes the policy fields, pasting
+    one back would have replaced a deliberate `missingParent: null` with `error`, breaking
+    the load for exactly the code types its comment named.
+    """
+
+    def _author(self, hub: Path, relationships: str, extra: str = "") -> None:
+        (hub / "integration" / "bindings" / "bookings.binding.yaml").write_text(
+            _binding("bookings", "booking", _BOOKING_CLASS, "booking_id", extra,
+                     relationships=relationships),
+            encoding="utf-8",
+        )
+
+    def test_an_authored_pair_is_not_re_proposed(self, hub):
+        self._author(hub, _AUTHORED_RELATIONSHIP)
+        report = _report(hub)
+        assert report.proposals == ()
+        assert report.already_authored == (
+            ("bookings", _BRIDGE_PROPERTY, _CONSIGNMENT_CLASS),
+        )
+
+    def test_an_authored_qname_target_matches_a_uri_parent_class(self, hub):
+        """The parent binding's `target.class` is a URI; the child may author a qname.
+
+        `kernel._relationship_ref_uri` accepts a full URI, a `prefix:Local` qname, or a
+        bare local name, and the canonical example uses the qname form -- so comparing
+        raw strings would miss the match and re-propose the entry anyway.
+        """
+        self._author(hub, _AUTHORED_RELATIONSHIP.replace(
+            f"target: {_CONSIGNMENT_CLASS}", "target: cons:Consignment"))
+        assert _report(hub).proposals == ()
+
+    def test_a_different_property_to_the_same_target_is_still_proposed(self, hub):
+        self._author(hub, _AUTHORED_RELATIONSHIP.replace(
+            _BRIDGE_PROPERTY, "https://ref.test/ont/supply-chain#someOtherProperty"))
+        report = _report(hub)
+        assert report.already_authored == ()
+        assert [p.property_uri for p in report.proposals] == [_BRIDGE_PROPERTY]
+
+    def test_the_authored_note_warns_against_overwriting_policy(self, hub):
+        self._author(hub, _AUTHORED_RELATIONSHIP)
+        assert any("already authored" in note for note in _report(hub).notes)
+
+
+class TestJoinKeySelection:
+    """#722: the child's own identity is not a foreign key to its parent."""
+
+    def _rekey(self, hub: Path, extra: str = "") -> None:
+        for name, domain, klass in (
+            ("bookings", "booking", _BOOKING_CLASS),
+            ("consignments", "consignment", _CONSIGNMENT_CLASS),
+        ):
+            (hub / "integration" / "bindings" / f"{name}.binding.yaml").write_text(
+                _binding(name, domain, klass, "source_record_id",
+                         extra if name == "bookings" else ""),
+                encoding="utf-8",
+            )
+
+    def test_the_childs_own_surrogate_identity_is_not_a_join_key(self, hub):
+        """A hub with one uniform identity column name joined every row to itself."""
+        self._rekey(hub)
+        proposal = _report(hub).proposals[0]
+        assert proposal.join_resolved is False
+        assert proposal.local_column == "<CONFIRM_JOIN_COLUMN>"
+
+    def test_an_unresolved_proposal_surfaces_declared_carriers_as_candidates(self, hub):
+        """The FK the old rule ignored is exactly the column DD-139 made the author declare."""
+        self._rekey(hub, extra=(
+            "technicalFields:\n"
+            "  - name: parent_invoice_source_id\n"
+            "    expression: parent_invoice_source_id\n"
+            "    type: string\n"
+            "    nullable: false\n"
+            "    purpose: relationship\n"
+        ))
+        proposal = _report(hub).proposals[0]
+        assert proposal.join_resolved is False
+        assert proposal.join_candidates == ("parent_invoice_source_id",)
+
+    def test_a_declared_carrier_is_labelled_as_its_own_evidence_tier(self, hub):
+        """The stock fixture's carrier now resolves via tier 0, not name equality."""
+        assert _report(hub).proposals[0].join_evidence == "declared-fk"
+
+
 class TestCLI:
     def _invoke(self, hub: Path, monkeypatch, args):
         monkeypatch.chdir(hub)
@@ -240,9 +343,43 @@ class TestCLI:
         result = self._invoke(hub, monkeypatch, ["--format", "json"])
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 2
         assert payload["proposals"][0]["evidence"] == "blueprint"
         assert payload["proposals"][0]["endpoint_match"] == "uri"
+
+    def test_the_header_counts_proposals_and_authored_entries(self, hub, monkeypatch):
+        """#722: a bare list of entries reads as N units of available work."""
+        (hub / "integration" / "bindings" / "bookings.binding.yaml").write_text(
+            _binding("bookings", "booking", _BOOKING_CLASS, "booking_id",
+                     relationships=_AUTHORED_RELATIONSHIP),
+            encoding="utf-8",
+        )
+        result = self._invoke(hub, monkeypatch, [])
+        assert result.exit_code == 0
+        assert "Proposals: 0 (0 with resolved join columns)" in result.output
+        assert "1 already authored, not re-proposed" in result.output
+        # The entry itself is never rendered, so there is nothing to paste back over
+        # the authored policy. (The advisory note names the policy fields in prose;
+        # what must be absent is a pasteable YAML entry.)
+        assert "- property:" not in result.output
+
+    def test_json_lists_the_authored_pairs_it_withheld(self, hub, monkeypatch):
+        """A tolerant local-name match must be reviewable, not merely counted."""
+        (hub / "integration" / "bindings" / "bookings.binding.yaml").write_text(
+            _binding("bookings", "booking", _BOOKING_CLASS, "booking_id",
+                     relationships=_AUTHORED_RELATIONSHIP),
+            encoding="utf-8",
+        )
+        result = self._invoke(hub, monkeypatch, ["--format", "json"])
+        payload = json.loads(result.output)
+        assert payload["proposals"] == []
+        assert payload["already_authored"] == [
+            {
+                "child_binding": "bookings",
+                "property": _BRIDGE_PROPERTY,
+                "target": _CONSIGNMENT_CLASS,
+            }
+        ]
 
     def test_no_unresolved_filters_sentinel_proposals(self, hub, monkeypatch):
         (hub / "integration" / "bindings" / "bookings.binding.yaml").write_text(
