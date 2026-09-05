@@ -28,6 +28,7 @@ from kairos_ontology.core.projections.medallion_dbt_projector import (
     _extract_fk_columns_and_joins,
     _build_merge_superset,
     _merge_pad_type,
+    _get_class_and_parents,
     _get_natural_key,
     _get_nk_property_uris,
     _get_raw_natural_key,
@@ -227,6 +228,75 @@ class TestHelpers:
         assert _camel_to_snake("clientId") == "client_id"
         assert _camel_to_snake("HTMLParser") == "html_parser"
         assert _camel_to_snake("already_snake") == "already_snake"
+
+    # -- #733: _get_class_and_parents must see every parent -------------------------------
+
+    @staticmethod
+    def _hierarchy(ttl: str) -> Graph:
+        return Graph().parse(
+            data=textwrap.dedent(
+                """\
+                @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+                @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+                @prefix ex:   <http://kairos.example/ontology/> .
+                """
+            )
+            + textwrap.dedent(ttl),
+            format="turtle",
+        )
+
+    def test_class_and_parents_includes_every_parent_and_grandparent(self):
+        """A class with two named parents contributes both branches (#733).
+
+        The old walker used ``graph.value`` -- one parent per level, chosen by rdflib
+        iteration order -- so one branch was silently dropped and, since this set decides
+        which properties become Silver columns, the columns declared on it vanished.
+        """
+        graph = self._hierarchy(
+            """\
+            ex:Root a owl:Class .
+            ex:Left a owl:Class ; rdfs:subClassOf ex:Root .
+            ex:Right a owl:Class .
+            ex:Leaf a owl:Class ; rdfs:subClassOf ex:Left , ex:Right .
+            """
+        )
+        assert _get_class_and_parents(graph, "http://kairos.example/ontology/Leaf") == {
+            "http://kairos.example/ontology/Leaf",
+            "http://kairos.example/ontology/Left",
+            "http://kairos.example/ontology/Right",
+            "http://kairos.example/ontology/Root",
+        }
+
+    def test_class_and_parents_owl_thing_does_not_truncate_the_walk(self):
+        """``rdfs:subClassOf owl:Thing`` (Protege-style) is dropped, not a stop sign.
+
+        The old walker ``break``-ed on the first W3C parent, so ``:A rdfs:subClassOf
+        owl:Thing, :B`` could lose ``:B`` depending on iteration order.
+        """
+        graph = self._hierarchy(
+            """\
+            ex:Base a owl:Class ; rdfs:subClassOf owl:Thing .
+            ex:Derived a owl:Class ; rdfs:subClassOf owl:Thing , ex:Base .
+            """
+        )
+        result = _get_class_and_parents(graph, "http://kairos.example/ontology/Derived")
+        assert result == {
+            "http://kairos.example/ontology/Derived",
+            "http://kairos.example/ontology/Base",
+        }
+        assert not any(uri.startswith("http://www.w3.org/") for uri in result)
+
+    def test_class_and_parents_is_cycle_safe(self):
+        graph = self._hierarchy(
+            """\
+            ex:A a owl:Class ; rdfs:subClassOf ex:B .
+            ex:B a owl:Class ; rdfs:subClassOf ex:A .
+            """
+        )
+        assert _get_class_and_parents(graph, "http://kairos.example/ontology/A") == {
+            "http://kairos.example/ontology/A",
+            "http://kairos.example/ontology/B",
+        }
 
     def test_source_type_to_databricks(self):
         assert _source_type_to_databricks("int") == "INT"

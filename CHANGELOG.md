@@ -41,6 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains `ancestor_uris` (internal compiler API; see Fixed).
 
 ### Fixed
+- **Multi-inheritance classes lost Silver columns; `owl:Thing` as a first parent truncated
+  inheritance (#733).** `_get_class_and_parents` in the dbt projector walked the class hierarchy
+  with `graph.value(current, RDFS.subClassOf)`, which returns *one* object — so a class declared
+  `rdfs:subClassOf :B, :C` contributed only one parent, chosen by rdflib iteration order, and
+  a W3C parent (`owl:Thing`, as Protégé-style exports assert on every class) `break`-ed the
+  walk before any real parent was seen. The set it returns decides which properties become
+  Silver columns (and feeds FK inference, merge type maps, natural-key resolution and
+  own-vs-inherited warnings), so the columns inherited through the unvisited branch were
+  silently absent from the emitted model. Now delegates to the shared, cycle-safe
+  `projections.shared.class_ancestors` (all named parents, transitive), dropping W3C classes
+  from the result without stopping the walk. Models for multi-inheritance classes may gain
+  columns they should always have had.
 - **`safety.relationship-endpoint` rejected a relationship whose `target:` is a subclass of
   the property's declared `rdfs:range` (#729).** The guard compared the single resolved range
   URI with the authored target by strict equality, so a hub that followed the prescribed
