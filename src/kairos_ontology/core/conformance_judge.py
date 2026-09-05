@@ -458,7 +458,11 @@ def bi_demand_terms(hub_root: Path) -> set[str]:
                 if candidate:
                     terms.add(_norm(candidate))
             for measure in table.get("measures") or ():
-                terms.add(_norm(measure))
+                # `import-tmdl` writes measures as {name, expression, format_string}
+                # dicts, so `_norm` on the dict stringified the whole mapping and no
+                # measure name could ever match a concept: the BI demand signal was
+                # silently empty for every worksheet the toolkit itself produced (#744).
+                terms.add(_norm(measure.get("name", "") if isinstance(measure, dict) else measure))
     return terms
 
 

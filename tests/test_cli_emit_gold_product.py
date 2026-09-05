@@ -174,3 +174,63 @@ def test_repeated_product_emit_is_idempotent(tmp_path, monkeypatch):
     for _ in range(2):
         result = _emit(hub, "invoicing", monkeypatch, "--confirm-emit")
         assert result.exit_code == 0, result.output
+
+
+_INSIGHTS = """
+schema_version: "1"
+personas:
+  - id: ops-manager
+    description: Runs invoicing day to day
+insights:
+  - id: invoiced-value
+    persona: ops-manager
+    question: How much did we invoice this month, by customer?
+    kpi: Invoiced value
+    comparison: prior month
+    product: invoicing
+    measures: [Invoiced Value]
+    dimensions: [dim_customer.customer_name]
+    status: confirmed
+"""
+
+
+def _write_insights(hub: Path) -> None:
+    path = hub / "integration" / "discovery" / "bi"
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "insights.yaml").write_text(_INSIGHTS, encoding="utf-8")
+
+
+def test_an_authored_insight_produces_a_brief(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    _write_insights(hub)
+
+    result = _emit(hub, "invoicing", monkeypatch, "--confirm-emit")
+
+    assert result.exit_code == 0, result.output
+    brief = (_gold_dir(hub) / "invoicing" / "invoicing-insight-brief.md").read_text(
+        encoding="utf-8"
+    )
+    assert "How much did we invoice this month, by customer?" in brief
+    assert "## ops-manager — Runs invoicing day to day" in brief
+
+
+def test_an_unanswerable_insight_is_reported_without_failing(tmp_path, monkeypatch):
+    """The gap between what the business wants and what the model answers is a backlog."""
+    hub = _hub(tmp_path)
+    _write_insights(hub)
+
+    result = _emit(hub, "invoicing", monkeypatch, "--confirm-emit")
+
+    assert result.exit_code == 0, result.output
+    assert "0/1 confirmed insight(s) answerable" in result.output
+    assert "invoiced-value: missing Invoiced Value" in result.output
+
+
+def test_a_hub_without_insights_gets_no_brief(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+
+    result = _emit(hub, "invoicing", monkeypatch, "--confirm-emit")
+
+    assert result.exit_code == 0, result.output
+    assert not (_gold_dir(hub) / "invoicing" / "invoicing-insight-brief.md").exists()
+    assert "confirmed insight" not in result.output

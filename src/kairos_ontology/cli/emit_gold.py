@@ -112,9 +112,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         )
 
     try:
-        product = resolve_gold_product(
-            hub_root, domain, hub_domains=tuple(_hub_domains(hub_root))
-        )
+        product = resolve_gold_product(hub_root, domain, hub_domains=tuple(_hub_domains(hub_root)))
     except GoldContractError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -184,6 +182,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     verb = "Would emit" if not confirm_emit else "Emitted"
     click.echo(f"✅ {verb} {len(artifacts)} Gold artifact(s) for {label} to {target}")
     _report_unresolved(artifacts, product)
+    _report_insight_coverage(hub_root, plans, product)
     if not confirm_emit:
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
         return
@@ -235,6 +234,32 @@ def _report_unresolved(artifacts: dict[str, str], product) -> None:
         "     Add the owning domain to this product in kairos.yaml (gold.products), "
         "or author the target as a Gold table in a participating domain."
     )
+
+
+def _report_insight_coverage(hub_root: Path, plans, product) -> None:
+    """Warn when a confirmed insight names something this product does not carry (#744).
+
+    A warning, not a gate: an insight is a statement of what the business wants to know,
+    and the gap between that and what the model answers is a backlog, not a build failure.
+    """
+    from ..core.insights import InsightsError
+    from ..core.projections.medallion_gold_projector import (
+        insight_coverage_for,
+        plan_gold_from_compile_plans,
+    )
+
+    try:
+        logical, _ = plan_gold_from_compile_plans(plans, product)
+        coverage = insight_coverage_for(logical, product, hub_root)
+    except InsightsError as exc:
+        raise click.ClickException(f"insights.yaml is unusable: {exc}") from exc
+    gaps = [item for item in coverage if not item.covered]
+    if not coverage:
+        return
+    click.echo(f"   {len(coverage) - len(gaps)}/{len(coverage)} confirmed insight(s) answerable")
+    for item in gaps:
+        missing = ", ".join((*item.missing_measures, *item.missing_dimensions))
+        click.echo(f"     ⚠ {item.insight.id}: missing {missing}")
 
 
 def _retire_superseded_manifests(target: Path, product) -> None:

@@ -20,6 +20,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
 
 ### Added
+- **`import-tmdl` harvests usage from the legacy report, not just the model (#744, DD-223).**
+  The command turned the `.SemanticModel` half of a PBIP export into demand evidence and
+  read nothing from the `.Report` half, where the reporting patterns live. It now writes a
+  `<report>-report-usage.yaml` for every report folder with pages: which measures are
+  actually *placed on a visual* rather than merely defined, which fields are used on
+  slicers, a visual-type histogram and page names. That is the signal a model inventory
+  cannot give — a legacy model typically defines far more measures than any report uses.
+  DD-147's discipline is unchanged: derived counts only, no visual definitions, positions,
+  filter values, titles, images, themes or connection strings, and the export still expands
+  to a temporary directory. A visual whose shape yields nothing is counted under
+  `unparsed_visuals` rather than failing the import, because one unreadable visual out of
+  2,000 must not cost the operator the other 1,999.
+- **Personas, questions and KPIs are authorable, and `emit-gold` checks them (#744, DD-223).**
+  A Gold product could be described completely without recording what anyone wanted to
+  know, so report design started from the data that happened to be modelled rather than
+  from the decision someone needs to make. `integration/discovery/bi/insights.yaml` records
+  personas, their questions, the KPI that answers each, and the canonical measures and
+  dimensions it needs. `emit-gold` reports which `confirmed` insights the product cannot
+  answer yet and writes `<product>-insight-brief.md` beside the semantic model, grouped by
+  persona. A measure still at DD-113 lifecycle `intent` does not count as answering
+  anything, because it is deliberately not rendered into the model.
+  A warning, never a gate: the gap between what the business wants to know and what the
+  model answers is a backlog, not a build failure. A hub that authors no insights gets no
+  brief and no warnings.
 - **A Gold product can span ontology domains (#744, DD-222).** A semantic model was
   hard-wired to exactly one domain: product identity came from a single compile plan, every
   emitted path was derived from it, and any foreign key whose target class lived in another
@@ -134,6 +158,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a companion must sit beside a real decision record.
 
 ### Fixed
+- **Legacy measure names reached the conformance judge as stringified dicts (#744).**
+  `bi_demand_terms` normalised each measure with `_norm(measure)`, but `import-tmdl` writes
+  measures as `{name, expression, format_string}` mappings, so the whole dict was
+  stringified and no measure name could ever match a concept. The BI demand signal was
+  silently empty for every worksheet the toolkit itself produced.
 - **The scaffolded hub README told operators to run `compile <domain> --emit`, which the CLI
   rejects (#739).** `--emit` has required `--confirm-emit` since #264, and
   `test_scaffold_emit_invocations_pass_confirm_emit` exists to catch exactly this — but it

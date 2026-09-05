@@ -135,7 +135,51 @@ def generate_gold_from_compile_plans(
 ) -> dict[str, str]:
     """Render one Gold product's artifacts from every participating domain (#744)."""
     logical, physical = plan_gold_from_compile_plans(compile_plans, product)
-    return _render(logical, physical, compile_plans, display_name=product.display_name)
+    artifacts = _render(logical, physical, compile_plans, display_name=product.display_name)
+    artifacts.update(_insight_brief(logical, product, Path(compile_plans[0].scope.hub_root)))
+    return artifacts
+
+
+def _insight_brief(
+    logical: GoldProductLogicalSpec,
+    product: GoldProductConfig,
+    hub_root: Path,
+) -> dict[str, str]:
+    """Render the persona/KPI brief for this product, when any insight is authored.
+
+    Emitted only when the hub authors insights for this product: a file of headings with
+    nothing under them is worse than no file, and every existing hub authors none.
+    """
+    from ..insights import check_coverage, load_insights, render_insight_brief
+
+    insight_set = load_insights(hub_root)
+    insights = insight_set.for_product(product.name)
+    if not insights:
+        return {}
+    coverage = check_coverage(insights, logical)
+    return {
+        f"{product.name}/{product.name}-insight-brief.md": render_insight_brief(
+            product.name, insight_set, coverage
+        )
+    }
+
+
+def insight_coverage_for(
+    logical: GoldProductLogicalSpec,
+    product: GoldProductConfig,
+    hub_root: Path,
+):
+    """Return coverage for this product's *confirmed* insights, for CLI reporting.
+
+    Only confirmed ones: a `draft` insight is a proposal nobody has agreed to, usually
+    written by an agent reading the legacy report usage, and warning about gaps in a guess
+    would train an operator to ignore the warning.
+    """
+    from ..insights import check_coverage, load_insights
+
+    insight_set = load_insights(hub_root)
+    confirmed = tuple(item for item in insight_set.for_product(product.name) if item.confirmed)
+    return check_coverage(confirmed, logical)
 
 
 def _render(

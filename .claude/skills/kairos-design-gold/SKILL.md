@@ -16,6 +16,44 @@ inherited. Record rationale, confidence, and references for every AI-approved ch
 ambiguous measures, security, PII, proprietary data, destructive choices, or low-confidence
 business semantics.
 
+## Insights before measures
+
+- Start from the decision, not the data: "what will someone do differently after reading
+  this?" A product whose measures nobody asked for is a data dump with a star schema.
+- Read `integration/discovery/bi/*-report-usage.yaml` first when the client has a legacy
+  estate. It ranks measures by how often a report actually *places* them on a visual and
+  fields by how often they are sliced on, which is the demand signal a model inventory
+  cannot give — most legacy models define far more measures than any report uses.
+- Propose personas and insights into `integration/discovery/bi/insights.yaml` with
+  `status: draft`, then confirm them with the human. Only `confirmed` insights are checked
+  against the product. One insight is one persona's question, the KPI that answers it, and
+  the measures and dimensions it needs:
+
+  ```yaml
+  schema_version: "1"
+  personas:
+    - id: ops-manager
+      description: Runs the terminal day to day
+  insights:
+    - id: on-time-departures
+      persona: ops-manager
+      question: How many departures left on time this week, by terminal?
+      kpi: On-time departure rate
+      comparison: prior week          # a KPI alone is a number; against a comparison
+      product: bookings-overview      # it is information
+      measures: [On Time Rate]
+      dimensions: [dim_terminal.terminal_name, dim_date.week]
+      status: draft
+  ```
+
+- Author the measures a confirmed insight needs in the owning domain's Gold extension, then
+  re-run `emit-gold`: it reports which confirmed insights the product cannot answer yet and
+  writes `<product>-insight-brief.md` beside the semantic model.
+- That brief plus `report-design-inspiration.md` is the hand-off to whoever builds the
+  report. The hub governs the model; page layout and visual design are theirs.
+- BI evidence is demand, never business authority (DD-147). A measure on 40 legacy visuals
+  proves someone needs that number, not that the number is currently right.
+
 ## Authored Gold contract
 
 - Declare the Gold profile and schema explicitly.

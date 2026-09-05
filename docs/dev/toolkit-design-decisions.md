@@ -285,5 +285,6 @@ during cleanup.
 | [DD-220](decisions/dd-220-a-proposal-never-re-renders-an-authored-relationship-and-a-childs-own-identity-is-not-a.md) | A proposal never re-renders an authored relationship, and a child's own identity is not a foreign key | Accepted | 2026-09-05 |
 | [DD-221](decisions/dd-221-gold-rendering-defaults-hide-technical-columns-mark-keys-and-carry-descriptions.md) | Gold rendering defaults hide technical columns, mark keys, and carry descriptions | Accepted | 2026-09-05 |
 | [DD-222](decisions/dd-222-gold-product-scope-is-a-bus-matrix-concern-declared-in-kairosyaml.md) | Gold product scope is a bus-matrix concern, declared in kairos.yaml | Accepted | 2026-09-05 |
+| [DD-223](decisions/dd-223-report-usage-is-harvested-and-insights-are-authored-evidence.md) | Report usage is harvested, and insights are authored evidence | Accepted | 2026-09-05 |
 
 ---
