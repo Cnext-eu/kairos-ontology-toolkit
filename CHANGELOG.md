@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.15.0rc17] — 2026-09-05
+
+Covers **rc14 through rc17**. The rc14, rc15 and rc16 bumps shipped without promoting
+`[Unreleased]`, so their changes had accumulated here unlabelled; everything recorded
+under this heading landed across those four release candidates rather than in rc17
+alone.
+
 ### Added
 - **Emitted artifacts carry their own provenance (DD-218, #716).** Every emit now writes
   `metadata/<domain>.provenance.json` — and `metadata/<domain>-gold.provenance.json` for a
