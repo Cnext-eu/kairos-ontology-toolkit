@@ -103,7 +103,10 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     from ..core.projections.dbt.gold_connection import resolve_gold_product
     from ..core.projections.dbt.gold_specs import GoldContractError
     from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
-    from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plans
+    from ..core.projections.medallion_gold_projector import (
+        plan_gold_from_compile_plans,
+        render_gold_product,
+    )
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
     if hub_root is None:
@@ -132,7 +135,10 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         plans.append(plan)
 
     try:
-        artifacts = generate_gold_from_compile_plans(plans, product)
+        # Shaped once and reused: the coverage report below reads the same spec, and
+        # shaping a product twice per emit is pure waste.
+        logical, _ = plan_gold_from_compile_plans(plans, product)
+        artifacts = render_gold_product(logical, plans, product)
     except GoldContractError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -182,7 +188,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     verb = "Would emit" if not confirm_emit else "Emitted"
     click.echo(f"✅ {verb} {len(artifacts)} Gold artifact(s) for {label} to {target}")
     _report_unresolved(artifacts, product)
-    _report_insight_coverage(hub_root, plans, product)
+    _report_insight_coverage(hub_root, logical, product)
     if not confirm_emit:
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
         return
@@ -365,20 +371,16 @@ def _report_unresolved(artifacts: dict[str, str], product) -> None:
     )
 
 
-def _report_insight_coverage(hub_root: Path, plans, product) -> None:
+def _report_insight_coverage(hub_root: Path, logical, product) -> None:
     """Warn when a confirmed insight names something this product does not carry (#744).
 
     A warning, not a gate: an insight is a statement of what the business wants to know,
     and the gap between that and what the model answers is a backlog, not a build failure.
     """
     from ..core.insights import InsightsError
-    from ..core.projections.medallion_gold_projector import (
-        insight_coverage_for,
-        plan_gold_from_compile_plans,
-    )
+    from ..core.projections.medallion_gold_projector import insight_coverage_for
 
     try:
-        logical, _ = plan_gold_from_compile_plans(plans, product)
         coverage = insight_coverage_for(logical, product, hub_root)
     except InsightsError as exc:
         raise click.ClickException(f"insights.yaml is unusable: {exc}") from exc
