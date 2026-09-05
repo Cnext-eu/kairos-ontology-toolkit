@@ -27,11 +27,13 @@ from kairos_ontology.core.propose_relationships import (
 
 
 def _entity(name: str, relation: str, source_key: tuple[str, ...],
-            referenced: tuple[str, ...] = ()) -> BoundEntity:
+            referenced: tuple[str, ...] = (),
+            relationship_columns: tuple[str, ...] = ()) -> BoundEntity:
     return BoundEntity(
         name=name, domain="d", target_class=f"https://t/ont#{name}",
         source_relation=relation, source_key=source_key,
         referenced_columns=referenced,
+        relationship_columns=relationship_columns,
     )
 
 
@@ -144,3 +146,88 @@ class TestInverseEdges:
         covered_by = [e for e in edges if e[0] == "https://t/ont#coveredBy"]
         assert covered_by == [("https://t/ont#coveredBy", "https://t/ont#Consignment",
                                "https://t/ont#Order")]
+
+
+class TestJoinCandidateSelection:
+    """#722: which child columns may become a join key at all."""
+
+    PARENT = _entity("invoice", "Src.invoice", ("source_record_id",))
+
+    def test_the_childs_sole_identity_column_is_never_a_join_key(self):
+        """The reported defect: a uniform surrogate name joined a row to itself.
+
+        Both relations key on ``source_record_id``, so tier 1 matched the child's own
+        primary key against the parent's and reported a resolved join -- while ignoring
+        ``parent_invoice_source_id``, the actual foreign key.
+        """
+        child = _entity("invoice-line", "Src.invoice_line", ("source_record_id",),
+                        referenced=("source_record_id", "parent_invoice_source_id"))
+        local, foreign, resolved, evidence = _match_join(child, self.PARENT, {})
+        assert (local, foreign, resolved, evidence) == (
+            SENTINEL_JOIN_COLUMN, SENTINEL_JOIN_COLUMN, False, "")
+
+    def test_a_composite_child_key_still_contributes_its_fk_component(self):
+        """The exclusion is per-column-is-the-whole-identity, not per-identity-column.
+
+        A line item keyed ``[invoice_id, line_no]`` carries ``invoice_id`` as a genuine
+        FK; excluding every ``identity.sourceKey`` column outright would lose it.
+        """
+        parent = _entity("invoice", "Src.invoice", ("invoice_id",))
+        child = _entity("invoice-line", "Src.invoice_line", ("invoice_id", "line_no"),
+                        referenced=("invoice_id", "line_no"))
+        assert _match_join(child, parent, {}) == (
+            "invoice_id", "invoice_id", True, "name")
+
+    def test_a_declared_relationship_column_bypasses_the_identity_exclusion(self):
+        """Tier 0 is the author's escape hatch for a 1:1 extension keyed by its parent."""
+        child = _entity("invoice-ext", "Src.invoice_ext", ("source_record_id",),
+                        referenced=("source_record_id",),
+                        relationship_columns=("source_record_id",))
+        assert _match_join(child, self.PARENT, {}) == (
+            "source_record_id", "source_record_id", True, "declared-fk")
+
+    def test_the_same_column_without_the_declaration_is_excluded(self):
+        """Pair with the test above: the declaration is the only difference."""
+        child = _entity("invoice-ext", "Src.invoice_ext", ("source_record_id",),
+                        referenced=("source_record_id",))
+        assert _match_join(child, self.PARENT, {})[2] is False
+
+    def test_a_declared_carrier_that_does_not_name_the_parent_key_is_not_a_join(self):
+        """Tier 0 matches by name, never positionally.
+
+        A child carries several ``purpose: relationship`` columns aimed at different
+        parents, so pairing the only carrier with the only parent key would emit a
+        confidently wrong join -- worse than the bug it replaces.
+        """
+        child = _entity("invoice-line", "Src.invoice_line", ("line_id",),
+                        referenced=("line_id", "parent_invoice_source_id"),
+                        relationship_columns=("parent_invoice_source_id",))
+        local, _foreign, resolved, evidence = _match_join(child, self.PARENT, {})
+        assert (local, resolved, evidence) == (SENTINEL_JOIN_COLUMN, False, "")
+
+    def test_several_declared_carriers_each_find_their_own_parent(self):
+        """The concrete reason tier 0 matches by name rather than positionally.
+
+        One child carries two FKs aimed at two different parents. Pairing "the" carrier
+        with "the" parent key would resolve one of these to the wrong column with full
+        confidence -- worse than leaving it a sentinel.
+        """
+        child = _entity("order-line", "Src.order_line", ("order_id", "line_no"),
+                        referenced=("order_id", "line_no", "product_id"),
+                        relationship_columns=("order_id", "product_id"))
+        order = _entity("order", "Src.order", ("order_id",))
+        product = _entity("product", "Src.product", ("product_id",))
+        assert _match_join(child, order, {}) == (
+            "order_id", "order_id", True, "declared-fk")
+        assert _match_join(child, product, {}) == (
+            "product_id", "product_id", True, "declared-fk")
+
+    def test_tier_zero_outranks_tier_two(self):
+        parent = _entity("consignments", "Src.consignments", ("consignment_id",))
+        child = _entity("bookings", "Src.bookings", ("booking_id",),
+                        referenced=("booking_id", "consignment_id", "parent_ref"),
+                        relationship_columns=("consignment_id",))
+        evidence = {("src", "bookings"): {"parent_ref": {("consignments",
+                                                          "consignment_id")}}}
+        assert _match_join(child, parent, evidence) == (
+            "consignment_id", "consignment_id", True, "declared-fk")

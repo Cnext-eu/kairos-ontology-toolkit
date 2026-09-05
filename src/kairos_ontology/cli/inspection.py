@@ -462,10 +462,19 @@ def propose_relationships_cmd(domain, accelerator, ref_models_dir, unresolved, o
     cross_domain_relationships declares each bridge with an exact property_uri and its
     domain/range class URIs. Hub-authored owl:ObjectProperty declarations with named
     rdfs:domain and rdfs:range supply the same signal, so hubs without an accelerator still
-    get proposals. Join columns are matched by exact normalized name equality between the
-    child binding's authored columns and the parent's identity.sourceKey -- the same
-    high-precision tier-1 rule as scaffold-binding's cross-source FK scanner. Anything not
-    derivable is emitted as an explicit sentinel, never a plausible guess.
+    get proposals. Join columns are matched against the parent's identity.sourceKey in
+    three tiers: a column the author declared purpose: relationship, then exact normalized
+    name equality over the child's other authored columns (the same high-precision rule as
+    scaffold-binding's cross-source FK scanner), then measured value containment from the
+    source profile. A column that is the child's entire identity is excluded from the name
+    tier -- it is a surrogate-name coincidence, not a foreign key. Anything not derivable
+    is emitted as an explicit sentinel, never a plausible guess.
+
+    A relationship the child binding already authors is not re-proposed: it is counted in
+    the header and listed under already_authored in JSON. Re-rendering one would hand you
+    default cardinality/mode/missingParent/ambiguousParent in place of the policy its
+    author chose, and pasting that back can silently turn a tolerant lookup into a hard
+    load failure.
 
     Advisory only: nothing is written and it always exits 0. Paste the rendered YAML into
     the child binding and confirm each entry.
@@ -510,6 +519,17 @@ def propose_relationships_cmd(domain, accelerator, ref_models_dir, unresolved, o
 
     click.echo(f"   Bindings scanned: {report.bindings_scanned}")
     click.echo(f"   Bindings with zero relationships: {len(report.bindings_without_relationships)}")
+    # A bare list of entries reads as N units of available work. Say how many carry a
+    # resolved join, and how many were withheld because they already exist (#722).
+    summary = (
+        f"   Proposals: {len(proposals)} "
+        f"({sum(1 for p in proposals if p.join_resolved)} with resolved join columns)"
+    )
+    if report.already_authored:
+        summary += (
+            f"; {len(report.already_authored)} already authored, not re-proposed"
+        )
+    click.echo(summary)
     click.echo(
         f"   Blueprint bridges: {report.blueprint_bridges} declared, "
         f"{report.bridges_with_both_endpoints_bound} with both endpoints bound"
@@ -524,6 +544,9 @@ def propose_relationships_cmd(domain, accelerator, ref_models_dir, unresolved, o
     for proposal in proposals:
         if not proposal.join_resolved:
             marker = "  [join columns UNRESOLVED]"
+        elif proposal.join_evidence == "declared-fk":
+            # #722 tier-0: the author declared this column purpose: relationship.
+            marker = "  [join from a declared purpose: relationship column]"
         elif proposal.join_evidence == "fk-inclusion":
             # DD-189 tier-2: measured value containment, not name similarity.
             marker = "  [join from measured fk-inclusion evidence]"
@@ -535,6 +558,11 @@ def propose_relationships_cmd(domain, accelerator, ref_models_dir, unresolved, o
             f"endpoints matched by {proposal.endpoint_match}; "
             f"{proposal.child_domain} → {proposal.parent_domain}"
         )
+        if proposal.join_candidates:
+            click.echo(
+                "     declared FK carrier(s) that do not name the parent key: "
+                + ", ".join(proposal.join_candidates)
+            )
         for line in proposal.to_yaml().splitlines():
             click.echo(f"     {line}")
         click.echo("")
@@ -543,7 +571,9 @@ def propose_relationships_cmd(domain, accelerator, ref_models_dir, unresolved, o
         click.echo(f"   ℹ {note}")
     click.echo(
         "   Advisory: nothing was written. Paste entries into the child binding's "
-        "relationships: block and confirm each one."
+        "relationships: block and confirm each one. A (property, target) pair the "
+        "binding already authors is never proposed, so a paste cannot overwrite an "
+        "existing entry's policy."
     )
 
 

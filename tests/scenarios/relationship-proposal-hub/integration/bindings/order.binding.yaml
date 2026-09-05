@@ -1,0 +1,23 @@
+# Parent for the four in-domain variations, and the child of the cross-domain one.
+# `customer_id` is a declared carrier, so the cross-domain proposal resolves via tier 0.
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: order
+  domain: sales
+source:
+  relation: erp.orders
+target:
+  class: "https://synthetic.test/ont/sales#Order"
+grain:
+  columns: [order_id]
+identity:
+  strategy: source-natural
+  sourceKey: [order_id]
+load:
+  mode: full-refresh
+fields: []
+relationships: []
+technicalFields:
+  - {name: order_id, expression: order_id, type: string, nullable: false, purpose: identity}
+  - {name: customer_id, expression: customer_id, type: string, nullable: true, purpose: relationship}

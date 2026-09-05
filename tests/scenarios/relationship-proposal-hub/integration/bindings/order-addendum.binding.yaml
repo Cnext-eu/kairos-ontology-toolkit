@@ -1,0 +1,23 @@
+# The same 1:1 shape as `order-ext`, but the author declared the column
+# `purpose: relationship`. Tier 0 is exempt from the identity exclusion, so this resolves
+# -- the documented escape hatch for the cost above.
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: order-addendum
+  domain: sales
+source:
+  relation: erp.order_addenda
+target:
+  class: "https://synthetic.test/ont/sales#OrderAddendum"
+grain:
+  columns: [order_id]
+identity:
+  strategy: source-natural
+  sourceKey: [order_id]
+load:
+  mode: full-refresh
+fields: []
+relationships: []
+technicalFields:
+  - {name: order_id, expression: order_id, type: string, nullable: false, purpose: relationship}

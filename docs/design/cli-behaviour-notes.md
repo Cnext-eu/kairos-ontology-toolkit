@@ -188,10 +188,46 @@ The object property is **read, not inferred**. Two deterministic sources feed it
   imported superclass counts too. This is also what makes the command useful on a
   hub with no accelerator installed.
 
-Join columns are matched by exact normalized name equality between the child
-binding's authored columns and the parent's `identity.sourceKey` -- the same
-high-precision tier-1 rule as `scaffold-binding`'s cross-source FK scanner. A
-cross-domain parent additionally gets a draft `externalReference` block whose
+Join columns are matched against the parent's `identity.sourceKey` in three
+tiers (DD-220):
+
+* **tier 0** -- a child column the author declared `purpose: relationship`
+  (DD-139), by name equality. This is the author stating that the column is a
+  foreign key, and it is the one tier exempt from the identity exclusion below;
+* **tier 1** -- exact normalized name equality over the child's other authored
+  columns, the same high-precision rule as `scaffold-binding`'s cross-source FK
+  scanner, **excluding any column that constitutes the child's entire
+  identity**;
+* **tier 2** -- measured value containment from the DD-189 source profile,
+  within one source system.
+
+The tier-1 exclusion is what stops a hub with one uniform surrogate identity
+name from proposing `source_record_id = source_record_id`, joining a row to
+itself across two relations. It is narrower than "exclude every
+`identity.sourceKey` column": a line-item child keyed `[order_id, line_no]`
+still contributes `order_id`, which genuinely is the FK. What it costs is a
+1:1 extension or subtype table keyed by its parent's key -- indistinguishable
+by name from the self-join, and now sentinelled. Declare the column
+`purpose: relationship` to resolve it via tier 0.
+
+Tier 0 matches by name too, never positionally: a child routinely carries
+several `purpose: relationship` columns aimed at different parents, so pairing
+the only carrier with the only parent key would emit a confidently wrong join.
+A declared carrier that names no parent key is surfaced as a `join_candidates`
+hint on the unresolved proposal instead.
+
+A relationship the child binding **already authors** is not re-proposed
+(DD-220). Matching is on `(property, target)`, compared by local name so an
+authored qname target matches a parent whose `target.class` is the full URI.
+Suppressed pairs are counted in the text header and listed under
+`already_authored` in JSON -- the local-name comparison is deliberately
+tolerant, so what was withheld has to stay reviewable. Skipping rather than
+re-rendering is the point: `to_yaml` hard-codes `cardinality`, `mode`,
+`missingParent` and `ambiguousParent`, so a re-rendered entry pasted back over
+an authored one silently replaces deliberate policy (a hub's
+`missingParent: null`) with the default (`error`).
+
+A cross-domain parent additionally gets a draft `externalReference` block whose
 `key[].column` is the parent's materialized output column and whose `name` is the
 parent's generated dbt model name (derived from the target class, per DD-138).
 

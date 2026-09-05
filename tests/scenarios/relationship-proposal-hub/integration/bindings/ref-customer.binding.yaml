@@ -1,0 +1,21 @@
+# Cross-domain parent: gives `order -> ref-customer` a DD-138 externalReference contract.
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: ref-customer
+  domain: ref
+source:
+  relation: erp.customers
+target:
+  class: "https://synthetic.test/ont/ref#Customer"
+grain:
+  columns: [customer_id]
+identity:
+  strategy: source-natural
+  sourceKey: [customer_id]
+load:
+  mode: full-refresh
+fields: []
+relationships: []
+technicalFields:
+  - {name: customer_id, expression: customer_id, type: string, nullable: false, purpose: identity}

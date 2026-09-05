@@ -21,9 +21,12 @@ the v5 binding path ever read:
   resolvable ``rdfs:domain``/``rdfs:range`` give the same signal for hub-local
   relationships and for hubs with no accelerator installed.
 
-Join columns are then matched deterministically (exact normalized name equality, the same
-high-precision tier-1 rule as ``scaffold_binding.scan_cross_source_fks``) between the
-child binding's authored columns and the parent binding's ``identity.sourceKey``.
+Join columns are then matched deterministically against the parent binding's
+``identity.sourceKey``: first a column the author declared ``purpose: relationship``
+(DD-139), then exact normalized name equality over the child's other authored columns --
+the same high-precision rule as ``scaffold_binding.scan_cross_source_fks`` -- excluding
+any column that is the child's entire identity, which is a surrogate-name coincidence
+rather than a foreign key (#722).
 
 Nothing here is auto-authored. The output is a proposal a human pastes and confirms;
 anything not derivable is emitted as an explicit sentinel rather than a plausible guess.
@@ -42,7 +45,9 @@ import yaml
 logger = logging.getLogger(__name__)
 
 #: Bumped when the machine-readable proposal contract changes.
-SCHEMA_VERSION = 1
+#: 2 (#722): proposals matching an already-authored ``(property, target)`` pair are
+#: skipped and reported under ``already_authored``; proposals gain ``join_candidates``.
+SCHEMA_VERSION = 2
 
 #: Emitted where a value cannot be derived deterministically. Mirrors the
 #: ``scaffold-binding`` sentinel convention (#450) -- a compile-visible placeholder beats a
@@ -62,6 +67,26 @@ def _local_name(uri: str) -> str:
         if separator in uri:
             return uri.rsplit(separator, 1)[-1]
     return uri
+
+
+def _class_token(ref: str) -> str:
+    """Comparison token for a class or property reference.
+
+    A binding's ``target.class`` and a relationship's ``target:`` may each be a full URI,
+    a ``prefix:Local`` qname, or a bare local name -- the compiler accepts all three
+    (``kernel._relationship_ref_uri``), and the canonical example authors
+    ``target: {class: party:Customer}``. ``_local_name`` splits on ``#`` and ``/`` only, so
+    it hands a qname straight back; strip the prefix too, then case-fold.
+
+    Deliberately **not** ``_normalize``, which strips every non-alphanumeric: ``hasParty``
+    and ``has_party`` are different property local names, and collapsing them would
+    manufacture a false already-authored match -- which, because such a match *suppresses*
+    a proposal (#722), would silently hide real work.
+    """
+    tail = _local_name(ref)
+    if ":" in tail:
+        tail = tail.rsplit(":", 1)[-1]
+    return tail.strip().lower()
 
 
 def _slug(class_uri: str) -> str:
@@ -164,6 +189,15 @@ class BoundEntity:
     #: Every source column the binding references (fields + technicalFields + identity).
     referenced_columns: tuple[str, ...] = ()
     relationship_count: int = 0
+    #: ``(property token, target token)`` pairs already present in ``relationships:``,
+    #: normalized with :func:`_class_token` so an authored qname target matches a parent
+    #: whose ``target.class`` is the full URI. Kept alongside -- not derived from --
+    #: ``relationship_count``: this set drops malformed entries, so a binding that *does*
+    #: author relationships could otherwise be reported as having none.
+    authored_relationships: frozenset[tuple[str, str]] = frozenset()
+    #: Source columns the author declared ``purpose: relationship`` (DD-139). The author
+    #: stating "this column is a foreign key", as opposed to anything we infer.
+    relationship_columns: tuple[str, ...] = ()
 
     def output_column_for(self, source_column: str) -> tuple[str, str]:
         """Return (output column, canonical type) for a parent key column.
@@ -220,6 +254,7 @@ def index_bindings(bindings_dir: Path) -> tuple[BoundEntity, ...]:
         technical_outputs: dict[str, str] = {}
         technical_types: dict[str, str] = {}
         referenced: list[str] = list(source_key)
+        relationship_columns: list[str] = []
         for tech in data.get("technicalFields") or []:
             if not isinstance(tech, dict):
                 continue
@@ -228,12 +263,26 @@ def index_bindings(bindings_dir: Path) -> tuple[BoundEntity, ...]:
                 technical_outputs[column] = str(tech.get("name", _snake(column)))
                 technical_types[column] = str(tech.get("type", SENTINEL_KEY_TYPE))
                 referenced.append(column)
+                if str(tech.get("purpose", "")) == "relationship":
+                    # The *source* column, not the technical field's output ``name``:
+                    # ``join.local`` names the source column, which is why the canonical
+                    # example joins ``local: account_id`` while the carrier is
+                    # ``name: account_ref, expression: account_id``.
+                    relationship_columns.append(column)
         for mapped in data.get("fields") or []:
             if not isinstance(mapped, dict):
                 continue
             column = _bare_column(mapped.get("expression"))
             if column:
                 referenced.append(column)
+
+        authored: set[tuple[str, str]] = set()
+        for relationship in data.get("relationships") or []:
+            if not isinstance(relationship, dict):
+                continue
+            prop, rel_target = relationship.get("property"), relationship.get("target")
+            if isinstance(prop, str) and prop and isinstance(rel_target, str) and rel_target:
+                authored.add((_class_token(prop), _class_token(rel_target)))
 
         entities.append(
             BoundEntity(
@@ -248,6 +297,8 @@ def index_bindings(bindings_dir: Path) -> tuple[BoundEntity, ...]:
                 technical_types=technical_types,
                 referenced_columns=tuple(dict.fromkeys(referenced)),
                 relationship_count=len(data.get("relationships") or []),
+                authored_relationships=frozenset(authored),
+                relationship_columns=tuple(dict.fromkeys(relationship_columns)),
             )
         )
     return tuple(entities)
@@ -350,10 +401,15 @@ class RelationshipProposal:
     #: True when the join columns were matched deterministically rather than sentinelled.
     join_resolved: bool
     external_reference: Optional[dict[str, Any]]
-    #: How the join columns were matched: ``name`` (tier-1 equality),
+    #: How the join columns were matched: ``declared-fk`` (tier-0, a column the
+    #: author declared ``purpose: relationship``), ``name`` (tier-1 equality),
     #: ``fk-inclusion`` (tier-2 measured containment, DD-189), or ``""`` when
     #: unresolved.
     join_evidence: str = ""
+    #: Declared ``purpose: relationship`` columns offered as a hint when the join is
+    #: unresolved. A hint, never a value -- "this child declares FK carriers, none of
+    #: which names your key; you pick" (#722).
+    join_candidates: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -369,6 +425,7 @@ class RelationshipProposal:
             "join": [{"local": self.local_column, "foreign": self.foreign_column}],
             "join_resolved": self.join_resolved,
             "join_evidence": self.join_evidence,
+            "join_candidates": list(self.join_candidates),
             "external_reference": self.external_reference,
             "yaml": self.to_yaml(),
         }
@@ -399,6 +456,11 @@ class RelationshipProposalReport:
     blueprint_bridges: int
     bridges_with_both_endpoints_bound: int
     notes: tuple[str, ...] = ()
+    #: ``(child binding, property, target)`` triples suppressed because the child already
+    #: authors that exact pair (#722). Reported rather than merely counted: the match is
+    #: made on :func:`_class_token`, which is deliberately tolerant of namespace, so a
+    #: reviewer must be able to see precisely what was withheld.
+    already_authored: tuple[tuple[str, str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -408,6 +470,10 @@ class RelationshipProposalReport:
             "blueprint_bridges": self.blueprint_bridges,
             "bridges_with_both_endpoints_bound": self.bridges_with_both_endpoints_bound,
             "proposals": [proposal.to_dict() for proposal in self.proposals],
+            "already_authored": [
+                {"child_binding": child, "property": prop, "target": target}
+                for child, prop, target in self.already_authored
+            ],
             "notes": list(self.notes),
         }
 
@@ -429,10 +495,36 @@ def _match_join(
     """Match a child column to a parent key column. Returns
     ``(local, foreign, resolved, join_evidence)``.
 
+    Tier 0 (#722) — a column the author declared ``purpose: relationship``
+    (DD-139), matched by the same name equality as tier 1. Its value is not
+    better matching but **exemption from the tier-1 identity exclusion below**:
+    tier 1 is our inference and must yield to that structural argument, while a
+    declaration is the author saying "this column is a foreign key" and must
+    not. It is also the escape hatch for the one shape the exclusion costs — a
+    1:1 extension table keyed by its parent's key.
+
+    Matching stays by name here too, never positional: a child routinely carries
+    several ``purpose: relationship`` columns aimed at different parents
+    (``parent_invoice_source_id``, ``parent_subject_id``, …), so "one carrier,
+    one parent key, therefore they pair" is a coin flip that would emit a
+    *confidently* wrong join. A declared carrier that names no parent key falls
+    through to the sentinel and is surfaced as a candidate instead.
+
     Tier 1 — exact normalized name equality, deliberately the same
     high-precision rule as ``scan_cross_source_fks``: prefix-stripped or fuzzy
     matches would manufacture false joins in a proposal a human is meant to
     trust.
+
+    A tier-1 candidate that constitutes the child's **entire** identity is
+    excluded (#722). A child whose whole ``sourceKey`` is one column that
+    name-matches the parent's key has the same grain as the parent under the
+    same name — the same-entity shape ``build_relationship_proposals`` already
+    refuses (#334), not a many-to-one FK. Without this, a hub using one uniform
+    surrogate identity name proposes ``source_record_id = source_record_id`` for
+    every pair of relations, joining a row to itself. Narrower than "exclude
+    every ``identity.sourceKey`` column" on purpose: that would kill the
+    line-item child whose grain is ``[order_id, line_no]``, where ``order_id``
+    genuinely *is* the FK.
 
     Tier 2 (DD-189) — measured value containment from the source profile: a
     child column tagged ``fk?-><parent table>.<key column>`` where that key
@@ -443,10 +535,21 @@ def _match_join(
     per-system and cross-system containment was never measured.
     """
     parent_keys = {_normalize(col): col for col in parent.source_key}
-    for column in child.referenced_columns:
+    child_identity = {_normalize(col) for col in child.source_key}
+
+    for column in child.relationship_columns:
         match = parent_keys.get(_normalize(column))
         if match is not None:
-            return column, match, True, "name"
+            return column, match, True, "declared-fk"
+
+    for column in child.referenced_columns:
+        key = _normalize(column)
+        match = parent_keys.get(key)
+        if match is None:
+            continue
+        if child_identity == {key}:
+            continue
+        return column, match, True, "name"
 
     child_parts, parent_parts = _relation_parts(child), _relation_parts(parent)
     if child_parts and parent_parts and child_parts[0] == parent_parts[0]:
@@ -525,6 +628,7 @@ def build_relationship_proposals(
         edges.append((prop, dom, rng, "ontology", _local_name(prop)))
 
     proposals: list[RelationshipProposal] = []
+    already_authored: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     bridges_matched = 0
     for property_uri, domain_class, range_class, evidence, evidence_id in edges:
@@ -547,6 +651,19 @@ def build_relationship_proposals(
                 if key in seen:
                     continue
                 seen.add(key)
+                # Compare against `parent.target_class` -- the very value that would have
+                # become `RelationshipProposal.target_class` and been rendered by
+                # `to_yaml`. The question is "is the entry I am about to render already
+                # there?", not "does some relationship exist" (#722).
+                authored_pair = (
+                    _class_token(property_uri),
+                    _class_token(parent.target_class),
+                )
+                if authored_pair in child.authored_relationships:
+                    already_authored.append(
+                        (child.name, property_uri, parent.target_class)
+                    )
+                    continue
                 local, foreign, resolved, join_evidence = _match_join(
                     child, parent, fk_evidence
                 )
@@ -569,6 +686,9 @@ def build_relationship_proposals(
                         join_resolved=resolved,
                         external_reference=_external_reference(child, parent, foreign),
                         join_evidence=join_evidence,
+                        join_candidates=(
+                            () if resolved else child.relationship_columns
+                        ),
                     )
                 )
 
@@ -595,6 +715,14 @@ def build_relationship_proposals(
             f"Join columns could not be matched for some proposals; those carry "
             f"{SENTINEL_JOIN_COLUMN} and must be completed by the author."
         )
+    if already_authored:
+        notes.append(
+            f"{len(already_authored)} relationship(s) are already authored in the child "
+            "binding and were not re-proposed, matched on (property, target) by local "
+            "name. An authored entry's cardinality/mode/missingParent/ambiguousParent are "
+            "the author's deliberate policy and must never be overwritten by a paste; see "
+            "'already_authored' in --format json for the exact pairs withheld."
+        )
     local_name_matches = sum(1 for p in proposals if p.endpoint_match == "local-name")
     if local_name_matches:
         notes.append(
@@ -613,4 +741,5 @@ def build_relationship_proposals(
         blueprint_bridges=len(bridges),
         bridges_with_both_endpoints_bound=bridges_matched,
         notes=tuple(notes),
+        already_authored=tuple(already_authored),
     )

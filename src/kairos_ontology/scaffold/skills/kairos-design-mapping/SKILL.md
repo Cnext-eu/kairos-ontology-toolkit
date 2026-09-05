@@ -411,7 +411,10 @@ declarations, matches join columns against other bindings' `identity.sourceKey`,
 and renders a pasteable entry including the `externalReference` key contract.
 Anything it cannot derive is emitted as an explicit sentinel
 (`<CONFIRM_JOIN_COLUMN>`, `<CONFIRM_KEY_TYPE>`) — confirm every one; a proposal
-is a starting point, never authority. Endpoints matched by `local-name` rather
+is a starting point, never authority. A relationship the binding already authors
+is never re-proposed (DD-220), so re-running after you have authored some is safe:
+what it still lists is what is left to do, and nothing it renders can overwrite an
+existing entry's `missingParent`/`ambiguousParent` policy. Endpoints matched by `local-name` rather
 than `uri` mean the hub authored its own class instead of binding the
 reference-model one; check it really is the same concept before accepting.
 

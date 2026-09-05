@@ -1,0 +1,22 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ref:  <https://synthetic.test/ont/ref#> .
+@prefix :     <https://synthetic.test/ont/sales#> .
+
+<https://synthetic.test/ont/sales> a owl:Ontology ;
+    owl:imports <https://synthetic.test/ont/ref> .
+
+:Order          a owl:Class ; rdfs:label "Order" .
+:OrderLine      a owl:Class ; rdfs:label "Order line" .
+:OrderExtension a owl:Class ; rdfs:label "Order extension" .
+:OrderAddendum  a owl:Class ; rdfs:label "Order addendum" .
+:Shipment       a owl:Class ; rdfs:label "Shipment" .
+:ShipmentLeg    a owl:Class ; rdfs:label "Shipment leg" .
+
+# Every edge below runs child -> parent, so the foreign key is on the domain side.
+:belongsToOrder   a owl:ObjectProperty ; rdfs:domain :OrderLine      ; rdfs:range :Order .
+:extendsOrder     a owl:ObjectProperty ; rdfs:domain :OrderExtension ; rdfs:range :Order .
+:addsToOrder      a owl:ObjectProperty ; rdfs:domain :OrderAddendum  ; rdfs:range :Order .
+:legOfShipment    a owl:ObjectProperty ; rdfs:domain :ShipmentLeg    ; rdfs:range :Shipment .
+:refersToProduct  a owl:ObjectProperty ; rdfs:domain :OrderLine      ; rdfs:range ref:Product .
+:placedByCustomer a owl:ObjectProperty ; rdfs:domain :Order          ; rdfs:range ref:Customer .
