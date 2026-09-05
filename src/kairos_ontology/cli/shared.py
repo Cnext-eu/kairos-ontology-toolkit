@@ -1578,6 +1578,38 @@ def _managed_scaffold_map() -> dict[str, Path]:
         if scaffold_file.is_file():
             result[f".import/modeling/feedback/{filename}"] = scaffold_file
 
+    # Per-directory guidance, one README beside the thing it explains. These were
+    # write-once until DD-219: written at `init` and then frozen, so a wrong instruction
+    # could only ever be corrected in hubs created after the fix -- half the scaffold's
+    # documentation lines were unreachable that way. They carry no substitution tokens
+    # (the `{company}` / `{slug}` braces in the discovery ones are filename examples in
+    # prose), so the verbatim-copy managed path handles them as-is.
+    #
+    # Deliberately NOT here: `decisions/index.md` and `.import/modeling/feedback/index.md`
+    # are regenerated from the hub's own records by `kairos-ontology decision` and
+    # `... feedback`. Managing either would have `update` overwrite a client's accumulated
+    # log with an empty table.
+    for rel_path in (
+        "ontology-hub/.input/README.md",
+        "ontology-hub/businessdiscovery/README.md",
+        "ontology-hub/businessdiscovery/_extractions/README.md",
+        "ontology-hub/integration/bindings/README.md",
+        "ontology-hub/integration/discovery/bi/README.md",
+        "ontology-hub/integration/sources/README.md",
+        "ontology-hub/integration/sources/source-system-template/README.md",
+        "ontology-hub/integration/transforms/dbt/README.md",
+        "ontology-hub/model/ontologies/README.md",
+        "ontology-hub/model/shapes/README.md",
+    ):
+        scaffold_file = _SCAFFOLD_DIR / rel_path
+        if scaffold_file.is_file():
+            result[rel_path] = scaffold_file
+
+    # Same, but installed under the leading-dot ".import/" tree.
+    discovery_readme = _SCAFFOLD_DIR / "import" / "businessdiscovery" / "README.md"
+    if discovery_readme.is_file():
+        result[".import/businessdiscovery/README.md"] = discovery_readme
+
     skills = _SCAFFOLD_DIR / "skills"
     if skills.is_dir():
         for skill_dir in sorted(skills.iterdir()):

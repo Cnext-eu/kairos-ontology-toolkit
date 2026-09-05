@@ -349,9 +349,18 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
       1  One or more files are outdated, missing, or stale
 
     \b
-    Managed files (do not edit manually):
+    Managed files (do not edit manually -- `update` replaces them):
+      CICD.md, CONTRIBUTING.md
       .github/copilot-instructions.md
       .claude/skills/*/SKILL.md
+      the per-directory README.md guides under ontology-hub/ and .import/
+      ontology-hub/decisions/{README.md,HUB-DD-template.md.template}
+
+    Yours, and never overwritten: .gitignore, .gitattributes, .openwikiignore-style
+    rule files (gaps are reported), .claude/settings.json (replaced only when it
+    matches a known superseded generation), and the decisions/ and feedback/ index.md
+    files, which `kairos-ontology decision` and `... feedback` regenerate from your
+    own records.
     """
     selected_modes = sum((bool(upgrade), test_ref is not None, bool(restore)))
     if selected_modes > 1:

@@ -113,7 +113,7 @@ copy; Copilot resolves the same tree.
 | Configure a hub | `kairos-setup-config` |
 | Create or consume a dataplatform | `kairos-setup-dataplatform`, `kairos-package-dataplatform` |
 | Update toolkit/managed files/reference models or release toolkit | `kairos-toolkit-ops` |
-| Toolkit development | `kairos-toolkit-dev` |
+| Toolkit development (this repository only) | `kairos-toolkit-dev` |
 
 Always invoke the owning skill before a skill-managed command or authored design change. Set
 `KAIROS_SKILL_CONTEXT=1` only while a skill legitimately wraps a command.

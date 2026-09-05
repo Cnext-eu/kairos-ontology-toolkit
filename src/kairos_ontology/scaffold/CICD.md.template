@@ -57,6 +57,18 @@ into `main`.
 
 ## Managed files
 
+The toolkit owns these and `update` replaces them, so edits are lost: `CICD.md`,
+`CONTRIBUTING.md`, `.github/copilot-instructions.md`, `.claude/skills/*/SKILL.md`, and the
+per-directory `README.md` guides under `ontology-hub/` and `.import/`. Those READMEs became
+managed in DD-219; before that they were written once at `init` and could never be
+corrected in a hub that already existed.
+
+Yours, and never overwritten: `.gitignore` and `.gitattributes` (missing template rules are
+*reported*, not merged), `.claude/settings.json` (replaced only when it matches a
+generation the toolkit knows it shipped), and `decisions/index.md` and
+`.import/modeling/feedback/index.md`, which are regenerated from your own records by
+`kairos-ontology decision` and `kairos-ontology feedback`.
+
 Adopt a newer managed guide and toolkit release in an isolated upgrade PR:
 
 ```powershell
