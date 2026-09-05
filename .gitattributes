@@ -1,0 +1,53 @@
+# Line-ending policy for the toolkit repository.
+#
+# Without this file Git normalises nothing (`core.autocrlf` is unset here and `false` on
+# the maintainer's machine), so committed bytes are whatever the writing tool happened to
+# emit. That drifted: before this policy the tree held 390 CRLF files, 534 LF files, and
+# two files with both endings inside them.
+#
+# The cost is not cosmetic. A contributor running `core.autocrlf=true` materialises the
+# tracked tree as CRLF at checkout; the next tool that writes LF then rewrites those
+# files wholesale, and `git status` reports them as modified while each is byte-identical
+# in meaning. `src/kairos_ontology/scaffold/gitattributes.template` records what that did
+# to a real hub (issue #699): 168 files reported modified and `git checkout <branch>`
+# refusing to switch. This repository ships that fix to every scaffolded hub and
+# dataplatform while running without it -- this file closes that gap.
+#
+# LF everywhere, on every platform. Nothing in this repository is Windows-only text: it
+# tracks no `.bat` or `.cmd`, and the one `.sh` would break under CRLF.
+* text=auto eol=lf
+
+# Stated explicitly for the text this repository tracks, so the policy survives a future
+# change to Git's `text=auto` heuristics.
+*.py       text eol=lf
+*.md       text eol=lf
+*.ttl      text eol=lf
+*.rdf      text eol=lf
+*.owl      text eol=lf
+*.sql      text eol=lf
+*.json     text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.toml     text eol=lf
+*.xml      text eol=lf
+*.csv      text eol=lf
+*.mmd      text eol=lf
+*.jinja2   text eol=lf
+*.template text eol=lf
+*.example  text eol=lf
+*.sh       text eol=lf
+*.ps1      text eol=lf
+*.cs       text eol=lf
+*.csproj   text eol=lf
+
+# Safety net. No binary is tracked today, but a fixture workbook or sample extract added
+# later must never be line-ending converted -- that corrupts it silently.
+*.parquet binary
+*.xlsx    binary
+*.xlsb    binary
+*.png     binary
+*.jpg     binary
+*.pdf     binary
+*.zip     binary
+*.pbix    binary
+*.whl     binary
