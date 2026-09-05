@@ -25,6 +25,14 @@ business semantics.
   types, formats, and folders. Projection does not prove business correctness.
 - Generate calendars only from explicit bounds, fiscal settings, locale, time zone, and role-playing
   date bindings.
+- Control column visibility with the right term of three (DD-221). Surrogate keys, generated
+  foreign keys, source-identity, entity-IRI, audit and SCD history columns are hidden
+  automatically by their Silver role, and the mapped column a join reads from stays visible.
+  Author `kairos-ext:goldHideColumn "Table.column"` only for a business-looking column this
+  product should not browse; it hides, and the column keeps its relationships and DAX.
+  `kairos-ext:goldExcludeColumn` (DD-217) removes a column from the product entirely, and
+  `kairos-ext:securityPolicy` is the access-control tool. Both column terms are fail-closed:
+  a value naming no emitted column blocks the compile.
 - Generate RLS/OLS only from complete fail-closed security policy and emitted-column bindings.
   Runtime identity provisioning and enforcement remain downstream responsibilities.
 - Keep platform-specific behavior inside supported Fabric/Databricks capability contracts.

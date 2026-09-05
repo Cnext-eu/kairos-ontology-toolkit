@@ -75,6 +75,7 @@ def _materialize_dimensional_powerbi(
                 nullable=column.nullable,
                 role=column.role,
                 comment=column.comment,
+                hidden=column.hidden,
             )
             for ordinal, column in enumerate(table.columns, start=1)
         )

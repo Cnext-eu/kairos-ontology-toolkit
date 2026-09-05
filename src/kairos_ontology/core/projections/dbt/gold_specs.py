@@ -73,6 +73,11 @@ class GoldColumnSpec:
     role: str
     comment: str
     provenance: tuple[str, ...]
+    #: Emitted as TMDL ``isHidden``. A hidden column is still in the model -- it carries
+    #: relationships, feeds DAX and can be granted by a role -- it is only kept out of a
+    #: report author's field list. Contrast ``goldExcludeColumn`` (DD-217), which removes
+    #: the column from the product entirely.
+    hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +212,7 @@ class GoldPhysicalColumnPlan:
     nullable: bool
     role: str
     comment: str
+    hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)

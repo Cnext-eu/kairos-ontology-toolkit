@@ -20,6 +20,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
 
 ### Added
+- **The Gold semantic model hides its technical columns, marks its keys, and carries the
+  ontology's descriptions (#744, DD-221).** A `dim_customer` opened in Power BI Desktop
+  used to show `customer_sk`, `country_sk`, `_source_identity_ref`, `_loaded_at` and
+  `_kairos_fk_*_match_count` in the field list beside `customer_name` — half the table
+  machinery — with no column marked as the key and no descriptions at all, even though the
+  ontology's `rdfs:comment` already reached the physical plan. None of that was authored
+  policy, so no hub could fix it.
+  Columns are now hidden by their Silver column **role** (`source-identity`,
+  `surrogate-join-key`, `entity-iri`, `audit`, `history`), not by name: the SCD history flag
+  defaults to `is_current` with no underscore, and a business column may legitimately end in
+  `_sk`. `foreign-key` is decided on provenance instead, because the compiler gives that one
+  role both to the generated `{target}_sk` and to the mapped column its join reads from — so
+  `country_code` stays visible while `country_sk` does not. Hiding is presentation only: a
+  hidden column keeps its relationships, answers DAX, and can still be granted by a security
+  role. `isKey` is emitted only for a dimension or bridge whose primary key is the Silver
+  surrogate, because Power BI rejects a non-unique key at refresh in the workspace rather
+  than at validation in CI. Column `rdfs:comment`s are emitted as TMDL `///`, so they reach
+  Desktop's field-list tooltip.
+  Every existing hub's TMDL changes on the next `emit-gold`; paths, manifests and the
+  `.SemanticModel` layout do not.
+- **`kairos-ext:goldHideColumn "Table.column"` (#744).** The authored escape hatch for a
+  business-looking column a product does not want browsed. Repeatable on the `owl:Ontology`
+  resource, case-insensitive on the table, and fail-closed as `gold.unknown-hidden-column`
+  like `goldExcludeColumn` (DD-217) — a stale value after a Silver rename must not read as
+  "successfully hidden" while the column is back in the field list. It hides; DD-217's
+  `goldExcludeColumn` removes; `kairos-ext:securityPolicy` controls access.
 - **A scaffolded hub now ships the toolkit's user documentation, and `update` keeps it
   current (#739).** `docs/guide/USER_GUIDE.md`, the eleven recipes under `docs/guide/how-to/`,
   `docs/guide/CLI_REFERENCE.md` and `docs/guide/CONSUMING_COMPILE_PLAN.md` existed only in this

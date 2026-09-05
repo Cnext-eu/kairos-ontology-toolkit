@@ -31,6 +31,7 @@ from .policy_specs import (
     MeasureLifecycle,
     MedallionPolicySpec,
     ScdType,
+    SilverColumnRole,
 )
 from .specs import ForeignKeyPolicy, SilverForeignKeySpec, SilverModelSpec, SilverRegistry
 
@@ -91,6 +92,82 @@ def _primary_key(model: SilverModelSpec) -> str:
     return model.columns[0].name if model.columns else ""
 
 
+#: Silver column roles always hidden from a report author's field list (#744).
+#:
+#: The columns a dimensional model needs but nobody browses: the surrogate key, the
+#: source-identity and entity-IRI plumbing, load audit columns, and SCD history flags.
+#: Hiding is presentation only -- a hidden column still carries its relationships, still
+#: answers DAX, and can still be granted or denied by a security role.
+#:
+#: Matching on the role rather than the name is deliberate. The history flag is
+#: authorable and defaults to `is_current` with no leading underscore, and a business
+#: column may legitimately end in `_sk`, so a name heuristic would both miss real
+#: technical columns and hide real business ones.
+#:
+#: `business`, `business-natural-key`, `integration-identity` and `mastered-identifier`
+#: stay visible: those are the values a business user recognises and filters on.
+#: `foreign-key` is deliberately absent -- see `_is_hidden_by_role`.
+_HIDDEN_COLUMN_ROLES = frozenset(
+    {
+        SilverColumnRole.SOURCE_IDENTITY.value,
+        SilverColumnRole.SURROGATE_JOIN_KEY.value,
+        SilverColumnRole.ENTITY_IRI.value,
+        SilverColumnRole.AUDIT.value,
+        SilverColumnRole.HISTORY.value,
+    }
+)
+
+
+def _is_hidden_by_role(column) -> bool:
+    """Return whether *column* is technical enough to hide by default (#744).
+
+    `foreign-key` cannot be decided on the role alone, because the compiler gives that
+    one role to two different kinds of column on the same table:
+
+    * the **generated** join column -- the DD-133 `{target}_sk` surrogate and its
+      DD-109 `_kairos_fk_*_match_count` sibling. Machinery; hide it.
+    * the **mapped** column the join reads from -- e.g. `country_code`, bound to an
+      ontology property under DD-107. That is business data a report author will
+      legitimately want to slice by, and hiding it was the over-reach this check exists
+      to prevent.
+
+    A mapped column carries a `property:` provenance tag and a generated one never does,
+    so provenance separates them exactly, with no name matching.
+    """
+    if column.role in _HIDDEN_COLUMN_ROLES:
+        return True
+    if column.role != SilverColumnRole.FOREIGN_KEY.value:
+        return False
+    return not any(item.startswith("property:") for item in column.provenance)
+
+
+def _qualified_column_names(values: tuple[str, ...], table_name: str) -> frozenset[str]:
+    """Return the column part of every ``"Table.column"`` value naming *table_name*.
+
+    Matching is case-insensitive on the table, mirroring `_table_aliases`.
+    """
+    prefix = f"{table_name.casefold()}."
+    return frozenset(
+        value.split(".", 1)[1]
+        for value in values
+        if value.casefold().startswith(prefix) and "." in value
+    )
+
+
+def _hidden_column_names(policy, table_name: str) -> frozenset[str]:
+    """Return the column names ``goldHideColumn`` hides on *table_name* (#744).
+
+    The authored companion to the `_HIDDEN_COLUMN_ROLES` default: a column whose role
+    reads as business data but which this product does not want in the field list. It
+    hides, never removes -- `goldExcludeColumn` (DD-217) is the tool for removal, and the
+    two are deliberately separate because hiding is presentation and excluding is a
+    projection boundary.
+    """
+    return _qualified_column_names(
+        tuple(getattr(policy.gold, "hidden_columns", ()) or ()), table_name
+    )
+
+
 def _excluded_column_names(policy, table_name: str) -> frozenset[str]:
     """Return the column names ``goldExcludeColumn`` keeps out of *table_name*.
 
@@ -104,18 +181,16 @@ def _excluded_column_names(policy, table_name: str) -> frozenset[str]:
 
     Matching is case-insensitive on the table, mirroring `_table_aliases`.
     """
-    values = tuple(getattr(policy.gold, "excluded_columns", ()) or ())
-    prefix = f"{table_name.casefold()}."
-    excluded = frozenset(
-        value.split(".", 1)[1]
-        for value in values
-        if value.casefold().startswith(prefix) and "." in value
+    return _qualified_column_names(
+        tuple(getattr(policy.gold, "excluded_columns", ()) or ()), table_name
     )
-    return excluded
 
 
 def _columns(
-    model: SilverModelSpec, resource_uri: str, excluded: frozenset[str] = frozenset()
+    model: SilverModelSpec,
+    resource_uri: str,
+    excluded: frozenset[str] = frozenset(),
+    hidden: frozenset[str] = frozenset(),
 ) -> tuple[GoldColumnSpec, ...]:
     result: list[GoldColumnSpec] = []
     for column in model.columns:
@@ -140,6 +215,7 @@ def _columns(
                 role=column.role,
                 comment=column.description,
                 provenance=column.provenance,
+                hidden=_is_hidden_by_role(column) or column.name in hidden,
             )
         )
     if not result:
@@ -419,22 +495,62 @@ def _check_excluded_columns(policy, matched: frozenset[str]) -> None:
     tables were built. The emitted set cannot answer this on its own: a correctly excluded
     column is absent from it for exactly the same reason a misspelt one is.
     """
-    values = tuple(getattr(policy.gold, "excluded_columns", ()) or ())
+    _check_authored_columns(
+        tuple(getattr(policy.gold, "excluded_columns", ()) or ()),
+        matched,
+        code="gold.unknown-excluded-column",
+        term="goldExcludeColumn",
+        verb="excluded",
+        rule_id="DD-217-gold-column",
+        ontology_uri=policy.gold.ontology_uri,
+    )
+
+
+def _check_hidden_columns(policy, matched: frozenset[str]) -> None:
+    """Reject a ``goldHideColumn`` value that names nothing (#744).
+
+    Fail-closed for the same reason as `_check_excluded_columns`: a stale value must not
+    read as "successfully hidden" while the column is back in the field list. The failure
+    mode is milder than an exclusion's -- a visible column, not a leaked one -- but the
+    silence is identical, and a Silver rename is exactly when an author needs to hear it.
+    """
+    _check_authored_columns(
+        tuple(getattr(policy.gold, "hidden_columns", ()) or ()),
+        matched,
+        code="gold.unknown-hidden-column",
+        term="goldHideColumn",
+        verb="hid",
+        rule_id="DD-221-gold-column-visibility",
+        ontology_uri=policy.gold.ontology_uri,
+    )
+
+
+def _check_authored_columns(
+    values: tuple[str, ...],
+    matched: frozenset[str],
+    *,
+    code: str,
+    term: str,
+    verb: str,
+    rule_id: str,
+    ontology_uri: str,
+) -> None:
+    """Reject every authored ``"Table.column"`` value that matched no emitted column."""
     if not values:
         return
-    # Compared case-insensitively, because `_excluded_column_names` folds the table part
+    # Compared case-insensitively, because `_qualified_column_names` folds the table part
     # (mirroring `_table_aliases`) while `matched` is rebuilt from the emitted table name.
     seen = {item.casefold() for item in matched}
     for value in sorted({item for item in values if item.casefold() not in seen}):
         _fail(
-            "gold.unknown-excluded-column",
+            code,
             (
-                f"goldExcludeColumn {value!r} excluded no emitted column "
+                f"{term} {value!r} {verb} no emitted column "
                 '(expected "Table.column", naming a Gold table and one of its '
                 "Silver columns)"
             ),
-            rule_id="DD-217-gold-column",
-            resource_uri=policy.gold.ontology_uri,
+            rule_id=rule_id,
+            resource_uri=ontology_uri,
         )
 
 
@@ -690,6 +806,8 @@ def _shape_dimensional(
     used_names: set[str] = set()
     #: Authored `goldExcludeColumn` values that actually removed a column (#703).
     excluded_matched: set[str] = set()
+    #: Authored `goldHideColumn` values that actually hid a column (#744).
+    hidden_matched: set[str] = set()
     for authored in policy.gold.tables:
         if not _IDENTIFIER.fullmatch(authored.table_name.value):
             _fail(
@@ -852,6 +970,15 @@ def _shape_dimensional(
             for name in table_excluded
             if any(column.name == name for column in model.columns)
         )
+        table_hidden = _hidden_column_names(policy, authored.table_name.value)
+        hidden_matched.update(
+            f"{authored.table_name.value}.{name}"
+            for name in table_hidden
+            # An excluded column is not in the product at all, so hiding it matched
+            # nothing -- the author has two annotations fighting over one column and
+            # should hear about it.
+            if name not in table_excluded and any(column.name == name for column in model.columns)
+        )
         tables.append(
             GoldTableSpec(
                 resource_uri=authored.resource_uri,
@@ -860,7 +987,7 @@ def _shape_dimensional(
                 role=authored.role.value,
                 source_model=actual_name,
                 source_version=actual_version,
-                columns=_columns(model, authored.resource_uri, table_excluded),
+                columns=_columns(model, authored.resource_uri, table_excluded, table_hidden),
                 primary_key=_primary_key(model),
                 fact_grain=(authored.fact_grain.value if authored.fact_grain is not None else ""),
                 fact_type=(authored.fact_type.value if authored.fact_type is not None else None),
@@ -905,6 +1032,7 @@ def _shape_dimensional(
         )
     ordered = tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
     _check_excluded_columns(policy, frozenset(excluded_matched))
+    _check_hidden_columns(policy, frozenset(hidden_matched))
     included = {table.resource_uri for table in ordered}
     for table in ordered:
         if table.role is GoldTableRole.BRIDGE and (

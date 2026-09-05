@@ -26,6 +26,7 @@ from .gold_specs import (
     GoldSecurityKind,
     GoldTableSpec,
 )
+from .policy_specs import GoldTableRole
 
 
 # PBIP wrapper schemas. The projector is the single, authoritative source of
@@ -838,10 +839,28 @@ def _table_tmdl(
             ]
         )
     for column in physical.columns:
+        # `isKey` only where the key is provably unique: a dimension or bridge whose
+        # primary key is the Silver surrogate. `_primary_key` falls back to "first
+        # non-nullable column, else first column", which on a fact can land on a repeated
+        # value -- and Power BI rejects a non-unique `isKey` at refresh, not at
+        # validation, so that failure surfaces in the workspace rather than in CI.
+        is_key = (
+            column.name == physical.primary_key
+            and column.role == "surrogate-join-key"
+            and table.role in {GoldTableRole.DIMENSION, GoldTableRole.BRIDGE}
+        )
+        # The ontology's `rdfs:comment`, carried through Silver as the column
+        # description. Descriptions are the ontology's best asset for a report author --
+        # they surface in Desktop's field-list tooltip -- and they already reached the
+        # physical plan; only the emit was missing (#744).
+        if column.comment:
+            lines.append(f"\t/// {_tmdl_text(column.comment)}")
         lines.extend(
             [
                 f"\tcolumn {column.name}",
                 f"\t\tdataType: {column.tmdl_type}",
+                *(["\t\tisKey"] if is_key else []),
+                *(["\t\tisHidden"] if column.hidden else []),
                 f"\t\tlineageTag: {_guid(f'{table.name}.{column.name}')}",
                 f"\t\tsourceColumn: {column.name}",
                 "\t\tsummarizeBy: none",
