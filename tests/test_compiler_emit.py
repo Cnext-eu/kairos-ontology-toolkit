@@ -523,3 +523,53 @@ def test_windows_swap_failure_names_the_path_and_the_likely_holder(tmp_path: Pat
     message = str(excinfo.value)
     assert "kairos-stage-" in message  # the blocked path, not just the target
     assert "antivirus" in message and "--log-file" in message
+
+
+def test_emit_rejects_an_unknown_manifest_schema(tmp_path: Path):
+    """Fail closed on a manifest this toolkit does not understand.
+
+    Untested until DD-218 weighed extending the manifest instead of emitting a
+    sidecar. It is the reason that option was rejected: an older toolkit reading a
+    newer publish tree does not degrade to "unowned", it refuses outright, and
+    `cli/compile.py` parses *every* domain's manifest -- so one unreadable manifest
+    fails an unrelated domain's emit.
+    """
+    target = tmp_path / "party"
+    target.mkdir()
+    manifest_path = target / EMIT_MANIFEST_NAME
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": "kairos.eu/compiler-emit-manifest/v2",
+                "files": [{"path": "models/customer.sql", "sha256": "0" * 64}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ManifestError, match="unsupported compiler manifest schema"):
+        emit_artifacts({"models/customer.sql": "generated"}, target)
+
+
+def test_emit_rejects_an_extra_top_level_manifest_key(tmp_path: Path):
+    """The manifest has no forward-compatible extension point.
+
+    Even at the *same* schema string, an added key is refused -- which is why DD-218
+    puts provenance in its own artifact rather than in here.
+    """
+    target = tmp_path / "party"
+    target.mkdir()
+    manifest_path = target / EMIT_MANIFEST_NAME
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": EMIT_MANIFEST_SCHEMA,
+                "files": [{"path": "models/customer.sql", "sha256": "0" * 64}],
+                "inputs": [{"name": "model/ontologies/party.ttl", "sha256": "1" * 64}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ManifestError, match="malformed compiler manifest"):
+        emit_artifacts({"models/customer.sql": "generated"}, target)

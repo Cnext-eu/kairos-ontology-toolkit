@@ -483,6 +483,7 @@ def _preflight_emit(
 
 def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     from ..core.compiler.emit import emit_artifacts
+    from ..core.compiler.provenance import provenance_artifact
 
     target = emit_dir.resolve(strict=False)
     _check_cross_domain_model_collisions(result, target)
@@ -490,6 +491,12 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     domain_artifacts = {
         path: content for path, content in artifacts.items() if not _is_shared_artifact(path)
     }
+    # DD-218. Domain-owned, not shared: the shared manifest is rewritten by whichever
+    # domain emits last, so provenance placed there would describe an arbitrary one.
+    scope = getattr(result.plan, "scope", None) if result.plan is not None else None
+    if scope is not None:
+        provenance_path, provenance_content = provenance_artifact(scope)
+        domain_artifacts[provenance_path] = provenance_content
     shared_artifacts = _reconciled_shared_artifacts(result, target)
     dependency_artifacts = _reconciled_dbt_dependencies(result, target)
     _preflight_emit(

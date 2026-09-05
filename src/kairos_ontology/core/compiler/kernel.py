@@ -949,7 +949,10 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
     )
     template_root = Path(__file__).resolve().parents[2] / "templates" / "dbt"
     inputs = [
-        ProvenanceInput(str(path.relative_to(root)), path.read_text(encoding="utf-8"))
+        # `.as_posix()`, not `str()`: the name is hashed into `provenance_hash`, so a
+        # Windows-flavoured separator would make the same hub hash differently per
+        # platform. Every other ProvenanceInput site already normalises.
+        ProvenanceInput(path.relative_to(root).as_posix(), path.read_text(encoding="utf-8"))
         for path in (*binding_paths, *source_paths)
     ]
     gold_extension = root / "model" / "extensions" / f"{domain}-gold-ext.ttl"
@@ -967,7 +970,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         if path.is_file():
             inputs.append(
                 ProvenanceInput(
-                    str(path.relative_to(root)) if path.is_relative_to(root) else path.name,
+                    path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name,
                     path.read_text(encoding="utf-8"),
                 )
             )

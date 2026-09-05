@@ -280,5 +280,6 @@ during cleanup.
 | [DD-215](decisions/dd-215-the-target-platform-names-the-engine-and-boolean-ness-is-rendered-per-adapter.md) | The target platform names the engine, and boolean-ness is rendered per adapter | Accepted | 2026-09-03 |
 | [DD-216](decisions/dd-216-the-declared-silver-contract-gets-its-own-diagram.md) | The declared Silver contract gets its own diagram | Accepted | 2026-09-04 |
 | [DD-217](decisions/dd-217-gold-projection-is-controllable-at-the-column.md) | Gold projection is controllable at the column | Accepted | 2026-09-04 |
+| [DD-218](decisions/dd-218-emitted-artifacts-carry-their-own-provenance-sidecar-not-a-manifest-schema-bump.md) | Emitted artifacts carry their own provenance sidecar, not a manifest schema bump | Accepted | 2026-09-05 |
 
 ---
