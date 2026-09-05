@@ -1,9 +1,11 @@
 # DD-213 companion — the declared Silver entity contract
 
 > Detailed specification for [DD-213](decisions/dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it.md).
-> **Status: Proposed.** Nothing in this document is implemented. It is normative for the
-> proposed closed `SilverContract` schema, the `contract.*` compile-time rules (Gate A), and
-> the release-time classification table (Gate B). It amends, but does not yet supersede,
+> **Status: partly implemented.** The closed `SilverContract` schema and the `contract.*`
+> compile-time rules (Gate A) ship in `core/compiler/contracts.py`,
+> `contract_conformance.py`, `contract_emission.py` and `contract_scaffold.py`. The
+> release-time classification table (Gate B) is **not** built. This document stays
+> normative for both. It amends, but does not yet supersede,
 > [DD-133](dd-133-v5-entity-binding-compile.md) §2, §3, §3c, and §5.
 
 ## 1. The inversion this fixes

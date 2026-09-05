@@ -1,6 +1,6 @@
 # DD-213: The Silver contract is declared, not derived — bindings conform to it
 
-**Status:** Proposed
+**Status:** Accepted — Gate A implemented; Gate B not built
 **Date:** 2026-09-01
 **Affects:** a new `model/contracts/<domain>.contract.yaml` authored input and its packaged JSON
 Schema; `core/compiler/kernel.py` (new `contract.*` safety rules), `core/compiler/adapter.py`

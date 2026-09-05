@@ -1,6 +1,6 @@
 # DD-NNN: Imperative one-line title
 
-**Status:** Proposed | Accepted | ~~Superseded by [DD-XXX](dd-xxx-slug.md)~~
+**Status:** Proposed | Accepted | `~~Superseded by [DD-XXX](dd-xxx-slug.md)~~`
 **Date:** YYYY-MM-DD
 **Affects:** the modules, authored inputs, emitted artifacts or commands this changes
 **Issue:** #NNN (optional)

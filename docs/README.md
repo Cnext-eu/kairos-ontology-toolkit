@@ -8,6 +8,8 @@
 | [CLI reference](CLI_REFERENCE.md) | Exact retained command surface and compiler modes |
 | [CompilePlan consumption](CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
 | [Logging & observability](OBSERVABILITY.md) | Verbosity flags, JSON logs, optional OpenTelemetry bridge (DD-151) |
+| [Architecture](design/ontology-dbt-dataplatform-design-architecture.md) | The system as it stands: boundaries, release safety, governance |
+| [Roadmap](design/roadmap.md) | What is *not* built yet; phased plan |
 | [DD-133](design/dd-133-v5-entity-binding-compile.md) | Normative EntityBinding/compiler contract |
 | [Design decisions](design/toolkit-design-decisions.md) | Status index; one file per decision under [`design/decisions/`](design/decisions/) |
 | [Releasing](RELEASING.md) | Maintainer publication process; not evidence of a published release |
@@ -23,10 +25,12 @@ orchestration decisions are retained only as labeled records in the ADR log.
 - [Practitioner guides](instruction-guides/)
 - [Demo](demo/)
 
-## Historical and draft material
+## Historical material
 
-- [`archive/`](archive/) is frozen provenance, not current guidance.
-- [`draft/`](draft/) contains working notes and proposals, not supported contracts.
+- [`design/dd-014-architecture.md`](design/dd-014-architecture.md) describes the retired v4
+  medallion lane and is kept as provenance, not guidance.
+- Superseded decisions stay in [`design/decisions/`](design/decisions/) with a
+  `~~Superseded by DD-XXX~~` status rather than being deleted.
 
-When archived or draft text conflicts with the current documents above, DD-133 and the
-implemented compiler behavior take precedence.
+When historical text conflicts with the current documents above, DD-133 and the implemented
+compiler behavior take precedence.
