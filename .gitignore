@@ -65,3 +65,8 @@ tests/scenarios/**/.kairos-state/
 # does not -- it's built on demand by tmdl_validate.py when `dotnet` is available).
 src/kairos_ontology/core/projections/dbt/tmdl_validator_tool/bin/
 src/kairos_ontology/core/projections/dbt/tmdl_validator_tool/obj/
+
+# Merge conflict artefacts. Six of these were committed once and lingered as stale
+# snapshots of live source, which an agent grepping the tree reads as if it were code.
+*.orig
+*.rej
