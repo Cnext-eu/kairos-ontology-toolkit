@@ -98,6 +98,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
       kairos-ontology emit-gold party --confirm-emit
     """
     from ..core.compiler.emit import emit_artifacts
+    from ..core.compiler.provenance import provenance_artifact
     from ..core.projections.dbt.gold_specs import GoldContractError
     from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
     from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plan
@@ -125,6 +126,12 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         artifacts = generate_gold_from_compile_plan(plan)
     except GoldContractError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    # DD-218. The Gold lane emits into its own manifest-owned subtree, so it carries its
+    # own sidecar rather than relying on the Silver one; `lane` keeps the two paths apart
+    # when both land under the same `metadata/` prefix.
+    provenance_path, provenance_content = provenance_artifact(plan.scope, lane="gold")
+    artifacts[provenance_path] = provenance_content
 
     # Always on, unlike the TMDL gate: this is pure Python against vendored schemas,
     # so there is no .NET SDK to be missing and no build cost to opt out of. It is also

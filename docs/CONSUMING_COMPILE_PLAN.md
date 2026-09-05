@@ -37,6 +37,29 @@ entries rewrite the emitted warehouse hostname and HTTP path for the deployed
 and projection fails closed while that block is absent — a semantic model with an
 unresolved connection is not a publishable artifact.
 
+## Provenance
+
+Every emit writes `metadata/<domain>.provenance.json` beside the models, and
+`metadata/<domain>-gold.provenance.json` for a Gold product (DD-218). It records the
+schema id `kairos.eu/compile-provenance/v1`, the domain, `apiVersion`, namespace, adapter,
+toolkit version, the compile provenance hash, and one `{name, sha256}` entry for every
+authored input that went into the build -- ontology closure, bindings, contracts,
+templates and `kairos.yaml`.
+
+Read it to answer "what produced these models?" without going back to the hub. Two
+comparisons are worth automating on this side:
+
+- **Same inputs, same output.** If `provenanceHash` matches the one recorded for the
+  release you previously pinned, the authored inputs are identical and any behaviour
+  change is yours, not the hub's.
+- **Which input moved.** When the hash differs, the per-input digests say precisely which
+  ontology or binding changed, which is usually faster than diffing generated SQL.
+
+The document is deterministic and carries no timestamp or Git revision by design, so
+re-emitting unchanged inputs produces byte-identical provenance. It is evidence, not a
+gate: nothing in the toolkit yet compares a candidate release against its predecessor
+(that is Gate B of DD-213, unbuilt).
+
 ## Ownership
 
 - Ontology, source, binding, and compile diagnostics: hub owner.
