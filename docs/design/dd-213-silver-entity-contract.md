@@ -1,6 +1,6 @@
 # DD-213 companion — the declared Silver entity contract
 
-> Detailed specification for [DD-213](toolkit-design-decisions.md#dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it).
+> Detailed specification for [DD-213](decisions/dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it.md).
 > **Status: Proposed.** Nothing in this document is implemented. It is normative for the
 > proposed closed `SilverContract` schema, the `contract.*` compile-time rules (Gate A), and
 > the release-time classification table (Gate B). It amends, but does not yet supersede,

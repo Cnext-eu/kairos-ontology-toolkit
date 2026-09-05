@@ -217,4 +217,4 @@ tables:
 ## Related Documents
 
 - [DD-038: Bronze Source Introspection & Layered dbt Architecture](dd-038-bronze-introspection-architecture.md)
-- [DD-015: Vocabulary TTL as Bronze Contract](toolkit-design-decisions.md#dd-015-vocabulary-ttl-as-bronze-contract)
+- [DD-015: Vocabulary TTL as Bronze Contract](decisions/dd-015-vocabulary-ttl-as-bronze-contract.md)

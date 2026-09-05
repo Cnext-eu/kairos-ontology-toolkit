@@ -30,8 +30,8 @@ def _check_catalog_structure(catalog_path: Path) -> bool:
     - Missing ``<nextCatalog>`` targets and catalog cycles.
 
     This mirrors the maintainer's stated preference for a soft/advisory gate over
-    a hard one that could break non-interactive flows (see DD around skill-gating
-    in docs/design/toolkit-design-decisions.md:3127).
+    a hard one that could break non-interactive flows (see DD-053, the CLI soft
+    skill-gate).
 
     Returns:
         True unless a dangling entry declared in the catalog under test was
