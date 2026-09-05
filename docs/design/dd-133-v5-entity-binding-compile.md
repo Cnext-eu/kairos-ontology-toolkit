@@ -288,6 +288,26 @@ the relationship stays visible before its target class conforms; an omitted rang
 (e.g. `xsd:string`) for an object property to fill that gap — doing so both defeats this
 check and makes the property indistinguishable from a real string attribute.
 
+**When a named range does resolve, the check is subsumption-aware, downward only (#729).**
+The authored `target:` class is compatible when it *is* the declared range **or a transitive
+`rdfs:subClassOf` descendant of it** — a hub class that specialises a reference-model class
+(the prescribed reuse pattern) satisfies a range declared on that reference class, because
+every instance of the subclass is an instance of the range. A *superclass* of the range is
+still rejected: it would admit instances outside the range. The domain side needs no
+equivalent rule because `ResolvedProperty.domain_uris` is not `rdfs:domain` but the set of
+resolved classes that expose the property, inherited included (§8b), so the bound subclass is
+already a member. Where the DD-103 index resolves **several** named ranges (own plus
+superproperty-inherited, per the `rdfs` profile), the target must match **any** of them, not
+all: requiring the intersection would reject reference models that declare a subproperty
+range without asserting the subsumption chain between them, which is an ontology-quality
+concern for the validator, not a compile blocker. The ancestor set the check consults is the
+index closure under the `rdfs` profile — asserted `rdfs:subClassOf` walked to a fixpoint, no
+OWL RL materialization — with `owl:Thing` excluded, so `rdfs:range owl:Thing` remains a hard
+failure (see the `property_range_owl_thing` validator warning) even for exports that assert
+`rdfs:subClassOf owl:Thing` on every class. This subsumption is carried into the graph-free
+adapter context as `ResolvedClass.ancestor_uris` at symbol-resolution time; the check itself
+never touches the graph.
+
 ## 8. Scope resolution & provenance
 
 - `compile <domain>` resolves a single immutable `BuildScope` from the hub root (located by

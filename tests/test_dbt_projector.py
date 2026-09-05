@@ -542,6 +542,107 @@ class TestShaclTests:
     def test_extract_shacl_no_matching_file(self, shapes_dir):
         assert _extract_shacl_tests(shapes_dir, "http://ex/Nonexistent") == {}
 
+    # -- #729: sh:targetClass applies to subclasses ----------------------------------------
+
+    _HIERARCHY_TTL = textwrap.dedent("""\
+        @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex:   <http://kairos.example/ontology/> .
+        ex:Party a owl:Class .
+        ex:Client a owl:Class ; rdfs:subClassOf ex:Party .
+        ex:VipClient a owl:Class ; rdfs:subClassOf ex:Client .
+        ex:partyRef a owl:DatatypeProperty ; rdfs:domain ex:Party ; rdfs:range xsd:string .
+        ex:clientId a owl:DatatypeProperty ; rdfs:domain ex:Client ; rdfs:range xsd:string .
+        ex:clientName a owl:DatatypeProperty ; rdfs:domain ex:Client ; rdfs:range xsd:string .
+        ex:tier a owl:DatatypeProperty ; rdfs:domain ex:VipClient ; rdfs:range xsd:string .
+    """)
+
+    _LAYERED_SHAPES_TTL = textwrap.dedent("""\
+        @prefix sh: <http://www.w3.org/ns/shacl#> .
+        @prefix ex: <http://kairos.example/ontology/> .
+        ex:PartyShape a sh:NodeShape ;
+            sh:targetClass ex:Party ;
+            sh:property [ sh:path ex:partyRef ; sh:minCount 1 ] ;
+            sh:property [ sh:path ex:clientName ; sh:minCount 1 ; sh:maxLength 200 ] .
+        ex:ClientShape a sh:NodeShape ;
+            sh:targetClass ex:Client ;
+            sh:property [ sh:path ex:clientId ; sh:minCount 1 ; sh:maxCount 1 ] .
+        ex:VipShape a sh:NodeShape ;
+            sh:targetClass ex:VipClient ;
+            sh:property [ sh:path ex:clientName ; sh:minCount 1 ; sh:maxCount 1 ] ;
+            sh:property [ sh:path ex:tier ; sh:in ( "GOLD" "PLATINUM" ) ] .
+    """)
+
+    def _layered(self):
+        ontology = Graph().parse(data=self._HIERARCHY_TTL, format="turtle")
+        shapes = Graph().parse(data=self._LAYERED_SHAPES_TTL, format="turtle")
+        return ontology, shapes
+
+    def test_shape_on_ancestor_applies_to_subclass(self, tmp_path):
+        """A NodeShape on a reference class must reach the hub subclass model (#729).
+
+        The kairos-design-domain exemplar puts governance rules on the reference class and
+        local rules on the subclass; with exact matching the governance rules were silently
+        never emitted for the subclass.
+        """
+        ontology, shapes = self._layered()
+        tests = _extract_shacl_tests(
+            tmp_path,
+            "http://kairos.example/ontology/VipClient",
+            shacl_graph=shapes,
+            ontology_graph=ontology,
+        )
+        assert "not_null" in tests["party_ref"]  # grandparent shape
+        assert "unique" in tests["client_id"]  # parent shape
+        assert any("accepted_values" in t for t in tests["tier"])  # own shape
+
+    def test_shape_on_subclass_does_not_apply_to_superclass(self, tmp_path):
+        """The widening is downward only: a shape on ``VipClient`` says nothing about ``Client``."""
+        ontology, shapes = self._layered()
+        tests = _extract_shacl_tests(
+            tmp_path,
+            "http://kairos.example/ontology/Client",
+            shacl_graph=shapes,
+            ontology_graph=ontology,
+        )
+        assert "tier" not in tests
+        assert "unique" in tests["client_id"]
+        assert "not_null" in tests["party_ref"]
+
+    def test_without_ontology_graph_matching_stays_exact(self, tmp_path):
+        """No hierarchy to walk means no widening -- the pre-#729 behaviour is preserved."""
+        _, shapes = self._layered()
+        tests = _extract_shacl_tests(
+            tmp_path, "http://kairos.example/ontology/VipClient", shacl_graph=shapes
+        )
+        assert set(tests) == {"client_name", "tier"}
+
+    def test_nearest_shape_wins_on_shared_path_deterministically(self, tmp_path):
+        """When parent and child shapes constrain the same path, the most specific wins.
+
+        ``_extract_property_shape_tests`` is first-wins per column, so the order shapes are
+        visited decides the outcome; rdflib iteration order is not stable across runs. The
+        child's ``maxCount 1`` (-> ``unique``) must win over the parent's ``maxLength 200``,
+        and the result must be byte-identical on repeated extraction.
+        """
+        ontology, _ = self._layered()
+        runs = []
+        for _ in range(3):
+            shapes = Graph().parse(data=self._LAYERED_SHAPES_TTL, format="turtle")
+            runs.append(
+                _extract_shacl_tests(
+                    tmp_path,
+                    "http://kairos.example/ontology/VipClient",
+                    shacl_graph=shapes,
+                    ontology_graph=ontology,
+                )
+            )
+        assert runs[0] == runs[1] == runs[2]
+        name_tests = runs[0]["client_name"]
+        assert "unique" in name_tests
+        assert not any("lengths_to_be_between" in t for t in name_tests)
+
 
 # ---------------------------------------------------------------------------
 # Integration: full artifact generation

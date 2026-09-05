@@ -245,11 +245,12 @@ def test_range_less_object_property_is_authorable_as_a_relationship(tmp_path, ra
 def test_owl_thing_range_is_worse_than_omitting_the_range(tmp_path):
     """Pins the asymmetry the ``property_range_owl_thing`` validator warning asserts.
 
-    The compiler's relationship guard is ``prop.range_uri and prop.range_uri !=
-    target_class.uri``. ``owl:Thing`` is a plain ``URIRef``, so the DD-103 semantic index
-    surfaces it as a named range: the guard does *not* short-circuit and, since it can
-    never equal the authored ``target:`` class, it always fails as
-    ``safety.relationship-endpoint``. Omitting ``rdfs:range`` leaves ``range_uri`` empty,
+    The compiler's relationship guard accepts a ``target:`` that is, or descends from, any
+    of ``prop.range_uris`` (#729). ``owl:Thing`` is a plain ``URIRef``, so the DD-103
+    semantic index surfaces it as a named range: the guard does *not* short-circuit, it can
+    never equal the authored ``target:`` class, and it is deliberately excluded from the
+    ancestor closure the guard consults -- so it always fails as
+    ``safety.relationship-endpoint``. Omitting ``rdfs:range`` leaves ``range_uris`` empty,
     the guard short-circuits, and the identical binding compiles.
 
     Both halves are asserted in one test on purpose: either alone would still pass if the

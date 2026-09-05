@@ -38,6 +38,53 @@ SCHEMA_HTTPS = Namespace("https://schema.org/")
 DOMAIN_INCLUDES_PREDICATES = (SCHEMA.domainIncludes, SCHEMA_HTTPS.domainIncludes)
 
 # ---------------------------------------------------------------------------
+# Class hierarchy walking (graph level)
+# ---------------------------------------------------------------------------
+#
+# The one sanctioned graph-level ``rdfs:subClassOf`` walker for projectors. The compiler
+# kernel reads the DD-103 semantic index (``ClassRecord.ancestors``) instead; projectors that
+# only hold an ``rdflib.Graph`` use this. Direction is *up* -- "which declared constraints
+# apply to this concrete class?" -- which is the safe direction: a subclass instance satisfies
+# every constraint declared on an ancestor. Never use it for identity, ownership, or collision
+# questions (conformance grouping, artifact ownership, contract drift), where subsumption is
+# the wrong relation (#729).
+
+
+def named_parents(graph: Graph, cls: URIRef) -> list[URIRef]:
+    """Return the direct, *named* superclasses of *cls*, URI-sorted.
+
+    A blank-node ``rdfs:subClassOf`` object is an OWL restriction (property cardinality), not
+    a superclass; the two sets are disjoint by construction, since a triple's object is either
+    a URIRef or a blank node, never both.
+    """
+    return sorted(
+        (parent for parent in graph.objects(cls, RDFS.subClassOf) if isinstance(parent, URIRef)),
+        key=str,
+    )
+
+
+def class_ancestors(graph: Graph, cls: URIRef) -> list[URIRef]:
+    """Return every transitive named superclass of *cls*, nearest first, cycle-safe.
+
+    Breadth-first over :func:`named_parents`, so the result is level-ordered: direct parents,
+    then grandparents, and so on, each level URI-sorted. An ontology may assert a
+    ``subClassOf`` cycle (directly or through an import) and a projector must render it rather
+    than recurse forever.
+    """
+    seen: set[URIRef] = {cls}
+    ordered: list[URIRef] = []
+    frontier = named_parents(graph, cls)
+    while frontier:
+        parent = frontier.pop(0)
+        if parent in seen:
+            continue
+        seen.add(parent)
+        ordered.append(parent)
+        frontier.extend(named_parents(graph, parent))
+    return ordered
+
+
+# ---------------------------------------------------------------------------
 # Multi-class property domain resolution (DD-131)
 # ---------------------------------------------------------------------------
 

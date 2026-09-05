@@ -277,9 +277,12 @@ the relationship visible and mechanically findable (`grep "STUB
 (deferred-relationship):"`) until the target module is onboarded. An omitted
 range is only *tolerated*, not the prescribed shape. Never patch the warning
 away with `rdfs:range owl:Thing`; that is worse than omitting the range,
-because the compiler rejects a declared range that differs from the authored
-`target:` class (`safety.relationship-endpoint`) while an omitted range
-compiles. Declare the real target class, stub it, or leave the range off.
+because the compiler rejects a declared range that is neither the authored
+`target:` class nor one of its superclasses (`safety.relationship-endpoint`) —
+and `owl:Thing` is never counted as a superclass — while an omitted range
+compiles. A hub subclass of the declared range *is* accepted (#729), so
+subclassing the reference class remains the right move. Declare the real
+target class, stub it, or leave the range off.
 
 Still confirm manually, since these require judgment the CLI cannot supply:
 

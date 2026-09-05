@@ -149,8 +149,17 @@ class ResolvedProperty:
     data_type: str
     description: str = ""
     is_object_property: bool = False
+    #: Every resolved class that *exposes* this property -- directly or through
+    #: ``rdfs:subClassOf`` inheritance (DD-133 §8b). This is **not** the property's
+    #: ``rdfs:domain``: the kernel adds the bound class URI while walking the semantic-index
+    #: property closure, so a hub subclass of the declaring class is already a member. A
+    #: membership test against it is therefore subsumption-aware without any further walk.
     domain_uris: tuple[str, ...] = ()
-    range_uri: str = ""
+    #: Every named ``rdfs:range`` the DD-103 index resolves for the property (own and
+    #: superproperty-inherited, URI-sorted). Empty for an object property whose range is
+    #: absent or a class expression -- the DD-133 §7 "deferred range" short-circuit. A
+    #: relationship target is compatible when it *is*, or descends from, **any** member (#729).
+    range_uris: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +171,16 @@ class ResolvedClass:
     name: str
     label: str = ""
     comment: str = ""
+    #: Direct named ``rdfs:subClassOf`` parents, one hop, straight off the graph.
     parent_uris: tuple[str, ...] = ()
+    #: Transitive named ancestors from the semantic-index closure (``ClassRecord.ancestors``
+    #: under the compiler's RDFS profile: asserted ``rdfs:subClassOf`` walked to a fixpoint,
+    #: no OWL materialization), with ``owl:Thing`` removed. Carried here because the
+    #: relationship-endpoint check runs against this graph-free context and needs "is the
+    #: declared range an ancestor of the authored target?" (#729). ``owl:Thing`` is excluded
+    #: so ``rdfs:range owl:Thing`` stays rejected (#330) even for exports that assert
+    #: ``rdfs:subClassOf owl:Thing`` on every class.
+    ancestor_uris: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +289,7 @@ def object_property_in_fields_message(property_token: str, prop: ResolvedPropert
     must point both ways: to ``relationships:`` for the semantically correct authoring, and
     to ``technicalFields:`` (DD-139) as the explicit raw-passthrough escape hatch.
     """
-    range_label = prop.range_uri or "undeclared or a class expression"
+    range_label = ", ".join(prop.range_uris) or "undeclared or a class expression"
     return (
         f"field '{property_token}' targets an object property (range {range_label}); "
         "fields: materializes scalar attributes only. Declare it as a relationships: entry "
