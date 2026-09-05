@@ -16,7 +16,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Emitted artifacts carry their own provenance (DD-218, #716).** Every emit now writes
+  `metadata/<domain>.provenance.json` — and `metadata/<domain>-gold.provenance.json` for a
+  Gold product — recording the toolkit version, adapter, `apiVersion`, namespace, the
+  `BuildScope` provenance hash, and a sha256 for every authored input in the build. The
+  manifest recorded one digest per file *written* and nothing about what those bytes were
+  computed *from*, so a dataplatform repository could not tell which ontology and bindings
+  produced a package without reconstructing it from whichever revision it happened to pin.
+  It is an ordinary artifact rather than manifest metadata because the manifest rejects any
+  key outside `{"files", "schema"}` — extending it fails closed on an older toolkit reading
+  a newer publish tree — and because emission writes four manifests over disjoint sets, the
+  shared one last-writer-wins across domains. No wall clock and no Git revision, so
+  re-emitting unchanged inputs is byte-identical.
+- **Task how-to guides (#719).** Twelve recipes under `docs/how-to/`, one per lifecycle
+  stage, each naming the skill that automates it. `tests/test_how_to_guides.py` resolves
+  every `kairos-ontology ...` line in them against the real command tree — command,
+  subcommand and every long flag — so a renamed flag breaks the build rather than the
+  reader, and executes the create-a-hub recipe end to end.
+- **A generated CLI reference (#718).** `docs/CLI_REFERENCE.md` is now produced by
+  `scripts/generate_cli_reference.py` from the Click tree: all 88 commands with usage,
+  arguments, options and defaults. The hand-written file it replaced had fallen 14 commands
+  behind. `tests/test_cli_reference_is_current.py` fails when the file and the CLI disagree.
+  The behaviour essays it used to carry moved to `docs/design/cli-behaviour-notes.md`.
+
+### Changed
+- **Scaffolded guidance is toolkit-managed (DD-219, #717).** Eleven per-directory `README.md`
+  guides under `ontology-hub/` and `.import/` were written once at `init` and then frozen —
+  half the scaffold's documentation lines could only ever be corrected in hubs created after
+  a fix. They are managed now, so `kairos-ontology update` delivers corrections. `init` and
+  `new-repo` stamp what the toolkit owns, without which a brand-new hub failed the
+  `update --check` that `managed-check.yml` runs on every pull request.
+  `decisions/index.md` and `.import/modeling/feedback/index.md` stay unmanaged on purpose:
+  they are regenerated from the hub's own records, and managing them would overwrite an
+  accumulated log.
+- **A hub receives 21 skills instead of 26 (DD-219, #717).** `kairos-toolkit-dev` and
+  `kairos-toolkit-dogfood` are maintainer activities aimed at this repository — dogfood is
+  explicitly adversarial — and were selectable by an agent working in a client hub.
+  `SC-merge-pr` documents this repository's own release process and shipped carrying a
+  paragraph telling the reader not to apply it there; `SC-document` drives a Cnext Outline
+  workspace. `kairos-design-mdm` is withheld while MDM is designed but not adopted, and
+  returns when it goes live. `kairos-toolkit-ops` deliberately still ships.
+- **The decision log is one file per decision (#713).** `toolkit-design-decisions.md` had
+  reached 15,680 lines across 217 entries: too large to load as context, and every new
+  decision appended at EOF so two branches adding one always conflicted. The file keeps its
+  path as the index; entries live in `docs/design/decisions/`. Adding a decision now creates
+  a file, so the only possible collision is an adjacent index row.
+- **The repository has an LF line-ending policy (#714).** No `.gitattributes` and
+  `core.autocrlf=false` meant committed bytes were whatever the writing tool emitted; the
+  tree had drifted to 390 CRLF and 534 LF files, with two carrying both internally. The
+  toolkit already shipped this fix to every scaffolded hub (issue #699) while running
+  without it. The renormalisation is listed in `.git-blame-ignore-revs`.
+- **Architecture and roadmap are separate documents (#715).** 302 of the architecture
+  document's 709 lines were a delivery plan; they moved to `docs/design/roadmap.md`.
+
 ### Fixed
+- **The compile provenance hash is now stable across platforms (#716).** `provenance_hash`
+  covers each input's *name*, and two of the six `ProvenanceInput` sites did not normalise
+  path separators — so on Windows bindings, source vocabularies and ontologies entered the
+  hash as `integration\bindings\...` while templates entered as `templates/...`. The same
+  hub hashed differently per platform, quietly undermining the reproducibility a pinned
+  release tag is supposed to provide. Linux digests are unchanged; Windows now agrees with
+  them.
+- **DD-213's recorded status matched reality (#715).** It was logged as `Proposed`, and its
+  companion opened with "Nothing in this document is implemented", while Gate A had shipped:
+  four compiler modules and 24 `contract.*` diagnostics. Gate B genuinely is not built. A
+  record claiming a shipped feature does not exist tells an agent to build what is already
+  there.
+- **The dataplatform's `CICD.md` no longer shows an unsubstituted `{ORG}` (#717).** It is
+  written by the verbatim managed-file copy, so the placeholder reached clients as literal
+  text telling them to pin `https://github.com/{ORG}/kairos-ontology-toolkit`.
+- **`scripts/sync_dev_skills.py` runs on a Windows console (#717).** It printed a non-ASCII
+  status mark and died with `UnicodeEncodeError` under a legacy code page — which is where
+  the pre-commit hook runs it.
+- **Four decision-log index rows disagreed with the entries they point at (#713).** Git
+  history confirmed the entry bodies were right; DD-077, DD-091, DD-185 and DD-186 are
+  corrected. The old consistency test compared titles only and never checked status or date.
+- **Six committed `.orig` merge artefacts are gone (#714).** Stale snapshots of live source,
+  indistinguishable from real code to anything grepping the tree. `*.orig` and `*.rej` are
+  now ignored.
 - **A conformance `UNION` now carries the width its branches declare (#681).** A class's
   published column type silently widened the moment it gained a second source —
   `string(50)` on every branch emitted as unsized `string` on the union, with no ontology
