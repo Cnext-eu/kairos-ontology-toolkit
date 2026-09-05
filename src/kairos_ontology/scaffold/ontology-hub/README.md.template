@@ -27,7 +27,7 @@ release evidence, or generated files as authored inputs.
 ```bash
 uv run kairos-ontology compile <domain> --check
 uv run kairos-ontology compile <domain> --explain --format json
-uv run kairos-ontology compile <domain> --emit
+uv run kairos-ontology compile <domain> --emit --confirm-emit
 ```
 
 The adapter is selected in `kairos.yaml` (`fabric-warehouse` or `databricks`, set with

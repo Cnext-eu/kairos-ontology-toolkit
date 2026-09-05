@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
 
 ### Added
+- **A scaffolded hub now ships the toolkit's user documentation, and `update` keeps it
+  current (#739).** `docs/USER_GUIDE.md`, the eleven recipes under `docs/how-to/`,
+  `docs/CLI_REFERENCE.md` and `docs/CONSUMING_COMPILE_PLAN.md` existed only in this
+  repository: not in the wheel, and not referenced by any scaffold file — so a hub operator
+  asking "do we have any user guides?" found nothing, and a GitHub link would not have helped
+  because client-side users do not necessarily have read access here. They are now copied
+  into every hub under `docs/toolkit/`, with an index at `docs/toolkit/README.md` and a
+  Documentation section on the hub README. They are **managed**, so hubs that already exist
+  receive them — and later corrections to them — on `kairos-ontology update`, pinned to the
+  toolkit version the hub runs. Namespaced under `docs/toolkit/` so they can never collide
+  with documentation a hub writes for itself.
+  Deliberately *not* shipped: the decision log, architecture record, DD-133, the practitioner
+  guides, MDM material and the maintainer release process. Those describe the toolkit rather
+  than how to operate a hub; the allowlist lives in `scripts/sync_dev_skills.py`, so adding a
+  document to every client hub stays a deliberate act. Cross-links from the shipped guides to
+  documents that stay behind were rewritten to absolute URLs, and a test now fails if a
+  shipped guide gains a relative link to something the hub never receives.
 - **`propose-relationships` matches endpoints through `rdfs:subClassOf` (#732).** Endpoint
   matching had two tiers — exact class URI, then a same-local-name heuristic across
   namespaces — so a hub that follows the prescribed pattern (subclass the reference-model
@@ -35,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint (`uri` < `subclass` < `local-name`), proposals order that way, and where several
   bound subclasses match one endpoint each is proposed — the author picks. The `local-name`
   heuristic remains as the last resort for hubs that mint an unanchored class.
+
+### Fixed
+- **The scaffolded hub README told operators to run `compile <domain> --emit`, which the CLI
+  rejects (#739).** `--emit` has required `--confirm-emit` since #264, and
+  `test_scaffold_emit_invocations_pass_confirm_emit` exists to catch exactly this — but it
+  filtered on `Path.suffix`, which for `README.md.template` is `.template`, not `.md`. Every
+  `*.md.template` in the scaffold was therefore exempt, including the two READMEs a new hub
+  operator reads first. The check now matches on the last two suffixes, and the three bare
+  invocations it found (the repo README, the hub README, and the user guide) are fixed.
 
 ### Changed
 - **`owl:equivalentClass` is no longer presented as a compile-time anchor (#730).**

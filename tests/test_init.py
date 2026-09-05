@@ -1523,7 +1523,12 @@ def test_scaffold_emit_invocations_pass_confirm_emit():
     scaffold_root = Path(next(iter(scaffold_pkg.__path__)))
     offenders = []
     for path in sorted(scaffold_root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in {".yml", ".yaml", ".md", ".sh"}:
+        # ``.template`` counts too, and did not before: ``Path("README.md.template").suffix``
+        # is ``.template``, so every ``*.md.template`` in the scaffold -- including the hub
+        # README, which is the first CLI a new operator copies -- was exempt from this check
+        # and shipped a bare ``--emit`` the CLI rejects (#739).
+        suffixes = {s.lower() for s in path.suffixes[-2:]}
+        if not path.is_file() or not suffixes & {".yml", ".yaml", ".md", ".sh"}:
             continue
         for lineno, line in enumerate(
             path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1

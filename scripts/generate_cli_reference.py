@@ -49,7 +49,7 @@ python scripts/generate_cli_reference.py
 
 For *why* a command behaves as it does -- the machine-output contract, the three ERD
 projections, `validate-dbt-contracts` versus `validate-dbt`, opt-in sample redaction --
-see [CLI behaviour notes](design/cli-behaviour-notes.md). This file documents surface,
+see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main/docs/design/cli-behaviour-notes.md). This file documents surface,
 not reasoning.
 """
 
