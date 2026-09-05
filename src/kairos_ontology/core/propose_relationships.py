@@ -90,8 +90,19 @@ def _class_token(ref: str) -> str:
 
 
 def _slug(class_uri: str) -> str:
-    """Generated dbt model name for a target class -- mirrors ``adapter._slug``."""
-    local = _local_name(class_uri)
+    """Generated dbt model name for a target class -- mirrors ``adapter._slug``.
+
+    Routed through :func:`_class_token` rather than ``_local_name`` (#724). The compiler
+    slugs the *resolved* class (``adapter._slug(klass.name)``, where ``ResolvedClass.name``
+    comes from the semantic index), so it never sees the authored token; this function is
+    handed the authored ``target.class`` verbatim. For a qname parent -- the form the
+    canonical example uses -- ``_local_name`` leaves the prefix in place and the colon then
+    maps to an underscore, so the proposal named ``party_customer`` a model the compiler
+    emits as ``customer``. Nothing fails closed on that: ``externalReference`` deliberately
+    bypasses model-existence checking, so the author pastes a ``ref()`` to a model that
+    will never exist.
+    """
+    local = _class_token(class_uri)
     out = "".join(char if char.isalnum() else "_" for char in local).strip("_").lower()
     return out
 
@@ -601,7 +612,7 @@ def build_relationship_proposals(
     for entity in bindings:
         if entity.target_class:
             by_class.setdefault(entity.target_class, []).append(entity)
-            by_local_name.setdefault(_local_name(entity.target_class).lower(), []).append(entity)
+            by_local_name.setdefault(_class_token(entity.target_class), []).append(entity)
 
     def _endpoints(class_uri: str) -> tuple[list[BoundEntity], str]:
         """Resolve one edge endpoint to authored bindings.
@@ -617,7 +628,7 @@ def build_relationship_proposals(
         exact = by_class.get(class_uri)
         if exact:
             return exact, "uri"
-        return by_local_name.get(_local_name(class_uri).lower(), []), "local-name"
+        return by_local_name.get(_class_token(class_uri), []), "local-name"
 
     bridges = load_blueprint_bridges(ref_models_dir, accelerator)
     edges: list[tuple[str, str, str, str, str]] = [

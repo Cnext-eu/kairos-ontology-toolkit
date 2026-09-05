@@ -171,6 +171,38 @@ class TestProposals:
             "key": [{"column": "consignment_id", "type": "<CONFIRM_KEY_TYPE>"}],
         }
 
+    def test_a_qname_parent_class_slugs_to_the_model_the_compiler_emits(self, hub):
+        """#724: the proposal is handed the authored token, the compiler the resolved class.
+
+        A parent authoring `target: {class: cons:Consignment}` -- the form the canonical
+        example uses -- used to yield `externalReference.name: cons_consignment`, because
+        `_local_name` splits on `#` and `/` only and the colon then mapped to an
+        underscore. The compiler slugs `ResolvedClass.name` from the semantic index and
+        emits `consignment`, so the pasted `ref()` named a model that never exists --
+        and `externalReference` skips model-existence checking, so nothing failed closed.
+        """
+        (hub / "integration" / "bindings" / "consignments.binding.yaml").write_text(
+            _binding("consignments", "consignment", "cons:Consignment", "consignment_id"),
+            encoding="utf-8",
+        )
+        proposal = _report(hub).proposals[0]
+        assert proposal.external_reference["name"] == "consignment"
+
+    def test_a_qname_class_still_matches_its_endpoint_by_local_name(self, hub):
+        """The same blind spot in the endpoint index, which keys on the authored token.
+
+        A hub authoring its own class as a qname while the blueprint declares a full URI
+        would key `cons:consignment` against `consignment` and match nothing, so the
+        bridge silently produced no proposal at all.
+        """
+        (hub / "integration" / "bindings" / "consignments.binding.yaml").write_text(
+            _binding("consignments", "consignment", "cons:Consignment", "consignment_id"),
+            encoding="utf-8",
+        )
+        report = _report(hub)
+        assert [p.parent_binding for p in report.proposals] == ["consignments"]
+        assert report.proposals[0].endpoint_match == "local-name"
+
     def test_key_type_is_derived_when_the_parent_materializes_the_column(self, hub):
         """When the parent DOES declare the column's type, use it rather than a sentinel."""
         (hub / "integration" / "bindings" / "consignments.binding.yaml").write_text(

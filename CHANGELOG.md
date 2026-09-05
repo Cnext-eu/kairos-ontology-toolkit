@@ -71,6 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   document's 709 lines were a delivery plan; they moved to `docs/design/roadmap.md`.
 
 ### Fixed
+- **A qname parent class no longer breaks relationship proposals (#724).** `target.class`
+  may be authored as a full URI, a `prefix:Local` qname, or a bare local name — the
+  canonical example uses the qname form — but `propose-relationships` resolved it with
+  `_local_name`, which splits on `#` and `/` only and hands a qname straight back. Two
+  consequences, the second worse than the first. `externalReference.name` slugged
+  `party:Customer` to `party_customer` while the compiler, which slugs the *resolved*
+  class, emits `customer` — so the pasted `ref()` named a model that never exists, and
+  `externalReference` deliberately skips model-existence checking, so nothing failed
+  closed. And the endpoint index keyed the same authored token, so a hub authoring its own
+  class as a qname against a blueprint declaring a full URI matched nothing at all and the
+  bridge produced **no proposal whatsoever**. Both now route through DD-220's
+  `_class_token`.
 - **`propose-relationships` no longer re-proposes what a binding already authors
   (DD-220, #722).** The command counted a binding's `relationships:` entries but never
   read them, so on a real 33-binding hub five of eight resolved proposals were verbatim
