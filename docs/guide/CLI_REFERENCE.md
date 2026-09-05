@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-88 commands.
+89 commands.
 
 ## Index
 
@@ -66,6 +66,7 @@ not reasoning.
 | [`fit-report`](#fit-report) | Advisory set-difference between a class's full property universe and what is populated. |
 | [`generate-bindings`](#generate-bindings) | Generate first-draft EntityBindings from the design sheet (DD-191, no LLM). |
 | [`guard-scope`](#guard-scope) | Deterministic 'no unexpected file changed' guard for a bounded skill gate. |
+| [`harvest-gold`](#harvest-gold) | Diff an edited semantic model against this hub and propose the authoring. |
 | [`import-flatfile`](#import-flatfile) | Import CSV/.xlsx/Parquet flat files as source schema documentation. |
 | [`import-source`](#import-source) | Import source schema YAML and generate/refresh bronze vocabulary TTL. |
 | [`import-tmdl`](#import-tmdl) | Import and inventory TMDL/PBIP files for ontology modeling. |
@@ -823,6 +824,23 @@ kairos-ontology guard-scope [OPTIONS]
 | `--check-since` |  | Compare current git status against the snapshot at this token path. |
 | `--allow` | `Sentinel.UNSET` | Glob (relative to the git repo root) allowed to have changed since the snapshot. Repeatable. Only valid with --check-since. |
 | `--ignored-root` | `Sentinel.UNSET` | Path (relative to the git repo root) of a gitignored tree to also fingerprint, opt-in and bounded. Repeatable. Only valid with --snapshot — the resolved root list is stored inside the token itself, and --check-since reads it back from there, so the two calls can never disagree on scope. |
+
+
+## harvest-gold
+
+Diff an edited semantic model against this hub and propose the authoring. A BI engineer opens the generated PBIP, hides a column, adds measures -- and the next `emit-gold` overwrites all of it. This reads the edited model, compares it with what the hub would emit now, and writes two review documents under `model/planning/gold-harvest/`: a Markdown diff, and a Turtle snippet of the changes that have authoring vocabulary. Nothing is applied. Merging an edit straight into `model/extensions/` would make the hub's own authored inputs a downstream artifact of a report, which inverts the ownership the whole design depends on. Review the proposal, paste what you agree with into the owning domain's Gold extension, and re-emit.  Examples: kairos-ontology harvest-gold invoicing --from ../edited/Invoicing.SemanticModel kairos-ontology harvest-gold party --from ../export
+
+```
+kairos-ontology harvest-gold [OPTIONS] PRODUCT_OR_DOMAIN
+```
+
+| Argument | Arity |
+|---|---|
+| `PRODUCT` | required |
+
+| Option | Default | Description |
+|---|---|---|
+| `--from` | **required** | The edited semantic model: a PBIP export folder, a '<Name>.SemanticModel' folder, or its 'definition/' folder. Power BI Desktop writes this with 'Save as PBIP'; for a Direct Lake model, export it through Fabric git integration instead -- Direct Lake cannot be saved as a PBIP from Desktop. |
 
 
 ## import-flatfile

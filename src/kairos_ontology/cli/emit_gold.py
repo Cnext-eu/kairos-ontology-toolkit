@@ -206,6 +206,135 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     _regenerate_master_gold_erd(target, hub_name=hub_root.name)
 
 
+@click.command(name="harvest-gold")
+@click.argument("product", metavar="PRODUCT_OR_DOMAIN")
+@click.option(
+    "--from",
+    "source",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="The edited semantic model: a PBIP export folder, a '<Name>.SemanticModel' "
+    "folder, or its 'definition/' folder. Power BI Desktop writes this with "
+    "'Save as PBIP'; for a Direct Lake model, export it through Fabric git integration "
+    "instead -- Direct Lake cannot be saved as a PBIP from Desktop.",
+)
+def harvest_gold_cmd(product: str, source: Path) -> None:
+    """Diff an edited semantic model against this hub and propose the authoring.
+
+    A BI engineer opens the generated PBIP, hides a column, adds measures -- and the next
+    `emit-gold` overwrites all of it. This reads the edited model, compares it with what
+    the hub would emit now, and writes two review documents under
+    `model/planning/gold-harvest/`: a Markdown diff, and a Turtle snippet of the changes
+    that have authoring vocabulary.
+
+    Nothing is applied. Merging an edit straight into `model/extensions/` would make the
+    hub's own authored inputs a downstream artifact of a report, which inverts the
+    ownership the whole design depends on. Review the proposal, paste what you agree with
+    into the owning domain's Gold extension, and re-emit.
+
+    \b
+    Examples:
+      kairos-ontology harvest-gold invoicing --from ../edited/Invoicing.SemanticModel
+      kairos-ontology harvest-gold party --from ../export
+    """
+    from ..cli.compile import _hub_domains
+    from ..core.compiler.kernel import build_compile_plan
+    from ..core.determinism import write_text_lf
+    from ..core.gold_harvest import (
+        HARVEST_RELDIR,
+        diff_models,
+        load_edited_model,
+        render_proposal,
+        render_report,
+    )
+    from ..core.projections.dbt.gold_connection import resolve_gold_product
+    from ..core.projections.dbt.gold_specs import GoldContractError
+    from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plans
+    from ..core.tmdl_parser import parse_tmdl_content
+
+    hub_root = find_hub_root(Path.cwd(), require_model=True)
+    if hub_root is None:
+        raise click.ClickException(
+            "Cannot locate a hub (model/ + integration/) from the current directory."
+        )
+    try:
+        resolved = resolve_gold_product(
+            hub_root, product, hub_domains=tuple(_hub_domains(hub_root))
+        )
+    except GoldContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    plans = []
+    for member in resolved.domains:
+        plan = build_compile_plan(hub_root, member)
+        if plan.blocked:
+            raise click.ClickException(f"{member}: compile plan is blocked; run compile --check")
+        plans.append(plan)
+    try:
+        artifacts = generate_gold_from_compile_plans(plans, resolved)
+    except GoldContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    emitted = _model_from_artifacts(artifacts, parse_tmdl_content)
+    try:
+        edited = load_edited_model(source)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    result = diff_models(emitted, edited, product=resolved.name)
+    domain_of_table = _table_domains(plans)
+
+    output_dir = hub_root / HARVEST_RELDIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_path = output_dir / f"{resolved.name}.md"
+    proposal_path = output_dir / f"{resolved.name}-proposal.ttl"
+    write_text_lf(report_path, render_report(result))
+    write_text_lf(proposal_path, render_proposal(result, domain_of_table=domain_of_table))
+
+    counts = (
+        f"{len(result.new_measures)} new measure(s), "
+        f"{len(result.changed_measures)} changed, "
+        f"{len(result.hidden_columns)} column(s) hidden"
+    )
+    click.echo(f"✅ Harvested {resolved.name!r}: {counts}")
+    click.echo(f"   → {report_path}")
+    click.echo(f"   → {proposal_path}")
+    if result.empty:
+        click.echo("   (the deployed model matches the hub; nothing to author)")
+    else:
+        click.echo("   Review, then merge the proposal into the owning domain's Gold extension.")
+
+
+def _model_from_artifacts(artifacts: dict[str, str], parse_tmdl_content):
+    """Rebuild a TmdlModel from the in-memory emit, without writing it to disk."""
+    from ..core.tmdl_parser import TmdlModel
+
+    model = TmdlModel(name="emitted")
+    for path, content in sorted(artifacts.items()):
+        if "/definition/tables/" not in path or not path.endswith(".tmdl"):
+            continue
+        for item in parse_tmdl_content(content):
+            if hasattr(item, "columns"):
+                model.tables.append(item)
+    return model
+
+
+def _table_domains(plans) -> dict[str, str]:
+    """Map each emitted Gold table name to the domain that authors it.
+
+    A multi-domain product's tables are authored across several extension files, so a
+    proposal has to say which one each item belongs in.
+    """
+    mapping: dict[str, str] = {}
+    for plan in plans:
+        contract = plan.normalized_contract
+        if contract is None:
+            continue
+        for table in contract.policy.gold.tables:
+            mapping[table.table_name.value] = plan.resolution.ontology_name
+    return mapping
+
+
 def _report_unresolved(artifacts: dict[str, str], product) -> None:
     """Warn about a foreign key whose target table is not in this product (#744).
 

@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
 
 ### Added
+- **`harvest-gold` brings Desktop and Fabric edits back into authored hub inputs (#744,
+  DD-224).** A BI engineer opened the generated PBIP, hid a column, added measures — and
+  the next `emit-gold` overwrote all of it. The only defences were to stop editing or to
+  stop re-emitting, and both defeat the point of generating the model.
+  `kairos-ontology harvest-gold <product> --from <exported model>` reads the edited model,
+  diffs it against a fresh in-memory emit, and writes two review documents under
+  `model/planning/gold-harvest/`: a Markdown report of everything that changed, and a
+  Turtle snippet of the changes that have authoring vocabulary, grouped by owning domain.
+  New measures arrive at DD-113 lifecycle `provisional`, carrying the author's own `///`
+  description as the starting definition.
+  **Nothing is applied.** Merging an edit into `model/extensions/` would make the hub's
+  authored inputs a downstream artifact of a report, which inverts the ownership the design
+  depends on. Tables match on the `Kairos_SilverBinding` annotation, columns and measures on
+  `lineageTag` — which Desktop preserves across a rename, so a rename is reported as a
+  rename rather than as a deletion plus an addition. A measure with no `Kairos_Lifecycle`
+  annotation was not emitted by the hub, which is how a hand-added measure is told from a
+  governed one. DAX is compared after normalising the reformatting Desktop applies, so a
+  re-indented governed measure is not reported as changed.
 - **`import-tmdl` harvests usage from the legacy report, not just the model (#744, DD-223).**
   The command turned the `.SemanticModel` half of a PBIP export into demand evidence and
   read nothing from the `.Report` half, where the reporting patterns live. It now writes a
@@ -158,6 +176,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a companion must sit beside a real decision record.
 
 ### Fixed
+- **The TMDL parser could not read bare flags, annotations or `///` descriptions (#744).**
+  `isKey` and `isHidden` are written with no value, and the reader only handled
+  `key: value` lines, so neither was visible; `annotation X = "..."` has no colon and was
+  skipped entirely; `///` doc comments — which is how TMDL actually carries a description —
+  were skipped in every block; and an `annotation` following a multi-line measure was
+  swallowed into the DAX expression. All are now parsed, which is what makes a round trip
+  from an edited model possible at all.
 - **Legacy measure names reached the conformance judge as stringified dicts (#744).**
   `bi_demand_terms` normalised each measure with `_norm(measure)`, but `import-tmdl` writes
   measures as `{name, expression, format_string}` mappings, so the whole dict was

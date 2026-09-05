@@ -54,6 +54,29 @@ business semantics.
 - BI evidence is demand, never business authority (DD-147). A measure on 40 legacy visuals
   proves someone needs that number, not that the number is currently right.
 
+## Harvest Desktop and Fabric edits
+
+- Desktop is a proposal tool; the hub stays the source of truth (DD-206 §8). Never tell a
+  BI engineer to stop editing, and never hand-edit the emitted TMDL: run
+  `kairos-ontology harvest-gold <product> --from <exported model>` after they have worked.
+- `--from` takes a PBIP export folder, a `<Name>.SemanticModel` folder, or its
+  `definition/` folder. Power BI Desktop writes one with **Save as PBIP**. A Direct Lake
+  model cannot be saved as a PBIP from Desktop — export it through Fabric git integration
+  instead.
+- It writes `model/planning/gold-harvest/<product>.md` (what changed, including what
+  cannot be harvested) and `<product>-proposal.ttl` (the changes that have authoring
+  vocabulary, grouped by owning domain). **It applies nothing.** Review the proposal, paste
+  what you agree with into the owning domain's `<domain>-gold-ext.ttl`, and re-emit.
+- Harvested measures arrive at DD-113 lifecycle `provisional` with the author's own `///`
+  description as the starting `measureDefinition`, and a guessed `measureDataType` marked
+  `CHECK`. Confirm both before promoting the measure.
+- A column un-hidden in Desktop is *not* proposed as an annotation. The hub hides by Silver
+  column role (DD-221), so a report author needing one visible is a signal that the role is
+  wrong or the column is really business data — that is a conversation, not an annotation.
+- A renamed column is reported and never patched: the hub names columns after the Silver
+  identifier, and every authored DAX expression and `measureColumnDependency` references
+  that name.
+
 ## Authored Gold contract
 
 - Declare the Gold profile and schema explicitly.

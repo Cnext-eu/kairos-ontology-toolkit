@@ -30,7 +30,7 @@ from . import shared as _shared
 from . import sources as _sources
 from . import validation as _validation
 from .compile import compile_cmd
-from .emit_gold import apply_gold_connection_cmd, emit_gold_cmd
+from .emit_gold import apply_gold_connection_cmd, emit_gold_cmd, harvest_gold_cmd
 from .package_powerbi_release import package_powerbi_release_cmd
 from .decisions import decision
 from .feedback import feedback
@@ -284,6 +284,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(compile_cmd)
     group.add_command(emit_gold_cmd)
     group.add_command(apply_gold_connection_cmd)
+    group.add_command(harvest_gold_cmd)
     group.add_command(package_powerbi_release_cmd)
     group.add_command(decision)
     group.add_command(feedback)

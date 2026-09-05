@@ -25,6 +25,12 @@ class TmdlColumn:
     is_hidden: bool = False
     lineage_tag: str = ""
     description: str = ""
+    #: Bare `isKey`, and the annotations Kairos writes. Needed to harvest a Desktop edit
+    #: back into authored hub inputs (#744): without annotations there is no way to tell a
+    #: measure the hub emitted from one a report author added by hand.
+    is_key: bool = False
+    display_folder: str = ""
+    annotations: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -35,6 +41,10 @@ class TmdlMeasure:
     expression: str = ""
     format_string: str = ""
     description: str = ""
+    display_folder: str = ""
+    lineage_tag: str = ""
+    is_hidden: bool = False
+    annotations: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -53,6 +63,7 @@ class TmdlTable:
     name: str
     lineage_tag: str = ""
     description: str = ""
+    annotations: dict[str, str] = field(default_factory=dict)
     columns: list[TmdlColumn] = field(default_factory=list)
     measures: list[TmdlMeasure] = field(default_factory=list)
     partitions: list[TmdlPartition] = field(default_factory=list)
@@ -189,6 +200,15 @@ def _parse_table(lines: list[str], start: int) -> tuple[TmdlTable, int]:
         elif stripped.startswith("partition "):
             partition, i = _parse_partition(lines, i, indent)
             table.partitions.append(partition)
+        elif _ANNOTATION.match(stripped):
+            annotation = _ANNOTATION.match(stripped)
+            table.annotations[annotation.group("name")] = _strip_quotes(
+                annotation.group("value").strip()
+            )
+            i += 1
+        elif stripped == "isHidden":
+            table.is_hidden = True
+            i += 1
         elif ":" in stripped:
             key, value = stripped.split(":", 1)
             key = key.strip()
@@ -206,12 +226,40 @@ def _parse_table(lines: list[str], start: int) -> tuple[TmdlTable, int]:
     return table, i
 
 
+_ANNOTATION = re.compile(r"^annotation\s+(?P<name>[A-Za-z_][\w]*)\s*=\s*(?P<value>.*)$")
+
+#: Terminates a multi-line DAX expression. `annotation` belongs here because Kairos emits
+#: `annotation Kairos_Lifecycle` straight after a measure, and without it the annotation
+#: was swallowed into the expression text (#744).
+_MEASURE_PROPERTY = re.compile(
+    r"^(formatString|description|lineageTag|isHidden|displayFolder|annotation)\s*[:=\s]"
+)
+
+
+def _doc_comment(lines: list[str], index: int) -> str:
+    """Return the `///` description immediately above *index*, if any.
+
+    TMDL writes a real description as a `///` doc comment, not a `description:` property,
+    so a parser that skips `///` (as this one did) cannot see any description Power BI
+    Desktop or Kairos actually emits.
+    """
+    parts: list[str] = []
+    cursor = index - 1
+    while cursor >= 0:
+        stripped = lines[cursor].strip()
+        if not stripped.startswith("///"):
+            break
+        parts.append(stripped[3:].strip())
+        cursor -= 1
+    return " ".join(reversed(parts))
+
+
 def _parse_column(lines: list[str], start: int, parent_indent: int) -> tuple[TmdlColumn, int]:
     """Parse a column block."""
     header = lines[start].strip()
     match = re.match(r"column\s+['\"]?(.+?)['\"]?\s*$", header)
     name = match.group(1) if match else header[7:].strip().strip("'\"")
-    col = TmdlColumn(name=name)
+    col = TmdlColumn(name=name, description=_doc_comment(lines, start))
 
     i = start + 1
     while i < len(lines):
@@ -225,6 +273,24 @@ def _parse_column(lines: list[str], start: int, parent_indent: int) -> tuple[Tmd
         indent = _get_indent(line)
         if indent <= parent_indent and stripped:
             break
+
+        annotation = _ANNOTATION.match(stripped)
+        if annotation:
+            col.annotations[annotation.group("name")] = _strip_quotes(
+                annotation.group("value").strip()
+            )
+            i += 1
+            continue
+        # Bare flags: TMDL writes `isKey` and `isHidden` with no value, so a
+        # colon-only reader could not see either.
+        if stripped == "isKey":
+            col.is_key = True
+            i += 1
+            continue
+        if stripped == "isHidden":
+            col.is_hidden = True
+            i += 1
+            continue
 
         if ":" in stripped:
             key, value = stripped.split(":", 1)
@@ -242,6 +308,8 @@ def _parse_column(lines: list[str], start: int, parent_indent: int) -> tuple[Tmd
                 col.lineage_tag = _strip_quotes(value)
             elif key == "description":
                 col.description = _strip_quotes(value)
+            elif key == "displayFolder":
+                col.display_folder = _strip_quotes(value)
         i += 1
 
     return col, i
@@ -261,7 +329,7 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
         name = match.group(1) if match else header[8:].strip().strip("'\"")
         first_expr = None
 
-    measure = TmdlMeasure(name=name)
+    measure = TmdlMeasure(name=name, description=_doc_comment(lines, start))
 
     i = start + 1
 
@@ -279,10 +347,7 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
                     continue
                 if next_indent <= parent_indent:
                     break
-                if re.match(
-                    r"^(formatString|description|lineageTag|isHidden|displayFolder)\s*[:=]",
-                    next_stripped,
-                ):
+                if _MEASURE_PROPERTY.match(next_stripped):
                     break
                 expr_lines.append(next_stripped)
                 i += 1
@@ -299,10 +364,7 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
                     continue
                 if next_indent <= parent_indent:
                     break
-                if re.match(
-                    r"^(formatString|description|lineageTag|isHidden|displayFolder)\s*[:=]",
-                    next_stripped,
-                ):
+                if _MEASURE_PROPERTY.match(next_stripped):
                     break
                 expr_lines.append(next_stripped)
                 i += 1
@@ -321,6 +383,18 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
         if indent <= parent_indent and stripped:
             break
 
+        annotation = _ANNOTATION.match(stripped)
+        if annotation:
+            measure.annotations[annotation.group("name")] = _strip_quotes(
+                annotation.group("value").strip()
+            )
+            i += 1
+            continue
+        if stripped == "isHidden":
+            measure.is_hidden = True
+            i += 1
+            continue
+
         if ":" in stripped:
             key, value = stripped.split(":", 1)
             key = key.strip()
@@ -329,6 +403,10 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
                 measure.format_string = _strip_quotes(value)
             elif key == "description":
                 measure.description = _strip_quotes(value)
+            elif key == "displayFolder":
+                measure.display_folder = _strip_quotes(value)
+            elif key == "lineageTag":
+                measure.lineage_tag = _strip_quotes(value)
         i += 1
 
     return measure, i
