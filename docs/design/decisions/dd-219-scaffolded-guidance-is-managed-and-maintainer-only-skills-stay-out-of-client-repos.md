@@ -54,7 +54,11 @@ process -- `scripts/finish_pr.py`, bumping `src/kairos_ontology/__init__.py` -- 
 which exists in a scaffolded repo, and it shipped carrying a paragraph telling the reader
 not to apply it there, which is a caveat working around a packaging mistake rather than a
 design. `SC-document` drives a Cnext Outline workspace behind `OUTLINE_API_KEY`. Both leave
-`_DATAPLATFORM_SKILLS` too; a scaffolded hub now receives 22 skills instead of 26.
+`_DATAPLATFORM_SKILLS` too. `kairos-design-mdm` joins them for a different reason: MDM is
+designed but not adopted (`docs/mdm/README.md`), so shipping an authoring skill for it
+invited an agent to write policy no hub consumes. Its CLI surface stays, and the skill
+returns to the scaffold when MDM goes live. A scaffolded hub now receives 21 skills
+instead of 26.
 `kairos-toolkit-ops` deliberately does not: clients use it to move their toolkit pin, and
 it is in the dataplatform subset already. Existing hubs lose the two automatically -- the
 stale-skill sweep deletes a marker-carrying skill whose directory the scaffold no longer

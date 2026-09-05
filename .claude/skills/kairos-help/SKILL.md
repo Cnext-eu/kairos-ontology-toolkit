@@ -44,7 +44,7 @@ keeps all downstream systems consistent with it, automatically.
 | `inverse-scan` | Find candidate source tables for a class | "Which source tables have columns matching Invoice properties?" |
 | `kairos-develop-dbt-transformation` | Complex contracted dbt SQL | "Write a dbt model to dedupe invoice line items." |
 | `kairos-design-gold` | Design Gold/BI products | "Create a Gold model for monthly invoice summaries." |
-| `kairos-design-mdm` | Author MDM policy | "Define survivorship rules for duplicate customers." |
+| `kairos-design-mdm` | Author MDM policy — *MDM is not live; not installed in a hub* | "Define survivorship rules for duplicate customers." |
 | `kairos-execute-validate` | Validate syntax/SHACL/bindings | "Check my ontology and bindings for errors." |
 | `kairos-execute-project` | Compile check/explain/emit | "Compile the billing domain and show diagnostics." |
 | `kairos-execute-report` | Review bindings and compile explain | "Show me a report of all EntityBindings." |
@@ -89,7 +89,7 @@ kairos-ontology validate
 
 Use `kairos-design-source`, `kairos-design-domain`, and `kairos-design-mapping` to author inputs;
 `kairos-develop-dbt-transformation` for ordinary contracted dbt models; `kairos-design-gold` and
-`kairos-design-mdm` for optional consumers; `kairos-execute-validate` for validation; and
+`kairos-design-mdm` (toolkit repository only, while MDM is not live) for optional consumers; `kairos-execute-validate` for validation; and
 `kairos-toolkit-ops` for managed files, versions, and reference models. Use
 `kairos-ontology decision new` for material ontology-decision rationale; `validate` lints an
 existing Decision Log bundle.

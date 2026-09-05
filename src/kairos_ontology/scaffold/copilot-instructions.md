@@ -104,7 +104,7 @@ copy; Copilot resolves the same tree.
 | Author source-to-canonical EntityBinding YAML | `kairos-design-mapping` |
 | Create a complex contracted dbt model | `kairos-develop-dbt-transformation` |
 | Design Gold/Power BI products | `kairos-design-gold` |
-| Design MDM policy | `kairos-design-mdm` |
+| Design MDM policy (not live; this repository only) | `kairos-design-mdm` |
 | Validate ontology and compile diagnostics | `kairos-execute-validate` |
 | Compile or generate artifacts | `kairos-execute-project` |
 | Review bindings and compiler explanation | `kairos-execute-report` |

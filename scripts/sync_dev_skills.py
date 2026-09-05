@@ -53,6 +53,11 @@ _UNMANAGED_SKILL_DIRS = {
     # mistake. `SC-document` drives a Cnext Outline workspace and needs `OUTLINE_API_KEY`.
     "SC-merge-pr",
     "SC-document",
+    # MDM is designed but not adopted -- see docs/mdm/README.md. Shipping an authoring
+    # skill for a capability no hub runs invites an agent to author policy nothing
+    # consumes. The CLI surface (`mdm-validate`, optional CompilePlan policy) stays;
+    # restore this skill to the scaffold when MDM goes live.
+    "kairos-design-mdm",
 }
 
 

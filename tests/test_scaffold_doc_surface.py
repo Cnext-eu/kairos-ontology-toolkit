@@ -61,6 +61,10 @@ _RUNTIME_OWNED = (
 
 _MAINTAINER_ONLY_SKILLS = ("kairos-toolkit-dev", "kairos-toolkit-dogfood")
 
+#: Cnext-internal or not-yet-live, so equally not client-facing, but for different
+#: reasons than the two above -- kept separate so the reason survives in the test name.
+_NOT_CLIENT_FACING_SKILLS = ("SC-merge-pr", "SC-document", "kairos-design-mdm")
+
 
 def _managed_docs() -> dict[str, object]:
     combined = {**_managed_scaffold_map(), **_managed_dataplatform_map()}
@@ -83,6 +87,19 @@ class TestMaintainerSkills:
         otherwise copy them straight back on the next run."""
         from scripts.sync_dev_skills import _UNMANAGED_SKILL_DIRS
 
+        assert name in _UNMANAGED_SKILL_DIRS
+
+    @pytest.mark.parametrize("name", _NOT_CLIENT_FACING_SKILLS)
+    def test_non_client_skills_are_not_shipped(self, name):
+        """`SC-*` are Cnext-internal; `kairos-design-mdm` authors policy nothing runs.
+
+        MDM is designed but not adopted (docs/mdm/README.md), so shipping its authoring
+        skill invited an agent to write policy no hub consumes. Restore it when MDM goes
+        live -- the CLI surface stayed.
+        """
+        from scripts.sync_dev_skills import _UNMANAGED_SKILL_DIRS
+
+        assert not (_SCAFFOLD_DIR / "skills" / name).exists()
         assert name in _UNMANAGED_SKILL_DIRS
 
     def test_toolkit_ops_is_still_shipped(self):
