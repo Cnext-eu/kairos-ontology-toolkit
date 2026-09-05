@@ -205,6 +205,23 @@ class TestJoinCandidateSelection:
         local, _foreign, resolved, evidence = _match_join(child, self.PARENT, {})
         assert (local, resolved, evidence) == (SENTINEL_JOIN_COLUMN, False, "")
 
+    def test_several_declared_carriers_each_find_their_own_parent(self):
+        """The concrete reason tier 0 matches by name rather than positionally.
+
+        One child carries two FKs aimed at two different parents. Pairing "the" carrier
+        with "the" parent key would resolve one of these to the wrong column with full
+        confidence -- worse than leaving it a sentinel.
+        """
+        child = _entity("order-line", "Src.order_line", ("order_id", "line_no"),
+                        referenced=("order_id", "line_no", "product_id"),
+                        relationship_columns=("order_id", "product_id"))
+        order = _entity("order", "Src.order", ("order_id",))
+        product = _entity("product", "Src.product", ("product_id",))
+        assert _match_join(child, order, {}) == (
+            "order_id", "order_id", True, "declared-fk")
+        assert _match_join(child, product, {}) == (
+            "product_id", "product_id", True, "declared-fk")
+
     def test_tier_zero_outranks_tier_two(self):
         parent = _entity("consignments", "Src.consignments", ("consignment_id",))
         child = _entity("bookings", "Src.bookings", ("booking_id",),

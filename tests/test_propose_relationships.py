@@ -282,6 +282,18 @@ class TestAlreadyAuthored:
         assert report.already_authored == ()
         assert [p.property_uri for p in report.proposals] == [_BRIDGE_PROPERTY]
 
+    def test_the_same_property_to_a_different_target_is_still_proposed(self, hub):
+        """The dangerous direction for a tolerant comparison: a false *suppression*.
+
+        Matching on the property alone would withhold a real proposal because the binding
+        happens to point the same property somewhere else.
+        """
+        self._author(hub, _AUTHORED_RELATIONSHIP.replace(
+            f"target: {_CONSIGNMENT_CLASS}", "target: cons:SomethingElse"))
+        report = _report(hub)
+        assert report.already_authored == ()
+        assert [p.property_uri for p in report.proposals] == [_BRIDGE_PROPERTY]
+
     def test_the_authored_note_warns_against_overwriting_policy(self, hub):
         self._author(hub, _AUTHORED_RELATIONSHIP)
         assert any("already authored" in note for note in _report(hub).notes)
