@@ -201,6 +201,15 @@ class DimensionalGoldSpec:
     perspectives: tuple[tuple[str, tuple[str, ...]], ...]
     silver_registry_names: tuple[tuple[str, str], ...]
     silver_registry_columns: tuple[tuple[str, frozenset[str]], ...]
+    #: Every ontology domain contributing tables to this product, in declaration order
+    #: (#744). A single-domain product carries exactly its own domain.
+    domains: tuple[str, ...] = ()
+    #: ``(property_uri, source_table, target_class)`` for each foreign key whose join
+    #: column was materialized but whose target table is not in this product -- a dead
+    #: column in the emitted model. Reported rather than raised: the fix is an authoring
+    #: decision (add the owning domain to the product, or accept the column), and before
+    #: #744 this vanished silently, which is how a cross-domain product lost half its star.
+    unresolved_relationships: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

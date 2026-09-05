@@ -1,0 +1,26 @@
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: crm-country
+  domain: party
+source:
+  relation: crm.countries
+target:
+  class: party:Country
+grain:
+  columns: [code]
+identity:
+  strategy: source-natural
+  sourceKey: [code]
+load:
+  mode: full-refresh
+fields:
+  - property: party:code
+    expression: code
+  - property: party:country_name
+    expression: country_name
+quality:
+  - kind: unique
+    columns: [code]
+  - kind: not-null
+    columns: [code]

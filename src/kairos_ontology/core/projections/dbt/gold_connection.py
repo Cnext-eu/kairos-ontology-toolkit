@@ -370,6 +370,178 @@ def load_gold_direct_lake_connection(
 
 
 # --------------------------------------------------------------------------------------
+# Gold product scope (issue #744)
+# --------------------------------------------------------------------------------------
+
+#: Governance rule for product scope.
+GOLD_PRODUCT_RULE_ID = "DD-222-gold-product-scope"
+
+_PRODUCTS_KEY = "products"
+_PRODUCTS_CONFIG_PATH = f"{_GOLD_KEY}.{_PRODUCTS_KEY}"
+#: Used verbatim in artifact paths and as the stem of the manifest filename, so the same
+#: character class the emitter already sanitises domains to.
+_PRODUCT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+@dataclass(frozen=True, slots=True)
+class GoldProductConfig:
+    """One analytical product and the ontology domains it is built from.
+
+    A Gold product follows a business process, not a modelling boundary: facts from one
+    domain joined to conformed dimensions from several others. Domains stay the unit of
+    ontology design and of Silver compilation; the product is the unit of *delivery*.
+    """
+
+    name: str
+    domains: tuple[str, ...]
+    display_name: str = ""
+    #: False for a product the hub never declared -- one Gold-configured domain standing
+    #: alone under its own name, which is what every hub emitted before #744.
+    declared: bool = True
+
+    @property
+    def model_name(self) -> str:
+        """The path-safe stem for this product's emitted item folders.
+
+        Always derived from `name`, never from `display_name`: a display name is free text
+        for the Fabric workspace and may contain spaces or characters that are illegal in a
+        path, a zip entry or a fabric-cicd `repository_directory`. The display name reaches
+        Fabric through `.platform`, which is what names the item there.
+        """
+        return "".join(part.capitalize() for part in re.split(r"[-_]", self.name) if part)
+
+
+def _product_invalid(detail: str) -> GoldContractError:
+    return GoldContractError(
+        "gold.products-invalid",
+        f"{_PRODUCTS_CONFIG_PATH} is malformed: {detail}",
+        rule_id=GOLD_PRODUCT_RULE_ID,
+    )
+
+
+def parse_gold_products(config: object) -> tuple[GoldProductConfig, ...]:
+    """Parse the ``gold.products`` block, or return ``()`` when unauthored."""
+    if not isinstance(config, dict):
+        return ()
+    gold = config.get(_GOLD_KEY)
+    if not isinstance(gold, dict):
+        return ()
+    raw = gold.get(_PRODUCTS_KEY)
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw:
+        raise _product_invalid("expected a non-empty list of products")
+
+    products: list[GoldProductConfig] = []
+    seen_names: set[str] = set()
+    domain_owner: dict[str, str] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise _product_invalid("each product must be a mapping with 'name' and 'domains'")
+        unknown = sorted(set(entry) - {"name", "domains", "display_name"})
+        if unknown:
+            raise _product_invalid(f"unknown key(s) {unknown} on a product")
+        name = entry.get("name")
+        if not isinstance(name, str) or not _PRODUCT_NAME.fullmatch(name):
+            raise _product_invalid(
+                f"product name {name!r} must be lower-case letters, digits and hyphens "
+                "(it is used verbatim in emitted artifact paths)"
+            )
+        if name in seen_names:
+            raise _product_invalid(f"duplicate product name {name!r}")
+        seen_names.add(name)
+        domains = entry.get("domains")
+        if (
+            not isinstance(domains, list)
+            or not domains
+            or not all(isinstance(item, str) and item for item in domains)
+        ):
+            raise _product_invalid(f"product {name!r} must declare a non-empty 'domains' list")
+        if len(set(domains)) != len(domains):
+            raise _product_invalid(f"product {name!r} repeats a domain")
+        for domain in domains:
+            owner = domain_owner.get(domain)
+            if owner is not None:
+                # One Gold table belongs to one semantic model. Two products over the same
+                # domain would emit its tables twice under different names, and a report
+                # author would have no way to tell which copy is authoritative.
+                raise _product_invalid(
+                    f"domain {domain!r} is claimed by both {owner!r} and {name!r}; "
+                    "a domain belongs to exactly one Gold product"
+                )
+            domain_owner[domain] = name
+        display_name = entry.get("display_name", "")
+        if not isinstance(display_name, str):
+            raise _product_invalid(f"product {name!r} has a non-string 'display_name'")
+        products.append(
+            GoldProductConfig(
+                name=name,
+                domains=tuple(domains),
+                display_name=display_name.strip(),
+            )
+        )
+    return tuple(products)
+
+
+def load_gold_products(hub_root: Path | None) -> tuple[GoldProductConfig, ...]:
+    """Load the hub's declared Gold products, or ``()`` when none are declared."""
+    if hub_root is None:
+        return ()
+    config_path = Path(hub_root) / "kairos.yaml"
+    if not config_path.is_file():
+        return ()
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise _product_invalid(f"{config_path} could not be read ({exc})") from exc
+    return parse_gold_products(config)
+
+
+def resolve_gold_product(
+    hub_root: Path | None,
+    requested: str,
+    *,
+    hub_domains: tuple[str, ...],
+) -> GoldProductConfig:
+    """Resolve *requested* -- a product name or a domain name -- to one product.
+
+    A domain that no declared product claims stays its own implicit product under its own
+    name, so a hub that declares nothing keeps emitting exactly what it emitted before
+    #744. Whether that domain actually authors a Gold profile is deliberately *not*
+    checked here: the caller checks it per participating domain and can say so precisely,
+    which is a better error than "unknown product" for a real domain that simply has no
+    Gold extension yet.
+    """
+    products = load_gold_products(hub_root)
+    for product in products:
+        if product.name == requested:
+            return product
+    claimed = {domain: product for product in products for domain in product.domains}
+    owner = claimed.get(requested)
+    if owner is not None:
+        raise GoldContractError(
+            "gold.domain-belongs-to-product",
+            (
+                f"domain {requested!r} is part of the Gold product {owner.name!r}; "
+                f"emit the product instead: `emit-gold {owner.name}` "
+                f"(domains: {', '.join(owner.domains)})"
+            ),
+            rule_id=GOLD_PRODUCT_RULE_ID,
+        )
+    if requested in hub_domains:
+        return GoldProductConfig(name=requested, domains=(requested,), declared=False)
+    known = sorted({*(product.name for product in products), *hub_domains})
+    raise GoldContractError(
+        "gold.unknown-product",
+        (
+            f"{requested!r} is neither a declared Gold product nor a domain in this hub. "
+            f"Known: {', '.join(known) if known else '(none)'}"
+        ),
+        rule_id=GOLD_PRODUCT_RULE_ID,
+    )
+
+
+# --------------------------------------------------------------------------------------
 # Deploy-time Direct Lake overrides (issue #662)
 # --------------------------------------------------------------------------------------
 

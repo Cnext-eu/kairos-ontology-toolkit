@@ -1,0 +1,26 @@
+@prefix billing: <https://example.test/ontology/billing#> .
+@prefix party: <https://example.test/ontology/party#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.test/ontology/billing> a owl:Ontology ;
+  owl:versionInfo "1.0.0" ;
+  owl:imports <https://example.test/ontology/party> ;
+  rdfs:label "Synthetic billing slice" .
+
+billing:Invoice a owl:Class ; rdfs:label "Invoice" ;
+  rdfs:comment "One issued invoice." .
+
+billing:invoice_id a owl:DatatypeProperty ;
+  rdfs:domain billing:Invoice ; rdfs:range xsd:string ;
+  rdfs:comment "Business key of the invoice." .
+billing:amount a owl:DatatypeProperty ;
+  rdfs:domain billing:Invoice ; rdfs:range xsd:decimal ;
+  rdfs:comment "Invoiced amount in contract currency." .
+billing:customer_id a owl:DatatypeProperty ;
+  rdfs:domain billing:Invoice ; rdfs:range xsd:string ;
+  rdfs:comment "Customer business key the invoice is billed to." .
+billing:billedTo a owl:ObjectProperty ;
+  rdfs:domain billing:Invoice ; rdfs:range party:Customer ;
+  rdfs:comment "The customer this invoice is billed to." .

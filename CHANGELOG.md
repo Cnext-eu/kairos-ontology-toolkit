@@ -20,6 +20,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
 
 ### Added
+- **A Gold product can span ontology domains (#744, DD-222).** A semantic model was
+  hard-wired to exactly one domain: product identity came from a single compile plan, every
+  emitted path was derived from it, and any foreign key whose target class lived in another
+  domain was dropped without a diagnostic. On a real reporting hub that meant a
+  role-assignment fact carried a `legalentity_sk` to a sibling domain, `relationships.tmdl`
+  carried only the intra-domain joins, and the column was dead — fixable only by a hand edit
+  in Desktop that the next emit overwrote. Domains are a modelling boundary; analytical
+  products follow business processes, with facts from one domain and conformed dimensions
+  from several others.
+  Declare one in `kairos.yaml`:
+  ```yaml
+  gold:
+    products:
+      - name: bookings-overview
+        display_name: Bookings Overview
+        domains: [booking, party, reference-data]
+  ```
+  `emit-gold bookings-overview` then compiles each listed domain — Silver compilation stays
+  per domain, and each keeps its own provenance sidecar — and shapes them into one model, so
+  the cross-domain join resolves. Every participating domain authors its own
+  `<domain>-gold-ext.ttl` for the tables it owns, and a cross-domain relationship still needs
+  its DD-138 `externalReference` in the binding.
+  **Nothing changes for a hub that declares no product:** each Gold-configured domain stays
+  its own product under its own name, with identical paths, manifest names and report
+  contents. A single-domain product is the N=1 case of the same code path, not a second one.
+  Moving a domain into a product retires its superseded per-domain emit, so fabric-cicd does
+  not deploy the old model beside the new one.
+- **A dangling Gold relationship is reported instead of dropped (#744).** Where the #207 fix
+  skipped a foreign key whose target table was absent, `emit-gold` now lists it and records
+  it in the product report as `unresolved_relationships`. It stays a warning, not an error:
+  the model is valid without the join, and the fix is an authoring decision — add the owning
+  domain to the product, or accept the column. This reverses the position taken in #661.
 - **The Gold semantic model hides its technical columns, marks its keys, and carries the
   ontology's descriptions (#744, DD-221).** A `dim_customer` opened in Power BI Desktop
   used to show `customer_sk`, `country_sk`, `_source_identity_ref`, `_loaded_at` and

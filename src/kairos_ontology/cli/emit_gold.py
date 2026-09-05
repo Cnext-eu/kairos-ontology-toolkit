@@ -44,7 +44,7 @@ def _gold_manifest_name(domain: str) -> str:
 
 
 @click.command(name="emit-gold")
-@click.argument("domain")
+@click.argument("domain", metavar="PRODUCT_OR_DOMAIN")
 @click.option(
     "--confirm-emit",
     "confirm_emit",
@@ -97,11 +97,13 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
       kairos-ontology emit-gold party
       kairos-ontology emit-gold party --confirm-emit
     """
+    from ..cli.compile import _hub_domains
     from ..core.compiler.emit import emit_artifacts
     from ..core.compiler.provenance import provenance_artifact
+    from ..core.projections.dbt.gold_connection import resolve_gold_product
     from ..core.projections.dbt.gold_specs import GoldContractError
     from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
-    from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plan
+    from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plans
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
     if hub_root is None:
@@ -109,29 +111,40 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
             "Cannot locate a hub (model/ + integration/) from the current directory."
         )
 
-    plan = build_compile_plan(hub_root, domain)
-    if plan.blocked:
-        for diagnostic in plan.diagnostics.ordered:
-            click.echo(diagnostic.render(), err=True)
-        raise click.ClickException(f"{domain}: compile plan is blocked; see diagnostics above")
-
-    contract = plan.normalized_contract
-    if contract is None or contract.policy.gold.profile is None:
-        raise click.ClickException(
-            f"{domain} has no authored Gold profile "
-            "(kairos-ext:goldProductProfile) -- nothing to emit"
+    try:
+        product = resolve_gold_product(
+            hub_root, domain, hub_domains=tuple(_hub_domains(hub_root))
         )
+    except GoldContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    plans = []
+    for member in product.domains:
+        plan = build_compile_plan(hub_root, member)
+        if plan.blocked:
+            for diagnostic in plan.diagnostics.ordered:
+                click.echo(diagnostic.render(), err=True)
+            raise click.ClickException(f"{member}: compile plan is blocked; see diagnostics above")
+        contract = plan.normalized_contract
+        if contract is None or contract.policy.gold.profile is None:
+            raise click.ClickException(
+                f"{member} has no authored Gold profile "
+                "(kairos-ext:goldProductProfile) -- nothing to emit"
+            )
+        plans.append(plan)
 
     try:
-        artifacts = generate_gold_from_compile_plan(plan)
+        artifacts = generate_gold_from_compile_plans(plans, product)
     except GoldContractError as exc:
         raise click.ClickException(str(exc)) from exc
 
     # DD-218. The Gold lane emits into its own manifest-owned subtree, so it carries its
     # own sidecar rather than relying on the Silver one; `lane` keeps the two paths apart
-    # when both land under the same `metadata/` prefix.
-    provenance_path, provenance_content = provenance_artifact(plan.scope, lane="gold")
-    artifacts[provenance_path] = provenance_content
+    # when both land under the same `metadata/` prefix. One per participating domain: the
+    # sidecar records a build scope, and a product has one scope per domain it compiled.
+    for plan in plans:
+        provenance_path, provenance_content = provenance_artifact(plan.scope, lane="gold")
+        artifacts[provenance_path] = provenance_content
 
     # Always on, unlike the TMDL gate: this is pure Python against vendored schemas,
     # so there is no .NET SDK to be missing and no build cost to opt out of. It is also
@@ -162,12 +175,20 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
             )
 
     target = (publish_root(hub_root) / _POWERBI_EMIT_SUBPATH).resolve(strict=False)
-    manifest_name = _gold_manifest_name(domain)
+    manifest_name = _gold_manifest_name(product.name)
+    label = (
+        f"{product.name!r} ({', '.join(product.domains)})"
+        if len(product.domains) > 1
+        else f"{product.name!r}"
+    )
     verb = "Would emit" if not confirm_emit else "Emitted"
-    click.echo(f"✅ {verb} {len(artifacts)} Gold artifact(s) for {domain!r} to {target}")
+    click.echo(f"✅ {verb} {len(artifacts)} Gold artifact(s) for {label} to {target}")
+    _report_unresolved(artifacts, product)
     if not confirm_emit:
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
         return
+
+    _retire_superseded_manifests(target, product)
 
     # `parameter.yml` is the one hub-wide root artifact every domain's Gold emit writes
     # into this shared directory -- correctly so, since fabric-cicd reads exactly one
@@ -184,6 +205,62 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     click.echo(f"   → {target}")
 
     _regenerate_master_gold_erd(target, hub_name=hub_root.name)
+
+
+def _report_unresolved(artifacts: dict[str, str], product) -> None:
+    """Warn about a foreign key whose target table is not in this product (#744).
+
+    Not fatal: the model is valid and useful without the join, and the fix is an authoring
+    decision -- add the owning domain to the product, or accept the dead column. Before
+    #744 this was silent, and a cross-domain product lost half its star with no signal.
+    """
+    import json
+
+    report = next(
+        (content for name, content in artifacts.items() if name.endswith("-gold-product.json")),
+        None,
+    )
+    if report is None:
+        return
+    unresolved = json.loads(report).get("unresolved_relationships") or []
+    if not unresolved:
+        return
+    click.echo(
+        f"   ⚠ {len(unresolved)} relationship(s) have no target table in this product; "
+        "their join columns are emitted but nothing joins them:"
+    )
+    for item in unresolved:
+        click.echo(f"       {item['source_table']} -> {item['target_class']}")
+    click.echo(
+        "     Add the owning domain to this product in kairos.yaml (gold.products), "
+        "or author the target as a Gold table in a participating domain."
+    )
+
+
+def _retire_superseded_manifests(target: Path, product) -> None:
+    """Remove the per-domain Gold trees a declared product now supersedes (#744).
+
+    ``emit_artifacts`` only removes files its *own* manifest owns, so a domain that used
+    to emit `booking/Booking.SemanticModel` and is now part of a product would leave that
+    whole tree behind: the master ERD would merge its stale diagram, and fabric-cicd,
+    pointed at the folder, would deploy two models where the hub declares one.
+
+    Emitting an empty artifact set under the old manifest deletes exactly what that
+    manifest owned, through the same transaction as any other emit, and nothing else.
+    """
+    from ..core.compiler.emit import emit_artifacts
+
+    if not product.declared:
+        return
+    for member in product.domains:
+        if member == product.name:
+            continue
+        stale = target / _gold_manifest_name(member)
+        if not stale.is_file():
+            continue
+        emit_artifacts({}, target, manifest_name=stale.name)
+        stale.unlink(missing_ok=True)
+        click.echo(f"   ↺ retired the superseded per-domain emit for {member!r}")
 
 
 def _regenerate_master_gold_erd(gold_output: Path, *, hub_name: str) -> None:

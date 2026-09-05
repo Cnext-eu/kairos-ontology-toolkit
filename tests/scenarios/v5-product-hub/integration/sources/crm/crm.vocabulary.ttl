@@ -1,0 +1,62 @@
+@prefix src: <https://example.test/source/crm#> .
+@prefix kb: <https://kairos.cnext.eu/bronze#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+src:crm a kb:SourceSystem ; rdfs:label "crm" ;
+  kb:database "crm_raw" ; kb:schema "dbo" ; kb:connectionType "jdbc" .
+
+src:customers a kb:SourceTable ; kb:sourceSystem src:crm ;
+  kb:tableName "customers" ; kb:primaryKeyColumns "customer_id" .
+src:customer_id a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "customer_id" ; kb:dataType "varchar(30)" ;
+  kb:sampleValues "C-1001 | C-1002" ; kb:nullable "false"^^xsd:boolean .
+src:customer_name a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "customer_name" ; kb:dataType "varchar(200)" ;
+  kb:sampleValues "SYNTHETIC COMPANY A | SYNTHETIC COMPANY B" ;
+  kb:nullable "true"^^xsd:boolean .
+src:customer_country a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "country_code" ; kb:dataType "char(2)" ;
+  kb:sampleValues "BE | NL" ; kb:nullable "false"^^xsd:boolean .
+src:customer_operation a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "operation" ; kb:dataType "varchar(1)" ;
+  kb:nullable "false"^^xsd:boolean .
+src:customer_source_updated_at a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "source_updated_at" ; kb:dataType "timestamp" ;
+  kb:nullable "false"^^xsd:boolean .
+src:customer_effective_at a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "effective_at" ; kb:dataType "timestamp" ;
+  kb:nullable "false"^^xsd:boolean .
+src:customer_ingested_at a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "ingested_at" ; kb:dataType "timestamp" ;
+  kb:nullable "false"^^xsd:boolean .
+src:customer_sequence_number a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "sequence_number" ; kb:dataType "bigint" ;
+  kb:nullable "false"^^xsd:boolean .
+
+src:countries a kb:SourceTable ; kb:sourceSystem src:crm ;
+  kb:tableName "countries" ; kb:primaryKeyColumns "code" .
+src:country_code a kb:SourceColumn ; kb:sourceTable src:countries ;
+  kb:columnName "code" ; kb:dataType "char(2)" ;
+  kb:sampleValues "BE | NL" ; kb:nullable "false"^^xsd:boolean .
+src:country_name a kb:SourceColumn ; kb:sourceTable src:countries ;
+  kb:columnName "country_name" ; kb:dataType "varchar(100)" ;
+  kb:sampleValues "BELGIUM | NETHERLANDS" ; kb:nullable "false"^^xsd:boolean .
+src:country_valid_from a kb:SourceColumn ; kb:sourceTable src:countries ;
+  kb:columnName "valid_from" ; kb:dataType "timestamp" ;
+  kb:nullable "false"^^xsd:boolean .
+src:country_valid_to a kb:SourceColumn ; kb:sourceTable src:countries ;
+  kb:columnName "valid_to" ; kb:dataType "timestamp" ;
+  kb:nullable "true"^^xsd:boolean .
+src:country_operation a kb:SourceColumn ; kb:sourceTable src:countries ;
+  kb:columnName "operation" ; kb:dataType "varchar(1)" ;
+  kb:nullable "false"^^xsd:boolean .
+src:country_source_updated_at a kb:SourceColumn ; kb:sourceTable src:countries ;
+  kb:columnName "source_updated_at" ; kb:dataType "timestamp" ;
+  kb:nullable "false"^^xsd:boolean .
+src:country_ingested_at a kb:SourceColumn ; kb:sourceTable src:countries ;
+  kb:columnName "ingested_at" ; kb:dataType "timestamp" ;
+  kb:nullable "false"^^xsd:boolean .
+src:country_sequence_number a kb:SourceColumn ; kb:sourceTable src:countries ;
+  kb:columnName "sequence_number" ; kb:dataType "bigint" ;
+  kb:nullable "false"^^xsd:boolean .

@@ -284,5 +284,6 @@ during cleanup.
 | [DD-219](decisions/dd-219-scaffolded-guidance-is-managed-and-maintainer-only-skills-stay-out-of-client-repos.md) | Scaffolded guidance is managed, and maintainer-only skills stay out of client repos | Accepted | 2026-09-05 |
 | [DD-220](decisions/dd-220-a-proposal-never-re-renders-an-authored-relationship-and-a-childs-own-identity-is-not-a.md) | A proposal never re-renders an authored relationship, and a child's own identity is not a foreign key | Accepted | 2026-09-05 |
 | [DD-221](decisions/dd-221-gold-rendering-defaults-hide-technical-columns-mark-keys-and-carry-descriptions.md) | Gold rendering defaults hide technical columns, mark keys, and carry descriptions | Accepted | 2026-09-05 |
+| [DD-222](decisions/dd-222-gold-product-scope-is-a-bus-matrix-concern-declared-in-kairosyaml.md) | Gold product scope is a bus-matrix concern, declared in kairos.yaml | Accepted | 2026-09-05 |
 
 ---

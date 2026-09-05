@@ -1,0 +1,47 @@
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: crm-customer
+  domain: party
+source:
+  relation: crm.customers
+target:
+  class: party:Customer
+grain:
+  columns: [customer_id]
+identity:
+  strategy: source-natural
+  sourceKey: [customer_id]
+load:
+  mode: full-refresh
+fields:
+  - property: party:customer_id
+    expression: customer_id
+  - property: party:customer_name
+    expression:
+      fn: upper
+      args:
+        - column: customer_name
+      nullPolicy: propagate
+  - property: party:country_code
+    expression: country_code
+relationships:
+  - property: party:country
+    target: party:Country
+    join:
+      - local: country_code
+        foreign: code
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: error
+    ambiguousParent: error
+quality:
+  - kind: unique
+    columns: [customer_id]
+  - kind: not-null
+    columns: [customer_id]
+  - kind: not-null
+    columns: [customer_name]
+  - kind: reconcile-rowcount
+  - kind: referential
+    columns: [country_code]

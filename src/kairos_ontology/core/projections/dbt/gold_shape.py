@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from ..uri_utils import camel_to_snake
 from .gold_specs import (
@@ -33,7 +34,30 @@ from .policy_specs import (
     ScdType,
     SilverColumnRole,
 )
-from .specs import ForeignKeyPolicy, SilverForeignKeySpec, SilverModelSpec, SilverRegistry
+from .specs import (
+    ForeignKeyDescriptorSpec,
+    ForeignKeyPolicy,
+    SilverForeignKeySpec,
+    SilverModelSpec,
+    SilverRegistry,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GoldDomainInput:
+    """One participating domain's compiled inputs for a Gold product (#744).
+
+    A Gold product is assembled from one compile plan per participating domain, because
+    Silver compilation stays per domain -- only Gold shaping spans them.
+    """
+
+    policy: MedallionPolicySpec
+    registry: SilverRegistry
+    silver_models: tuple[SilverModelSpec, ...]
+    foreign_keys: ForeignKeyPolicy
+    ontology_name: str
+    ontology_version: str
+
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SECURITY_BINDING = re.compile(
@@ -267,7 +291,17 @@ def _column_by_property(
 def _shape_measures(
     policy: MedallionPolicySpec,
     tables: tuple[GoldTableSpec, ...],
+    *,
+    has_calendar: bool | None = None,
 ) -> tuple[GoldMeasureSpec, ...]:
+    """Shape *policy*'s measures against the product's emitted tables.
+
+    *has_calendar* is the product's answer, not this domain's: in a multi-domain product
+    one domain declares the calendar and every domain's DAX may reference `dim_date`
+    (#744). It defaults to this policy's own declaration for single-domain callers.
+    """
+    if has_calendar is None:
+        has_calendar = policy.gold.calendar is not None
     by_resource = {item.resource_uri: item for item in policy.gold.measures}
     shaped: dict[str, GoldMeasureSpec] = {}
     visiting: set[str] = set()
@@ -352,7 +386,7 @@ def _shape_measures(
                     resource_uri=source.resource_uri,
                 )
             known_tables = {item.name for item in tables} | (
-                {"dim_date"} if policy.gold.calendar is not None else set()
+                {"dim_date"} if has_calendar else set()
             )
             referenced_tables = {
                 *_DAX_QUOTED_TABLE_REFERENCE.findall(expression),
@@ -688,15 +722,27 @@ def _relationship_column(
 
 def _shape_relationships(
     tables: tuple[GoldTableSpec, ...],
-    foreign_keys: ForeignKeyPolicy,
+    descriptors: tuple[ForeignKeyDescriptorSpec, ...],
     silver_models: dict[str, SilverModelSpec],
-) -> tuple[GoldRelationshipSpec, ...]:
+) -> tuple[tuple[GoldRelationshipSpec, ...], tuple[tuple[str, str, str], ...]]:
+    """Shape every relationship both of whose endpoints are tables in this product.
+
+    Returns the shaped relationships and the *unresolved* ones: a foreign key whose
+    source table is in the product, whose join column was materialized, and whose target
+    is not here. That is a dead column in the emitted model -- the fact carries
+    `customer_sk` and nothing joins it -- and before #744 it vanished with no diagnostic
+    at all, which is how a cross-domain product silently lost half its star.
+
+    A descriptor whose *source* is outside the product is not reported: that relationship
+    belongs to some other product and is none of this one's business.
+    """
     by_resource = {table.resource_uri: table for table in tables}
     relationships: list[GoldRelationshipSpec] = []
-    for descriptor in foreign_keys.descriptors:
+    unresolved: list[tuple[str, str, str]] = []
+    for descriptor in descriptors:
         source = by_resource.get(descriptor.source_class)
         target = by_resource.get(descriptor.target_class)
-        if source is None or target is None:
+        if source is None:
             continue
         source_model = silver_models.get(source.source_model)
         column_name = _relationship_column(
@@ -707,6 +753,9 @@ def _shape_relationships(
             resource_uri=descriptor.property_uri,
         )
         if not column_name:
+            continue
+        if target is None:
+            unresolved.append((descriptor.property_uri, source.name, descriptor.target_class))
             continue
         if (
             source.version_binding is not None
@@ -761,26 +810,36 @@ def _shape_relationships(
                     version_binding=None,
                 )
             )
-    return tuple(
-        sorted(
-            relationships,
-            key=lambda item: (
-                item.source_table,
-                item.source_column,
-                item.target_table,
-            ),
-        )
+    return (
+        tuple(
+            sorted(
+                relationships,
+                key=lambda item: (
+                    item.source_table,
+                    item.source_column,
+                    item.target_table,
+                ),
+            )
+        ),
+        tuple(sorted(set(unresolved))),
     )
 
 
-def _shape_dimensional(
+def _shape_tables(
     policy: MedallionPolicySpec,
     registry: SilverRegistry,
     silver_models: tuple[SilverModelSpec, ...],
-    foreign_keys: ForeignKeyPolicy,
     ontology_name: str,
     ontology_version: str,
-) -> DimensionalGoldSpec:
+) -> tuple[GoldTableSpec, ...]:
+    """Shape one domain's authored Gold tables against its own compiled Silver registry.
+
+    Split out of the product assembly for #744. Tables are the only part of a Gold product
+    that is genuinely per-domain: a table is materialized by the compile of the domain that
+    binds it, so this runs once per participating domain. Everything that *spans* tables --
+    relationships, measures, the calendar, security, perspectives -- is assembled afterwards
+    over the union, because crossing the domain boundary is the whole point of a product.
+    """
     profile_value = policy.gold.profile
     if profile_value is None or policy.gold.schema is None:
         _fail(
@@ -788,7 +847,10 @@ def _shape_dimensional(
             "Gold projection requires an explicit registered product profile and schema",
             rule_id="DD-112-profile",
         )
-    profile = policy.gold_registry.get(profile_value.value)
+    # Called for its fail-closed side effect, not its value: `get` raises on a profile
+    # this build does not register, and this domain's tables must not be shaped under a
+    # profile the product assembler would then reject.
+    policy.gold_registry.get(profile_value.value)
     names = dict(registry.names)
     registry_columns = dict(registry.columns)
     versions = dict(registry.versions)
@@ -1030,9 +1092,86 @@ def _shape_dimensional(
                 perspectives=tuple(sorted(perspective_by_table.get(authored.resource_uri, ()))),
             )
         )
-    ordered = tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
     _check_excluded_columns(policy, frozenset(excluded_matched))
     _check_hidden_columns(policy, frozenset(hidden_matched))
+    return tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
+
+
+def _sole(
+    members: tuple["GoldDomainInput", ...],
+    pick,
+    *,
+    code: str,
+    what: str,
+) -> "GoldDomainInput | None":
+    """Return the one member that declares *what*, or fail if several do.
+
+    A Gold product has exactly one calendar and one security policy. Both are naturally
+    hub-wide concerns that happen to be authored per domain, so the rule is that one
+    participating domain declares it and the product inherits it -- which is what makes a
+    hub-wide calendar possible at all (#744). Two competing declarations have no defensible
+    merge, so they fail rather than silently picking one.
+    """
+    declaring = [member for member in members if pick(member) is not None]
+    if len(declaring) > 1:
+        names = ", ".join(sorted(member.ontology_name for member in declaring))
+        _fail(
+            code,
+            (
+                f"{len(declaring)} domains declare a {what} for this Gold product "
+                f"({names}); exactly one participating domain may declare it"
+            ),
+            rule_id="DD-112-profile",
+        )
+    return declaring[0] if declaring else None
+
+
+def _shape_dimensional_product(
+    members: tuple["GoldDomainInput", ...],
+    product_name: str,
+) -> DimensionalGoldSpec:
+    """Assemble one Gold product from one or more compiled domains (#744).
+
+    A single-domain product is the N=1 case of this rather than a separate path, so a hub
+    that declares no product keeps emitting exactly what it emitted before.
+    """
+    primary = members[0]
+    profile_value = primary.policy.gold.profile
+    if profile_value is None or primary.policy.gold.schema is None:
+        _fail(
+            "gold.profile-missing",
+            "Gold projection requires an explicit registered product profile and schema",
+            rule_id="DD-112-profile",
+        )
+    profile = primary.policy.gold_registry.get(profile_value.value)
+
+    tables: list[GoldTableSpec] = []
+    owner_of: dict[str, str] = {}
+    for member in members:
+        for table in _shape_tables(
+            member.policy,
+            member.registry,
+            member.silver_models,
+            member.ontology_name,
+            member.ontology_version,
+        ):
+            owner = owner_of.get(table.name.casefold())
+            if owner is not None:
+                _fail(
+                    "gold.product-table-name-collision",
+                    (
+                        f"Gold table {table.name!r} is authored in both {owner!r} and "
+                        f"{member.ontology_name!r}; one semantic model cannot carry two "
+                        "tables under one name -- rename one with kairos-ext:goldTableName"
+                    ),
+                    rule_id="DD-112-table-role",
+                    resource_uri=table.resource_uri,
+                )
+            owner_of[table.name.casefold()] = member.ontology_name
+            tables.append(table)
+    ordered = tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
+
+    # Checked over the union, not per domain: a bridge may span two domains' tables.
     included = {table.resource_uri for table in ordered}
     for table in ordered:
         if table.role is GoldTableRole.BRIDGE and (
@@ -1044,29 +1183,106 @@ def _shape_dimensional(
                 rule_id="DD-112-bridge",
                 resource_uri=table.resource_uri,
             )
+
+    models: dict[str, SilverModelSpec] = {}
+    descriptors: list[ForeignKeyDescriptorSpec] = []
+    for member in members:
+        models.update({model.identity.model_name: model for model in member.silver_models})
+        descriptors.extend(member.foreign_keys.descriptors)
+    relationships, unresolved = _shape_relationships(ordered, tuple(descriptors), models)
+
+    calendar_owner = _sole(
+        members,
+        lambda member: member.policy.gold.calendar,
+        code="gold.product-calendar-conflict",
+        what="calendar profile",
+    )
+    calendar = (
+        _shape_calendar(calendar_owner.policy, ordered) if calendar_owner is not None else None
+    )
+    security_owner = _sole(
+        members,
+        lambda member: member.policy.gold.security,
+        code="gold.product-security-unsupported",
+        what="security policy",
+    )
+    security = (
+        _shape_security(security_owner.policy, ordered) if security_owner is not None else None
+    )
+
+    measures: list[GoldMeasureSpec] = []
+    measure_owner: dict[str, str] = {}
+    for member in members:
+        for measure in _shape_measures(member.policy, ordered, has_calendar=calendar is not None):
+            owner = measure_owner.get(measure.measure_id.casefold())
+            if owner is not None:
+                _fail(
+                    "gold.product-measure-id-collision",
+                    (
+                        f"measure {measure.measure_id!r} is authored in both {owner!r} and "
+                        f"{member.ontology_name!r}; a measure name is unique in one model"
+                    ),
+                    rule_id="DD-113-measure-lifecycle",
+                    resource_uri=measure.resource_uri,
+                )
+            measure_owner[measure.measure_id.casefold()] = member.ontology_name
+            measures.append(measure)
+
+    perspectives = [
+        (
+            item.name,
+            tuple(sorted(table.name for table in ordered if table.resource_uri in item.table_uris)),
+        )
+        for member in members
+        for item in member.policy.gold.perspectives
+    ]
+    registry_names: list[tuple[str, str]] = []
+    registry_columns: list[tuple[str, frozenset[str]]] = []
+    for member in members:
+        registry_names.extend(member.registry.names)
+        registry_columns.extend(member.registry.columns)
+
     return DimensionalGoldSpec(
         profile=profile.name,
         profile_version=profile.version,
-        ontology_name=ontology_name,
-        ontology_version=ontology_version,
-        schema_name=policy.gold.schema.value,
-        adapter=policy.target_adapter.value.value,
+        ontology_name=product_name,
+        ontology_version=primary.ontology_version,
+        schema_name=primary.policy.gold.schema.value,
+        adapter=primary.policy.target_adapter.value.value,
         tables=ordered,
-        relationships=_shape_relationships(ordered, foreign_keys, models),
-        measures=_shape_measures(policy, ordered),
-        calendar=_shape_calendar(policy, ordered),
-        security=_shape_security(policy, ordered),
-        perspectives=tuple(
-            (
-                item.name,
-                tuple(
-                    sorted(table.name for table in ordered if table.resource_uri in item.table_uris)
-                ),
-            )
-            for item in policy.gold.perspectives
+        relationships=relationships,
+        measures=tuple(sorted(measures, key=lambda item: item.measure_id)),
+        calendar=calendar,
+        security=security,
+        perspectives=tuple(sorted(perspectives)),
+        silver_registry_names=tuple(sorted(set(registry_names))),
+        silver_registry_columns=tuple(sorted(set(registry_columns))),
+        domains=tuple(member.ontology_name for member in members),
+        unresolved_relationships=unresolved,
+    )
+
+
+def _shape_dimensional(
+    policy: MedallionPolicySpec,
+    registry: SilverRegistry,
+    silver_models: tuple[SilverModelSpec, ...],
+    foreign_keys: ForeignKeyPolicy,
+    ontology_name: str,
+    ontology_version: str,
+) -> DimensionalGoldSpec:
+    """The single-domain product: one member, named after its own domain."""
+    return _shape_dimensional_product(
+        (
+            GoldDomainInput(
+                policy=policy,
+                registry=registry,
+                silver_models=silver_models,
+                foreign_keys=foreign_keys,
+                ontology_name=ontology_name,
+                ontology_version=ontology_version,
+            ),
         ),
-        silver_registry_names=registry.names,
-        silver_registry_columns=registry.columns,
+        ontology_name,
     )
 
 
@@ -1123,3 +1339,57 @@ def shape_gold_product(
         ontology_name,
         ontology_version,
     )
+
+
+def shape_gold_products(
+    members: tuple[GoldDomainInput, ...],
+    *,
+    product_name: str,
+    required: bool = False,
+) -> GoldProductLogicalSpec | None:
+    """Dispatch one registered profile over every domain participating in a product.
+
+    Every participating domain must author the same profile: the product is one semantic
+    model, and a profile decides how that model is shaped, so two answers would have no
+    meaning. Only ``dimensional-powerbi-v1`` exists today, which makes the check cheap now
+    and load-bearing the moment a second profile is registered.
+    """
+    if not members:
+        _fail(
+            "gold.product-without-domains",
+            f"Gold product {product_name!r} has no participating domain",
+            rule_id="DD-222-gold-product-scope",
+        )
+    unprofiled = [member.ontology_name for member in members if member.policy.gold.profile is None]
+    if unprofiled:
+        if required:
+            _fail(
+                "gold.profile-missing",
+                (
+                    f"Gold product {product_name!r} includes domain(s) "
+                    f"{', '.join(sorted(unprofiled))} that author no goldProductProfile; "
+                    "every participating domain must author its own Gold extension"
+                ),
+                rule_id="DD-112-profile",
+            )
+        return None
+    profiles = {member.policy.gold.profile.value for member in members}
+    if len(profiles) > 1:
+        _fail(
+            "gold.product-profile-conflict",
+            (
+                f"Gold product {product_name!r} spans domains authoring different product "
+                f"profiles ({', '.join(sorted(str(item) for item in profiles))}); one "
+                "product is one semantic model and takes one profile"
+            ),
+            rule_id="DD-112-profile",
+        )
+    primary = members[0]
+    registered = primary.policy.gold_registry.get(primary.policy.gold.profile.value)
+    if _PROFILE_BUILDERS.get(registered.name) is None:
+        _fail(
+            "gold.profile-not-implemented",
+            f"registered Gold profile {registered.name.value!r} has no implementation",
+            rule_id="DD-112-profile",
+        )
+    return _shape_dimensional_product(members, product_name)

@@ -40,3 +40,6 @@ types later without redefining Gold.
 - Generic Gold orchestration is separated from Power BI profile rendering.
 - Wide tables, feature sets, API/search products, regulatory extracts, and visuals are
   out of scope.
+- **Product scope is superseded by [DD-222](dd-222-gold-product-scope-is-a-bus-matrix-concern-declared-in-kairosyaml.md)**
+  (#744): a Gold product is a bus-matrix concern declared in `kairos.yaml`, not one
+  ontology domain. The profile, role and grain rules above are unchanged.
