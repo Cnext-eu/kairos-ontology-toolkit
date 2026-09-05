@@ -37,14 +37,38 @@ def test_global_instructions_scope_design_fleet_mode_to_one_invocation(path):
     assert "records each ai-approved choice" in lowered
 
 
+CLAUDE_SKILLS = REPO_ROOT / ".claude" / "skills"
+SCAFFOLD_SKILLS = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills"
+
+
+def _design_skill_cases() -> list[tuple[Path, str]]:
+    """Every (root, design skill) pair that should exist.
+
+    The scaffold ships a *subset*: skills for capabilities a client cannot use are
+    deliberately withheld (DD-219 -- `kairos-design-mdm` while MDM is not live). Deriving
+    the scaffold half from what is actually shipped keeps this test from failing whenever
+    that subset changes, while `test_every_design_skill_exists_in_this_repository` below
+    still catches an accidental deletion.
+    """
+    cases = [(CLAUDE_SKILLS, skill) for skill in DESIGN_SKILLS]
+    cases += [
+        (SCAFFOLD_SKILLS, skill)
+        for skill in DESIGN_SKILLS
+        if (SCAFFOLD_SKILLS / skill / "SKILL.md").is_file()
+    ]
+    return cases
+
+
 @pytest.mark.parametrize("skill", DESIGN_SKILLS)
+def test_every_design_skill_exists_in_this_repository(skill):
+    """The scaffold subset may shrink; the authored set may not, unless deliberately."""
+    assert (CLAUDE_SKILLS / skill / "SKILL.md").is_file()
+
+
 @pytest.mark.parametrize(
-    "root",
-    [
-        REPO_ROOT / ".claude" / "skills",
-        REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills",
-    ],
-    ids=["claude", "scaffold"],
+    ("root", "skill"),
+    _design_skill_cases(),
+    ids=lambda value: value.parent.name if isinstance(value, Path) else value,
 )
 def test_design_skills_include_fleet_mode_guardrails(root, skill):
     path = root / skill / "SKILL.md"

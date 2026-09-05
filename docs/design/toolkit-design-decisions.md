@@ -281,5 +281,6 @@ during cleanup.
 | [DD-216](decisions/dd-216-the-declared-silver-contract-gets-its-own-diagram.md) | The declared Silver contract gets its own diagram | Accepted | 2026-09-04 |
 | [DD-217](decisions/dd-217-gold-projection-is-controllable-at-the-column.md) | Gold projection is controllable at the column | Accepted | 2026-09-04 |
 | [DD-218](decisions/dd-218-emitted-artifacts-carry-their-own-provenance-sidecar-not-a-manifest-schema-bump.md) | Emitted artifacts carry their own provenance sidecar, not a manifest schema bump | Accepted | 2026-09-05 |
+| [DD-219](decisions/dd-219-scaffolded-guidance-is-managed-and-maintainer-only-skills-stay-out-of-client-repos.md) | Scaffolded guidance is managed, and maintainer-only skills stay out of client repos | Accepted | 2026-09-05 |
 
 ---

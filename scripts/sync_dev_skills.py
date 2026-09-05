@@ -34,7 +34,38 @@ SCAFFOLD_INSTRUCTIONS = (
 # for this repo, not part of the kairos-* scaffold shipped to hub/dataplatform
 # repos, and must never be synced to the scaffold. "synced" is also a name
 # Claude Code reserves for claude.ai account sync and would never be authored here.
-_UNMANAGED_SKILL_DIRS = {"synced", "langfuse"}
+#: Skills that stay in this repository and are never shipped to a scaffolded hub or
+#: dataplatform. `kairos-toolkit-dev` and `kairos-toolkit-dogfood` are maintainer
+#: activities aimed at *this* repository -- dogfood is explicitly adversarial, hunting
+#: toolkit gaps using a client's data -- so installing them in a client repo added 314
+#: lines of irrelevant instruction and, worse, left them selectable by an agent working
+#: there. `kairos-toolkit-ops` is deliberately absent from this set: clients do use it
+#: to upgrade their toolkit pin, and it is in the dataplatform subset too.
+_UNMANAGED_SKILL_DIRS = {
+    "synced",
+    "langfuse",
+    "kairos-toolkit-dev",
+    "kairos-toolkit-dogfood",
+    # Cnext-internal, not client-facing. `SC-merge-pr` documents *this* repository's
+    # release process -- `scripts/finish_pr.py`, bumping `src/kairos_ontology/__init__.py`
+    # -- neither of which exists in a scaffolded repo; it shipped with a paragraph telling
+    # the reader not to apply it there, which is a caveat working around a packaging
+    # mistake. `SC-document` drives a Cnext Outline workspace and needs `OUTLINE_API_KEY`.
+    "SC-merge-pr",
+    "SC-document",
+    # MDM is designed but not adopted -- see docs/mdm/README.md. Shipping an authoring
+    # skill for a capability no hub runs invites an agent to author policy nothing
+    # consumes. The CLI surface (`mdm-validate`, optional CompilePlan policy) stays;
+    # restore this skill to the scaffold when MDM goes live.
+    "kairos-design-mdm",
+}
+
+
+# The status output below uses non-ASCII marks, and this script runs from a Git
+# pre-commit hook where stdout is a legacy-codepage Windows console -- there, printing
+# them raises UnicodeEncodeError and the hook fails for a cosmetic reason.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 def get_sync_pairs() -> list[tuple[Path, Path]]:

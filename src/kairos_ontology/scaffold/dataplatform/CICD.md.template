@@ -199,7 +199,7 @@ dependencies = [
     ...
 ]
 [tool.uv.sources]
-kairos-ontology-toolkit = { git = "https://github.com/{ORG}/kairos-ontology-toolkit" }
+kairos-ontology-toolkit = { git = "https://github.com/<your-org>/kairos-ontology-toolkit" }
 
 # With this (pick a real released tag, e.g. from
 # https://github.com/Cnext-eu/kairos-ontology-toolkit/releases):

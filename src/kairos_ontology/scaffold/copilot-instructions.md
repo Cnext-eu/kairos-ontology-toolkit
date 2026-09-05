@@ -104,7 +104,7 @@ copy; Copilot resolves the same tree.
 | Author source-to-canonical EntityBinding YAML | `kairos-design-mapping` |
 | Create a complex contracted dbt model | `kairos-develop-dbt-transformation` |
 | Design Gold/Power BI products | `kairos-design-gold` |
-| Design MDM policy | `kairos-design-mdm` |
+| Design MDM policy (not live; this repository only) | `kairos-design-mdm` |
 | Validate ontology and compile diagnostics | `kairos-execute-validate` |
 | Compile or generate artifacts | `kairos-execute-project` |
 | Review bindings and compiler explanation | `kairos-execute-report` |
@@ -113,7 +113,7 @@ copy; Copilot resolves the same tree.
 | Configure a hub | `kairos-setup-config` |
 | Create or consume a dataplatform | `kairos-setup-dataplatform`, `kairos-package-dataplatform` |
 | Update toolkit/managed files/reference models or release toolkit | `kairos-toolkit-ops` |
-| Toolkit development | `kairos-toolkit-dev` |
+| Toolkit development (this repository only) | `kairos-toolkit-dev` |
 
 Always invoke the owning skill before a skill-managed command or authored design change. Set
 `KAIROS_SKILL_CONTEXT=1` only while a skill legitimately wraps a command.

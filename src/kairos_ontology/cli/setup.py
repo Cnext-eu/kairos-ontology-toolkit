@@ -48,6 +48,8 @@ from .shared import (
     _create_github_repo,
     _detect_hub_context,
     _format_refmodels_fetch_provenance,
+    _get_managed_version,
+    _managed_scaffold_map,
     _is_old_layout,
     _resolve_scaffold_refmodels_pin,
     _resolve_scaffold_toolkit_pin,
@@ -565,6 +567,22 @@ def init(
             )
             hub_readme_dst.write_text(content, encoding="utf-8")
             print("  ✓ Created ontology-hub/README.md (company context)")
+
+
+    # Stamp every toolkit-owned document, whatever route wrote it. The per-directory
+    # READMEs arrive with the bulk `ontology-hub/` copy, which does not stamp, so
+    # without this pass a brand-new hub reports them all as "unmanaged" and fails
+    # `update --check` -- the check `managed-check.yml` runs on every pull request.
+    # Idempotent: an already-stamped file is left alone.
+    for _rel_path, _src in _managed_scaffold_map().items():
+        _dst = cwd / _rel_path
+        if _dst.is_file():
+            _current = _dst.read_text(encoding="utf-8")
+            if _get_managed_version(_current):
+                continue  # already stamped by its own step
+            if _current != _src.read_text(encoding="utf-8"):
+                continue  # the operator's own file -- `--force` is the only way in
+        _copy_managed(_src, _dst)
 
     # 7. Generate master ontology (imports all domains)
     master_src = _SCAFFOLD_DIR / "ontology-hub" / "model" / "ontologies" / "master.ttl.template"
@@ -1328,6 +1346,22 @@ def new_repo(
         claude_settings_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(claude_settings_src, claude_settings_dst)
         print("  ✓ .claude/settings.json (TTL access boundary)")
+
+    # Stamp every toolkit-owned document, whatever route wrote it. The per-directory
+    # READMEs arrive with the bulk `ontology-hub/` copy, which does not stamp, so
+    # without this pass a brand-new hub reports them all as "unmanaged" and fails
+    # `update --check` -- the check `managed-check.yml` runs on every pull request.
+    # Idempotent: an already-stamped file is left alone.
+    for _rel_path, _src in _managed_scaffold_map().items():
+        _dst = repo_dir / _rel_path
+        if _dst.is_file():
+            _current = _dst.read_text(encoding="utf-8")
+            if _get_managed_version(_current):
+                continue  # already stamped by its own step
+            if _current != _src.read_text(encoding="utf-8"):
+                continue  # the operator's own file -- `--force` is the only way in
+        _copy_managed(_src, _dst)
+
 
     # README.md
     readme_src = _SCAFFOLD_DIR / "README.md.template"
