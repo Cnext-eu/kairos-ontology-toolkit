@@ -30,7 +30,7 @@ GITHUB_INSTRUCTIONS = REPO_ROOT / ".github" / "copilot-instructions.md"
 SCAFFOLD_INSTRUCTIONS = (
     REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "copilot-instructions.md"
 )
-DOCS = REPO_ROOT / "docs"
+DOCS = REPO_ROOT / "docs" / "guide"
 SCAFFOLD_DOCS = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "docs"
 
 #: The operator-facing guides shipped into every scaffolded hub (#739). An **allowlist**,
@@ -71,7 +71,7 @@ _UNMANAGED_SKILL_DIRS = {
     # mistake. `SC-document` drives a Cnext Outline workspace and needs `OUTLINE_API_KEY`.
     "SC-merge-pr",
     "SC-document",
-    # MDM is designed but not adopted -- see docs/mdm/README.md. Shipping an authoring
+    # MDM is designed but not adopted -- see docs/dev/mdm/README.md. Shipping an authoring
     # skill for a capability no hub runs invites an agent to author policy nothing
     # consumes. The CLI surface (`mdm-validate`, optional CompilePlan policy) stays;
     # restore this skill to the scaffold when MDM goes live.

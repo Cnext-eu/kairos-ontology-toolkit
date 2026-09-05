@@ -2,8 +2,8 @@
 # Copyright 2026 Cnext.eu
 """One-shot migration: split the decision log into one file per decision.
 
-Ran once to turn a 15,680-line ``docs/design/toolkit-design-decisions.md`` into a slim
-index plus 217 files under ``docs/design/decisions/``. Kept in the tree so the mechanical
+Ran once to turn a 15,680-line ``docs/dev/toolkit-design-decisions.md`` into a slim
+index plus 217 files under ``docs/dev/decisions/``. Kept in the tree so the mechanical
 transformation is reviewable next to its result; it is safe to delete once that review is
 done, and running it again on the already-split log is a no-op (it finds no ``## DD-NNN``
 headings).
@@ -25,8 +25,8 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-LOG = REPO / "docs" / "design" / "toolkit-design-decisions.md"
-DECISIONS = REPO / "docs" / "design" / "decisions"
+LOG = REPO / "docs" / "dev" / "toolkit-design-decisions.md"
+DECISIONS = REPO / "docs" / "dev" / "decisions"
 
 MAX_FILENAME = 100  # keep Windows paths short; 15 titles exceed this
 
@@ -116,7 +116,7 @@ def main() -> int:
     for entry in entries:
         body = TRAILING_RULE_RE.sub("", entry["body"]).rstrip("\r\n")
         body = "#" + body[2:]  # '## DD-NNN: ...' -> '# DD-NNN: ...'
-        # sibling docs/design/*.md links move one directory down
+        # sibling docs/dev/*.md links move one directory down
         body = SIBLING_RE.sub(lambda m: f"](../{m.group(1)}{m.group(2) or ''})", body)
         # in-page fragments become sibling files inside decisions/
         body = FRAGMENT_RE.sub(

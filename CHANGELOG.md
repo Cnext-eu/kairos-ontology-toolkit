@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **A scaffolded hub now ships the toolkit's user documentation, and `update` keeps it
-  current (#739).** `docs/USER_GUIDE.md`, the eleven recipes under `docs/how-to/`,
-  `docs/CLI_REFERENCE.md` and `docs/CONSUMING_COMPILE_PLAN.md` existed only in this
+  current (#739).** `docs/guide/USER_GUIDE.md`, the eleven recipes under `docs/guide/how-to/`,
+  `docs/guide/CLI_REFERENCE.md` and `docs/guide/CONSUMING_COMPILE_PLAN.md` existed only in this
   repository: not in the wheel, and not referenced by any scaffold file — so a hub operator
   asking "do we have any user guides?" found nothing, and a GitHub link would not have helped
   because client-side users do not necessarily have read access here. They are now copied
@@ -52,6 +52,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint (`uri` < `subclass` < `local-name`), proposals order that way, and where several
   bound subclasses match one endpoint each is proposed — the author picks. The `local-name`
   heuristic remains as the last resort for hubs that mint an unanchored class.
+
+- **`docs/` is split by audience: `guide/` for operating a hub, `dev/` for building the
+  toolkit.** The two were mixed in one folder, so the user guide sat beside the 221-entry
+  decision log and neither audience had an obvious entry point. `docs/guide/` now holds the
+  user guide, how-to recipes, CLI reference, CompilePlan consumption, observability, the
+  demo script and the practitioner guides — the same set shipped into hubs above.
+  `docs/dev/` holds the decision log, architecture record, diagnostic codes, CLI behaviour
+  notes, quality policies, roadmap, MDM design material and the release process.
+  `docs/README.md` is now an audience-split index that states the rule for where a new
+  document goes.
+  The **two parallel DD stores are merged**: thirteen long-form design documents lived at
+  `docs/design/dd-NNN-*.md` using the same DD numbers as the ADRs under
+  `docs/design/decisions/`, with different slugs and no stated authority. The ten live ones
+  are now `dd-NNN-<adr-slug>-companion.md` beside the record they expand; three whose
+  decisions are formally superseded (DD-014, DD-025, DD-039) were removed, their records
+  intact in the log. Also removed: the v4.7 medallion engineering guide and two completed
+  migration notes.
+  Four tracked ADRs cited change-request documents under `docs/temp/`, which is
+  **gitignored** — those citations resolved only on the author's machine. They now cite the
+  substance instead. New guards: no tracked document may link into `docs/temp/`, no relative
+  link under `docs/` may dangle (eighteen broke during the move and nothing reported it),
+  and a companion must sit beside a real decision record.
 
 ### Fixed
 - **The scaffolded hub README told operators to run `compile <domain> --emit`, which the CLI
@@ -159,16 +181,16 @@ alone.
   a newer publish tree — and because emission writes four manifests over disjoint sets, the
   shared one last-writer-wins across domains. No wall clock and no Git revision, so
   re-emitting unchanged inputs is byte-identical.
-- **Task how-to guides (#719).** Twelve recipes under `docs/how-to/`, one per lifecycle
+- **Task how-to guides (#719).** Twelve recipes under `docs/guide/how-to/`, one per lifecycle
   stage, each naming the skill that automates it. `tests/test_how_to_guides.py` resolves
   every `kairos-ontology ...` line in them against the real command tree — command,
   subcommand and every long flag — so a renamed flag breaks the build rather than the
   reader, and executes the create-a-hub recipe end to end.
-- **A generated CLI reference (#718).** `docs/CLI_REFERENCE.md` is now produced by
+- **A generated CLI reference (#718).** `docs/guide/CLI_REFERENCE.md` is now produced by
   `scripts/generate_cli_reference.py` from the Click tree: all 88 commands with usage,
   arguments, options and defaults. The hand-written file it replaced had fallen 14 commands
   behind. `tests/test_cli_reference_is_current.py` fails when the file and the CLI disagree.
-  The behaviour essays it used to carry moved to `docs/design/cli-behaviour-notes.md`.
+  The behaviour essays it used to carry moved to `docs/dev/cli-behaviour-notes.md`.
 
 ### Changed
 - **Scaffolded guidance is toolkit-managed (DD-219, #717).** Eleven per-directory `README.md`
@@ -190,7 +212,7 @@ alone.
 - **The decision log is one file per decision (#713).** `toolkit-design-decisions.md` had
   reached 15,680 lines across 217 entries: too large to load as context, and every new
   decision appended at EOF so two branches adding one always conflicted. The file keeps its
-  path as the index; entries live in `docs/design/decisions/`. Adding a decision now creates
+  path as the index; entries live in `docs/dev/decisions/`. Adding a decision now creates
   a file, so the only possible collision is an adjacent index row.
 - **The repository has an LF line-ending policy (#714).** No `.gitattributes` and
   `core.autocrlf=false` meant committed bytes were whatever the writing tool emitted; the
@@ -198,7 +220,7 @@ alone.
   toolkit already shipped this fix to every scaffolded hub (issue #699) while running
   without it. The renormalisation is listed in `.git-blame-ignore-revs`.
 - **Architecture and roadmap are separate documents (#715).** 302 of the architecture
-  document's 709 lines were a delivery plan; they moved to `docs/design/roadmap.md`.
+  document's 709 lines were a delivery plan; they moved to `docs/dev/roadmap.md`.
 
 ### Fixed
 - **A qname parent class no longer breaks relationship proposals (#724).** `target.class`
@@ -797,7 +819,7 @@ preserved below for history.
 - **Seed column docs are a first-class authored artifact (issue #586, stage b).** A sibling `integration/transforms/dbt/seeds/<name>.yml` (or `.yaml`) next to `<name>.csv` is dbt's plain `seeds: - name: ... columns: ...` properties form. It is deliberately **not** a `meta.kairos` contract — a seed is not a bindable virtual source, so it declares no output contract and stays out of the contract-parsing path entirely. Selecting a seed into a compile closure selects its sibling docs too, and both are emitted together under `seeds/`. Carried on the plan as a new `seed_properties` dependency kind, which — like model properties YAML — has no `model_name`: the CSV owns the resource name and the document only describes it.
 - **`validate-dbt-contracts` gains three seed findings (issue #586, stage b).** `dbt-contract.seed-docs-unmatched` (warning) for seed docs naming no authored CSV stem (typo or stale docs after a rename); `dbt-contract.seed-unreadable` (warning) for a CSV that is unreadable, not UTF-8, or has an empty header row; and `dbt-contract.seed-model-collision` (**error**, not a warning like the other two) for a seed stem colliding with an authored model stem — dbt resolves `ref()` in one resource namespace, so the generated project would fail to parse, and the dbt bundle hard-fails the same case. A lint that called that advisory would disagree with the build.
 - **`init` and `new-repo` now create `integration/transforms/dbt/seeds/`.** Note that `update` does **not** backfill hub directories: an existing hub must `mkdir integration/transforms/dbt/seeds` itself before authoring its first seed. This is the scaffold's standing behavior, not a seed-specific gap.
-- **`docs/design/ontology-dbt-dataplatform-design-architecture.md`**, a standalone architecture reference for how the ontology hub governs source discovery, bronze-to-canonical bindings, and Silver/Gold dbt generation, and how a separate dataplatform repository consumes that output safely — including repository/ownership boundaries, release-compatibility and reproducibility design, extraction/profiling design, the int-layer authoring boundary, and a dbt Core 2.0 version-strategy note.
+- **`docs/dev/ontology-dbt-dataplatform-design-architecture.md`**, a standalone architecture reference for how the ontology hub governs source discovery, bronze-to-canonical bindings, and Silver/Gold dbt generation, and how a separate dataplatform repository consumes that output safely — including repository/ownership boundaries, release-compatibility and reproducibility design, extraction/profiling design, the int-layer authoring boundary, and a dbt Core 2.0 version-strategy note.
 - **`kairos-ontology feedback new/resolve/list/sync-index` (issue #588).** A lighter-weight, OKF-style sibling of the Decision Log for running design/business observations captured before (or instead of) they become a `kairos-ontology decision` — replacing the single hand-maintained `modelingfeedback.md` scratchpad with one toolkit-managed file per observation. Simpler than a Decision Record by design: `open`/`resolved` status only (no lifecycle/materiality state machine, no supersession graph), and evidence is a warning when absent, never required. `feedback resolve <id> --note ...` is the one new verb — it rejects resolving an already-resolved record rather than overwriting a prior note. (Records originally lived under `.import/businessdiscovery/insights/`; relocated to `.import/modeling/feedback/` later in this same release — see Changed, issue #591.)
 - **dbt seeds now declare a `seeds:` config block (issue #596).** Previously `dbt_project.yml` declared `seed-paths: ["seeds"]` with no matching `seeds:` config, so emitted seeds landed in the profile's default schema with adapter-dependent type inference. Seeds now get `+schema: 'reference'` (a new, dedicated hub-wide layer for business-supplied reference/lookup data), `+quote_columns: true`, and `+tags: ['reference']`. `column_types` remains on adapter inference for now — see the DD-140 amendment for the deferred typed-seeds design and a forward-looking note on seed sourcing. (Resolves the "open question, deliberately unresolved" noted below when seeds first became resolvable.)
 
@@ -927,7 +949,7 @@ preserved below for history.
   future silent jump into unvalidated pre-GA territory.
 
 ### Added
-- **`docs/design/ontology-dbt-dataplatform-design-architecture.md`**, a standalone architecture
+- **`docs/dev/ontology-dbt-dataplatform-design-architecture.md`**, a standalone architecture
   reference for how the ontology hub governs source discovery, bronze-to-canonical bindings, and
   Silver/Gold dbt generation, and how a separate dataplatform repository consumes that output
   safely — including repository/ownership boundaries, release-compatibility and reproducibility
@@ -2958,7 +2980,7 @@ silently invalidates the evidence they produce.
   boundary also performs the observability teardown (`reset_operation_context`, `flush_otel`,
   `reset_logging`), which is what flushes and closes the `--log-file` handler on the failure path.
   Root option parsing and command resolution remain outside the boundary — they run before
-  `configure_logging` — and `docs/OBSERVABILITY.md` documents that limitation, the record shape,
+  `configure_logging` — and `docs/guide/OBSERVABILITY.md` documents that limitation, the record shape,
   and that the persisted stacktrace is redacted and therefore lossy.
 
 ## [5.2.0rc13] — 2026-08-11
@@ -2999,7 +3021,7 @@ silently invalidates the evidence they produce.
   keeps `CompileDiagnostic` as its stable contract and adds targeted `logger.debug` trace points
   (scope resolution, binding selection, emit plan/commit/recovery) visible only under `--debug`.
   An optional `[otel]` extra wires a `LoggingHandler` OTLP bridge — off by default, telemetry
-  failure never fails compilation. See `docs/OBSERVABILITY.md`.
+  failure never fails compilation. See `docs/guide/OBSERVABILITY.md`.
 - **Gold Power BI output is now a complete PBIP project** (#206). The projector emitted only the
   inner `{Domain}.SemanticModel/` TMDL, so Fabric git-integration worked but Power BI Desktop
   could not open the result — Desktop opens a *report*, not a semantic model. It now also emits
@@ -3326,7 +3348,7 @@ silently invalidates the evidence they produce.
   in one invocation (diagnostics and the explain report both come back; `CompileResult`
   already computed both internally, so this required no new compile mode). `--emit` stays
   mutually exclusive, since it's the only side-effecting mode.
-- **Stable diagnostic-code catalog (`docs/design/diagnostic-codes.md`):** documents all 117
+- **Stable diagnostic-code catalog (`docs/dev/diagnostic-codes.md`):** documents all 117
   distinct `CompileDiagnostic` codes across the compiler, with severity and owning
   `rule_id`/DD citation, backed by an AST-based test that fails if a new or removed code
   drifts out of sync with the doc.
@@ -4046,15 +4068,15 @@ silently invalidates the evidence they produce.
     pattern; `tests/test_layering.py` guard). Public API is preserved via top-level
     `kairos_ontology` re-exports.
   - New scaffold asset `kairos-mdm.ttl`. See **MDM-DD-001..003** and
-    `docs/mdm/`.
+    `docs/dev/mdm/`.
   - New **kairos-design-mdm** skill (`.github/skills/` + scaffold mirror) for
-    interactive `*-mdm-ext.ttl` authoring, plus MDM docs under `docs/mdm/`
+    interactive `*-mdm-ext.ttl` authoring, plus MDM docs under `docs/dev/mdm/`
     (`mdm-design-decisions.md`, `user-stories.md`, `mdm-navigator-spec.md`).
 
 ### Changed
 - **Docs housekeeping**: reorganised `docs/` for navigability. Added a
-  `docs/README.md` documentation map; consolidated all MDM docs under `docs/mdm/`
-  (moved `mdmhubdesignv2.md` from `docs/design/`); archived unreferenced historical
+  `docs/README.md` documentation map; consolidated all MDM docs under `docs/dev/mdm/`
+  (moved `mdmhubdesignv2.md` from `docs/dev/`); archived unreferenced historical
   material (former `docs/draft/` and the `evidence-led-modeling` tracker) under
   `docs/archive/` with a `README.md` frozen-history marker; removed a duplicate
   `ddd-governance-implementation-plan.md`; and repathed all inbound references. Pure
@@ -4722,7 +4744,7 @@ silently invalidates the evidence they produce.
 ## [3.16.1] — 2026-06-14
 
 ### Added
-- **Release-management guide + policy (DD-067).** New `docs/RELEASING.md` documents
+- **Release-management guide + policy (DD-067).** New `docs/dev/RELEASING.md` documents
   SemVer discipline, the "support only the latest line" policy, and a bugfix decision
   tree that keeps patches out of feature releases via ephemeral `hotfix/x.y.z`
   branches cut from the release tag (with a mandatory back-merge to `main`).
@@ -5073,7 +5095,7 @@ silently invalidates the evidence they produce.
 - Tests: `test_propose_alignment_hints.py`, `test_scenario_mapping_hints.py`,
   `test_inventory_freshness.py`, `test_design_domain_skill_contract.py`,
   `test_scenario_specialization.py`
-- `docs/instruction-guides/context-engineer-methodology-guide.md` — two-design-model
+- `docs/guide/practitioner/context-engineer-methodology-guide.md` — two-design-model
   methodology + three-tier (deterministic/promptable/judgment) guide
 
 ### Removed
@@ -5123,7 +5145,7 @@ silently invalidates the evidence they produce.
 - **Extension vocabulary coverage guard** — `tests/test_ext_vocabulary_coverage.py`
   fails if any `kairos-ext` annotation consumed by a projector is undeclared in
   `kairos-ext.ttl`, keeping the vocabulary the single source of truth (DD-034).
-- **`docs/design/dd-034-extension-explanation.md`** — hub-author reference for the full
+- **`docs/dev/dd-034-extension-explanation.md`** — hub-author reference for the full
   `kairos-ext:` vocabulary (per-layer annotations, naming conventions, FK-child
   identity guidance, RESERVED list).
 - **Context-aware `naturalKey` warning** — the dbt projector now detects FK-child
@@ -5202,7 +5224,7 @@ silently invalidates the evidence they produce.
   Imported classes require explicit claiming via `kairos-ext:silverInclude` /
   `goldInclude` (per-class) or `silverIncludeImports` / `goldIncludeImports`
   (bulk, ontology-level). Peer hub domain imports are automatically excluded
-  from bulk inclusion. See DD-021 in `docs/design/toolkit-design-decisions.md`.
+  from bulk inclusion. See DD-021 in `docs/dev/toolkit-design-decisions.md`.
 - **4 new `kairos-ext:` annotations** — `silverInclude`, `silverIncludeImports`,
   `goldInclude`, `goldIncludeImports` added to the extension vocabulary.
 - **Pre-release publishing** — `release.ps1` supports rc/beta/alpha pre-releases
@@ -5215,7 +5237,7 @@ silently invalidates the evidence they produce.
   with platform-specific type maps and cross-platform macros.
 - **Branch protection** — `new-repo` auto-configures branch protection on `main`
   (require PR, 1 reviewer, dismiss stale reviews, block force push).
-- **Design decisions log** — `docs/design/toolkit-design-decisions.md` (ADR format).
+- **Design decisions log** — `docs/dev/toolkit-design-decisions.md` (ADR format).
 
 ### Fixed
 

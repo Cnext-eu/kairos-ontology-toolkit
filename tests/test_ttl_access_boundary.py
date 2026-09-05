@@ -3,7 +3,7 @@
 """Static boundary test enforcing DD-103 (canonical ontology closure).
 
 DD-103 ("Canonical ontology closure and versioned semantic index",
-``docs/design/toolkit-design-decisions.md``) designates ``core/ontology_loader.py``
+``docs/dev/toolkit-design-decisions.md``) designates ``core/ontology_loader.py``
 (``load_ontology()``) and its ``SemanticIndex`` as the single semantic-loading API.
 Raw ``rdflib.Graph().parse(...)`` calls scattered across other modules bypass the
 catalog-backed ``owl:imports`` closure, the completeness/diagnostics contract, and the

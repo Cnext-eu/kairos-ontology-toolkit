@@ -97,7 +97,7 @@ class TestMaintainerSkills:
     def test_non_client_skills_are_not_shipped(self, name):
         """`SC-*` are Cnext-internal; `kairos-design-mdm` authors policy nothing runs.
 
-        MDM is designed but not adopted (docs/mdm/README.md), so shipping its authoring
+        MDM is designed but not adopted (docs/dev/mdm/README.md), so shipping its authoring
         skill invited an agent to write policy no hub consumes. Restore it when MDM goes
         live -- the CLI surface stayed.
         """
@@ -177,14 +177,19 @@ _SHIPPED_USER_DOCS = (
 )
 
 #: Toolkit-internal material that must never reach a client hub: it documents *this*
-#: repository, not how to operate a hub.
+#: repository, not how to operate a hub. These are the names under ``docs/dev/`` after the
+#: audience split, plus the pre-split names so a revert cannot quietly re-ship them.
 _TOOLKIT_ONLY_DOCS = (
+    "decisions",
+    "mdm",
+    "toolkit-design-decisions.md",
+    "diagnostic-codes.md",
+    "roadmap.md",
+    "quality-policies.md",
+    "RELEASING.md",
     "design",
     "instruction-guides",
-    "mdm",
-    "demo",
     "temp",
-    "RELEASING.md",
 )
 
 

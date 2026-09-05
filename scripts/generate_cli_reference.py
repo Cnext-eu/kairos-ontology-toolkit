@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Generate ``docs/CLI_REFERENCE.md`` from the Click command tree.
+"""Generate ``docs/guide/CLI_REFERENCE.md`` from the Click command tree.
 
 The hand-written reference drifted: 70 commands are registered and 14 of them were
 never mentioned in it. A reference is the one kind of documentation that should never
@@ -19,7 +19,7 @@ mirrors ``scripts/sync_dev_skills.py`` and its drift test.
 
 Explanatory material -- why ``validate-dbt-contracts`` differs from ``validate-dbt``,
 what the machine-output contract guarantees -- deliberately does *not* live here. It is
-in ``docs/design/cli-behaviour-notes.md``, because it is reasoning rather than surface,
+in ``docs/dev/cli-behaviour-notes.md``, because it is reasoning rather than surface,
 and a generator would flatten it away on the next run.
 """
 
@@ -31,7 +31,7 @@ from pathlib import Path
 import click
 
 REPO = Path(__file__).resolve().parent.parent
-OUTPUT = REPO / "docs" / "CLI_REFERENCE.md"
+OUTPUT = REPO / "docs" / "guide" / "CLI_REFERENCE.md"
 PROGRAM = "kairos-ontology"
 
 _HEADER = """# CLI Reference
@@ -49,7 +49,7 @@ python scripts/generate_cli_reference.py
 
 For *why* a command behaves as it does -- the machine-output contract, the three ERD
 projections, `validate-dbt-contracts` versus `validate-dbt`, opt-in sample redaction --
-see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main/docs/design/cli-behaviour-notes.md). This file documents surface,
+see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main/docs/dev/cli-behaviour-notes.md). This file documents surface,
 not reasoning.
 """
 

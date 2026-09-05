@@ -4,7 +4,7 @@
 
 Documentation that names a command or a flag which no longer exists is worse than none:
 it reads authoritative and fails on contact. Every `kairos-ontology ...` invocation in
-`docs/how-to/` is parsed out of its fenced block and checked against the real Click tree,
+`docs/guide/how-to/` is parsed out of its fenced block and checked against the real Click tree,
 so renaming a flag breaks the build rather than the reader.
 """
 
@@ -18,7 +18,7 @@ import pytest
 
 from kairos_ontology.cli.main import cli
 
-_HOW_TO = Path(__file__).resolve().parent.parent / "docs" / "how-to"
+_HOW_TO = Path(__file__).resolve().parent.parent / "docs" / "guide" / "how-to"
 _FENCE = re.compile(r"```(?:bash|sh|shell|powershell)?\n(.*?)```", re.DOTALL)
 
 
@@ -120,7 +120,7 @@ def test_index_lists_every_guide():
     """A guide nobody links to is a guide nobody finds."""
     index = (_HOW_TO / "README.md").read_text(encoding="utf-8")
     missing = [guide.name for guide in _guides() if f"({guide.name})" not in index]
-    assert not missing, "guides missing from docs/how-to/README.md:\n" + "\n".join(missing)
+    assert not missing, "guides missing from docs/guide/how-to/README.md:\n" + "\n".join(missing)
 
 
 def test_every_guide_names_its_skill_or_says_there_is_none():
