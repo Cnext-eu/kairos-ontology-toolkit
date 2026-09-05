@@ -414,8 +414,10 @@ Anything it cannot derive is emitted as an explicit sentinel
 is a starting point, never authority. A relationship the binding already authors
 is never re-proposed (DD-220), so re-running after you have authored some is safe:
 what it still lists is what is left to do, and nothing it renders can overwrite an
-existing entry's `missingParent`/`ambiguousParent` policy. Endpoints matched by `local-name` rather
-than `uri` mean the hub authored its own class instead of binding the
+existing entry's `missingParent`/`ambiguousParent` policy. Endpoints matched by `subclass`
+mean the hub binds an `rdfs:subClassOf` descendant of the class the bridge names — the
+prescribed pattern; sound, and the compiler accepts it. Endpoints matched by `local-name`
+mean the hub authored its own class with no `rdfs:subClassOf` anchor to the
 reference-model one; check it really is the same concept before accepting.
 
 **A relationship-purpose technical field with no relationship is a warning, not
