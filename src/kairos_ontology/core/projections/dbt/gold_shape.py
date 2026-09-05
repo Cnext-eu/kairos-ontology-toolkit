@@ -1228,14 +1228,35 @@ def _shape_dimensional_product(
             measure_owner[measure.measure_id.casefold()] = member.ontology_name
             measures.append(measure)
 
-    perspectives = [
-        (
-            item.name,
-            tuple(sorted(table.name for table in ordered if table.resource_uri in item.table_uris)),
-        )
-        for member in members
-        for item in member.policy.gold.perspectives
-    ]
+    perspectives: list[tuple[str, tuple[str, ...]]] = []
+    perspective_owner: dict[str, str] = {}
+    for member in members:
+        for item in member.policy.gold.perspectives:
+            owner = perspective_owner.get(item.name.casefold())
+            if owner is not None:
+                # One `perspectives.tmdl` per model, so two blocks under one name is not a
+                # merge the projector may guess at. Caught here rather than left to the
+                # TOM gate, which `--skip-tmdl-validation` turns off.
+                _fail(
+                    "gold.product-perspective-collision",
+                    (
+                        f"perspective {item.name!r} is authored in both {owner!r} and "
+                        f"{member.ontology_name!r}; a perspective name is unique in one "
+                        "semantic model"
+                    ),
+                    rule_id="DD-112-profile",
+                )
+            perspective_owner[item.name.casefold()] = member.ontology_name
+            perspectives.append(
+                (
+                    item.name,
+                    tuple(
+                        sorted(
+                            table.name for table in ordered if table.resource_uri in item.table_uris
+                        )
+                    ),
+                )
+            )
     registry_names: list[tuple[str, str]] = []
     registry_columns: list[tuple[str, frozenset[str]]] = []
     for member in members:

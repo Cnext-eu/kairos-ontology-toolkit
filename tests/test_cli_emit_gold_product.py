@@ -234,3 +234,21 @@ def test_a_hub_without_insights_gets_no_brief(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert not (_gold_dir(hub) / "invoicing" / "invoicing-insight-brief.md").exists()
     assert "confirmed insight" not in result.output
+
+
+def test_a_malformed_insights_file_is_reported_not_traced(tmp_path, monkeypatch):
+    """The brief is built during rendering, so a bad file surfaces there first.
+
+    Without an explicit handler the operator got a Python traceback for a stray tab in
+    their own YAML, which is exactly what the coverage report's message exists to prevent.
+    """
+    hub = _hub(tmp_path)
+    path = hub / "integration" / "discovery" / "bi"
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "insights.yaml").write_text("insights:\n  - id: x\n", encoding="utf-8")
+
+    result = _emit(hub, "invoicing", monkeypatch, "--confirm-emit")
+
+    assert result.exit_code != 0
+    assert "insights.yaml is unusable" in result.output
+    assert "Traceback" not in result.output

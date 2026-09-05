@@ -143,13 +143,13 @@ class TestUsageCounts:
 
         usage = parse_report_folder(report)
 
-        assert usage.unparsed_visuals == 1
+        assert usage.unreadable_visuals == 1
         assert usage.fields["f.M"].visual_count == 1
 
     def test_a_visual_with_no_recognisable_field_is_counted_not_dropped(self, tmp_path):
         report = _report(tmp_path, {"Overview": [{"name": "v", "visual": {"visualType": "shape"}}]})
         usage = parse_report_folder(report)
-        assert usage.unparsed_visuals == 1
+        assert usage.visuals_without_fields == 1
         assert usage.visual_count == 1
 
 
@@ -168,7 +168,12 @@ class TestRenderedArtifact:
         document = yaml.safe_load(rendered)
 
         assert document["model_name"] == "Sales"
-        assert document["totals"] == {"pages": 1, "visuals": 2, "unparsed_visuals": 0}
+        assert document["totals"] == {
+            "pages": 1,
+            "visuals": 2,
+            "unreadable_visuals": 0,
+            "visuals_without_fields": 0,
+        }
         assert document["measures"] == [{"ref": "fact_sales.Revenue", "placed_on_visuals": 1}]
         assert document["fields"] == [
             {"ref": "dim_customer.country", "on_visuals": 1, "on_slicers": 1}

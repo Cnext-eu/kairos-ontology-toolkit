@@ -134,27 +134,31 @@ def generate_gold_from_compile_plans(
     product: GoldProductConfig,
 ) -> dict[str, str]:
     """Render one Gold product's artifacts from every participating domain (#744)."""
-    logical, _ = plan_gold_from_compile_plans(compile_plans, product)
-    return render_gold_product(logical, compile_plans, product)
+    logical, physical = plan_gold_from_compile_plans(compile_plans, product)
+    return render_gold_product(logical, compile_plans, product, physical=physical)
 
 
 def render_gold_product(
     logical: GoldProductLogicalSpec,
     compile_plans: "Sequence[CompilePlan]",
     product: GoldProductConfig,
+    *,
+    physical: GoldProductPhysicalSpec | None = None,
 ) -> dict[str, str]:
     """Render artifacts from an already-shaped product.
 
     Separate from :func:`generate_gold_from_compile_plans` so a caller that needs the
     shaped spec as well -- `emit-gold`, which reports insight coverage against it -- does
-    not shape the same product twice.
+    not shape the same product twice. Pass *physical* too when the caller already has it,
+    so materialization is not repeated either.
     """
-    materialized = compile_plans[0].materialization_plan
-    physical = materialize_gold_product(
-        logical,
-        adapter_version=materialized.adapter.version,
-        capability_results=materialized.adapter.capability_results,
-    )
+    if physical is None:
+        materialized = compile_plans[0].materialization_plan
+        physical = materialize_gold_product(
+            logical,
+            adapter_version=materialized.adapter.version,
+            capability_results=materialized.adapter.capability_results,
+        )
     artifacts = _render(logical, physical, compile_plans, display_name=product.display_name)
     artifacts.update(_insight_brief(logical, product, Path(compile_plans[0].scope.hub_root)))
     return artifacts

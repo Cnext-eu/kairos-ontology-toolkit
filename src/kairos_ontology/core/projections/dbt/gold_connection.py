@@ -200,9 +200,7 @@ _DIRECT_LAKE_ENVIRONMENT_FIELDS = ("workspace_id", "lakehouse_id")
 _DIRECT_LAKE_CONFIG_PATH = f"{_GOLD_KEY}.{_DIRECT_LAKE_KEY}"
 #: A Fabric workspace/lakehouse ID is a GUID; anything else is an unresolved
 #: placeholder (the exact failure mode #619 Bugs 4/6 report).
-_GUID = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
+_GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 #: The value the scaffolded ``kairos.yaml`` ships as an example. It is GUID-shaped, so
 #: format validation alone cannot tell it from a real ID (issue #662).
 _PLACEHOLDER_GUID = "00000000-0000-0000-0000-000000000000"
@@ -514,6 +512,21 @@ def resolve_gold_product(
     """
     products = load_gold_products(hub_root)
     for product in products:
+        if product.name in hub_domains and product.name not in product.domains:
+            # Product names are matched before domain names and share the output
+            # directory and manifest, so a product named after an unrelated domain would
+            # silently make that domain's own Gold unemittable and delete its tree on the
+            # next emit. Cheap to reject, invisible to debug.
+            raise GoldContractError(
+                "gold.product-shadows-domain",
+                (
+                    f"Gold product {product.name!r} is named after the hub domain "
+                    f"{product.name!r}, which it does not include. Rename the product: "
+                    "a product name it shares with an unrelated domain would hide that "
+                    "domain's own Gold output and overwrite its emitted tree"
+                ),
+                rule_id=GOLD_PRODUCT_RULE_ID,
+            )
         if product.name == requested:
             return product
     claimed = {domain: product for product in products for domain in product.domains}

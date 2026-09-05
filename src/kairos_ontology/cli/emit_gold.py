@@ -100,6 +100,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     from ..cli.compile import _hub_domains
     from ..core.compiler.emit import emit_artifacts
     from ..core.compiler.provenance import provenance_artifact
+    from ..core.insights import InsightsError
     from ..core.projections.dbt.gold_connection import resolve_gold_product
     from ..core.projections.dbt.gold_specs import GoldContractError
     from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
@@ -141,6 +142,11 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         artifacts = render_gold_product(logical, plans, product)
     except GoldContractError as exc:
         raise click.ClickException(str(exc)) from exc
+    except InsightsError as exc:
+        # Rendering reads insights.yaml to build the brief, so a malformed file surfaces
+        # here rather than in the coverage report below. Without this the operator gets a
+        # Python traceback for a stray tab in their own YAML.
+        raise click.ClickException(f"insights.yaml is unusable: {exc}") from exc
 
     # DD-218. The Gold lane emits into its own manifest-owned subtree, so it carries its
     # own sidecar rather than relying on the Silver one; `lane` keeps the two paths apart
@@ -246,6 +252,7 @@ def harvest_gold_cmd(product: str, source: Path) -> None:
     from ..cli.compile import _hub_domains
     from ..core.compiler.kernel import build_compile_plan
     from ..core.determinism import write_text_lf
+    from ..core.insights import InsightsError
     from ..core.gold_harvest import (
         HARVEST_RELDIR,
         diff_models,
@@ -280,6 +287,8 @@ def harvest_gold_cmd(product: str, source: Path) -> None:
         artifacts = generate_gold_from_compile_plans(plans, resolved)
     except GoldContractError as exc:
         raise click.ClickException(str(exc)) from exc
+    except InsightsError as exc:
+        raise click.ClickException(f"insights.yaml is unusable: {exc}") from exc
 
     emitted = _model_from_artifacts(artifacts, parse_tmdl_content)
     try:

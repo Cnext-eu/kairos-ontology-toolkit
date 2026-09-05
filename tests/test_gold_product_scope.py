@@ -371,3 +371,33 @@ class TestProductResolution:
         with pytest.raises(GoldContractError) as excinfo:
             resolve_gold_product(hub, "nope", hub_domains=("billing", "party"))
         assert excinfo.value.code == "gold.unknown-product"
+
+
+class TestProductShadowingADomain:
+    """A product must not take the name of a hub domain it does not include.
+
+    Product names are matched before domain names and share the output directory and the
+    manifest, so a product named `party` that contains only `billing` would silently make
+    the real `party` domain unemittable and delete its emitted tree on the next run.
+    """
+
+    _SHADOW = """
+  products:
+    - name: party
+      domains: [billing]
+"""
+
+    def test_it_is_rejected(self, tmp_path):
+        hub = _hub(tmp_path, products_yaml=self._SHADOW)
+        with pytest.raises(GoldContractError) as excinfo:
+            resolve_gold_product(hub, "party", hub_domains=("billing", "party"))
+        assert excinfo.value.code == "gold.product-shadows-domain"
+
+    def test_a_product_may_be_named_after_a_domain_it_includes(self, tmp_path):
+        """The common case: one domain grows into a product that still carries its name."""
+        hub = _hub(
+            tmp_path,
+            products_yaml="\n  products:\n    - name: party\n      domains: [party, billing]\n",
+        )
+        product = resolve_gold_product(hub, "party", hub_domains=("billing", "party"))
+        assert product.domains == ("party", "billing")

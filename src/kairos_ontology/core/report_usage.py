@@ -24,8 +24,10 @@ years of Desktop versions. So field references are found by walking the JSON for
 shapes Power BI has always used (`{"Column": {"Expression": {"SourceRef": {"Entity":
 ...}}, "Property": ...}}`, and its `Measure` and `Aggregation` siblings) rather than by
 assuming a fixed path through `queryState`. A visual whose shape yields nothing is counted under
-`unparsed_visuals` instead of failing the import: partial evidence is still evidence, and
-an unreadable visual in one of 2,000 must not cost the operator the other 1,999.
+`unreadable_visuals` instead of failing the import: partial evidence is still evidence, and
+one unreadable visual out of 2,000 must not cost the operator the other 1,999. A visual that
+parses but projects nothing -- a text box, a shape -- is counted separately under
+`visuals_without_fields`, because that is expected rather than a parser failure.
 """
 
 from __future__ import annotations
@@ -66,7 +68,12 @@ class ReportUsage:
     name: str
     page_count: int = 0
     visual_count: int = 0
-    unparsed_visuals: int = 0
+    #: A visual whose JSON could not be read at all. The robustness signal.
+    unreadable_visuals: int = 0
+    #: A visual that parsed but projects no field -- a text box, shape or image. Expected,
+    #: and counted apart from `unreadable_visuals` so a report full of annotations does not
+    #: read as a parser failure.
+    visuals_without_fields: int = 0
     pages: list[tuple[str, int]] = field(default_factory=list)
     visual_types: Counter = field(default_factory=Counter)
     fields: dict[str, FieldUsage] = field(default_factory=dict)
@@ -143,7 +150,7 @@ def parse_report_folder(report_dir: Path) -> ReportUsage:
             try:
                 visual = json.loads(visual_json.read_text(encoding="utf-8"))
             except (OSError, ValueError):
-                usage.unparsed_visuals += 1
+                usage.unreadable_visuals += 1
                 continue
             page_visuals += 1
             usage.visual_count += 1
@@ -153,7 +160,7 @@ def parse_report_folder(report_dir: Path) -> ReportUsage:
             found: list[tuple[str, bool]] = []
             _walk_field_refs(visual, found)
             if not found:
-                usage.unparsed_visuals += 1
+                usage.visuals_without_fields += 1
                 continue
             # De-duplicated per visual: a field on both the axis and the sort spec is
             # one use of that field, not two.
@@ -182,7 +189,8 @@ def render_report_usage(usage: ReportUsage, *, source_label: str = "") -> str:
         "totals": {
             "pages": usage.page_count,
             "visuals": usage.visual_count,
-            "unparsed_visuals": usage.unparsed_visuals,
+            "unreadable_visuals": usage.unreadable_visuals,
+            "visuals_without_fields": usage.visuals_without_fields,
         },
         "visual_types": dict(usage.visual_types.most_common()),
         "pages": [{"display_name": name, "visuals": count} for name, count in usage.pages],

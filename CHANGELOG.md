@@ -73,9 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot give — a legacy model typically defines far more measures than any report uses.
   DD-147's discipline is unchanged: derived counts only, no visual definitions, positions,
   filter values, titles, images, themes or connection strings, and the export still expands
-  to a temporary directory. A visual whose shape yields nothing is counted under
-  `unparsed_visuals` rather than failing the import, because one unreadable visual out of
-  2,000 must not cost the operator the other 1,999.
+  to a temporary directory. A visual whose JSON cannot be read is counted under
+  `unreadable_visuals` rather than failing the import, because one bad visual out of 2,000
+  must not cost the operator the other 1,999; a visual that parses but projects no field (a
+  text box, a shape) is counted separately, so an annotated report does not read as a broken
+  parse.
 - **Personas, questions and KPIs are authorable, and `emit-gold` checks them (#744, DD-223).**
   A Gold product could be described completely without recording what anyone wanted to
   know, so report design started from the data that happened to be modelled rather than

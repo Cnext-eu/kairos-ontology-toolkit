@@ -46,9 +46,12 @@ each was used. The archive still expands to a temporary directory, never into th
 **Field references are found by walking the JSON, not by a path through `queryState`.** The
 PBIR `visualContainer` schema is versioned and unvendored, role names are arbitrary
 (`Category`, `Y`, `Values`, whatever a custom visual invents), and a client estate spans
-years of Desktop versions. A visual that yields nothing is counted under `unparsed_visuals`
-rather than failing the import: one unreadable visual out of 2,000 must not cost the
-operator the other 1,999. Partial evidence is still evidence.
+years of Desktop versions. A visual whose JSON cannot be read is counted under
+`unreadable_visuals` rather than failing the import: one bad visual out of 2,000 must not
+cost the operator the other 1,999. Partial evidence is still evidence. A visual that parses
+but projects no field -- a text box, a shape -- is counted separately under
+`visuals_without_fields`, because that is expected rather than a parser failure, and
+merging the two would make a heavily annotated report look like a broken parse.
 
 **`integration/discovery/bi/insights.yaml` records personas, questions, KPIs, and the
 canonical measures and dimensions that answer each.** It sits beside the harvested usage
