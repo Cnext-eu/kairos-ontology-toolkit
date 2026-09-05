@@ -233,9 +233,14 @@ parent's generated dbt model name (derived from the target class, per DD-138).
 
 Nothing is guessed. Anything not derivable is emitted as `<CONFIRM_JOIN_COLUMN>`
 or `<CONFIRM_KEY_TYPE>`. Each proposal reports `endpoint_match`: `uri` (exact
-class-URI equality) or `local-name` (the hub authored its own class in its own
-namespace) -- confirm a `local-name` match really is the same concept before
-accepting it. `--no-unresolved` hides proposals whose join columns are sentinels.
+class-URI equality, including an authored qname that expands to the endpoint
+class), `subclass` (the hub binds an `rdfs:subClassOf` descendant of the class the
+edge names -- sound, and accepted by `compile` since #729; where several bound
+subclasses match, each is proposed and you pick), or `local-name` (the hub
+authored its own class in its own namespace with no `rdfs:subClassOf` anchor) --
+confirm a `local-name` match really is the same concept before accepting it.
+Proposals are ordered `uri` before `subclass` before `local-name`.
+`--no-unresolved` hides proposals whose join columns are sentinels.
 
 ## `scaffold-system`
 

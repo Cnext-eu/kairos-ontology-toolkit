@@ -19,6 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > The next release that includes this section must be a **minor** bump (5.16.0), not a
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
 
+### Added
+- **`propose-relationships` matches endpoints through `rdfs:subClassOf` (#732).** Endpoint
+  matching had two tiers — exact class URI, then a same-local-name heuristic across
+  namespaces — so a hub that follows the prescribed pattern (subclass the reference-model
+  class: `PortCallRecord ⊑ PortCall`) got no proposal for any blueprint bridge or
+  reference object property whose endpoint is the reference class, unless the local names
+  happened to coincide. DD-139 then told the author to "run `propose-relationships`" for
+  entries it could not derive. A new `subclass` tier sits between the two: a binding whose
+  `target.class` is an `rdfs:subClassOf` descendant of the endpoint class is a match, read
+  from the same RDFS-profile index closure the compiler's endpoint check consults (#729), so
+  what is proposed is exactly what compiles. Authored qname targets are expanded against the
+  hub's own `@prefix` declarations, so a qname that denotes the endpoint class now counts
+  as a `uri` match rather than a `local-name` one. A pair is reported as its *weaker*
+  endpoint (`uri` < `subclass` < `local-name`), proposals order that way, and where several
+  bound subclasses match one endpoint each is proposed — the author picks. The `local-name`
+  heuristic remains as the last resort for hubs that mint an unanchored class.
+
 ### Changed
 - **BREAKING for hubs with SHACL shapes on reference-model classes: `sh:targetClass` now
   applies to subclasses (#729).** `_extract_shacl_tests` matched `sh:targetClass` by exact

@@ -320,6 +320,93 @@ def index_bindings(bindings_dir: Path) -> tuple[BoundEntity, ...]:
 # --------------------------------------------------------------------------------------
 
 
+def _load_hub_ontologies(ontologies_dir: Path):
+    """Yield the DD-103 load result for every authored hub ontology, ``rdfs`` profile.
+
+    Shared by :func:`load_ontology_edges` and :func:`load_class_hierarchy` so both read the
+    same closure. Files starting with ``_`` (``_master.ttl``) are skipped; a module that
+    fails to resolve is skipped here and reported by ``validate``.
+    """
+    from .ontology_loader import SemanticProfile, load_ontology
+
+    directory = Path(ontologies_dir)
+    if not directory.is_dir():
+        return
+    for path in sorted(directory.glob("*.ttl")):
+        if path.name.startswith("_"):
+            continue
+        try:
+            result = load_ontology(path, profile=SemanticProfile.RDFS, degraded=True)
+        except Exception:  # defensive: resolution errors are reported by `validate`
+            continue
+        if getattr(result, "semantic_index", None) is None:
+            continue
+        yield result
+
+
+@dataclass(frozen=True, slots=True)
+class ClassHierarchy:
+    """Asserted ``rdfs:subClassOf`` closure of the hub ontologies, for endpoint matching.
+
+    ``ancestors`` maps every indexed class URI to its transitive named ancestors under the
+    ``rdfs`` profile -- asserted triples walked to a fixpoint, no OWL materialization: the
+    same closure the compiler's relationship-endpoint check consults, so what this matches
+    is exactly what ``compile`` accepts (#729, #732). ``namespaces`` is every ``@prefix``
+    bound across the loaded modules, so an authored qname target such as
+    ``cons:Consignment`` can be expanded without re-parsing.
+    """
+
+    ancestors: dict[str, frozenset[str]] = field(default_factory=dict)
+    namespaces: dict[str, str] = field(default_factory=dict)
+
+    def resolve(self, token: str) -> Optional[str]:
+        """Return the class URI an authored ``target.class`` token denotes, if known.
+
+        Accepts the three forms the compiler accepts (``kernel._relationship_ref_uri``): a
+        full URI, a ``prefix:Local`` qname bound in the hub's ontologies, or a bare local
+        name that names exactly one indexed class. Anything else is ``None`` and the caller
+        falls back to the local-name heuristic.
+        """
+        if not token:
+            return None
+        if "://" in token:
+            return token
+        if ":" in token:
+            prefix, local = token.split(":", 1)
+            namespace = self.namespaces.get(prefix)
+            return namespace + local if namespace else None
+        wanted = _class_token(token)
+        matches = [uri for uri in self.ancestors if _class_token(uri) == wanted]
+        return matches[0] if len(matches) == 1 else None
+
+    def is_subclass(self, class_uri: str, ancestor_uri: str) -> bool:
+        """True when ``class_uri`` is a *proper* descendant of ``ancestor_uri``."""
+        return ancestor_uri in self.ancestors.get(class_uri, frozenset())
+
+
+def load_class_hierarchy(ontologies_dir: Path) -> ClassHierarchy:
+    """Build the :class:`ClassHierarchy` for a hub's ``model/ontologies``.
+
+    Prefixes are read from the authored Turtle files, not from the merged closure graph:
+    the loader does not carry a module's ``@prefix`` bindings into the closure it returns,
+    so ``graph.namespaces()`` knows the well-known vocabularies and none of the hub's own.
+    The kernel's ``_declared_prefixes`` is the same reader ``compile`` uses to resolve an
+    authored qname, so a token resolves here exactly as it does there.
+    """
+    from .compiler.kernel import _declared_prefixes
+
+    ancestors: dict[str, frozenset[str]] = {}
+    namespaces: dict[str, str] = {}
+    for result in _load_hub_ontologies(ontologies_dir):
+        for record in result.semantic_index.classes:
+            ancestors.setdefault(record.uri, frozenset(link.uri for link in record.ancestors))
+        for source in result.sources:
+            for prefix, declared in _declared_prefixes(str(source.manifest.source_path)).items():
+                if declared and prefix not in namespaces:
+                    namespaces[prefix] = declared[0]
+    return ClassHierarchy(ancestors=ancestors, namespaces=namespaces)
+
+
 def load_ontology_edges(ontologies_dir: Path) -> tuple[tuple[str, str, str], ...]:
     """Return ``(property_uri, domain_class_uri, range_class_uri)`` from hub ontologies.
 
@@ -331,22 +418,9 @@ def load_ontology_edges(ontologies_dir: Path) -> tuple[tuple[str, str, str], ...
     (``owl:unionOf`` / ``owl:Restriction``) is a blank node the semantic index does not
     surface as a named class, so there is no endpoint to propose (DD-133 s7).
     """
-    from .ontology_loader import SemanticProfile, load_ontology
-
-    directory = Path(ontologies_dir)
-    if not directory.is_dir():
-        return ()
     edges: list[tuple[str, str, str]] = []
-    for path in sorted(directory.glob("*.ttl")):
-        if path.name.startswith("_"):
-            continue
-        try:
-            result = load_ontology(path, profile=SemanticProfile.RDFS, degraded=True)
-        except Exception:  # defensive: resolution errors are reported by `validate`
-            continue
-        index = getattr(result, "semantic_index", None)
-        if index is None:
-            continue
+    for result in _load_hub_ontologies(ontologies_dir):
+        index = result.semantic_index
         for prop in index.properties:
             if prop.property_type != "object":
                 continue
@@ -405,7 +479,10 @@ class RelationshipProposal:
     evidence: str
     evidence_id: str
     #: How the edge's endpoint classes were matched to authored bindings: ``uri`` (exact
-    #: class-URI equality) or ``local-name`` (same local name in a different namespace).
+    #: class-URI equality), ``subclass`` (the hub binds an ``rdfs:subClassOf`` descendant
+    #: of the class the edge names -- sound, and what ``compile`` accepts since #729), or
+    #: ``local-name`` (same local name in a different namespace -- a heuristic). When the
+    #: two endpoints matched differently the weaker kind is reported.
     endpoint_match: str
     local_column: str
     foreign_column: str
@@ -595,6 +672,11 @@ def _external_reference(child: BoundEntity, parent: BoundEntity, foreign: str) -
     }
 
 
+#: Endpoint-match kinds, strongest first. Drives both the "weaker endpoint wins" rule for a
+#: pair and the ordering of proposals a reviewer sees.
+_ENDPOINT_MATCH_RANK: dict[str, int] = {"uri": 0, "subclass": 1, "local-name": 2}
+
+
 def build_relationship_proposals(
     *,
     hub_root: Path,
@@ -607,27 +689,53 @@ def build_relationship_proposals(
 
     bindings = index_bindings(Path(hub_root) / "integration" / "bindings")
     fk_evidence = load_fk_evidence(Path(hub_root) / "integration" / "sources")
+    hierarchy = load_class_hierarchy(Path(hub_root) / "model" / "ontologies")
     by_class: dict[str, list[BoundEntity]] = {}
     by_local_name: dict[str, list[BoundEntity]] = {}
+    resolved_uri: dict[str, Optional[str]] = {}
     for entity in bindings:
         if entity.target_class:
             by_class.setdefault(entity.target_class, []).append(entity)
             by_local_name.setdefault(_class_token(entity.target_class), []).append(entity)
+            resolved_uri[entity.name] = hierarchy.resolve(entity.target_class)
 
     def _endpoints(class_uri: str) -> tuple[list[BoundEntity], str]:
-        """Resolve one edge endpoint to authored bindings.
+        """Resolve one edge endpoint to authored bindings, strongest evidence first.
 
-        Exact class-URI equality first. Blueprint bridges name *reference-model* URIs,
-        while a hub routinely authors its own classes in its own namespace (the CLdN hub
-        binds ``https://cldn.com/ont/consignment#Consignment``, not the blueprint's
-        ``.../mmt/consignment#Consignment``), so a URI-only match silently discards almost
-        every declared bridge. The local-name fallback recovers them and is reported
-        separately via ``endpoint_match`` so a weaker match is never mistaken for an exact
-        one.
+        1. ``uri`` -- the binding's ``target.class`` is the endpoint class (as authored, or
+           once a qname is expanded against the hub's own prefixes).
+        2. ``subclass`` -- the binding's class is an ``rdfs:subClassOf`` descendant of the
+           endpoint (#732). Blueprint bridges and reference-model object properties name
+           *reference* classes, while the prescribed hub pattern is to subclass them
+           (``PortCallRecord ⊑ PortCall``); every instance of the subclass is an instance
+           of the endpoint, so this is a real match, not a guess, and ``compile`` accepts
+           it since #729. Several bound descendants each yield a proposal -- the author
+           picks; nothing here chooses for them.
+        3. ``local-name`` -- same local name in a different namespace. A heuristic that
+           predates the hierarchy walk and stays as the last resort for hubs that mint an
+           unanchored class (the CLdN hub binds
+           ``https://cldn.com/ont/consignment#Consignment`` with no ``rdfs:subClassOf`` to
+           the blueprint's ``.../mmt/consignment#Consignment``). Reported separately via
+           ``endpoint_match`` so a weaker match is never mistaken for a stronger one.
         """
-        exact = by_class.get(class_uri)
+        exact = list(by_class.get(class_uri, ()))
+        exact.extend(
+            entity
+            for entity in bindings
+            if entity.target_class
+            and entity.target_class != class_uri
+            and resolved_uri.get(entity.name) == class_uri
+        )
         if exact:
             return exact, "uri"
+        descendants = [
+            entity
+            for entity in bindings
+            if resolved_uri.get(entity.name) is not None
+            and hierarchy.is_subclass(resolved_uri[entity.name], class_uri)
+        ]
+        if descendants:
+            return descendants, "subclass"
         return by_local_name.get(_class_token(class_uri), []), "local-name"
 
     bridges = load_blueprint_bridges(ref_models_dir, accelerator)
@@ -647,7 +755,8 @@ def build_relationship_proposals(
         parents, parent_match = _endpoints(range_class)
         if not children or not parents:
             continue
-        endpoint_match = "uri" if child_match == "uri" and parent_match == "uri" else "local-name"
+        # The pair is only as strong as its weaker endpoint.
+        endpoint_match = max((child_match, parent_match), key=_ENDPOINT_MATCH_RANK.__getitem__)
         if evidence == "blueprint":
             bridges_matched += 1
         for child in children:
@@ -708,7 +817,7 @@ def build_relationship_proposals(
     proposals.sort(
         key=lambda p: (
             not p.join_resolved,
-            p.endpoint_match != "uri",
+            _ENDPOINT_MATCH_RANK.get(p.endpoint_match, len(_ENDPOINT_MATCH_RANK)),
             p.evidence != "blueprint",
             p.child_binding,
             p.property_uri,
@@ -733,6 +842,15 @@ def build_relationship_proposals(
             "name. An authored entry's cardinality/mode/missingParent/ambiguousParent are "
             "the author's deliberate policy and must never be overwritten by a paste; see "
             "'already_authored' in --format json for the exact pairs withheld."
+        )
+    subclass_matches = sum(1 for p in proposals if p.endpoint_match == "subclass")
+    if subclass_matches:
+        notes.append(
+            f"{subclass_matches} proposal(s) matched an endpoint through rdfs:subClassOf: "
+            "the hub binds a subclass of the class the edge names. Every instance of the "
+            "subclass is an instance of that endpoint, so the relationship is sound and "
+            "compiles (#729). Where several bound subclasses match one endpoint, each is "
+            "proposed separately — pick the one your source actually references."
         )
     local_name_matches = sum(1 for p in proposals if p.endpoint_match == "local-name")
     if local_name_matches:

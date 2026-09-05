@@ -272,6 +272,144 @@ class TestProposals:
         assert _report(hub).proposals == ()
 
 
+_HUB_NS = "https://hub.test/ont/logistics#"
+_LOCAL_CONSIGNMENT = f"{_HUB_NS}LocalConsignment"
+_HOUSE_CONSIGNMENT = f"{_HUB_NS}HouseConsignment"
+_CARRIER_BOOKING = f"{_HUB_NS}CarrierBooking"
+
+#: The prescribed hub pattern: subclass the reference-model class rather than bind it.
+_HUB_ONTOLOGY = f"""\
+@prefix hub:  <{_HUB_NS}> .
+@prefix refb: <https://ref.test/ont/booking#> .
+@prefix refc: <https://ref.test/ont/consignment#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://hub.test/ont/logistics> a owl:Ontology ; owl:versionInfo "1.0.0" .
+hub:CarrierBooking a owl:Class ; rdfs:label "Carrier booking" ;
+  rdfs:subClassOf refb:Booking .
+hub:LocalConsignment a owl:Class ; rdfs:label "Local consignment" ;
+  rdfs:subClassOf refc:Consignment .
+"""
+
+
+class TestSubclassEndpoints:
+    """#732: a hub subclass of the endpoint class is a match, read from the RDFS closure.
+
+    Blueprint bridges and reference object properties name *reference* classes; the
+    prescribed hub pattern is to subclass them. Before this, only exact URI or a
+    same-local-name coincidence matched, so the entries DD-139 told authors to derive with
+    this command could not be derived -- and once #729 made the compiler accept a subclass
+    endpoint, the proposer was the only thing still refusing it.
+    """
+
+    def _ontology(self, hub: Path, ttl: str = _HUB_ONTOLOGY) -> None:
+        (hub / "model" / "ontologies" / "logistics.ttl").write_text(ttl, encoding="utf-8")
+
+    def _rebind(self, hub: Path, bookings_class: str, consignments_class: str) -> None:
+        child_extra = (
+            "technicalFields:\n"
+            "  - name: consignment_id\n"
+            "    expression: consignment_id\n"
+            "    type: string\n"
+            "    nullable: false\n"
+            "    purpose: relationship\n"
+        )
+        (hub / "integration" / "bindings" / "bookings.binding.yaml").write_text(
+            _binding("bookings", "booking", bookings_class, "booking_id", child_extra),
+            encoding="utf-8",
+        )
+        (hub / "integration" / "bindings" / "consignments.binding.yaml").write_text(
+            _binding("consignments", "consignment", consignments_class, "consignment_id"),
+            encoding="utf-8",
+        )
+
+    def test_a_hub_subclass_of_each_endpoint_is_proposed(self, hub):
+        self._ontology(hub)
+        self._rebind(hub, _CARRIER_BOOKING, _LOCAL_CONSIGNMENT)
+        report = _report(hub)
+        assert [p.parent_binding for p in report.proposals] == ["consignments"]
+        proposal = report.proposals[0]
+        assert proposal.endpoint_match == "subclass"
+        # The pasteable target is the class the hub binds, never the blueprint's URI.
+        assert proposal.target_class == _LOCAL_CONSIGNMENT
+        assert proposal.join_resolved
+        assert any("rdfs:subClassOf" in note for note in report.notes)
+
+    def test_a_qname_subclass_target_resolves_through_the_hub_prefixes(self, hub):
+        self._ontology(hub)
+        self._rebind(hub, "hub:CarrierBooking", "hub:LocalConsignment")
+        report = _report(hub)
+        assert [p.endpoint_match for p in report.proposals] == ["subclass"]
+        assert report.proposals[0].target_class == "hub:LocalConsignment"
+
+    def test_a_qname_that_denotes_the_endpoint_class_is_a_uri_match(self, hub):
+        """Expanding the qname against the hub's own ``@prefix`` promotes what used to be a
+        ``local-name`` coincidence to the exact match it always was."""
+        self._ontology(hub)
+        self._rebind(hub, _BOOKING_CLASS, "refc:Consignment")
+        report = _report(hub)
+        assert [p.endpoint_match for p in report.proposals] == ["uri"]
+
+    def test_a_superclass_of_the_endpoint_is_not_matched(self, hub):
+        """Downward only. If the edge names the *subclass*, binding its parent would let
+        instances outside the endpoint satisfy the join -- the same asymmetry the compiler
+        enforces (#729)."""
+        self._ontology(hub)
+        blueprint = (
+            hub.parent / "ontology-reference-models" / "accelerator-packs" / "logistics"
+            / "client-hub-blueprint" / "data-domains.yaml"
+        )
+        blueprint.write_text(
+            _DATA_DOMAINS_YAML.replace(_CONSIGNMENT_CLASS, _LOCAL_CONSIGNMENT),
+            encoding="utf-8",
+        )
+        self._rebind(hub, _BOOKING_CLASS, _CONSIGNMENT_CLASS)
+        assert _report(hub).proposals == ()
+
+    def test_several_bound_subclasses_each_yield_a_proposal(self, hub):
+        """Nothing here picks for the author; every bound descendant is a candidate."""
+        self._ontology(
+            hub,
+            _HUB_ONTOLOGY
+            + "hub:HouseConsignment a owl:Class ; rdfs:subClassOf refc:Consignment .\n",
+        )
+        self._rebind(hub, _CARRIER_BOOKING, _LOCAL_CONSIGNMENT)
+        (hub / "integration" / "bindings" / "house.binding.yaml").write_text(
+            _binding("house", "consignment", _HOUSE_CONSIGNMENT, "consignment_id"),
+            encoding="utf-8",
+        )
+        report = _report(hub)
+        assert sorted(p.parent_binding for p in report.proposals) == ["consignments", "house"]
+        assert {p.endpoint_match for p in report.proposals} == {"subclass"}
+        assert any("several bound subclasses" in note for note in report.notes)
+
+    def test_an_ontology_edge_between_reference_classes_proposes_the_hub_subclasses(self, hub):
+        """The #729 shape without any blueprint: the reference model declares the object
+        property between its own classes; the hub binds subclasses of both."""
+        self._ontology(
+            hub,
+            _HUB_ONTOLOGY
+            + "refb:bookedConsignment a owl:ObjectProperty ;\n"
+            "  rdfs:domain refb:Booking ; rdfs:range refc:Consignment .\n",
+        )
+        self._rebind(hub, _CARRIER_BOOKING, _LOCAL_CONSIGNMENT)
+        report = build_relationship_proposals(hub_root=hub, ref_models_dir=None)
+        assert [(p.evidence, p.endpoint_match) for p in report.proposals] == [
+            ("ontology", "subclass")
+        ]
+        assert report.proposals[0].property_uri == "https://ref.test/ont/booking#bookedConsignment"
+
+    def test_subclass_ranks_between_uri_and_local_name(self, hub):
+        """A reviewer sees exact matches first, then sound subsumption, then the heuristic."""
+        from kairos_ontology.core.propose_relationships import _ENDPOINT_MATCH_RANK
+
+        assert sorted(_ENDPOINT_MATCH_RANK, key=_ENDPOINT_MATCH_RANK.__getitem__) == [
+            "uri",
+            "subclass",
+            "local-name",
+        ]
+
+
 class TestAlreadyAuthored:
     """#722: a relationship the binding already carries is not work, and not a proposal.
 

@@ -47,8 +47,12 @@ root cause: **the toolkit already held the evidence, and never joined it up.**
    profile, so inherited relationships count), never guessed. Join columns are matched by exact
    normalized name equality against the parent's `identity.sourceKey`. Cross-domain parents get a
    draft DD-138 `externalReference`. Everything non-derivable is an explicit sentinel.
-   Endpoint matches are labelled `uri` or `local-name`, because a hub routinely authors its own
-   class in its own namespace and a URI-only match discards nearly every declared bridge.
+   Endpoint matches are labelled `uri`, `subclass` or `local-name`, strongest first. `subclass`
+   (#732) means the hub binds an `rdfs:subClassOf` descendant of the class the edge names — the
+   prescribed pattern, sound, and what `compile` accepts since #729; it is read from the same
+   RDFS-profile index closure the compiler's endpoint check consults. `local-name` remains the
+   last-resort heuristic for a hub that mints an unanchored class in its own namespace, since a
+   URI-only match would discard nearly every declared bridge. A pair reports its weaker endpoint.
 4. **`relationship.unrealized-technical-field` (warning).** Emitted when a binding carries
    `technicalFields` with `purpose: relationship` and no `relationships:` entry. Warning, not
    error: the FK really is materialized and staging carriers ahead of an unbound parent is
