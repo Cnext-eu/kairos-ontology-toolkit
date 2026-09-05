@@ -204,7 +204,7 @@ name, column set, and column order are all computed from the bindings
 drops a column, reordering `fields:` changes the parity fingerprint, renaming an ontology
 property renames the physical column, and onboarding a second source to a class *must* reshape
 the model because `conformance.property-incompatible` requires identical property sets across a
-group. [DD-213](toolkit-design-decisions.md#dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it)
+group. [DD-213](decisions/dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it.md)
 (proposed) introduces `model/contracts/<domain>.contract.yaml` as a third authored input between
 ontology and bindings, and a compile-time `contract.*` rule family enforcing conformance to it.
 *Why:* a contract must constrain its implementations; here each implementation redefines the

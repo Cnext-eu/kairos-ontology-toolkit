@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Validate design-decisions.md TOC ↔ body consistency.
+"""Validate the decision log: index table ↔ one file per decision.
 
-Catches drift between the Index table and the actual ## DD-NNN headings.
+The log was split from a single 15k-line file into ``docs/design/decisions/dd-NNN-*.md``,
+with ``toolkit-design-decisions.md`` kept as the index. These tests are the only thing
+stopping the two halves from drifting apart.
 """
 
 from __future__ import annotations
@@ -12,9 +14,22 @@ from pathlib import Path
 
 import pytest
 
-_DD_FILE = (
-    Path(__file__).resolve().parent.parent / "docs" / "design" / "toolkit-design-decisions.md"
+_DOCS = Path(__file__).resolve().parent.parent / "docs"
+_INDEX_FILE = _DOCS / "design" / "toolkit-design-decisions.md"
+_DECISIONS_DIR = _DOCS / "design" / "decisions"
+
+_MAX_FILENAME = 100
+
+_ROW_RE = re.compile(
+    r"^\|\s*\[(?P<id>DD-\d+)\]\((?P<href>[^)]+)\)\s*\|"
+    r"\s*(?P<title>[^|]+?)\s*\|\s*(?P<status>[^|]*?)\s*\|\s*(?P<date>[^|]*?)\s*\|",
+    re.MULTILINE,
 )
+_HEADING_RE = re.compile(r"^# (DD-\d+):\s*(.+)$", re.MULTILINE)
+_STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.MULTILINE)
+_DATE_RE = re.compile(r"^\*\*Date:\*\*\s*(.+?)\s*$", re.MULTILINE)
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_INLINE_CODE = re.compile(r"`([^`]*)`")
 
 
 def _github_anchor(heading: str) -> str:
@@ -24,112 +39,165 @@ def _github_anchor(heading: str) -> str:
     then replace spaces with hyphens. Characters like — + & = become nothing,
     and surrounding spaces naturally produce double hyphens. Underscores are a
     real GitHub word character and survive slugification (e.g. a heading
-    containing `row_count` anchors to `...-row_count-...`, not `...-rowcount-...`)
+    containing `row_count` slugs to `...-row_count-...`, not `...-rowcount-...`)
     -- a prior version of this helper stripped them, which produced false
-    positives against correctly-authored TOC links (DD-211) while letting a
+    positives against correctly-authored links (DD-211) while letting a
     genuinely broken one (DD-156, missing its underscores) pass unnoticed.
     """
     anchor = heading.lower()
-    # Keep only a-z, 0-9, underscore, spaces, and hyphens
     anchor = re.sub(r"[^a-z0-9_ -]", "", anchor)
-    anchor = anchor.strip().replace(" ", "-")
-    return anchor
+    return anchor.strip().replace(" ", "-")
 
 
-def _parse_toc_entries(content: str) -> list[tuple[str, str, str]]:
-    """Return list of (id, title, anchor) from the TOC table."""
-    entries = []
-    for m in re.finditer(
-        r"\|\s*\[(?P<id>DD-\d+)\]\(#(?P<anchor>[^)]+)\)\s*\|\s*(?P<title>[^|]+?)\s*\|",
-        content,
-    ):
-        entries.append((m.group("id"), m.group("title").strip(), m.group("anchor")))
-    return entries
+def _expected_filename(dd_id: str, title: str) -> str:
+    """The slug rule documented in the index header."""
+    name = _github_anchor(f"{dd_id}: {title}")
+    if len(name) + 3 > _MAX_FILENAME:
+        name = name[: _MAX_FILENAME - 3]
+        if "-" in name:
+            name = name.rsplit("-", 1)[0]
+        name = name.rstrip("-")
+    return f"{name}.md"
 
 
-def _parse_body_headings(content: str) -> list[tuple[str, str]]:
-    """Return list of (id, title) from ## DD-NNN headings."""
-    headings = []
-    for m in re.finditer(r"^## (DD-\d+):\s*(.+)$", content, re.MULTILINE):
-        headings.append((m.group(1), m.group(2).strip()))
-    return headings
+def _normalise(text: str) -> str:
+    """Compare prose ignoring inline-code ticks and link markup.
+
+    An index cell says ``~~Superseded by DD-014~~`` while the decision file links
+    the same reference. Both must mean the same thing; neither has to be spelled
+    the same way.
+    """
+    return _INLINE_CODE.sub(r"\1", _MD_LINK.sub(r"\1", text)).strip()
 
 
-@pytest.fixture()
-def dd_content():
-    if not _DD_FILE.exists():
-        pytest.skip("design-decisions.md not found")
-    return _DD_FILE.read_text(encoding="utf-8")
+def _agrees(index_value: str, file_value: str) -> bool:
+    """The index may summarise the file, but must never contradict it.
+
+    A row saying ``Accepted`` against a file saying ``Accepted (amended by
+    DD-215)`` is a summary and is fine; ``2026-08-16`` against ``2026-08-17``
+    is a contradiction and is not. So require the file value to *start with*
+    the index value, on a word boundary.
+    """
+    if not file_value.startswith(index_value):
+        return False
+    remainder = file_value[len(index_value) :]
+    return remainder == "" or not remainder[0].isalnum()
 
 
-def test_toc_entries_match_body_headings(dd_content):
-    """Every TOC entry must have a matching body heading with the same DD-ID and title."""
-    toc = _parse_toc_entries(dd_content)
-    body = _parse_body_headings(dd_content)
+@pytest.fixture(scope="module")
+def index_rows() -> list[dict[str, str]]:
+    text = _INDEX_FILE.read_text(encoding="utf-8")
+    rows = [match.groupdict() for match in _ROW_RE.finditer(text)]
+    assert rows, "no index rows parsed -- the table shape changed"
+    return rows
 
-    body_by_id = {dd_id: title for dd_id, title in body}
 
+@pytest.fixture(scope="module")
+def decision_files() -> list[Path]:
+    files = sorted(path for path in _DECISIONS_DIR.glob("*.md") if path.name != "TEMPLATE.md")
+    assert files, "no decision files found"
+    return files
+
+
+def test_template_exists() -> None:
+    """The index header tells authors to copy it, so it has to be there."""
+    assert (_DECISIONS_DIR / "TEMPLATE.md").is_file()
+
+
+def test_every_index_row_resolves_to_a_file(index_rows) -> None:
+    missing = [
+        f"{row['id']}: href {row['href']!r} does not exist"
+        for row in index_rows
+        if not (_INDEX_FILE.parent / row["href"]).is_file()
+    ]
+    assert not missing, "index rows pointing at nothing:\n" + "\n".join(missing)
+
+
+def test_every_decision_file_is_indexed(index_rows, decision_files) -> None:
+    indexed = {Path(row["href"]).name for row in index_rows}
+    orphans = [path.name for path in decision_files if path.name not in indexed]
+    assert not orphans, "decision files missing from the index:\n" + "\n".join(orphans)
+
+
+def test_each_file_has_exactly_one_decision_heading(decision_files) -> None:
+    bad = []
+    for path in decision_files:
+        headings = _HEADING_RE.findall(path.read_text(encoding="utf-8"))
+        if len(headings) != 1:
+            bad.append(f"{path.name}: found {len(headings)} '# DD-NNN:' headings, want 1")
+    assert not bad, "\n".join(bad)
+
+
+def test_file_heading_status_and_date_match_the_index(index_rows) -> None:
     mismatches = []
-    for dd_id, toc_title, _ in toc:
-        if dd_id not in body_by_id:
-            mismatches.append(f"{dd_id}: in TOC but no body heading found")
-        else:
-            # Strip markdown formatting for comparison (backticks, etc.)
-            clean_toc = re.sub(r"`([^`]*)`", r"\1", toc_title)
-            clean_body = re.sub(r"`([^`]*)`", r"\1", body_by_id[dd_id])
-            if clean_toc != clean_body:
-                mismatches.append(f"{dd_id}: TOC title '{clean_toc}' ≠ body title '{clean_body}'")
+    for row in index_rows:
+        path = _INDEX_FILE.parent / row["href"]
+        if not path.is_file():
+            continue  # reported by test_every_index_row_resolves_to_a_file
+        text = path.read_text(encoding="utf-8")
 
-    assert not mismatches, "TOC ↔ body title mismatches:\n" + "\n".join(mismatches)
+        heading = _HEADING_RE.search(text)
+        if heading is None:
+            mismatches.append(f"{row['id']}: no '# DD-NNN:' heading in {path.name}")
+            continue
+        if heading.group(1) != row["id"]:
+            mismatches.append(f"{row['id']}: file {path.name} declares {heading.group(1)}")
+        if _normalise(heading.group(2)) != _normalise(row["title"]):
+            mismatches.append(
+                f"{row['id']}: index title {_normalise(row['title'])!r} != "
+                f"file title {_normalise(heading.group(2))!r}"
+            )
 
-
-def test_body_headings_all_in_toc(dd_content):
-    """Every body heading must have a corresponding TOC entry."""
-    toc = _parse_toc_entries(dd_content)
-    body = _parse_body_headings(dd_content)
-
-    toc_ids = {dd_id for dd_id, _, _ in toc}
-    missing = [f"{dd_id}: {title}" for dd_id, title in body if dd_id not in toc_ids]
-
-    assert not missing, "Body headings missing from TOC:\n" + "\n".join(missing)
-
-
-def test_toc_anchors_resolve(dd_content):
-    """Each TOC anchor link must match the expected GitHub-generated anchor."""
-    toc = _parse_toc_entries(dd_content)
-    body = _parse_body_headings(dd_content)
-
-    body_anchors = {}
-    for dd_id, title in body:
-        full_heading = f"{dd_id}: {title}"
-        body_anchors[dd_id] = _github_anchor(full_heading)
-
-    broken = []
-    for dd_id, _, toc_anchor in toc:
-        if dd_id in body_anchors:
-            expected = body_anchors[dd_id]
-            if toc_anchor != expected:
-                broken.append(f"{dd_id}: anchor '#{toc_anchor}' should be '#{expected}'")
-
-    assert not broken, "Broken TOC anchor links:\n" + "\n".join(broken)
+        for label, pattern in (("status", _STATUS_RE), ("date", _DATE_RE)):
+            found = pattern.search(text)
+            if found is None:
+                mismatches.append(f"{row['id']}: no **{label.title()}:** line in {path.name}")
+            elif not _agrees(_normalise(row[label]), _normalise(found.group(1))):
+                mismatches.append(
+                    f"{row['id']}: index {label} {_normalise(row[label])!r} contradicts "
+                    f"file {label} {_normalise(found.group(1))!r}"
+                )
+    assert not mismatches, "index <-> file drift:\n" + "\n".join(mismatches)
 
 
-def test_toc_ids_sequential(dd_content):
-    """DD-IDs in the TOC should be sequential (no gaps, no duplicates)."""
-    toc = _parse_toc_entries(dd_content)
-    ids = [int(dd_id.replace("DD-", "")) for dd_id, _, _ in toc]
+def test_filenames_follow_the_documented_slug_rule(index_rows) -> None:
+    wrong = []
+    for row in index_rows:
+        expected = _expected_filename(row["id"], _normalise(row["title"]))
+        actual = Path(row["href"]).name
+        if actual != expected:
+            wrong.append(f"{row['id']}: file is {actual!r}, slug rule wants {expected!r}")
+    assert not wrong, "filenames disagree with the rule in the index header:\n" + "\n".join(wrong)
 
-    if not ids:
-        pytest.skip("No TOC entries found")
 
+def test_ids_are_sequential(index_rows) -> None:
+    ids = [int(row["id"].removeprefix("DD-")) for row in index_rows]
     expected = list(range(1, max(ids) + 1))
-    missing = set(expected) - set(ids)
-    duplicates = [x for x in ids if ids.count(x) > 1]
+    missing = sorted(set(expected) - set(ids))
+    duplicates = sorted({value for value in ids if ids.count(value) > 1})
 
     issues = []
     if missing:
-        issues.append(f"Missing IDs: {sorted(missing)}")
+        issues.append(f"Missing IDs: {missing}")
     if duplicates:
-        issues.append(f"Duplicate IDs: {sorted(set(duplicates))}")
+        issues.append(f"Duplicate IDs: {duplicates}")
+    assert not issues, "index ID sequence issues:\n" + "\n".join(issues)
 
-    assert not issues, "TOC ID sequence issues:\n" + "\n".join(issues)
+
+def test_no_in_page_decision_anchors_survive() -> None:
+    """The split turned every ``](#dd-nnn-...)`` fragment into a relative path.
+
+    A reintroduced fragment is a link that silently lands at the top of whatever
+    file it sits in, so guard the whole docs tree rather than one file.
+    """
+    offenders = []
+    for path in sorted(_DOCS.rglob("*.md")):
+        if "temp" in path.relative_to(_DOCS).parts:
+            continue  # untracked scratch space, gitignored
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if "](#dd-" in line:
+                offenders.append(f"{path.relative_to(_DOCS.parent)}:{number}")
+    assert not offenders, (
+        "in-page DD anchors are dead after the split; use decisions/dd-nnn-....md:\n"
+        + "\n".join(offenders)
+    )

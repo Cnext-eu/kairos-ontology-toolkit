@@ -9,7 +9,7 @@
 | [CompilePlan consumption](CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
 | [Logging & observability](OBSERVABILITY.md) | Verbosity flags, JSON logs, optional OpenTelemetry bridge (DD-151) |
 | [DD-133](design/dd-133-v5-entity-binding-compile.md) | Normative EntityBinding/compiler contract |
-| [Design decisions](design/toolkit-design-decisions.md) | Canonical ADR log and status index |
+| [Design decisions](design/toolkit-design-decisions.md) | Status index; one file per decision under [`design/decisions/`](design/decisions/) |
 | [Releasing](RELEASING.md) | Maintainer publication process; not evidence of a published release |
 
 The active architecture is the lean v5 hub: ontology/source TTL, one closed EntityBinding

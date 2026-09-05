@@ -1,6 +1,6 @@
 # DD-133 companion — v5 EntityBinding + `compile` contract
 
-> Detailed specification for [DD-133](toolkit-design-decisions.md#dd-133-v5-authoring-break--yaml-entitybinding--stateless-compile).
+> Detailed specification for [DD-133](decisions/dd-133-v5-authoring-break--yaml-entitybinding--stateless-compile.md).
 > This is the **authoritative contract** for the v5 compiler. It is
 > normative for the closed YAML schema, the scalar-expression grammar, the stateless
 > `compile` command, the atomic emission contract, and the minimal static safety kernel.
