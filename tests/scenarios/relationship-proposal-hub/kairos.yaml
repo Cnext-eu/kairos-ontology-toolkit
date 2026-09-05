@@ -1,0 +1,4 @@
+version: 5
+name: relationship-proposal-hub
+default_domain: sales
+adapter: fabric

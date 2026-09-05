@@ -1,0 +1,27 @@
+# Composite grain: `order_id` is part of the child's identity but is NOT the whole of it,
+# so DD-220's exclusion must not touch it -- this is the line-item archetype the toolkit
+# scaffolds, and the guard against an over-broad reading of #722.
+# It also carries a second declared FK (`product_id`) aimed at a different parent, which
+# is why tier 0 matches by name rather than positionally.
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: order-line
+  domain: sales
+source:
+  relation: erp.order_lines
+target:
+  class: "https://synthetic.test/ont/sales#OrderLine"
+grain:
+  columns: [order_id, line_no]
+identity:
+  strategy: source-natural
+  sourceKey: [order_id, line_no]
+load:
+  mode: full-refresh
+fields: []
+relationships: []
+technicalFields:
+  - {name: order_id, expression: order_id, type: string, nullable: false, purpose: identity}
+  - {name: line_no, expression: line_no, type: integer, nullable: false, purpose: identity}
+  - {name: product_id, expression: product_id, type: string, nullable: true, purpose: relationship}

@@ -1,0 +1,22 @@
+# Second cross-domain parent, so `order-line` has two declared carriers aimed at two
+# different parents.
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: ref-product
+  domain: ref
+source:
+  relation: erp.products
+target:
+  class: "https://synthetic.test/ont/ref#Product"
+grain:
+  columns: [product_id]
+identity:
+  strategy: source-natural
+  sourceKey: [product_id]
+load:
+  mode: full-refresh
+fields: []
+relationships: []
+technicalFields:
+  - {name: product_id, expression: product_id, type: string, nullable: false, purpose: identity}

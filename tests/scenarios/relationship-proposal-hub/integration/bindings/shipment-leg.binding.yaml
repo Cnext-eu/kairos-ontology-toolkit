@@ -1,0 +1,24 @@
+# Both sides key on `source_record_id`, so the old tier-1 rule joined a row to itself and
+# ignored `parent_shipment_ref`, the real FK. It now sentinels and surfaces that column as
+# a `join_candidates` hint instead.
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: shipment-leg
+  domain: sales
+source:
+  relation: erp.shipment_legs
+target:
+  class: "https://synthetic.test/ont/sales#ShipmentLeg"
+grain:
+  columns: [source_record_id]
+identity:
+  strategy: source-natural
+  sourceKey: [source_record_id]
+load:
+  mode: full-refresh
+fields: []
+relationships: []
+technicalFields:
+  - {name: source_record_id, expression: source_record_id, type: string, nullable: false, purpose: identity}
+  - {name: parent_shipment_ref, expression: parent_shipment_ref, type: string, nullable: true, purpose: relationship}

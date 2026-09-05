@@ -1,0 +1,22 @@
+# A 1:1 extension keyed by its parent's key, with NO declaration. Name-indistinguishable
+# from the self-join #722 reports, so it sentinels. This is DD-220's accepted cost.
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: order-ext
+  domain: sales
+source:
+  relation: erp.order_extensions
+target:
+  class: "https://synthetic.test/ont/sales#OrderExtension"
+grain:
+  columns: [order_id]
+identity:
+  strategy: source-natural
+  sourceKey: [order_id]
+load:
+  mode: full-refresh
+fields: []
+relationships: []
+technicalFields:
+  - {name: order_id, expression: order_id, type: string, nullable: false, purpose: identity}

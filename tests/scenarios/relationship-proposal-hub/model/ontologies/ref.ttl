@@ -1,0 +1,8 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix :     <https://synthetic.test/ont/ref#> .
+
+<https://synthetic.test/ont/ref> a owl:Ontology .
+
+:Customer a owl:Class ; rdfs:label "Customer" .
+:Product  a owl:Class ; rdfs:label "Product" .
