@@ -1882,26 +1882,26 @@ def _extract_silver_model_facts(
 
 
 def _get_class_and_parents(graph: Graph, class_uri: str) -> set[str]:
-    """Return the set of class URIs including the given class and all ancestors.
+    """Return the set of class URIs including the given class and all named ancestors.
 
-    Walks the rdfs:subClassOf chain upward, collecting all parent class URIs.
-    This enables inheritance: properties defined on a parent class are included
-    when generating models for a subclass.
+    Walks ``rdfs:subClassOf`` upward over **every** named parent, transitively and
+    cycle-safe, via the shared :func:`class_ancestors`. This enables inheritance:
+    properties defined on a parent class are included when generating models for a
+    subclass. W3C vocabulary classes (``owl:Thing`` and friends) are dropped from the
+    result but do not stop the walk.
+
+    The previous implementation used ``graph.value(current, RDFS.subClassOf)``, which
+    returns *one* object: a class with two named parents contributed only one of them,
+    chosen by rdflib iteration order, and a W3C parent ``break``-ed the whole chain, so
+    ``:A rdfs:subClassOf owl:Thing, :B`` could lose ``:B`` entirely. Because this set
+    decides which properties become Silver columns, multi-inheritance classes silently
+    lost columns (#733).
     """
-    result = {class_uri}
-    current = URIRef(class_uri)
-    visited = set()
-    while current not in visited:
-        visited.add(current)
-        parent = graph.value(current, RDFS.subClassOf)
-        if parent is None or str(parent) in result:
-            break
-        # Skip owl:Thing and other top-level classes
-        if str(parent).startswith("http://www.w3.org/"):
-            break
-        result.add(str(parent))
-        current = parent
-    return result
+    return {class_uri} | {
+        str(ancestor)
+        for ancestor in class_ancestors(graph, URIRef(class_uri))
+        if not str(ancestor).startswith("http://www.w3.org/")
+    }
 
 
 def _get_table_column_uris(systems: list[dict], table_uri: str) -> set[str]:
