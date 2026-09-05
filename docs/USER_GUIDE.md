@@ -201,6 +201,6 @@ source vocabularies, binding intent, ordinary contracted dbt, and current option
 Gold/MDM policy. Historical design decisions remain available for provenance but are not
 active guidance.
 
-For the exact supported command list, see [CLI reference](CLI_REFERENCE.md). For the
+For step-by-step recipes for individual tasks, see the [how-to guides](how-to/). For the exact supported command list, see [CLI reference](CLI_REFERENCE.md). For the
 normative compiler contract, see
 [DD-133](design/dd-133-v5-entity-binding-compile.md).

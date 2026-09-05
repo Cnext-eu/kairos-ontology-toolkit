@@ -5,6 +5,7 @@
 | Document | Purpose |
 |---|---|
 | [User guide](USER_GUIDE.md) | Authoring, stateless compile, adapters, and clean cutover |
+| [How-to guides](how-to/) | Task recipes: create a hub, import a source, bind an entity, compile, consume downstream |
 | [CLI reference](CLI_REFERENCE.md) | Every command, generated from the command tree |
 | [CLI behaviour notes](design/cli-behaviour-notes.md) | Why particular commands behave as they do: machine-output contract, ERD projections, `validate-dbt-contracts` vs `validate-dbt` |
 | [CompilePlan consumption](CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
