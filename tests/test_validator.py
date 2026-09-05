@@ -900,6 +900,66 @@ class TestPhaseDAuthoringLints:
         # It is a *different* finding from the deferred-range one, not a relabelling.
         assert not [w for w in result["warnings"] if w["code"] == "property_missing_range"]
 
+    def test_equivalent_class_to_a_named_class_warns_it_is_not_an_anchor(self):
+        """#730: ``owl:equivalentClass`` looks like an anchor and the compiler never reads it.
+
+        ``integrity.class-unanchored`` used to accept it, so an author following that
+        remediation got a green integrity check and a binding that inherited nothing.
+        """
+        content = (
+            self._HEADER
+            + """
+:Klant a owl:Class ;
+    rdfs:label "Klant" ;
+    rdfs:comment "Local customer class" ;
+    owl:equivalentClass <https://ref.test/ont/party#Customer> .
+"""
+        )
+        result = validate_naming_conventions(content)
+
+        assert result["passed"] is True, result["errors"]
+        warnings = [
+            w for w in result["warnings"] if w["code"] == "class_equivalence_not_a_compile_anchor"
+        ]
+        assert len(warnings) == 1, result["warnings"]
+        assert warnings[0]["term_uri"] == "http://kairos.example/ontology/Klant"
+        message = warnings[0]["message"]
+        assert "rdfs:subClassOf" in message
+        assert "https://ref.test/ont/party#Customer" in message
+        assert "DD-144" in message
+
+    def test_equivalent_class_to_an_enumeration_is_a_definition_not_an_anchor(self):
+        """IATA OneRecord code lists are ``owl:equivalentClass [ owl:oneOf (...) ]`` -- a
+        blank-node class *definition*. That is not what #730 is about and must not warn."""
+        content = (
+            self._HEADER
+            + """
+:Status a owl:Class ;
+    rdfs:label "Status" ;
+    rdfs:comment "Closed code list" ;
+    owl:equivalentClass [ a owl:Class ; owl:oneOf ( :Open :Closed ) ] .
+"""
+        )
+        result = validate_naming_conventions(content)
+        assert not [
+            w for w in result["warnings"] if w["code"] == "class_equivalence_not_a_compile_anchor"
+        ], result["warnings"]
+
+    def test_subclass_anchor_produces_no_equivalence_finding(self):
+        content = (
+            self._HEADER
+            + """
+:Klant a owl:Class ;
+    rdfs:label "Klant" ;
+    rdfs:comment "Local customer class" ;
+    rdfs:subClassOf <https://ref.test/ont/party#Customer> .
+"""
+        )
+        result = validate_naming_conventions(content)
+        assert not [
+            w for w in result["warnings"] if w["code"] == "class_equivalence_not_a_compile_anchor"
+        ], result["warnings"]
+
     def test_named_class_range_produces_no_range_finding(self):
         """Guard against the warning firing on every object property."""
         content = (

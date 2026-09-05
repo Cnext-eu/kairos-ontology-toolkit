@@ -372,16 +372,19 @@ RULE_REGISTRY: dict[tuple[str, str, str], RuleVerdict] = {
         "equal-labels-treated-as-equivalent",
     ): _judgement(
         "the rule turns on 'without checking grain' — a judgement about whether the author "
-        "checked, not about the triple. Flagging cross-namespace owl:equivalentClass would "
-        "fire on a documented, recommended practice: the logistics accelerator's BLUEPRINT.md "
-        "tells authors to add owl:equivalentClass when cross-model querying is needed, DD-032 "
-        "covers local equivalents of reference-model classes, and semantic_index consumes "
-        "owl:equivalentClass as a feature.",
+        "checked, not about the triple. Flagging cross-namespace owl:equivalentClass here would "
+        "fire on a documented practice: the logistics accelerator's BLUEPRINT.md tells authors "
+        "to add owl:equivalentClass when cross-model *querying* is needed, and DD-032 covers "
+        "local equivalents of reference-model classes. Note the scope: that is a downstream "
+        "graph-query concern. The compiler does not read owl:equivalentClass at all — anchoring "
+        "for inherited properties and relationship endpoints is rdfs:subClassOf only (#730), "
+        "and the validator says so per triple (class_equivalence_not_a_compile_anchor).",
         evidence=(
             "accelerator-packs/logistics/client-hub-blueprint/BLUEPRINT.md: 'Equivalence later "
             "| Add owl:equivalentClass only if cross-model querying is needed'",
             "docs/design/toolkit-design-decisions.md: DD-032 reference-model alignment",
-            "core/semantic_index.py: reads OWL.equivalentClass when indexing class equivalence",
+            "core/semantic_index.py: surfaces OWL.equivalentClass under the kairos-design/owl-rl "
+            "profiles only; core/compiler loads the rdfs profile and never reads it",
         ),
     ),
     # grain_collisions for qualified-role-assignment now key by the `against` IRI

@@ -37,6 +37,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   heuristic remains as the last resort for hubs that mint an unanchored class.
 
 ### Changed
+- **`owl:equivalentClass` is no longer presented as a compile-time anchor (#730).**
+  `integrity.class-unanchored` accepted a local class anchored to a reference class by
+  `owl:equivalentClass`, and its remediation recommended it alongside `rdfs:subClassOf`. The
+  compiler never read it: symbol resolution runs under the DD-103 `rdfs` profile, where
+  `equivalent_classes` is empty, and inherited properties and relationship endpoints resolve
+  through `rdfs:subClassOf` alone. An author following the guidance got a green integrity check
+  and a binding that inherited nothing. Equivalence is symmetric — "two URIs, one class" — and
+  honouring it faithfully would reach the identity, conformance-grouping and artifact-ownership
+  sites where subsumption is deliberately not applied, so this is not widened the way #729 was;
+  no hub on record uses it for anchoring (the only `owl:equivalentClass` in reach are IATA
+  `owl:oneOf` enumerations and vendored schema.org mappings). Now: `integrity.class-unanchored`
+  counts `rdfs:subClassOf` only and its remediation says so (the shadowing check and the
+  `class-anchoring` suggestion report read the same anchor set, so such a class now receives an
+  anchor suggestion); the validator emits a new warning,
+  `class_equivalence_not_a_compile_anchor`, on a local class that asserts `owl:equivalentClass`
+  to a *named* class (blank-node enumerations are untouched), pointing at the two anchoring
+  moves that work — subclass the reference class, or bind it directly (DD-144). The triple
+  itself remains legal; the logistics blueprint's "add equivalence for cross-model querying" is
+  a downstream graph-query concern and is unaffected.
 - **BREAKING for hubs with SHACL shapes on reference-model classes: `sh:targetClass` now
   applies to subclasses (#729).** `_extract_shacl_tests` matched `sh:targetClass` by exact
   URI, so a NodeShape declared on a reference class (`sh:targetClass dcsa:TransportEvent`)
