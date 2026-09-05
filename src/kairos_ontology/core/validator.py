@@ -961,6 +961,33 @@ def validate_naming_conventions(
                     term_uri=class_uri,
                 )
             )
+        # #730: owl:equivalentClass to a *named* class looks like an anchor and is not one.
+        # The compiler resolves inherited properties and relationship endpoints through
+        # rdfs:subClassOf only (DD-103 rdfs profile; equivalent_classes is never read), so
+        # a class anchored this way binds nothing while every check upstream stays green.
+        # Blank-node objects (owl:oneOf enumerations, as in IATA OneRecord) are a class
+        # *definition*, not an anchor, and are left alone.
+        for equivalent in sorted(
+            (e for e in graph.objects(subject, OWL.equivalentClass) if isinstance(e, URIRef)),
+            key=str,
+        ):
+            warnings.append(
+                NamingDiagnostic(
+                    level="warning",
+                    code="class_equivalence_not_a_compile_anchor",
+                    message=(
+                        f"Class {class_uri} declares owl:equivalentClass {equivalent}. The "
+                        "compiler does not read owl:equivalentClass: inherited properties and "
+                        "relationship endpoints resolve through rdfs:subClassOf only, so this "
+                        "class inherits nothing from the equivalent and cannot stand in for it "
+                        "as a relationship target (#730, DD-133 §8b). To anchor it, declare "
+                        f"rdfs:subClassOf {equivalent} instead, or bind {equivalent} directly "
+                        "(DD-144). Keep the equivalence only if it serves downstream cross-model "
+                        "querying; it has no effect on binding."
+                    ),
+                    term_uri=class_uri,
+                )
+            )
 
     for property_uri in sorted(property_uris):
         subject = URIRef(property_uri)

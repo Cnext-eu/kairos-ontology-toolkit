@@ -499,6 +499,22 @@ def test_a_resolvable_parent_still_anchors(tmp_path: Path) -> None:
     assert onts["cargo"].anchored_classes == frozenset({"CargoItem"})
 
 
+def test_an_equivalent_class_no_longer_counts_as_an_anchor(tmp_path: Path) -> None:
+    """#730: the compiler resolves anchoring through rdfs:subClassOf only, so an
+    equivalence-only link passed this check and then bound nothing."""
+    path = _write_domain(tmp_path, "cargo", classes=("CargoItem",), imports=(_MODULE,))
+    _with_extra(
+        path,
+        f"\n:CargoItem <http://www.w3.org/2002/07/owl#equivalentClass> <{_MODULE}#CargoItem> .\n",
+    )
+    onts = scan_hub_ontologies(tmp_path, _TERMS)
+    assert onts["cargo"].anchored_classes == frozenset()
+    diagnostics = check_unanchored_classes(onts)
+    assert [d.code for d in diagnostics] == ["integrity.class-unanchored"]
+    assert "rdfs:subClassOf" in diagnostics[0].remediation
+    assert "owl:equivalentClass does not anchor" in diagnostics[0].remediation
+
+
 def test_an_unresolvable_parent_no_longer_counts_as_an_anchor(tmp_path: Path) -> None:
     """A typo'd parent used to register as anchored, which was worse than unreported."""
     onts = _typo_hub(tmp_path, "CargoIteem")

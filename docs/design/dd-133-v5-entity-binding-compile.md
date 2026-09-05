@@ -363,7 +363,14 @@ Two coupled compile-time corrections (see the DD-108 amendment 2026-07-28 and DD
   `SemanticIndex.class_properties`, including properties whose `rdfs:domain` is an ancestor in an
   imported namespace. Inherited resolved properties are made applicable to the bound subclass in
   the resolved-symbol layer (the bound class URI is added to `domain_uris`); the graph is never
-  rewritten. The exact-domain/namespace helpers in `ontology_ops`
+  rewritten. **Anchoring is `rdfs:subClassOf` only.** `owl:equivalentClass` is not consulted for
+  inheritance or for relationship endpoints (#730): equivalence is symmetric — "two URIs, one
+  class" — and honouring it faithfully would have to reach the identity, conformance-grouping
+  and artifact-ownership sites where subsumption is deliberately *not* applied. No hub uses it
+  for anchoring; the validator warns on the triple (`class_equivalence_not_a_compile_anchor`)
+  and `integrity.class-unanchored` no longer accepts it. If a genuine need for compile-time
+  equivalence appears, it is a design decision to be taken with the identity question first,
+  not a widening of this rule. The exact-domain/namespace helpers in `ontology_ops`
   (`list_classes`/`list_properties`) do **not** walk `rdfs:subClassOf` and must not be used for
   structure-aware binding resolution — they remain for inventory/non-binding uses only. Binding
   targets remain hub-namespace classes. An authored field ref that resolves to more than one

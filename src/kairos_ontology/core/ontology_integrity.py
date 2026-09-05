@@ -424,14 +424,18 @@ def scan_domain_ontology(
         name = _local_name(str(target))
         return name in known["classes"] or name in known["properties"]
 
+    # ``rdfs:subClassOf`` only. ``owl:equivalentClass`` used to count as an anchor here, but
+    # the compiler resolves inheritance and relationship endpoints through ``subClassOf``
+    # alone (DD-103 ``rdfs`` profile; ``equivalent_classes`` is never read), so an
+    # equivalence-only anchor passed this check and then bound nothing (#730). The
+    # validator's ``class_equivalence_not_a_compile_anchor`` names the triple itself.
     anchored_classes = {
         _local_name(str(subject))
         for subject in graph.subjects(RDF.type, OWL.Class)
         if str(subject).startswith(namespace)
         and any(
             not str(parent).startswith(namespace) and _resolves(parent)
-            for predicate in (RDFS.subClassOf, OWL.equivalentClass)
-            for parent in graph.objects(subject, predicate)
+            for parent in graph.objects(subject, RDFS.subClassOf)
             if isinstance(parent, URIRef)
         )
     }
@@ -932,13 +936,15 @@ def check_unanchored_classes(
                 message=(
                     f"Domain '{domain}' declares {len(unanchored)} local class(es) and imports "
                     f"{len(onto.imports)} reference module(s), but no class is anchored to any "
-                    "of them by rdfs:subClassOf or owl:equivalentClass."
+                    "of them by rdfs:subClassOf."
                 ),
                 domain=domain,
                 term_uri=None,
                 remediation=(
-                    "Anchor each local class to the reference-model class it specialises, or "
-                    "reuse the reference-model class directly instead of declaring a local one."
+                    "Anchor each local class with rdfs:subClassOf to the reference-model class it "
+                    "specialises, or reuse the reference-model class directly instead of declaring "
+                    "a local one. owl:equivalentClass does not anchor: the compiler resolves "
+                    "inherited properties and relationship endpoints through rdfs:subClassOf only."
                 ),
             )
         )
