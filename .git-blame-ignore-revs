@@ -1,0 +1,15 @@
+# Commits that changed formatting only. `git blame` should skip them.
+#
+# GitHub honours this file automatically. Locally, enable it once with:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Only add a commit here if it changed no content whatsoever -- verify with a
+# whitespace-insensitive diff before appending.
+#
+# NOTE: the SHA below is this branch's commit. Merging this pull request with a
+# *merge commit* keeps it reachable and correct. A squash merge rewrites it, in
+# which case replace it with the squashed commit's SHA in a follow-up.
+
+# chore: renormalise the tree to LF (407 files, line endings only)
+0367dff2f7b110c984a4df0ebb36f44dc766fffb
