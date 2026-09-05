@@ -26,6 +26,9 @@ class PropertyInfo:
     range_uri: str
     range_name: str
     is_object_property: bool = False
+    #: Every named range the semantic index resolves (see ``ResolvedProperty.range_uris``);
+    #: ``range_uri`` above keeps the single-value view the datatype path reads (#729).
+    range_uris: tuple[str, ...] = ()
 
 
 @dataclass

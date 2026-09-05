@@ -16,6 +16,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> The next release that includes this section must be a **minor** bump (5.16.0), not a
+> 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
+
+### Changed
+- **BREAKING for hubs with SHACL shapes on reference-model classes: `sh:targetClass` now
+  applies to subclasses (#729).** `_extract_shacl_tests` matched `sh:targetClass` by exact
+  URI, so a NodeShape declared on a reference class (`sh:targetClass dcsa:TransportEvent`)
+  contributed **no** dbt tests to a hub model bound to a subclass
+  (`:LocalTransportEvent rdfs:subClassOf dcsa:TransportEvent`) — silently, with no
+  diagnostic. That is exactly the shape the `kairos-design-domain` exemplar prescribes
+  (governance rules on the reference class, local rules on the subclass), so the exemplar's
+  own closed-code-list and mandatory-timestamp tests were never emitted. SHACL semantics say
+  `sh:targetClass C` targets instances of `C` *and of its subclasses*. The projector now walks
+  `rdfs:subClassOf` upward (asserted, transitive, via the new `projections.shared.class_ancestors`)
+  and applies every ancestor's shapes, **nearest first**, so when a child shape and a parent
+  shape constrain the same path the most specific one wins — deterministically, where
+  before rdflib iteration order would have decided. Shapes with no `sh:targetClass` keep
+  applying to every class, as before. **Migration:** subclass models may gain `not_null`,
+  `unique`, `accepted_values`, regex or length tests they did not emit before. A build that
+  turns red after upgrading is reporting a governance rule that was declared but never
+  checked — fix the data or narrow the shape; do not delete the test.
+- `ResolvedProperty.range_uri: str` is now `range_uris: tuple[str, ...]` and `ResolvedClass`
+  gains `ancestor_uris` (internal compiler API; see Fixed).
+
+### Fixed
+- **`safety.relationship-endpoint` rejected a relationship whose `target:` is a subclass of
+  the property's declared `rdfs:range` (#729).** The guard compared the single resolved range
+  URI with the authored target by strict equality, so a hub that followed the prescribed
+  pattern — subclass the reference-model class — could not author any inherited object
+  property whose range is a reference class the hub also subclasses (`partOfVoyage` from
+  `PortCallRecord ⊑ PortCall` to `MaritimeVoyageRecord ⊑ Voyage`: sound OWL, hard error). The
+  target is now accepted when it *is*, or descends from, **any** of the property's named
+  ranges. Downward only — a *superclass* of the range still fails — and `owl:Thing` is kept out
+  of the ancestor closure so `rdfs:range owl:Thing` remains rejected (#330) even for exports
+  that assert `rdfs:subClassOf owl:Thing` on every class. Three things the issue got wrong,
+  recorded so they are not re-filed: the **domain** side never had this defect
+  (`ResolvedProperty.domain_uris` is the set of classes that *expose* the property, inherited
+  included — DD-133 §8b — not `rdfs:domain`, so the hub subclass was already a member); the
+  fix could not live at the check site as suggested (`ResolutionContext` is graph-free by
+  design, so the ancestor closure is now carried into `ResolvedClass.ancestor_uris` at
+  symbol-resolution time, populated on all three construction paths including DD-144
+  accelerator-direct and the cross-domain fallback); and the check must accept **any** range,
+  not all — ranges are superproperty-widened and URI-sorted, so the old `ranges[0]` was
+  deterministic-but-arbitrary, and intersection semantics would newly reject reference models
+  that omit the subsumption chain between a subproperty's range and its parent's (#731 tracks
+  that as a validator warning). `propose-relationships` still matches endpoints by URI or
+  local name, so DD-139's "run propose-relationships" remedy cannot derive these entries until
+  #732 lands.
+
 ## [5.15.0rc17] — 2026-09-05
 
 Covers **rc14 through rc17**. The rc14, rc15 and rc16 bumps shipped without promoting

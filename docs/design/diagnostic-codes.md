@@ -282,7 +282,7 @@ above).
 
 | `safety.grain-missing` | error | DD-133 (default) | also constructed via remap in `kernel.py` |
 | `safety.identity-incomplete` | error | DD-133 (default) | also constructed via remap in `kernel.py` |
-| `safety.relationship-endpoint` | error | DD-133 (default) | also constructed directly in `kernel.py` |
+| `safety.relationship-endpoint` | error | DD-133 (default) | also constructed directly in `kernel.py`. The endpoint-compatibility site in `_relationship_diagnostics` ("relationship … is incompatible with …") accepts a `target:` that is the declared `rdfs:range` **or a subclass of it** (any of the index-resolved named ranges), rejects a superclass, and never treats `owl:Thing` as an ancestor (#729, #330). The domain side is subsumption-aware through `ResolvedProperty.domain_uris` (DD-133 §8b), which is the set of classes exposing the property, not `rdfs:domain`. |
 
 ## `temporal.py` — Stage-2 relationship validation (DD-109 temporal lookups)
 

@@ -32,7 +32,7 @@ from typing import Optional
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 
-from .shared import effective_domain_classes
+from .shared import class_ancestors, effective_domain_classes, named_parents
 from .uri_utils import extract_local_name
 
 
@@ -123,37 +123,12 @@ def _collect_classes(graph: Graph, namespace: str) -> list[URIRef]:
     return sorted(classes, key=str)
 
 
-def _named_parents(graph: Graph, cls: URIRef) -> list[URIRef]:
-    """Return the direct, *named* superclasses of *cls*.
-
-    A blank-node ``rdfs:subClassOf`` object is an OWL restriction (property
-    cardinality), not a superclass, and is what :func:`_restriction_bounds` walks
-    separately; the two sets are disjoint by construction, since a triple's object is
-    either a URIRef or a blank node, never both.
-    """
-    return sorted(
-        (parent for parent in graph.objects(cls, RDFS.subClassOf) if isinstance(parent, URIRef)),
-        key=str,
-    )
-
-
-def _ancestors(graph: Graph, cls: URIRef) -> list[URIRef]:
-    """Return every transitive named superclass of *cls*, nearest first, cycle-safe.
-
-    An ontology may assert a ``subClassOf`` cycle (directly or through an import), and a
-    documentation projector must render it rather than recurse forever.
-    """
-    seen: set[URIRef] = {cls}
-    ordered: list[URIRef] = []
-    frontier = _named_parents(graph, cls)
-    while frontier:
-        parent = frontier.pop(0)
-        if parent in seen:
-            continue
-        seen.add(parent)
-        ordered.append(parent)
-        frontier.extend(_named_parents(graph, parent))
-    return ordered
+# The hierarchy walkers used to live here; they are now the shared projector-level authority
+# in ``projections/shared.py`` so the SHACL/dbt path can honour ``sh:targetClass`` on an
+# ancestor the same way this diagram does (#729). Blank-node ``rdfs:subClassOf`` objects are
+# restrictions, walked separately by :func:`_restriction_bounds`.
+_named_parents = named_parents
+_ancestors = class_ancestors
 
 
 def _external_label(cls: URIRef) -> str:

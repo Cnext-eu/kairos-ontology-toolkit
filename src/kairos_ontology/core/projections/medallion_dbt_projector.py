@@ -41,6 +41,7 @@ from .uri_utils import camel_to_snake, extract_local_name
 from .shared import (
     ForeignKeyClassification,
     KAIROS_EXT,
+    class_ancestors,
     classify_foreign_keys,
     effective_domain_classes,
     str_val,
@@ -621,32 +622,62 @@ def _extract_shacl_tests(
 
     tests_by_col: dict[str, list] = {}
 
-    # Find property shapes that target this class (directly or via NodeShape)
-    for node_shape in sg.subjects(RDF.type, SH.NodeShape):
-        shape_target = sg.value(node_shape, SH.targetClass)
-        if shape_target and str(shape_target) != str(target_class):
-            continue
+    # ``sh:targetClass C`` targets instances of C *and of its subclasses*, so a shape declared
+    # on a reference-model class applies to the hub subclass bound here (#729). Before this,
+    # the match was exact-URI, and the kairos-design-domain exemplar's governance shapes on
+    # ``dcsa:TransportEvent`` were silently never emitted for ``:LocalTransportEvent``.
+    #
+    # Rank applicable shapes nearest-first -- the class itself, then ancestors by distance,
+    # then shape URI. ``_extract_property_shape_tests`` is first-wins per column and rdflib
+    # iteration order is not stable, so without an explicit order a parent shape and a child
+    # shape constraining the same path would race between runs. Shapes with no
+    # ``sh:targetClass`` keep applying to every class, as before, ranked last. Without an
+    # ontology graph there is no hierarchy to walk and matching stays exact.
+    distance_by_class: dict[str, int] = {str(target_class): 0}
+    if ontology_graph is not None:
+        for distance, ancestor in enumerate(class_ancestors(ontology_graph, target_class), 1):
+            distance_by_class.setdefault(str(ancestor), distance)
+    untargeted_rank = len(distance_by_class)
+
+    def _shape_rank(shape) -> tuple[int, str] | None:
+        shape_target = sg.value(shape, SH.targetClass)
+        if shape_target is None:
+            return (untargeted_rank, str(shape))
+        distance = distance_by_class.get(str(shape_target))
+        if distance is None:
+            return None
+        return (distance, str(shape))
+
+    ranked_shapes = sorted(
+        (
+            (rank, shape)
+            for shape in sg.subjects(RDF.type, SH.NodeShape)
+            for rank in (_shape_rank(shape),)
+            if rank is not None
+        ),
+        key=lambda item: item[0],
+    )
+    for _, node_shape in ranked_shapes:
         for ps in sg.objects(node_shape, SH.property):
             _extract_property_shape_tests(sg, ps, tests_by_col, ontology_graph)
 
-    # Also handle property shapes attached via sh:property without NodeShape typing
+    # Also handle property shapes attached via sh:property without NodeShape typing. Only
+    # shapes that declare a target take part here (as before); the column-level first-wins
+    # guard lives in ``_extract_property_shape_tests``.
+    ranked_untyped: list[tuple[tuple[int, str, str], object]] = []
     for ps in sg.objects(predicate=SH.property):
         path = sg.value(ps, SH.path)
         if not path:
             continue
-        col_name = (
-            _resolve_column_name(ontology_graph, str(path))
-            if ontology_graph
-            else _camel_to_snake(extract_local_name(str(path)))
-        )
-        if col_name in tests_by_col:
-            continue  # already extracted via NodeShape path
-        # Check if this property shape belongs to a shape targeting our class
         for subj in sg.subjects(SH.property, ps):
-            shape_target = sg.value(subj, SH.targetClass)
-            if shape_target and str(shape_target) == str(target_class):
-                _extract_property_shape_tests(sg, ps, tests_by_col, ontology_graph)
+            if sg.value(subj, SH.targetClass) is None:
+                continue
+            rank = _shape_rank(subj)
+            if rank is not None:
+                ranked_untyped.append(((*rank, str(path)), ps))
                 break
+    for _, ps in sorted(ranked_untyped, key=lambda item: item[0]):
+        _extract_property_shape_tests(sg, ps, tests_by_col, ontology_graph)
 
     return tests_by_col
 

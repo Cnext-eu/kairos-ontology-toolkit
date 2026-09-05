@@ -583,7 +583,11 @@ def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[Proper
         # ``fields:`` and made the range check in ``_relationship_diagnostics`` reject the
         # correct ``relationships:`` authoring (issue #280). An object property with no
         # resolvable named range therefore carries no range at all, and the
-        # ``prop.range_uri and ...`` guard short-circuits honestly.
+        # ``prop.range_uris and ...`` guard short-circuits honestly.
+        #
+        # ``ranges`` is URI-sorted and superproperty-widened by the index, so ``ranges[0]`` is
+        # deterministic but arbitrary -- keep the single value only for the datatype-typing
+        # path and carry the full tuple for the relationship-endpoint check (#729).
         range_uri = ranges[0] if ranges else ("" if is_object_property else str(XSD.string))
         resolved.append(
             PropertyInfo(
@@ -594,9 +598,30 @@ def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[Proper
                 range_uri=range_uri,
                 range_name=_local_from_uri(range_uri),
                 is_object_property=is_object_property,
+                range_uris=ranges if is_object_property else (range_uri,),
             )
         )
     return tuple(resolved)
+
+
+def _ancestor_uris(index, class_uri: str) -> tuple[str, ...]:
+    """Return the transitive named ancestors of ``class_uri`` from the DD-103 index.
+
+    Under the compiler's RDFS profile ``ClassRecord.ancestors`` is asserted
+    ``rdfs:subClassOf`` walked to a fixpoint -- no OWL materialization, so nothing appears
+    here that an author did not write. ``owl:Thing`` is dropped deliberately: exports that
+    assert ``rdfs:subClassOf owl:Thing`` on every class must not turn ``rdfs:range owl:Thing``
+    into a permissive range (#330). Consumed by ``_relationship_diagnostics`` through the
+    graph-free ``ResolvedClass.ancestor_uris`` (#729).
+    """
+    if index is None:
+        return ()
+    record = index.class_by_uri(class_uri)
+    if record is None:
+        return ()
+    return tuple(
+        sorted(link.uri for link in record.ancestors if link.uri != str(OWL.Thing))
+    )
 
 
 def _domain_namespace(loaded, graph: Graph) -> str:
@@ -701,6 +726,7 @@ def _ontology_symbols(
                 if isinstance(parent, URIRef)
             )
         )
+        ancestor_uris = _ancestor_uris(index, info.uri)
         for ref in sorted(class_refs):
             classes.append(
                 ResolvedClass(
@@ -710,6 +736,7 @@ def _ontology_symbols(
                     info.label,
                     info.comment,
                     parent_uris,
+                    ancestor_uris=ancestor_uris,
                 )
             )
         for prop in _class_index_properties(index, info.uri, graph):
@@ -729,7 +756,7 @@ def _ontology_symbols(
                     description=prop.comment,
                     is_object_property=prop.is_object_property,
                     domain_uris=domains,
-                    range_uri=prop.range_uri,
+                    range_uris=prop.range_uris,
                 )
     # DD-144: accelerator-direct binding resolution. The local-namespace pass above never
     # sees an imported (e.g. accelerator) class an author references without a local
@@ -746,7 +773,15 @@ def _ontology_symbols(
         if record is None:
             continue
         classes.append(
-            ResolvedClass(token, record.uri, record.name, record.label, record.comment, ())
+            ResolvedClass(
+                token,
+                record.uri,
+                record.name,
+                record.label,
+                record.comment,
+                (),
+                ancestor_uris=_ancestor_uris(index, record.uri),
+            )
         )
         for prop in _class_index_properties(index, record.uri, graph):
             data_type = _XSD_TYPES.get(prop.range_uri, prop.range_uri)
@@ -764,7 +799,7 @@ def _ontology_symbols(
                     description=prop.comment,
                     is_object_property=prop.is_object_property,
                     domain_uris=domains,
-                    range_uri=prop.range_uri,
+                    range_uris=prop.range_uris,
                 )
     closure_paths = tuple(
         sorted(
@@ -1142,6 +1177,7 @@ def _relationship_target_class(
         local,
         _literal(loaded.graph, node, RDFS.label, local),
         _literal(loaded.graph, node, RDFS.comment, ""),
+        ancestor_uris=_ancestor_uris(loaded.semantic_index, uri),
     )
 
 
@@ -2894,10 +2930,24 @@ def _relationship_diagnostics(
             continue
         if source_class is None:
             continue
+        # Domain: ``domain_uris`` already holds every class that exposes the property,
+        # inherited included, so membership is subsumption-aware as-is (DD-133 §8b).
+        # Range: the target is compatible when it *is*, or descends from, any declared
+        # range -- a hub subclass of the reference range is sound OWL (#729). The
+        # widening is downward only: a *superclass* of the range would admit instances
+        # outside it, so it still fails here, and ``owl:Thing`` never enters
+        # ``ancestor_uris`` (#330). "Any", not "all": ranges are superproperty-widened
+        # and reference models routinely omit the subsumption chain between them (#731).
         if (
             target_class is None
             or (prop.domain_uris and source_class.uri not in prop.domain_uris)
-            or (prop.range_uri and prop.range_uri != target_class.uri)
+            or (
+                prop.range_uris
+                and not any(
+                    range_uri == target_class.uri or range_uri in target_class.ancestor_uris
+                    for range_uri in prop.range_uris
+                )
+            )
         ):
             diagnostics.append(
                 CompileDiagnostic(

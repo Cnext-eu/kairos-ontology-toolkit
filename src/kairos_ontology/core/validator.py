@@ -1053,22 +1053,24 @@ def validate_naming_conventions(
                     )
                 )
         elif is_object_property and declared_range == OWL.Thing:
-            # Worse than omitting it: the compiler's relationship guard is
-            # ``prop.range_uri and prop.range_uri != target_class.uri``, so an omitted
-            # range short-circuits and compiles, while owl:Thing is a resolvable named
-            # range that never equals the authored target: class and therefore always
-            # fails as safety.relationship-endpoint (DD-133 §7).
+            # Worse than omitting it: the compiler's relationship guard accepts a target
+            # that is, or descends from, any declared named range, and deliberately keeps
+            # owl:Thing out of the ancestor closure it consults (#729, #330). So an omitted
+            # range short-circuits and compiles, while owl:Thing is a resolvable named range
+            # that never equals -- and is never an ancestor of -- the authored target: class
+            # and therefore always fails as safety.relationship-endpoint (DD-133 §7).
             warnings.append(
                 NamingDiagnostic(
                     level="warning",
                     code="property_range_owl_thing",
                     message=(
                         f"Object property {property_uri} declares rdfs:range owl:Thing, which "
-                        "is worse than omitting rdfs:range entirely. The compiler compares a "
-                        "declared named range against the authored target: class, so "
-                        "owl:Thing always fails as safety.relationship-endpoint, whereas an "
-                        "omitted range leaves the range unconstrained and compiles (DD-133 "
-                        "§7). Remove the rdfs:range triple, or declare the real target class."
+                        "is worse than omitting rdfs:range entirely. The compiler accepts a "
+                        "target: class that is the declared named range or a subclass of it, "
+                        "and never treats owl:Thing as an ancestor, so owl:Thing always fails "
+                        "as safety.relationship-endpoint, whereas an omitted range leaves the "
+                        "range unconstrained and compiles (DD-133 §7). Remove the rdfs:range "
+                        "triple, or declare the real target class."
                     ),
                     term_uri=property_uri,
                 )

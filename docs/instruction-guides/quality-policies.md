@@ -75,7 +75,7 @@ validates that the resolved binding is coherent. All other policies assume the k
 | `safety.class-unresolved` / `.property-unresolved` | canonical class / property cannot be resolved |
 | `safety.type-incompatible` | source/target types are incompatible |
 | `safety.expression-unsafe` | an expression is not statically safe |
-| `safety.relationship-endpoint` | a relationship target is not in compile scope |
+| `safety.relationship-endpoint` | a relationship target is not in compile scope, its property does not resolve, or the property's declared `rdfs:domain`/`rdfs:range` does not cover the authored endpoints (a `target:` that is the declared range **or a subclass of it** is accepted; a superclass is not) |
 | `safety.incremental-identity-incomplete` | incremental identity is incomplete |
 | `safety.adapter-unsupported` | the adapter cannot support a required construct |
 | `safety.artifact-collision` | duplicate binding name, or two entities own one artifact |
