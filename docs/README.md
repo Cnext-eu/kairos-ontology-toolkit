@@ -20,12 +20,13 @@ output. Historical claim, preparation, Silver-extension, lifecycle/readiness, an
 orchestration decisions are retained only as labeled records in the ADR log.
 
 ## Other maintained material
-
-- [MDM documentation](mdm/)
 - [Practitioner guides](instruction-guides/)
 - [Demo](demo/)
 
 ## Historical material
+
+- [`mdm/`](mdm/) is design material for a capability that is **not live**; see
+  [its README](mdm/README.md). Not kept in step with the toolkit.
 
 - [`design/dd-014-architecture.md`](design/dd-014-architecture.md) describes the retired v4
   medallion lane and is kept as provenance, not guidance.

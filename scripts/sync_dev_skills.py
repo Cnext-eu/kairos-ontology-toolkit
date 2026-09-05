@@ -46,6 +46,13 @@ _UNMANAGED_SKILL_DIRS = {
     "langfuse",
     "kairos-toolkit-dev",
     "kairos-toolkit-dogfood",
+    # Cnext-internal, not client-facing. `SC-merge-pr` documents *this* repository's
+    # release process -- `scripts/finish_pr.py`, bumping `src/kairos_ontology/__init__.py`
+    # -- neither of which exists in a scaffolded repo; it shipped with a paragraph telling
+    # the reader not to apply it there, which is a caveat working around a packaging
+    # mistake. `SC-document` drives a Cnext Outline workspace and needs `OUTLINE_API_KEY`.
+    "SC-merge-pr",
+    "SC-document",
 }
 
 

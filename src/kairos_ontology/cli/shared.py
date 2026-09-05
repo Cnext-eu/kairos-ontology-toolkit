@@ -213,8 +213,6 @@ _DATAPLATFORM_SKILLS = [
     "kairos-help",
     "kairos-diagnose-status",
     "kairos-toolkit-ops",
-    "SC-merge-pr",
-    "SC-document",
 ]
 
 

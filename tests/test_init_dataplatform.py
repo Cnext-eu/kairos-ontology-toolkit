@@ -273,20 +273,20 @@ class TestInitDataplatform:
         skills_dir = dataplatform_output / ".claude" / "skills"
         assert skills_dir.exists()
 
-        expected = [
-            "kairos-develop-dataplatform",
-            "kairos-package-dataplatform",
-            "kairos-help",
-            "kairos-diagnose-status",
-            "kairos-toolkit-ops",
-            "SC-merge-pr",
-            "SC-document",
-        ]
-        for skill in expected:
+        # Driven off the registry, not a copy of it: a hardcoded list silently
+        # disagrees with the shipped set the moment the subset changes (DD-219).
+        from kairos_ontology.cli.shared import _DATAPLATFORM_SKILLS
+
+        for skill in _DATAPLATFORM_SKILLS:
             skill_file = skills_dir / skill / "SKILL.md"
             assert skill_file.exists(), f"Missing skill: {skill}"
             content = skill_file.read_text(encoding="utf-8")
             assert "kairos-ontology-toolkit" in content
+
+        # Cnext-internal, deliberately not shipped (DD-219): SC-merge-pr documents this
+        # repository's own release process, SC-document drives a Cnext Outline workspace.
+        for excluded in ("SC-merge-pr", "SC-document", "kairos-toolkit-dogfood"):
+            assert not (skills_dir / excluded).exists(), excluded
 
         # Should NOT have ontology-hub-specific skills
         assert not (skills_dir / "kairos-design-domain").exists()

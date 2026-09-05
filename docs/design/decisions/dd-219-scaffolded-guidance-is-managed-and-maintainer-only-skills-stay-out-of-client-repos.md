@@ -48,7 +48,13 @@ hub would have been red on its first PR. The pass is narrow: it skips a file alr
 stamped, and skips one whose content differs from the scaffold's, so an operator-authored
 `CICD.md` survives and `--force` remains the only way over it.
 
-`kairos-toolkit-dev` and `kairos-toolkit-dogfood` join `_UNMANAGED_SKILL_DIRS`.
+`kairos-toolkit-dev` and `kairos-toolkit-dogfood` join `_UNMANAGED_SKILL_DIRS`, and so do
+`SC-merge-pr` and `SC-document`. `SC-merge-pr` documents *this* repository's release
+process -- `scripts/finish_pr.py`, bumping `src/kairos_ontology/__init__.py` -- neither of
+which exists in a scaffolded repo, and it shipped carrying a paragraph telling the reader
+not to apply it there, which is a caveat working around a packaging mistake rather than a
+design. `SC-document` drives a Cnext Outline workspace behind `OUTLINE_API_KEY`. Both leave
+`_DATAPLATFORM_SKILLS` too; a scaffolded hub now receives 22 skills instead of 26.
 `kairos-toolkit-ops` deliberately does not: clients use it to move their toolkit pin, and
 it is in the dataplatform subset already. Existing hubs lose the two automatically -- the
 stale-skill sweep deletes a marker-carrying skill whose directory the scaffold no longer
