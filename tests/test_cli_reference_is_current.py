@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""`docs/CLI_REFERENCE.md` is generated, and must not drift from the command tree.
+"""`docs/guide/CLI_REFERENCE.md` is generated, and must not drift from the command tree.
 
 The hand-written reference it replaced had fallen 14 commands behind -- `alignment-report`,
 `generate-bindings`, `profile-sources`, `promote-transform`, `validate-source-bindings` and
@@ -23,10 +23,10 @@ def generated() -> str:
 
 
 def test_committed_file_matches_the_command_tree(generated):
-    assert OUTPUT.is_file(), "docs/CLI_REFERENCE.md is missing -- run the generator"
+    assert OUTPUT.is_file(), "docs/guide/CLI_REFERENCE.md is missing -- run the generator"
     current = OUTPUT.read_text(encoding="utf-8")
     assert current == generated, (
-        "docs/CLI_REFERENCE.md is out of date with the CLI.\n"
+        "docs/guide/CLI_REFERENCE.md is out of date with the CLI.\n"
         "Run: python scripts/generate_cli_reference.py"
     )
 

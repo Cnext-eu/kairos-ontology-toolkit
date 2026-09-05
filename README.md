@@ -140,7 +140,7 @@ security, or data tests.
 Publish emitted artifacts at an immutable Git revision or versioned artifact
 location. Pin that revision from the data-platform repository, run `dbt deps`,
 `dbt parse`, `dbt build`, and `dbt test`, and never edit compiler-owned output.
-See [CompilePlan consumption](docs/CONSUMING_COMPILE_PLAN.md).
+See [CompilePlan consumption](docs/guide/CONSUMING_COMPILE_PLAN.md).
 
 ## Test an unreleased toolkit version
 
@@ -155,12 +155,12 @@ uv run kairos-ontology update --restore
 
 ## Documentation
 
-- [User guide](docs/USER_GUIDE.md)
-- [CLI reference](docs/CLI_REFERENCE.md)
-- [CompilePlan consumption](docs/CONSUMING_COMPILE_PLAN.md)
+- [User guide](docs/guide/USER_GUIDE.md)
+- [CLI reference](docs/guide/CLI_REFERENCE.md)
+- [CompilePlan consumption](docs/guide/CONSUMING_COMPILE_PLAN.md)
 - [Documentation map](docs/README.md)
-- [DD-133 v5 compiler contract](docs/design/dd-133-v5-entity-binding-compile.md)
-- [Design decisions](docs/design/toolkit-design-decisions.md)
+- [DD-133 v5 compiler contract](docs/dev/dd-133-v5-entity-binding-compile.md)
+- [Design decisions](docs/dev/toolkit-design-decisions.md)
 
 ## Develop the toolkit
 

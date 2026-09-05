@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Validate the decision log: index table ↔ one file per decision.
 
-The log was split from a single 15k-line file into ``docs/design/decisions/dd-NNN-*.md``,
+The log was split from a single 15k-line file into ``docs/dev/decisions/dd-NNN-*.md``,
 with ``toolkit-design-decisions.md`` kept as the index. These tests are the only thing
 stopping the two halves from drifting apart.
 """
@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 _DOCS = Path(__file__).resolve().parent.parent / "docs"
-_INDEX_FILE = _DOCS / "design" / "toolkit-design-decisions.md"
-_DECISIONS_DIR = _DOCS / "design" / "decisions"
+_INDEX_FILE = _DOCS / "dev" / "toolkit-design-decisions.md"
+_DECISIONS_DIR = _DOCS / "dev" / "decisions"
 
 _MAX_FILENAME = 100
 
@@ -94,7 +94,13 @@ def index_rows() -> list[dict[str, str]]:
 
 @pytest.fixture(scope="module")
 def decision_files() -> list[Path]:
-    files = sorted(path for path in _DECISIONS_DIR.glob("*.md") if path.name != "TEMPLATE.md")
+    # ``*-companion.md`` is the long-form background beside a record, not a record:
+    # it carries no ``# DD-NNN:`` heading and has no index row of its own.
+    files = sorted(
+        path
+        for path in _DECISIONS_DIR.glob("*.md")
+        if path.name != "TEMPLATE.md" and not path.name.endswith("-companion.md")
+    )
     assert files, "no decision files found"
     return files
 
@@ -201,3 +207,63 @@ def test_no_in_page_decision_anchors_survive() -> None:
         "in-page DD anchors are dead after the split; use decisions/dd-nnn-....md:\n"
         + "\n".join(offenders)
     )
+
+
+def test_no_tracked_doc_links_into_gitignored_scratch() -> None:
+    """``docs/temp/`` is gitignored, so a link into it resolves only for its author.
+
+    Four tracked ADRs cited change-request documents that live there: the reasoning was
+    real, but every reader who cloned the repository followed the citation to nothing.
+    Cite the substance instead, or commit the source.
+    """
+    offenders = [
+        f"{path.relative_to(_DOCS.parent).as_posix()}:{lineno}"
+        for path in sorted(_DOCS.rglob("*.md"))
+        if "temp" not in path.parts
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if re.search(r"docs/temp/[A-Za-z0-9_.-]+", line)
+    ]
+    assert not offenders, "tracked documents linking into gitignored docs/temp/:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_a_companion_sits_beside_the_decision_it_expands() -> None:
+    """Long-form design documents used to live one directory up from their ADR, under a
+    different slug for the same DD number -- two parallel stores with no stated authority.
+
+    They are now ``dd-NNN-<adr-slug>-companion.md`` beside the record they expand, so the
+    relationship is in the filename.
+    """
+    orphans = [
+        companion.name
+        for companion in sorted(_DECISIONS_DIR.glob("*-companion.md"))
+        if not (_DECISIONS_DIR / f"{companion.name[: -len('-companion.md')]}.md").is_file()
+    ]
+    assert not orphans, f"companions with no decision record: {orphans}"
+
+    stragglers = [path.name for path in sorted(_DOCS.glob("dev/dd-*.md"))]
+    assert not stragglers, f"decision documents outside decisions/: {stragglers}"
+
+
+def test_no_relative_link_in_docs_dangles() -> None:
+    """Every relative link under ``docs/`` must resolve on disk.
+
+    Reorganising ``docs/`` into ``guide/`` (operating a hub) and ``dev/`` (building the
+    toolkit) moved ~250 files, and folding the long-form design documents in beside their
+    ADRs renamed ten more. Relative links do not survive that by themselves -- eighteen
+    broke -- and nothing would have reported it.
+    """
+    placeholders = {"dd-xxx-slug.md", "dd-NNN-short-slug.md"}
+    offenders = []
+    for path in sorted(_DOCS.rglob("*.md")):
+        if "temp" in path.parts:
+            continue  # gitignored scratch; guarded separately
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for target in re.findall(r"\]\((?!https?://|mailto:|#)([^)#]+)", line):
+                if Path(target).name in placeholders:
+                    continue
+                if not (path.parent / target).exists():
+                    rel = path.relative_to(_DOCS.parent).as_posix()
+                    offenders.append(f"{rel}:{lineno} -> {target}")
+    assert not offenders, "dangling relative links in docs/:\n" + "\n".join(offenders)

@@ -382,7 +382,7 @@ RULE_REGISTRY: dict[tuple[str, str, str], RuleVerdict] = {
         evidence=(
             "accelerator-packs/logistics/client-hub-blueprint/BLUEPRINT.md: 'Equivalence later "
             "| Add owl:equivalentClass only if cross-model querying is needed'",
-            "docs/design/toolkit-design-decisions.md: DD-032 reference-model alignment",
+            "docs/dev/toolkit-design-decisions.md: DD-032 reference-model alignment",
             "core/semantic_index.py: surfaces OWL.equivalentClass under the kairos-design/owl-rl "
             "profiles only; core/compiler loads the rdfs profile and never reads it",
         ),

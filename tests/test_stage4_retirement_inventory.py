@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 PACKAGE = SRC / "kairos_ontology"
-INVENTORY_PATH = ROOT / "docs" / "design" / "stage4-retirement-import-inventory.json"
+INVENTORY_PATH = ROOT / "docs" / "dev" / "stage4-retirement-import-inventory.json"
 
 
 def _module_name(path: Path) -> str:

@@ -2,7 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Drift guard: every compiler diagnostic code must be documented.
 
-``docs/design/diagnostic-codes.md`` is the stable catalog of every
+``docs/dev/diagnostic-codes.md`` is the stable catalog of every
 ``CompileDiagnostic.code`` literal constructed anywhere under
 ``core/compiler/*.py``. This test statically parses that same source tree (via the
 ``ast`` module, not just a text grep) and fails if any code is missing from the
@@ -20,7 +20,7 @@ from pathlib import Path
 import kairos_ontology.core.compiler as compiler_package
 
 COMPILER_DIR = Path(compiler_package.__file__).parent
-DOC_PATH = Path(__file__).resolve().parents[1] / "docs" / "design" / "diagnostic-codes.md"
+DOC_PATH = Path(__file__).resolve().parents[1] / "docs" / "dev" / "diagnostic-codes.md"
 
 
 def _string_value(node: ast.AST) -> str | None:
@@ -150,13 +150,13 @@ def test_no_dynamically_constructed_codes_are_silently_uncataloged():
     literal. If a genuinely dynamic (non-enumerable) code is introduced, this test must
     be updated deliberately -- either to special-case the new pattern in ``_scan_file``
     (as was done for the ``code_map`` remap) or to document the pattern in
-    ``docs/design/diagnostic-codes.md`` and adjust the comparison below accordingly.
+    ``docs/dev/diagnostic-codes.md`` and adjust the comparison below accordingly.
     """
     _, dynamic_by_file = _all_source_codes()
     assert dynamic_by_file == {}, (
         "found dynamically-constructed diagnostic code(s) that this static scan cannot "
         f"enumerate as exact literals: {dynamic_by_file!r}. Document the pattern in "
-        "docs/design/diagnostic-codes.md and extend the scan/test accordingly."
+        "docs/dev/diagnostic-codes.md and extend the scan/test accordingly."
     )
 
 
@@ -168,7 +168,7 @@ def test_every_diagnostic_code_is_documented():
     missing = sorted(source_codes - documented)
     assert not missing, (
         "diagnostic code(s) constructed in core/compiler are missing from "
-        f"docs/design/diagnostic-codes.md: {missing}. Add a row for each to the catalog."
+        f"docs/dev/diagnostic-codes.md: {missing}. Add a row for each to the catalog."
     )
 
 
@@ -179,6 +179,6 @@ def test_documented_codes_are_all_still_real():
 
     stale = sorted(documented - source_codes)
     assert not stale, (
-        "docs/design/diagnostic-codes.md documents code(s) no longer constructed anywhere "
+        "docs/dev/diagnostic-codes.md documents code(s) no longer constructed anywhere "
         f"in core/compiler: {stale}. Remove the stale row(s) or restore the construction site."
     )

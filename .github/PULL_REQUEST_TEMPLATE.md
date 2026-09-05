@@ -20,6 +20,6 @@ Closes #
 - [ ] Tests pass (`uv run pytest`)
 - [ ] `uv run kairos-ontology validate` passes (if ontology changes)
 - [ ] `uv run kairos-ontology project` regenerated (if ontology changes)
-- [ ] Version bump only if this PR is cutting a release (see `docs/RELEASING.md`) — not required otherwise
+- [ ] Version bump only if this PR is cutting a release (see `docs/dev/RELEASING.md`) — not required otherwise
 - [ ] DCO sign-off on all commits (`git commit -s`)
 - [ ] No secrets, credentials, or PII in code

@@ -139,7 +139,7 @@ proprietary data, policy choices, and destructive actions.
 
 Changes affecting hub repositories must also update `src/kairos_ontology/scaffold/`. Keep both
 Copilot instruction copies byte-identical. An architectural change adds a decision file
-under `docs/design/decisions/` and its row in `docs/design/toolkit-design-decisions.md`.
+under `docs/dev/decisions/` and its row in `docs/dev/toolkit-design-decisions.md`.
 
 Before a PR, verify SPDX headers, no secrets or PII, Apache-2.0-compatible dependencies, NOTICE for
 bundled third-party components, no proprietary examples, DCO sign-off, and issue-closing keywords in

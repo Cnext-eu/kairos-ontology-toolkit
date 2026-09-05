@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   # Unifies two release triggers into one tag + should_release decision:
-  #   - a tag push (docs/RELEASING.md hotfix runbook: tag a hotfix/x.y.z branch
+  #   - a tag push (docs/dev/RELEASING.md hotfix runbook: tag a hotfix/x.y.z branch
   #     directly, never touching main) -- behaves exactly as before.
   #   - a push to main (the normal case: a squash-merged version-bump PR) -- detects
   #     whether __version__ actually changed and, if so, creates and pushes the tag

@@ -19,7 +19,7 @@ jobs:
 
       - name: Require CHANGELOG entry for a bumped version
         run: |
-          # Version bumps happen at release time (docs/RELEASING.md), not on every
+          # Version bumps happen at release time (docs/dev/RELEASING.md), not on every
           # PR. This only enforces that *if* a PR does bump __version__ to a stable
           # release, it also carries the matching CHANGELOG entry.
           PR_VERSION=$(grep '__version__' src/kairos_ontology/__init__.py \

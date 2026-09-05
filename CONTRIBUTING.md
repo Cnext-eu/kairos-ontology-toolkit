@@ -125,7 +125,7 @@ Open a GitHub Issue with the `enhancement` label describing:
 
 Never commit to `main` directly — always branch + PR.
 
-> **Releasing & hotfixes:** see [`docs/RELEASING.md`](docs/RELEASING.md) for the full
+> **Releasing & hotfixes:** see [`docs/dev/RELEASING.md`](docs/dev/RELEASING.md) for the full
 > SemVer policy, the bugfix-vs-feature decision tree, and the hotfix/back-merge flow
 > (DD-067).
 
@@ -145,14 +145,14 @@ Never commit to `main` directly — always branch + PR.
 - [ ] Tests pass (`uv run pytest` for fast, `uv run pytest -m ""` for full)
 - [ ] `python -m kairos_ontology validate` passes (if ontology changes)
 - [ ] `python -m kairos_ontology project` regenerated (if ontology changes)
-- [ ] Version bump only if this PR is cutting a release (see `docs/RELEASING.md`) — not required otherwise
+- [ ] Version bump only if this PR is cutting a release (see `docs/dev/RELEASING.md`) — not required otherwise
 - [ ] DCO sign-off on all commits
 - [ ] No secrets, credentials, or PII in code
 
 ### Version bump and CI version-check
 
 Version bumps happen **at release time**, not on every PR — see
-`docs/RELEASING.md` for the full flow (patch/minor/major, hotfixes,
+`docs/dev/RELEASING.md` for the full flow (patch/minor/major, hotfixes,
 pre-releases). Most PRs land on `main` without touching `__version__`.
 
 The CI **version-check** job only fires when a PR *does* bump `__version__`
@@ -188,7 +188,7 @@ If you want hub-repo users to test your changes before a GA release:
 6. Testers run `kairos-ontology update --upgrade` (uses `uv lock` + `uv sync`)
 7. After validation, create a GA release and testers switch back to `channel = "stable"`.
 
-> See [`docs/RELEASING.md`](docs/RELEASING.md) for how pre-releases fit into the
+> See [`docs/dev/RELEASING.md`](docs/dev/RELEASING.md) for how pre-releases fit into the
 > overall release flow (channels, SemVer, hotfixes).
 
 ## Code of Conduct
