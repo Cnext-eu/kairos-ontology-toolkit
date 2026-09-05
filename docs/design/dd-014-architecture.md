@@ -1,4 +1,13 @@
-# Data Platform & dbt Architecture
+# Data Platform & dbt Architecture (historical, v4)
+
+> **Superseded — do not use as current guidance.** This describes the v4 medallion
+> architecture: it names `model/extensions/{domain}-silver-ext.ttl` as the Silver schema and
+> predates the v5 authoring break entirely, mentioning neither `EntityBinding` nor
+> `CompilePlan`. Its decision, DD-014, is itself superseded by DD-106.
+>
+> For the architecture as it stands, read
+> [ontology-dbt-dataplatform-design-architecture.md](ontology-dbt-dataplatform-design-architecture.md).
+> Retained as a record of what the v4 lane looked like.
 
 ## Overview
 

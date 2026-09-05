@@ -9,7 +9,7 @@
 
 This document is the frozen normative baseline for the Medallion projector redesign.
 It resolves the data-engineering review captured in
-[`../draft/Kairos-Ontology 4.7- Medaillon projector - dataengineeringrules - FEEDBACK.md`](../draft/Kairos-Ontology%204.7-%20Medaillon%20projector%20-%20dataengineeringrules%20-%20FEEDBACK.md).
+`Kairos-Ontology 4.7 - Medaillon projector - dataengineeringrules - FEEDBACK.md` (an untracked working note; never committed, so the path is recorded here for provenance only).
 
 The typed projector implements this policy through immutable phase contracts,
 adapter-specific rendering, executable DQ artifacts, and fail-closed strict release.

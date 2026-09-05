@@ -275,7 +275,7 @@ during cleanup.
 | [DD-210](decisions/dd-210-version-bump-moves-from-mandatory-per-pr-to-release-time-only.md) | Version bump moves from mandatory-per-PR to release-time-only | Accepted | 2026-08-30 |
 | [DD-211](decisions/dd-211-the-hub-wide-bound-master-erd-is-reconnected-to-compileemit-gold-the-dead-run_projections.md) | The hub-wide bound master ERD is reconnected to `compile`/`emit-gold`; the dead `run_projections` dbt/silver/powerbi branch is retired in place | Accepted | 2026-08-30 |
 | [DD-212](decisions/dd-212-the-canonical-erd-target-renders-a-mermaid-classdiagram-instead-of-erdiagram-and-gains-a.md) | The canonical `erd` target renders a Mermaid `classDiagram` instead of `erDiagram`, and gains a plumbing-only overlay hook | Accepted | 2026-08-30 |
-| [DD-213](decisions/dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it.md) | The Silver contract is declared, not derived — bindings conform to it | Proposed | 2026-09-01 |
+| [DD-213](decisions/dd-213-the-silver-contract-is-declared-not-derived--bindings-conform-to-it.md) | The Silver contract is declared, not derived — bindings conform to it | Accepted | 2026-09-01 |
 | [DD-214](decisions/dd-214-sample-redaction-is-opt-in-at-import-the-pre-send-scan-advises-instead-of-refusing.md) | Sample redaction is opt-in at import; the pre-send scan advises instead of refusing | Accepted | 2026-09-01 |
 | [DD-215](decisions/dd-215-the-target-platform-names-the-engine-and-boolean-ness-is-rendered-per-adapter.md) | The target platform names the engine, and boolean-ness is rendered per adapter | Accepted | 2026-09-03 |
 | [DD-216](decisions/dd-216-the-declared-silver-contract-gets-its-own-diagram.md) | The declared Silver contract gets its own diagram | Accepted | 2026-09-04 |
