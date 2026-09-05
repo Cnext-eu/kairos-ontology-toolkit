@@ -49,10 +49,28 @@ business semantics.
 - Author the measures a confirmed insight needs in the owning domain's Gold extension, then
   re-run `emit-gold`: it reports which confirmed insights the product cannot answer yet and
   writes `<product>-insight-brief.md` beside the semantic model.
-- That brief plus `report-design-inspiration.md` is the hand-off to whoever builds the
-  report. The hub governs the model; page layout and visual design are theirs.
+- That brief plus [`report-design-inspiration.md`](report-design-inspiration.md) is the
+  hand-off to whoever builds the report. The hub governs the model; page layout and visual
+  design are theirs.
+- `report-design-inspiration.md` is **inspiration, not a gate**: nothing in it is validated
+  by the toolkit or blocks an emit. Use it to shape the conversation about what a page
+  should say — start from the decision, one message per page, every number against a
+  comparison — and drop anything that does not fit this client.
 - BI evidence is demand, never business authority (DD-147). A measure on 40 legacy visuals
   proves someone needs that number, not that the number is currently right.
+
+## Where the hub stops and the report begins
+
+- The hub owns everything governed: tables, relationships, measures, calendar, security,
+  column visibility and descriptions. It also emits a **stub** `<Product>.Report`.
+- The BI engineer owns look and feel: pages, visuals, bookmarks, theme, and the report's
+  own layout. Build that as a **separate Fabric item with its own name**, bound to the
+  deployed model — the generated stub is republished on every hub release, so edits to it
+  are lost.
+- If a report needs something the model lacks, that is a hub change. Author it, or run
+  `harvest-gold` to turn what was built in Desktop into a reviewable proposal. Working
+  around the model in the report layer is how one governed measure acquires three competing
+  definitions.
 
 ## Harvest Desktop and Fabric edits
 

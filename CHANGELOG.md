@@ -20,6 +20,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
 
 ### Added
+- **A Power BI report design guide ships with `kairos-design-gold`, and a how-to covers the
+  whole Gold lifecycle (#744).** `report-design-inspiration.md` collects what actually
+  changes reporting outcomes: the native visuals and formatting-pane features teams
+  underuse, JSON themes and `.pbit` templates as the highest-leverage consistency tool, and
+  the UX practices worth arguing for — start from the decision rather than the data, one
+  message per page, titles as takeaways, colour as signal with 4.5:1 contrast, accessibility
+  and load time as usability, wireframe before building. Plus the insight side: IBCS, and
+  the rule that every number needs a comparison to mean anything.
+  It is **inspiration, not a gate**: nothing in it is validated by the toolkit or blocks an
+  emit, and the guide says so at the top. It is reference material for shaping a
+  conversation with a client, not a checklist to satisfy.
+  A new how-to, *Design a Gold product*, walks the lifecycle end to end: declare the
+  product's scope, author each domain's tables, record what people need to know, emit, hand
+  off, and harvest what the BI engineer builds. `scripts/sync_dev_skills.py` now ships
+  Markdown siblings of a skill, so reference material a skill links to reaches client hubs
+  instead of stopping at this repository.
+- **The hub/report ownership boundary is written down (#744).** The hub owns everything
+  governed — tables, relationships, measures, calendar, security, column visibility,
+  descriptions — and emits a *stub* report item. Report design belongs to the BI engineer,
+  who builds it as a separate Fabric item with its own name bound to the deployed model:
+  the generated `<Product>.Report` is republished on every hub release, so edits to it are
+  lost. Model edits return through `harvest-gold`, never into the dataplatform repository.
+  Recorded in the user guide, the dataplatform `CICD.md`, the *consume from a dataplatform*
+  recipe and the `kairos-package-dataplatform` skill, which also now states that the
+  dataplatform-side TMDL sanitizer is gone and must not come back — the `///` comments it
+  used to strip are load-bearing, carrying the ontology's descriptions into Desktop.
 - **`harvest-gold` brings Desktop and Fabric edits back into authored hub inputs (#744,
   DD-224).** A BI engineer opened the generated PBIP, hid a column, added measures — and
   the next `emit-gold` overwrote all of it. The only defences were to stop editing or to

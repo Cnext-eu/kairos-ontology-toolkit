@@ -48,6 +48,16 @@ offline gate in the hub can.
 - The hub owner owns ontology, sources, bindings and compile diagnostics. The dataplatform
   owner owns connections, deployment, adapter runtime and data-test failures.
 
+## Who owns the Power BI report
+
+The hub emits the semantic model and a stub `<Product>.Report`. Report design belongs to the
+BI engineer: build it as a separate Fabric item with its own name, bound to the deployed
+model. The stub is republished on every hub release, so edits to it are lost.
+
+Edits to the *model* go back to the hub via `kairos-ontology harvest-gold`, which turns them
+into a reviewable proposal. The dataplatform stays read-only over item content: extract,
+verify, deploy.
+
 ## Know what you are running
 
 Read `metadata/<domain>.provenance.json` in the package: toolkit version, adapter, and a

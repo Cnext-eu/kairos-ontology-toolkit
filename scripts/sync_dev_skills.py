@@ -108,6 +108,10 @@ def get_sync_pairs() -> list[tuple[Path, Path]]:
                 *skill_dir.glob("*-domain.ttl"),
                 *skill_dir.glob("*-domain.shacl.ttl"),
                 *skill_dir.glob("exemplar-binding.yaml"),
+                # Reference material a skill links to rather than inlines, so the skill
+                # stays scannable and the guide can be read on its own (#744). SKILL.md
+                # itself is already synced above; this is for its siblings.
+                *(item for item in skill_dir.glob("*.md") if item.name != "SKILL.md"),
             ]
             for extra in sorted(extra_globs):
                 pairs.append((extra, SCAFFOLD_SKILLS / skill_dir.name / extra.name))

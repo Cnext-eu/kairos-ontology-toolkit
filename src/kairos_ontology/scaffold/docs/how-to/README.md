@@ -16,6 +16,7 @@ the [decision log](https://github.com/Cnext-eu/kairos-ontology-toolkit/blob/main
 | Onboard a second system to an entity you already model | [Add a second source to a class](add-a-second-source-to-a-class.md) |
 | Handle logic a binding cannot express | [Write a contracted dbt model](write-a-contracted-dbt-model.md) |
 | Produce the dbt artifacts | [Compile and emit](compile-and-emit.md) |
+| Deliver a Power BI semantic model | [Design a Gold product](design-a-gold-product.md) |
 | Use the output downstream | [Consume from a dataplatform](consume-from-a-dataplatform.md) |
 | Move to a newer toolkit | [Upgrade the toolkit](upgrade-the-toolkit.md) |
 | Record why a modelling choice was made | [Record a decision](record-a-decision.md) |
