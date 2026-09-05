@@ -5,7 +5,8 @@
 | Document | Purpose |
 |---|---|
 | [User guide](USER_GUIDE.md) | Authoring, stateless compile, adapters, and clean cutover |
-| [CLI reference](CLI_REFERENCE.md) | Exact retained command surface and compiler modes |
+| [CLI reference](CLI_REFERENCE.md) | Every command, generated from the command tree |
+| [CLI behaviour notes](design/cli-behaviour-notes.md) | Why particular commands behave as they do: machine-output contract, ERD projections, `validate-dbt-contracts` vs `validate-dbt` |
 | [CompilePlan consumption](CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
 | [Logging & observability](OBSERVABILITY.md) | Verbosity flags, JSON logs, optional OpenTelemetry bridge (DD-151) |
 | [Architecture](design/ontology-dbt-dataplatform-design-architecture.md) | The system as it stands: boundaries, release safety, governance |
