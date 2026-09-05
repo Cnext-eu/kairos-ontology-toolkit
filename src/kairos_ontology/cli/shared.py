@@ -1554,6 +1554,30 @@ def _managed_scaffold_map() -> dict[str, Path]:
     if ci.is_file():
         result[".github/copilot-instructions.md"] = ci
 
+    # User documentation (#739). A scaffolded hub used to carry no route to the user guide,
+    # the how-to recipes or the CLI reference: they existed only in the toolkit repository,
+    # were not shipped in the wheel, and nothing in the scaffold linked them -- so a hub
+    # operator asking "do we have any user guides?" found nothing, and a GitHub link would
+    # have assumed read access to a repository client-side users do not necessarily have.
+    # Managed rather than init-only so hubs that already exist receive them, and receive
+    # corrections, on `update`.
+    #
+    # Namespaced under `docs/toolkit/` so it can never collide with documentation the hub
+    # authors for itself. The shipped set is the operator-facing guides only -- the
+    # allowlist lives in `scripts/sync_dev_skills.py`, which copies them to the scaffold;
+    # the decision log, architecture record, DD-133 and the maintainer release process are
+    # about the toolkit, not about operating a hub, and stay out.
+    scaffold_docs = _SCAFFOLD_DIR / "docs"
+    if scaffold_docs.is_dir():
+        for doc in sorted(scaffold_docs.rglob("*.md*")):
+            if not doc.is_file():
+                continue
+            relative = doc.relative_to(scaffold_docs).as_posix()
+            # `README.md.template` is scaffold-owned (it indexes what the hub receives),
+            # unlike its siblings which are synced copies of the toolkit's own docs.
+            destination = relative[: -len(".template")] if relative.endswith(".template") else relative
+            result[f"docs/toolkit/{destination}"] = doc
+
     for rel_path in (
         "ontology-hub/decisions/README.md",
         "ontology-hub/decisions/HUB-DD-template.md.template",

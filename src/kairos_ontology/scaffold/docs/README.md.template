@@ -1,0 +1,32 @@
+# Toolkit documentation
+
+The user documentation for the Kairos ontology toolkit, shipped into this hub so it is
+available locally — no access to the toolkit repository required.
+
+**These files are toolkit-managed.** They carry a `<!-- kairos-ontology-toolkit:managed -->`
+marker and are overwritten by `kairos-ontology update`, which also refreshes them to match
+the toolkit version this hub is pinned to. Do not edit them; put hub-specific documentation
+somewhere else under `docs/`.
+
+| Document | Purpose |
+|---|---|
+| [User guide](USER_GUIDE.md) | Authoring, stateless compile, adapters, and clean cutover |
+| [How-to guides](how-to/README.md) | Task recipes: create a hub, import a source, bind an entity, compile, consume downstream |
+| [CLI reference](CLI_REFERENCE.md) | Every command, generated from the command tree |
+| [CompilePlan consumption](CONSUMING_COMPILE_PLAN.md) | Dataplatform, Gold, and MDM consumption |
+
+## Start here
+
+| If you want to | Read |
+|---|---|
+| Understand the whole lifecycle in order | [User guide](USER_GUIDE.md) |
+| Do one specific task | [How-to guides](how-to/README.md) |
+| Look up a command's flags | [CLI reference](CLI_REFERENCE.md) |
+| Move this hub to a newer toolkit | [Upgrade the toolkit](how-to/upgrade-the-toolkit.md) |
+
+## Not shipped here
+
+Design decisions, the architecture record, DD-133 (the normative EntityBinding/compiler
+contract) and the maintainer release process describe the toolkit itself rather than how to
+operate a hub. They live in the toolkit repository:
+<https://github.com/Cnext-eu/kairos-ontology-toolkit/tree/main/docs>.

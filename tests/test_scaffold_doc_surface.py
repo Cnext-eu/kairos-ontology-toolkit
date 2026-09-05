@@ -13,11 +13,15 @@ Three properties, none of which had a test before:
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from kairos_ontology.cli.shared import (
+    _MANAGED_MARKER_RE,
     _SCAFFOLD_DIR,
     _managed_dataplatform_map,
     _managed_scaffold_map,
@@ -161,6 +165,118 @@ class TestManagedDocumentation:
         """The managed marker is an HTML comment; it is only invisible in Markdown."""
         for destination in _managed_docs():
             assert re.search(r"\.md(\.template)?$", destination), destination
+
+
+#: Operator-facing guides every scaffolded hub receives (#739).
+_SHIPPED_USER_DOCS = (
+    "docs/toolkit/README.md",
+    "docs/toolkit/USER_GUIDE.md",
+    "docs/toolkit/CLI_REFERENCE.md",
+    "docs/toolkit/CONSUMING_COMPILE_PLAN.md",
+    "docs/toolkit/how-to/README.md",
+)
+
+#: Toolkit-internal material that must never reach a client hub: it documents *this*
+#: repository, not how to operate a hub.
+_TOOLKIT_ONLY_DOCS = (
+    "design",
+    "instruction-guides",
+    "mdm",
+    "demo",
+    "temp",
+    "RELEASING.md",
+)
+
+
+class TestUserDocumentationReachesTheHub:
+    """#739: a scaffolded hub carried no route to the user guide, how-tos or CLI reference.
+
+    They existed only in the toolkit repository, were not shipped in the wheel, and nothing
+    in the scaffold linked them -- so a hub operator asking "do we have any user guides?"
+    found nothing. A GitHub link would not have fixed it either: client-side users do not
+    necessarily have read access to that repository.
+    """
+
+    @pytest.mark.parametrize("rel_path", _SHIPPED_USER_DOCS)
+    def test_user_docs_are_managed(self, rel_path):
+        """Managed, not init-only: hubs that already exist must receive them on `update`,
+        and receive corrections to them the same way."""
+        assert rel_path in _managed_scaffold_map(), rel_path
+
+    @pytest.mark.parametrize("name", _TOOLKIT_ONLY_DOCS)
+    def test_toolkit_internal_docs_are_not_shipped(self, name):
+        """The decision log, architecture record, DD-133, the practitioner guides and the
+        maintainer release process are about the toolkit, not about operating a hub."""
+        assert not (_SCAFFOLD_DIR / "docs" / name).exists()
+        assert not any(
+            dest.startswith(f"docs/toolkit/{name}") for dest in _managed_scaffold_map()
+        ), name
+
+    def test_shipped_docs_carry_no_relative_link_outside_the_shipped_set(self):
+        """Managed files are copied verbatim, so a `../design/...` link dangles in the hub.
+
+        Cross-links to documents the hub does not receive must be absolute URLs.
+        """
+        shipped = {
+            dest[len("docs/toolkit/") :]
+            for dest in _managed_scaffold_map()
+            if dest.startswith("docs/toolkit/")
+        }
+        offenders = []
+        for dest, source in _managed_scaffold_map().items():
+            if not dest.startswith("docs/toolkit/"):
+                continue
+            here = PurePosixPath(dest[len("docs/toolkit/") :]).parent
+            for target in re.findall(r"\]\((?!https?://|#)([^)#]+)", source.read_text("utf-8")):
+                if not target.endswith(".md") and "/" not in target:
+                    continue  # an anchor or a non-document link
+                # A bare directory link renders only on GitHub; on disk it resolves to the
+                # directory's README, so that is what has to ship.
+                candidate = target + "README.md" if target.endswith("/") else target
+                resolved = os.path.normpath(str(here / candidate)).replace(os.sep, "/")
+                if resolved not in shipped:
+                    offenders.append(f"{dest} -> {target}")
+        assert not offenders, "relative links to documents the hub never receives:\n" + "\n".join(
+            offenders
+        )
+
+    def test_update_installs_the_docs_into_a_hub_that_predates_them(self, tmp_path):
+        """The upgrade path, and the reason these are managed rather than init-only.
+
+        A hub scaffolded before #739 has no `docs/toolkit/`. `update` must create it, not
+        merely report it missing -- that is what "documentation copied after a toolkit
+        update" means for the hubs that already exist.
+        """
+        from unittest import mock
+
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        runner = CliRunner()
+        with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+            mock_run.return_value = mock.MagicMock(returncode=0)
+            with runner.isolated_filesystem(temp_dir=tmp_path) as cwd:
+                created = runner.invoke(cli, ["init", "--company-domain", "acme.example"])
+                assert created.exit_code == 0, created.output
+
+                root = Path(cwd)
+                shutil.rmtree(root / "docs" / "toolkit")  # the pre-#739 hub
+                assert not (root / "docs" / "toolkit").exists()
+
+                restored = runner.invoke(cli, ["update"])
+                assert restored.exit_code == 0, restored.output
+
+        for rel_path in _SHIPPED_USER_DOCS:
+            installed = root / rel_path
+            assert installed.is_file(), f"{rel_path} not installed by update\n{restored.output}"
+            assert _MANAGED_MARKER_RE.search(installed.read_text("utf-8")), rel_path
+
+    def test_the_hub_readme_routes_to_them(self, tmp_path):
+        """The docs are only useful if the hub's front page says they exist."""
+        readme = (_SCAFFOLD_DIR / "README.md.template").read_text("utf-8")
+        assert "docs/toolkit/README.md" in readme
+        assert "docs/toolkit/USER_GUIDE.md" in readme
 
 
 class TestFreshHubIsSelfConsistent:

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Sync .claude/ skills and copilot-instructions to scaffold/.
+"""Sync .claude/ skills, copilot-instructions and the user guides to scaffold/.
 
 Direction: .claude/skills/ (master) → scaffold/skills/ (distribution copy)
            .github/copilot-instructions.md (master) → scaffold/ (distribution copy)
+           docs/<user guides> (master) → scaffold/docs/ (distribution copy)
 
 .claude/skills/ is the authored source for skills — read directly by Claude Code
 and by GitHub Copilot's Agent Skills support (since Copilot's December 2025
@@ -28,6 +29,23 @@ SCAFFOLD_SKILLS = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "skills"
 GITHUB_INSTRUCTIONS = REPO_ROOT / ".github" / "copilot-instructions.md"
 SCAFFOLD_INSTRUCTIONS = (
     REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "copilot-instructions.md"
+)
+DOCS = REPO_ROOT / "docs"
+SCAFFOLD_DOCS = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "docs"
+
+#: The operator-facing guides shipped into every scaffolded hub (#739). An **allowlist**,
+#: not "docs/ minus exclusions": `docs/` also holds the decision log, the architecture
+#: record, DD-133, RELEASING.md and the practitioner/MDM material, none of which a hub
+#: operator needs and all of which describe *this* repository. Adding a file here puts it
+#: in every client hub on the next `update`, so the addition is a deliberate act.
+#:
+#: Kept flat except for `how-to/`, whose README is the recipe index. These are copied
+#: verbatim by `_copy_managed`, so any cross-link they carry to a document outside this
+#: list must be an absolute URL — a relative `../design/...` would dangle in the hub.
+_USER_DOCS = (
+    "USER_GUIDE.md",
+    "CLI_REFERENCE.md",
+    "CONSUMING_COMPILE_PLAN.md",
 )
 
 # Skill directories under .claude/skills/ that are contributor-workflow skills
@@ -93,6 +111,17 @@ def get_sync_pairs() -> list[tuple[Path, Path]]:
             ]
             for extra in sorted(extra_globs):
                 pairs.append((extra, SCAFFOLD_SKILLS / skill_dir.name / extra.name))
+
+    # User guides (#739): shipped into the hub as managed files so a hub operator has the
+    # documentation locally, without needing read access to this repository.
+    for name in _USER_DOCS:
+        source = DOCS / name
+        if source.is_file():
+            pairs.append((source, SCAFFOLD_DOCS / name))
+    how_to = DOCS / "how-to"
+    if how_to.is_dir():
+        for source in sorted(how_to.glob("*.md")):
+            pairs.append((source, SCAFFOLD_DOCS / "how-to" / source.name))
 
     return pairs
 

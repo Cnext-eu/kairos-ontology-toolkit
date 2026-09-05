@@ -4,13 +4,26 @@ Kairos v5 ontology hub for **{description}**.
 
 Operational branching, release, rollback, and hotfix guidance is in [`CICD.md`](CICD.md).
 
+## Documentation
+
+The toolkit's user documentation ships with this hub and is refreshed by
+`kairos-ontology update`, so it always matches the pinned toolkit version:
+
+| Document | Purpose |
+|---|---|
+| [Documentation index](docs/toolkit/README.md) | What is here and where to start |
+| [User guide](docs/toolkit/USER_GUIDE.md) | Authoring, stateless compile, adapters, cutover |
+| [How-to guides](docs/toolkit/how-to/README.md) | Task recipes, one per goal |
+| [CLI reference](docs/toolkit/CLI_REFERENCE.md) | Every command and flag |
+| [CompilePlan consumption](docs/toolkit/CONSUMING_COMPILE_PLAN.md) | Downstream dataplatform, Gold, MDM |
+
 ## Quick start
 
 ```bash
 uv sync
 uv run kairos-ontology compile <domain> --check
 uv run kairos-ontology compile <domain> --explain
-uv run kairos-ontology compile <domain> --emit
+uv run kairos-ontology compile <domain> --emit --confirm-emit
 ```
 
 `--check` and `--explain` are write-free. `--emit` atomically writes only
