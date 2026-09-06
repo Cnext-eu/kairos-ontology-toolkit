@@ -256,6 +256,12 @@ kairos-ext:goldExcludeColumn a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
+kairos-ext:goldHideColumn a owl:AnnotationProperty ;
+    rdfs:label "gold hide column"@en ;
+    rdfs:comment "Hide one emitted Gold column from a report author's field list, as \"Table.column\" (issue #744). Repeatable; set on the owl:Ontology resource. Surrogate keys, foreign keys, source-identity, entity-IRI, audit and SCD history columns are hidden automatically by their Silver column role -- this annotation is for the remaining case, a business-looking column this product does not want browsed. Hiding is presentation only: the column stays in the model, carries its relationships and remains available to DAX. Use kairos-ext:goldExcludeColumn (DD-217) to remove a column from the product entirely, and kairos-ext:securityPolicy for role-based access. Fail-closed: a value naming no emitted Gold column is rejected (gold.unknown-hidden-column)."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
 kairos-ext:goldIncludeImports a owl:AnnotationProperty ;
     rdfs:label "gold include imports"@en ;
     rdfs:comment "Bulk-claim all first-level imported classes for gold projection (DD-021). Set on the owl:Ontology resource. Peer hub domain imports are excluded."@en ;

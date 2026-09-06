@@ -129,6 +129,49 @@ binds through a named expression that embeds those GUIDs, so projection fails cl
 `gold.direct-lake-connection-missing` when the block is absent. Both modes emit a root
 `parameter.yml` so fabric-cicd can rewrite the environment-specific values at deploy time.
 
+### Gold products span domains
+
+One semantic model is one *product*, and a product follows a business process rather than
+an ontology domain: a fact from one domain joined to conformed dimensions from several
+others. Declare it in `kairos.yaml`:
+
+```yaml
+gold:
+  products:
+    - name: bookings-overview        # lower-case, digits, hyphens: used in file paths
+      display_name: Bookings Overview # optional; names the item in the Fabric workspace
+      domains: [booking, party, reference-data]
+```
+
+`emit-gold bookings-overview` compiles each listed domain — Silver compilation stays per
+domain — and shapes them into one model, so a cross-domain foreign key resolves instead of
+leaving a dead surrogate-key column. Every participating domain authors its own
+`<domain>-gold-ext.ttl` for the tables it owns, and belongs to at most one product. Declare
+the calendar and the security policy in exactly one participating domain; the product
+inherits them.
+
+Without a `products` block nothing changes: each Gold-configured domain is its own product
+under its own name, with the paths a hub already has.
+
+A cross-domain relationship reaches the compiler only through a DD-138 `externalReference`
+in the child's EntityBinding. After emitting, read the unresolved-relationship warning: it
+lists foreign keys whose join column is emitted but whose target table is not in the
+product.
+
+### The hub governs the model; the report belongs downstream
+
+The hub emits the semantic model and a **stub** report item. Real report design — pages,
+visuals, bookmarks, theme — belongs to the BI engineer, who builds it as a separate Fabric
+item with its own name, bound to the deployed model. The generated `<Product>.Report` is
+republished on every hub release, so edits to it are lost.
+
+Edits made to the *model* in Power BI Desktop or Fabric come back through
+`kairos-ontology harvest-gold <product> --from <exported model>`, which diffs the edited
+model against the hub and writes a review document plus a ready-to-paste Turtle snippet
+under `model/planning/gold-harvest/`. It applies nothing: authored inputs are never
+rewritten behind the author's back. See
+[Design a Gold product](how-to/design-a-gold-product.md).
+
 ## 4. Compile
 
 Each invocation resolves its inputs afresh and builds one immutable, graph-free

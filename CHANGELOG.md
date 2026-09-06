@@ -20,6 +20,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
 
 ### Added
+- **A Power BI report design guide ships with `kairos-design-gold`, and a how-to covers the
+  whole Gold lifecycle (#744).** `report-design-inspiration.md` collects what actually
+  changes reporting outcomes: the native visuals and formatting-pane features teams
+  underuse, JSON themes and `.pbit` templates as the highest-leverage consistency tool, and
+  the UX practices worth arguing for — start from the decision rather than the data, one
+  message per page, titles as takeaways, colour as signal with 4.5:1 contrast, accessibility
+  and load time as usability, wireframe before building. Plus the insight side: IBCS, and
+  the rule that every number needs a comparison to mean anything.
+  It is **inspiration, not a gate**: nothing in it is validated by the toolkit or blocks an
+  emit, and the guide says so at the top. It is reference material for shaping a
+  conversation with a client, not a checklist to satisfy.
+  A new how-to, *Design a Gold product*, walks the lifecycle end to end: declare the
+  product's scope, author each domain's tables, record what people need to know, emit, hand
+  off, and harvest what the BI engineer builds. `scripts/sync_dev_skills.py` now ships
+  Markdown siblings of a skill, so reference material a skill links to reaches client hubs
+  instead of stopping at this repository.
+- **The hub/report ownership boundary is written down (#744).** The hub owns everything
+  governed — tables, relationships, measures, calendar, security, column visibility,
+  descriptions — and emits a *stub* report item. Report design belongs to the BI engineer,
+  who builds it as a separate Fabric item with its own name bound to the deployed model:
+  the generated `<Product>.Report` is republished on every hub release, so edits to it are
+  lost. Model edits return through `harvest-gold`, never into the dataplatform repository.
+  Recorded in the user guide, the dataplatform `CICD.md`, the *consume from a dataplatform*
+  recipe and the `kairos-package-dataplatform` skill, which also now states that the
+  dataplatform-side TMDL sanitizer is gone and must not come back — the `///` comments it
+  used to strip are load-bearing, carrying the ontology's descriptions into Desktop.
+- **`harvest-gold` brings Desktop and Fabric edits back into authored hub inputs (#744,
+  DD-224).** A BI engineer opened the generated PBIP, hid a column, added measures — and
+  the next `emit-gold` overwrote all of it. The only defences were to stop editing or to
+  stop re-emitting, and both defeat the point of generating the model.
+  `kairos-ontology harvest-gold <product> --from <exported model>` reads the edited model,
+  diffs it against a fresh in-memory emit, and writes two review documents under
+  `model/planning/gold-harvest/`: a Markdown report of everything that changed, and a
+  Turtle snippet of the changes that have authoring vocabulary, grouped by owning domain.
+  New measures arrive at DD-113 lifecycle `provisional`, carrying the author's own `///`
+  description as the starting definition.
+  **Nothing is applied.** Merging an edit into `model/extensions/` would make the hub's
+  authored inputs a downstream artifact of a report, which inverts the ownership the design
+  depends on. Tables match on the `Kairos_SilverBinding` annotation, columns and measures on
+  `lineageTag` — which Desktop preserves across a rename, so a rename is reported as a
+  rename rather than as a deletion plus an addition. A measure with no `Kairos_Lifecycle`
+  annotation was not emitted by the hub, which is how a hand-added measure is told from a
+  governed one. DAX is compared after normalising the reformatting Desktop applies, so a
+  re-indented governed measure is not reported as changed.
+- **`import-tmdl` harvests usage from the legacy report, not just the model (#744, DD-223).**
+  The command turned the `.SemanticModel` half of a PBIP export into demand evidence and
+  read nothing from the `.Report` half, where the reporting patterns live. It now writes a
+  `<report>-report-usage.yaml` for every report folder with pages: which measures are
+  actually *placed on a visual* rather than merely defined, which fields are used on
+  slicers, a visual-type histogram and page names. That is the signal a model inventory
+  cannot give — a legacy model typically defines far more measures than any report uses.
+  DD-147's discipline is unchanged: derived counts only, no visual definitions, positions,
+  filter values, titles, images, themes or connection strings, and the export still expands
+  to a temporary directory. A visual whose JSON cannot be read is counted under
+  `unreadable_visuals` rather than failing the import, because one bad visual out of 2,000
+  must not cost the operator the other 1,999; a visual that parses but projects no field (a
+  text box, a shape) is counted separately, so an annotated report does not read as a broken
+  parse.
+- **Personas, questions and KPIs are authorable, and `emit-gold` checks them (#744, DD-223).**
+  A Gold product could be described completely without recording what anyone wanted to
+  know, so report design started from the data that happened to be modelled rather than
+  from the decision someone needs to make. `integration/discovery/bi/insights.yaml` records
+  personas, their questions, the KPI that answers each, and the canonical measures and
+  dimensions it needs. `emit-gold` reports which `confirmed` insights the product cannot
+  answer yet and writes `<product>-insight-brief.md` beside the semantic model, grouped by
+  persona. A measure still at DD-113 lifecycle `intent` does not count as answering
+  anything, because it is deliberately not rendered into the model.
+  A warning, never a gate: the gap between what the business wants to know and what the
+  model answers is a backlog, not a build failure. A hub that authors no insights gets no
+  brief and no warnings.
+- **A Gold product can span ontology domains (#744, DD-222).** A semantic model was
+  hard-wired to exactly one domain: product identity came from a single compile plan, every
+  emitted path was derived from it, and any foreign key whose target class lived in another
+  domain was dropped without a diagnostic. On a real reporting hub that meant a
+  role-assignment fact carried a `legalentity_sk` to a sibling domain, `relationships.tmdl`
+  carried only the intra-domain joins, and the column was dead — fixable only by a hand edit
+  in Desktop that the next emit overwrote. Domains are a modelling boundary; analytical
+  products follow business processes, with facts from one domain and conformed dimensions
+  from several others.
+  Declare one in `kairos.yaml`:
+  ```yaml
+  gold:
+    products:
+      - name: bookings-overview
+        display_name: Bookings Overview
+        domains: [booking, party, reference-data]
+  ```
+  `emit-gold bookings-overview` then compiles each listed domain — Silver compilation stays
+  per domain, and each keeps its own provenance sidecar — and shapes them into one model, so
+  the cross-domain join resolves. Every participating domain authors its own
+  `<domain>-gold-ext.ttl` for the tables it owns, and a cross-domain relationship still needs
+  its DD-138 `externalReference` in the binding.
+  **Nothing changes for a hub that declares no product:** each Gold-configured domain stays
+  its own product under its own name, with identical paths, manifest names and report
+  contents. A single-domain product is the N=1 case of the same code path, not a second one.
+  Moving a domain into a product retires its superseded per-domain emit, so fabric-cicd does
+  not deploy the old model beside the new one.
+- **A dangling Gold relationship is reported instead of dropped (#744).** Where the #207 fix
+  skipped a foreign key whose target table was absent, `emit-gold` now lists it and records
+  it in the product report as `unresolved_relationships`. It stays a warning, not an error:
+  the model is valid without the join, and the fix is an authoring decision — add the owning
+  domain to the product, or accept the column. This reverses the position taken in #661.
+- **The Gold semantic model hides its technical columns, marks its keys, and carries the
+  ontology's descriptions (#744, DD-221).** A `dim_customer` opened in Power BI Desktop
+  used to show `customer_sk`, `country_sk`, `_source_identity_ref`, `_loaded_at` and
+  `_kairos_fk_*_match_count` in the field list beside `customer_name` — half the table
+  machinery — with no column marked as the key and no descriptions at all, even though the
+  ontology's `rdfs:comment` already reached the physical plan. None of that was authored
+  policy, so no hub could fix it.
+  Columns are now hidden by their Silver column **role** (`source-identity`,
+  `surrogate-join-key`, `entity-iri`, `audit`, `history`), not by name: the SCD history flag
+  defaults to `is_current` with no underscore, and a business column may legitimately end in
+  `_sk`. `foreign-key` is decided on provenance instead, because the compiler gives that one
+  role both to the generated `{target}_sk` and to the mapped column its join reads from — so
+  `country_code` stays visible while `country_sk` does not. Hiding is presentation only: a
+  hidden column keeps its relationships, answers DAX, and can still be granted by a security
+  role. `isKey` is emitted only for a dimension or bridge whose primary key is the Silver
+  surrogate, because Power BI rejects a non-unique key at refresh in the workspace rather
+  than at validation in CI. Column `rdfs:comment`s are emitted as TMDL `///`, so they reach
+  Desktop's field-list tooltip.
+  Every existing hub's TMDL changes on the next `emit-gold`; paths, manifests and the
+  `.SemanticModel` layout do not.
+- **`kairos-ext:goldHideColumn "Table.column"` (#744).** The authored escape hatch for a
+  business-looking column a product does not want browsed. Repeatable on the `owl:Ontology`
+  resource, case-insensitive on the table, and fail-closed as `gold.unknown-hidden-column`
+  like `goldExcludeColumn` (DD-217) — a stale value after a Silver rename must not read as
+  "successfully hidden" while the column is back in the field list. It hides; DD-217's
+  `goldExcludeColumn` removes; `kairos-ext:securityPolicy` controls access.
 - **A scaffolded hub now ships the toolkit's user documentation, and `update` keeps it
   current (#739).** `docs/guide/USER_GUIDE.md`, the eleven recipes under `docs/guide/how-to/`,
   `docs/guide/CLI_REFERENCE.md` and `docs/guide/CONSUMING_COMPILE_PLAN.md` existed only in this
@@ -76,6 +204,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a companion must sit beside a real decision record.
 
 ### Fixed
+- **The TMDL parser could not read bare flags, annotations or `///` descriptions (#744).**
+  `isKey` and `isHidden` are written with no value, and the reader only handled
+  `key: value` lines, so neither was visible; `annotation X = "..."` has no colon and was
+  skipped entirely; `///` doc comments — which is how TMDL actually carries a description —
+  were skipped in every block; and an `annotation` following a multi-line measure was
+  swallowed into the DAX expression. All are now parsed, which is what makes a round trip
+  from an edited model possible at all.
+- **Legacy measure names reached the conformance judge as stringified dicts (#744).**
+  `bi_demand_terms` normalised each measure with `_norm(measure)`, but `import-tmdl` writes
+  measures as `{name, expression, format_string}` mappings, so the whole dict was
+  stringified and no measure name could ever match a concept. The BI demand signal was
+  silently empty for every worksheet the toolkit itself produced.
 - **The scaffolded hub README told operators to run `compile <domain> --emit`, which the CLI
   rejects (#739).** `--emit` has required `--confirm-emit` since #264, and
   `test_scaffold_emit_invocations_pass_confirm_emit` exists to catch exactly this — but it

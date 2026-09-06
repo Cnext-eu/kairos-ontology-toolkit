@@ -1,0 +1,44 @@
+apiVersion: kairos.eu/v5
+kind: EntityBinding
+metadata:
+  name: erp-invoice
+  domain: billing
+source:
+  relation: erp.invoices
+target:
+  class: billing:Invoice
+grain:
+  columns: [invoice_id]
+identity:
+  strategy: source-natural
+  sourceKey: [invoice_id]
+load:
+  mode: full-refresh
+fields:
+  - property: billing:invoice_id
+    expression: invoice_id
+  - property: billing:amount
+    expression: amount
+  - property: billing:customer_id
+    expression: customer_id
+relationships:
+  - property: billing:billedTo
+    target: party:Customer
+    externalReference:
+      name: customer
+      domain: party
+      key:
+        - column: customer_id
+          type: string
+    join:
+      - local: customer_id
+        foreign: customer_id
+    cardinality: many-to-one
+    mode: non-temporal
+    missingParent: error
+    ambiguousParent: error
+quality:
+  - kind: unique
+    columns: [invoice_id]
+  - kind: not-null
+    columns: [invoice_id]

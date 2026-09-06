@@ -37,3 +37,26 @@ adapter: {adapter}
 #       prod:
 #         workspace_id: <prod workspace GUID>
 #         lakehouse_id: <prod lakehouse GUID>
+
+# Gold products (issue #744). Optional. An analytical product follows a business
+# process, not a modelling boundary: a fact from one domain joined to conformed
+# dimensions from several others. Declare one here and `emit-gold <product>`
+# compiles every listed domain and shapes them into ONE semantic model, so a
+# cross-domain foreign key resolves instead of leaving a dead surrogate-key column.
+#
+# Without this block nothing changes: every Gold-configured domain stays its own
+# product under its own name, with the same emitted paths as before.
+#
+# `name` is used verbatim in artifact paths, so lower-case, digits and hyphens only.
+# `display_name` is optional and becomes the Fabric item name (default: PascalCase
+# of `name`). A domain belongs to at most one product. Every listed domain must
+# author its own `<domain>-gold-ext.ttl` declaring the tables it owns.
+#
+# A cross-domain relationship reaches the compiler only through a DD-138
+# `externalReference` in the child's EntityBinding; without one the compile blocks
+# on `safety.relationship-endpoint` long before Gold sees it.
+# gold:
+#   products:
+#     - name: bookings-overview
+#       display_name: Bookings Overview
+#       domains: [booking, party, reference-data]

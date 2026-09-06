@@ -26,6 +26,7 @@ from .gold_specs import (
     GoldSecurityKind,
     GoldTableSpec,
 )
+from .policy_specs import GoldTableRole
 
 
 # PBIP wrapper schemas. The projector is the single, authoritative source of
@@ -424,7 +425,13 @@ def _ddl(
         f"-- Gold data product: {spec.profile.value}/{spec.profile_version}",
         f"-- Adapter: {physical.adapter}/{physical.adapter_version}",
         "-- Roles, grains, and source bindings are authored; none are inferred.",
-        f"CREATE SCHEMA IF NOT EXISTS {spec.schema_name};",
+        # One per distinct table schema, not one for the product: a multi-domain product
+        # spans a `gold_<domain>` schema per participating domain (#744), and the physical
+        # tables stay owned by the domain that binds them.
+        *(
+            f"CREATE SCHEMA IF NOT EXISTS {name};"
+            for name in sorted({item.schema_name for item in physical.tables} or {spec.schema_name})
+        ),
         "",
     ]
     for table in physical.tables:
@@ -838,10 +845,28 @@ def _table_tmdl(
             ]
         )
     for column in physical.columns:
+        # `isKey` only where the key is provably unique: a dimension or bridge whose
+        # primary key is the Silver surrogate. `_primary_key` falls back to "first
+        # non-nullable column, else first column", which on a fact can land on a repeated
+        # value -- and Power BI rejects a non-unique `isKey` at refresh, not at
+        # validation, so that failure surfaces in the workspace rather than in CI.
+        is_key = (
+            column.name == physical.primary_key
+            and column.role == "surrogate-join-key"
+            and table.role in {GoldTableRole.DIMENSION, GoldTableRole.BRIDGE}
+        )
+        # The ontology's `rdfs:comment`, carried through Silver as the column
+        # description. Descriptions are the ontology's best asset for a report author --
+        # they surface in Desktop's field-list tooltip -- and they already reached the
+        # physical plan; only the emit was missing (#744).
+        if column.comment:
+            lines.append(f"\t/// {_tmdl_text(column.comment)}")
         lines.extend(
             [
                 f"\tcolumn {column.name}",
                 f"\t\tdataType: {column.tmdl_type}",
+                *(["\t\tisKey"] if is_key else []),
+                *(["\t\tisHidden"] if column.hidden else []),
                 f"\t\tlineageTag: {_guid(f'{table.name}.{column.name}')}",
                 f"\t\tsourceColumn: {column.name}",
                 "\t\tsummarizeBy: none",
@@ -1015,6 +1040,26 @@ def gold_product_report(
             "name": spec.profile.value,
             "version": spec.profile_version,
         },
+        # Only for a product that actually spans domains (#744): adding a key to every
+        # existing hub's report for a value it already knows would be churn, and a
+        # single-domain product's one domain is its own name.
+        **({"domains": list(spec.domains)} if len(spec.domains) > 1 else {}),
+        # A foreign key whose join column exists but whose target table is not in this
+        # product: a dead column in the model. Empty for every product that resolves.
+        **(
+            {
+                "unresolved_relationships": [
+                    {
+                        "property": property_uri,
+                        "source_table": source_table,
+                        "target_class": target_class,
+                    }
+                    for property_uri, source_table, target_class in spec.unresolved_relationships
+                ]
+            }
+            if spec.unresolved_relationships
+            else {}
+        ),
         "adapter": {
             "name": physical.adapter,
             "version": physical.adapter_version,
@@ -1149,6 +1194,7 @@ def render_powerbi_artifacts(
     silver_parity: dict | None = None,
     connection: GoldDatabricksConnectionSpec | None = None,
     direct_lake_connection: GoldDirectLakeConnectionSpec | None = None,
+    display_name: str = "",
 ) -> dict[str, str]:
     """Render DDL, dbt, TMDL, DAX, ERD, and report artifacts.
 
@@ -1184,8 +1230,18 @@ def render_powerbi_artifacts(
             ),
             rule_id=GOLD_DIRECT_LAKE_RULE_ID,
         )
+    # `ontology_name` carries the *product* name (#744). A Gold-configured domain that no
+    # declared product claims is its own product under its own name, so a hub that declares
+    # nothing keeps exactly the paths and manifest names it had.
+    #
+    # Paths stay derived from the product name, never from the authored display name: a
+    # display name is free text a client chooses for the workspace, and letting it name
+    # folders would put spaces -- or a character illegal in a path -- into the emitted
+    # tree, the release zip and the fabric-cicd `repository_directory`. The display name
+    # reaches Fabric through `.platform`, which is what actually names the item there.
     domain = spec.ontology_name
     model_name = "".join(item.capitalize() for item in domain.replace("-", "_").split("_"))
+    item_name = display_name or model_name
     prefix = f"{domain}/{model_name}.SemanticModel"
     definition = f"{prefix}/definition"
     report = f"{domain}/{model_name}.Report"
@@ -1201,9 +1257,9 @@ def render_powerbi_artifacts(
             )
         ),
         f"{domain}/{model_name}.pbip": _pbip(model_name),
-        f"{report}/.platform": _platform(model_name, artifact_type="Report"),
+        f"{report}/.platform": _platform(item_name, artifact_type="Report"),
         f"{report}/definition.pbir": _pbir(model_name),
-        f"{prefix}/.platform": _platform(model_name),
+        f"{prefix}/.platform": _platform(item_name),
         f"{prefix}/definition.pbism": _pbism(),
         f"{definition}/database.tmdl": (
             "database\n\tcompatibilityLevel: 1702\n\tcompatibilityMode: powerBI\n\tlanguage: 1033\n"

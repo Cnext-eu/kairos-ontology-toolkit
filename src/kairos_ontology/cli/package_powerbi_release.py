@@ -69,11 +69,12 @@ def package_powerbi_release_cmd(
       kairos-ontology package-powerbi-release --confirm-emit --output dist/powerbi.zip
     """
     from ..cli.compile import _hub_domains
+    from ..core.projections.dbt.gold_connection import GoldProductConfig, load_gold_products
     from ..core.projections.dbt.gold_release_package import build_powerbi_release_archive
     from ..core.projections.dbt.gold_specs import GoldContractError
     from ..core.projections.dbt.pbip_validate import validate_package_artifacts
     from ..core.projections.dbt.tmdl_validate import validate_tmdl_artifacts
-    from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plan
+    from ..core.projections.medallion_gold_projector import generate_gold_from_compile_plans
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
     if hub_root is None:
@@ -81,24 +82,58 @@ def package_powerbi_release_cmd(
             "Cannot locate a hub (model/ + integration/) from the current directory."
         )
 
+    # Declared products first, then every Gold-configured domain no product claims as its
+    # own implicit product (#744). A hub that declares nothing packages exactly what it
+    # packaged before: one item per Gold-configured domain, under its own name.
+    declared = load_gold_products(hub_root)
+    claimed = {domain for product in declared for domain in product.domains}
+    hub_domains = list(_hub_domains(hub_root))
+    unknown = sorted(
+        domain for product in declared for domain in product.domains if domain not in hub_domains
+    )
+    if unknown:
+        raise click.ClickException(
+            f"gold.products names domain(s) not in this hub: {', '.join(unknown)}"
+        )
+    products = [
+        *declared,
+        *(
+            GoldProductConfig(name=domain, domains=(domain,), declared=False)
+            for domain in hub_domains
+            if domain not in claimed
+        ),
+    ]
+
     domain_artifacts: dict[str, dict[str, str]] = {}
     skipped: list[str] = []
-    for domain in _hub_domains(hub_root):
-        plan = build_compile_plan(hub_root, domain)
-        if plan.blocked:
-            for diagnostic in plan.diagnostics.ordered:
-                click.echo(diagnostic.render(), err=True)
-            raise click.ClickException(f"{domain}: compile plan is blocked; see diagnostics above")
-
-        contract = plan.normalized_contract
-        if contract is None or contract.policy.gold.profile is None:
-            skipped.append(domain)
+    for product in products:
+        plans = []
+        incomplete = False
+        for member in product.domains:
+            plan = build_compile_plan(hub_root, member)
+            if plan.blocked:
+                for diagnostic in plan.diagnostics.ordered:
+                    click.echo(diagnostic.render(), err=True)
+                raise click.ClickException(
+                    f"{member}: compile plan is blocked; see diagnostics above"
+                )
+            contract = plan.normalized_contract
+            if contract is None or contract.policy.gold.profile is None:
+                # An implicit product is just a domain, and a domain without a Gold
+                # profile has always been skipped. A *declared* product naming such a
+                # domain is an authoring error, and is reported as one by the projector.
+                if not product.declared:
+                    skipped.append(member)
+                    incomplete = True
+                    break
+            plans.append(plan)
+        if incomplete:
             continue
 
         try:
-            artifacts = generate_gold_from_compile_plan(plan)
+            artifacts = generate_gold_from_compile_plans(plans, product)
         except GoldContractError as exc:
-            raise click.ClickException(f"{domain}: {exc}") from exc
+            raise click.ClickException(f"{product.name}: {exc}") from exc
 
         package_failures = [
             result for result in validate_package_artifacts(artifacts) if result.status != "pass"
@@ -106,7 +141,7 @@ def package_powerbi_release_cmd(
         if package_failures:
             detail = "; ".join(f"{item.artifact_path}: {item.message}" for item in package_failures)
             raise click.ClickException(
-                f"{domain}: Fabric package validation failed for "
+                f"{product.name}: Fabric package validation failed for "
                 f"{len(package_failures)} file(s): {detail}"
             )
 
@@ -116,7 +151,7 @@ def package_powerbi_release_cmd(
             for result in tmdl_results:
                 if result.status == "unavailable":
                     click.echo(
-                        f"   (TOM SDK validation unavailable for {domain} "
+                        f"   (TOM SDK validation unavailable for {product.name} "
                         f"{result.definition_root}: {result.message})"
                     )
             if failures:
@@ -124,27 +159,27 @@ def package_powerbi_release_cmd(
                     f"{item.definition_root}: {item.message}" for item in failures
                 )
                 raise click.ClickException(
-                    f"{domain}: TMDL structural validation failed for "
+                    f"{product.name}: TMDL structural validation failed for "
                     f"{len(failures)} model(s): {detail}"
                 )
 
-        domain_artifacts[domain] = artifacts
+        domain_artifacts[product.name] = artifacts
 
     if skipped:
-        click.echo(f"   (skipped, no Gold profile authored: {', '.join(skipped)})")
+        click.echo(f"   (skipped, no Gold profile authored: {', '.join(sorted(skipped))})")
 
     try:
         archive = build_powerbi_release_archive(domain_artifacts)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     if archive is None:
-        click.echo("No Gold-configured domain contributes a Power BI item; nothing to package.")
+        click.echo("No Gold-configured product contributes a Power BI item; nothing to package.")
         return
 
     verb = "Would package" if not confirm_emit else "Packaged"
     click.echo(
         f"✅ {verb} {archive.file_count} file(s) across {len(archive.domains)} "
-        f"domain(s) ({', '.join(archive.domains)}) into {output}"
+        f"product(s) ({', '.join(archive.domains)}) into {output}"
     )
     click.echo(f"   sha256: {archive.sha256}")
     if not confirm_emit:

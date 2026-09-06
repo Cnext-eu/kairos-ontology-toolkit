@@ -907,6 +907,8 @@ class GoldProductFact:
     security_policies: tuple[SecurityFact, ...]
     #: ``kairos-ext:goldExcludeColumn`` values, each ``"Table.column"`` (#703).
     excluded_columns: AuthoredValuesFact | None = None
+    #: ``kairos-ext:goldHideColumn`` values, each ``"Table.column"`` (#744).
+    hidden_columns: AuthoredValuesFact | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1025,6 +1027,9 @@ class GoldProductSpec:
     #: verbatim: the emitted column set they are checked against only exists once the
     #: tables have been shaped.
     excluded_columns: tuple[str, ...] = ()
+    #: ``kairos-ext:goldHideColumn`` values, each ``"Table.column"`` (#744). Carried
+    #: verbatim for the same reason as ``excluded_columns``.
+    hidden_columns: tuple[str, ...] = ()
     #: The ontology this product was authored on, for diagnostics that have no table.
     ontology_uri: str = ""
 

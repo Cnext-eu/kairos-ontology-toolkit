@@ -56,8 +56,11 @@ Stop for ambiguous semantics, low confidence, secrets, PII, proprietary data, or
    the reason. Confirm the remaining set with the user before continuing.
 10. Once sources are settled, offer to import any Power BI / TMDL analysis the user has as **demand
     evidence, not a source**. Run `kairos-ontology import-tmdl <pbip.zip | SemanticModel/ |
-    file.tmdl>`; it lands an Engineering Pack and a Concept Mapping template under
-    `integration/discovery/bi/`. Never place it under `integration/sources/` or bind it as a source
+    file.tmdl>`; it lands an Engineering Pack, a Concept Mapping template and — for a PBIP
+    export that carries its `.Report` folders — a report-usage summary under
+    `integration/discovery/bi/`. The usage file ranks measures by how often a report
+    actually places them on a visual, and fields by how often they are sliced on; it is the
+    starting evidence `kairos-design-gold` uses to propose insights. Never place it under `integration/sources/` or bind it as a source
     relation — it informs ontology and Gold design only. Fold each imported or skipped BI input into
     the same report from step 9.
 11. When semantic source analysis is requested, select and disclose the AI provider immediately

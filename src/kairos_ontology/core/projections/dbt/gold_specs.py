@@ -73,6 +73,11 @@ class GoldColumnSpec:
     role: str
     comment: str
     provenance: tuple[str, ...]
+    #: Emitted as TMDL ``isHidden``. A hidden column is still in the model -- it carries
+    #: relationships, feeds DAX and can be granted by a role -- it is only kept out of a
+    #: report author's field list. Contrast ``goldExcludeColumn`` (DD-217), which removes
+    #: the column from the product entirely.
+    hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +201,15 @@ class DimensionalGoldSpec:
     perspectives: tuple[tuple[str, tuple[str, ...]], ...]
     silver_registry_names: tuple[tuple[str, str], ...]
     silver_registry_columns: tuple[tuple[str, frozenset[str]], ...]
+    #: Every ontology domain contributing tables to this product, in declaration order
+    #: (#744). A single-domain product carries exactly its own domain.
+    domains: tuple[str, ...] = ()
+    #: ``(property_uri, source_table, target_class)`` for each foreign key whose join
+    #: column was materialized but whose target table is not in this product -- a dead
+    #: column in the emitted model. Reported rather than raised: the fix is an authoring
+    #: decision (add the owning domain to the product, or accept the column), and before
+    #: #744 this vanished silently, which is how a cross-domain product lost half its star.
+    unresolved_relationships: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +221,7 @@ class GoldPhysicalColumnPlan:
     nullable: bool
     role: str
     comment: str
+    hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-88 commands.
+89 commands.
 
 ## Index
 
@@ -66,6 +66,7 @@ not reasoning.
 | [`fit-report`](#fit-report) | Advisory set-difference between a class's full property universe and what is populated. |
 | [`generate-bindings`](#generate-bindings) | Generate first-draft EntityBindings from the design sheet (DD-191, no LLM). |
 | [`guard-scope`](#guard-scope) | Deterministic 'no unexpected file changed' guard for a bounded skill gate. |
+| [`harvest-gold`](#harvest-gold) | Diff an edited semantic model against this hub and propose the authoring. |
 | [`import-flatfile`](#import-flatfile) | Import CSV/.xlsx/Parquet flat files as source schema documentation. |
 | [`import-source`](#import-source) | Import source schema YAML and generate/refresh bronze vocabulary TTL. |
 | [`import-tmdl`](#import-tmdl) | Import and inventory TMDL/PBIP files for ontology modeling. |
@@ -630,7 +631,7 @@ kairos-ontology draft-model-report [OPTIONS]
 Emit Gold/PowerBI artifacts (TMDL, PBIP, DAX, ERD) for one compiled DOMAIN. Builds the same typed ``CompilePlan`` ``compile`` uses, then projects its Gold product the same way ``project_downstream_compile_plan('powerbi', plan)`` does. Requires the domain to have an authored Gold profile (``kairos-ext:goldProductProfile``) and, for a Direct Lake or Databricks-backed product, the matching connection block in ``kairos.yaml`` (``gold.direct_lake_connection`` / ``gold.databricks_connection``). Before writing anything, two independent gates run. ``validate_package_artifacts()`` validates every Fabric package file (``.pbip``, ``definition.pbir``, ``definition.pbism``, ``.platform``, and the PBIR report JSON) against the JSON Schema each one declares, using vendored copies of Microsoft's published schemas. It always runs and never touches the network. ``validate_tmdl_artifacts()`` then runs the generated TMDL through the Microsoft TOM SDK. This is **TMDL structural/deserialization validation only** (``TmdlSerializer.DeserializeDatabaseFromFolder``) -- it is not proof that Desktop or Fabric can open the project. It does not evaluate the package JSON above, the ``sourceColumn`` requirements Desktop enforces on calculated tables, relationship endpoint validity, or anything else checked when a local Analysis Services database is created (#623). Pass ``--skip-tmdl-validation`` to skip it (for example in an environment without the .NET SDK where you'd rather not pay the build cost on every emit). The emit location is fixed and not configurable: ``<repo>/ontology-hub-publish/powerbi`` (sibling of the hub, and of the dbt publish target `<repo>/ontology-hub-publish/medallion/dbt` -- never inside it).  Examples: kairos-ontology emit-gold party kairos-ontology emit-gold party --confirm-emit
 
 ```
-kairos-ontology emit-gold [OPTIONS] DOMAIN
+kairos-ontology emit-gold [OPTIONS] PRODUCT_OR_DOMAIN
 ```
 
 | Argument | Arity |
@@ -823,6 +824,23 @@ kairos-ontology guard-scope [OPTIONS]
 | `--check-since` |  | Compare current git status against the snapshot at this token path. |
 | `--allow` | `Sentinel.UNSET` | Glob (relative to the git repo root) allowed to have changed since the snapshot. Repeatable. Only valid with --check-since. |
 | `--ignored-root` | `Sentinel.UNSET` | Path (relative to the git repo root) of a gitignored tree to also fingerprint, opt-in and bounded. Repeatable. Only valid with --snapshot — the resolved root list is stored inside the token itself, and --check-since reads it back from there, so the two calls can never disagree on scope. |
+
+
+## harvest-gold
+
+Diff an edited semantic model against this hub and propose the authoring. A BI engineer opens the generated PBIP, hides a column, adds measures -- and the next `emit-gold` overwrites all of it. This reads the edited model, compares it with what the hub would emit now, and writes two review documents under `model/planning/gold-harvest/`: a Markdown diff, and a Turtle snippet of the changes that have authoring vocabulary. Nothing is applied. Merging an edit straight into `model/extensions/` would make the hub's own authored inputs a downstream artifact of a report, which inverts the ownership the whole design depends on. Review the proposal, paste what you agree with into the owning domain's Gold extension, and re-emit.  Examples: kairos-ontology harvest-gold invoicing --from ../edited/Invoicing.SemanticModel kairos-ontology harvest-gold party --from ../export
+
+```
+kairos-ontology harvest-gold [OPTIONS] PRODUCT_OR_DOMAIN
+```
+
+| Argument | Arity |
+|---|---|
+| `PRODUCT` | required |
+
+| Option | Default | Description |
+|---|---|---|
+| `--from` | **required** | The edited semantic model: a PBIP export folder, a '<Name>.SemanticModel' folder, or its 'definition/' folder. Power BI Desktop writes this with 'Save as PBIP'; for a Direct Lake model, export it through Fabric git integration instead -- Direct Lake cannot be saved as a PBIP from Desktop. |
 
 
 ## import-flatfile

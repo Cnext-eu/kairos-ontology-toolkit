@@ -34,6 +34,15 @@ Treat the ontology hub as the producer and the dataplatform as the runtime consu
 
 ## Gold and MDM
 
+- The hub owns the semantic model; the BI engineer owns the report. Build a real report as a
+  separate Fabric item with its own name, bound to the deployed model — never by editing the
+  generated `<Product>.Report`, which every hub release republishes. Model edits made in
+  Desktop or Fabric return to the hub through `kairos-ontology harvest-gold`, never into this
+  repository.
+- The dataplatform-side TMDL sanitizer is gone. The hub emits `///` doc comments deliberately:
+  they carry the ontology's descriptions into Desktop's field list. Do not reintroduce a
+  script that strips them.
+
 Consume optional Gold semantic-model and MDM profile artifacts from the same CompilePlan build. The
 generated `deploy-powerbi-semantic-model.yml` workflow already verifies the hub release tag resolves
 to the expected hub SHA and that the downloaded `powerbi-semantic-model.zip` matches its recorded

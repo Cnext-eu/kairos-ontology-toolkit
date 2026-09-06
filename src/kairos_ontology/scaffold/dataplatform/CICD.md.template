@@ -138,6 +138,28 @@ PBIR, or report JSON in the dataplatform. Any wrapper generation or TMDL normali
 the hub before the archive is validated and checksummed; downstream deployment is read-only over
 item content.
 
+The dataplatform-side normalization script that used to strip `///` doc comments and rewrite
+partition keywords is **gone**. Everything it backfilled is emitted correctly by the hub, and those
+`///` comments are now load-bearing: they carry the ontology's descriptions into Power BI Desktop's
+field-list tooltip. Do not reintroduce a sanitizer.
+
+### Who owns the report
+
+The hub owns everything governed: tables, relationships, measures, calendar, security, column
+visibility and descriptions. It also emits a **stub** `<Product>.Report` so the project opens.
+
+Report design — pages, visuals, bookmarks, theme, layout — belongs to the BI engineer. Build it as a
+**separate Fabric item with its own name**, bound to the deployed semantic model. Never build it by
+editing the generated `<Product>.Report`: every hub release republishes that stub, so those edits are
+lost on the next deployment.
+
+Edits made to the *model* in Power BI Desktop or Fabric go back to the hub, not into this repository.
+Export the model and run `kairos-ontology harvest-gold <product> --from <exported model>` in the hub;
+it produces a reviewable proposal that a hub author merges into the owning domain's Gold extension.
+If a report needs a measure, column or relationship the model lacks, that is a hub change request —
+working around it in the report layer is how one governed measure acquires three competing
+definitions.
+
 ### Direct Lake connection overrides
 
 Deploy-time parameterization is the exception to "read-only", and is this repo's job by design.

@@ -27,7 +27,17 @@ bound as a source relation in an `EntityBinding`.
 
 ## How it is used
 
-- `import-tmdl` writes an Engineering Pack and a Concept Mapping template here.
+- `import-tmdl` writes an Engineering Pack and a Concept Mapping template here, plus a
+  **report usage** summary for every `*.Report` folder in the export that has pages. Usage
+  answers what a model inventory cannot: which of a model's ~90 measures a report actually
+  *places on a visual*, and which attributes people filter on. Counts only — never visual
+  definitions, positions, filter values, titles, images or themes.
+- `insights.yaml` is **authored**, not imported: personas, the questions they need
+  answered, the KPI that answers each, and the canonical measures and dimensions it needs.
+  `emit-gold` checks every `confirmed` insight against the emitted product, reports what is
+  missing, and writes an insight brief beside the semantic model for whoever builds the
+  report. `kairos-design-gold` walks you through writing it, using the harvested usage as
+  the starting evidence.
 - A modeler fills in `reference_model_match` in the concept-mapping YAML.
 - `design-landscape` reads the filled matches as an **advisory** `bi_weight` signal
   that may only re-rank the `demanded-but-unbound` backlog — it never changes a

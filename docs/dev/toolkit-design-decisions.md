@@ -283,5 +283,9 @@ during cleanup.
 | [DD-218](decisions/dd-218-emitted-artifacts-carry-their-own-provenance-sidecar-not-a-manifest-schema-bump.md) | Emitted artifacts carry their own provenance sidecar, not a manifest schema bump | Accepted | 2026-09-05 |
 | [DD-219](decisions/dd-219-scaffolded-guidance-is-managed-and-maintainer-only-skills-stay-out-of-client-repos.md) | Scaffolded guidance is managed, and maintainer-only skills stay out of client repos | Accepted | 2026-09-05 |
 | [DD-220](decisions/dd-220-a-proposal-never-re-renders-an-authored-relationship-and-a-childs-own-identity-is-not-a.md) | A proposal never re-renders an authored relationship, and a child's own identity is not a foreign key | Accepted | 2026-09-05 |
+| [DD-221](decisions/dd-221-gold-rendering-defaults-hide-technical-columns-mark-keys-and-carry-descriptions.md) | Gold rendering defaults hide technical columns, mark keys, and carry descriptions | Accepted | 2026-09-05 |
+| [DD-222](decisions/dd-222-gold-product-scope-is-a-bus-matrix-concern-declared-in-kairosyaml.md) | Gold product scope is a bus-matrix concern, declared in kairos.yaml | Accepted | 2026-09-05 |
+| [DD-223](decisions/dd-223-report-usage-is-harvested-and-insights-are-authored-evidence.md) | Report usage is harvested, and insights are authored evidence | Accepted | 2026-09-05 |
+| [DD-224](decisions/dd-224-desktop-is-a-proposal-tool-edits-are-harvested-never-merged.md) | Desktop is a proposal tool; edits are harvested, never merged | Accepted | 2026-09-06 |
 
 ---

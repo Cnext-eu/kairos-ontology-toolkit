@@ -396,7 +396,8 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
         # README). Extracting in place also accumulated stale members across
         # re-runs, since extractall never prunes (issue #296).
         with tempfile.TemporaryDirectory(prefix="kairos-tmdl-") as tmp:
-            definition_dirs = extract_pbip_zip(source, Path(tmp) / source.stem)
+            extracted = Path(tmp) / source.stem
+            definition_dirs = extract_pbip_zip(source, extracted)
             if not definition_dirs:
                 logger.warning("No SemanticModel definition/ found in ZIP: %s", source)
                 return []
@@ -404,6 +405,7 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
                 model = parse_model_folder(def_dir)
                 files = _write_outputs(model, output_dir, str(source))
                 generated_files.extend(files)
+            generated_files.extend(_write_report_usage(extracted, output_dir, str(source)))
 
     elif input_type == "pointer":
         # Modern Fabric git-integration .pbip — a JSON pointer to sibling
@@ -424,6 +426,8 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
             model = parse_model_folder(def_dir)
             files = _write_outputs(model, output_dir, str(source))
             generated_files.extend(files)
+        for folder in artifact_dirs:
+            generated_files.extend(_write_report_usage(folder, output_dir, str(source)))
 
     elif input_type == "folder":
         definition_dirs = find_definition_dirs(source)
@@ -434,6 +438,7 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
             model = parse_model_folder(def_dir)
             files = _write_outputs(model, output_dir, str(source))
             generated_files.extend(files)
+        generated_files.extend(_write_report_usage(source, output_dir, str(source)))
 
     elif input_type == "file":
         # Single .tmdl file — parse directly
@@ -449,6 +454,35 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
         generated_files.extend(files)
 
     return generated_files
+
+
+def _write_report_usage(search_root: Path, output_dir: Path, source_label: str) -> list[Path]:
+    """Write one usage artifact per `*.Report` folder found under *search_root* (#744).
+
+    The report half of a PBIP export is where the reporting patterns live: which measures
+    are placed on visuals rather than merely defined, which attributes people filter on.
+    `import-tmdl` read none of it. Only derived counts are written -- never report content
+    -- so DD-147's rule that the hub receives summaries and not proprietary material still
+    holds, and the export folder stays git-ignored.
+
+    Silent when a report carries no pages: a `.Report` folder with an empty definition is
+    the shape the pointer fixtures use, and writing an artifact full of zeroes for it would
+    be noise.
+    """
+    from .report_usage import find_report_dirs, parse_report_folder, render_report_usage
+
+    generated: list[Path] = []
+    for report_dir in find_report_dirs(search_root):
+        usage = parse_report_folder(report_dir)
+        if not usage.page_count:
+            continue
+        output_dir.mkdir(parents=True, exist_ok=True)
+        slug = usage.name or "unnamed-report"
+        path = output_dir / f"{slug}-report-usage.yaml"
+        path.write_text(render_report_usage(usage, source_label=source_label), encoding="utf-8")
+        generated.append(path)
+        logger.info("Generated: %s", path)
+    return generated
 
 
 def _write_outputs(model: TmdlModel, output_dir: Path, source_label: str) -> list[Path]:
