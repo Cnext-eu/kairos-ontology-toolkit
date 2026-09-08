@@ -204,6 +204,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a companion must sit beside a real decision record.
 
 ### Fixed
+- **The canonical class diagram ignored a subclass's restriction on an inherited property and
+  drew every `owl:inverseOf` pair twice (#753 P1+P2).** An inherited edge is rendered from
+  the hub subclass, but its cardinality was read from the superclass that *declares* the
+  property — so `:PortCallRecord rdfs:subClassOf [ owl:onProperty portcall:partOfVoyage ;
+  owl:minCardinality 1 ; owl:maxCardinality 1 ]`, the one place a hub can tighten a
+  reference-model property, was skipped and a mandatory single voyage rendered as `0..*`.
+  Bounds now resolve from the drawn class, then its ancestors nearest-first, then the
+  declaring class; the nearest restriction wins. Separately, `p` and its `owl:inverseOf`
+  partner are both `owl:ObjectProperty`, so each produced an edge and one relationship drew
+  as two arrows. When both directions are present between the same two classes they fold
+  into one edge: the property whose IRI sorts first is the canonical direction and the label
+  names both (`contactParty / hasPartyContact`); the partner's own restriction on the range
+  class supplies the left multiplicity the forward property alone could never state.
+  Part 3 of #753 (SVG rendering and the master class diagram) is not in this change.
+- **The per-domain Silver ERD dropped every foreign key whose target lives in another domain
+  (#754).** `_render_erd` only drew an edge when the referenced model was in the same plan, so
+  a domain whose relationships are mostly cross-domain — invoices issued to a client — rendered
+  as disconnected tables, and the master ERD was the only place the edge existed at all. The
+  target is now drawn as a stub entity (`string external "model from another domain"`) and the
+  edge labelled `[external]`, mirroring the declared-contract ERD; `_render_erd` stays a pure
+  function of one plan. The master ERD, which has the hub-wide inventory, strips a stub and its
+  `[external]` edge once the target's domain has been emitted so the real entity and the
+  resolved cross-domain edge appear exactly once; a target no domain has emitted keeps its
+  stub. The ERD is hashed into `{domain}-silver-parity.json`, so parity manifests of domains
+  with cross-domain foreign keys change on the next emit.
 - **`safety.column-unresolved` for a relationship `join.local` now says what would resolve
   (#751).** `join.local` is always the child's *source* column — the raw Bronze column for a
   `source.relation` binding, the contracted output column for `source.dbtModel`. Authoring a
