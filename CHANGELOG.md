@@ -5,16 +5,18 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.14.0** is the latest GA release (2026-08-23), the first published GA
-> since **5.10.1**. Everything recorded under the individual `5.13.0rc1`–`rc31` headings below
-> shipped as part of this one release — those headings are the per-change record of how it was
-> built, not separate releases; none of them carry their own tag.
+> **Release status.** **5.17.0** is the latest GA release (2026-09-08), superseding **5.14.0**
+> (2026-08-23). Everything recorded under the individual `5.15.0rc*` and `5.16.0rc*` headings
+> below shipped as part of this one release — those headings are the per-change record of how it
+> was built, not separate releases. The same holds for `5.13.0rc1`–`rc31` under 5.14.0.
 >
 > Read **5.11.0** before upgrading: `propose-alignment` now refuses to run without
 > `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop. `--without-anchors`
 > is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.17.0] — 2026-09-08
 
 > The next release that includes this section must be a **minor** bump (5.16.0), not a
 > 5.15.x patch: the SHACL change below adds emitted dbt tests to existing models.
