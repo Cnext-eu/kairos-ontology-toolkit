@@ -308,8 +308,12 @@ def run_scaffold_system(
     analysis_dir: Path | None = None,
     platform: str = FABRIC_WAREHOUSE,
     dry_run: bool = False,
+    include_pii: bool = False,
 ) -> ScaffoldSystemResult:
     """Scaffold every good ``passthrough`` candidate under ``integration/sources/<system>/``.
+
+    *include_pii* is forwarded to every ``scaffold-binding`` call: by default each staging
+    model leaves out the columns classified as personal data and says so in its notes (#758).
 
     For every table (not just the unscaffolded ones -- an already-bound table is reported as
     declined with reason ``already-covered`` rather than silently omitted):
@@ -402,6 +406,7 @@ def run_scaffold_system(
                 analysis_dir=analysis_dir,
                 platform=platform,
                 dry_run=dry_run,
+                include_pii=include_pii,
             )
         except ScaffoldBindingError as exc:
             declined.append(ScaffoldSystemDecline(table, "scaffold-failed", str(exc)))

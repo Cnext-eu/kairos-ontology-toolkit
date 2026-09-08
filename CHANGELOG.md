@@ -248,6 +248,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   learn its name, kind, or range. The class slice now adds `name`, `property_type`, and
   `ranges` to each link, derived exactly as `list-class-properties` does. Existing keys
   are unchanged and `to_dict()` (closure hashes, determinism baselines) is untouched.
+- **The canonical class diagram ignored a subclass's restriction on an inherited property and
+  drew every `owl:inverseOf` pair twice (#753 P1+P2).** An inherited edge is rendered from
+  the hub subclass, but its cardinality was read from the superclass that *declares* the
+  property — so `:PortCallRecord rdfs:subClassOf [ owl:onProperty portcall:partOfVoyage ;
+  owl:minCardinality 1 ; owl:maxCardinality 1 ]`, the one place a hub can tighten a
+  reference-model property, was skipped and a mandatory single voyage rendered as `0..*`.
+  Bounds now resolve from the drawn class, then its ancestors nearest-first, then the
+  declaring class; the nearest restriction wins. Separately, `p` and its `owl:inverseOf`
+  partner are both `owl:ObjectProperty`, so each produced an edge and one relationship drew
+  as two arrows. When both directions are present between the same two classes they fold
+  into one edge: the property whose IRI sorts first is the canonical direction and the label
+  names both (`contactParty / hasPartyContact`); the partner's own restriction on the range
+  class supplies the left multiplicity the forward property alone could never state.
+  Part 3 of #753 (SVG rendering and the master class diagram) is not in this change.
+- **The per-domain Silver ERD dropped every foreign key whose target lives in another domain
+  (#754).** `_render_erd` only drew an edge when the referenced model was in the same plan, so
+  a domain whose relationships are mostly cross-domain — invoices issued to a client — rendered
+  as disconnected tables, and the master ERD was the only place the edge existed at all. The
+  target is now drawn as a stub entity (`string external "model from another domain"`) and the
+  edge labelled `[external]`, mirroring the declared-contract ERD; `_render_erd` stays a pure
+  function of one plan. The master ERD, which has the hub-wide inventory, strips a stub and its
+  `[external]` edge once the target's domain has been emitted so the real entity and the
+  resolved cross-domain edge appear exactly once; a target no domain has emitted keeps its
+  stub. The ERD is hashed into `{domain}-silver-parity.json`, so parity manifests of domains
+  with cross-domain foreign keys change on the next emit.
+- **`safety.column-unresolved` for a relationship `join.local` now says what would resolve
+  (#751).** `join.local` is always the child's *source* column — the raw Bronze column for a
+  `source.relation` binding, the contracted output column for `source.dbtModel`. Authoring a
+  technical field's output `name` there (`voyage_source_id` instead of `JA_JV`) only appears
+  to work on a dbtModel source because the two usually coincide; on a relation source it
+  failed with a bare `does not resolve` and no hint. The diagnostic now names the resolved
+  relation and its source kind, and either points at the source column the technical field
+  binds (`'voyage_source_id' is the technical field name; join.local must be the source
+  column -- use 'JA_JV'`) or lists up to eight candidate columns. Resolution semantics are
+  unchanged; `kairos-design-mapping` now states the rule explicitly.
+- **Name-based address detection redacted code, flag and type columns such as
+  `AddressType` (#749).** `_kind_from_name` matched the `address` keyword as a bare substring
+  of the camel-split column name, so CargoWise `E2_AddressType`, `PZ_AddressType`,
+  `OA_AddressMap` and `OA_SuppressAddressValidationError` — none of which holds an address —
+  had every sample value and every `kairos-bronze:sampleValues` literal replaced by
+  `<redacted kind=address …>`. On the Fracht hub that hid the 13-value document-address role
+  code vocabulary a party-role binding must map. The name rule now stands down when the
+  column's own tokens carry a code/flag/type discriminator (`type`, `code`, `kind`, `map`,
+  `suppress`, `validation`, `validate`, `error`, `flag`, `id`, `key`, `count`, `status`);
+  `Address1`, `StreetAddress`, `postal_address` and `HasAddressOnFile` are unchanged, and a
+  shaped value (email, IBAN, phone, long id) in such a column is still caught by value
+  detection. The guard reads the name only — never the datatype (#672) — so the redactor and
+  the persistence gate keep agreeing, and it is scoped to `address`: the art. 9 keywords
+  disclose through a flag too, and `EmailId` routinely holds the email itself. There is no
+  value-shape detector for postal addresses, so a street address typed into an `AddressType`
+  column is not caught; the name rule was the only address detector.
+- **The passthrough staging scaffold copied credential, payroll and personal-data columns
+  verbatim (#758, #760, #761).** `scaffold-binding --archetype passthrough`,
+  `scaffold-staging` and `scaffold-system` rendered one `select` line per Bronze column with
+  no privacy awareness at all, so `GS_PasswordHash`, `GS_WagesBankAccount` and a birth date
+  landed in a dbt model nobody had reviewed. All three now partition columns through the
+  DD-075 `is_pii_column` policy (plus the import redactor's own `<redacted ...>` verdict):
+  personal-data columns are left out of the `select`, the stage properties YAML and the
+  merged model's common columns, named in the SQL header as
+  `-- excluded by privacy policy (pass --include-pii to keep): ...`, and reported in the
+  result notes. A new `--include-pii` flag on all three commands restores them. The shared
+  `PII_KEYWORDS` list gains the credential and payroll terms it was missing (`password`,
+  `sql_login`, `bank_account`, `wages`, `salary`, `emergency_contact`, `residency`,
+  `security_card`, `birth_date`), deliberately without the broad tokens (`hash`, `bank`,
+  `login`) that would fire on `geohash` or `login_count`.
+  Alongside: `dbt-contract.dialect-fabric-nested-cte` reported only a count, so an author
+  whose comments said "with" twice went hunting for a CTE that was not there — it now lists
+  the 1-based line of every occurrence and says the scan includes comments, and the scaffold's
+  new header is pinned by test to spend none of the one allowed `with `. The scaffolded
+  `deploy-powerbi-semantic-model.yml` fell back to `github.token` for cross-repository `gh`
+  calls against the hub, which cannot read a private sibling and only surfaced later as
+  "release not found"; it now fails fast by name when `HUB_REPO_TOKEN` is missing and never
+  falls back, and `pr-validate.yml`'s "assuming a public hub package" message says what a
+  private-hub operator will see and which secret to add. The scaffolded
+  `profiles.yml.example` activated `authentication: ServicePrincipal`, which dbt-fabric 1.11
+  rejects outright (and whose accepted `ActiveDirectoryServicePrincipal` spelling appends
+  `Authority Id=`, which the mssql-python driver refuses); it now uses
+  `authentication: environment`, reads `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/
+  `AZURE_CLIENT_SECRET` from the environment, and lists the accepted spellings.
 - **The TMDL parser could not read bare flags, annotations or `///` descriptions (#744).**
   `isKey` and `isHidden` are written with no value, and the reader only handled
   `key: value` lines, so neither was visible; `annotation X = "..."` has no colon and was
@@ -267,6 +346,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.md.template` in the scaffold was therefore exempt, including the two READMEs a new hub
   operator reads first. The check now matches on the last two suffixes, and the three bare
   invocations it found (the repo README, the hub README, and the user guide) are fixed.
+- **Gold contract errors reach the compile report under their own code and file, and
+  `emit-gold` no longer claims success before it has written anything (#748, #752).**
+  A `GoldContractError` raised while shaping the project was flattened into
+  `safety.type-incompatible` at the hub root with `projection normalization failed:` in
+  front of the real text, so a `gold.source-version-drift` told the author neither which
+  rule fired nor which file to edit. The kernel now reports it under its own `gold.*` code
+  and `DD-112` rule, located at `model/extensions/<domain>-gold-ext.ttl`; the plan stays
+  blocked. The drift message itself now names the Gold table, its Silver model and the
+  domain, and says where the pin lives. On `--confirm-emit`, `emit-gold` printed
+  `✅ Emitted …` before calling `emit_artifacts`, so a failed swap left a success line
+  directly above the error; the line is now echoed only after the write commits. The
+  backup rename in `_commit_stage` raised without the Windows sharing-violation hint the
+  stage-to-target swap already carried; both branches now carry it, and the hint names the
+  Gold lane's usual holders — Power BI Desktop with the emitted `.pbip` open, or a shell
+  whose current directory is inside the target. `kairos-design-domain` step 9 now warns
+  that bumping `owl:versionInfo` invalidates every `goldSourceVersion` pin and allows the
+  Gold extension in its `guard-scope` example.
 
 ### Changed
 - **`owl:equivalentClass` is no longer presented as a compile-time anchor (#730).**

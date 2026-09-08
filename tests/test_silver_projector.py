@@ -23,12 +23,15 @@ from kairos_ontology.core.projections.dbt import (
 from kairos_ontology.core.projections.dbt.materialize import _bounded_identifier
 from kairos_ontology.core.projections.dbt.specs import (
     SchemaKind,
+    SilverConstraintPhysicalPlan,
 )
 from kairos_ontology.core.projections.medallion_dbt_projector import (
     generate_dbt_artifacts,
 )
 from kairos_ontology.core.projections.medallion_silver_projector import (
     SilverParityError,
+    _render_erd,
+    generate_master_erd,
     generate_silver_artifacts,
     validate_parity_manifest,
 )
@@ -181,6 +184,91 @@ def test_erd_and_parity_manifest_are_deterministic():
         "docs/diagrams/client/client-erd.mmd",
     ):
         assert first[path] == second[path]
+
+
+_EXTERNAL_STUB = '    REGION {\n        string external "model from another domain"\n    }\n'
+_CROSS_DOMAIN_URI = "https://acme.example/ontology/billing#inRegion"
+
+
+def _plan_with_cross_domain_foreign_key():
+    """The client plan plus one FK from ``client`` to a model no client binding emits."""
+    *_, plan, _ = _run()
+    silver = plan.silver
+    client = next(model for model in silver.models if model.model_name == "client")
+    foreign_key = SilverConstraintPhysicalPlan(
+        name="fk_client_region",
+        kind="foreign-key",
+        columns=("region_sk",),
+        referenced_model="region",
+        referenced_columns=("region_sk",),
+        temporal_mode="current",
+        property_uri=_CROSS_DOMAIN_URI,
+    )
+    patched = replace(client, constraints=(*client.constraints, foreign_key))
+    return replace(
+        silver,
+        models=tuple(patched if model is client else model for model in silver.models),
+    )
+
+
+def test_erd_draws_a_cross_domain_foreign_key_as_an_external_stub_and_edge():
+    """#754: a FK to a model outside the plan used to vanish from the domain ERD."""
+    erd = _render_erd(_plan_with_cross_domain_foreign_key())
+
+    assert erd.count(_EXTERNAL_STUB) == 1
+    assert f'    REGION ||--o{{ CLIENT : "{_CROSS_DOMAIN_URI} [temporal=current] [external]"' in erd
+    in_domain = [line for line in erd.splitlines() if "CLIENT_TYPE ||--o{" in line]
+    assert in_domain and all("[external]" not in line for line in in_domain)
+    assert _render_erd(_plan_with_cross_domain_foreign_key()) == erd
+
+
+def _write_domain(root: Path, domain: str, erd: str, models: list[dict]) -> None:
+    diagram = root / "docs" / "diagrams" / domain / f"{domain}-erd.mmd"
+    diagram.parent.mkdir(parents=True, exist_ok=True)
+    diagram.write_text(erd, encoding="utf-8")
+    metadata = root / "metadata" / f"{domain}-silver-constraints.json"
+    metadata.parent.mkdir(parents=True, exist_ok=True)
+    metadata.write_text(json.dumps({"models": models}), encoding="utf-8")
+
+
+def test_master_erd_replaces_an_external_stub_once_its_domain_is_emitted(tmp_path):
+    """The master has the hub-wide inventory, so it draws the real entity and the resolved
+    cross-domain edge exactly once -- the stub must not merge into the real entity."""
+    _write_domain(
+        tmp_path,
+        "client",
+        _render_erd(_plan_with_cross_domain_foreign_key()),
+        [
+            {
+                "model_name": "client",
+                "constraints": [
+                    {
+                        "kind": "foreign-key",
+                        "referenced_model": "region",
+                        "temporal_mode": "current",
+                        "property_uri": _CROSS_DOMAIN_URI,
+                    }
+                ],
+            }
+        ],
+    )
+
+    client_only = generate_master_erd(tmp_path, hub_name="acme")
+    assert client_only is not None
+    assert client_only.count(_EXTERNAL_STUB.rstrip("\n")) == 1
+    assert client_only.count(f"{_CROSS_DOMAIN_URI} [temporal=current] [external]") == 1
+
+    billing_erd = "erDiagram\n    REGION {\n        VARCHAR_8000_ region_sk PK\n    }\n"
+    _write_domain(tmp_path, "billing", billing_erd, [{"model_name": "region", "constraints": []}])
+
+    both = generate_master_erd(tmp_path, hub_name="acme")
+    assert both is not None
+    assert "model from another domain" not in both
+    # The master strips each domain body, so the first entity line may sit at column 0.
+    assert both.count("REGION {") == 1
+    assert both.count(f'REGION ||--o{{ CLIENT : "{_CROSS_DOMAIN_URI} [temporal=current]"') == 1
+    edges = [line for line in both.splitlines() if "||--o{" in line]
+    assert edges and all("[external]" not in line for line in edges)
 
 
 def test_deliberate_artifact_drift_blocks_parity():

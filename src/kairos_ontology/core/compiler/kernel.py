@@ -35,6 +35,7 @@ from ..projections.dbt.mapping_specs import SourceMappings
 from ..projections.dbt.mapping_renderers import quote_mapping_identifier
 from ..projections.dbt.policy_bind import EXT as _EXT_NS
 from ..projections.dbt.policy_bind import _data_quality_rules, bind_policy_facts
+from ..projections.dbt.gold_specs import GoldContractError
 from ..projections.dbt.policy_normalize import PolicyNormalizationError, _source_type
 from ..projections.dbt.silver_contract import canonical_type_label
 from ..projections.dbt.policy_specs import (
@@ -2834,6 +2835,45 @@ def _external_target_domain(hub_root: str, current_domain: str, target_class: st
     return None
 
 
+_JOIN_LOCAL_CANDIDATE_LIMIT = 8
+
+
+def _unresolved_join_local_message(
+    binding: EntityBinding,
+    relation: ResolvedRelation,
+    local: str,
+    local_columns: dict[str, ResolvedColumn],
+) -> str:
+    """Explain why ``join.local`` did not resolve and what the author can write instead (#751).
+
+    ``join.local`` is always a *source* column of the child's resolved relation -- the raw
+    Bronze columns for ``source.relation``, the contracted output columns for
+    ``source.dbtModel``. A technical field's ``name`` is an *output* column and is never a
+    legal ``join.local``; it only appears to work for dbtModel sources because the model's
+    output column and the technical field name usually coincide. So when the authored value
+    is a technical field name, say so and point at the source column that field binds;
+    otherwise list the columns the relation actually exposes.
+    """
+    source_kind = "source.dbtModel" if binding.source.dbt_model is not None else "source.relation"
+    message = (
+        f"relationship local column '{local}' does not resolve against {source_kind} "
+        f"'{relation.ref}'"
+    )
+    renamed = next((item for item in binding.technical_fields if item.name == local), None)
+    if renamed is not None:
+        message += f"; '{local}' is the technical field name; join.local must be the source column"
+        if isinstance(renamed.expression, ExprColumn):
+            message += f" -- use '{renamed.expression.column}'"
+        return message
+    candidates = sorted(local_columns)
+    if not candidates:
+        return message + "; the relation exposes no columns"
+    shown = ", ".join(f"'{name}'" for name in candidates[:_JOIN_LOCAL_CANDIDATE_LIMIT])
+    hidden = len(candidates) - _JOIN_LOCAL_CANDIDATE_LIMIT
+    suffix = f" (+{hidden} more)" if hidden > 0 else ""
+    return f"{message}; candidates: {shown}{suffix}"
+
+
 def _relationship_diagnostics(
     binding: EntityBinding,
     selected: dict[str, EntityBinding],
@@ -3060,7 +3100,9 @@ def _relationship_diagnostics(
                 diagnostics.append(
                     CompileDiagnostic(
                         code="safety.column-unresolved",
-                        message=f"relationship local column '{join.local}' does not resolve",
+                        message=_unresolved_join_local_message(
+                            binding, relation, join.local, local_columns
+                        ),
                         location=SourceLocation(path=binding.source_path, pointer=join_pointer),
                     )
                 )
@@ -4004,6 +4046,28 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 shape_project(contract), tuple(valid_bindings), context
             )
             materialized = plan_materialization(contract, shaped)
+        except GoldContractError as exc:
+            # #752/#763: a Gold contract failure (DD-112 `gold.*`) keeps its own code, rule
+            # and file instead of being flattened into `safety.type-incompatible` at the hub
+            # root, which told the author neither which rule fired nor which file to edit.
+            # The message drops the `code: ` prefix `GoldContractError.__str__` adds, since
+            # the diagnostic renders the code itself. Severity stays ERROR (the default), so
+            # the plan is still blocked exactly as before.
+            diagnostics.append(
+                CompileDiagnostic(
+                    code=exc.code,
+                    message=str(exc).removeprefix(f"{exc.code}: "),
+                    location=SourceLocation(
+                        path=str(
+                            Path(scope.hub_root)
+                            / "model"
+                            / "extensions"
+                            / f"{context.domain}-gold-ext.ttl"
+                        )
+                    ),
+                    rule_id=exc.rule_id,
+                )
+            )
         except Exception as exc:  # downstream contracts expose several precise exception types
             diagnostics.append(
                 CompileDiagnostic(

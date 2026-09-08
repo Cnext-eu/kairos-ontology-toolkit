@@ -28,6 +28,16 @@
 # --- PLATFORM: fabric-warehouse ---
     # Microsoft Fabric Warehouse
     # Requires: pip install dbt-fabric
+    #
+    # `authentication: environment` (#761): dbt-fabric 1.11 reads the service principal
+    # from the standard Azure SDK variables, so no tenant/client keys go in this file.
+    # Set these before running dbt (same names deployment-settings.json.example lists):
+    #   AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+    # Accepted dbt-fabric 1.11 spellings: environment, ActiveDirectoryDefault, cli,
+    # ActiveDirectoryServicePrincipal. The last one appends `Authority Id=` to the
+    # connection string, which the mssql-python driver rejects, and the bare
+    # `ServicePrincipal` spelling is not accepted at all ("Unsupported authentication
+    # method") -- so `environment` is the one that works on this driver stack.
     # @config
     # dev:
     #   type: fabric
@@ -35,10 +45,7 @@
     #   server: "{your-workspace}.datawarehouse.fabric.microsoft.com"
     #   database: "{your-warehouse-name}"
     #   schema: "dbo"
-    #   authentication: ServicePrincipal
-    #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
-    #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
-    #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
+    #   authentication: environment
     # @endconfig
     # --- Promotion targets (uncomment/adjust for a multi-environment setup,
     # e.g. one Fabric workspace per environment) — run with: dbt run --target uat
@@ -48,20 +55,14 @@
     #   server: "{your-uat-workspace}.datawarehouse.fabric.microsoft.com"
     #   database: "{your-warehouse-name}"
     #   schema: "dbo"
-    #   authentication: ServicePrincipal
-    #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
-    #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
-    #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
+    #   authentication: environment
     # prod:
     #   type: fabric
     #   driver: "ODBC Driver 18 for SQL Server"
     #   server: "{your-prod-workspace}.datawarehouse.fabric.microsoft.com"
     #   database: "{your-warehouse-name}"
     #   schema: "dbo"
-    #   authentication: ServicePrincipal
-    #   tenant_id: "{{ env_var('DBT_FABRIC_TENANT_ID') }}"
-    #   client_id: "{{ env_var('DBT_FABRIC_CLIENT_ID') }}"
-    #   client_secret: "{{ env_var('DBT_FABRIC_CLIENT_SECRET') }}"
+    #   authentication: environment
 # --- END PLATFORM ---
 
 # --- PLATFORM: databricks ---

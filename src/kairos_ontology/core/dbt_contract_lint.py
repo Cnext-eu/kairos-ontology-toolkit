@@ -221,19 +221,26 @@ def _dialect_findings(scan, hub_root: Path) -> list[DbtContractFinding]:
             sql = model.sql_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        occurrences = len(_FABRIC_WITH_SUBSTRING.findall(sql))
+        # 1-based line of each hit, so the author can see which ones are comments (#758):
+        # the count alone said "3" and left them grepping for a CTE that was not there.
+        hit_lines = [
+            sql.count("\n", 0, match.start()) + 1 for match in _FABRIC_WITH_SUBSTRING.finditer(sql)
+        ]
+        occurrences = len(hit_lines)
         if occurrences > 1:
+            where = ", ".join(str(line) for line in hit_lines)
             findings.append(
                 DbtContractFinding(
                     code="dbt-contract.dialect-fabric-nested-cte",
                     severity=SEVERITY_ERROR,
                     message=(
-                        f"model {model.name!r} contains {occurrences} case-insensitive "
-                        "occurrences of 'with ' and enforces its contract on "
-                        "fabric-warehouse. dbt-fabric's materialization macro counts that "
-                        "substring across the whole file -- comments included -- to detect "
-                        "a nested CTE, and refuses to build the model. Reduce it to at most "
-                        "one, rewording comments if that is where the extras are."
+                        f"model {model.name!r}: 'with' appears {occurrences} times "
+                        f"(lines {where}) and the model enforces its contract on "
+                        "fabric-warehouse, which allows one CTE opener. dbt-fabric's "
+                        "materialization macro counts that substring across the whole "
+                        "file -- the scan includes comments -- to detect a nested CTE, and "
+                        "refuses to build the model. Reduce it to at most one, rewording "
+                        "comments if that is where the extras are."
                     ),
                     path=_relative(model.sql_path, hub_root),
                     model=model.name,

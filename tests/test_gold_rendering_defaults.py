@@ -66,18 +66,18 @@ def _emit(tmp_path: Path, *, extra: str = "") -> str:
 
 
 def _blocking_message(tmp_path: Path, *, extra: str) -> str:
-    """Return the error text of a compile blocked by *extra*.
+    """Return the rendered error diagnostics of a compile blocked by *extra*.
 
-    A Gold contract failure reaches a caller as a blocked plan carrying
-    `safety.type-incompatible`, with the `gold.*` code inside the message -- the same
-    wrapping `goldExcludeColumn` has had since #703. Asserting on the raised
+    A Gold contract failure reaches a caller as a blocked plan carrying the `gold.*` code
+    of the `GoldContractError` that fired (#752; before that it was flattened into
+    `safety.type-incompatible` with the code inside the message). Asserting on the raised
     `GoldContractError` would test the projector in isolation and miss the path an
-    author actually hits.
+    author actually hits, so this reads the plan's diagnostics as `--check` renders them.
     """
     plan = _plan(tmp_path, extra=extra)
     assert plan.blocked, "expected the authored value to block the compile"
     return "\n".join(
-        str(diagnostic.message)
+        diagnostic.render()
         for diagnostic in plan.diagnostics.ordered
         if str(getattr(diagnostic, "severity", "")).lower().endswith("error")
     )

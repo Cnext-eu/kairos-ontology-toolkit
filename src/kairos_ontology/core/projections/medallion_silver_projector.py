@@ -201,12 +201,25 @@ def _mermaid_type(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", value)
 
 
+#: The single attribute line of a stub entity standing in for a model from another domain.
+_EXTERNAL_STUB_ATTRIBUTE = '        string external "model from another domain"'
+
+
 def _render_erd(plan: SilverPhysicalPlan) -> str:
+    """Render one domain's Silver plan as a Mermaid ``erDiagram``.
+
+    A pure function of *plan*: it knows nothing about other domains. A foreign key whose
+    target model is not in this plan used to be dropped, so a domain whose relationships
+    are mostly cross-domain rendered as disconnected tables (#754). The target is now drawn
+    as a stub entity and the edge labelled ``[external]``, mirroring the declared-contract
+    ERD; the master ERD replaces the stub with the real entity once that domain is emitted.
+    """
     emitted = {model.model_name for model in plan.models}
     lines = [
         "erDiagram",
         (f"    %% Silver ERD: {plan.domain_name}; adapter={plan.adapter}/{plan.adapter_version}"),
-        "    %% Relationships come only from emitted SilverForeignKeySpec values.",
+        "    %% Relationships come only from emitted SilverForeignKeySpec values. A referenced",
+        "    %% model outside this domain is drawn as a stub and its edge labelled [external].",
         "",
     ]
     for model in plan.models:
@@ -233,20 +246,73 @@ def _render_erd(plan: SilverPhysicalPlan) -> str:
             )
             lines.append(f"        {_mermaid_type(column.physical_type)} {column.name}{marker}")
         lines.extend(("    }", ""))
-    for model in plan.models:
-        for constraint in model.constraints:
-            if constraint.kind != "foreign-key" or constraint.referenced_model not in emitted:
-                continue
-            temporal = constraint.temporal_mode or "none"
-            annotation = f"temporal={temporal}"
-            if constraint.as_of_column:
-                annotation += f";as-of={constraint.as_of_column}"
-            lines.append(
-                f"    {constraint.referenced_model.upper()} ||--o{{ "
-                f'{model.model_name.upper()} : "{constraint.property_uri} '
-                f'[{annotation}]"'
-            )
+    foreign_keys = [
+        (model, constraint)
+        for model in plan.models
+        for constraint in model.constraints
+        if constraint.kind == "foreign-key" and constraint.referenced_model
+    ]
+    external = sorted(
+        {
+            constraint.referenced_model
+            for _, constraint in foreign_keys
+            if constraint.referenced_model not in emitted
+        }
+    )
+    for referenced_model in external:
+        lines.extend((f"    {referenced_model.upper()} {{", _EXTERNAL_STUB_ATTRIBUTE, "    }", ""))
+    for model, constraint in foreign_keys:
+        temporal = constraint.temporal_mode or "none"
+        annotation = f"temporal={temporal}"
+        if constraint.as_of_column:
+            annotation += f";as-of={constraint.as_of_column}"
+        label = f"{constraint.property_uri} [{annotation}]"
+        if constraint.referenced_model not in emitted:
+            label += " [external]"
+        lines.append(
+            f"    {constraint.referenced_model.upper()} ||--o{{ "
+            f'{model.model_name.upper()} : "{label}"'
+        )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _drop_resolved_externals(body: str, emitted: set[str]) -> str:
+    """Remove a domain ERD's external stubs and edges that the master ERD resolves itself.
+
+    A per-domain ERD stubs a referenced model from another domain (#754). Once that domain
+    has been emitted too, the master has the real entity and draws the cross-domain
+    relationship from constraint metadata, so the stub would merge a bogus attribute into
+    the real entity and the ``[external]`` edge would duplicate the resolved one. A target
+    no domain has emitted yet keeps its stub: the master reflects what is known so far.
+    *emitted* holds upper-cased model names.
+    """
+    lines = body.splitlines()
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        is_stub = (
+            stripped.endswith(" {")
+            and stripped[:-2] in emitted
+            and index + 2 < len(lines)
+            and lines[index + 1].strip() == _EXTERNAL_STUB_ATTRIBUTE.strip()
+            and lines[index + 2].strip() == "}"
+        )
+        if is_stub:
+            index += 3
+            if index < len(lines) and not lines[index].strip():
+                index += 1
+            continue
+        if (
+            "||--o{" in stripped
+            and stripped.endswith('[external]"')
+            and stripped.split(" ", 1)[0] in emitted
+        ):
+            index += 1
+            continue
+        kept.append(lines[index])
+        index += 1
+    return "\n".join(kept).strip()
 
 
 def _schema_columns(content: str, model_name: str) -> tuple[str, ...] | None:
@@ -504,6 +570,12 @@ def generate_master_erd(
                     f'    {target.upper()} ||--o{{ {source.upper()} : "'
                     f'{constraint.get("property_uri", "")} [{annotation}]"'
                 )
+    emitted_upper = {name.upper() for name in emitted}
+    domain_erds = [
+        (domain, resolved)
+        for domain, body in domain_erds
+        if (resolved := _drop_resolved_externals(body, emitted_upper))
+    ]
     lines = [
         "erDiagram",
         f"    %% Master ERD — {hub_name} (all domains)",

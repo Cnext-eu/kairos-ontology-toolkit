@@ -27,7 +27,9 @@ from kairos_ontology.core.scaffold_binding import (
     detect_column_prefix,
     list_unscaffolded_tables,
     match_columns_to_properties,
+    partition_pii_columns,
     propose_grain_columns,
+    render_staging_sql,
     run_scaffold_binding,
     scan_cross_source_fks,
 )
@@ -1223,3 +1225,200 @@ def test_scan_cross_source_fks_reports_in_scaffold_result_and_notes(tmp_path):
     assert any(m.local_column == "trade_party_id" for m in result.cross_source_fk_matches)
     assert any("cross-source FK scan" in note for note in result.notes)
     assert "Cross-source FK candidates" in result.binding_text
+
+
+# ---------------------------------------------------------------------------
+# #758: the passthrough staging model leaves personal-data columns out by default.
+# ---------------------------------------------------------------------------
+_HR_TTL = textwrap.dedent(
+    """
+    @prefix src: <https://example.test/source-hr#> .
+    @prefix kb: <https://kairos.cnext.eu/bronze#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+    src:hr a kb:SourceSystem ; rdfs:label "hr" ;
+      kb:database "raw" ; kb:schema "dbo" ; kb:connectionType "jdbc" .
+
+    src:staff a kb:SourceTable ; kb:sourceSystem src:hr ;
+      kb:tableName "staff" ; kb:primaryKeyColumns "GS_Code" .
+    src:code a kb:SourceColumn ; kb:sourceTable src:staff ;
+      kb:columnName "GS_Code" ; kb:dataType "varchar(20)" ;
+      kb:nullable "false"^^xsd:boolean ; kb:distinctCount "120"^^xsd:integer .
+    src:branch a kb:SourceColumn ; kb:sourceTable src:staff ;
+      kb:columnName "GS_Branch" ; kb:dataType "varchar(50)" ;
+      kb:nullable "true"^^xsd:boolean .
+    src:fullname a kb:SourceColumn ; kb:sourceTable src:staff ;
+      kb:columnName "GS_FullName" ; kb:dataType "varchar(200)" ;
+      kb:nullable "true"^^xsd:boolean .
+    src:pwd a kb:SourceColumn ; kb:sourceTable src:staff ;
+      kb:columnName "GS_PasswordHash" ; kb:dataType "varchar(128)" ;
+      kb:nullable "true"^^xsd:boolean .
+    src:bank a kb:SourceColumn ; kb:sourceTable src:staff ;
+      kb:columnName "GS_WagesBankAccount" ; kb:dataType "varchar(34)" ;
+      kb:nullable "true"^^xsd:boolean .
+    src:dob a kb:SourceColumn ; kb:sourceTable src:staff ;
+      kb:columnName "GS_Birthdate" ; kb:dataType "date" ;
+      kb:nullable "true"^^xsd:boolean .
+    """
+).strip()
+
+_PII_FIXTURE_EXCLUDED = ("GS_FullName", "GS_PasswordHash", "GS_WagesBankAccount", "GS_Birthdate")
+
+
+def _add_hr_table(hub_root: Path) -> None:
+    hr_dir = hub_root / "integration" / "sources" / "hr"
+    hr_dir.mkdir(parents=True, exist_ok=True)
+    (hr_dir / "hr.vocabulary.ttl").write_text(_HR_TTL, encoding="utf-8")
+
+
+def _staff_columns() -> tuple[SourceColumn, ...]:
+    def col(name: str, data_type: str, **overrides) -> SourceColumn:
+        kwargs = dict(
+            name=name,
+            data_type=data_type,
+            nullable=True,
+            samples=(),
+            distinct_count=None,
+            is_primary_key=False,
+        )
+        kwargs.update(overrides)
+        return SourceColumn(**kwargs)
+
+    return (
+        col("GS_Code", "varchar(20)", nullable=False, distinct_count=120, is_primary_key=True),
+        col("GS_Branch", "varchar(50)"),
+        col("GS_FullName", "varchar(200)"),
+        col("GS_PasswordHash", "varchar(128)"),
+        col("GS_WagesBankAccount", "varchar(34)"),
+        col("GS_Birthdate", "date"),
+    )
+
+
+def _selected_columns(sql: str) -> set[str]:
+    return {
+        line.rsplit(" as ", 1)[1].strip().rstrip(",")
+        for line in sql.splitlines()
+        if " as " in line and line.startswith("        ")
+    }
+
+
+def test_partition_pii_columns_flags_credential_payroll_and_person_columns():
+    kept, excluded = partition_pii_columns(_staff_columns())
+
+    assert tuple(c.name for c in kept) == ("GS_Code", "GS_Branch")
+    assert tuple(c.name for c in excluded) == _PII_FIXTURE_EXCLUDED
+
+
+def test_partition_pii_columns_treats_a_redacted_sample_as_the_import_verdict():
+    # The import redactor already decided this column holds PII; the scaffold must not
+    # re-litigate that from the name alone.
+    column = SourceColumn(
+        name="GS_Remark",
+        data_type="varchar(400)",
+        nullable=True,
+        samples=("<redacted kind=email source=staff.GS_Remark datatype=varchar(400)>",),
+        distinct_count=None,
+        is_primary_key=False,
+    )
+
+    kept, excluded = partition_pii_columns((column,))
+
+    assert kept == ()
+    assert excluded == (column,)
+
+
+def test_passthrough_staging_sql_excludes_pii_columns_by_default():
+    sql = render_staging_sql("hr", "staff", _staff_columns())
+
+    assert _selected_columns(sql) == {"GS_Code", "GS_Branch", "source_system"}
+    for name in _PII_FIXTURE_EXCLUDED:
+        assert f" as {name}" not in sql
+    header = [line for line in sql.splitlines() if line.startswith("--")]
+    assert any(
+        line.startswith("-- excluded by privacy policy (pass --include-pii to keep): ")
+        for line in header
+    )
+    header_text = " ".join(header)
+    for name in _PII_FIXTURE_EXCLUDED:
+        assert name in header_text
+
+
+def test_passthrough_staging_sql_has_exactly_one_cte_opener():
+    """dbt-fabric counts `with ` over the whole file, comments included (#758)."""
+    from kairos_ontology.core.dbt_contract_lint import _FABRIC_WITH_SUBSTRING
+
+    for include_pii in (False, True):
+        sql = render_staging_sql("hr", "staff", _staff_columns(), include_pii=include_pii)
+        assert len(_FABRIC_WITH_SUBSTRING.findall(sql)) == 1, sql
+
+
+def test_include_pii_restores_the_columns_and_says_so():
+    sql = render_staging_sql("hr", "staff", _staff_columns(), include_pii=True)
+
+    assert _selected_columns(sql) == {
+        "GS_Code",
+        "GS_Branch",
+        *_PII_FIXTURE_EXCLUDED,
+        "source_system",
+    }
+    assert "-- privacy: --include-pii was passed; 4 personal-data column(s) kept: " in sql
+    assert "excluded by privacy policy" not in sql
+
+
+def test_passthrough_scaffold_reports_excluded_pii_columns_in_notes(tmp_path):
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    _add_hr_table(hub_root)
+
+    result = _scaffold(hub_root, ref_models_dir, system="hr", table="staff")
+
+    assert result.dbt_model_written
+    sql = result.dbt_model_path.read_text(encoding="utf-8")
+    assert " as GS_Code" in sql
+    assert " as GS_PasswordHash" not in sql
+    privacy_notes = [note for note in result.notes if note.startswith("privacy:")]
+    assert len(privacy_notes) == 1
+    assert "4 personal-data column(s) excluded" in privacy_notes[0]
+    assert "GS_WagesBankAccount" in privacy_notes[0]
+    assert "--include-pii" in privacy_notes[0]
+
+    kept = _scaffold(
+        hub_root, ref_models_dir, system="hr", table="staff", include_pii=True, force=True
+    )
+
+    assert " as GS_PasswordHash" in kept.dbt_model_text
+    assert any("--include-pii kept 4 personal-data column(s)" in note for note in kept.notes)
+
+
+def test_scaffold_binding_cli_include_pii_flag(tmp_path, monkeypatch):
+    hub_root, ref_models_dir = _build_hub(tmp_path)
+    _add_hr_table(hub_root)
+    monkeypatch.setenv("KAIROS_REFMODELS_ROOT", str(ref_models_dir))
+    monkeypatch.chdir(hub_root)
+    args = [
+        "scaffold-binding",
+        "--system",
+        "hr",
+        "--table",
+        "staff",
+        "--archetype",
+        "passthrough",
+        "--target-class",
+        _TRADE_PARTY_IRI,
+        "--domain",
+        "party",
+    ]
+    model_path = (
+        hub_root / "integration" / "transforms" / "dbt" / "models" / "intermediate" / "party"
+        / "stg_hr__staff.sql"
+    )
+
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert "NOTE: privacy: 4 personal-data column(s) excluded" in result.output
+    assert " as GS_Birthdate" not in model_path.read_text(encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [*args, "--include-pii", "--force"])
+    assert result.exit_code == 0, result.output
+    assert "NOTE: privacy: --include-pii kept 4 personal-data column(s)" in result.output
+    assert " as GS_Birthdate" in model_path.read_text(encoding="utf-8")
