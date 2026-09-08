@@ -812,7 +812,7 @@ kairos-ontology generate-bindings [OPTIONS]
 
 ## guard-scope
 
-Deterministic 'no unexpected file changed' guard for a bounded skill gate. Replaces a self-reported "confirm no other file changed" instruction with a code-enforced check. No persisted hub state is involved: the snapshot is a throwaway file in the OS temp directory, never written into the hub or repo, and git's own working-tree status is the only source of truth.  --snapshot [--ignored-root PATH ...] Capture the current working-tree status (tracked and untracked changes) and print the token path to stdout. Pass that path to --check-since at the end of the bounded work. Each --ignored-root (repo-root-relative, repeatable) additionally fingerprints every gitignored file under that path, so a write there is no longer invisible; the resolved root list travels inside the token itself. --check-since TOKEN --allow GLOB [--allow GLOB ...] Compare current status against the snapshot at TOKEN. Any path whose content or git status differs from the snapshot — including one that was already dirty when the snapshot was taken, and one that has since disappeared from git's output — fails the command unless it matches at least one --allow glob (non-zero exit, every offending path is named). A commit moving HEAD inside the window also fails. On success, the token file is removed. If the token was taken with --ignored-root, those same roots are re-scanned here automatically (no --ignored-root flag is accepted on this side — the token is the single source of scope). Scope of the guarantee: the guard sees exactly what git reports, plus any path passed via --ignored-root at snapshot time. It remains blind to writes into any other gitignored path — a passing result does not attest to those.
+Deterministic 'no unexpected file changed' guard for a bounded skill gate. Replaces a self-reported "confirm no other file changed" instruction with a code-enforced check. No persisted hub state is involved: the snapshot is a throwaway file in the OS temp directory, never written into the hub or repo, and git's own working-tree status is the only source of truth.  --snapshot [--ignored-root PATH ...] Capture the current working-tree status (tracked and untracked changes) and print the token path to stdout. Pass that path to --check-since at the end of the bounded work. Each --ignored-root (repo-root-relative, repeatable) additionally fingerprints every gitignored file under that path, so a write there is no longer invisible; the resolved root list travels inside the token itself. --check-since TOKEN --allow GLOB [--allow GLOB ...] [--keep] Compare current status against the snapshot at TOKEN. Any path whose content or git status differs from the snapshot — including one that was already dirty when the snapshot was taken, and one that has since disappeared from git's output — fails the command unless it matches at least one --allow glob (non-zero exit, every offending path is named). A commit moving HEAD inside the window also fails. On success, the token file is removed unless --keep is passed, which retains it so an intermediate check does not consume the snapshot the final check still needs. If the token was taken with --ignored-root, those same roots are re-scanned here automatically (no --ignored-root flag is accepted on this side — the token is the single source of scope). Scope of the guarantee: the guard sees exactly what git reports, plus any path passed via --ignored-root at snapshot time. It remains blind to writes into any other gitignored path — a passing result does not attest to those.
 
 ```
 kairos-ontology guard-scope [OPTIONS]
@@ -824,6 +824,7 @@ kairos-ontology guard-scope [OPTIONS]
 | `--check-since` |  | Compare current git status against the snapshot at this token path. |
 | `--allow` | `Sentinel.UNSET` | Glob (relative to the git repo root) allowed to have changed since the snapshot. Repeatable. Only valid with --check-since. |
 | `--ignored-root` | `Sentinel.UNSET` | Path (relative to the git repo root) of a gitignored tree to also fingerprint, opt-in and bounded. Repeatable. Only valid with --snapshot — the resolved root list is stored inside the token itself, and --check-since reads it back from there, so the two calls can never disagree on scope. |
+| `--keep` |  | Retain the token after a passing --check-since, so the same snapshot can be checked again later in the bounded work. Only valid with --check-since. |
 
 
 ## harvest-gold
@@ -1282,7 +1283,7 @@ kairos-ontology scaffold-binding [OPTIONS]
 
 ## scaffold-contract
 
-Generate a declared Silver contract from the current compile plan. The generated document records what the compiler emits today, so adopting it is a no-op: the parity manifest must be unchanged. Edit it afterwards to record what Silver *promises* rather than what it currently contains.
+Generate a declared Silver contract from the current compile plan. The generated document records what the compiler emits today, so adopting it is a no-op: the parity manifest must be unchanged. Edit it afterwards to record what Silver *promises* rather than what it currently contains. A compile blocked *only* by ``contract.class-not-declared`` does not refuse: that diagnostic means the contract lacks an entry for a class, and this command is how that entry is produced. Pair it with ``--entity <class> --dry-run`` to get the block to add.
 
 ```
 kairos-ontology scaffold-contract [OPTIONS] DOMAIN
@@ -1297,6 +1298,7 @@ kairos-ontology scaffold-contract [OPTIONS] DOMAIN
 | `--out` |  | Destination file (default: model/contracts/<domain>.contract.yaml). |
 | `--force` |  | Overwrite an existing contract file. |
 | `--dry-run` |  | Print the contract instead of writing it. |
+| `--entity` | `Sentinel.UNSET` | Only scaffold this target class (authored token such as party:Customer, or the resolved IRI). Repeatable. With --dry-run this prints just the block(s) to paste into an existing contract. |
 
 
 ## scaffold-domain
