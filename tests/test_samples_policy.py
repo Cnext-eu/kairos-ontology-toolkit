@@ -397,6 +397,8 @@ class TestExemptionsDoNotWeakenDetection:
             ("Religion_Christian", "bit", "True", "demographic"),
             ("HasHealthFlag", "bit", "False", "health"),
             ("HasAddressOnFile", "bit", "True", "address"),
+            # Bare `address` (no code/flag/type discriminator, #749) stays datatype-blind.
+            ("E2_Address", "nvarchar(255)", "Main Street 12", "address"),
         ],
     )
     def test_column_name_detection_survives_every_datatype(
@@ -410,6 +412,97 @@ class TestExemptionsDoNotWeakenDetection:
         )
         assert is_redaction_token(redacted)
         assert finding is not None and finding.kind == expected_kind
+
+
+class TestAddressCodeColumns:
+    """`address`-named code, flag and type columns are not address literals (#749).
+
+    CargoWise `E2_AddressType` holds a 13-value document-address role vocabulary that
+    a party-role binding must map; matching `address` as a bare substring of the
+    camel-split name redacted every value of it. The name rule stands down when the
+    column's own tokens carry a code/flag/type discriminator. It reads the name only,
+    never the datatype (#672), so the redactor and the persistence gate keep agreeing.
+    """
+
+    NOT_ADDRESS_LITERALS = [
+        "E2_AddressType",
+        "PZ_AddressType",
+        "OA_SuppressAddressValidationError",
+        "OA_AddressMap",
+        "AddressTypeCode",
+        "address_id",
+    ]
+    ADDRESS_LITERALS = [
+        "OA_Address1",
+        "StreetAddress",
+        "postal_address",
+        "E2_Address",
+        "address_line",
+        "billing_address",
+        "oa_address",
+        "HasAddressOnFile",
+    ]
+
+    @pytest.mark.parametrize("column", NOT_ADDRESS_LITERALS)
+    def test_code_like_address_column_is_not_redacted_by_name(self, column: str):
+        assert _kind_from_name(column) is None
+        assert detect_sample_pii_kind(column, "DOC") is None
+        assert not is_pii_column(column)
+        redacted, finding = redact_sample_value(
+            "DOC", table="OrgAddress", column=column, data_type="nvarchar(3)"
+        )
+        assert redacted == "DOC" and finding is None
+
+    @pytest.mark.parametrize("column", NOT_ADDRESS_LITERALS)
+    def test_persistence_gate_agrees_with_the_redactor(self, column: str):
+        rows = [{column: "DOC"}]
+        assert find_unredacted_sample_pii(rows, table="OrgAddress") == []
+        assert_no_unredacted_sample_pii(rows, table="OrgAddress")
+
+    @pytest.mark.parametrize("column", ADDRESS_LITERALS)
+    def test_address_literal_column_is_still_redacted_by_name(self, column: str):
+        assert _kind_from_name(column) == "address"
+        assert is_pii_column(column)
+        redacted, finding = redact_sample_value(
+            "Main Street 12", table="OrgAddress", column=column, data_type="nvarchar(200)"
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == "address"
+
+    @pytest.mark.parametrize("data_type", [None, "bit", "int", "nvarchar(3)", "some-future-type"])
+    def test_refinement_is_datatype_independent(self, data_type: str | None):
+        # Sibling of test_column_name_detection_survives_every_datatype: the guard is a
+        # property of the name, so no datatype can switch it on or off.
+        redacted, finding = redact_sample_value(
+            "DOC", table="OrgAddress", column="E2_AddressType", data_type=data_type
+        )
+        assert redacted == "DOC" and finding is None
+
+    @pytest.mark.parametrize(
+        ("value", "expected_kind"),
+        [
+            ("jane.doe@acme.com", "email"),
+            ("+32 470 12 34 56", "phone"),
+            ("BE68 5390 0754 7034", "iban"),
+            ("1234567890123", "identifier"),
+        ],
+    )
+    def test_shaped_value_in_code_like_address_column_is_still_caught(
+        self, value: str, expected_kind: str
+    ):
+        assert detect_sample_pii_kind("E2_AddressType", value) == expected_kind
+        redacted, finding = redact_sample_value(
+            value, table="OrgAddress", column="E2_AddressType", data_type="nvarchar(255)"
+        )
+        assert is_redaction_token(redacted)
+        assert finding is not None and finding.kind == expected_kind
+
+    def test_postal_address_has_no_value_shape_detector(self):
+        # Documents the residual, not a wish: `_kind_from_text` detects email, IBAN, phone
+        # and long ids only, so a street address typed into an `AddressType` column is
+        # not caught by value shape. The name rule was, and is, the only address detector.
+        assert _kind_from_text("Main Street 12") is None
+        assert detect_sample_pii_kind("E2_AddressType", "Main Street 12") is None
 
 
 class TestLocationDetection:

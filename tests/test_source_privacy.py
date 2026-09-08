@@ -287,6 +287,50 @@ def test_generic_name_column_not_flagged_on_non_person_table(tmp_path):
     assert detect_sample_pii_kind("Name", "Loading place", context_name="TransportStop") is None
 
 
+def test_address_type_code_column_not_flagged_by_name(tmp_path):
+    """A code/flag/type column that merely CONTAINS `address` must not be flagged.
+
+    Regression (#749): ``_kind_from_name`` matched ``address`` as a bare substring of
+    the camel-split column name, so CargoWise ``E2_AddressType`` — a 13-value
+    document-address role code vocabulary — had every sample value and every
+    ``kairos-bronze:sampleValues`` literal replaced by ``<redacted kind=address …>``.
+    """
+    from kairos_ontology.core._samples import detect_sample_pii_kind
+    from kairos_ontology.core.source_privacy import find_source_data_privacy_issues
+
+    data = {
+        "tables": [
+            {
+                "name": "OrgAddress",
+                "columns": [
+                    {
+                        "name": "E2_AddressType",
+                        "data_type": "nvarchar(3)",
+                        "samples": ["DOC", "PHY", "POS"],
+                    },
+                    {
+                        "name": "OA_SuppressAddressValidationError",
+                        "data_type": "bit",
+                        "samples": ["True", "False"],
+                    },
+                    {
+                        "name": "OA_Address1",
+                        "data_type": "nvarchar(200)",
+                        "samples": ["Main Street 12"],
+                    },
+                ],
+            }
+        ]
+    }
+
+    issues = find_source_data_privacy_issues(data)
+    flagged = {(issue.table, issue.column, issue.kind) for issue in issues}
+    assert flagged == {("OrgAddress", "OA_Address1", "address")}
+    assert detect_sample_pii_kind("E2_AddressType", "DOC", context_name="OrgAddress") is None
+    # A shaped value in such a column is still caught by value detection.
+    assert detect_sample_pii_kind("E2_AddressType", "jane@acme.com") == "email"
+
+
 def test_null_value_in_pii_named_column_is_not_flagged(tmp_path):
     """A NULL in a PII-named column must not be classified as unredacted PII.
 
