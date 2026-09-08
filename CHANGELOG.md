@@ -229,6 +229,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved cross-domain edge appear exactly once; a target no domain has emitted keeps its
   stub. The ERD is hashed into `{domain}-silver-parity.json`, so parity manifests of domains
   with cross-domain foreign keys change on the next emit.
+- **`safety.column-unresolved` for a relationship `join.local` now says what would resolve
+  (#751).** `join.local` is always the child's *source* column — the raw Bronze column for a
+  `source.relation` binding, the contracted output column for `source.dbtModel`. Authoring a
+  technical field's output `name` there (`voyage_source_id` instead of `JA_JV`) only appears
+  to work on a dbtModel source because the two usually coincide; on a relation source it
+  failed with a bare `does not resolve` and no hint. The diagnostic now names the resolved
+  relation and its source kind, and either points at the source column the technical field
+  binds (`'voyage_source_id' is the technical field name; join.local must be the source
+  column -- use 'JA_JV'`) or lists up to eight candidate columns. Resolution semantics are
+  unchanged; `kairos-design-mapping` now states the rule explicitly.
+- **Name-based address detection redacted code, flag and type columns such as
+  `AddressType` (#749).** `_kind_from_name` matched the `address` keyword as a bare substring
+  of the camel-split column name, so CargoWise `E2_AddressType`, `PZ_AddressType`,
+  `OA_AddressMap` and `OA_SuppressAddressValidationError` — none of which holds an address —
+  had every sample value and every `kairos-bronze:sampleValues` literal replaced by
+  `<redacted kind=address …>`. On the Fracht hub that hid the 13-value document-address role
+  code vocabulary a party-role binding must map. The name rule now stands down when the
+  column's own tokens carry a code/flag/type discriminator (`type`, `code`, `kind`, `map`,
+  `suppress`, `validation`, `validate`, `error`, `flag`, `id`, `key`, `count`, `status`);
+  `Address1`, `StreetAddress`, `postal_address` and `HasAddressOnFile` are unchanged, and a
+  shaped value (email, IBAN, phone, long id) in such a column is still caught by value
+  detection. The guard reads the name only — never the datatype (#672) — so the redactor and
+  the persistence gate keep agreeing, and it is scoped to `address`: the art. 9 keywords
+  disclose through a flag too, and `EmailId` routinely holds the email itself. There is no
+  value-shape detector for postal addresses, so a street address typed into an `AddressType`
+  column is not caught; the name rule was the only address detector.
 - **The TMDL parser could not read bare flags, annotations or `///` descriptions (#744).**
   `isKey` and `isHidden` are written with no value, and the reader only handled
   `key: value` lines, so neither was visible; `annotation X = "..."` has no colon and was
@@ -248,6 +274,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.md.template` in the scaffold was therefore exempt, including the two READMEs a new hub
   operator reads first. The check now matches on the last two suffixes, and the three bare
   invocations it found (the repo README, the hub README, and the user guide) are fixed.
+- **Gold contract errors reach the compile report under their own code and file, and
+  `emit-gold` no longer claims success before it has written anything (#748, #752).**
+  A `GoldContractError` raised while shaping the project was flattened into
+  `safety.type-incompatible` at the hub root with `projection normalization failed:` in
+  front of the real text, so a `gold.source-version-drift` told the author neither which
+  rule fired nor which file to edit. The kernel now reports it under its own `gold.*` code
+  and `DD-112` rule, located at `model/extensions/<domain>-gold-ext.ttl`; the plan stays
+  blocked. The drift message itself now names the Gold table, its Silver model and the
+  domain, and says where the pin lives. On `--confirm-emit`, `emit-gold` printed
+  `✅ Emitted …` before calling `emit_artifacts`, so a failed swap left a success line
+  directly above the error; the line is now echoed only after the write commits. The
+  backup rename in `_commit_stage` raised without the Windows sharing-violation hint the
+  stage-to-target swap already carried; both branches now carry it, and the hint names the
+  Gold lane's usual holders — Power BI Desktop with the emitted `.pbip` open, or a shell
+  whose current directory is inside the target. `kairos-design-domain` step 9 now warns
+  that bumping `owl:versionInfo` invalidates every `goldSourceVersion` pin and allows the
+  Gold extension in its `guard-scope` example.
 
 ### Changed
 - **`owl:equivalentClass` is no longer presented as a compile-time anchor (#730).**

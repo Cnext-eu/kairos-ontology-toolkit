@@ -531,6 +531,12 @@ fleet mode, record the AI approval with rationale, confidence, and evidence.
 Apply only the approved diff. Reread and parse the saved ontology and repeat
 Gate 5.
 
+If the diff bumps `owl:versionInfo`, every `kairos-ext:goldSourceVersion` pin
+in `model/extensions/<domain>-gold-ext.ttl` is now stale: compile reports
+`gold.source-version-drift`, naming the Gold table and that file. Do not bump
+the pin here to make the diagnostic go away — it is updated only after the Gold
+table has been re-validated against the new version (kairos-design-gold).
+
 Then run full-coverage validation, before registration:
 
 ```powershell
@@ -585,14 +591,15 @@ Finally confirm the workspace guard passes:
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-uv run kairos-ontology guard-scope --check-since <token> --allow "*model/ontologies/<domain>.ttl" --allow "*catalog-v001.xml" --allow "*model/ontologies/_master.ttl"
+uv run kairos-ontology guard-scope --check-since <token> --allow "*model/ontologies/<domain>.ttl" --allow "*catalog-v001.xml" --allow "*model/ontologies/_master.ttl" --allow "*model/extensions/<domain>-gold-ext.ttl"
 ```
 
-Those three globs are the whole legitimate footprint of one domain: the ontology
-patch, the catalog entry the registration step writes, and `_master.ttl`, which
+Those four globs are the whole legitimate footprint of one domain: the ontology
+patch, the catalog entry the registration step writes, `_master.ttl`, which
 `init --domain` now updates automatically — expect this file to change on every
-domain registration, not just an edge case. Each one carries a leading `*`
-because `guard-scope` reports paths relative to the **git repo root**; a
+domain registration, not just an edge case — and the domain's Gold extension,
+whose `goldSourceVersion` pins a version bump invalidates. Each one carries a
+leading `*` because `guard-scope` reports paths relative to the **git repo root**; a
 hub-relative glob matches nothing in the standard `ontology-hub/` layout.
 
 A non-zero exit names every path that changed outside that scope — treat that as

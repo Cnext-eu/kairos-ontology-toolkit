@@ -509,6 +509,13 @@ Every relationship `join[].local` column must **also** be mapped as a scalar
 silver projection; omitting its `fields:` mapping fails compilation with
 `mapping.unresolved-join-input` (`DD-107-source-ownership`).
 
+`join[].local` is always the child's *source* column, whether the binding reads
+`source.relation` or `source.dbtModel`. A `technicalFields[].name` is an output
+column and is not accepted there; on a `source.relation` binding it fails with
+`safety.column-unresolved`. (For a dbtModel source the model's output column and
+the technical field name usually coincide, which is why it appears to work.)
+Write the source column in `join[].local` and let the technical field carry it.
+
 Use `quality:` only for focused evidence-backed dbt tests. It is not execution
 authority and does not replace compiler safety.
 

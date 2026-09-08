@@ -456,6 +456,80 @@ def test_relationship_join_columns_must_resolve(tmp_path, side):
     assert "safety.column-unresolved" in {item.code for item in result.diagnostics.items}
 
 
+def _unresolved_join_local(result):
+    return next(
+        item
+        for item in result.diagnostics.items
+        if item.code == "safety.column-unresolved"
+        and item.message.startswith("relationship local column")
+    )
+
+
+def test_unresolved_join_local_names_relation_source_kind_and_candidates(tmp_path):
+    """#751: the bare ``does not resolve`` message named neither the relation the column was
+    looked up in nor anything that *would* resolve. It now names the ``source.relation`` ref
+    and lists the relation's columns -- sorted, capped at eight, with the overflow counted --
+    while the code and pointer stay exactly as before."""
+    scenario = Path(__file__).parent / "scenarios" / "v5-hub"
+    hub = tmp_path / "hub"
+    shutil.copytree(scenario, hub)
+    _add_source_columns(hub, ("zz_extra_column", "varchar(10)"))
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace("local: country_code", "local: missing"),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    unresolved = _unresolved_join_local(result)
+    assert unresolved.location.pointer == "/relationships/0/join/0"
+    assert (
+        "relationship local column 'missing' does not resolve against "
+        "source.relation 'crm.customers'; candidates: "
+        "'country_code', 'customer_id', 'customer_name', 'effective_at', 'ingested_at', "
+        "'operation', 'sequence_number', 'source_updated_at' (+1 more)"
+    ) == unresolved.message
+    assert "zz_extra_column" not in unresolved.message
+
+
+def test_unresolved_join_local_technical_field_name_hints_the_source_column(tmp_path):
+    """#751: ``join.local`` is a *source* column regardless of source kind. Authoring a
+    technical field's output ``name`` there fails on a ``source.relation`` binding -- it only
+    seems to work on ``source.dbtModel`` because the contracted output column and the
+    technical field name usually coincide. The diagnostic now says so and names the source
+    column that technical field binds, instead of listing candidates."""
+    scenario = Path(__file__).parent / "scenarios" / "v5-hub"
+    hub = tmp_path / "hub"
+    shutil.copytree(scenario, hub)
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace("local: country_code", "local: op_code")
+        + textwrap.dedent("""
+            technicalFields:
+              - name: op_code
+                expression: operation
+                type: string
+                nullable: true
+                purpose: relationship
+            """),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    unresolved = _unresolved_join_local(result)
+    assert unresolved.location.pointer == "/relationships/0/join/0"
+    assert (
+        "relationship local column 'op_code' does not resolve against "
+        "source.relation 'crm.customers'; 'op_code' is the technical field name; "
+        "join.local must be the source column -- use 'operation'"
+    ) == unresolved.message
+    assert "candidates:" not in unresolved.message
+
+
 def _add_source_columns(hub: Path, *columns: tuple[str, str]) -> None:
     source = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
     additions = "\n".join(
@@ -982,3 +1056,57 @@ def test_single_fields_entry_per_property_is_unaffected(tmp_path):
     codes = {item.code for item in result.diagnostics.items}
     assert "field.duplicate-property" not in codes
     assert "field.output-collision" not in codes
+
+
+_V5_HUB = Path(__file__).parent / "scenarios" / "v5-hub"
+
+_DRIFTED_GOLD_EXT = """
+@prefix party: <https://example.test/ontology/party#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+<https://example.test/ontology/party>
+  kairos-ext:goldSchema "gold" ;
+  kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+party:Customer
+  kairos-ext:goldTableType "dimension" ;
+  kairos-ext:goldTableName "dim_customer" ;
+  kairos-ext:goldSourceModel "customer" ;
+  kairos-ext:goldSourceVersion "9.9.9" ;
+  kairos-ext:dimensionExposure "current-only" ;
+  kairos-ext:dimensionVersionBinding "current" .
+"""
+
+
+def test_gold_contract_error_keeps_its_own_code_rule_and_file(tmp_path):
+    """#752/#763: a ``GoldContractError`` raised while shaping the project must surface
+    under its own ``gold.*`` code, DD-112 rule and the Gold extension file -- not as
+    ``safety.type-incompatible`` at the hub root with ``projection normalization failed:``
+    in front of the real text, which named neither the rule nor the file to edit. The plan
+    must stay blocked exactly as it was when the error was flattened.
+    """
+    hub = tmp_path / "hub"
+    shutil.copytree(_V5_HUB, hub)
+    extensions = hub / "model" / "extensions"
+    extensions.mkdir(parents=True, exist_ok=True)
+    (extensions / "party-gold-ext.ttl").write_text(_DRIFTED_GOLD_EXT, encoding="utf-8")
+
+    plan = build_compile_plan(hub, "party")
+
+    assert plan.blocked is True
+    codes = {item.code for item in plan.diagnostics.items}
+    assert "gold.source-version-drift" in codes, [item.render() for item in plan.diagnostics.items]
+    assert "safety.type-incompatible" not in codes
+    diagnostic = next(
+        item for item in plan.diagnostics.items if item.code == "gold.source-version-drift"
+    )
+    assert diagnostic.rule_id == "DD-112-silver-binding"
+    assert diagnostic.location.path.endswith("party-gold-ext.ttl")
+    assert not diagnostic.message.startswith("projection normalization failed")
+    assert not diagnostic.message.startswith("gold.source-version-drift:")
+    # The message names the table, the Silver model, the domain and the pin's file.
+    assert "'dim_customer'" in diagnostic.message
+    assert "'customer'" in diagnostic.message
+    assert "'party'" in diagnostic.message
+    assert "'9.9.9'" in diagnostic.message and "'1.0.0'" in diagnostic.message
+    assert "model/extensions/party-gold-ext.ttl" in diagnostic.message

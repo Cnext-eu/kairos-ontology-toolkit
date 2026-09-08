@@ -191,8 +191,9 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         if len(product.domains) > 1
         else f"{product.name!r}"
     )
-    verb = "Would emit" if not confirm_emit else "Emitted"
-    click.echo(f"✅ {verb} {len(artifacts)} Gold artifact(s) for {label} to {target}")
+    summary = f"{len(artifacts)} Gold artifact(s) for {label} to {target}"
+    if not confirm_emit:
+        click.echo(f"✅ Would emit {summary}")
     _report_unresolved(artifacts, product)
     _report_insight_coverage(hub_root, logical, product)
     if not confirm_emit:
@@ -213,6 +214,10 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         manifest_name=manifest_name,
         replace_unowned_paths=(PARAMETER_ARTIFACT_PATH,),
     )
+    # #748: success is announced only once the write has actually committed. The line used
+    # to be printed before `emit_artifacts`, so a failed swap left a "✅ Emitted" on the
+    # terminal directly above the error that said nothing was written.
+    click.echo(f"✅ Emitted {summary}")
     click.echo(f"   → {target}")
 
     _regenerate_master_gold_erd(target, hub_name=hub_root.name)
