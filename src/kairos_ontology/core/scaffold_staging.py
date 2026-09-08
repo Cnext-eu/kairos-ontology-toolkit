@@ -36,7 +36,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .scaffold_binding import SourceColumn, load_table_columns, render_staging_sql
+from .scaffold_binding import (
+    SourceColumn,
+    load_table_columns,
+    partition_pii_columns,
+    render_staging_sql,
+)
 
 SENTINEL_TARGET_CLASS = "<CONFIRM_TARGET_CLASS>"
 SENTINEL_VIRTUAL_SOURCE_IRI = "<CONFIRM_VIRTUAL_SOURCE_IRI>"
@@ -62,7 +67,12 @@ class StageWritten:
     yaml_path: Path
     sql_written: bool
     yaml_written: bool
+    #: The columns the stage actually selects -- personal-data columns are already gone
+    #: unless ``include_pii`` was passed (#758).
     columns: tuple[SourceColumn, ...]
+    #: Names of the personal-data columns left out of (or, under ``include_pii``, kept in)
+    #: this stage.
+    pii_columns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +229,7 @@ def run_scaffold_staging(
     sources: tuple[tuple[str, str], ...],
     force: bool = False,
     dry_run: bool = False,
+    include_pii: bool = False,
 ) -> ScaffoldStagingResult:
     """Scaffold one ``stg_<source>__<entity>`` model per *sources* entry, plus one merged model.
 
@@ -226,6 +237,10 @@ def run_scaffold_staging(
     under ``integration/sources/<system>/`` (the same evidence ``scaffold-binding`` reads).
     Never overwrites an existing file unless *force* is set; *dry_run* reports what would be
     written without writing anything.
+
+    Personal-data columns (:func:`scaffold_binding.partition_pii_columns`) are left out of
+    every stage's SELECT, its properties YAML and the merged model's common-column set, and
+    are named in the stage SQL header and in ``notes``; *include_pii* keeps them (#758).
     """
     if not entity or not entity.replace("_", "").isalnum():
         raise ScaffoldStagingError(f"--entity must be a plain identifier, got {entity!r}")
@@ -239,14 +254,28 @@ def run_scaffold_staging(
     columns_by_name: dict[str, SourceColumn] = {}
 
     for system, table in sources:
-        columns = load_table_columns(hub_root, system, table)
+        all_columns = load_table_columns(hub_root, system, table)
+        columns, pii_columns = partition_pii_columns(all_columns, include_pii=include_pii)
+        pii_names = tuple(column.name for column in pii_columns)
+        if pii_names:
+            if include_pii:
+                notes.append(
+                    f"privacy: --include-pii kept {len(pii_names)} personal-data column(s) in "
+                    f"stg_{system}__{entity}: {', '.join(pii_names)}."
+                )
+            else:
+                notes.append(
+                    f"privacy: {len(pii_names)} personal-data column(s) excluded from "
+                    f"stg_{system}__{entity} (pass --include-pii to keep them): "
+                    f"{', '.join(pii_names)}."
+                )
         column_sets.append({column.name for column in columns})
         for column in columns:
             columns_by_name.setdefault(column.name, column)
         model_name = f"stg_{system}__{entity}"
         sql_path = models_dir / f"{model_name}.sql"
         yaml_path = models_dir / f"{model_name}.yml"
-        sql_text = render_staging_sql(system, table, columns)
+        sql_text = render_staging_sql(system, table, all_columns, include_pii=include_pii)
         yaml_text = _stage_properties_yaml(model_name, system, table, columns)
 
         sql_written = False
@@ -279,6 +308,7 @@ def run_scaffold_staging(
                 sql_written=sql_written,
                 yaml_written=yaml_written,
                 columns=columns,
+                pii_columns=pii_names,
             )
         )
 

@@ -230,6 +230,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disclose through a flag too, and `EmailId` routinely holds the email itself. There is no
   value-shape detector for postal addresses, so a street address typed into an `AddressType`
   column is not caught; the name rule was the only address detector.
+- **The passthrough staging scaffold copied credential, payroll and personal-data columns
+  verbatim (#758, #760, #761).** `scaffold-binding --archetype passthrough`,
+  `scaffold-staging` and `scaffold-system` rendered one `select` line per Bronze column with
+  no privacy awareness at all, so `GS_PasswordHash`, `GS_WagesBankAccount` and a birth date
+  landed in a dbt model nobody had reviewed. All three now partition columns through the
+  DD-075 `is_pii_column` policy (plus the import redactor's own `<redacted ...>` verdict):
+  personal-data columns are left out of the `select`, the stage properties YAML and the
+  merged model's common columns, named in the SQL header as
+  `-- excluded by privacy policy (pass --include-pii to keep): ...`, and reported in the
+  result notes. A new `--include-pii` flag on all three commands restores them. The shared
+  `PII_KEYWORDS` list gains the credential and payroll terms it was missing (`password`,
+  `sql_login`, `bank_account`, `bsb`, `wages`, `salary`, `emergency_contact`, `residency`,
+  `security_card`, `birth_date`), deliberately without the broad tokens (`hash`, `bank`,
+  `login`) that would fire on `geohash` or `login_count`.
+  Alongside: `dbt-contract.dialect-fabric-nested-cte` reported only a count, so an author
+  whose comments said "with" twice went hunting for a CTE that was not there — it now lists
+  the 1-based line of every occurrence and says the scan includes comments, and the scaffold's
+  new header is pinned by test to spend none of the one allowed `with `. The scaffolded
+  `deploy-powerbi-semantic-model.yml` fell back to `github.token` for cross-repository `gh`
+  calls against the hub, which cannot read a private sibling and only surfaced later as
+  "release not found"; it now fails fast by name when `HUB_REPO_TOKEN` is missing and never
+  falls back, and `pr-validate.yml`'s "assuming a public hub package" message says what a
+  private-hub operator will see and which secret to add. The scaffolded
+  `profiles.yml.example` activated `authentication: ServicePrincipal`, which dbt-fabric 1.11
+  rejects outright (and whose accepted `ActiveDirectoryServicePrincipal` spelling appends
+  `Authority Id=`, which the mssql-python driver refuses); it now uses
+  `authentication: environment`, reads `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/
+  `AZURE_CLIENT_SECRET` from the environment, and lists the accepted spellings.
 - **The TMDL parser could not read bare flags, annotations or `///` descriptions (#744).**
   `isKey` and `isHidden` are written with no value, and the reader only handled
   `key: value` lines, so neither was visible; `annotation X = "..."` has no colon and was

@@ -351,6 +351,35 @@ class TestInitDataplatform:
 
         assert '"SemanticModel", "Report"' in content
 
+    def test_fabric_deploy_workflow_fails_fast_without_hub_repo_token(self, dataplatform_output):
+        """#760: the default GITHUB_TOKEN is scoped to this repository, so falling back to
+        it for the cross-repo `gh` calls only moved the failure to a confusing "release not
+        found" later. The workflow now names the missing secret up front and never falls
+        back.
+        """
+        wf = dataplatform_output / ".github" / "workflows" / "deploy-powerbi-semantic-model.yml"
+        content = wf.read_text(encoding="utf-8")
+
+        assert "|| github.token" not in content
+        assert "::error::HUB_REPO_TOKEN is not set" in content
+        assert "Contents:read" in content
+        preflight = content.index("Verify HUB_REPO_TOKEN is configured")
+        first_hub_call = content.index("Verify hub release tag resolves")
+        assert preflight < first_hub_call
+        # Only the hub-facing steps use the secret; the same-repo run check keeps github.token.
+        assert content.count("GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}") == 2
+        assert "GH_TOKEN: ${{ github.token }}" in content
+
+    def test_pr_validate_workflow_explains_private_hub_failure_mode(self, dataplatform_output):
+        """#760: a public hub is legitimate (exit 0 stays), but the message must say what a
+        private-hub operator will see and do."""
+        wf = dataplatform_output / ".github" / "workflows" / "pr-validate.yml"
+        content = wf.read_text(encoding="utf-8")
+
+        assert "assuming a public hub package" in content
+        assert "dbt deps will fail with 'Repository not found'" in content
+        assert "add HUB_REPO_TOKEN (Contents:read on the hub) as a repository secret" in content
+
     def test_fabric_deploy_settings_example_created(self, dataplatform_output):
         cfg = dataplatform_output / ".github" / "fabric" / "deployment-settings.json.example"
         assert cfg.exists()
@@ -610,7 +639,19 @@ class TestProfilesExamplePlatformSelection:
         content = self._profiles_example(mock_hub, "dp-fabric-wh", platform="fabric-warehouse")
         assert self._active_types(content) == {"fabric"}
         assert '"{your-warehouse-name}"' in content
-        assert "authentication: ServicePrincipal" in content
+        # #761: the bare `ServicePrincipal` spelling is rejected by dbt-fabric 1.11, and
+        # `ActiveDirectoryServicePrincipal` appends `Authority Id=` which the mssql-python
+        # driver refuses; `environment` reads AZURE_TENANT_ID/AZURE_CLIENT_ID/
+        # AZURE_CLIENT_SECRET and is the spelling that works.
+        active_auth = [
+            line.strip()
+            for line in content.splitlines()
+            if line.strip().startswith("authentication:")
+        ]
+        assert active_auth == ["authentication: environment"], active_auth
+        assert "authentication: ServicePrincipal" not in content
+        assert "DBT_FABRIC_TENANT_ID" not in content
+        assert "AZURE_TENANT_ID" in content
 
     def test_databricks_platform_activates_databricks_block(self, mock_hub):
         content = self._profiles_example(mock_hub, "dp-databricks", platform="databricks")
@@ -644,9 +685,13 @@ class TestProfilesExamplePlatformSelection:
 
     def test_secret_fields_use_env_var_placeholders(self, mock_hub):
         content = self._profiles_example(mock_hub, "dp-secrets", platform="fabric-warehouse")
-        assert "env_var('DBT_FABRIC_TENANT_ID')" in content
-        assert "env_var('DBT_FABRIC_CLIENT_ID')" in content
-        assert "env_var('DBT_FABRIC_CLIENT_SECRET')" in content
+        # #761: `authentication: environment` reads the Azure SDK variables directly, so the
+        # fabric block carries no tenant/client keys at all -- it documents the variable
+        # names instead. Nothing credential-shaped may appear in the file.
+        for name in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
+            assert name in content
+        for key in ("tenant_id:", "client_id:", "client_secret:"):
+            assert key not in content, key
 
         dbx_content = self._profiles_example(mock_hub, "dp-secrets-dbx", platform="databricks")
         assert "env_var('DBT_DATABRICKS_TOKEN')" in dbx_content

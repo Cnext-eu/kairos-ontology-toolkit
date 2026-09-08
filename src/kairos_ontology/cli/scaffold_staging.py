@@ -29,7 +29,16 @@ import click
     default=False,
     help="Compute and report what would be scaffolded without writing any file.",
 )
-def scaffold_staging_cmd(entity, domain, sources, force, dry_run):
+@click.option(
+    "--include-pii",
+    "include_pii",
+    is_flag=True,
+    default=False,
+    help="Keep personal-data columns (credentials, payroll, contact, demographic fields) in "
+    "the stage models. By default they are left out of each stage's SELECT, properties YAML "
+    "and the merged model's common columns, and named in the stage header comment (#758).",
+)
+def scaffold_staging_cmd(entity, domain, sources, force, dry_run, include_pii):
     """Scaffold first-class stg_<source>__<entity> + int_merged__<entity> staging (issue #399, #616).
 
     kairos-develop-dbt-transformation/SKILL.md already documents this layering -- one
@@ -78,6 +87,7 @@ def scaffold_staging_cmd(entity, domain, sources, force, dry_run):
             sources=tuple(parsed_sources),
             force=force,
             dry_run=dry_run,
+            include_pii=include_pii,
         )
     except (ScaffoldStagingError, ScaffoldBindingError) as exc:
         raise click.ClickException(str(exc)) from exc

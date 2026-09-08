@@ -66,6 +66,15 @@ from .shared import _autodetect_analysis_dir, resolve_refmodels_dir
     help="Compute and report what would be scaffolded without writing any file.",
 )
 @click.option(
+    "--include-pii",
+    "include_pii",
+    is_flag=True,
+    default=False,
+    help="Keep personal-data columns (credentials, payroll, contact, demographic fields) in "
+    "the passthrough dbt staging model. By default they are left out and named in the "
+    "model's header comment (#758).",
+)
+@click.option(
     "--accelerator", default=None, help="Accelerator pack (default: resolved from hub config)."
 )
 @click.option(
@@ -100,6 +109,7 @@ def scaffold_binding_cmd(
     force,
     column_prefix,
     dry_run,
+    include_pii,
     accelerator,
     ref_models_dir_opt,
     catalog,
@@ -201,6 +211,7 @@ def scaffold_binding_cmd(
             analysis_dir=analysis_dir,
             dry_run=dry_run,
             column_prefix=column_prefix,
+            include_pii=include_pii,
         )
     except (ScaffoldBindingError, BindingArchetypeError) as exc:
         raise click.ClickException(str(exc)) from exc

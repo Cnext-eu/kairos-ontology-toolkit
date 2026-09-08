@@ -37,6 +37,9 @@ _CRM_TTL = textwrap.dedent(
     src:cnotes a kb:SourceColumn ; kb:sourceTable src:customers ;
       kb:columnName "crm_only_notes" ; kb:dataType "varchar(4000)" ;
       kb:nullable "true"^^xsd:boolean .
+    src:cemail a kb:SourceColumn ; kb:sourceTable src:customers ;
+      kb:columnName "customer_email" ; kb:dataType "varchar(200)" ;
+      kb:nullable "true"^^xsd:boolean .
     """
 ).strip()
 
@@ -56,6 +59,9 @@ _ERP_TTL = textwrap.dedent(
       kb:nullable "false"^^xsd:boolean .
     src:perpcode a kb:SourceColumn ; kb:sourceTable src:parties ;
       kb:columnName "erp_only_code" ; kb:dataType "varchar(20)" ;
+      kb:nullable "true"^^xsd:boolean .
+    src:pemail a kb:SourceColumn ; kb:sourceTable src:parties ;
+      kb:columnName "customer_email" ; kb:dataType "varchar(200)" ;
       kb:nullable "true"^^xsd:boolean .
     """
 ).strip()
@@ -100,7 +106,8 @@ def test_common_columns_are_the_intersection_across_stages(tmp_path):
         hub, entity="party", domain="party", sources=(("crm", "customers"), ("erp", "parties"))
     )
 
-    # crm has crm_only_notes, erp has erp_only_code -- only customer_id/customer_name are shared.
+    # crm has crm_only_notes, erp has erp_only_code -- only customer_id/customer_name are shared
+    # (customer_email is shared too, but personal data is excluded by default, #758).
     assert set(result.common_columns) == {"customer_id", "customer_name"}
 
 
@@ -271,3 +278,76 @@ def test_cli_end_to_end(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "stg_crm__party" in result.output
     assert "int_merged__party" in result.output
+
+
+# ---------------------------------------------------------------------------
+# #758: personal-data columns stay out of every stage, its YAML and the merged model.
+# ---------------------------------------------------------------------------
+def _yaml_column_names(path: Path) -> set[str]:
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return {column["name"] for column in document["models"][0]["columns"]}
+
+
+def test_pii_columns_are_excluded_from_stages_yaml_and_common_columns(tmp_path):
+    hub = _hub(tmp_path)
+
+    result = run_scaffold_staging(
+        hub, entity="party", domain="party", sources=(("crm", "customers"), ("erp", "parties"))
+    )
+
+    # customer_email is in BOTH sources, so it would be a common column if it were kept.
+    assert "customer_email" not in result.common_columns
+    for stage in result.stages:
+        assert stage.pii_columns == ("customer_email",)
+        assert "customer_email" not in {column.name for column in stage.columns}
+        sql = stage.sql_path.read_text(encoding="utf-8")
+        assert " as customer_email" not in sql
+        assert "-- excluded by privacy policy (pass --include-pii to keep): customer_email" in sql
+        assert "customer_email" not in _yaml_column_names(stage.yaml_path)
+    assert "customer_email" not in result.merged_sql_path.read_text(encoding="utf-8")
+    privacy_notes = [note for note in result.notes if note.startswith("privacy:")]
+    assert len(privacy_notes) == 2
+    assert all("customer_email" in note and "--include-pii" in note for note in privacy_notes)
+
+
+def test_include_pii_keeps_the_columns_in_every_artifact(tmp_path):
+    hub = _hub(tmp_path)
+
+    result = run_scaffold_staging(
+        hub,
+        entity="party",
+        domain="party",
+        sources=(("crm", "customers"), ("erp", "parties")),
+        include_pii=True,
+    )
+
+    assert "customer_email" in result.common_columns
+    for stage in result.stages:
+        assert stage.pii_columns == ("customer_email",)
+        assert " as customer_email" in stage.sql_path.read_text(encoding="utf-8")
+        assert "customer_email" in _yaml_column_names(stage.yaml_path)
+    assert "customer_email" in result.merged_sql_path.read_text(encoding="utf-8")
+    assert any("--include-pii kept 1 personal-data column(s)" in note for note in result.notes)
+
+
+def test_cli_include_pii_flag(tmp_path, monkeypatch):
+    hub = _hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "scaffold-staging",
+            "--entity",
+            "party",
+            "--domain",
+            "party",
+            "--source",
+            "crm.customers",
+            "--include-pii",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "customer_email" in result.output
+    assert "NOTE: privacy: --include-pii kept" in result.output
