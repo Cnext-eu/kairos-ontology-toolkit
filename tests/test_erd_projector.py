@@ -238,6 +238,117 @@ class TestCardinalityRestrictions:
         assert '--> "0..1" Order' in relationship_line
         assert '--> "0..*" Order' not in relationship_line
 
+    def test_restriction_on_the_heir_of_an_inherited_property_is_honoured(self):
+        """#753: the hub subclass tightens a reference-model property to exactly one.
+
+        The property is declared on the imported superclass, so the edge is drawn from
+        the subclass as ``(inherited)``. The restriction lives on the subclass -- the
+        class the modeller controls -- and was read from the superclass instead, so a
+        mandatory single ``Voyage`` rendered as ``0..*``.
+        """
+        g = Graph()
+        g.add((REF.Record, RDF.type, OWL.Class))
+        g.add((REF.Voyage, RDF.type, OWL.Class))
+        g.add((REF.partOfVoyage, RDF.type, OWL.ObjectProperty))
+        g.add((REF.partOfVoyage, RDFS.domain, REF.Record))
+        g.add((REF.partOfVoyage, RDFS.range, REF.Voyage))
+        g.add((ORDER.PortCallRecord, RDF.type, OWL.Class))
+        g.add((ORDER.PortCallRecord, RDFS.subClassOf, REF.Record))
+        restriction = BNode()
+        g.add((restriction, RDF.type, OWL.Restriction))
+        g.add((restriction, OWL.onProperty, REF.partOfVoyage))
+        g.add((restriction, OWL.minCardinality, Literal(1)))
+        g.add((restriction, OWL.maxCardinality, Literal(1)))
+        g.add((ORDER.PortCallRecord, RDFS.subClassOf, restriction))
+
+        content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+
+        line = next(line for line in content.splitlines() if ": partOfVoyage" in line)
+        assert line == '    PortCallRecord "0..*" --> "1" Voyage : partOfVoyage (inherited)'
+
+    def test_the_nearest_class_wins_when_both_heir_and_superclass_restrict(self):
+        g = Graph()
+        g.add((REF.Record, RDF.type, OWL.Class))
+        g.add((REF.Voyage, RDF.type, OWL.Class))
+        g.add((REF.partOfVoyage, RDF.type, OWL.ObjectProperty))
+        g.add((REF.partOfVoyage, RDFS.domain, REF.Record))
+        g.add((REF.partOfVoyage, RDFS.range, REF.Voyage))
+        g.add((ORDER.PortCallRecord, RDF.type, OWL.Class))
+        g.add((ORDER.PortCallRecord, RDFS.subClassOf, REF.Record))
+        loose = BNode()
+        g.add((loose, RDF.type, OWL.Restriction))
+        g.add((loose, OWL.onProperty, REF.partOfVoyage))
+        g.add((loose, OWL.minCardinality, Literal(0)))
+        g.add((REF.Record, RDFS.subClassOf, loose))
+        tight = BNode()
+        g.add((tight, RDF.type, OWL.Restriction))
+        g.add((tight, OWL.onProperty, REF.partOfVoyage))
+        g.add((tight, OWL.qualifiedCardinality, Literal(1)))
+        g.add((ORDER.PortCallRecord, RDFS.subClassOf, tight))
+
+        content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+
+        line = next(line for line in content.splitlines() if ": partOfVoyage" in line)
+        assert '--> "1" Voyage' in line
+
+
+class TestInverseFolding:
+    """#753: an ``owl:inverseOf`` pair is one relationship, not two edges."""
+
+    @staticmethod
+    def _graph(*, declare_inverse: bool = True) -> Graph:
+        g = Graph()
+        g.add((ORDER.Party, RDF.type, OWL.Class))
+        g.add((ORDER.Contact, RDF.type, OWL.Class))
+        g.add((ORDER.hasPartyContact, RDF.type, OWL.ObjectProperty))
+        g.add((ORDER.hasPartyContact, RDFS.domain, ORDER.Party))
+        g.add((ORDER.hasPartyContact, RDFS.range, ORDER.Contact))
+        g.add((ORDER.contactParty, RDF.type, OWL.ObjectProperty))
+        g.add((ORDER.contactParty, RDFS.domain, ORDER.Contact))
+        g.add((ORDER.contactParty, RDFS.range, ORDER.Party))
+        if declare_inverse:
+            g.add((ORDER.contactParty, OWL.inverseOf, ORDER.hasPartyContact))
+        return g
+
+    def test_an_inverse_pair_draws_one_edge_labelled_with_both_names(self):
+        content = generate_erd_artifacts(self._graph(), NS, "order")["order-erd.mmd"]
+
+        edges = [line for line in content.splitlines() if "-->" in line]
+        assert len(edges) == 1
+        # The lexicographically smaller property IRI is the canonical direction.
+        assert edges[0] == '    Contact "0..*" --> "0..*" Party : contactParty / hasPartyContact'
+
+    def test_the_fold_is_independent_of_which_side_declares_inverse_of(self):
+        forward = self._graph()
+        backward = self._graph(declare_inverse=False)
+        backward.add((ORDER.hasPartyContact, OWL.inverseOf, ORDER.contactParty))
+
+        assert generate_erd_artifacts(forward, NS, "order") == generate_erd_artifacts(
+            backward, NS, "order"
+        )
+
+    def test_without_inverse_of_both_edges_are_still_drawn(self):
+        content = generate_erd_artifacts(self._graph(declare_inverse=False), NS, "order")
+        edges = [line for line in content["order-erd.mmd"].splitlines() if "-->" in line]
+        assert len(edges) == 2
+
+    def test_the_folded_partner_supplies_the_left_multiplicity(self):
+        """The partner is declared on the range class, so its restriction there is the
+        multiplicity of the canonical edge's left end -- information the pre-fold second
+        edge used to carry and the fold must not lose."""
+        g = self._graph()
+        restriction = BNode()
+        g.add((restriction, RDF.type, OWL.Restriction))
+        g.add((restriction, OWL.onProperty, ORDER.hasPartyContact))
+        g.add((restriction, OWL.minCardinality, Literal(1)))
+        g.add((ORDER.Party, RDFS.subClassOf, restriction))
+        g.add((ORDER.contactParty, RDF.type, OWL.FunctionalProperty))
+
+        content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+
+        edges = [line for line in content.splitlines() if "-->" in line]
+        assert edges == ['    Contact "1..*" --> "0..1" Party : contactParty / hasPartyContact']
+
 
 class TestOverlayExtension:
     """Plumbing-only ``{domain}-erd-ext.ttl`` overlay hook -- no packaged vocabulary

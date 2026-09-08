@@ -130,6 +130,64 @@ def _collect_classes(graph: Graph, namespace: str) -> list[URIRef]:
 _named_parents = named_parents
 _ancestors = class_ancestors
 
+#: ``(left, declared_on, property, range, inherited, folded_inverse)`` -- one drawn edge.
+Edge = tuple[URIRef, URIRef, URIRef, URIRef, bool, Optional[URIRef]]
+
+
+def _effective_bounds(
+    graph: Graph, drawn: URIRef, declared_on: URIRef, prop: URIRef
+) -> tuple[Optional[int], Optional[int]]:
+    """Return the nearest OWL cardinality restriction on *prop* that applies to *drawn*.
+
+    A restriction sits on whichever class the modeller chose: the class declaring the
+    property, or a subclass tightening it -- ``:PortCallRecord rdfs:subClassOf
+    [ owl:onProperty portcall:partOfVoyage ; owl:minCardinality 1 ; owl:maxCardinality 1 ]``
+    on a hub subclass of a reference-model class. Reading only *declared_on* (the
+    superclass, for an inherited edge) missed the subclass's restriction and rendered
+    ``0..*`` (#753). The drawn class is checked first, then its ancestors nearest-first,
+    then the declaring class; the first class carrying any bound wins.
+    """
+    seen: set[URIRef] = set()
+    for owner in (drawn, *_ancestors(graph, drawn), declared_on):
+        if owner in seen:
+            continue
+        seen.add(owner)
+        bounds = _restriction_bounds(graph, owner, prop)
+        if bounds != (None, None):
+            return bounds
+    return None, None
+
+
+def _fold_inverses(graph: Graph, edges: list[Edge]) -> list[Edge]:
+    """Collapse an ``owl:inverseOf`` pair drawn in both directions into one association.
+
+    ``p`` and its inverse ``q`` are one relationship read from either end, but both are
+    ``owl:ObjectProperty`` so each yielded its own edge and the pair drew twice (#753).
+    When both directions are present between the same two classes, the edge whose property
+    IRI sorts first is kept as the canonical direction and carries the inverse's name in
+    its label; the other is dropped. An inverse declared but drawn in only one direction is
+    left alone -- there is nothing to fold.
+    """
+    inverses: dict[URIRef, set[URIRef]] = {}
+    for subject, obj in graph.subject_objects(OWL.inverseOf):
+        if isinstance(subject, URIRef) and isinstance(obj, URIRef) and subject != obj:
+            inverses.setdefault(subject, set()).add(obj)
+            inverses.setdefault(obj, set()).add(subject)
+    if not inverses:
+        return edges
+    present = {(left, prop, range_cls) for left, _, prop, range_cls, _, _ in edges}
+    folded: list[Edge] = []
+    for left, declared_on, prop, range_cls, inherited, _ in edges:
+        partners = sorted(
+            (other for other in inverses.get(prop, ()) if (range_cls, other, left) in present),
+            key=str,
+        )
+        if any(str(other) < str(prop) for other in partners):
+            continue  # the inverse direction is canonical and carries this name
+        inverse = partners[0] if partners else None
+        folded.append((left, declared_on, prop, range_cls, inherited, inverse))
+    return folded
+
 
 def _external_label(cls: URIRef) -> str:
     """Return a short Mermaid stereotype naming the model an imported class came from.
@@ -145,10 +203,8 @@ def _external_label(cls: URIRef) -> str:
     return re.sub(r"[^0-9A-Za-z_./-]", "_", label) or "imported"
 
 
-def _collect_relationships(
-    graph: Graph, classes: list[URIRef]
-) -> list[tuple[URIRef, URIRef, URIRef, URIRef, bool]]:
-    """Return ``(left, declared_on, property, range, inherited)`` edges to render.
+def _collect_relationships(graph: Graph, classes: list[URIRef]) -> list[Edge]:
+    """Return ``(left, declared_on, property, range, inherited, inverse)`` edges to render.
 
     Uses :func:`effective_domain_classes` (DD-131) so multi-class ``rdfs:domain``
     (``owl:unionOf``) and ``schema:domainIncludes`` are both honored -- the same
@@ -166,19 +222,21 @@ def _collect_relationships(
     * neither, but the *range* is domain-local -- an imported class pointing **at** this
       domain, which the domain-scoped view should not hide either.
 
-    ``declared_on`` is kept separate from ``left`` so :func:`_restriction_bounds` reads
-    the cardinality from the class that actually declares the restriction.
+    ``declared_on`` is kept separate from ``left`` so :func:`_effective_bounds` can fall
+    back to the declaring class after the drawn class and its ancestors have been checked
+    for a cardinality restriction (#753). ``inverse`` is the ``owl:inverseOf`` partner
+    folded into this edge by :func:`_fold_inverses`, or ``None``.
     """
     class_set = set(classes)
     ancestry = {cls: set(_ancestors(graph, cls)) for cls in classes}
-    edges: list[tuple[URIRef, URIRef, URIRef, URIRef, bool]] = []
+    edges: list[Edge] = []
     for prop in sorted(set(graph.subjects(RDF.type, OWL.ObjectProperty)), key=str):
         range_value = graph.value(prop, RDFS.range)
         if not isinstance(range_value, URIRef):
             continue
         for domain_cls in sorted(effective_domain_classes(graph, prop), key=str):
             if domain_cls in class_set:
-                edges.append((domain_cls, domain_cls, prop, range_value, False))
+                edges.append((domain_cls, domain_cls, prop, range_value, False, None))
                 continue
             heirs = sorted(
                 (cls for cls in classes if domain_cls in ancestry[cls]),
@@ -186,11 +244,11 @@ def _collect_relationships(
             )
             if heirs:
                 for heir in heirs:
-                    edges.append((heir, domain_cls, prop, range_value, True))
+                    edges.append((heir, domain_cls, prop, range_value, True, None))
             elif range_value in class_set:
-                edges.append((domain_cls, domain_cls, prop, range_value, False))
+                edges.append((domain_cls, domain_cls, prop, range_value, False, None))
     edges.sort(key=lambda item: (str(item[0]), str(item[2]), str(item[3]), str(item[1])))
-    return edges
+    return _fold_inverses(graph, edges)
 
 
 def _collect_inheritance(graph: Graph, classes: list[URIRef]) -> list[tuple[URIRef, URIRef]]:
@@ -260,7 +318,9 @@ def _class_block(graph: Graph, cls: URIRef, *, stub: bool = False) -> str:
                 inherited.append(prop)
 
     for prop in own:
-        lines.append(f"        {_attribute_type(graph, prop)} {_sanitize(extract_local_name(str(prop)))}")
+        lines.append(
+            f"        {_attribute_type(graph, prop)} {_sanitize(extract_local_name(str(prop)))}"
+        )
     for prop in sorted(inherited, key=str):
         lines.append(
             f"        #{_attribute_type(graph, prop)} {_sanitize(extract_local_name(str(prop)))}"
@@ -319,8 +379,8 @@ def generate_erd_artifacts(
         for node in (
             [parent for parent, _ in inheritance]
             + [subclass for _, subclass in inheritance]
-            + [left for left, _, _, _, _ in relationships]
-            + [range_cls for _, _, _, range_cls, _ in relationships]
+            + [left for left, _, _, _, _, _ in relationships]
+            + [range_cls for _, _, _, range_cls, _, _ in relationships]
         )
         if node not in local
     }
@@ -332,6 +392,8 @@ def generate_erd_artifacts(
         "%% the model it comes from, and with no members of its own listed.",
         "%% A member prefixed # is inherited from a superclass; an edge labelled",
         "%% (inherited) is declared on a superclass and applies to this class.",
+        "%% An edge labelled a / b is one owl:inverseOf pair drawn once: read left to right",
+        "%% it is a, right to left it is b.",
         "classDiagram",
     ]
     for cls in classes:
@@ -344,23 +406,31 @@ def generate_erd_artifacts(
         child = _sanitize(extract_local_name(str(subclass)))
         lines.append(f"    {parent} <|-- {child}")
 
-    for domain_cls, declared_on, prop, range_cls, inherited in relationships:
+    for domain_cls, declared_on, prop, range_cls, inherited, inverse in relationships:
         left = _sanitize(extract_local_name(str(domain_cls)))
         right = _sanitize(extract_local_name(str(range_cls)))
-        min_bound, max_bound = _restriction_bounds(working_graph, declared_on, prop)
+        min_bound, max_bound = _effective_bounds(working_graph, domain_cls, declared_on, prop)
         if max_bound is None and (prop, RDF.type, OWL.FunctionalProperty) in working_graph:
             max_bound = 1
-        # The left (domain-class) side has no restriction to read directly from --
-        # OWL restrictions are declared on the class holding the property, i.e. the
-        # domain side, which is exactly what `_restriction_bounds` already captured
-        # for the right side above. The only signal available for the left side is
-        # inverse-functionality (at most one domain instance per range value).
-        left_max = (
-            1 if (prop, RDF.type, OWL.InverseFunctionalProperty) in working_graph else None
-        )
-        left_mult = _multiplicity(None, left_max)
+        # OWL restrictions are declared on the class holding the property, i.e. the domain
+        # side, which is what `_effective_bounds` captured for the right side above. The
+        # left side has two signals: inverse-functionality of the forward property (at
+        # most one domain instance per range value) and, when an owl:inverseOf partner was
+        # folded into this edge, the partner's own restriction on the range class -- that
+        # partner is declared there, so its bounds are exactly the left multiplicity.
+        left_min: Optional[int] = None
+        left_max = 1 if (prop, RDF.type, OWL.InverseFunctionalProperty) in working_graph else None
+        if inverse is not None:
+            left_min, inverse_max = _effective_bounds(working_graph, range_cls, range_cls, inverse)
+            if inverse_max is not None:
+                left_max = inverse_max
+            elif (inverse, RDF.type, OWL.FunctionalProperty) in working_graph:
+                left_max = 1
+        left_mult = _multiplicity(left_min, left_max)
         right_mult = _multiplicity(min_bound, max_bound)
         label = _sanitize(extract_local_name(str(prop)))
+        if inverse is not None:
+            label = f"{label} / {_sanitize(extract_local_name(str(inverse)))}"
         if inherited:
             label = f"{label} (inherited)"
         lines.append(f'    {left} "{left_mult}" --> "{right_mult}" {right} : {label}')
