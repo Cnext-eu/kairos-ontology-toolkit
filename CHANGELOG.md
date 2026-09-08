@@ -214,6 +214,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binds (`'voyage_source_id' is the technical field name; join.local must be the source
   column -- use 'JA_JV'`) or lists up to eight candidate columns. Resolution semantics are
   unchanged; `kairos-design-mapping` now states the rule explicitly.
+- **Name-based address detection redacted code, flag and type columns such as
+  `AddressType` (#749).** `_kind_from_name` matched the `address` keyword as a bare substring
+  of the camel-split column name, so CargoWise `E2_AddressType`, `PZ_AddressType`,
+  `OA_AddressMap` and `OA_SuppressAddressValidationError` — none of which holds an address —
+  had every sample value and every `kairos-bronze:sampleValues` literal replaced by
+  `<redacted kind=address …>`. On the Fracht hub that hid the 13-value document-address role
+  code vocabulary a party-role binding must map. The name rule now stands down when the
+  column's own tokens carry a code/flag/type discriminator (`type`, `code`, `kind`, `map`,
+  `suppress`, `validation`, `validate`, `error`, `flag`, `id`, `key`, `count`, `status`);
+  `Address1`, `StreetAddress`, `postal_address` and `HasAddressOnFile` are unchanged, and a
+  shaped value (email, IBAN, phone, long id) in such a column is still caught by value
+  detection. The guard reads the name only — never the datatype (#672) — so the redactor and
+  the persistence gate keep agreeing, and it is scoped to `address`: the art. 9 keywords
+  disclose through a flag too, and `EmailId` routinely holds the email itself. There is no
+  value-shape detector for postal addresses, so a street address typed into an `AddressType`
+  column is not caught; the name rule was the only address detector.
 - **The TMDL parser could not read bare flags, annotations or `///` descriptions (#744).**
   `isKey` and `isHidden` are written with no value, and the reader only handled
   `key: value` lines, so neither was visible; `annotation X = "..."` has no colon and was
