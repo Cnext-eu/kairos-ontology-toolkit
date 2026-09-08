@@ -1273,6 +1273,7 @@ kairos-ontology scaffold-binding [OPTIONS]
 | `--force` |  | Overwrite an existing output path. |
 | `--column-prefix` |  | Vendor column prefix to strip before matching (e.g. GB for GB_BranchName), without the trailing underscore. Default: the dominant leading [A-Z0-9]{1,4}_ prefix across the table's columns. Pass this when the auto-detected prefix is wrong, or to reach a second prefix layer (e.g. --column-prefix JW_OA for JW_OA_DepartureLocation). |
 | `--dry-run` |  | Compute and report what would be scaffolded without writing any file. |
+| `--include-pii` |  | Keep personal-data columns (credentials, payroll, contact, demographic fields) in the passthrough dbt staging model. By default they are left out and named in the model's header comment (#758). |
 | `--accelerator` |  | Accelerator pack (default: resolved from hub config). |
 | `--ref-models` |  | Reference-models checkout (default: auto-detect). |
 | `--catalog` |  |  |
@@ -1368,6 +1369,7 @@ kairos-ontology scaffold-staging [OPTIONS]
 | `--source` | **required** | '<system>.<table>' contributing to the merged entity. Repeatable; a single source scaffolds a trivial passthrough int_merged__<entity> (issue #616's day-one pattern), two or more scaffold a real survivorship model. |
 | `--force` |  | Overwrite existing output files. |
 | `--dry-run` |  | Compute and report what would be scaffolded without writing any file. |
+| `--include-pii` |  | Keep personal-data columns (credentials, payroll, contact, demographic fields) in the stage models. By default they are left out of each stage's SELECT, properties YAML and the merged model's common columns, and named in the stage header comment (#758). |
 
 
 ## scaffold-system
@@ -1387,6 +1389,7 @@ kairos-ontology scaffold-system [OPTIONS]
 | `--catalog` |  |  |
 | `--format` | `text` | Output format (default: text). |
 | `--limit` | `20` | Max declined-table rows printed per reason in text mode (0 = unlimited; --format json is always complete). |
+| `--include-pii` |  | Keep personal-data columns (credentials, payroll, contact, demographic fields) in every scaffolded dbt staging model. By default they are left out and named in each model's header comment and notes (#758). |
 
 
 ## show-class-inventory

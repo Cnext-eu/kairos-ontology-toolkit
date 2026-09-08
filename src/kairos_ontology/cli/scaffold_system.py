@@ -97,8 +97,17 @@ def _render_scaffold_system_text(result, *, limit: int) -> None:
     help="Max declined-table rows printed per reason in text mode (0 = unlimited; --format json "
     "is always complete).",
 )
+@click.option(
+    "--include-pii",
+    "include_pii",
+    is_flag=True,
+    default=False,
+    help="Keep personal-data columns (credentials, payroll, contact, demographic fields) in "
+    "every scaffolded dbt staging model. By default they are left out and named in each "
+    "model's header comment and notes (#758).",
+)
 def scaffold_system_cmd(
-    system, accelerator, dry_run, ref_models_dir_opt, catalog, out_format, limit
+    system, accelerator, dry_run, ref_models_dir_opt, catalog, out_format, limit, include_pii
 ):
     """Scaffold every good ``passthrough`` candidate under one source system in one pass.
 
@@ -144,6 +153,7 @@ def scaffold_system_cmd(
             catalog_path=catalog_path,
             analysis_dir=analysis_dir,
             dry_run=dry_run,
+            include_pii=include_pii,
         )
     except ScaffoldSystemError as exc:
         raise click.ClickException(str(exc)) from exc

@@ -46,6 +46,25 @@ PII_KEYWORDS: list[str] = [
     "nationality",
     "marital_status",
     "next_of_kin",
+    # #758: credential, payroll and HR-record terms a passthrough staging scaffold must not
+    # copy verbatim. Substring-matched against the snake_cased name (``GS_PasswordHash`` ->
+    # ``gs_password_hash``), so both the joined and the underscored spelling are listed
+    # where a lowercase source name would otherwise slip through. Deliberately absent:
+    # ``hash``, ``bank``, ``login`` and ``dob`` alone -- too broad (``geohash``,
+    # ``bank_holiday``, ``login_count``, ``adobe``).
+    "birth_date",
+    "birthdate",
+    "password",
+    "passwordhash",
+    "sql_login",
+    "sqllogin",
+    "bank_account",
+    "bankaccount",
+    "wages",
+    "salary",
+    "emergency_contact",
+    "residency",
+    "security_card",
 ]
 
 #: Bounds for human-facing example rendering.

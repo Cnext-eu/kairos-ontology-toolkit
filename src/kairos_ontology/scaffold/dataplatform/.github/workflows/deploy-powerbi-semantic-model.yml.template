@@ -72,11 +72,25 @@ jobs:
           fi
           echo "Verified dbt build run $RUN_ID succeeded for $TARGET_ENVIRONMENT."
 
+      # Every `gh` call against the hub below is cross-repository. The default
+      # GITHUB_TOKEN is scoped to *this* repository and cannot read a private sibling,
+      # so falling back to it only moves the failure to a confusing "release not found"
+      # later (#760). Fail here, by name, instead.
+      - name: Verify HUB_REPO_TOKEN is configured
+        env:
+          HUB_REPO_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
+        run: |
+          if [ -z "${HUB_REPO_TOKEN:-}" ]; then
+            echo "::error::HUB_REPO_TOKEN is not set; GITHUB_TOKEN cannot read a private sibling repository -- add a token with Contents:read on the hub repo as the HUB_REPO_TOKEN secret"
+            exit 1
+          fi
+          echo "HUB_REPO_TOKEN is set."
+
       # §8 dataplatform responsibility items 1-2: verify the tag resolves to the
       # expected hub SHA before anything is downloaded.
       - name: Verify hub release tag resolves to the expected hub SHA
         env:
-          GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
           EXPECTED_HUB_SHA: ${{ inputs.expected_hub_sha }}
         run: |
           RESOLVED_SHA=$(gh api "repos/${HUB_ORG}/${HUB_REPO}/commits/${{ inputs.hub_release_tag }}" -q .sha)
@@ -88,7 +102,7 @@ jobs:
 
       - name: Download semantic model package from ontology-hub release
         env:
-          GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.HUB_REPO_TOKEN }}
         run: |
           gh release download "${{ inputs.hub_release_tag }}" \
             --repo "${HUB_ORG}/${HUB_REPO}" \

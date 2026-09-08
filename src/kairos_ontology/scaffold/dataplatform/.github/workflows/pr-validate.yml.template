@@ -74,6 +74,7 @@ jobs:
           set -euo pipefail
           if [ -z "${HUB_REPO_TOKEN:-}" ]; then
             echo "HUB_REPO_TOKEN is not set - assuming a public hub package."
+            echo "If the hub repository is private, dbt deps will fail with 'Repository not found'; add HUB_REPO_TOKEN (Contents:read on the hub) as a repository secret."
             exit 0
           fi
           host="$(uv run python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;print(_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).host)')"

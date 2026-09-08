@@ -426,3 +426,52 @@ def test_rule_still_applies_to_the_deprecated_fabric_spelling(tmp_path):
         "-- joins customers with orders, with care\nselect 1\n",
     )
     assert "dbt-contract.dialect-fabric-nested-cte" in _codes(run_dbt_contract_lint(tmp_path))
+
+
+def test_fabric_nested_cte_message_names_each_line_and_says_comments_count(tmp_path):
+    """#758: a bare count sent authors hunting for a CTE that was a comment."""
+    _write(tmp_path, _contract("int_merged__customer"))
+    _write_sql(
+        tmp_path,
+        "int_merged__customer",
+        textwrap.dedent(
+            """
+            -- joins customers with orders
+            with base as (select 1)
+            select * from base
+            """
+        ).lstrip(),
+    )
+    report = run_dbt_contract_lint(tmp_path)
+    [finding] = [
+        f for f in report.findings if f.code == "dbt-contract.dialect-fabric-nested-cte"
+    ]
+    assert "'with' appears 2 times (lines 1, 2)" in finding.message
+    assert "allows one CTE opener" in finding.message
+    assert "the scan includes comments" in finding.message
+
+
+def test_scaffolded_passthrough_staging_sql_passes_the_fabric_rule(tmp_path):
+    """The scaffold's privacy header (#758) must not spend the one allowed `with `."""
+    from kairos_ontology.core.scaffold_binding import SourceColumn, render_staging_sql
+
+    columns = tuple(
+        SourceColumn(
+            name=name,
+            data_type="varchar(50)",
+            nullable=True,
+            samples=(),
+            distinct_count=None,
+            is_primary_key=False,
+        )
+        for name in ("customer_id", "customer_name", "customer_email", "password_hash")
+    )
+    _write(tmp_path, _contract("int_merged__customer"))
+    for include_pii in (False, True):
+        _write_sql(
+            tmp_path,
+            "int_merged__customer",
+            render_staging_sql("crm", "customers", columns, include_pii=include_pii),
+        )
+        report = run_dbt_contract_lint(tmp_path)
+        assert "dbt-contract.dialect-fabric-nested-cte" not in _codes(report), include_pii
