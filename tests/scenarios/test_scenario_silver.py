@@ -68,19 +68,30 @@ def test_structural_fks_do_not_infer_runtime_links(invoice_dbt_artifacts):
     assert links == []
 
 
-def test_erd_uses_only_emitted_models_and_temporal_annotations(
-    invoice_dbt_artifacts,
-):
+def test_erd_draws_cross_domain_targets_as_external_stubs(invoice_dbt_artifacts):
+    """The invoice domain's ``issuedTo`` points at the client domain's model (#754).
+
+    Every edge's child is an emitted model; a parent outside the plan is drawn once as a
+    stub entity and its edges are labelled ``[external]`` -- never silently dropped.
+    """
     metadata = json.loads(invoice_dbt_artifacts["metadata/invoice-silver-constraints.json"])
     emitted = {model["model_name"].upper() for model in metadata["models"]}
     erd = invoice_dbt_artifacts["docs/diagrams/invoice/invoice-erd.mmd"]
 
     assert erd.startswith("erDiagram\n")
     assert "temporal=" in erd
+    external_parents: set[str] = set()
     for line in erd.splitlines():
         if "||--o{" not in line:
             continue
         left, remainder = line.strip().split(" ||--o{ ", 1)
         right = remainder.split(" :", 1)[0]
-        assert left in emitted
         assert right in emitted
+        if left in emitted:
+            assert "[external]" not in line
+        else:
+            assert line.rstrip().endswith('[external]"')
+            external_parents.add(left)
+    assert external_parents == {"CLIENT"}
+    stub = '    CLIENT {\n        string external "model from another domain"\n    }\n'
+    assert erd.count(stub) == 1
