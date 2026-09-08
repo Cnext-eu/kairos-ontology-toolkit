@@ -456,6 +456,80 @@ def test_relationship_join_columns_must_resolve(tmp_path, side):
     assert "safety.column-unresolved" in {item.code for item in result.diagnostics.items}
 
 
+def _unresolved_join_local(result):
+    return next(
+        item
+        for item in result.diagnostics.items
+        if item.code == "safety.column-unresolved"
+        and item.message.startswith("relationship local column")
+    )
+
+
+def test_unresolved_join_local_names_relation_source_kind_and_candidates(tmp_path):
+    """#751: the bare ``does not resolve`` message named neither the relation the column was
+    looked up in nor anything that *would* resolve. It now names the ``source.relation`` ref
+    and lists the relation's columns -- sorted, capped at eight, with the overflow counted --
+    while the code and pointer stay exactly as before."""
+    scenario = Path(__file__).parent / "scenarios" / "v5-hub"
+    hub = tmp_path / "hub"
+    shutil.copytree(scenario, hub)
+    _add_source_columns(hub, ("zz_extra_column", "varchar(10)"))
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace("local: country_code", "local: missing"),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    unresolved = _unresolved_join_local(result)
+    assert unresolved.location.pointer == "/relationships/0/join/0"
+    assert (
+        "relationship local column 'missing' does not resolve against "
+        "source.relation 'crm.customers'; candidates: "
+        "'country_code', 'customer_id', 'customer_name', 'effective_at', 'ingested_at', "
+        "'operation', 'sequence_number', 'source_updated_at' (+1 more)"
+    ) == unresolved.message
+    assert "zz_extra_column" not in unresolved.message
+
+
+def test_unresolved_join_local_technical_field_name_hints_the_source_column(tmp_path):
+    """#751: ``join.local`` is a *source* column regardless of source kind. Authoring a
+    technical field's output ``name`` there fails on a ``source.relation`` binding -- it only
+    seems to work on ``source.dbtModel`` because the contracted output column and the
+    technical field name usually coincide. The diagnostic now says so and names the source
+    column that technical field binds, instead of listing candidates."""
+    scenario = Path(__file__).parent / "scenarios" / "v5-hub"
+    hub = tmp_path / "hub"
+    shutil.copytree(scenario, hub)
+    binding = hub / "integration" / "bindings" / "customer.binding.yaml"
+    binding.write_text(
+        binding.read_text(encoding="utf-8").replace("local: country_code", "local: op_code")
+        + textwrap.dedent("""
+            technicalFields:
+              - name: op_code
+                expression: operation
+                type: string
+                nullable: true
+                purpose: relationship
+            """),
+        encoding="utf-8",
+    )
+
+    result = compile_domain(hub, "party")
+
+    assert not result.succeeded
+    unresolved = _unresolved_join_local(result)
+    assert unresolved.location.pointer == "/relationships/0/join/0"
+    assert (
+        "relationship local column 'op_code' does not resolve against "
+        "source.relation 'crm.customers'; 'op_code' is the technical field name; "
+        "join.local must be the source column -- use 'operation'"
+    ) == unresolved.message
+    assert "candidates:" not in unresolved.message
+
+
 def _add_source_columns(hub: Path, *columns: tuple[str, str]) -> None:
     source = hub / "integration" / "sources" / "crm" / "crm.vocabulary.ttl"
     additions = "\n".join(
