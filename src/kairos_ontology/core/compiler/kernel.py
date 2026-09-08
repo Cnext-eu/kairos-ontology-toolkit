@@ -35,6 +35,7 @@ from ..projections.dbt.mapping_specs import SourceMappings
 from ..projections.dbt.mapping_renderers import quote_mapping_identifier
 from ..projections.dbt.policy_bind import EXT as _EXT_NS
 from ..projections.dbt.policy_bind import _data_quality_rules, bind_policy_facts
+from ..projections.dbt.gold_specs import GoldContractError
 from ..projections.dbt.policy_normalize import PolicyNormalizationError, _source_type
 from ..projections.dbt.silver_contract import canonical_type_label
 from ..projections.dbt.policy_specs import (
@@ -4004,6 +4005,28 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 shape_project(contract), tuple(valid_bindings), context
             )
             materialized = plan_materialization(contract, shaped)
+        except GoldContractError as exc:
+            # #752/#763: a Gold contract failure (DD-112 `gold.*`) keeps its own code, rule
+            # and file instead of being flattened into `safety.type-incompatible` at the hub
+            # root, which told the author neither which rule fired nor which file to edit.
+            # The message drops the `code: ` prefix `GoldContractError.__str__` adds, since
+            # the diagnostic renders the code itself. Severity stays ERROR (the default), so
+            # the plan is still blocked exactly as before.
+            diagnostics.append(
+                CompileDiagnostic(
+                    code=exc.code,
+                    message=str(exc).removeprefix(f"{exc.code}: "),
+                    location=SourceLocation(
+                        path=str(
+                            Path(scope.hub_root)
+                            / "model"
+                            / "extensions"
+                            / f"{context.domain}-gold-ext.ttl"
+                        )
+                    ),
+                    rule_id=exc.rule_id,
+                )
+            )
         except Exception as exc:  # downstream contracts expose several precise exception types
             diagnostics.append(
                 CompileDiagnostic(

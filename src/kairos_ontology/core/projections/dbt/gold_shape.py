@@ -919,8 +919,12 @@ def _shape_tables(
             _fail(
                 "gold.source-version-drift",
                 (
-                    f"authored source version {authored.source_version.value!r} does "
-                    f"not match Silver registry version {actual_version!r}"
+                    f"gold table {authored.table_name.value!r} (silver model "
+                    f"{actual_name!r}, domain {ontology_name!r}) pins goldSourceVersion "
+                    f"{authored.source_version.value!r} but the domain's owl:versionInfo "
+                    f"is {actual_version!r}; update kairos-ext:goldSourceVersion in "
+                    f"model/extensions/{ontology_name}-gold-ext.ttl after re-validating "
+                    "the Gold table"
                 ),
                 rule_id="DD-112-silver-binding",
                 resource_uri=authored.resource_uri,

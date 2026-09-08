@@ -516,7 +516,9 @@ _WINDOWS_SWAP_HINT = (
     "the directory. Common holders are real-time antivirus or a file-sync client "
     "scanning the just-written files, an editor or IDE extension with the folder open, "
     "or a --log-file pointed inside the emission target (which this process would hold "
-    "open for its whole lifetime, so no amount of retrying can clear it)"
+    "open for its whole lifetime, so no amount of retrying can clear it). For a Gold "
+    "emit the usual holder is Power BI Desktop with the emitted .pbip still open, or a "
+    "shell whose current directory is inside the target"
 )
 
 
@@ -557,9 +559,13 @@ def _commit_stage(stage: Path, target: Path) -> Path | None:
             _rename_with_retry(target, backup)
             previous_moved = True
         except OSError as exc:
-            raise EmissionError(
-                f"could not move emission target to backup: {target} ({exc})"
-            ) from exc
+            # #748: the same sharing violation that blocks the stage -> target swap blocks
+            # this rename first when the previous target is what is held open, so it needs
+            # the same hint -- this branch used to raise without one.
+            detail = f"could not move emission target to backup: {target} ({exc})"
+            if sys.platform == "win32":
+                detail = f"{detail}. {_WINDOWS_SWAP_HINT}"
+            raise EmissionError(detail) from exc
 
     try:
         _rename_with_retry(stage, target)
