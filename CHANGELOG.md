@@ -204,6 +204,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a companion must sit beside a real decision record.
 
 ### Fixed
+- **`safety.column-unresolved` for a relationship `join.local` now says what would resolve
+  (#751).** `join.local` is always the child's *source* column — the raw Bronze column for a
+  `source.relation` binding, the contracted output column for `source.dbtModel`. Authoring a
+  technical field's output `name` there (`voyage_source_id` instead of `JA_JV`) only appears
+  to work on a dbtModel source because the two usually coincide; on a relation source it
+  failed with a bare `does not resolve` and no hint. The diagnostic now names the resolved
+  relation and its source kind, and either points at the source column the technical field
+  binds (`'voyage_source_id' is the technical field name; join.local must be the source
+  column -- use 'JA_JV'`) or lists up to eight candidate columns. Resolution semantics are
+  unchanged; `kairos-design-mapping` now states the rule explicitly.
 - **The TMDL parser could not read bare flags, annotations or `///` descriptions (#744).**
   `isKey` and `isHidden` are written with no value, and the reader only handled
   `key: value` lines, so neither was visible; `annotation X = "..."` has no colon and was

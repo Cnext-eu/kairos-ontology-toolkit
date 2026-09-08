@@ -2834,6 +2834,45 @@ def _external_target_domain(hub_root: str, current_domain: str, target_class: st
     return None
 
 
+_JOIN_LOCAL_CANDIDATE_LIMIT = 8
+
+
+def _unresolved_join_local_message(
+    binding: EntityBinding,
+    relation: ResolvedRelation,
+    local: str,
+    local_columns: dict[str, ResolvedColumn],
+) -> str:
+    """Explain why ``join.local`` did not resolve and what the author can write instead (#751).
+
+    ``join.local`` is always a *source* column of the child's resolved relation -- the raw
+    Bronze columns for ``source.relation``, the contracted output columns for
+    ``source.dbtModel``. A technical field's ``name`` is an *output* column and is never a
+    legal ``join.local``; it only appears to work for dbtModel sources because the model's
+    output column and the technical field name usually coincide. So when the authored value
+    is a technical field name, say so and point at the source column that field binds;
+    otherwise list the columns the relation actually exposes.
+    """
+    source_kind = "source.dbtModel" if binding.source.dbt_model is not None else "source.relation"
+    message = (
+        f"relationship local column '{local}' does not resolve against {source_kind} "
+        f"'{relation.ref}'"
+    )
+    renamed = next((item for item in binding.technical_fields if item.name == local), None)
+    if renamed is not None:
+        message += f"; '{local}' is the technical field name; join.local must be the source column"
+        if isinstance(renamed.expression, ExprColumn):
+            message += f" -- use '{renamed.expression.column}'"
+        return message
+    candidates = sorted(local_columns)
+    if not candidates:
+        return message + "; the relation exposes no columns"
+    shown = ", ".join(f"'{name}'" for name in candidates[:_JOIN_LOCAL_CANDIDATE_LIMIT])
+    hidden = len(candidates) - _JOIN_LOCAL_CANDIDATE_LIMIT
+    suffix = f" (+{hidden} more)" if hidden > 0 else ""
+    return f"{message}; candidates: {shown}{suffix}"
+
+
 def _relationship_diagnostics(
     binding: EntityBinding,
     selected: dict[str, EntityBinding],
@@ -3060,7 +3099,9 @@ def _relationship_diagnostics(
                 diagnostics.append(
                     CompileDiagnostic(
                         code="safety.column-unresolved",
-                        message=f"relationship local column '{join.local}' does not resolve",
+                        message=_unresolved_join_local_message(
+                            binding, relation, join.local, local_columns
+                        ),
                         location=SourceLocation(path=binding.source_path, pointer=join_pointer),
                     )
                 )
