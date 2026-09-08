@@ -263,3 +263,41 @@ def test_gold_dbt_models_are_not_written_beside_the_powerbi_artifacts(tmp_path, 
     # `<domain>-gold-ddl.sql` is a Power BI-side artifact and legitimately stays here;
     # only the dbt *models* moved.
     assert not [path for path in powerbi.rglob("*.sql") if not path.name.endswith("-gold-ddl.sql")]
+
+
+def test_confirm_emit_does_not_announce_success_before_the_write(tmp_path, monkeypatch):
+    """#748: ``✅ Emitted`` used to be echoed *before* ``emit_artifacts`` ran, so a failed
+    swap left a success line directly above the error that said nothing was written.
+    """
+    from kairos_ontology.core.compiler import emit as emit_module
+    from kairos_ontology.core.compiler.emit import EmissionError
+
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    def refuse_to_write(*_args, **_kwargs):
+        raise EmissionError("could not swap staged artifacts (simulated)")
+
+    monkeypatch.setattr(emit_module, "emit_artifacts", refuse_to_write)
+
+    result = CliRunner().invoke(cli, ["emit-gold", "party", "--confirm-emit"])
+
+    assert result.exit_code != 0
+    assert "Emitted" not in result.output
+    assert "✅" not in result.output
+    assert not (publish_root(hub) / "powerbi").exists()
+
+
+def test_confirm_emit_announces_success_after_the_write(tmp_path, monkeypatch):
+    hub = _copy_hub(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["emit-gold", "party", "--confirm-emit"])
+
+    assert result.exit_code == 0, result.output
+    assert "✅ Emitted" in result.output
+    assert "Would emit" not in result.output
+    # Success is the last thing said, after every informational line about the product.
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    assert lines[-2].startswith("✅ Emitted"), result.output
+    assert lines[-1].strip().startswith("→"), result.output

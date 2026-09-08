@@ -1056,3 +1056,57 @@ def test_single_fields_entry_per_property_is_unaffected(tmp_path):
     codes = {item.code for item in result.diagnostics.items}
     assert "field.duplicate-property" not in codes
     assert "field.output-collision" not in codes
+
+
+_V5_HUB = Path(__file__).parent / "scenarios" / "v5-hub"
+
+_DRIFTED_GOLD_EXT = """
+@prefix party: <https://example.test/ontology/party#> .
+@prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+<https://example.test/ontology/party>
+  kairos-ext:goldSchema "gold" ;
+  kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+party:Customer
+  kairos-ext:goldTableType "dimension" ;
+  kairos-ext:goldTableName "dim_customer" ;
+  kairos-ext:goldSourceModel "customer" ;
+  kairos-ext:goldSourceVersion "9.9.9" ;
+  kairos-ext:dimensionExposure "current-only" ;
+  kairos-ext:dimensionVersionBinding "current" .
+"""
+
+
+def test_gold_contract_error_keeps_its_own_code_rule_and_file(tmp_path):
+    """#752/#763: a ``GoldContractError`` raised while shaping the project must surface
+    under its own ``gold.*`` code, DD-112 rule and the Gold extension file -- not as
+    ``safety.type-incompatible`` at the hub root with ``projection normalization failed:``
+    in front of the real text, which named neither the rule nor the file to edit. The plan
+    must stay blocked exactly as it was when the error was flattened.
+    """
+    hub = tmp_path / "hub"
+    shutil.copytree(_V5_HUB, hub)
+    extensions = hub / "model" / "extensions"
+    extensions.mkdir(parents=True, exist_ok=True)
+    (extensions / "party-gold-ext.ttl").write_text(_DRIFTED_GOLD_EXT, encoding="utf-8")
+
+    plan = build_compile_plan(hub, "party")
+
+    assert plan.blocked is True
+    codes = {item.code for item in plan.diagnostics.items}
+    assert "gold.source-version-drift" in codes, [item.render() for item in plan.diagnostics.items]
+    assert "safety.type-incompatible" not in codes
+    diagnostic = next(
+        item for item in plan.diagnostics.items if item.code == "gold.source-version-drift"
+    )
+    assert diagnostic.rule_id == "DD-112-silver-binding"
+    assert diagnostic.location.path.endswith("party-gold-ext.ttl")
+    assert not diagnostic.message.startswith("projection normalization failed")
+    assert not diagnostic.message.startswith("gold.source-version-drift:")
+    # The message names the table, the Silver model, the domain and the pin's file.
+    assert "'dim_customer'" in diagnostic.message
+    assert "'customer'" in diagnostic.message
+    assert "'party'" in diagnostic.message
+    assert "'9.9.9'" in diagnostic.message and "'1.0.0'" in diagnostic.message
+    assert "model/extensions/party-gold-ext.ttl" in diagnostic.message

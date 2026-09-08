@@ -523,6 +523,34 @@ def test_windows_swap_failure_names_the_path_and_the_likely_holder(tmp_path: Pat
     message = str(excinfo.value)
     assert "kairos-stage-" in message  # the blocked path, not just the target
     assert "antivirus" in message and "--log-file" in message
+    assert "Power BI Desktop" in message and ".pbip" in message
+
+
+def test_windows_backup_rename_failure_carries_the_same_hint(tmp_path: Path, monkeypatch):
+    """#748: when the *previous* target is what is held open, the first rename to fail is
+    target -> backup, and that branch raised without the sharing-violation hint the
+    stage -> target swap already carried. Same failure, same holder, same hint.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(emit_module.time, "sleep", lambda _: None)
+    target = tmp_path / "party"
+    emit_artifacts({"models/customer.sql": "first"}, target)
+    original_replace = os.replace
+
+    def block_the_backup(source, destination):
+        if str(source) == str(target):
+            raise _sharing_violation(32)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(emit_module.os, "replace", block_the_backup)
+    with pytest.raises(EmissionError) as excinfo:
+        emit_artifacts({"models/customer.sql": "second"}, target)
+
+    message = str(excinfo.value)
+    assert "could not move emission target to backup" in message
+    assert "antivirus" in message and "Power BI Desktop" in message
+    # The previous target is untouched.
+    assert (target / "models/customer.sql").read_text() == "first"
 
 
 def test_emit_rejects_an_unknown_manifest_schema(tmp_path: Path):

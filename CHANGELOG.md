@@ -249,6 +249,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.md.template` in the scaffold was therefore exempt, including the two READMEs a new hub
   operator reads first. The check now matches on the last two suffixes, and the three bare
   invocations it found (the repo README, the hub README, and the user guide) are fixed.
+- **Gold contract errors reach the compile report under their own code and file, and
+  `emit-gold` no longer claims success before it has written anything (#748, #752).**
+  A `GoldContractError` raised while shaping the project was flattened into
+  `safety.type-incompatible` at the hub root with `projection normalization failed:` in
+  front of the real text, so a `gold.source-version-drift` told the author neither which
+  rule fired nor which file to edit. The kernel now reports it under its own `gold.*` code
+  and `DD-112` rule, located at `model/extensions/<domain>-gold-ext.ttl`; the plan stays
+  blocked. The drift message itself now names the Gold table, its Silver model and the
+  domain, and says where the pin lives. On `--confirm-emit`, `emit-gold` printed
+  `✅ Emitted …` before calling `emit_artifacts`, so a failed swap left a success line
+  directly above the error; the line is now echoed only after the write commits. The
+  backup rename in `_commit_stage` raised without the Windows sharing-violation hint the
+  stage-to-target swap already carried; both branches now carry it, and the hint names the
+  Gold lane's usual holders — Power BI Desktop with the emitted `.pbip` open, or a shell
+  whose current directory is inside the target. `kairos-design-domain` step 9 now warns
+  that bumping `owl:versionInfo` invalidates every `goldSourceVersion` pin and allows the
+  Gold extension in its `guard-scope` example.
 
 ### Changed
 - **`owl:equivalentClass` is no longer presented as a compile-time anchor (#730).**
