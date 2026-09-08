@@ -94,6 +94,38 @@ def test_check_passes_with_only_allowed_change(tmp_path, monkeypatch):
     assert not Path(token).exists()  # token cleaned up on success
 
 
+def test_check_with_keep_retains_the_token_for_a_later_check(tmp_path, monkeypatch):
+    """#756: a passing intermediate check consumed the snapshot the final check needed."""
+    tracked = _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    token = _snapshot()
+    tracked.write_text("changed", encoding="utf-8")
+
+    first = CliRunner().invoke(
+        cli, ["guard-scope", "--check-since", token, "--allow", BOOKING_ALLOW, "--keep"]
+    )
+
+    assert first.exit_code == 0, first.output
+    assert "passed" in first.output
+    assert Path(token).exists()  # retained
+
+    second = _check(token, BOOKING_ALLOW)
+
+    assert second.exit_code == 0, second.output
+    assert not Path(token).exists()  # the final check still consumes it
+
+
+def test_keep_is_rejected_with_snapshot(tmp_path, monkeypatch):
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["guard-scope", "--snapshot", "--keep"])
+
+    assert result.exit_code != 0
+    assert "--keep is only valid with --check-since" in result.output
+
+
 def test_check_fails_on_extra_untracked_file_outside_allowlist(tmp_path, monkeypatch):
     tracked = _init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)

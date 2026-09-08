@@ -25,6 +25,7 @@ puts outside the contract's ``closed`` scope.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import yaml
@@ -138,10 +139,23 @@ def _models_by_class(plan: CompilePlan) -> dict[str, SilverModelSpec]:
     return models_by_class(shaped.silver_models)
 
 
-def build_contract_document(plan: CompilePlan) -> dict:
-    """Return the contract document for every governed class in one compile plan."""
+def build_contract_document(
+    plan: CompilePlan, *, only_classes: Iterable[str] | None = None
+) -> dict:
+    """Return the contract document for every governed class in one compile plan.
+
+    *only_classes* (#750) restricts the document to the bindings whose ``target.class``
+    matches one of the given values, each either the authored token (``party:Customer``)
+    or the resolved class IRI. That is the "append one entity to an existing contract"
+    path: a class the contract does not yet declare blocks compile with
+    ``contract.class-not-declared``, and the author needs exactly that entity's block, not
+    a whole regenerated document. A value that matches no binding is an error -- silently
+    producing an empty or partial document would hide a typo.
+    """
     models = _models_by_class(plan)
     context = plan.resolution
+    wanted = set(only_classes) if only_classes is not None else None
+    matched: set[str] = set()
     entities: list[dict] = []
     seen: set[str] = set()
     for binding in sorted(plan.bindings, key=lambda item: (item.target_class, item.name)):
@@ -154,6 +168,11 @@ def build_contract_document(plan: CompilePlan) -> dict:
             raise ContractScaffoldError(
                 f"binding '{binding.name}' target class '{binding.target_class}' did not resolve"
             )
+        if wanted is not None:
+            hits = wanted & {binding.target_class, resolved_class.uri}
+            if not hits:
+                continue
+            matched.update(hits)
         model = models.get(resolved_class.uri)
         if model is None:
             raise ContractScaffoldError(
@@ -234,6 +253,12 @@ def build_contract_document(plan: CompilePlan) -> dict:
             entity["relationships"] = relationships
         entities.append(entity)
 
+    if wanted is not None and wanted - matched:
+        missing = ", ".join(sorted(wanted - matched))
+        raise ContractScaffoldError(
+            f"no binding in domain '{plan.domain}' targets {missing}; --entity takes the "
+            "authored target.class token or the resolved class IRI"
+        )
     if not entities:
         raise ContractScaffoldError(
             f"domain '{plan.domain}' has no bindings to scaffold a contract from"

@@ -8,8 +8,11 @@ import textwrap
 
 import pytest
 import yaml
+from click.testing import CliRunner
 
+from kairos_ontology.cli.main import cli
 from kairos_ontology.core.compiler.contract_scaffold import (
+    ContractScaffoldError,
     build_contract_document,
     render_contract_yaml,
 )
@@ -1139,3 +1142,100 @@ class TestRealHubShapes:
         }
         entity["grain"]["columns"] = ["source_record_id"]
         assert "contract.grain-not-required" in _codes(_dump(document))
+
+
+def _drop_entity(class_token: str):
+    """Return a ``_adopt_contract`` mutator that removes one entity from the document."""
+
+    def mutate(document: dict) -> None:
+        document["entities"] = [
+            item for item in document["entities"] if item["class"] != class_token
+        ]
+
+    return mutate
+
+
+def _scaffold(hub_root, monkeypatch, *args: str):
+    monkeypatch.chdir(hub_root)
+    return CliRunner().invoke(cli, ["scaffold-contract", "party", "--dry-run", *args])
+
+
+class TestScaffoldContractCli:
+    """#750: the command refused the one blocked state it exists to resolve.
+
+    A governed domain that gains a binding for a class the contract does not yet declare
+    is blocked by ``contract.class-not-declared`` -- and `scaffold-contract` refused on
+    ``plan.blocked`` without looking at *why*, so the author could neither compile nor
+    generate the entity block the diagnostic asked for.
+    """
+
+    def test_blocked_only_by_class_not_declared_proceeds(self, tmp_path, monkeypatch):
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=False)
+        _adopt_contract(tmp_path, mutate=_drop_entity("party:LegalEntity"))
+        # Non-vacuity: the fixture really is blocked, by exactly that code.
+        codes = set(_diagnostics(tmp_path))
+        assert "contract.class-not-declared" in codes
+
+        result = _scaffold(tmp_path, monkeypatch)
+
+        assert result.exit_code == 0, result.output
+        assert "blocked only by contract.class-not-declared for: party:LegalEntity" in (
+            result.stderr
+        )
+        document = yaml.safe_load(result.stdout)
+        assert [item["class"] for item in document["entities"]] == [
+            "party:Customer",
+            "party:LegalEntity",
+        ]
+
+    def test_blocked_by_another_error_still_refuses(self, tmp_path, monkeypatch):
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=False)
+
+        def mutate(document: dict) -> None:
+            _drop_entity("party:LegalEntity")(document)
+            document["entities"][0]["identity"]["strategy"] = "surrogate"
+
+        _adopt_contract(tmp_path, mutate=mutate)
+        codes = set(_diagnostics(tmp_path))
+        assert {"contract.class-not-declared", "contract.identity-mismatch"} <= codes
+
+        result = _scaffold(tmp_path, monkeypatch)
+
+        assert result.exit_code == 1
+        assert "compile is blocked for this domain" in result.stderr
+        assert "blocked only by" not in result.stderr
+
+    def test_entity_filter_prints_only_the_requested_block(self, tmp_path, monkeypatch):
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=False)
+        _adopt_contract(tmp_path, mutate=_drop_entity("party:LegalEntity"))
+
+        result = _scaffold(tmp_path, monkeypatch, "--entity", "party:LegalEntity")
+
+        assert result.exit_code == 0, result.output
+        document = yaml.safe_load(result.stdout)
+        assert [item["class"] for item in document["entities"]] == ["party:LegalEntity"]
+        assert document["entities"][0]["modelName"] == "legalentity"
+
+    def test_entity_filter_accepts_the_resolved_iri(self, tmp_path):
+        _write_hub(tmp_path)
+        _add_related_entity(tmp_path, via_technical_field=False)
+        plan = build_compile_plan(tmp_path, "party")
+
+        document = build_contract_document(
+            plan, only_classes=["https://example.test/party#Customer"]
+        )
+
+        assert [item["class"] for item in document["entities"]] == ["party:Customer"]
+
+    def test_entity_filter_rejects_an_unknown_class(self, tmp_path, monkeypatch):
+        _write_hub(tmp_path)
+
+        result = _scaffold(tmp_path, monkeypatch, "--entity", "party:Nope")
+
+        assert result.exit_code == 1
+        assert "no binding in domain 'party' targets party:Nope" in result.stderr
+        with pytest.raises(ContractScaffoldError):
+            build_contract_document(build_compile_plan(tmp_path, "party"), only_classes=["x"])

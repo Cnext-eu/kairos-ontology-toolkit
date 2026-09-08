@@ -150,6 +150,41 @@ def test_index_serialization_and_slice_disclose_semantic_coverage(tmp_path):
     assert sliced["metadata"]["selection_rule"] == "uri-order"
 
 
+def test_slice_enriches_property_links_but_to_dict_stays_bare(tmp_path):
+    """#759: a slice link carried only `uri`/`provenance`/`distance`, so every
+    `show-class-inventory` reader had to look each property up again. The enrichment is
+    additive and confined to `slice()`; `to_dict()` feeds closure hashes and determinism
+    baselines and must not move."""
+    index = _load(tmp_path, SemanticProfile.KAIROS_DESIGN)
+
+    company = next(
+        item
+        for item in index.slice()["classes"]
+        if item["uri"] == "https://example.org/main#Company"
+    )
+    by_uri = {link["uri"]: link for link in company["direct_properties"]}
+    assert by_uri["https://example.org/main#employeeCount"] == {
+        "uri": "https://example.org/main#employeeCount",
+        "provenance": by_uri["https://example.org/main#employeeCount"]["provenance"],
+        "distance": 1,
+        "name": "employeeCount",
+        "property_type": "datatype",
+        "ranges": ["http://www.w3.org/2001/XMLSchema#integer"],
+    }
+    inherited = {link["uri"]: link for link in company["inherited_properties"]}
+    assert inherited["https://example.org/main#owns"]["property_type"] == "object"
+    assert inherited["https://example.org/main#owns"]["ranges"] == [
+        "https://example.org/main#Party"
+    ]
+
+    bare = next(
+        item
+        for item in index.to_dict()["classes"]
+        if item["uri"] == "https://example.org/main#Company"
+    )
+    assert set(bare["direct_properties"][0]) == {"uri", "provenance", "distance"}
+
+
 ORPHANED_DOMAIN_ONTOLOGY = """\
 @prefix ex: <https://example.org/main#> .
 @prefix absent: <https://example.org/absent#> .

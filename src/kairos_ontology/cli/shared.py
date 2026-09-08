@@ -1930,18 +1930,44 @@ def _resolve_catalog(
     return None
 
 
+def resolve_domain_ontology(value: str) -> Path | None:
+    """Return ``<hub>/model/ontologies/<value>.ttl`` when *value* names a hub domain (#759).
+
+    Only a bare name qualifies -- no path separators -- and only when a hub with a
+    ``model/`` tree is discoverable from the working directory. Anything else, or a name
+    with no ontology file behind it, returns ``None`` so the caller falls through to its
+    existing path/IRI handling. The catalog stays optional: ``load_ontology`` discovers
+    the hub's ``catalog-v001.xml`` beside the ontology on its own.
+    """
+    if not value or "/" in value or "\\" in value:
+        return None
+    from ..core.hub_utils import find_hub_root
+
+    hub = find_hub_root(Path.cwd(), require_model=True)
+    if hub is None:
+        return None
+    candidate = hub / "model" / "ontologies" / f"{value}.ttl"
+    return candidate if candidate.is_file() else None
+
+
 def _resolve_semantic_input(
     value: str,
     catalog: str | None,
 ) -> tuple[Path, Path | None]:
-    """Resolve a CLI ontology path or catalog-mapped ontology IRI."""
+    """Resolve a CLI ontology path, hub domain name, or catalog-mapped ontology IRI."""
     candidate = Path(value)
     catalog_path = Path(catalog) if catalog else None
     if candidate.is_file():
         return candidate, catalog_path
+    domain_ontology = resolve_domain_ontology(value)
+    if domain_ontology is not None:
+        return domain_ontology, catalog_path
     if catalog_path is None:
         raise click.ClickException(
-            f"{value!r} is not a file; --catalog is required to resolve an ontology IRI."
+            f"{value!r} is not a file, and no hub domain ontology "
+            f"model/ontologies/{value}.ttl is reachable from the current directory. Pass "
+            "an ontology path, a domain name from inside the hub, or --catalog to resolve "
+            "an ontology IRI."
         )
     from ..core.catalog_utils import CatalogResolver
 

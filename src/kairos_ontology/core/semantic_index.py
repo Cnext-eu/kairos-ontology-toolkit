@@ -201,7 +201,30 @@ class SemanticIndex:
                 "truncated": len(included) < len(candidates),
                 "omitted_modules": omitted_modules,
             },
-            "classes": [_record_dict(item) for item in included],
+            "classes": [self._class_slice_dict(item) for item in included],
+        }
+
+    def _class_slice_dict(self, record: ClassRecord) -> dict[str, Any]:
+        """Serialise one class for a slice, with readable property links (#759).
+
+        A bare ``SemanticLink`` carries only ``uri``/``provenance``/``distance``, so a
+        ``show-class-inventory`` reader had to look every property up again to learn its
+        name, kind, or range. ``name``/``property_type``/``ranges`` are added the way
+        :meth:`class_properties` derives them. Existing keys are untouched, and
+        :meth:`to_dict` -- which feeds closure hashes and determinism baselines -- is not.
+        """
+        data = _record_dict(record)
+        for key in ("direct_properties", "inherited_properties"):
+            data[key] = [self._describe_link(link) for link in data[key]]
+        return data
+
+    def _describe_link(self, link: dict[str, Any]) -> dict[str, Any]:
+        prop = self.property_by_uri(link["uri"])
+        return {
+            **link,
+            "name": prop.name if prop else _local_name(link["uri"]),
+            "property_type": prop.property_type if prop else "rdf",
+            "ranges": [item.uri for item in prop.ranges] if prop else [],
         }
 
 

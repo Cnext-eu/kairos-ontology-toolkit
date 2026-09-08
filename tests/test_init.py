@@ -3,6 +3,7 @@
 """Tests for the kairos-ontology init and new-repo CLI commands."""
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -2284,3 +2285,36 @@ def test_init_domain_malformed_master_ttl_skips_sync_safely(tmp_path):
             assert second.exit_code == 0, second.output
             assert "Could not sync _master.ttl automatically" in second.output
             assert master.read_text(encoding="utf-8") == corrupt
+
+
+def test_init_domain_leaves_populated_publish_slots_without_gitkeep(tmp_path):
+    """#755: `init --domain` on an existing hub dropped `.gitkeep` into populated slots.
+
+    The publish slots are gitignored except for the marker, so a marker written next to
+    real emitted output became a stray tracked file on every domain registration. Only a
+    genuinely empty slot gets one; a populated slot is left exactly as found, and a
+    missing slot is still created.
+    """
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            first = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert first.exit_code == 0, first.output
+
+            publish = Path("ontology-hub-publish")
+            powerbi = publish / "powerbi"
+            (powerbi / ".gitkeep").unlink()
+            (powerbi / "foo.txt").write_text("emitted", encoding="utf-8")
+            shutil.rmtree(publish / "neo4j")
+            assert (publish / "mdm" / ".gitkeep").is_file()  # untouched empty slot
+
+            second = runner.invoke(
+                cli, ["init", "--company-domain", "test.com", "--domain", "customer"]
+            )
+            assert second.exit_code == 0, second.output
+
+            assert not (powerbi / ".gitkeep").exists()
+            assert (powerbi / "foo.txt").read_text(encoding="utf-8") == "emitted"
+            assert (publish / "neo4j" / ".gitkeep").is_file()
+            assert (publish / "mdm" / ".gitkeep").is_file()

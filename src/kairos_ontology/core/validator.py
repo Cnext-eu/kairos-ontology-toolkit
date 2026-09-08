@@ -1341,6 +1341,23 @@ def render_validation_markdown(
     return "\n".join(lines) + "\n"
 
 
+def _first_error_message(section: dict) -> str:
+    """Return the first recorded error text of one validation section, if any (#757).
+
+    Sections record errors in slightly different shapes -- a diagnostic ``to_dict()``
+    carrying ``message``, a ``{"file", "error"}`` pair from a parse failure, or a bare
+    string -- so this reads whichever is present rather than forcing one shape on them.
+    """
+    for item in section.get("errors", []):
+        if isinstance(item, str):
+            return item
+        if isinstance(item, dict):
+            text = item.get("message") or item.get("error")
+            if text:
+                return str(text)
+    return ""
+
+
 def run_validation(
     ontologies_path: Path,
     shapes_path: Path,
@@ -1549,8 +1566,15 @@ def run_validation(
             for item in warnings:
                 print(f"    ⚠ {item.message}")
         imports_warning_count = len(results["imports"]["warnings"])
-        if imports_warning_count:
-            print(f"\n  Imports — Warnings: {imports_warning_count}")
+        imports_warnings_suffix = (
+            f", Warnings: {imports_warning_count}" if imports_warning_count else ""
+        )
+        # #757: same footer shape as the decision-log section, so a failed import check
+        # is visible at the section boundary and not only in the per-file lines above.
+        print(
+            f"\n  Imports — Passed: {results['imports']['passed']}, "
+            f"Failed: {results['imports']['failed']}{imports_warnings_suffix}"
+        )
         print()
 
     # Hub-wide ontology integrity (DD-163). Every check above reads one
@@ -1931,15 +1955,12 @@ def run_validation(
         print(f"📄 Markdown report saved to {markdown_report_path}")
 
     # Exit code
-    total_failed = (
-        results["syntax"]["failed"]
-        + results["naming"]["failed"]
-        + results["imports"]["failed"]
-        + results["shacl"]["failed"]
-        + results["consistency"]["failed"]
-        + results["decisions"]["failed"]
-        + results.get("integrity", {}).get("failed", 0)
-    )
+    section_failures = [
+        (section, results[section]["failed"])
+        for section in ("syntax", "naming", "imports", "shacl", "consistency", "decisions")
+    ]
+    section_failures.append(("integrity", results.get("integrity", {}).get("failed", 0)))
+    total_failed = sum(count for _, count in section_failures)
     # Issue #332: warnings never feed the exit code (unchanged), but the final line
     # must not claim a clean bill of health while ANY section still has open warnings
     # -- naming/imports/decisions (each carries its own `warnings` list, printed with
@@ -1955,7 +1976,16 @@ def run_validation(
     total_open_warnings = gdpr_warnings + section_warning_count
 
     if total_failed > 0:
-        print(f"\n❌ Validation failed with {total_failed} errors")
+        # #757: name the failing section(s) and quote each one's first error, so the
+        # reader is not sent scrolling back through every section to find the one that
+        # failed.
+        failing = [(section, count) for section, count in section_failures if count]
+        by_section = ", ".join(f"{section} {count}" for section, count in failing)
+        print(f"\n❌ Validation failed with {total_failed} error(s): {by_section}")
+        for section, _ in failing:
+            first = _first_error_message(results.get(section, {}))
+            if first:
+                print(f"   {section}: {first}")
         exit(1)
     elif not ontology_files:
         detail_parts = []
