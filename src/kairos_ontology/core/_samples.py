@@ -133,11 +133,11 @@ def _name_tokens(name: str | None) -> set[str]:
     return tokens
 
 
-def _name_is_pii(name: str | None) -> bool:
+def _name_is_pii(name: str | None, *, ignore: frozenset[str] = frozenset()) -> bool:
     if not name:
         return False
     norm = _normalize(name)
-    return any(kw in norm for kw in PII_KEYWORDS)
+    return any(kw in norm for kw in PII_KEYWORDS if kw not in ignore)
 
 
 def _is_exempt_numeric_value(text: str) -> bool:
@@ -280,6 +280,45 @@ _NAMED_KINDS: tuple[tuple[str, str], ...] = (
     ("marital_status", "demographic"),
 )
 
+# `address` is the one name keyword that is routinely the SUBJECT of an ordinary code,
+# flag or type column: CargoWise carries `E2_AddressType`, `PZ_AddressType`, `OA_AddressMap`
+# and `OA_SuppressAddressValidationError`, none of which ever holds an address literal.
+# Matching `address` as a bare substring redacted them all and hid the 13-value
+# document-address role code vocabulary a party-role binding must map (#749). When the
+# column's own tokens (full words via `_name_tokens`, so `address1`, `address_line`,
+# `street_address` and `HasAddressOnFile` are untouched) carry one of these discriminators
+# the name rule stands down; value-shape detection in `_kind_from_text` still runs over the
+# value. Same shape as `_kind_from_location` (#423): name tokens only, never the declared
+# datatype (#672), so the redactor and the persistence gate keep agreeing.
+#
+# Deliberately scoped to `address`. The GDPR art. 9 keywords (`health`, `religion`, ...)
+# disclose through a flag or type column too -- `HasHealthFlag` MUST stay redacted. Nor is
+# it widened to `email`/`phone`: `EmailId` routinely holds the email itself, so an `id`/`key`
+# discriminator there would under-redact.
+_ADDRESS_CODE_TOKENS: frozenset[str] = frozenset(
+    {
+        "code",
+        "count",
+        "error",
+        "flag",
+        "id",
+        "key",
+        "kind",
+        "map",
+        "status",
+        "suppress",
+        "type",
+        "validate",
+        "validation",
+    }
+)
+
+
+def _address_name_is_code_like(tokens: set[str]) -> bool:
+    """True when an `address`-bearing column name denotes a code/flag/type, not a literal."""
+    return bool(tokens & _ADDRESS_CODE_TOKENS)
+
+
 # Location-bearing column-name tokens -> the numeric range a coordinate value must
 # fall within to be treated as a geographic coordinate (#423). Matched as FULL WORDS
 # via `_name_tokens` only — substring matching would fire on "relationship"/"platform"
@@ -319,16 +358,23 @@ DETECTED_PII_KINDS: tuple[str, ...] = tuple(
 # name-keyword is the accepted cost of never under-redacting a real special category.
 def _kind_from_name(name: str | None, *, context_name: str | None = None) -> str | None:
     norm = _normalize(name or "")
+    tokens = _name_tokens(name)
+    # Read off the column's OWN tokens, before table context is merged in (#749).
+    skip_address = _address_name_is_code_like(tokens)
     for keyword, kind in _NAMED_KINDS:
+        if keyword == "address" and skip_address:
+            continue
         if keyword in norm:
             return kind
-    tokens = _name_tokens(name)
     if context_name:
         tokens |= _name_tokens(context_name)
     token_kind = _kind_from_person_column_tokens(tokens)
     if token_kind:
         return token_kind
-    return "pii-column" if _name_is_pii(name) else None
+    # `PII_KEYWORDS` lists `address` too; without the same guard the fallback would
+    # convict `AddressType` as `pii-column` and the refinement above would be moot.
+    ignored = frozenset({"address"}) if skip_address else frozenset()
+    return "pii-column" if _name_is_pii(name, ignore=ignored) else None
 
 
 def _kind_from_text(value: Any) -> str | None:
