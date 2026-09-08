@@ -204,6 +204,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a companion must sit beside a real decision record.
 
 ### Fixed
+- **`scaffold-contract` refused the one blocked state it exists to resolve (#750).** A
+  governed domain that gains a binding for a class its contract does not yet declare is
+  blocked by `contract.class-not-declared` — and the command refused on `plan.blocked`
+  without asking why, so the author could neither compile nor generate the entity block
+  the diagnostic asked for. When that is the *only* blocking error it now proceeds (the
+  shaped plan is intact behind it), printing which classes are undeclared. A new
+  repeatable `--entity <class token or IRI>` scaffolds just those classes, so
+  `--entity party:LegalEntity --dry-run` prints exactly the block to paste into the
+  existing contract. Any other blocking error still refuses.
+- **`init --domain` dropped a `.gitkeep` into populated publish slots (#755).** The
+  comment said "empty publish subdirs" but nothing checked emptiness, so every domain
+  registration on a hub that had already emitted added a stray tracked marker next to real
+  `powerbi/` output. A slot is now only marked when it is genuinely empty; the directory
+  itself is still created when missing. `init` and `new-repo` share the helper.
+- **`guard-scope --check-since` consumed the token on success (#756).** A passing
+  intermediate check deleted the snapshot the final check still needed. `--keep` retains
+  it (rejected with `--snapshot`, like `--ignored-root` on the check side); the
+  `kairos-design-domain` step-9 example uses it and says the last check may omit it.
+- **`validate` failed without naming the failing section (#757).** The summary read
+  `❌ Validation failed with 2 errors` and nothing else, so a reader scrolled back through
+  every section to find the one that failed. It now reads
+  `❌ Validation failed with 2 error(s): imports 1, decisions 1` followed by each failing
+  section's first error message, and the imports section gained the
+  `Imports — Passed: N, Failed: N` footer the decisions section already had.
+- **`resolve-ontology <domain>` works from inside a hub (#759).** Every other inspection
+  command accepts a bare domain name via `--domain`; `resolve-ontology` demanded a file
+  path or `--catalog`, and the skill text told authors to run
+  `resolve-ontology <domain> --json-output`. A bare name now resolves to
+  `<hub>/model/ontologies/<domain>.ttl` when a hub is discoverable (`--catalog` stays
+  optional — the loader finds `catalog-v001.xml` itself), and the error for anything else
+  names all three accepted forms.
+- **`explain-term` said a term "is not present in the closure" when the ERD draws it
+  (#759).** The semantic index admits a class only when typed or on a `subClassOf` edge,
+  while the ERD projector stubs any `rdfs:range` object, so a reader asking about a stub
+  box was told it did not exist. The index is not widened; the message now says the term
+  is not indexed in this closure but appears as the range/domain of `<property>`
+  (declared in `<source>`), is drawn as a stub, and should be explained via its owning
+  `--domain`. A term the closure never mentions keeps the original message.
+- **`show-class-inventory` property links carried only a URI (#759).** Each
+  `direct_properties`/`inherited_properties` entry was a bare `SemanticLink`
+  (`uri`, `provenance`, `distance`), so a reader had to look every property up again to
+  learn its name, kind, or range. The class slice now adds `name`, `property_type`, and
+  `ranges` to each link, derived exactly as `list-class-properties` does. Existing keys
+  are unchanged and `to_dict()` (closure hashes, determinism baselines) is untouched.
 - **The canonical class diagram ignored a subclass's restriction on an inherited property and
   drew every `owl:inverseOf` pair twice (#753 P1+P2).** An inherited edge is rendered from
   the hub subclass, but its cardinality was read from the superclass that *declares* the

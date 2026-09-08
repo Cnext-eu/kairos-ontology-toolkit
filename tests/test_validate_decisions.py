@@ -2,6 +2,7 @@
 # Copyright 2026 Cnext.eu
 """Decision-log validation integration tests."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -65,7 +66,9 @@ generated: { by: kairos-ontology-toolkit/9.9.9, at: 2026-07-28T21:00:00Z }
     )
 
 
-def test_run_validation_fails_when_decision_bundle_has_errors(tmp_path: Path) -> None:
+def test_run_validation_fails_when_decision_bundle_has_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     ontologies_path, shapes_path, decisions_path = _make_hub(tmp_path)
     _write_invalid_record(decisions_path)
 
@@ -79,6 +82,21 @@ def test_run_validation_fails_when_decision_bundle_has_errors(tmp_path: Path) ->
             do_consistency=False,
             decisions_path=decisions_path,
         )
+
+    # #757: the summary names the failing section and quotes its first error, instead of
+    # a bare "failed with N errors" that pointed at no section at all.
+    out = capsys.readouterr().out
+    summary = next(line for line in out.splitlines() if "❌ Validation failed" in line)
+    failed = int(re.search(r"Failed: (\d+)", out).group(1))  # the section's own footer
+    assert failed > 0
+    assert summary.endswith(f"with {failed} error(s): decisions {failed}"), summary
+    first_message = next(
+        line.strip()[len("decisions: "):]
+        for line in out.splitlines()
+        if line.strip().startswith("decisions: ")
+    )
+    assert first_message
+    assert first_message in out.split("❌ Validation failed")[0]  # quoted from the section
 
 
 def test_run_validation_passes_when_decision_bundle_is_valid(

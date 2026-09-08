@@ -59,6 +59,24 @@ from .shared import (
 )
 
 
+def _ensure_publish_placeholders(hub: Path) -> None:
+    """Create the derived-output slots and a ``.gitkeep`` in each one that is *empty*.
+
+    The publish slots live in the sibling ``<repo>/ontology-hub-publish/`` and are
+    gitignored except for the marker, so git tracks them only through ``.gitkeep``. On a
+    hub that has already emitted, a slot such as ``powerbi/`` is populated and needs no
+    marker; dropping one there anyway (#755) left every ``init --domain`` run adding a
+    stray tracked file next to real output, which then showed up in ``git status`` and
+    failed ``guard-scope``. The directory itself is still created when missing.
+    """
+    for target in _V5_OUTPUT_DIRECTORIES:
+        slot = publish_root(hub) / target
+        slot.mkdir(parents=True, exist_ok=True)
+        if any(slot.iterdir()):
+            continue
+        (slot / ".gitkeep").touch()
+
+
 def _registration_import_gate(
     *,
     domain: str,
@@ -299,12 +317,8 @@ def init(
         print("  ✓ Created .import/modeling/feedback/index.md")
 
     # Place .gitkeep in empty publish subdirs (sibling <repo>/ontology-hub-publish/)
-    # so git tracks the derived-output slots.
-    for target in _V5_OUTPUT_DIRECTORIES:
-        gitkeep = publish_root(hub) / target / ".gitkeep"
-        gitkeep.parent.mkdir(parents=True, exist_ok=True)
-        if not gitkeep.exists():
-            gitkeep.touch()
+    # so git tracks the derived-output slots. Populated slots are left alone (#755).
+    _ensure_publish_placeholders(hub)
 
     # 2. Copy README files for each directory
     readme_map = {
@@ -1130,12 +1144,8 @@ def new_repo(
     print("  ✓ .import/modeling/feedback/ (modeling feedback)")
 
     # Place .gitkeep in publish subdirs (sibling <repo>/ontology-hub-publish/)
-    # so git tracks the derived-output slots.
-    for target in _V5_OUTPUT_DIRECTORIES:
-        gitkeep = publish_root(hub) / target / ".gitkeep"
-        gitkeep.parent.mkdir(parents=True, exist_ok=True)
-        if not gitkeep.exists():
-            gitkeep.touch()
+    # so git tracks the derived-output slots (shared with `init`, #755).
+    _ensure_publish_placeholders(hub)
 
     # README files
     readme_map = {

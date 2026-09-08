@@ -591,8 +591,12 @@ Finally confirm the workspace guard passes:
 
 ```powershell
 $env:KAIROS_SKILL_CONTEXT = "1"
-uv run kairos-ontology guard-scope --check-since <token> --allow "*model/ontologies/<domain>.ttl" --allow "*catalog-v001.xml" --allow "*model/ontologies/_master.ttl" --allow "*model/extensions/<domain>-gold-ext.ttl"
+uv run kairos-ontology guard-scope --check-since <token> --allow "*model/ontologies/<domain>.ttl" --allow "*catalog-v001.xml" --allow "*model/ontologies/_master.ttl" --allow "*model/extensions/<domain>-gold-ext.ttl" --keep
 ```
+
+`--keep` retains the token, so a check run mid-step (after the patch, before
+registration) does not consume the snapshot the final check still needs; the
+last check of the step may omit it and let the token be removed on success.
 
 Those four globs are the whole legitimate footprint of one domain: the ontology
 patch, the catalog entry the registration step writes, `_master.ttl`, which

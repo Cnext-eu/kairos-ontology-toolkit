@@ -108,6 +108,117 @@ def test_explain_term_requires_ontology_or_domain(tmp_path, monkeypatch):
     assert "Provide --ontology or --domain" in result.output
 
 
+# Issue #759 — resolve-ontology <domain>, and explain-term on an ERD stub class
+
+STUB_RANGE_ONTOLOGY = """\
+@prefix ex: <https://example.org/domain#> .
+@prefix other: <https://example.org/other#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<https://example.org/domain> a owl:Ontology ; owl:versionInfo "1.0" .
+ex:Party a owl:Class ; rdfs:label "Party" .
+ex:locatedAt a owl:ObjectProperty ; rdfs:domain ex:Party ; rdfs:range other:Address .
+"""
+
+
+def _hub_with_domain(root, name="domain", text=ONTOLOGY):
+    ontologies_dir = root / "ontology-hub" / "model" / "ontologies"
+    ontologies_dir.mkdir(parents=True)
+    (ontologies_dir / f"{name}.ttl").write_text(text, encoding="utf-8")
+    return root / "ontology-hub"
+
+
+def test_resolve_ontology_accepts_a_bare_domain_name_inside_a_hub(tmp_path, monkeypatch):
+    """Every other inspection command takes `--domain <name>`; `resolve-ontology` demanded
+    a path or `--catalog`, while the design-domain skill told authors to run
+    `resolve-ontology <domain> --json-output`."""
+    hub = _hub_with_domain(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["resolve-ontology", "domain", "--json-output"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["manifest"][0]["ontology_iri"] == "https://example.org/domain"
+
+
+def test_resolve_ontology_unknown_domain_names_the_accepted_forms(tmp_path, monkeypatch):
+    hub = _hub_with_domain(tmp_path)
+    monkeypatch.chdir(hub)
+
+    result = CliRunner().invoke(cli, ["resolve-ontology", "nope"])
+
+    assert result.exit_code != 0
+    assert "model/ontologies/nope.ttl" in result.output
+    assert "a domain name from inside the hub" in result.output
+
+
+def test_resolve_ontology_outside_a_hub_still_requires_a_path_or_catalog(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(cli, ["resolve-ontology", "domain"])
+
+    assert result.exit_code != 0
+    assert "is not a file" in result.output
+
+
+def test_explain_term_names_the_property_that_stubs_an_unindexed_range(tmp_path):
+    """The ERD draws `other:Address` as a stub (it is only an `rdfs:range` object), yet
+    `explain-term` claimed it was not present in the closure at all."""
+    ontology = tmp_path / "domain.ttl"
+    ontology.write_text(STUB_RANGE_ONTOLOGY, encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        ["explain-term", "https://example.org/other#Address", "--ontology", str(ontology)],
+    )
+
+    assert result.exit_code != 0
+    assert "not indexed as a class or property in the closure of 'domain'" in result.output
+    assert "the range of https://example.org/domain#locatedAt" in result.output
+    assert "declared in https://example.org/domain" in result.output
+    assert "drawn as a stub in the ERD" in result.output
+    assert "--domain" in result.output
+    assert "is not present in the closure" not in result.output
+
+
+def test_explain_term_keeps_the_plain_message_for_an_unmentioned_iri(tmp_path):
+    ontology = tmp_path / "domain.ttl"
+    ontology.write_text(STUB_RANGE_ONTOLOGY, encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        ["explain-term", "https://example.org/nowhere#Thing", "--ontology", str(ontology)],
+    )
+
+    assert result.exit_code != 0
+    assert "Term is not present in the closure: https://example.org/nowhere#Thing" in (
+        result.output
+    )
+
+
+def test_show_class_inventory_property_links_carry_name_type_and_ranges(tmp_path):
+    ontology = tmp_path / "domain.ttl"
+    ontology.write_text(STUB_RANGE_ONTOLOGY, encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["show-class-inventory", "--ontology", str(ontology)])
+
+    assert result.exit_code == 0, result.output
+    party = json.loads(result.output)["classes"][0]
+    assert party["direct_properties"] == [
+        {
+            "distance": 1,
+            "name": "locatedAt",
+            "property_type": "object",
+            "provenance": party["direct_properties"][0]["provenance"],
+            "ranges": ["https://example.org/other#Address"],
+            "uri": "https://example.org/domain#locatedAt",
+        }
+    ]
+
+
 def test_show_source_schema_returns_parsed_tables(tmp_path):
     sources = tmp_path / "sources"
     system_dir = sources / "erp"

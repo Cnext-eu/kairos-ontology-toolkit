@@ -808,7 +808,7 @@ def explain_term_cmd(iri, ontology, domain, catalog, profile):
     )
     term = loaded.semantic_index.term(iri)
     if term is None:
-        raise click.ClickException(f"Term is not present in the closure: {iri}")
+        raise click.ClickException(_closure_miss_message(loaded, iri, path))
     click.echo(
         json.dumps(
             {
@@ -822,6 +822,52 @@ def explain_term_cmd(iri, ontology, domain, catalog, profile):
             sort_keys=True,
         )
     )
+
+
+def _closure_miss_message(loaded, iri: str, path: Path) -> str:
+    """Say *why* an IRI the closure mentions is still not an explainable term (#759).
+
+    The semantic index admits a class only when it is typed or sits on an
+    ``rdfs:subClassOf`` edge, while the ERD projector draws any ``rdfs:range`` object as a
+    stub -- so a reader who sees a box in the ERD and asks `explain-term` about it was
+    told the term "is not present", which is false and points nowhere. The index is
+    deliberately *not* widened here: the stub class belongs to another domain, and that
+    domain's closure is where it is explainable.
+    """
+    from rdflib import RDFS, URIRef
+
+    node = URIRef(iri)
+    graph = loaded.graph
+    mentions: list[str] = []
+    for predicate, role in ((RDFS.range, "range"), (RDFS.domain, "domain")):
+        for prop in sorted(str(subject) for subject in graph.subjects(predicate, node)):
+            declared = _declaring_source(loaded, prop)
+            where = f" (declared in {declared})" if declared else ""
+            mentions.append(f"the {role} of {prop}{where}")
+    if mentions:
+        return (
+            f"Term is not indexed as a class or property in the closure of '{path.stem}', "
+            f"but appears as {'; '.join(mentions)}; it is drawn as a stub in the ERD. "
+            f"Use its owning domain with --domain to explain it: {iri}"
+        )
+    if (node, None, None) in graph or (None, None, node) in graph:
+        return (
+            f"Term is not indexed as a class or property in the closure of '{path.stem}', "
+            f"though the closure mentions it. Use its owning domain with --domain to "
+            f"explain it: {iri}"
+        )
+    return f"Term is not present in the closure: {iri}"
+
+
+def _declaring_source(loaded, subject_iri: str) -> str:
+    """Return the source identity whose graph declares *subject_iri*, or ``""``."""
+    from rdflib import URIRef
+
+    node = URIRef(subject_iri)
+    for source in getattr(loaded, "sources", ()):
+        if (node, None, None) in source.graph:
+            return str(source.manifest.source_identity)
+    return ""
 
 
 @click.command("coverage-report")
@@ -2293,11 +2339,18 @@ def _read_guard_token(token_path: Path) -> tuple[str, dict[str, list[str]], tupl
     "the resolved root list is stored inside the token itself, and --check-since "
     "reads it back from there, so the two calls can never disagree on scope.",
 )
+@click.option(
+    "--keep",
+    is_flag=True,
+    help="Retain the token after a passing --check-since, so the same snapshot can be "
+    "checked again later in the bounded work. Only valid with --check-since.",
+)
 def guard_scope_cmd(
     snapshot: bool,
     check_since: Path | None,
     allow_globs: tuple[str, ...],
     ignored_roots: tuple[str, ...],
+    keep: bool,
 ) -> None:
     """Deterministic 'no unexpected file changed' guard for a bounded skill gate.
 
@@ -2314,16 +2367,18 @@ def guard_scope_cmd(
         (repo-root-relative, repeatable) additionally fingerprints every
         gitignored file under that path, so a write there is no longer
         invisible; the resolved root list travels inside the token itself.
-    --check-since TOKEN --allow GLOB [--allow GLOB ...]
+    --check-since TOKEN --allow GLOB [--allow GLOB ...] [--keep]
         Compare current status against the snapshot at TOKEN. Any path whose
         content or git status differs from the snapshot — including one that
         was already dirty when the snapshot was taken, and one that has since
         disappeared from git's output — fails the command unless it matches at
         least one --allow glob (non-zero exit, every offending path is named).
         A commit moving HEAD inside the window also fails. On success, the
-        token file is removed. If the token was taken with --ignored-root,
-        those same roots are re-scanned here automatically (no --ignored-root
-        flag is accepted on this side — the token is the single source of scope).
+        token file is removed unless --keep is passed, which retains it so an
+        intermediate check does not consume the snapshot the final check still
+        needs. If the token was taken with --ignored-root, those same roots are
+        re-scanned here automatically (no --ignored-root flag is accepted on
+        this side — the token is the single source of scope).
 
     Scope of the guarantee: the guard sees exactly what git reports, plus any
     path passed via --ignored-root at snapshot time. It remains blind to
@@ -2341,6 +2396,8 @@ def guard_scope_cmd(
             "--ignored-root is only valid with --snapshot; --check-since reads the "
             "ignored roots back from the token itself."
         )
+    if keep and snapshot:
+        raise click.UsageError("--keep is only valid with --check-since.")
 
     repo_dir = Path.cwd()
     repo_root = _git_repo_root(repo_dir)
@@ -2398,10 +2455,11 @@ def guard_scope_cmd(
             "--allow for each additional path that legitimately changed."
         )
 
-    try:
-        check_since.unlink()
-    except OSError:
-        pass
+    if not keep:
+        try:
+            check_since.unlink()
+        except OSError:
+            pass
     click.echo("✓ guard-scope passed — no unexpected file changes.")
 
 
