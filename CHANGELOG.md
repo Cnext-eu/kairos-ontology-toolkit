@@ -241,7 +241,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `-- excluded by privacy policy (pass --include-pii to keep): ...`, and reported in the
   result notes. A new `--include-pii` flag on all three commands restores them. The shared
   `PII_KEYWORDS` list gains the credential and payroll terms it was missing (`password`,
-  `sql_login`, `bank_account`, `bsb`, `wages`, `salary`, `emergency_contact`, `residency`,
+  `sql_login`, `bank_account`, `wages`, `salary`, `emergency_contact`, `residency`,
   `security_card`, `birth_date`), deliberately without the broad tokens (`hash`, `bank`,
   `login`) that would fire on `geohash` or `login_count`.
   Alongside: `dbt-contract.dialect-fabric-nested-cte` reported only a count, so an author

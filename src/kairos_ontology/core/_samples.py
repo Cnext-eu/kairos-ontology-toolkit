@@ -60,7 +60,6 @@ PII_KEYWORDS: list[str] = [
     "sqllogin",
     "bank_account",
     "bankaccount",
-    "bsb",
     "wages",
     "salary",
     "emergency_contact",
