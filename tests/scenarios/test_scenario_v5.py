@@ -712,6 +712,73 @@ def test_stage2_conformance_is_explicit_precedence_union_and_dedup(tmp_path):
     assert "integration/sources/erp/erp.vocabulary.ttl" in inputs
 
 
+def test_conformance_group_emits_each_relationship_test_once_per_model(tmp_path):
+    """#777/#779: a conformance group emitted one FK test per member, not per model.
+
+    Three members x three relationships produced nine byte-identical
+    ``kairos_temporal_fk_cardinality`` entries, and dbt refuses to parse a project whose
+    resources collide on name -- so the emitted package was unusable downstream. The same
+    multiplication also reached the runtime model's ``*_match_count`` columns and the
+    branch SQL, which is why this asserts on all three rather than only the schema YAML.
+    """
+    hub = _copy_hub(tmp_path)
+    _incremental_country(hub)
+    # `current`, not `as-of`: the erp clone has no event-time column, and the temporal
+    # mode is orthogonal to the per-member duplication this covers.
+    _incremental_customer(hub, 2, temporal_mode="current")
+    _add_conformance(hub)
+    # A third member, so the assertion below distinguishes "one per model" from "two".
+    # The reported hub had three, all contracted dbt models.
+    _, crm = _binding(hub, "customer")
+    third = {
+        **crm,
+        "metadata": {**crm["metadata"], "name": "dbt-customer"},
+        "source": {
+            "dbtModel": {
+                "name": "customer_stage",
+                "sqlPath": "integration/transforms/dbt/models/customer_stage.sql",
+                "contractPath": "integration/transforms/dbt/models/schema.yml",
+            }
+        },
+        "conformance": {**crm["conformance"], "sourcePrecedence": 3},
+    }
+    _write_binding(hub / "integration" / "bindings" / "dbt-customer.binding.yaml", third)
+
+    result = compile_domain(hub, "party", CompileMode.EXPLAIN)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    artifacts = result.artifact_dict()
+    assert len([path for path in artifacts if "customer__from_" in path]) == 3
+    schema = yaml.safe_load(artifacts["models/silver/party/_party__models.yml"])
+    customer = next(model for model in schema["models"] if model["name"] == "customer")
+
+    fk_tests = [
+        test
+        for test in customer["data_tests"]
+        if "kairos_temporal_fk_cardinality" in yaml.safe_dump(test, sort_keys=True)
+    ]
+    assert fk_tests, "expected the conformance union to carry its relationship FK test"
+    rendered = [yaml.safe_dump(test, sort_keys=True) for test in fk_tests]
+    assert len(rendered) == len(set(rendered)), rendered
+    # One per relationship on the class, regardless of how many bindings contribute.
+    assert len(fk_tests) == 1
+
+    # The same tuple feeds the runtime model's columns and the branch SQL (#777/#779),
+    # where a duplicate is not merely noisy -- it breaks DD-110 Silver output parity and
+    # blocks the compile outright.
+    column_names = [column["name"] for column in customer["columns"]]
+    assert len(column_names) == len(set(column_names)), column_names
+    for path, text in artifacts.items():
+        if "customer__from_" not in path or not path.endswith(".sql"):
+            continue
+        marker = next(line for line in text.splitlines() if line.startswith("-- DD-110-COLUMNS: "))
+        emitted = json.loads(marker.removeprefix("-- DD-110-COLUMNS: "))
+        assert len(emitted) == len(set(emitted)), (path, emitted)
+        assert sum(1 for name in emitted if name.endswith("_match_count")) == 1, emitted
+        # One window function defining the match count, not one per contributing binding.
+        assert text.count(") as _kairos_fk_") == 1, (path, text)
+
+
 def test_stage2_conformance_incompatible_group_blocks_only_group(tmp_path):
     hub = _copy_hub(tmp_path)
     _add_conformance(hub, compatible=False)

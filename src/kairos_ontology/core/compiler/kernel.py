@@ -1357,7 +1357,14 @@ def _foreign_keys(
                     conditional_on_type="",
                 )
             )
-    return tuple(facts)
+    # #777/#779: every member of a conformance group shares a target class and -- because
+    # `conformance.relationship-incompatible` demands it -- an identical relationship
+    # contract, so each member re-derives the same fact. Left duplicated, one fact per
+    # member multiplies downstream into duplicate dbt test names (which make the emitted
+    # package unparseable), duplicate `*_match_count` columns, and N copies in the plan
+    # JSON. Deduped first-occurrence-wins on the whole fact, the same idiom
+    # `class_to_sources` and `binding_observations` already use in `merge_bound_sources`.
+    return tuple(dict.fromkeys(facts))
 
 
 def _authored(resource: str, predicate: str, value: str) -> AuthoredValuesFact:

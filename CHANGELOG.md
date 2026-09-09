@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A conformance group no longer emits its relationship tests once per member, which made the
+  generated package unparseable by dbt (#777, #779).** A group produces one Silver table, but
+  relationship foreign keys were derived per *binding*: three members declaring the same
+  relationship contract -- which `conformance.relationship-incompatible` requires them to --
+  produced three byte-identical `kairos_temporal_fk_cardinality` entries per relationship, and
+  dbt refuses to parse a project whose resources collide on name. There was no way to author
+  around it while staying in the group. Single-source models were never affected, which is why
+  the multi-source path reached a real warehouse before the defect surfaced. The duplication was
+  wider than the schema YAML: the same tuple feeds the SCD runtime model's `*_match_count`
+  columns, the branch SQL's temporal lookups, and the plan/explain JSON, so on an incremental
+  entity it also broke DD-110 Silver output parity and blocked the compile outright. Fixed at
+  both ends -- authoring facts are deduped where they are derived, and the policy that assembles
+  `authority.foreign_keys` now keys on the property URI it already looks values up by.
+
 ### Performance
 - **Hub PR validation is roughly halved, without weakening a gate.** A real 16-ontology hub's
   PR check took 9m10s. Three things were wrong with it. `compile --all --check` (110s) did no
