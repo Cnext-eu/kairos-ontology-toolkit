@@ -109,9 +109,13 @@ Open a GitHub Issue with the `enhancement` label describing:
    ```
 2. Make your changes — follow existing code conventions.
 3. Add or update tests for your changes.
-4. Run tests: `uv run pytest` (fast) or `uv run pytest -m ""` (full)
-5. Commit with DCO sign-off: `git commit -s`
-6. Push and open a Pull Request against `main`.
+4. Add a `changelog.d/<issue-or-pr>-<slug>.md` fragment if the change is user-visible.
+   Do **not** edit `CHANGELOG.md` directly in a feature or fix PR: every such PR edits the
+   same anchor, so any two open at once conflict on it. See
+   [`changelog.d/README.md`](changelog.d/README.md).
+5. Run tests: `uv run pytest` (fast) or `uv run pytest -m ""` (full)
+6. Commit with DCO sign-off: `git commit -s`
+7. Push and open a Pull Request against `main`.
 
 ### Branch naming
 
@@ -143,6 +147,7 @@ Never commit to `main` directly — always branch + PR.
 ### PR checklist
 
 - [ ] Tests pass (`uv run pytest` for fast, `uv run pytest -m ""` for full)
+- [ ] `changelog.d/` fragment added if the change is user-visible (not `CHANGELOG.md`)
 - [ ] `python -m kairos_ontology validate` passes (if ontology changes)
 - [ ] `python -m kairos_ontology project` regenerated (if ontology changes)
 - [ ] Version bump only if this PR is cutting a release (see `docs/dev/RELEASING.md`) — not required otherwise
