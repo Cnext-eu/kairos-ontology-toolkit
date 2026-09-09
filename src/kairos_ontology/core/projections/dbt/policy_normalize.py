@@ -3973,16 +3973,20 @@ def _silver_authorities(
         fk_names = frozenset(
             item.silver_column_name for item in descriptors if item.silver_column_name is not None
         )
+        # #777/#779: `descriptors` holds one entry per contributing binding, so a
+        # conformance group repeats every property once per member. Each copy is looked up
+        # by `property_uri` and therefore resolves to the *same* `TemporalRelationshipSpec`
+        # object -- which is why the duplicates were byte-identical downstream. Deduping on
+        # that key is both complete and order-stable, and preserves the property_uri
+        # ordering this tuple already had. This is the choke point every consumer of
+        # `authority.foreign_keys` reads through, so fixing it here covers the schema-YAML
+        # tests, the runtime match-count columns, and the plan JSON alike.
+        descriptor_properties = {item.property_uri for item in descriptors}
         foreign_keys = tuple(
-            temporal_by_property[item.property_uri]
-            for item in sorted(descriptors, key=lambda value: value.property_uri)
-            if item.property_uri in temporal_by_property
+            temporal_by_property[property_uri]
+            for property_uri in sorted(descriptor_properties & temporal_by_property.keys())
         )
-        missing_temporal = sorted(
-            item.property_uri
-            for item in descriptors
-            if item.property_uri not in temporal_by_property
-        )
+        missing_temporal = sorted(descriptor_properties - temporal_by_property.keys())
         identity = identity_by_uri.get(class_uri)
         if identity is not None and missing_temporal:
             raise PolicyNormalizationError(
