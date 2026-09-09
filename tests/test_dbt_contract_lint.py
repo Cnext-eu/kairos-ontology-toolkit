@@ -417,6 +417,70 @@ def test_rule_does_not_apply_to_a_databricks_only_model(tmp_path):
     assert "dbt-contract.dialect-fabric-nested-cte" not in _codes(run_dbt_contract_lint(tmp_path))
 
 
+def test_canonical_type_in_a_cast_is_reported(tmp_path):
+    """#778: `cast(x as timestamp)` parses cleanly and dies against a real warehouse."""
+    _write(tmp_path, _contract("int_cargowise__maritime_port_call"))
+    _write_sql(
+        tmp_path,
+        "int_cargowise__maritime_port_call",
+        "select cast(destination.JB_A_ARV as timestamp) as actual_time_of_arrival\n",
+    )
+    report = run_dbt_contract_lint(tmp_path)
+    assert "dbt-contract.dialect-uncastable-type" in _codes(report)
+    assert not report.passed
+    finding = next(
+        item for item in report.findings if item.code == "dbt-contract.dialect-uncastable-type"
+    )
+    assert "line 1" in finding.message
+    assert "datetime2(6)" in finding.message
+    # The neighbouring contract field takes the *canonical* name and is likely fine; saying
+    # so is the whole point, since conflating the two is what produced the bug.
+    assert "data_type" in finding.message
+
+
+def test_uncastable_boolean_is_reported_and_names_bit(tmp_path):
+    _write(tmp_path, _contract("int_merged__customer"))
+    _write_sql(tmp_path, "int_merged__customer", "select cast(flag as boolean) as is_active\n")
+    finding = next(
+        item
+        for item in run_dbt_contract_lint(tmp_path).findings
+        if item.code == "dbt-contract.dialect-uncastable-type"
+    )
+    assert "'bit'" in finding.message
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "cast(a as datetime2)",
+        "cast(a as nvarchar(50))",
+        "cast(a as uniqueidentifier)",
+        "cast(a as tinyint)",
+        "cast(a as decimal(18,2))",
+        "cast(a as varchar(8000))",
+        "sum(a) as timestamp_total",
+    ],
+)
+def test_valid_tsql_types_are_not_reported(tmp_path, expression):
+    """The false-positive guard: T-SQL has many valid types the registry never names."""
+    _write(tmp_path, _contract("int_merged__customer"))
+    _write_sql(tmp_path, "int_merged__customer", f"select {expression} as value\n")
+    assert "dbt-contract.dialect-uncastable-type" not in _codes(run_dbt_contract_lint(tmp_path))
+
+
+def test_uncastable_rule_does_not_apply_to_a_databricks_only_model(tmp_path):
+    """`boolean` and `timestamp` are real Databricks types; only Fabric has an opinion."""
+    _write(tmp_path, _contract("int_merged__customer", supported_adapters=["databricks"]))
+    _write_sql(tmp_path, "int_merged__customer", "select cast(a as timestamp) as ts\n")
+    assert "dbt-contract.dialect-uncastable-type" not in _codes(run_dbt_contract_lint(tmp_path))
+
+
+def test_uncastable_type_is_found_inside_a_nested_cast(tmp_path):
+    _write(tmp_path, _contract("int_merged__customer"))
+    _write_sql(tmp_path, "int_merged__customer", "select cast(cast(a as string) as int) as v\n")
+    assert "dbt-contract.dialect-uncastable-type" in _codes(run_dbt_contract_lint(tmp_path))
+
+
 def test_rule_still_applies_to_the_deprecated_fabric_spelling(tmp_path):
     """Authored contracts in the field still say `supported_adapters: [fabric]`."""
     _write(tmp_path, _contract("int_merged__customer", supported_adapters=["fabric"]))

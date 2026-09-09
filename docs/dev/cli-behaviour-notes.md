@@ -161,6 +161,32 @@ single resource namespace, so two resources with one name make the generated pro
 parse outright, and the dbt bundle now hard-fails the same case. A lint that called it
 advisory would disagree with the build.
 
+### Adapter-dialect rules over authored SQL
+
+dbt does not abstract SQL dialects: a model body reaches the engine verbatim, and neither
+`dbt parse` nor `dbt compile` reads it — so a hub running only `validate-dbt
+--structural-only` never sees a dialect error at all. Two rules close the slice of that gap
+that is deterministic from the text alone. Both apply only to models whose declared
+`supported_adapters` include the adapter in question.
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `dbt-contract.dialect-fabric-nested-cte` | error | `with ` appears more than once in a model that enforces its contract on `fabric-warehouse`. dbt-fabric's materialization macro counts that substring across the whole file — comments included — to detect a nested CTE, and refuses to build. |
+| `dbt-contract.dialect-uncastable-type` | error | #778. A `cast(... as <type>)` whose target is a *canonical* type name the adapter cannot cast to — on `fabric-warehouse`: `boolean`/`bool`, `string`, `int16`/`int32`/`int64`, `float64`/`double`, `timestamp`, `json`, `variant`. |
+
+`dialect-uncastable-type` exists because the same token means different things in two fields
+that sit next to each other in one authored file. `boolean` and `timestamp` are legitimate
+canonical kinds: correct in a binding's `externalReference.key[].type`, and correct in a dbt
+contract's `data_type`, where dbt-fabric translates `boolean` to `bit`. They are wrong only
+in a SQL cast. The finding says so explicitly, so the fix is not to "correct" a `data_type`
+that was already right.
+
+It is a **denylist of known-wrong spellings**, not an allowlist derived from the adapter type
+registry. T-SQL has many valid types the registry never names — `nvarchar`, `tinyint`,
+`uniqueidentifier`, `money`, `datetimeoffset` — and flagging those would drown the real
+findings. The rule therefore reports only what is known-wrong and stays silent on everything
+it has no opinion about. Only `fabric-warehouse` is populated today.
+
 Seed column-docs YAML is dbt's plain `seeds:` properties form and deliberately carries no
 `meta.kairos` — a seed is not a bindable virtual source, so it is never contract-parsed.
 
