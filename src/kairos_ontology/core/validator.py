@@ -4,6 +4,7 @@
 
 import json
 import logging
+import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -152,14 +153,208 @@ def _property_range_is_boolean(graph: Graph, prop: URIRef) -> bool:
     return any(r == XSD.boolean for r in graph.objects(prop, RDFS.range))
 
 
+#: Cap on concurrent SHACL workers. Each one holds a full import closure plus the RDFS
+#: closure pyshacl materialises over a copy of it, so this is bounded by memory rather
+#: than by cores; eight large closures at once is already generous on a 16 GB runner.
+_MAX_SHACL_WORKERS = 8
+
+#: Escape hatch. ``KAIROS_VALIDATE_JOBS=1`` forces the serial path -- useful when
+#: debugging a single domain's report, or in a container with a low memory ceiling where
+#: concurrent closures would be the thing that fails.
+ENV_VALIDATE_JOBS = "KAIROS_VALIDATE_JOBS"
+
+
+@dataclass(frozen=True, slots=True)
+class _ShaclOutcome:
+    """One domain's SHACL verdict, in a form that survives a process boundary.
+
+    Only primitives: the report *graph* is discarded (the caller never used it) and the
+    loader's semantic context is flattened, because ``rdflib`` graphs are expensive to
+    pickle and there is no reason to ship one back.
+    """
+
+    file: str
+    conforms: bool
+    report_text: str
+    error: Optional[str]
+    profile: Optional[str]
+    closure_hash: Optional[str]
+    import_complete: Optional[bool]
+
+
+def _shacl_validate_one(
+    ontology_file: str,
+    shapes_turtle: str,
+    catalog_path: Optional[str],
+    degraded: bool,
+) -> _ShaclOutcome:
+    """Load one domain's closure and validate it. Module-level so it can be pickled.
+
+    Shapes cross as Turtle text rather than as a graph: they are small next to a domain
+    closure, and re-parsing them per worker costs far less than pickling a graph. Every
+    failure is captured and returned rather than raised, so one unloadable domain cannot
+    take down the pool -- which mirrors the serial loop's ``except Exception`` exactly.
+    """
+    try:
+        from .ontology_loader import SemanticProfile, load_ontology
+
+        loaded = load_ontology(
+            Path(ontology_file),
+            catalog_path=Path(catalog_path) if catalog_path else None,
+            profile=SemanticProfile.RDFS,
+            degraded=degraded,
+        )
+        shapes_graph = Graph()
+        shapes_graph.parse(data=shapes_turtle, format="turtle")
+        conforms, _report_graph, report_text = shacl_validate(
+            loaded.graph,
+            shacl_graph=shapes_graph,
+            inference="rdfs",
+            abort_on_first=False,
+        )
+        return _ShaclOutcome(
+            file=ontology_file,
+            conforms=bool(conforms),
+            report_text=report_text or "",
+            error=None,
+            profile=loaded.profile.value,
+            closure_hash=loaded.closure_hash,
+            import_complete=loaded.complete,
+        )
+    except Exception as exc:  # noqa: BLE001 - reported per domain, never fatal
+        return _ShaclOutcome(
+            file=ontology_file,
+            conforms=False,
+            report_text="",
+            error=str(exc),
+            profile=None,
+            closure_hash=None,
+            import_complete=None,
+        )
+
+
+def _shacl_worker_count(file_count: int) -> int:
+    """How many domains to validate at once."""
+    requested = os.environ.get(ENV_VALIDATE_JOBS, "").strip()
+    if requested:
+        try:
+            explicit = int(requested)
+        except ValueError:
+            explicit = 0
+        if explicit > 0:
+            return max(1, min(explicit, file_count))
+    return max(1, min(file_count, os.cpu_count() or 1, _MAX_SHACL_WORKERS))
+
+
+def _run_shacl_validations(
+    ontology_files: list[Path],
+    shapes_turtle: str,
+    catalog_path: Optional[Path],
+    degraded: bool,
+) -> list[_ShaclOutcome]:
+    """Validate every domain, in input order, across processes where that is possible.
+
+    The passes are independent and read-only -- each loads its own closure and shares
+    nothing -- but they are CPU-bound Python, so threads would serialise on the GIL and
+    only separate processes actually overlap them. On a real 16-ontology hub this was the
+    single largest CI step at 161s.
+
+    Deliberately *not* ``inplace=True`` on pyshacl: the data graph is the object held in
+    the loader's in-process cache, so materialising the RDFS closure into it would poison
+    every later phase in the same process.
+
+    Order is the caller's, not completion order, so counts, the error list and the printed
+    report stay byte-identical to the serial path.
+    """
+    args = [
+        (str(path), shapes_turtle, str(catalog_path) if catalog_path else None, degraded)
+        for path in ontology_files
+    ]
+    if not args:
+        return []
+
+    workers = _shacl_worker_count(len(args))
+    if workers > 1:
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                return list(pool.map(_shacl_validate_one, *zip(*args)))
+        except Exception as exc:  # noqa: BLE001 - a pool is an optimisation, never a requirement
+            logger.warning(
+                "Parallel SHACL validation unavailable (%s); validating serially instead", exc
+            )
+
+    return [_shacl_validate_one(*call) for call in args]
+
+
 def _is_governed_code_property_name(snake_local: str) -> bool:
     """True when the local name's last snake-case segment is a bare ``code``."""
     tokens = snake_local.split("_")
     return len(tokens) > 1 and tokens[-1] == "code"
 
 
+@dataclass(frozen=True, slots=True)
+class _BindingSourceCorpus:
+    """The domain-independent inputs of the GDPR binding-evidence scan.
+
+    Both members are a pure function of the hub, not of any one domain, but they used to
+    be rebuilt inside :func:`_binding_source_evidence` on every call -- i.e. once per
+    domain ontology. Resolving ``relations`` fully parses every source vocabulary in
+    ``integration/sources/``, so a 16-domain hub parsed its whole source corpus sixteen
+    times to answer sixteen questions that differ only by a one-line filter.
+    """
+
+    binding_texts: tuple[tuple[Path, str], ...]
+    relations_by_ref: dict[str, object]
+
+
+def _load_binding_source_corpus(hub_root: Path) -> Optional[_BindingSourceCorpus]:
+    """Read every binding and source relation once, or ``None`` if there is nothing to scan.
+
+    ``None`` collapses the four "nothing to do" cases the per-domain function used to
+    return an empty dict for: no ``integration/bindings``, no bindings in it, no source
+    vocabularies, or a source corpus that would not resolve. Unreadable individual
+    bindings are dropped here, exactly as the loop used to skip them.
+    """
+    bindings_dir = hub_root / "integration" / "bindings"
+    if not bindings_dir.is_dir():
+        return None
+
+    binding_paths = sorted(bindings_dir.glob("*.binding.yaml"))
+    if not binding_paths:
+        return None
+
+    sources_dir = hub_root / "integration" / "sources"
+    source_paths = tuple(sorted(sources_dir.glob("**/*.ttl"))) if sources_dir.is_dir() else ()
+    if not source_paths:
+        return None
+
+    try:
+        relations = _source_relations(source_paths)
+    except Exception:
+        logger.debug(
+            "GDPR scan: could not resolve source relations under %s", sources_dir, exc_info=True
+        )
+        return None
+
+    texts: list[tuple[Path, str]] = []
+    for binding_path in binding_paths:
+        try:
+            texts.append((binding_path, binding_path.read_text(encoding="utf-8")))
+        except OSError:
+            continue
+
+    return _BindingSourceCorpus(
+        binding_texts=tuple(texts),
+        relations_by_ref={relation.ref: relation for relation in relations},
+    )
+
+
 def _binding_source_evidence(
-    hub_root: Path, domain_name: str
+    hub_root: Path,
+    domain_name: str,
+    corpus: Optional[_BindingSourceCorpus] = None,
 ) -> dict[str, list[tuple[str, str, str]]]:
     """Best-effort: map each ``domain_name``-scoped bound class to PII-keyword hits found
     in its EntityBinding's *source* columns (not its canonical property names).
@@ -186,33 +381,18 @@ def _binding_source_evidence(
     """
     evidence: dict[str, list[tuple[str, str, str]]] = {}
 
-    bindings_dir = hub_root / "integration" / "bindings"
-    if not bindings_dir.is_dir():
+    # Callers scanning more than one domain pass the corpus in; a single-domain or
+    # library caller still gets the original self-contained behaviour.
+    if corpus is None:
+        corpus = _load_binding_source_corpus(hub_root)
+    if corpus is None:
         return evidence
+    relations_by_ref = corpus.relations_by_ref
 
-    binding_paths = sorted(bindings_dir.glob("*.binding.yaml"))
-    if not binding_paths:
-        return evidence
-
-    sources_dir = hub_root / "integration" / "sources"
-    source_paths = tuple(sorted(sources_dir.glob("**/*.ttl"))) if sources_dir.is_dir() else ()
-    if not source_paths:
-        return evidence
-
-    try:
-        relations = _source_relations(source_paths)
-    except Exception:
-        logger.debug(
-            "GDPR scan: could not resolve source relations under %s", sources_dir, exc_info=True
-        )
-        return evidence
-    relations_by_ref = {relation.ref: relation for relation in relations}
-
-    for binding_path in binding_paths:
-        try:
-            text = binding_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
+    for _binding_path, text in corpus.binding_texts:
+        # An unscoped binding (`domain:` absent or null) contributes to *every* domain,
+        # matching resolve_scope()'s own filter -- so this stays a per-domain decision
+        # and cannot be hoisted with the parsing above.
         if _binding_domain(text) not in (None, domain_name):
             continue
         target_class = _binding_target_class(text)
@@ -414,13 +594,19 @@ def run_gdpr_validation(
     total_warnings = 0
     total_domains = 0
 
+    # Once for the whole scan: every domain asks the same question of the same bindings
+    # and source vocabularies, differing only in which bindings it keeps.
+    binding_corpus = _load_binding_source_corpus(resolved_hub_root)
+
     for ontology_file in ontology_files:
         domain_name = ontology_file.stem
         ext_file = ext_map.get(domain_name)
         ext_content = ext_file.read_text(encoding="utf-8") if ext_file else None
 
         ontology_content = ontology_file.read_text(encoding="utf-8")
-        source_evidence = _binding_source_evidence(resolved_hub_root, domain_name)
+        source_evidence = _binding_source_evidence(
+            resolved_hub_root, domain_name, corpus=binding_corpus
+        )
         result = validate_gdpr(ontology_content, ext_content, source_evidence=source_evidence)
         total_domains += 1
 
@@ -1865,42 +2051,41 @@ def run_validation(
         for shape_file in shapes_path.glob("**/*.shacl.ttl"):
             shapes_graph.parse(shape_file, format="turtle")
 
-        for ontology_file in ontology_files:
-            try:
-                from .ontology_loader import SemanticProfile, load_ontology
+        workers = _shacl_worker_count(len(ontology_files))
+        if workers > 1:
+            # Said up front because the per-domain lines can only be printed once every
+            # worker has reported: this is the longest phase, and silence with no
+            # explanation reads as a hang.
+            print(f"  validating {len(ontology_files)} domain(s) across {workers} workers…")
+        outcomes = _run_shacl_validations(
+            ontology_files,
+            shapes_graph.serialize(format="turtle"),
+            catalog_path,
+            degraded,
+        )
 
-                loaded = load_ontology(
-                    ontology_file,
-                    catalog_path=catalog_path,
-                    profile=SemanticProfile.RDFS,
-                    degraded=degraded,
-                )
-                data_graph = loaded.graph
-
-                conforms, report_graph, report_text = shacl_validate(
-                    data_graph, shacl_graph=shapes_graph, inference="rdfs", abort_on_first=False
-                )
-
-                if conforms:
-                    results["shacl"]["passed"] += 1
-                    results["shacl"].setdefault("semantic_context", {})[str(ontology_file)] = {
-                        "profile": loaded.profile.value,
-                        "closure_hash": loaded.closure_hash,
-                        "import_complete": loaded.complete,
-                    }
-                    print(f"  ✓ {ontology_file.name}")
-                else:
-                    results["shacl"]["failed"] += 1
-                    results["shacl"]["errors"].append(
-                        {"file": str(ontology_file), "report": report_text}
-                    )
-                    print(f"  ✗ {ontology_file.name}")
-                    print(f"    {report_text}")
-
-            except Exception as e:
+        for ontology_file, outcome in zip(ontology_files, outcomes):
+            if outcome.error is not None:
                 results["shacl"]["failed"] += 1
-                results["shacl"]["errors"].append({"file": str(ontology_file), "error": str(e)})
-                print(f"  ✗ {ontology_file.name}: {e}")
+                results["shacl"]["errors"].append(
+                    {"file": str(ontology_file), "error": outcome.error}
+                )
+                print(f"  ✗ {ontology_file.name}: {outcome.error}")
+            elif outcome.conforms:
+                results["shacl"]["passed"] += 1
+                results["shacl"].setdefault("semantic_context", {})[str(ontology_file)] = {
+                    "profile": outcome.profile,
+                    "closure_hash": outcome.closure_hash,
+                    "import_complete": outcome.import_complete,
+                }
+                print(f"  ✓ {ontology_file.name}")
+            else:
+                results["shacl"]["failed"] += 1
+                results["shacl"]["errors"].append(
+                    {"file": str(ontology_file), "report": outcome.report_text}
+                )
+                print(f"  ✗ {ontology_file.name}")
+                print(f"    {outcome.report_text}")
 
         print(f"\n  Passed: {results['shacl']['passed']}, Failed: {results['shacl']['failed']}\n")
 

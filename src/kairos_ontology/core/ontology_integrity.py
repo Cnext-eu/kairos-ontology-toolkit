@@ -38,6 +38,8 @@ Design constraints this module holds to:
 from __future__ import annotations
 
 import re
+import hashlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -973,6 +975,82 @@ def _module_terms(catalog_path: Optional[Path]) -> dict[str, dict[str, set[str]]
     return terms
 
 
+#: In-process memo for the hub-wide ontology scan, keyed by the inputs that decide it.
+#: ``compile --all`` runs the DD-163 gate once per domain, and each run re-parsed *every*
+#: authored ``.ttl`` in the hub -- 15 domains x 17 files is 255 Turtle parses per
+#: invocation to answer 15 questions over one identical corpus. The scan is scoped to the
+#: whole hub by design (a cross-domain duplicate is invisible from inside one domain), so
+#: the answer cannot be narrowed; it can only be shared.
+#:
+#: Safe to share because nothing mutates a :class:`DomainOntology`: every check reads
+#: them, and ``scan_hub_ontologies`` has exactly one caller. Module-global, so the test
+#: suite clears it between cases.
+_HUB_SCAN_CACHE: dict[tuple, dict[str, "DomainOntology"]] = {}
+
+
+def reset_hub_scan_cache() -> None:
+    """Drop the in-process hub-scan memo.
+
+    Mirrors ``alignment_report.reset_alignment_report_cache`` and
+    ``class_anchoring.reset_reference_terms_cache``: without this a test that rewrites a
+    hub an earlier test already scanned would read the earlier parse.
+    """
+    _HUB_SCAN_CACHE.clear()
+
+
+def _hub_ontologies_fingerprint(ontologies_dir: Path) -> str:
+    """Content hash of every authored ``.ttl`` the scan would read.
+
+    Content, not ``mtime``. The reference-corpus fingerprint elsewhere in the toolkit can
+    use ``st_mtime_ns`` because it stamps installed package files that only change on
+    reinstall; these are files a human or a skill is actively editing, and re-auditing a
+    hub *after* rewriting an ontology in the same process is a real pattern -- the
+    scaffold-domain tests do exactly that. A stale answer there is a wrong verdict, not a
+    slow one, so the key is exact. Reading and hashing 17 files costs a fraction of
+    parsing them, which is what this memo exists to avoid.
+    """
+    digest = hashlib.sha256()
+    try:
+        paths = sorted(Path(ontologies_dir).glob("*.ttl"))
+    except OSError:
+        return "unreadable"
+    for path in paths:
+        if path.name.startswith("_"):
+            continue
+        digest.update(path.name.encode("utf-8"))
+        try:
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+        except OSError:
+            digest.update(b"unreadable")
+    return digest.hexdigest()
+
+
+def _scan_hub_ontologies_cached(
+    ontologies_dir: Path,
+    catalog_path: Optional[Path],
+    module_terms: dict,
+) -> dict[str, "DomainOntology"]:
+    """Return the hub scan for these inputs, parsing only on a miss.
+
+    Keyed on the *catalog* rather than on ``module_terms`` itself: the terms are derived
+    from the catalog by ``_module_terms``, and a nested dict of sets is not hashable.
+    ``KAIROS_REFMODELS_ROOT`` joins the key because it relocates the corpus the terms
+    come from, and the content fingerprint joins it so an edited ontology invalidates the
+    entry rather than being answered from the previous parse.
+    """
+    key = (
+        str(Path(ontologies_dir).resolve()),
+        str(Path(catalog_path).resolve()) if catalog_path is not None else None,
+        os.environ.get("KAIROS_REFMODELS_ROOT", ""),
+        _hub_ontologies_fingerprint(ontologies_dir),
+    )
+    cached = _HUB_SCAN_CACHE.get(key)
+    if cached is None:
+        cached = scan_hub_ontologies(ontologies_dir, module_terms)
+        _HUB_SCAN_CACHE[key] = cached
+    return cached
+
+
 def audit_ontology_integrity(
     *,
     ontologies_dir: Path,
@@ -990,7 +1068,7 @@ def audit_ontology_integrity(
     # a typo'd one. Without it an unresolvable parent counts as an anchor and silences
     # check_unanchored_classes and both arms of check_reference_model_shadowing.
     module_terms = _module_terms(catalog_path)
-    ontologies = scan_hub_ontologies(ontologies_dir, module_terms)
+    ontologies = _scan_hub_ontologies_cached(ontologies_dir, catalog_path, module_terms)
     report = IntegrityReport(domains_scanned=len(ontologies))
     if not ontologies:
         report.notices.append(

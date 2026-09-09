@@ -310,6 +310,7 @@ kairos-ontology compile [OPTIONS] [DOMAINS]...
 | `--emit` |  | Atomically emit generated dbt artifacts to the fixed canonical location <repo>/ontology-hub-publish/medallion/dbt (sibling of the hub). The target is not configurable. Requires --confirm-emit. |
 | `--confirm-emit` |  | Required alongside --emit. Confirms this is an explicit, execution-phase invocation (owned by kairos-execute-project) — prevents design-time skills from accidentally emitting compiled artifacts. |
 | `--format` | `text` |  |
+| `--quiet`, `-q` |  | Suppress per-domain progress lines (they go to stderr, so --format json is unaffected either way). |
 | `--no-cache` |  | Bypass the ontology-closure parse cache and force a clean reparse. Use after manually editing a hub's .cache/ontology-parse/ directory, or when debugging a suspected stale-cache result. |
 
 

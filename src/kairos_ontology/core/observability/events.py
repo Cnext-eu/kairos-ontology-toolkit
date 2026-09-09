@@ -35,6 +35,13 @@ PROJECTION_STEP_SKIPPED: Final[str] = "kairos.projection.step.skipped"
 PROJECTION_STEP_FAILED: Final[str] = "kairos.projection.step.failed"
 
 
+#: Per-domain compile progress. A multi-domain `compile --all` reports each domain only
+#: once it finishes, which on a large hub is minutes of apparent silence; these say which
+#: domain is in flight and how long the last one took.
+COMPILE_DOMAIN_STARTED: Final[str] = "kairos.compile.domain.started"
+COMPILE_DOMAIN_COMPLETED: Final[str] = "kairos.compile.domain.completed"
+
+
 def emit(event: str, level: int, message: str, **fields: object) -> None:
     """Emit one structured log record carrying a stable ``event`` name.
 

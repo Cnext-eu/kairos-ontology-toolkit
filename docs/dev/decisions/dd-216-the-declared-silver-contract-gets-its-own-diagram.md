@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-09-04
 **Affects:** new `core/projections/contract_erd_projector.py`, `core/projector.py` (new
-`TargetSpec("contract-erd", "architecture/contract-erd", ...)`, a `contracts_dir` parameter threaded
+`TargetSpec("contract-erd", "model/contracts/diagrams", ..., hub_relative=True)`, a `contracts_dir` parameter threaded
 to the dispatch), new `tests/test_contract_erd_projector.py`, `tests/test_target_registry.py`
 **Issue:** #698
 

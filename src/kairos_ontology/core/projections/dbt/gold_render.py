@@ -27,6 +27,7 @@ from .gold_specs import (
     GoldTableSpec,
 )
 from .policy_specs import GoldTableRole
+from ..shared import mermaid_provenance_comment
 
 
 # PBIP wrapper schemas. The projector is the single, authoritative source of
@@ -496,6 +497,7 @@ def _erd(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
     physical_by_name = {item.name: item for item in physical.tables}
     lines = [
         "erDiagram",
+        mermaid_provenance_comment(),
         (
             f"    %% Gold product {spec.profile.value}/{spec.profile_version}; "
             f"adapter={physical.adapter}"

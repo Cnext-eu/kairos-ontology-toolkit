@@ -23,15 +23,26 @@ import click
 
 from ..core.compiler import build_compile_plan
 from ..core.determinism import write_text_lf
-from ..core.hub_utils import find_hub_root, publish_root
+from ..core.hub_utils import contract_diagrams_dir, find_hub_root, publish_root
 from ..core.projections.dbt.gold_connection import GOLD_CONNECTION_OVERRIDE_PATH
 from ..core.projections.dbt.gold_render import PARAMETER_ARTIFACT_PATH
 from ..core.projections.dbt.pbip_validate import validate_package_artifacts
+from ..core.projections.shared import split_erd_artifacts
 
 #: Power BI/Gold publish sub-path under the publish root (``<publish_root>/powerbi``),
 #: a sibling of the dbt publish sub-path (``<publish_root>/medallion/dbt``) -- never
 #: inside it, since TMDL/PBIP files are not dbt project files.
 _POWERBI_EMIT_SUBPATH = Path("powerbi")
+
+
+def _gold_diagrams_manifest_name(domain: str) -> str:
+    """Manifest owning one product's Gold ERDs in ``model/contracts/diagrams``.
+
+    Separate from :func:`_gold_manifest_name`: different target directory, different
+    files, so a shared name would make each emit look like it had lost the other's.
+    """
+    safe_domain = re.sub(r"[^A-Za-z0-9_.-]", "_", domain) or "domain"
+    return f".kairos-compile-manifest.gold-diagrams-{safe_domain}.json"
 
 
 def _gold_manifest_name(domain: str) -> str:
@@ -185,6 +196,11 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
             )
 
     target = (publish_root(hub_root) / _POWERBI_EMIT_SUBPATH).resolve(strict=False)
+    # The Gold ERDs leave the Power BI package and go to the hub, beside the Silver and
+    # declared-contract diagrams. Lifted before the summary count so the reported number
+    # matches what is actually written to `target`.
+    diagrams = split_erd_artifacts(artifacts, "-gold-erd.mmd")
+    diagrams_target = contract_diagrams_dir(hub_root).resolve(strict=False)
     manifest_name = _gold_manifest_name(product.name)
     label = (
         f"{product.name!r} ({', '.join(product.domains)})"
@@ -200,7 +216,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
         return
 
-    _retire_superseded_manifests(target, product)
+    _retire_superseded_manifests(target, product, diagrams_target)
 
     # `parameter.yml` is the one hub-wide root artifact every domain's Gold emit writes
     # into this shared directory -- correctly so, since fabric-cicd reads exactly one
@@ -214,13 +230,21 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         manifest_name=manifest_name,
         replace_unowned_paths=(PARAMETER_ARTIFACT_PATH,),
     )
+    if diagrams:
+        emit_artifacts(
+            diagrams,
+            diagrams_target,
+            manifest_name=_gold_diagrams_manifest_name(product.name),
+        )
     # #748: success is announced only once the write has actually committed. The line used
     # to be printed before `emit_artifacts`, so a failed swap left a "✅ Emitted" on the
     # terminal directly above the error that said nothing was written.
     click.echo(f"✅ Emitted {summary}")
     click.echo(f"   → {target}")
+    if diagrams:
+        click.echo(f"   → {len(diagrams)} ERD(s) to {diagrams_target}")
 
-    _regenerate_master_gold_erd(target, hub_name=hub_root.name)
+    _regenerate_master_gold_erd(diagrams_target, hub_name=hub_root.name)
 
 
 @click.command(name="harvest-gold")
@@ -407,7 +431,7 @@ def _report_insight_coverage(hub_root: Path, logical, product) -> None:
         click.echo(f"     ⚠ {item.insight.id}: missing {missing}")
 
 
-def _retire_superseded_manifests(target: Path, product) -> None:
+def _retire_superseded_manifests(target: Path, product, diagrams_target: Path) -> None:
     """Remove the per-domain Gold trees a declared product now supersedes (#744).
 
     ``emit_artifacts`` only removes files its *own* manifest owns, so a domain that used
@@ -426,6 +450,14 @@ def _retire_superseded_manifests(target: Path, product) -> None:
         if member == product.name:
             continue
         stale = target / _gold_manifest_name(member)
+        stale_diagrams = diagrams_target / _gold_diagrams_manifest_name(member)
+        # The ERDs are retired on their own manifest, in their own directory. Without
+        # this the docstring's own failure mode simply moved: the superseded domain's
+        # diagram would survive in the hub and the master merge would keep folding it in,
+        # showing two products where the hub now declares one.
+        if stale_diagrams.is_file():
+            emit_artifacts({}, diagrams_target, manifest_name=stale_diagrams.name)
+            stale_diagrams.unlink(missing_ok=True)
         if not stale.is_file():
             continue
         emit_artifacts({}, target, manifest_name=stale.name)
@@ -433,22 +465,25 @@ def _retire_superseded_manifests(target: Path, product) -> None:
         click.echo(f"   ↺ retired the superseded per-domain emit for {member!r}")
 
 
-def _regenerate_master_gold_erd(gold_output: Path, *, hub_name: str) -> None:
+def _regenerate_master_gold_erd(diagrams_target: Path, *, hub_name: str) -> None:
     """Recompute the hub-wide bound Gold ERD from whatever domains are on disk.
 
     ``generate_master_gold_erd`` is a pure disk-scan-and-merge over every
-    ``**/*-gold-erd.mmd`` already emitted under the shared Gold/PowerBI publish root, so
-    this accumulates correctly across separate single-domain ``emit-gold`` invocations.
-    Ported from the legacy ``run_projections`` orchestrator (DD-011), whose ``powerbi``
-    target is compile-plan-only and unreachable there; that call site is now commented
-    out.
+    ``*-gold-erd.mmd`` in the hub's ``model/contracts/diagrams``, so this accumulates
+    correctly across separate single-domain ``emit-gold`` invocations. Ported from the
+    legacy ``run_projections`` orchestrator (DD-011), whose ``powerbi`` target is
+    compile-plan-only and unreachable there; that call site is now commented out.
     """
-    from ..core.projections.medallion_gold_projector import generate_master_gold_erd
+    from ..core.projections.medallion_gold_projector import (
+        MASTER_GOLD_ERD_NAME,
+        generate_master_gold_erd,
+    )
 
-    master_mmd = generate_master_gold_erd(gold_output, hub_name=hub_name)
+    master_mmd = generate_master_gold_erd(diagrams_target, hub_name=hub_name)
     if master_mmd is None:
         return
-    write_text_lf(gold_output / "master-gold-erd.mmd", master_mmd)
+    diagrams_target.mkdir(parents=True, exist_ok=True)
+    write_text_lf(diagrams_target / MASTER_GOLD_ERD_NAME, master_mmd)
 
 
 @click.command(name="apply-gold-connection")

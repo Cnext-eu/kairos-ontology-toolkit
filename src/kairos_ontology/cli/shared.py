@@ -2524,6 +2524,7 @@ def _detect_hub_context() -> dict:
 _HUB_WORKFLOW_SOURCES = {
     ".github/workflows/managed-check.yml": "github-workflows/managed-check.yml",
     ".github/workflows/pr-validate.yml": "github-workflows/pr-validate.yml",
+    ".github/workflows/full-validate.yml": "github-workflows/full-validate.yml",
     ".github/workflows/release-projections.yml": "github-workflows/release-projections.yml",
     ".github/workflows/assign-copilot.yml": "github-workflows/assign-copilot.yml",
     ".github/workflows/copilot-setup-steps.yml": "github-workflows/copilot-setup-steps.yml",
@@ -2561,6 +2562,13 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "dataplatform-pr-validate/2.template",
         # Pre-DD-215 hub generation, before `validate-dbt-contracts` became a CI gate.
         "hub-pr-validate/1.template",
+        # Pre-ERD-relocation hub generation, before the drift gate covered
+        # `ontology-hub/model/contracts/diagrams` and while it still diffed
+        # `ontology-hub-publish/powerbi`.
+        "hub-pr-validate/2.template",
+        # Single-job hub generation, before validation and compile were split into two
+        # parallel jobs and the redundant `compile --all --check` step was removed.
+        "hub-pr-validate/3.template",
     ),
 }
 

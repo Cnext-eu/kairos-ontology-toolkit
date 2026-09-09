@@ -254,7 +254,7 @@ def test_emit_reads_contracted_dependencies_only_from_compile_plan(tmp_path):
     shutil.rmtree(hub / "integration" / "transforms")
 
     target = tmp_path / "publish" / "medallion" / "dbt"
-    _emit_compile_artifacts(result, target)
+    _emit_compile_artifacts(result, target, hub)
 
     assert (target / "models" / "customer_stage.sql").is_file()
     assert (target / "models" / "schema.yml").is_file()
@@ -570,10 +570,8 @@ def test_master_silver_erd_accumulates_across_sequential_emits(tmp_path, monkeyp
     _add_billing_domain_on_crm_countries(hub)
     monkeypatch.chdir(hub)
     runner = CliRunner()
-    master_erd = (
-        hub.parent / "ontology-hub-publish" / "medallion" / "dbt" / "docs" / "diagrams"
-        / "master-erd.mmd"
-    )
+    # Tracked in the authored hub, not the ignored publish root.
+    master_erd = hub / "model" / "contracts" / "diagrams" / "master-erd.mmd"
 
     party_only = runner.invoke(cli, ["compile", "party", "--emit", "--confirm-emit"])
     assert party_only.exit_code == 0, party_only.output
@@ -613,7 +611,7 @@ def test_emit_writes_seed_dependencies_and_fails_closed_on_tampering(tmp_path):
     assert result.succeeded, [item.render() for item in result.diagnostics.items]
     target = tmp_path / "publish" / "medallion" / "dbt"
 
-    _emit_compile_artifacts(result, target)
+    _emit_compile_artifacts(result, target, hub)
 
     seed_file = target / "seeds" / "country_codes.csv"
     assert seed_file.read_text(encoding="utf-8") == "code,name\nBE,Belgium\n"
@@ -622,7 +620,7 @@ def test_emit_writes_seed_dependencies_and_fails_closed_on_tampering(tmp_path):
     assert _dangling_refs(target) == {}
 
     # Re-emitting round-trips the kind="seed" dependency state.
-    _emit_compile_artifacts(result, target)
+    _emit_compile_artifacts(result, target, hub)
     assert seed_file.read_text(encoding="utf-8") == "code,name\nBE,Belgium\n"
 
     # A tampered emitted seed fails closed on the next emit.
@@ -630,7 +628,7 @@ def test_emit_writes_seed_dependencies_and_fails_closed_on_tampering(tmp_path):
     from kairos_ontology.core.compiler.emit import ManifestError
 
     with pytest.raises(ManifestError):
-        _emit_compile_artifacts(result, target)
+        _emit_compile_artifacts(result, target, hub)
 
 
 def test_emit_writes_seed_column_docs_and_fails_closed_on_tampering(tmp_path):
@@ -646,7 +644,7 @@ def test_emit_writes_seed_column_docs_and_fails_closed_on_tampering(tmp_path):
     assert result.succeeded, [item.render() for item in result.diagnostics.items]
     target = tmp_path / "publish" / "medallion" / "dbt"
 
-    _emit_compile_artifacts(result, target)
+    _emit_compile_artifacts(result, target, hub)
 
     planned = {item.path: item for item in result.plan.dbt_dependencies}
     assert planned["seeds/country_codes.yml"].kind == "seed_properties"
@@ -658,14 +656,14 @@ def test_emit_writes_seed_column_docs_and_fails_closed_on_tampering(tmp_path):
     assert docs_file.read_text(encoding="utf-8") == docs_text
 
     # Re-emitting round-trips the kind="seed_properties" dependency state.
-    _emit_compile_artifacts(result, target)
+    _emit_compile_artifacts(result, target, hub)
     assert docs_file.read_text(encoding="utf-8") == docs_text
 
     docs_file.write_text("version: 2\nseeds: []\n", encoding="utf-8")
     from kairos_ontology.core.compiler.emit import ManifestError
 
     with pytest.raises(ManifestError):
-        _emit_compile_artifacts(result, target)
+        _emit_compile_artifacts(result, target, hub)
 
 
 def test_dependency_kind_registry_fails_closed_on_unknown_and_misplaced_kinds():
@@ -1070,3 +1068,131 @@ class TestCrossDomainGeneratedModelCollision:
 
         result = self._Result("party", {"models/gold/party/dim_party.sql": "select 1"})
         _check_cross_domain_model_collisions(result, target)
+
+
+class TestDiagramRouting:
+    """`compile --emit` writes ERDs into the hub, not the ignored publish root."""
+
+    class _Result:
+        def __init__(self, domain: str) -> None:
+            self.domain = domain
+
+    def test_silver_erd_is_lifted_out_of_the_dbt_artifact_set(self):
+        """The ERD must leave the dbt plan entirely.
+
+        Left in, it would be written to both places, and the publish-root copy -- which
+        nothing reads and Git ignores -- would drift from the reviewed one.
+        """
+        from kairos_ontology.cli.compile import _split_diagram_artifacts
+
+        artifacts = {
+            "docs/diagrams/party/party-erd.mmd": "erDiagram\n",
+            "models/silver/party/customer.sql": "select 1",
+            "analyses/party/party-ddl.sql": "create table",
+        }
+        lifted = _split_diagram_artifacts(artifacts)
+
+        assert lifted == {"party-erd.mmd": "erDiagram\n"}
+        assert "docs/diagrams/party/party-erd.mmd" not in artifacts
+        assert set(artifacts) == {
+            "models/silver/party/customer.sql",
+            "analyses/party/party-ddl.sql",
+        }
+
+    def test_emit_draws_the_declared_contract_erd(self, tmp_path):
+        """DD-216's diagram was reachable only through `project --target contract-erd`,
+        so a hub that only ever ran `compile --emit` never got one. Emit now renders it
+        from the authored contract, which needs no graph and no compile plan."""
+        from kairos_ontology.cli.compile import _diagram_artifacts
+        from .test_contract_erd_projector import CONTRACT
+
+        hub = tmp_path / "ontology-hub"
+        contracts = hub / "model" / "contracts"
+        contracts.mkdir(parents=True)
+        (contracts / "party.contract.yaml").write_text(CONTRACT, encoding="utf-8")
+
+        diagrams = _diagram_artifacts(self._Result("party"), hub)
+
+        assert set(diagrams) == {"party-contract-erd.mmd"}
+        assert "erDiagram" in diagrams["party-contract-erd.mmd"]
+        assert "CUSTOMER {" in diagrams["party-contract-erd.mmd"]
+
+    def test_an_ungoverned_domain_gets_no_contract_erd(self, tmp_path):
+        """Adopting a contract is opt-in (DD-213 s6), so a domain without one must not
+        start emitting an empty diagram for it."""
+        from kairos_ontology.cli.compile import _diagram_artifacts
+
+        hub = tmp_path / "ontology-hub"
+        (hub / "model" / "contracts").mkdir(parents=True)
+
+        assert _diagram_artifacts(self._Result("party"), hub) == {}
+
+    def test_diagrams_are_manifest_owned_so_a_retired_one_is_deleted(self, tmp_path):
+        """A renamed entity must not leave a stale picture of a model that is gone."""
+        from kairos_ontology.cli.compile import _emit_diagram_artifacts
+        from kairos_ontology.core.hub_utils import contract_diagrams_dir
+
+        hub = tmp_path / "ontology-hub"
+        result = self._Result("party")
+
+        _emit_diagram_artifacts(result, hub, {"party-erd.mmd": "erDiagram\n"})
+        diagrams = contract_diagrams_dir(hub)
+        assert (diagrams / "party-erd.mmd").is_file()
+
+        # A hand-written file this manifest does not own, and another domain's diagram:
+        # neither may be touched when party re-emits.
+        (diagrams / "master-erd.mmd").write_text("erDiagram\n", encoding="utf-8")
+        _emit_diagram_artifacts(result, hub, {"party-contract-erd.mmd": "erDiagram\n"})
+
+        assert not (diagrams / "party-erd.mmd").exists()
+        assert (diagrams / "party-contract-erd.mmd").is_file()
+        assert (diagrams / "master-erd.mmd").is_file()
+
+
+class TestDomainProgress:
+    """A multi-domain compile says which domain is in flight, not only which finished."""
+
+    def test_progress_goes_to_stderr_and_leaves_json_stdout_parseable(self, tmp_path, monkeypatch):
+        hub = _two_domain_hub(tmp_path)
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "--all", "--check", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        # The payload is still the whole of stdout.
+        payload = json.loads(result.stdout)
+        assert [entry["domain"] for entry in payload] == ["booking", "party"]
+        # And the progress lines exist, on stderr.
+        assert "[1/2] booking" in result.stderr
+        assert "[2/2] party" in result.stderr
+
+    def test_quiet_suppresses_progress(self, tmp_path, monkeypatch):
+        hub = _two_domain_hub(tmp_path)
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "--all", "--check", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        assert "[1/2]" not in result.output
+
+    def test_json_log_format_suppresses_the_human_line(self, tmp_path, monkeypatch):
+        """Under --log-format json, stderr is JSONL; a plain-text line would break it."""
+        hub = _two_domain_hub(tmp_path)
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(
+            cli, ["--log-format", "json", "compile", "--all", "--check"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "[1/2]" not in result.output
+
+    def test_a_single_domain_gets_no_counter(self, tmp_path, monkeypatch):
+        """With one domain the result line already lands immediately; "[1/1]" is noise."""
+        hub = _hub(tmp_path / "hub")
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+        assert result.exit_code == 0, result.output
+        assert "[1/1]" not in result.output

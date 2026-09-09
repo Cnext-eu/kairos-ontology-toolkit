@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import click
@@ -17,8 +19,9 @@ from ..core import ontology_loader
 from ..core.compiler import CompileMode, compile_domain
 from ..core.compiler.result import CompileDiagnostic
 from ..core.conformance_artifact import check_discovery_gate
+from ..core.observability import events
 from ..core.determinism import write_text_lf
-from ..core.hub_utils import find_hub_root, publish_root
+from ..core.hub_utils import contract_diagrams_dir, find_hub_root, publish_root
 from ..core.observability import current_operation_id
 
 #: dbt project sub-path under the publish root (``<publish_root>/medallion/dbt``).
@@ -104,11 +107,68 @@ def _payload(result) -> dict:
     }
 
 
+def _announce_domain_start(domain: str, index: int, total: int, *, quiet: bool) -> None:
+    """Say which domain is starting, before the work rather than after it.
+
+    Two mechanisms, deliberately. The structured event is for log consumers and carries
+    the index/total; it is INFO, so at the default WARNING level it is invisible unless
+    the caller asked for it (``-v``, or ``KAIROS_LOG_LEVEL``). The human line is printed
+    unconditionally, because the problem it solves is not verbosity -- a multi-domain
+    compile reported each domain only once it had finished, so a large hub looked hung
+    for minutes at a time with no indication of which domain was in flight.
+
+    Only for a genuinely multi-domain run: with one domain the existing per-domain result
+    line already lands immediately, and a "[1/1]" prefix would be noise.
+
+    On **stderr**, so ``--format json`` keeps stdout a single parseable document -- the
+    same split the multi-domain summary already uses. Suppressed under
+    ``--log-format json``, where a plain-text line would break a consumer parsing stderr
+    as JSONL.
+    """
+    events.emit(
+        events.COMPILE_DOMAIN_STARTED,
+        logging.INFO,
+        f"compile {domain} started",
+        domain=domain,
+        index=index,
+        total=total,
+    )
+    if quiet or total < 2 or _log_format_is_json():
+        return
+    click.echo(f"  [{index}/{total}] {domain}…", err=True)
+
+
+def _log_format_is_json() -> bool:
+    """True when the root group was given ``--log-format json``.
+
+    Read off the live Click context rather than threaded through every signature: the
+    option belongs to the root group, and only this one presentation decision needs it.
+    """
+    context = click.get_current_context(silent=True)
+    while context is not None:
+        params = getattr(context, "params", None) or {}
+        if params.get("log_format") is not None:
+            return str(params["log_format"]).lower() == "json"
+        context = context.parent
+    return False
+
+
 def _domain_manifest_name(domain: str) -> str:
     safe_domain = re.sub(r"[^A-Za-z0-9_.-]", "_", domain)
     if not safe_domain:
         safe_domain = "domain"
     return f".kairos-compile-manifest.{safe_domain}.json"
+
+
+def _diagrams_manifest_name(domain: str) -> str:
+    """Manifest name owning one domain's diagrams in ``model/contracts/diagrams``.
+
+    Distinct from :func:`_domain_manifest_name` because the two live in different
+    target directories and own different files; sharing a name would make each emit
+    look like it had lost the other's artifacts.
+    """
+    safe_domain = re.sub(r"[^A-Za-z0-9_.-]", "_", domain) or "domain"
+    return f".kairos-compile-manifest.diagrams-{safe_domain}.json"
 
 
 def _dependency_state_name(domain: str) -> str:
@@ -481,7 +541,56 @@ def _preflight_emit(
     )
 
 
-def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
+def _diagram_artifacts(result, hub: Path) -> dict[str, str]:
+    """Return the ERD artifacts this domain contributes to the hub diagrams directory.
+
+    Two sources, both keyed by bare file name because the destination is flat:
+
+    * the Silver ERD the compile plan already rendered, lifted out of the dbt artifact
+      set by :func:`_split_diagram_artifacts`; and
+    * the declared-contract ERD (DD-216), rendered here from
+      ``model/contracts/<domain>.contract.yaml``.
+
+    The contract ERD used to be reachable only through ``project --target contract-erd``,
+    a separate command over a separate (pre-CompilePlan) pipeline, so a hub that only
+    ever ran ``compile --emit`` never got one. It is a pure function of an authored
+    contract file -- no graph, no plan -- so producing it here costs nothing and means
+    one command draws every diagram. ``project --target contract-erd`` still works and
+    now writes to this same directory. An ungoverned domain has no contract and
+    contributes nothing, which keeps contract adoption opt-in (DD-213 §6).
+    """
+    from ..core.projections.contract_erd_projector import generate_contract_erd_artifacts
+
+    return generate_contract_erd_artifacts(hub / "model" / "contracts", result.domain)
+
+
+def _split_diagram_artifacts(domain_artifacts: dict[str, str]) -> dict[str, str]:
+    """Lift this domain's Silver ERD out of the dbt emit plan. See
+    :func:`~kairos_ontology.core.projections.shared.split_erd_artifacts`."""
+    from ..core.projections.shared import split_erd_artifacts
+
+    return split_erd_artifacts(domain_artifacts, "-erd.mmd")
+
+
+def _emit_diagram_artifacts(result, hub: Path, diagrams: dict[str, str]) -> Path | None:
+    """Write one domain's ERDs into ``model/contracts/diagrams``, transactionally.
+
+    Uses the same manifest-owned emit as the dbt project rather than a plain write, so
+    a renamed or retired entity's diagram is deleted instead of lingering as a stale
+    picture of a model that no longer exists -- and so files this manifest does not own
+    (the other domains' diagrams, the merged masters, the contract ERDs written by
+    ``project``) are preserved untouched.
+    """
+    from ..core.compiler.emit import emit_artifacts
+
+    if not diagrams:
+        return None
+    target = contract_diagrams_dir(hub).resolve(strict=False)
+    emit_artifacts(diagrams, target, manifest_name=_diagrams_manifest_name(result.domain))
+    return target
+
+
+def _emit_compile_artifacts(result, emit_dir: Path, hub: Path) -> Path:
     from ..core.compiler.emit import emit_artifacts
     from ..core.compiler.provenance import provenance_artifact
 
@@ -491,6 +600,8 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     domain_artifacts = {
         path: content for path, content in artifacts.items() if not _is_shared_artifact(path)
     }
+    diagrams = _split_diagram_artifacts(domain_artifacts)
+    diagrams.update(_diagram_artifacts(result, hub))
     # DD-218. Domain-owned, not shared: the shared manifest is rewritten by whichever
     # domain emits last, so provenance placed there would describe an arbitrary one.
     scope = getattr(result.plan, "scope", None) if result.plan is not None else None
@@ -533,6 +644,7 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
             target,
             manifest_name=_DEPENDENCY_MANIFEST_NAME,
         )
+    _emit_diagram_artifacts(result, hub, diagrams)
     return target
 
 
@@ -572,6 +684,15 @@ def _emit_compile_artifacts(result, emit_dir: Path) -> Path:
     show_default=True,
 )
 @click.option(
+    "--quiet",
+    "-q",
+    "quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress per-domain progress lines (they go to stderr, so --format json is "
+    "unaffected either way).",
+)
+@click.option(
     "--no-cache",
     "no_cache",
     is_flag=True,
@@ -587,6 +708,7 @@ def compile_cmd(
     emit_mode: bool,
     confirm_emit: bool,
     output_format: str,
+    quiet: bool,
     no_cache: bool,
 ) -> None:
     """Check, explain, or emit one or more v5 DOMAINS from the current hub.
@@ -652,8 +774,11 @@ def compile_cmd(
     # persisted if writes only opened later. --check/--explain get scope(False) and
     # remain write-free. Scoped, not assigned, so the flag cannot leak into unrelated
     # later calls sharing this process.
+    total = len(selected)
     with ontology_loader.cache_write_scope(not no_cache and mode is CompileMode.EMIT):
-        for one in selected:
+        for index, one in enumerate(selected, start=1):
+            _announce_domain_start(one, index, total, quiet=quiet)
+            started = perf_counter()
             succeeded, payload = _compile_one_domain(
                 hub,
                 one,
@@ -663,6 +788,16 @@ def compile_cmd(
                 emit_mode=emit_mode,
                 no_cache=no_cache,
                 output_format=output_format,
+            )
+            events.emit(
+                events.COMPILE_DOMAIN_COMPLETED,
+                logging.INFO,
+                f"compile {one} completed",
+                domain=one,
+                index=index,
+                total=total,
+                duration_ms=int((perf_counter() - started) * 1000),
+                succeeded=succeeded,
             )
             if payload is not None:
                 payloads.append(payload)
@@ -709,15 +844,23 @@ def _regenerate_master_silver_erd(hub: Path) -> None:
     from the legacy ``run_projections`` orchestrator (DD-011), whose dbt/silver targets
     are retired and unreachable; that call site is now commented out.
     """
-    from ..core.projections.medallion_silver_projector import generate_master_erd
+    from ..core.projections.medallion_silver_projector import (
+        MASTER_ERD_NAME,
+        generate_master_erd,
+    )
 
-    dbt_output = publish_root(hub) / _DBT_EMIT_SUBPATH
-    master_mmd = generate_master_erd(dbt_output, hub_name=hub.name)
+    diagrams_dir = contract_diagrams_dir(hub)
+    master_mmd = generate_master_erd(
+        diagrams_dir,
+        hub_name=hub.name,
+        # Cross-domain foreign keys come from the per-domain constraint documents,
+        # which are dbt's own inputs and stay in the publish root.
+        metadata_path=publish_root(hub) / _DBT_EMIT_SUBPATH / "metadata",
+    )
     if master_mmd is None:
         return
-    diagrams_dir = dbt_output / "docs" / "diagrams"
     diagrams_dir.mkdir(parents=True, exist_ok=True)
-    write_text_lf(diagrams_dir / "master-erd.mmd", master_mmd)
+    write_text_lf(diagrams_dir / MASTER_ERD_NAME, master_mmd)
 
 
 def _hub_domains(hub: Path) -> list[str]:
@@ -917,7 +1060,7 @@ def _compile_one_domain(
         # The emit location is fixed and not configurable: derived dbt artifacts
         # always land in the sibling publish root, never inside the hub.
         requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
-        emit_target = _emit_compile_artifacts(result, requested_target)
+        emit_target = _emit_compile_artifacts(result, requested_target, hub)
     payload = _payload(result) if output_format == "json" else None
     if payload is None:
         for diagnostic in result.diagnostics.ordered:

@@ -164,6 +164,24 @@ def publish_root(hub: Path) -> Path:
     return hub.parent / _PUBLISH_DIRNAME
 
 
+def contract_diagrams_dir(hub: Path) -> Path:
+    """Return the tracked ERD location for *hub*: ``model/contracts/diagrams``.
+
+    Every ERD family (the Silver ERD and its master, the Gold ERDs and their
+    master, and the declared-contract ERD of DD-216) is written here rather than
+    under :func:`publish_root`.  The publish root is now ignored wholesale by the
+    scaffolded ``.gitignore``, and an ERD is the one emitted artifact a human
+    actually reviews in a pull request -- it has to live in the tracked, authored
+    hub tree to be reviewable at all.
+
+    ``model/contracts/`` is otherwise authored ground, so the diagrams go in a
+    subdirectory: the compiler owns everything below ``diagrams/`` and nothing
+    beside the ``*.contract.yaml`` files it is derived from.  Callers must pass
+    the *hub root* (as returned by :func:`find_hub_root`).
+    """
+    return hub / "model" / "contracts" / "diagrams"
+
+
 def _is_managed_root(directory: Path) -> bool:
     """Return True when *directory* is a toolkit-managed hub/dataplatform root.
 

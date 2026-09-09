@@ -17,6 +17,7 @@ never affect compiler/projection artifacts or command exit codes.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Final
@@ -35,12 +36,46 @@ _HANDLER_MARK: Final[str] = "_kairos_observability"
 _VALID_FORMATS: Final[frozenset[str]] = frozenset({"text", "json"})
 
 
+#: Environment override for the default level, so a long-running command can be made
+#: talkative without typing ``-v`` every time. An explicit ``--verbose``/``--debug``
+#: still wins, and an unparseable value is ignored rather than failing a command over
+#: its logging configuration.
+#:
+#: Deliberately an environment variable and not a ``kairos.yaml`` key: that file's raw
+#: bytes are a compile provenance input, hashed into ``provenance_hash``, and the
+#: provenance sidecar is a tracked, drift-gated artifact -- so adding a key there would
+#: rewrite the hash for every domain in the hub while changing no model bytes.
+ENV_LOG_LEVEL: Final[str] = "KAIROS_LOG_LEVEL"
+
+#: Accepted spellings, lowercased. ``warn`` is included because people type it.
+_LEVEL_NAMES: Final[dict[str, int]] = {
+    "critical": logging.CRITICAL,
+    "error": logging.ERROR,
+    "warning": logging.WARNING,
+    "warn": logging.WARNING,
+    "info": logging.INFO,
+    "debug": logging.DEBUG,
+}
+
+
+def _configured_default_level() -> int:
+    """Return the level ``KAIROS_LOG_LEVEL`` asks for, or ``WARNING``."""
+    requested = os.environ.get(ENV_LOG_LEVEL, "").strip().lower()
+    if not requested:
+        return logging.WARNING
+    if requested in _LEVEL_NAMES:
+        return _LEVEL_NAMES[requested]
+    if requested.isdigit():
+        return int(requested)
+    return logging.WARNING
+
+
 def _resolve_level(verbose: bool, debug: bool) -> int:
     if debug:
         return logging.DEBUG
     if verbose:
         return logging.INFO
-    return logging.WARNING
+    return _configured_default_level()
 
 
 def _make_formatter(log_format: str) -> logging.Formatter:

@@ -424,6 +424,19 @@ def init(
             shutil.copy2(pr_wf_src, pr_wf_dst)
             print("  ✓ Installed .github/workflows/pr-validate.yml")
 
+    # 4b-i-c. Copy full-validation workflow (the unhurried counterpart to
+    # pr-validate.yml: same gates, run serially on main and nightly, plus the
+    # write-free hub-wide `compile --all --check`)
+    full_wf_src = _SCAFFOLD_DIR / "github-workflows" / "full-validate.yml"
+    full_wf_dst = cwd / ".github" / "workflows" / "full-validate.yml"
+    if full_wf_src.is_file():
+        if full_wf_dst.exists() and not force:
+            print("  ⏭  .github/workflows/full-validate.yml already exists (use --force)")
+        else:
+            full_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(full_wf_src, full_wf_dst)
+            print("  ✓ Installed .github/workflows/full-validate.yml")
+
     # 4b-ii. Copy release-projections workflow
     release_wf_src = _SCAFFOLD_DIR / "github-workflows" / "release-projections.yml"
     release_wf_dst = cwd / ".github" / "workflows" / "release-projections.yml"
@@ -924,7 +937,7 @@ def migrate(check, dry_run, hub_path):
         if check:
             print(
                 "  DELETE  application-models/  "
-                "(ERDs now in ontology-hub-publish/medallion/dbt/docs/diagrams/)"
+                "(ERDs now in ontology-hub/model/contracts/diagrams/)"
             )
         else:
             shutil.rmtree(app_models)
@@ -1284,6 +1297,14 @@ def new_repo(
         pr_wf_dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(pr_wf_src, pr_wf_dst)
         print("  ✓ .github/workflows/pr-validate.yml")
+
+    # Full-validation workflow (serial, on main + nightly)
+    full_wf_src = _SCAFFOLD_DIR / "github-workflows" / "full-validate.yml"
+    full_wf_dst = repo_dir / ".github" / "workflows" / "full-validate.yml"
+    if full_wf_src.is_file():
+        full_wf_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(full_wf_src, full_wf_dst)
+        print("  ✓ .github/workflows/full-validate.yml")
 
     # Release-projections workflow
     release_wf_src = _SCAFFOLD_DIR / "github-workflows" / "release-projections.yml"

@@ -391,6 +391,41 @@ def _validate_stage(stage: Path, plan: EmissionPlan, manifest_name: str) -> None
             raise EmissionError(f"staged artifact hash mismatch: {artifact.path!r}")
 
 
+def _stage_from_target(target: Path, stage: Path) -> None:
+    """Populate *stage* with *target*'s current contents, hardlinking when possible.
+
+    Staging used to copy every byte of the existing target. That is the dominant cost of
+    an emit: ``_emit_compile_artifacts`` opens three or four transactions per domain, so a
+    14-domain hub copied -- and then deleted -- a growing dbt project some forty times in
+    one run, for a plan that rewrites a handful of files.
+
+    Hardlinking is safe here because this module never writes through a path it did not
+    create. Every artifact is written with ``open("xb")`` (:func:`_write_stage`), an
+    exclusive create that fails rather than truncating an existing file; a manifest-owned
+    file being replaced is ``unlink``-ed first (:func:`_remove_owned_file`), which drops
+    one name and leaves the target's copy intact; the manifest itself is unlinked before
+    rewrite; and :func:`_commit_stage` only renames directories. So a shared inode is
+    only ever read, and removing the backup afterwards just drops the second name.
+
+    The fallback is required, not defensive. ``os.link`` needs both paths on one
+    filesystem -- guaranteed here, since the stage is created in ``target.parent`` -- but
+    it also needs a filesystem that has hardlinks at all. On Windows that means NTFS (no
+    elevated privilege is involved; that is symlinks), so a hub on a mapped network share
+    or a FAT-formatted volume fails, and a partially linked stage must be discarded
+    before retrying with real copies. Discarding it is safe for the same unlink-only
+    reason.
+    """
+    try:
+        shutil.copytree(target, stage, dirs_exist_ok=True, symlinks=True, copy_function=os.link)
+        return
+    except (OSError, shutil.Error, NotImplementedError) as exc:
+        logger.debug("hardlinked staging unavailable for %s (%s); copying instead", target, exc)
+
+    _best_effort_remove(stage)
+    stage.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(target, stage, dirs_exist_ok=True, symlinks=True)
+
+
 def _best_effort_remove(path: Path | None) -> None:
     if path is None:
         return
@@ -644,7 +679,7 @@ def emit_artifacts(
                 tempfile.mkdtemp(prefix=f".{target.name}.kairos-stage-", dir=target.parent)
             )
             if target.exists():
-                shutil.copytree(target, stage, dirs_exist_ok=True, symlinks=True)
+                _stage_from_target(target, stage)
             _write_stage(
                 stage,
                 plan,

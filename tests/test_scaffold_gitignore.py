@@ -52,28 +52,58 @@ def test_scaffold_gitignore_ignores_output_but_preserves_gitkeep(tmp_path: Path)
         assert preserved.returncode == 1
 
 
-def test_scaffold_gitignore_tracks_dbt_and_powerbi_release_output(tmp_path: Path) -> None:
-    """DD-206: the dbt package and Power BI PBIP output are the release-relevant
-    lanes a hub release publishes from an exact commit, so they're tracked despite
-    the blanket ``ontology-hub-publish/**`` ignore -- unlike other projection
-    targets (neo4j, azure-search, reports/details, etc.), which stay ignored."""
+def test_scaffold_gitignore_tracks_only_the_dbt_package(tmp_path: Path) -> None:
+    """The dbt package is the one tracked lane; everything else is ignored.
+
+    It has to be: a dataplatform consumes it as a dbt package pinned by ``git`` +
+    ``revision`` + ``subdirectory``, which ``dbt deps`` resolves out of the committed
+    tree at that tag -- untracked, the path does not exist at the revision. The Power BI
+    PBIP output used to be tracked too, but ``package-powerbi-release`` renders and zips
+    it in CI from the compile plan, so nothing needs it committed.
+    """
     template = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "gitignore.template"
     (tmp_path / ".gitignore").write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "init"], check=True, capture_output=True)
 
     root = tmp_path / "ontology-hub-publish"
     dbt_file = root / "medallion" / "dbt" / "dbt_project.yml"
-    powerbi_file = root / "powerbi" / "party" / "party-gold-erd.mmd"
-    dbt_file.parent.mkdir(parents=True)
-    dbt_file.write_text("name: generated\n", encoding="utf-8")
-    powerbi_file.parent.mkdir(parents=True)
-    powerbi_file.write_text("erDiagram\n", encoding="utf-8")
+    ignored_lanes = {
+        "powerbi": root / "powerbi" / "party" / "definition.pbism",
+        "neo4j": root / "neo4j" / "graph.cypher",
+        "reports": root / "reports" / "details" / "party.md",
+    }
+    for path in (dbt_file, *ignored_lanes.values()):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("generated\n", encoding="utf-8")
 
-    dbt_ignored = _is_ignored(tmp_path, dbt_file.relative_to(tmp_path).as_posix())
-    powerbi_ignored = _is_ignored(tmp_path, powerbi_file.relative_to(tmp_path).as_posix())
+    tracked = _is_ignored(tmp_path, dbt_file.relative_to(tmp_path).as_posix())
+    assert tracked.returncode == 1, f"the dbt package must stay tracked: {tracked.stdout}"
 
-    assert dbt_ignored.returncode == 1, dbt_ignored.stdout
-    assert powerbi_ignored.returncode == 1, powerbi_ignored.stdout
+    for lane, path in ignored_lanes.items():
+        ignored = _check_ignore(tmp_path, path.relative_to(tmp_path).as_posix())
+        assert ignored.returncode == 0, f"{lane} is tracked: {ignored.stderr}"
+
+
+def test_erds_live_in_the_tracked_hub_tree(tmp_path: Path) -> None:
+    """The ERDs moved into ``ontology-hub/model/contracts/diagrams`` precisely so they
+    stay reviewable once the publish root is ignored in full -- nothing in the template
+    may ignore them."""
+    template = REPO_ROOT / "src" / "kairos_ontology" / "scaffold" / "gitignore.template"
+    (tmp_path / ".gitignore").write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "init"], check=True, capture_output=True)
+
+    diagrams = tmp_path / "ontology-hub" / "model" / "contracts" / "diagrams"
+    diagrams.mkdir(parents=True)
+    for name in (
+        "party-erd.mmd",
+        "party-gold-erd.mmd",
+        "party-contract-erd.mmd",
+        "master-erd.mmd",
+        "master-gold-erd.mmd",
+    ):
+        (diagrams / name).write_text("erDiagram\n", encoding="utf-8")
+        tracked = _is_ignored(tmp_path, (diagrams / name).relative_to(tmp_path).as_posix())
+        assert tracked.returncode == 1, f"{name} is ignored: {tracked.stdout}"
 
 
 def test_scaffold_gitignore_ignores_import_directory(tmp_path: Path) -> None:

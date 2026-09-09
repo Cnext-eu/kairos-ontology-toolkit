@@ -16,6 +16,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+- **Hub PR validation is roughly halved, without weakening a gate.** A real 16-ontology hub's
+  PR check took 9m10s. Three things were wrong with it. `compile --all --check` (110s) did no
+  work the emit step did not already do — `compile_domain` forces rendering in every mode, and
+  all four gates plus the success verdict are mode-blind, so `--check` is `--emit` minus the
+  disk write; it is now dropped from the PR path and runs in the new serial `full-validate.yml`
+  on main and nightly, which is also the only place a cache can be written that a later PR can
+  restore. The two remaining halves run as **parallel jobs**: they share no path and neither
+  reads what the other writes, and setup is ~9s, so paying it twice is cheap against the 161s
+  saved by overlapping. The `validate` job id is kept, because it is the status-check context a
+  hub's branch protection may already require. Plus `concurrency` with `cancel-in-progress`, and
+  `enable-cache` on every `setup-uv`.
+- **`validate` is 2.4x faster on a real hub (57.2s → 24.1s), with byte-identical output.** The
+  per-domain SHACL passes are independent and read-only but CPU-bound Python, so threads would
+  serialise on the GIL and only separate processes overlap them; they now run across processes,
+  in input order, so counts, the error list and the printed report are unchanged — verified by
+  diffing the full validation report between a serial and a parallel run. `KAIROS_VALIDATE_JOBS=1`
+  forces serial for a low-memory container, and an unavailable pool degrades rather than fails.
+  The reference-corpus walk (~17s) was performed twice per run, once for the DD-163 integrity
+  audit and once for the DD-169 gate, with neither reusing the other's work; it is now resolved
+  once. The GDPR scan re-parsed every source vocabulary once per domain — sixteen full parses of
+  one corpus to answer sixteen questions differing by a one-line filter — and now reads it once.
+- **`compile` no longer re-parses the whole hub once per domain.** The DD-163 gate ran per
+  domain and each run parsed *every* authored `.ttl`, so a 15-domain hub performed 255 Turtle
+  parses per invocation over one identical corpus. The scan is shared, keyed on a content hash
+  of the files it reads — content rather than mtime, because re-auditing a hub after rewriting
+  an ontology in the same process is a real pattern and a stale answer there is a wrong verdict,
+  not a slow one.
+- **Emit stages by hardlinking instead of copying.** With three or four transactions per domain,
+  a 14-domain hub copied and then deleted a growing dbt project some forty times to write a
+  handful of files. Safe because the emitter never writes through a path it did not create:
+  artifacts use `open("xb")`, an exclusive create; a replaced owned file is unlinked first; the
+  manifest is unlinked before rewrite; and commit only renames directories. A copy fallback is
+  required rather than defensive — hardlinks need a filesystem that has them, which excludes a
+  hub on a mapped network share or a FAT volume. Verified on a real 15-domain hub: two separate
+  emit processes produce 363 byte-identical files.
+
+### Added
+- **`compile --all` reports per-domain progress.** It used to report a domain only once that
+  domain had finished, so a 15-domain hub looked hung for minutes with no indication of which
+  domain was in flight. Structured `kairos.compile.domain.started`/`.completed` events carry
+  index, total and duration_ms at INFO for log consumers; the human line prints unconditionally,
+  because the absence of any signal during a long command is a defect rather than a level to opt
+  into. It goes to stderr, so `--format json` keeps stdout a single parseable document, and is
+  suppressed by the new `--quiet`, under `--log-format json`, and for a single-domain run.
+- **`KAIROS_LOG_LEVEL` sets the default log level**, so a long-running command can be made
+  talkative without typing `-v` every time. Explicit `--verbose`/`--debug` still win, and an
+  unparseable value is ignored rather than failing a command over its own logging configuration.
+  Deliberately an environment variable and not a `kairos.yaml` key: that file's raw bytes are a
+  compile provenance input hashed into `provenance_hash`, and the provenance sidecar is a
+  tracked, drift-gated artifact, so a key there would rewrite the hash for every domain in the
+  hub while changing no model bytes.
+
+### Fixed
+- **Changing a workflow template no longer silently strands every existing repo.** The contract
+  is that the outgoing bytes are recorded as a superseded generation; skip it and each
+  already-scaffolded repo classifies as "customized" and stops receiving template fixes. The
+  ERD-relocation change edited `pr-validate.yml` and recorded nothing, and the suite stayed
+  green because the only check compared hub generations against the *dataplatform* template,
+  which they can never equal. Both missing generations are now recorded, that check covers both
+  repo kinds, and a digest tripwire fails with the remediation steps the next time a template
+  moves without its predecessor being kept.
+- **The ontology parse cache is written atomically.** A bare write left a window in which the
+  file existed but was short, and N-Triples is line-oriented, so a reader arriving mid-write got
+  a *valid* parse of an incomplete graph — a silent wrong answer rather than a cache miss,
+  reachable by an interrupted emit.
+
+### Changed
+- **Every ERD is written into the hub at `model/contracts/diagrams/`, beside the contract it
+  describes, and the Power BI publish lane is no longer tracked.** The Silver ERD and its
+  merged master used to land in `ontology-hub-publish/medallion/dbt/docs/diagrams/`, and the
+  Gold ERDs under the Power BI publish root. A diagram is the one generated artifact a human
+  actually reviews, so it belongs where a pull request shows it — in the authored tree,
+  next to `<domain>.contract.yaml`. `compile --emit` and `emit-gold` write them there, and
+  `pr-validate.yml` regenerates and diffs them like any other tracked output, so a committed
+  diagram cannot drift from the inputs it was drawn from.
+
+  `ontology-hub-publish/medallion/dbt` stays tracked, unchanged: a dataplatform consumes it
+  as a dbt package pinned by `git` + `revision` + `subdirectory`, which `dbt deps` resolves
+  out of the committed tree at that tag. `ontology-hub-publish/powerbi` is now ignored —
+  `package-powerbi-release` renders and zips it in CI from the compile plan, so nothing
+  needed it committed. Every other target was already ignored.
+
+  Two behaviour changes to know about when upgrading a hub: the old diagram locations are
+  removed by the emit manifest that used to own them, and `update` will report the
+  `.gitignore` rule change rather than applying it (Git-hygiene files stay yours to merge).
+
+### Added
+- **`compile --emit` now draws the declared-contract ERD (DD-216).** It was only ever
+  reachable through `project --target contract-erd`, a separate command over the older
+  pre-CompilePlan pipeline, so a hub that only ran `compile --emit` never got one. It is a
+  pure function of the authored contract — no graph, no compile plan — so emit renders it
+  directly. `project --target contract-erd` still works and now writes to the same place.
+  A domain with no contract still gets no diagram: adopting one stays opt-in (DD-213 §6).
+- **Generated `.mmd` files carry the toolkit version that drew them**
+  (`%% Generated by kairos-ontology 5.17.0 -- do not edit`). Deliberately no timestamp: the
+  diagrams are tracked and drift-gated, and a wall-clock stamp is a fresh value on every run
+  in a new process, so it would fail that gate unconditionally and make every emit a
+  timestamp-only diff. The commit history records *when*; only *which version* could not be
+  recovered afterwards.
+
 ## [5.17.0] — 2026-09-08
 
 > The next release that includes this section must be a **minor** bump (5.16.0), not a
