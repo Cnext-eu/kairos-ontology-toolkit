@@ -297,6 +297,10 @@ class CompileResult:
             # blocked and filtered from the IR exactly like a relationship-endpoint failure.
             "relationship.self-reference-unsupported",
             "relationship.external-reference-same-domain",
+            # #775: same shape -- the binding whose externalReference names a column the
+            # parent contract does not declare is blocked and filtered from the IR, and
+            # its peers in the domain remain emittable.
+            "relationship.external-reference-key-column-unknown",
         }
         if any(entity.blocked for entity in self.ir.entities):
             return all(

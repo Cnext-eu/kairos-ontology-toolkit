@@ -8,6 +8,7 @@ import json
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -330,6 +331,48 @@ def _add_conformance(hub: Path, *, compatible: bool = True) -> None:
     )
 
 
+def _add_billing_contract(hub: Path, *, column_name: str = "account_id") -> None:
+    """Declare the parent domain's Silver interface (DD-213).
+
+    `column_name` pins what the parent actually materializes for `billing:account_id`, so a
+    test can make the child's `externalReference.key` name a column that does not exist --
+    exactly the #775 shape, where the parent renamed a column on the way out and the child
+    kept quoting the source-side name.
+    """
+    contracts = hub / "model" / "contracts"
+    contracts.mkdir(parents=True, exist_ok=True)
+    (contracts / "billing.contract.yaml").write_text(
+        textwrap.dedent(f"""
+            apiVersion: kairos.eu/v5
+            kind: SilverContract
+            metadata:
+              domain: billing
+            entities:
+              - class: billing:Account
+                modelName: account
+                stability: stable
+                closed: true
+                grain:
+                  columns: [{column_name}]
+                identity:
+                  strategy: source-natural
+                  businessKey: [{column_name}]
+                properties:
+                  - property: billing:account_id
+                    type: string(64)
+                    requirement: required
+                    nullable: false
+                    columnName: {column_name}
+                  - property: billing:account_region
+                    type: string(64)
+                    requirement: required
+                    nullable: false
+            """).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _codes(result) -> set[str]:
     return {item.code for item in result.diagnostics.items}
 
@@ -395,6 +438,63 @@ def test_v5_external_reference_composite_key_uses_ordered_tuple(tmp_path):
     sql = result.artifact_dict()["models/silver/party/customer.sql"].lower()
     assert "[src].[billing_account_id] = [account].[account_id]" in sql
     assert "[src].[country_code] = [account].[account_region]" in sql
+
+
+def test_external_reference_key_column_is_checked_against_the_parent_contract(tmp_path):
+    """#775: the key names the parent's *output* column, and nothing enforced it.
+
+    `compile --check` passed, `--emit` rendered the join, and the failure surfaced only
+    when a downstream dataplatform ran `dbt run` against a real warehouse. The parent
+    contract that answers the question was already a provenance input of this very compile.
+    """
+    hub = _copy_hub(tmp_path)
+    _add_external_reference_fixture(hub)
+    # The parent materializes `billing:account_id` as `account_ref`, not `account_id`.
+    _add_billing_contract(hub, column_name="account_ref")
+
+    result = compile_domain(hub, "party", CompileMode.CHECK)
+
+    assert not result.succeeded
+    assert "relationship.external-reference-key-column-unknown" in _codes(result)
+    failure = next(
+        item
+        for item in result.diagnostics.items
+        if item.code == "relationship.external-reference-key-column-unknown"
+    )
+    # The message must name what is actually available, or the author cannot act on it.
+    assert "account_ref" in failure.message
+    assert "account_region" in failure.message
+    assert failure.location.pointer == "/relationships/0/externalReference/key/0/column"
+    # Entity-local: the offending binding is blocked, its peers still emit.
+    assert "models/silver/party/country.sql" in result.artifact_dict()
+
+
+def test_external_reference_key_column_matching_the_parent_contract_compiles(tmp_path):
+    hub = _copy_hub(tmp_path)
+    _add_external_reference_fixture(hub)
+    _add_billing_contract(hub)
+
+    result = compile_domain(hub, "party", CompileMode.EXPLAIN)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    sql = result.artifact_dict()["models/silver/party/customer.sql"]
+    assert "left join {{ ref('account') }}" in sql
+    assert "[src].[billing_account_id] = [account].[account_id]" in sql
+
+
+def test_external_reference_is_unchecked_when_the_parent_is_ungoverned(tmp_path):
+    """DD-213 §6: a domain without a contract compiles exactly as it did before.
+
+    The regression guard that matters most -- this check may only ever reject a reference
+    that a contract positively contradicts, never one it simply cannot speak to.
+    """
+    hub = _copy_hub(tmp_path)
+    _add_external_reference_fixture(hub)
+
+    result = compile_domain(hub, "party", CompileMode.CHECK)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    assert "relationship.external-reference-key-column-unknown" not in _codes(result)
 
 
 @pytest.mark.parametrize(
