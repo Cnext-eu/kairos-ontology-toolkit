@@ -19,8 +19,12 @@ from kairos_ontology.core.projections.dbt import (
     GoldContractError,
     GoldPhysicalPlan,
 )
+from kairos_ontology.core.projections.dbt.gold_specs import GoldCalendarSpec
 from kairos_ontology.core.projections.dbt import gold_materialize
-from kairos_ontology.core.projections.dbt.gold_render import render_gold_dbt_artifacts
+from kairos_ontology.core.projections.dbt.gold_render import (
+    _dbt_calendar_sql,
+    render_gold_dbt_artifacts,
+)
 from kairos_ontology.core.projections.dbt.policy_normalize import (
     PolicyNormalizationError,
 )
@@ -162,7 +166,12 @@ def _databricks_gold(tmp_path: Path) -> Path:
     return _write_gold(tmp_path, "client", _gold_text("client") + _DATABRICKS_DEVIATIONS)
 
 
-def _gold_dbt(domain: str, *, gold_path: Path | None = None) -> dict[str, str]:
+def _gold_dbt(
+    domain: str,
+    *,
+    gold_path: Path | None = None,
+    target_platform: str = "fabric-warehouse",
+) -> dict[str, str]:
     """Render the Gold dbt models for *domain* at their real, unprefixed paths.
 
     These used to be asserted through `generate_gold_artifacts`, which re-emitted them
@@ -189,7 +198,7 @@ def _gold_dbt(domain: str, *, gold_path: Path | None = None) -> dict[str, str]:
         ),
         silver_ext_path=EXTENSIONS_DIR / f"{domain}-silver-ext.ttl",
         peer_ext_paths=peers,
-        target_platform="fabric-warehouse",
+        target_platform=target_platform,
     )
     return render_gold_dbt_artifacts(shaped.gold_product, plan.gold)
 
@@ -528,6 +537,60 @@ def test_calendar_is_only_generated_when_explicit_and_approved(
     assert calendar["time_zone"] == "Europe/Brussels"
     assert calendar["period_closure"] == "finance-approved-period-status"
     assert calendar["roles"][0]["binding"] == "fact_invoice.invoice_date"
+
+
+def test_calendar_model_is_rendered_for_the_declared_adapter(tmp_path: Path):
+    """#776: dim_date was emitted as one adapter-neutral file that built on neither.
+
+    Four constructs, none portable: `dbt_utils.date_spine` puts `ORDER BY` in a CTE and
+    dbt-fabric routes `materialized="table"` through a view; `EXTRACT` is not T-SQL;
+    `CAST(<date> AS VARCHAR)` is style 0 on T-SQL and needs a length on Databricks, so
+    `date_key` was wrong on both; and Fabric has no `boolean`.
+    """
+    # Fabric end-to-end through the real projection; Databricks through the renderer
+    # directly, because the invoice Gold profile needs approved capability deviations on
+    # that adapter and this is a pure function of (calendar, adapter).
+    fabric = _gold_dbt("invoice")["models/gold/shared/dim_date.sql"]
+    calendar = GoldCalendarSpec(
+        resource_uri="https://example.test/gold#calendar",
+        start_date="2020-01-01",
+        end_date="2035-12-31",
+        fiscal_year_start_month=1,
+        week_pattern="iso-8601-monday",
+        locale="en-BE",
+        holiday_source="none-approved",
+        time_zone="Europe/Brussels",
+        period_closure="finance-approved-period-status",
+        roles=(),
+        approved=True,
+    )
+    assert _dbt_calendar_sql(calendar, "fabric-warehouse") == fabric
+    databricks = _dbt_calendar_sql(calendar, "databricks")
+
+    # A trailing ORDER BY anywhere is fatal inside dbt-fabric's intermediate view.
+    assert "dbt_utils.date_spine" not in fabric
+    assert "order by" not in fabric.lower()
+    assert "generate_series(0, 5843)" in fabric  # 2020-01-01..2035-12-31, inclusive
+    assert "extract(" not in fabric
+    assert "datepart(year, date_day)" in fabric
+    assert "convert(varchar(8), date_day, 112)" in fabric
+    # `none-approved` takes the literal branch; bare `false` is not a Fabric literal.
+    assert "boolean" not in fabric
+    assert "cast(0 as bit) as is_holiday" in fabric
+    # The other branch is the one #776 reported: an unresolved holiday source is NULL.
+    sourced = dataclasses.replace(calendar, holiday_source="external-approved")
+    assert "cast(null as bit) as is_holiday" in _dbt_calendar_sql(sourced, "fabric-warehouse")
+    assert "cast(null as boolean) as is_holiday" in _dbt_calendar_sql(sourced, "databricks")
+
+    # Databricks keeps the portable spine and its own native spellings.
+    assert "dbt_utils.date_spine" in databricks
+    assert "extract(year from date_day)" in databricks
+    assert "date_format(date_day, 'yyyyMMdd')" in databricks
+    assert "bit" not in databricks
+
+    # The dbt model and the DDL for the same table must agree on is_holiday (they did not).
+    ddl = _generate("invoice")["invoice/invoice-gold-ddl.sql"]
+    assert "is_holiday BIT" in ddl
 
 
 def test_draft_calendar_blocks_time_intelligence(tmp_path: Path):
