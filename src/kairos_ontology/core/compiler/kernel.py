@@ -74,7 +74,7 @@ from .contract_emission import (
     mark_padded_columns,
     padded_column_names,
 )
-from .contracts import SilverContract, load_silver_contract
+from .contracts import SilverContract, entity_output_columns, load_silver_contract
 from .bindings import (
     EntityBinding,
     ExprCase,
@@ -2886,11 +2886,13 @@ def _relationship_diagnostics(
     selected: dict[str, EntityBinding],
     context: ResolutionContext,
     hub_root: str,
+    parent_columns: dict[str, frozenset[str]] | None = None,
 ) -> tuple[CompileDiagnostic, ...]:
     diagnostics: list[CompileDiagnostic] = []
     relation = _resolved_binding_relation(binding, context)
     if relation is None:
         return ()
+    parent_columns = parent_columns or {}
     local_columns = {column.name: column for column in relation.columns} if relation else {}
     targets = {item.target_class: item for item in selected.values()}
     for index, relationship in enumerate(binding.relationships):
@@ -3055,6 +3057,37 @@ def _relationship_diagnostics(
                     )
                 )
                 continue
+            declared_columns = (
+                parent_columns.get(target_class.uri) if target_class is not None else None
+            )
+            if declared_columns is not None:
+                unknown = [
+                    (position, item.column)
+                    for position, item in enumerate(external.key)
+                    if item.column not in declared_columns
+                ]
+                if unknown:
+                    available = ", ".join(sorted(declared_columns)) or "(none declared)"
+                    position, column = unknown[0]
+                    diagnostics.append(
+                        CompileDiagnostic(
+                            code="relationship.external-reference-key-column-unknown",
+                            message=(
+                                f"externalReference key column {column!r} is not "
+                                f"materialized by {external.domain}.{external.name}: the "
+                                "key names the *parent's* output column, not this "
+                                f"binding's source column. Declared there: {available}"
+                            ),
+                            location=SourceLocation(
+                                path=binding.source_path,
+                                pointer=(
+                                    f"{pointer}/externalReference/key/{position}/column"
+                                ),
+                            ),
+                            rule_id="DD-133-safety",
+                        )
+                    )
+                    continue
         if relationship.temporal is not None:
             if (
                 relationship.mode == "as-of"
@@ -3796,6 +3829,42 @@ def _load_domain_contract(
     return None, []
 
 
+def _foreign_contract_columns(
+    scope: BuildScope, domain: str, context: ResolutionContext
+) -> dict[str, frozenset[str]]:
+    """Map each foreign-contract class URI to the columns its Silver model materializes.
+
+    `discover_contract_paths` already pulls a foreign domain's contract into scope whenever
+    this domain points a relationship at a class it declares, and already hashes it into
+    provenance -- it was simply never parsed (#775). Reading it here adds no input, no I/O
+    outside the resolved scope, and no cross-domain state: the parent's *emitted* artifacts
+    stay out of scope (DD-133/140), only its *declared* interface (DD-213) is consulted.
+
+    Keyed by resolved class URI rather than by `externalReference.name`, so the lookup does
+    not depend on the parent's model-naming rule -- the child names a class in `target:`
+    and that is what both sides can agree on.
+
+    Non-fatal throughout, mirroring `_load_domain_contract`: a contract that will not load,
+    or a class that will not resolve, leaves that parent unchecked rather than stopping
+    this domain compiling. A missing entry means "no opinion", never "no such column".
+    """
+    columns: dict[str, frozenset[str]] = {}
+    for path_text in scope.contract_paths:
+        path = Path(path_text)
+        if path.stem == f"{domain}.contract":
+            continue
+        try:
+            contract = load_silver_contract(path.read_text(encoding="utf-8"), path=str(path))
+        except (CompileError, OSError, UnicodeDecodeError):
+            continue
+        for entity in contract.entities:
+            klass = context.klass(entity.target_class)
+            if klass is None:
+                continue
+            columns[klass.uri] = entity_output_columns(entity)
+    return columns
+
+
 def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
     """Build the canonical graph-free plan without rendering or writing artifacts."""
     scope, context = resolve_scope(Path(hub_root), domain)
@@ -3821,6 +3890,10 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
                 domain_contract, context, severity=DiagnosticSeverity.ERROR
             )
         )
+    # #775: the parents' declared interfaces, for `externalReference.key[].column`. Built
+    # after `apply_column_names` so the child's own contract-pinned names are already in
+    # context; the parents' names come from their own contracts, not from this one.
+    parent_columns = _foreign_contract_columns(scope, domain, context)
     specs: list[EntityBindingSpec] = []
     valid_bindings: list[EntityBinding] = []
     # The bindings exactly as authored, parallel to ``valid_bindings``. Gate A must judge
@@ -3949,7 +4022,7 @@ def build_compile_plan(hub_root: str | Path, domain: str) -> CompilePlan:
             specs.append(EntityBindingSpec(binding=binding, blocked=True))
             continue
         relationship_diagnostics = _relationship_diagnostics(
-            binding, selected_by_name, context, scope.hub_root
+            binding, selected_by_name, context, scope.hub_root, parent_columns
         )
         if relationship_diagnostics:
             diagnostics.extend(relationship_diagnostics)

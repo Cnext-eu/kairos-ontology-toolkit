@@ -290,6 +290,22 @@ def resolved_column_name(item: ContractProperty) -> str:
     return item.column_name or default_column_name(item.property)
 
 
+def entity_output_columns(entity: ContractEntity) -> frozenset[str]:
+    """Return every column this entity's Silver model materializes, per its contract.
+
+    The three declaration sites that produce a physical column: mapped properties (whose
+    name may be pinned or defaulted), technical columns, and relationships whose FK column
+    the contract pins. `_entity_diagnostics` builds the same union inline for
+    `contract.column-name-collision`, but needs `(name, label, pointer)` triples to name
+    the offender -- so it keeps its own construction and both share `resolved_column_name`.
+    """
+    return frozenset(
+        {resolved_column_name(item) for item in entity.properties}
+        | {item.name for item in entity.technical_columns}
+        | {item.column_name for item in entity.relationships if item.column_name}
+    )
+
+
 def _entity_diagnostics(
     entity: ContractEntity, resolver: _MarkResolver
 ) -> list[CompileDiagnostic]:
