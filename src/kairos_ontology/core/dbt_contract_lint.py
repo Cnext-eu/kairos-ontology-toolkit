@@ -39,6 +39,8 @@ from .dbt_contracts import (
     scan_dbt_contracts,
 )
 from .hub_utils import is_scaffold_placeholder_text
+from .projections.dbt.capabilities import physical_canonical_type
+from .projections.dbt.policy_specs import CanonicalTypeKind, CanonicalTypeSpec
 
 SCHEMA_VERSION = 1
 
@@ -195,6 +197,108 @@ def _sentinel_fields(kairos_meta: Any) -> tuple[str, ...]:
 #: the whole compiled text, comments included -- not a parse -- so two mentions of the
 #: word "with" in a comment fail a model with no CTEs at all.
 _FABRIC_WITH_SUBSTRING = re.compile(r"with\s", re.IGNORECASE)
+
+
+#: Type spellings that are *canonical vocabulary*, not SQL, on a given adapter -- valid in a
+#: binding's `externalReference.key[].type` and in a dbt contract's `data_type`, but rejected
+#: by the engine as a `CAST` target. Mapped to the canonical kind they mean, so the physical
+#: spelling to suggest comes from the one adapter type registry rather than a second table
+#: (`None` where the adapter has no equivalent at all).
+#:
+#: A denylist, deliberately, not an allowlist derived from that registry: T-SQL has dozens of
+#: perfectly valid types the registry never names -- `nvarchar`, `tinyint`, `uniqueidentifier`,
+#: `money`, `datetimeoffset`, `smalldatetime` -- and flagging those would drown the real
+#: findings. This way the rule reports only spellings that are known-wrong, and stays silent
+#: on everything it has no opinion about. Only `fabric-warehouse` is populated: a Databricks
+#: row is a natural extension, but there is no reported evidence behind one and guessing at it
+#: would reintroduce exactly the false positives this shape exists to avoid.
+_UNCASTABLE_TYPES: dict[str, dict[str, CanonicalTypeKind | None]] = {
+    FABRIC_WAREHOUSE: {
+        "bool": CanonicalTypeKind.BOOLEAN,
+        "boolean": CanonicalTypeKind.BOOLEAN,
+        "double": CanonicalTypeKind.FLOAT64,
+        "float64": CanonicalTypeKind.FLOAT64,
+        "int16": CanonicalTypeKind.INT16,
+        "int32": CanonicalTypeKind.INT32,
+        "int64": CanonicalTypeKind.INT64,
+        "json": CanonicalTypeKind.JSON,
+        "string": CanonicalTypeKind.STRING,
+        # T-SQL *has* a `timestamp` -- it is a rowversion synonym, which is why the engine
+        # says "explicit conversion ... is not allowed" rather than "not a defined system
+        # type". Wrong either way, and never what an author casting a datetime meant.
+        "timestamp": CanonicalTypeKind.TIMESTAMP,
+        "variant": None,
+    }
+}
+
+#: A denied spelling in cast-target position: immediately after `AS`, immediately before the
+#: closing paren. Tight enough that a column *named* `timestamp` or a `varchar(8000)` never
+#: matches, and it needs no bracket matching, so a nested cast is caught like any other.
+_CAST_TARGET = re.compile(r"\bas\s+(\w+)\s*\)", re.IGNORECASE)
+
+
+def _uncastable_findings(scan, hub_root: Path) -> list[DbtContractFinding]:
+    """Flag `cast(... as <canonical-only-type>)` in hand-authored model SQL (#778).
+
+    dbt does not abstract SQL dialects: a model body reaches the engine verbatim, and
+    neither `dbt parse` nor `dbt compile` looks at it, so a hub running
+    `validate-dbt --structural-only` never sees a dialect error at all. This closes the one
+    slice of that gap which is deterministic from the text.
+
+    The confusion the rule exists for is real and narrow. `boolean` and `timestamp` are both
+    legitimate *canonical kinds* in the toolkit's own vocabulary -- correct in a binding's
+    `externalReference.key[].type`, and correct in a dbt contract's `data_type`, where
+    dbt-fabric translates `boolean` to `bit`. They are wrong only in a SQL cast, and the two
+    fields sit next to each other in the same authored file.
+    """
+    findings: list[DbtContractFinding] = []
+    for model in scan.models:
+        adapters = canonical_adapters(model.supported_adapters) or ()
+        denied: dict[str, CanonicalTypeKind | None] = {}
+        for adapter in adapters:
+            denied.update(_UNCASTABLE_TYPES.get(adapter, {}))
+        if not denied:
+            continue
+        try:
+            sql = model.sql_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for match in _CAST_TARGET.finditer(sql):
+            spelling = match.group(1).lower()
+            if spelling not in denied:
+                continue
+            kind = denied[spelling]
+            suggestion = ""
+            if kind is not None:
+                for adapter in adapters:
+                    if spelling not in _UNCASTABLE_TYPES.get(adapter, {}):
+                        continue
+                    try:
+                        physical = physical_canonical_type(adapter, CanonicalTypeSpec(kind))
+                    except ValueError:  # pragma: no cover -- registry covers every kind
+                        continue
+                    suggestion = f" Use {physical.lower()!r} on {adapter}."
+                    break
+            line = sql.count(chr(10), 0, match.start()) + 1
+            findings.append(
+                DbtContractFinding(
+                    code="dbt-contract.dialect-uncastable-type",
+                    severity=SEVERITY_ERROR,
+                    message=(
+                        f"model {model.name!r} line {line}: {spelling!r} is a canonical type "
+                        "name, not a SQL type the declared adapter can cast to, so the model "
+                        "fails at run time however cleanly it parses."
+                        + suggestion
+                        + " `kairos_safe_cast` takes an adapter-correct target type if you "
+                        "want TRY_CAST semantics. Note the neighbouring contract "
+                        "`data_type:` takes canonical names and is likely already right -- "
+                        "the two fields read from different vocabularies."
+                    ),
+                    path=_relative(model.sql_path, hub_root),
+                    model=model.name,
+                )
+            )
+    return findings
 
 
 def _dialect_findings(scan, hub_root: Path) -> list[DbtContractFinding]:
@@ -596,6 +700,7 @@ def run_dbt_contract_lint(
 
     # --- adapter dialect rules over the authored SQL (DD-215) ------------------------------
     findings.extend(_dialect_findings(scan, hub_root))
+    findings.extend(_uncastable_findings(scan, hub_root))
 
     # --- authored seeds (#586 stage b) -----------------------------------------------------
     findings.extend(_seed_findings(transforms_dir, hub_root))
