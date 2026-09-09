@@ -10,11 +10,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > below shipped as part of this one release — those headings are the per-change record of how it
 > was built, not separate releases. The same holds for `5.13.0rc1`–`rc31` under 5.14.0.
 >
+> **5.18.0rc1** is a pre-release, published for hub testing and not marked Latest. It adds two
+> gates that fail closed, so a hub that compiled green on 5.17.0 can newly fail CI — which is
+> the reason it ships as an RC first. Both reject something that was already broken at run time:
+> `relationship.external-reference-key-column-unknown` blocks a binding whose
+> `externalReference.key[].column` the parent domain's contract does not declare (only when that
+> parent *has* a contract — an ungoverned parent is unaffected), and
+> `dbt-contract.dialect-uncastable-type` fails `validate-dbt-contracts` on a `cast(... as
+> boolean|timestamp|string|…)` in authored SQL. Expect to fix real defects, not to suppress the
+> gates.
+>
 > Read **5.11.0** before upgrading: `propose-alignment` now refuses to run without
 > `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop. `--without-anchors`
 > is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.18.0rc1] — 2026-09-10
+
+### Added
+- **`validate-dbt-contracts` now rejects a canonical type name used as a SQL cast target
+  (`dbt-contract.dialect-uncastable-type`, refs #778).** `cast(x as timestamp)` and
+  `cast(x as boolean)` parse cleanly, pass `compile --check`, emit, and then fail against a real
+  Fabric warehouse -- and a hub whose CI runs `validate-dbt --structural-only` never connects to
+  one, so they reach `main` green. The confusion is narrow and real: `boolean` and `timestamp`
+  are legitimate canonical kinds, correct in a binding's `externalReference.key[].type` and
+  correct in a dbt contract's `data_type` (dbt-fabric translates `boolean` to `bit`) -- they are
+  wrong only in a cast, and the two fields sit next to each other in the same authored file. The
+  finding says so, so the fix is not to "correct" a `data_type` that was already right. A
+  denylist of known-wrong spellings rather than an allowlist from the adapter type registry:
+  T-SQL has many valid types the registry never names (`nvarchar`, `uniqueidentifier`,
+  `datetimeoffset`), and flagging those would drown the real findings.
+
+### Fixed
+- **`compile --check` now rejects an `externalReference.key[].column` the parent domain's
+  contract does not materialize (#775).** The key names the *parent's* output column, but the
+  rename that produces that column happens in the parent's binding -- so the source-side name is
+  the one an author has just been looking at. Four bindings in one hub drifted the same way
+  independently, all four passed CI, `--emit` rendered joins against a column that does not
+  exist, and the failure surfaced only when a downstream dataplatform ran `dbt run` against a
+  real warehouse, taking five Silver models and three Gold facts with it. Nothing needed to
+  change about per-domain statelessness to catch it: `discover_contract_paths` already admits a
+  foreign domain's contract whenever this domain points a relationship at a class it declares,
+  and already hashes it into provenance -- it was simply never parsed. The check consults the
+  parent's *declared* interface (DD-213), never its emitted artifacts, and is keyed on the
+  resolved target class rather than the model name. New diagnostic
+  `relationship.external-reference-key-column-unknown`, which lists the parent's available
+  columns. Fails open by construction: an ungoverned parent compiles exactly as it did before.
+- **The generated Gold `dim_date` now builds on `fabric-warehouse` (#776).** Four constructs in
+  one compiler-generated file, none of them portable, and the first failure hid the rest.
+  `dbt_utils.date_spine` expands with a trailing `ORDER BY`; dbt-fabric's table materialization
+  creates a view as an intermediate step and T-SQL rejects `ORDER BY` in a view without `TOP`, so
+  the model failed even though it declares `materialized='table'`. Behind it: `EXTRACT` is not a
+  T-SQL function, and `is_holiday` was rendered as `boolean` -- a type Fabric does not have --
+  while the DDL for the very same table already said `BIT`. A fourth defect had not been reached
+  yet: `cast(<date> as varchar)` uses style 0 on T-SQL and yields `Sep 09 2026`, so the
+  `replace(..., '-', '')` that built `date_key` removed nothing and the outer cast to `bigint`
+  failed; on Databricks the same expression is invalid because `varchar` needs a length, so
+  `date_key` was broken on both adapters. The calendar model is now rendered per adapter, the
+  same way the Gold DDL renderer beside it already was. `dim_date` is the product calendar, so a
+  hub lost year-on-year, week and prior-period comparison everywhere until it built.
 
 ### Fixed
 - **A conformance group no longer emits its relationship tests once per member, which made the
