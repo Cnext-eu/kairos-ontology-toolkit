@@ -146,6 +146,37 @@ def _reset_alignment_report_cache():
     reset_alignment_report_cache()
 
 
+@pytest.fixture(autouse=True)
+def _reset_reference_terms_cache():
+    """Clear the in-process reference-terms memo between tests.
+
+    ``read_reference_terms`` memoizes on the resolved catalog path, so without this a
+    test that writes reference models under a path an earlier test already resolved
+    would read the earlier test's corpus.
+    """
+    try:
+        from kairos_ontology.core.class_anchoring import reset_reference_terms_cache
+    except ImportError:  # pragma: no cover — class_anchoring must be importable
+        yield
+        return
+    reset_reference_terms_cache()
+    yield
+    reset_reference_terms_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_hub_scan_cache():
+    """Clear the in-process hub ontology-scan memo between tests."""
+    try:
+        from kairos_ontology.core.ontology_integrity import reset_hub_scan_cache
+    except ImportError:  # pragma: no cover — ontology_integrity must be importable
+        yield
+        return
+    reset_hub_scan_cache()
+    yield
+    reset_hub_scan_cache()
+
+
 @pytest.fixture
 def github_provider_env():
     """Opt-in fixture: set a configured GitHub Models provider for tests that need one."""

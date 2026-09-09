@@ -191,12 +191,55 @@ def _module_of(uri: str) -> str:
     return uri.rstrip("/").rsplit("/", 1)[0]
 
 
+#: In-process memo for :func:`read_reference_terms`, keyed by the inputs that decide its
+#: answer. Resolving the corpus walks every module the catalog maps and costs ~17s on a
+#: real hub, and a single ``validate`` run asks for it twice -- once for the DD-163
+#: integrity audit and once for the DD-169 alignment gate -- with neither reusing the
+#: other's work. Module-global, so the test suite clears it between cases.
+_REFERENCE_TERMS_CACHE: dict[tuple, tuple["ReferenceTerm", ...]] = {}
+
+
+def reset_reference_terms_cache() -> None:
+    """Drop the in-process reference-terms memo.
+
+    Mirrors ``alignment_report.reset_alignment_report_cache``: a module-global cache
+    leaks across pytest cases, so a test that writes reference models under a path an
+    earlier test already resolved would otherwise read the earlier answer.
+    """
+    _REFERENCE_TERMS_CACHE.clear()
+
+
+def _reference_terms_cache_key(
+    catalog_path: Optional[Path],
+    module_scope: Optional[Iterable[str]],
+) -> tuple:
+    """Build the memo key.
+
+    Three details matter. The catalog path is **resolved**: the two callers this memo
+    exists to unify arrive with different ``Path`` objects for the same file -- one from
+    the CLI's catalog resolution, one derived from the hub root, and under a relative
+    ``--ontologies`` one of them is relative -- so keying on the raw value would miss
+    every time. ``module_scope`` is normalised to a ``frozenset`` because callers pass
+    sets, which are unhashable. And ``KAIROS_REFMODELS_ROOT`` is part of the key because
+    it relocates the corpus itself.
+    """
+    import os
+
+    resolved = str(Path(catalog_path).resolve()) if catalog_path is not None else None
+    scope = frozenset(str(item) for item in module_scope) if module_scope is not None else None
+    return (resolved, scope, os.environ.get("KAIROS_REFMODELS_ROOT", ""))
+
+
 def read_reference_terms(
     catalog_path: Optional[Path],
     *,
     module_scope: Optional[Iterable[str]] = None,
 ) -> list[ReferenceTerm]:
     """Resolve reference-model classes and properties, live from the catalog (DD-173).
+
+    Memoized per process (see :data:`_REFERENCE_TERMS_CACHE`). A fresh ``list`` is
+    returned on every call so a caller cannot mutate the shared result, and so the
+    ``== []`` comparisons callers and tests already make keep working.
 
     Reads through ``parse_reference_model`` — the same canonical DD-103 loader path the
     aligner uses, resolving ``owl:imports`` and honouring the DD-131 domain authority —
@@ -228,6 +271,20 @@ def read_reference_terms(
 
     Returns ``[]`` when no catalog resolves; callers report that as a notice.
     """
+    key = _reference_terms_cache_key(catalog_path, module_scope)
+    cached = _REFERENCE_TERMS_CACHE.get(key)
+    if cached is None:
+        cached = tuple(_read_reference_terms_uncached(catalog_path, module_scope=module_scope))
+        _REFERENCE_TERMS_CACHE[key] = cached
+    return list(cached)
+
+
+def _read_reference_terms_uncached(
+    catalog_path: Optional[Path],
+    *,
+    module_scope: Optional[Iterable[str]] = None,
+) -> list[ReferenceTerm]:
+    """The live resolution :func:`read_reference_terms` memoizes. See its docstring."""
     terms: list[ReferenceTerm] = []
     if catalog_path is None or not Path(catalog_path).is_file():
         return terms
