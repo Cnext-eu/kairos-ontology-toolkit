@@ -99,9 +99,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `package-powerbi-release` renders and zips it in CI from the compile plan, so nothing
   needed it committed. Every other target was already ignored.
 
-  Two behaviour changes to know about when upgrading a hub: the old diagram locations are
-  removed by the emit manifest that used to own them, and `update` will report the
-  `.gitignore` rule change rather than applying it (Git-hygiene files stay yours to merge).
+  Two behaviour changes to know about when upgrading a hub. The old diagram locations are
+  cleaned up for you: the emit manifest that used to own those paths removes them.
+
+  **The `.gitignore` change is not, and `update` will not mention it.** Delete this line
+  from the hub's `.gitignore` by hand:
+
+  ```
+  !ontology-hub-publish/powerbi/**
+  ```
+
+  Leave it and the hub keeps tracking Power BI output that `package-powerbi-release` now
+  renders in CI. Nothing prompts you, because `update`'s Git-hygiene check compares the
+  template *against* the local file and reports only rules the hub is **missing** — it has
+  no way to tell a rule the toolkit removed from a rule the hub added itself, so it never
+  reports either. Git-hygiene files stay yours to merge by design; the blind spot for
+  *removals* is tracked in #699 P2 and is deliberately not closed here.
 
 ### Added
 - **`compile --emit` now draws the declared-contract ERD (DD-216).** It was only ever
