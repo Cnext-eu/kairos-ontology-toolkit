@@ -192,3 +192,36 @@ def test_otel_bridge_flush_is_safe_with_none():
     from kairos_ontology.core.observability.otel import flush_otel
 
     flush_otel(None)  # must not raise
+
+
+def test_default_level_is_warning_without_any_flag_or_env(monkeypatch):
+    """The baseline nothing asserted before: no flags means WARNING."""
+    monkeypatch.delenv("KAIROS_LOG_LEVEL", raising=False)
+    logger = configure_logging()
+    assert logger.level == logging.WARNING
+
+
+def test_kairos_log_level_sets_the_default_level(monkeypatch):
+    """So a long-running command can be made talkative without typing -v every time.
+
+    An environment variable rather than a kairos.yaml key on purpose: that file's bytes
+    are a compile provenance input, so a key there would rewrite every domain's
+    provenance hash while changing no model bytes.
+    """
+    monkeypatch.setenv("KAIROS_LOG_LEVEL", "info")
+    assert configure_logging().level == logging.INFO
+
+    monkeypatch.setenv("KAIROS_LOG_LEVEL", "DEBUG")
+    assert configure_logging().level == logging.DEBUG
+
+
+def test_explicit_flags_beat_the_environment(monkeypatch):
+    monkeypatch.setenv("KAIROS_LOG_LEVEL", "error")
+    assert configure_logging(verbose=True).level == logging.INFO
+    assert configure_logging(debug=True).level == logging.DEBUG
+
+
+def test_an_unparseable_log_level_is_ignored(monkeypatch):
+    """A bad value in the environment must not fail a command over its logging setup."""
+    monkeypatch.setenv("KAIROS_LOG_LEVEL", "chatty")
+    assert configure_logging().level == logging.WARNING

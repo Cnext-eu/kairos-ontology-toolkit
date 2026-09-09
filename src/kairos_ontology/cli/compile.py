@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import click
@@ -17,6 +19,7 @@ from ..core import ontology_loader
 from ..core.compiler import CompileMode, compile_domain
 from ..core.compiler.result import CompileDiagnostic
 from ..core.conformance_artifact import check_discovery_gate
+from ..core.observability import events
 from ..core.determinism import write_text_lf
 from ..core.hub_utils import contract_diagrams_dir, find_hub_root, publish_root
 from ..core.observability import current_operation_id
@@ -102,6 +105,52 @@ def _payload(result) -> dict:
         "explain": asdict(result.explain) if result.explain is not None else None,
         "artifacts": [path for path, _ in result.artifacts],
     }
+
+
+def _announce_domain_start(domain: str, index: int, total: int, *, quiet: bool) -> None:
+    """Say which domain is starting, before the work rather than after it.
+
+    Two mechanisms, deliberately. The structured event is for log consumers and carries
+    the index/total; it is INFO, so at the default WARNING level it is invisible unless
+    the caller asked for it (``-v``, or ``KAIROS_LOG_LEVEL``). The human line is printed
+    unconditionally, because the problem it solves is not verbosity -- a multi-domain
+    compile reported each domain only once it had finished, so a large hub looked hung
+    for minutes at a time with no indication of which domain was in flight.
+
+    Only for a genuinely multi-domain run: with one domain the existing per-domain result
+    line already lands immediately, and a "[1/1]" prefix would be noise.
+
+    On **stderr**, so ``--format json`` keeps stdout a single parseable document -- the
+    same split the multi-domain summary already uses. Suppressed under
+    ``--log-format json``, where a plain-text line would break a consumer parsing stderr
+    as JSONL.
+    """
+    events.emit(
+        events.COMPILE_DOMAIN_STARTED,
+        logging.INFO,
+        f"compile {domain} started",
+        domain=domain,
+        index=index,
+        total=total,
+    )
+    if quiet or total < 2 or _log_format_is_json():
+        return
+    click.echo(f"  [{index}/{total}] {domain}…", err=True)
+
+
+def _log_format_is_json() -> bool:
+    """True when the root group was given ``--log-format json``.
+
+    Read off the live Click context rather than threaded through every signature: the
+    option belongs to the root group, and only this one presentation decision needs it.
+    """
+    context = click.get_current_context(silent=True)
+    while context is not None:
+        params = getattr(context, "params", None) or {}
+        if params.get("log_format") is not None:
+            return str(params["log_format"]).lower() == "json"
+        context = context.parent
+    return False
 
 
 def _domain_manifest_name(domain: str) -> str:
@@ -635,6 +684,15 @@ def _emit_compile_artifacts(result, emit_dir: Path, hub: Path) -> Path:
     show_default=True,
 )
 @click.option(
+    "--quiet",
+    "-q",
+    "quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress per-domain progress lines (they go to stderr, so --format json is "
+    "unaffected either way).",
+)
+@click.option(
     "--no-cache",
     "no_cache",
     is_flag=True,
@@ -650,6 +708,7 @@ def compile_cmd(
     emit_mode: bool,
     confirm_emit: bool,
     output_format: str,
+    quiet: bool,
     no_cache: bool,
 ) -> None:
     """Check, explain, or emit one or more v5 DOMAINS from the current hub.
@@ -715,8 +774,11 @@ def compile_cmd(
     # persisted if writes only opened later. --check/--explain get scope(False) and
     # remain write-free. Scoped, not assigned, so the flag cannot leak into unrelated
     # later calls sharing this process.
+    total = len(selected)
     with ontology_loader.cache_write_scope(not no_cache and mode is CompileMode.EMIT):
-        for one in selected:
+        for index, one in enumerate(selected, start=1):
+            _announce_domain_start(one, index, total, quiet=quiet)
+            started = perf_counter()
             succeeded, payload = _compile_one_domain(
                 hub,
                 one,
@@ -726,6 +788,16 @@ def compile_cmd(
                 emit_mode=emit_mode,
                 no_cache=no_cache,
                 output_format=output_format,
+            )
+            events.emit(
+                events.COMPILE_DOMAIN_COMPLETED,
+                logging.INFO,
+                f"compile {one} completed",
+                domain=one,
+                index=index,
+                total=total,
+                duration_ms=int((perf_counter() - started) * 1000),
+                succeeded=succeeded,
             )
             if payload is not None:
                 payloads.append(payload)

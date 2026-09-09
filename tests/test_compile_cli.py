@@ -1147,3 +1147,52 @@ class TestDiagramRouting:
         assert not (diagrams / "party-erd.mmd").exists()
         assert (diagrams / "party-contract-erd.mmd").is_file()
         assert (diagrams / "master-erd.mmd").is_file()
+
+
+class TestDomainProgress:
+    """A multi-domain compile says which domain is in flight, not only which finished."""
+
+    def test_progress_goes_to_stderr_and_leaves_json_stdout_parseable(self, tmp_path, monkeypatch):
+        hub = _two_domain_hub(tmp_path)
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "--all", "--check", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        # The payload is still the whole of stdout.
+        payload = json.loads(result.stdout)
+        assert [entry["domain"] for entry in payload] == ["booking", "party"]
+        # And the progress lines exist, on stderr.
+        assert "[1/2] booking" in result.stderr
+        assert "[2/2] party" in result.stderr
+
+    def test_quiet_suppresses_progress(self, tmp_path, monkeypatch):
+        hub = _two_domain_hub(tmp_path)
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "--all", "--check", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        assert "[1/2]" not in result.output
+
+    def test_json_log_format_suppresses_the_human_line(self, tmp_path, monkeypatch):
+        """Under --log-format json, stderr is JSONL; a plain-text line would break it."""
+        hub = _two_domain_hub(tmp_path)
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(
+            cli, ["--log-format", "json", "compile", "--all", "--check"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "[1/2]" not in result.output
+
+    def test_a_single_domain_gets_no_counter(self, tmp_path, monkeypatch):
+        """With one domain the result line already lands immediately; "[1/1]" is noise."""
+        hub = _hub(tmp_path / "hub")
+        monkeypatch.chdir(hub)
+
+        result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+        assert result.exit_code == 0, result.output
+        assert "[1/1]" not in result.output
