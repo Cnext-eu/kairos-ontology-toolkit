@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date
 
 import yaml
 
+from .capabilities import physical_canonical_type
 from .gold_connection import (
     GOLD_CONNECTION_RULE_ID,
     GOLD_DIRECT_LAKE_RULE_ID,
@@ -26,7 +28,7 @@ from .gold_specs import (
     GoldSecurityKind,
     GoldTableSpec,
 )
-from .policy_specs import GoldTableRole
+from .policy_specs import CanonicalTypeKind, CanonicalTypeSpec, GoldTableRole
 from ..shared import mermaid_provenance_comment
 
 
@@ -204,14 +206,32 @@ def _dbt_current_sql(table: GoldTableSpec, physical: GoldPhysicalTablePlan) -> s
     )
 
 
-def _dbt_calendar_sql(calendar: GoldCalendarSpec) -> str:
+def _dbt_calendar_sql(calendar: GoldCalendarSpec, adapter: str) -> str:
+    """Render the governed calendar model for one adapter (#776).
+
+    Adapter-branched, because not one of the four constructs this model needs has a single
+    spelling both adapters accept:
+
+    * ``dbt_utils.date_spine`` expands with a trailing ``ORDER BY``, and dbt-fabric's table
+      materialization creates a view as an intermediate step -- T-SQL rejects ``ORDER BY``
+      in a view without ``TOP``, so the model failed even though it declares
+      ``materialized="table"``.
+    * ``EXTRACT`` is not a T-SQL function; ``DATEPART`` is the spelling.
+    * ``CAST(<date> AS VARCHAR)`` uses style 0 on T-SQL and yields ``Sep 09 2026``, so the
+      ``replace(..., "-", "")`` that built the key removed nothing and the outer cast to
+      ``bigint`` failed. On Databricks the same expression is invalid for the opposite
+      reason -- ``varchar`` needs a length. ``date_key`` was broken on both adapters.
+    * Fabric has no ``boolean``; the type is ``bit``.
+
+    This is the same ``physical.adapter`` branch ``_ddl`` below already applies to this
+    exact table -- which is how the DDL came to say ``is_holiday BIT`` while the dbt model
+    said ``cast(null as boolean)``.
+    """
+    databricks = adapter == "databricks"
     start = _quoted(calendar.start_date)
     end = _quoted(calendar.end_date)
-    return "\n".join(
-        [
-            "{{ config(materialized='table', schema='gold_shared') }}",
-            "",
-            "-- Approved governed calendar; no date bounds are inferred.",
+    if databricks:
+        spine = [
             "with date_spine as (",
             "    {{ dbt_utils.date_spine(",
             "        datepart='day',",
@@ -219,21 +239,53 @@ def _dbt_calendar_sql(calendar: GoldCalendarSpec) -> str:
             f'        end_date="dateadd(day, 1, cast({end} as date))"',
             "    ) }}",
             ")",
+        ]
+    else:
+        # The bounds are already `date.fromisoformat`-parsed and ordered upstream in
+        # `policy_normalize`, so neither call can raise here. `date_spine`'s end is
+        # exclusive and the Databricks branch adds a day to it, so the authored range is
+        # inclusive of both bounds; `generate_series` is inclusive, hence `span.days`.
+        span = date.fromisoformat(calendar.end_date) - date.fromisoformat(calendar.start_date)
+        spine = [
+            "with date_spine as (",
+            f"    select dateadd(day, value, cast({start} as date)) as date_day",
+            f"    from generate_series(0, {span.days})",
+            ")",
+        ]
+    date_key = (
+        "cast(date_format(date_day, 'yyyyMMdd') as bigint)"
+        if databricks
+        else "cast(convert(varchar(8), date_day, 112) as bigint)"
+    )
+
+    def _part(unit: str) -> str:
+        return f"extract({unit} from date_day)" if databricks else f"datepart({unit}, date_day)"
+
+    boolean_type = physical_canonical_type(
+        adapter, CanonicalTypeSpec(CanonicalTypeKind.BOOLEAN)
+    ).lower()
+    false_literal = "false" if databricks else f"cast(0 as {boolean_type})"
+    return "\n".join(
+        [
+            "{{ config(materialized='table', schema='gold_shared') }}",
+            "",
+            "-- Approved governed calendar; no date bounds are inferred.",
+            *spine,
             "select",
-            "    cast(replace(cast(date_day as varchar), '-', '') as bigint) as date_key,",
+            f"    {date_key} as date_key,",
             "    cast(date_day as date) as full_date,",
-            "    extract(year from date_day) as year_number,",
-            "    extract(month from date_day) as month_number,",
-            "    extract(day from date_day) as day_of_month,",
+            f"    {_part('year')} as year_number,",
+            f"    {_part('month')} as month_number,",
+            f"    {_part('day')} as day_of_month,",
             f"    {calendar.fiscal_year_start_month} as fiscal_year_start_month,",
             f"    {_quoted(calendar.week_pattern)} as week_pattern,",
             f"    {_quoted(calendar.locale)} as calendar_locale,",
             f"    {_quoted(calendar.time_zone)} as calendar_time_zone,",
             f"    {_quoted(calendar.period_closure)} as period_closure_policy,",
             (
-                "    false as is_holiday"
+                f"    {false_literal} as is_holiday"
                 if calendar.holiday_source.startswith("none-")
-                else "    cast(null as boolean) as is_holiday"
+                else f"    cast(null as {boolean_type}) as is_holiday"
             ),
             "from date_spine",
             "",
@@ -380,7 +432,9 @@ def render_gold_dbt_artifacts(
                 _dbt_current_sql(table, plan)
             )
     if spec.calendar is not None and spec.calendar.approved:
-        artifacts["models/gold/shared/dim_date.sql"] = _dbt_calendar_sql(spec.calendar)
+        artifacts["models/gold/shared/dim_date.sql"] = _dbt_calendar_sql(
+            spec.calendar, physical.adapter
+        )
         artifacts["models/gold/shared/_shared__gold_models.yml"] = yaml.safe_dump(
             {
                 "version": 2,
