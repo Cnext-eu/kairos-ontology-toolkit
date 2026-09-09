@@ -601,3 +601,100 @@ def test_emit_rejects_an_extra_top_level_manifest_key(tmp_path: Path):
 
     with pytest.raises(ManifestError, match="malformed compiler manifest"):
         emit_artifacts({"models/customer.sql": "generated"}, target)
+
+
+class TestHardlinkedStaging:
+    """Staging hardlinks the existing target instead of copying every byte.
+
+    Safe only because this module never writes through a path it did not create --
+    artifacts use an exclusive create, replaced files are unlinked first. These tests
+    pin that property, since losing it would silently corrupt the live tree rather than
+    fail.
+    """
+
+    def test_replacing_an_owned_file_does_not_write_through_the_link(self, tmp_path):
+        target = tmp_path / "party"
+
+        emit_artifacts({"models/customer.sql": "select 1\n"}, target)
+        first = (target / "models" / "customer.sql").read_text(encoding="utf-8")
+        assert first == "select 1\n"
+
+        # Second emit replaces the same manifest-owned path. If staging hardlinked and
+        # the writer truncated in place, the committed file would be corrupt or the old
+        # inode would have been mutated behind the backup's back.
+        emit_artifacts({"models/customer.sql": "select 2\n"}, target)
+        assert (target / "models" / "customer.sql").read_text(encoding="utf-8") == "select 2\n"
+
+    def test_unowned_files_survive_and_stay_intact(self, tmp_path):
+        target = tmp_path / "party"
+        target.mkdir()
+        (target / "hand-written.md").write_text("mine\n", encoding="utf-8")
+
+        emit_artifacts({"models/customer.sql": "select 1\n"}, target)
+
+        assert (target / "hand-written.md").read_text(encoding="utf-8") == "mine\n"
+        assert (target / "models" / "customer.sql").is_file()
+
+    def test_stale_owned_file_is_removed_across_emits(self, tmp_path):
+        target = tmp_path / "party"
+
+        emit_artifacts({"models/a.sql": "a\n", "models/b.sql": "b\n"}, target)
+        emit_artifacts({"models/a.sql": "a\n"}, target)
+
+        assert (target / "models" / "a.sql").is_file()
+        assert not (target / "models" / "b.sql").exists()
+
+    def test_falls_back_to_copying_when_hardlinks_are_unavailable(self, tmp_path, monkeypatch):
+        """A hub on a network share or a FAT volume has no hardlinks at all.
+
+        The fallback is required rather than defensive, so it is exercised directly: the
+        committed tree must be identical to the hardlinked path's result.
+        """
+        target = tmp_path / "party"
+        emit_artifacts({"models/customer.sql": "select 1\n"}, target)
+        (target / "unowned.txt").write_text("keep\n", encoding="utf-8")
+
+        calls: list[str] = []
+
+        def _no_hardlinks(src, dst, *args, **kwargs):
+            calls.append(str(src))
+            raise OSError(1, "hardlinks not supported on this filesystem")
+
+        monkeypatch.setattr(emit_module.os, "link", _no_hardlinks)
+
+        emit_artifacts({"models/customer.sql": "select 2\n"}, target)
+
+        assert calls, "the hardlink path was never attempted"
+        assert (target / "models" / "customer.sql").read_text(encoding="utf-8") == "select 2\n"
+        assert (target / "unowned.txt").read_text(encoding="utf-8") == "keep\n"
+
+    def test_an_untouched_file_is_linked_rather_than_copied(self, tmp_path):
+        """The point of the change, asserted precisely.
+
+        A plain copy would stage a fresh copy of every existing file, so after the swap an
+        untouched file has a *new* inode. Hardlinked, it keeps the one it had. That makes
+        inode identity across an emit a direct observation of which path ran.
+
+        Skipped where the filesystem has no hardlinks -- which is exactly when
+        ``test_falls_back_to_copying_when_hardlinks_are_unavailable`` is the live path.
+        """
+        import os
+
+        target = tmp_path / "party"
+        emit_artifacts({"models/a.sql": "a\n"}, target)
+
+        untouched = target / "untouched.bin"
+        untouched.write_bytes(b"x")
+
+        probe = tmp_path / "probe.link"
+        try:
+            os.link(untouched, probe)
+        except (OSError, NotImplementedError):
+            pytest.skip("filesystem does not support hardlinks")
+        probe.unlink()
+
+        before = untouched.stat().st_ino
+        emit_artifacts({"models/a.sql": "a\n", "models/b.sql": "b\n"}, target)
+
+        assert untouched.read_bytes() == b"x"
+        assert untouched.stat().st_ino == before

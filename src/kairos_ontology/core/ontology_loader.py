@@ -8,6 +8,8 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from collections import deque
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -205,11 +207,34 @@ def _store_cached_source_graph(
     if not CACHE_ENABLED or not CACHE_WRITE_ENABLED:
         return
     cache_file = _parse_cache_path(identity_root, digest, rdf_format)
+    # Staged, then renamed into place. A bare write leaves a window in which the file
+    # exists but is short, and N-Triples is line-oriented: a reader that arrives mid-write
+    # gets a *valid* parse of an incomplete graph, which the reader cannot detect because
+    # it only guards against parse errors. That is a silent wrong answer -- a closure
+    # missing triples -- rather than a miss, and an interrupted emit is enough to cause it.
+    # Content-addressed names make the bytes safe; only the rename makes them visible
+    # atomically.
+    staged: Path | None = None
     try:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(graph.serialize(format="nt"), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=cache_file.parent,
+            prefix=f".{cache_file.name}.",
+            suffix=".partial",
+            delete=False,
+        ) as handle:
+            staged = Path(handle.name)
+            handle.write(graph.serialize(format="nt"))
+        os.replace(staged, cache_file)
+        staged = None
     except OSError as exc:
         logger.warning("Could not write ontology parse cache %s: %s", cache_file, exc)
+    finally:
+        if staged is not None:
+            with contextlib.suppress(OSError):
+                staged.unlink()
 
 
 def _manifest_still_fresh(manifest: tuple["ImportManifestEntry", ...]) -> bool:
