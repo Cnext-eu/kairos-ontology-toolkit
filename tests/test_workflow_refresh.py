@@ -93,16 +93,26 @@ def test_workflow_sources_selects_by_repo_kind(tmp_path):
 
 
 def test_every_superseded_template_file_exists_and_differs_from_current():
-    """A recorded generation that equals the current template would make refresh a no-op."""
+    """A recorded generation that equals a current template would make refresh a no-op.
+
+    Compared against *both* repo kinds' live templates. It used to check only the
+    dataplatform one, so a hub generation was compared against a file it could never
+    equal -- which made the assertion vacuous for exactly the generations that then
+    went missing.
+    """
     assert _SUPERSEDED_WORKFLOW_TEMPLATES, "no superseded generations registered"
     for destination, names in _SUPERSEDED_WORKFLOW_TEMPLATES.items():
         loaded = _superseded_workflow_templates(destination)
         assert len(loaded) == len(names), f"missing superseded template file(s) for {destination}"
-        current = (_SCAFFOLD_DIR / _DATAPLATFORM_WORKFLOW_SOURCES[destination]).read_text(
-            encoding="utf-8"
-        )
+        live = [
+            (_SCAFFOLD_DIR / sources[destination]).read_text(encoding="utf-8")
+            for sources in (_HUB_WORKFLOW_SOURCES, _DATAPLATFORM_WORKFLOW_SOURCES)
+            if destination in sources
+        ]
+        assert live, f"no live template for {destination}"
         for previous in loaded:
-            assert previous != current
+            for current in live:
+                assert previous != current, destination
 
 
 def test_pre_guard_pr_validate_generation_is_refreshable(tmp_path):
@@ -154,3 +164,85 @@ def test_superseded_templates_ship_in_the_package():
     assert root.is_dir()
     assert Path(root).is_relative_to(_SCAFFOLD_DIR)
     assert list(root.rglob("*.template"))
+
+
+#: SHA-256 of every live workflow template. This is a deliberate tripwire, not a
+#: content assertion: editing a workflow template obliges you to record the outgoing
+#: bytes as a superseded generation (see the MAINTENANCE note on
+#: ``_SUPERSEDED_WORKFLOW_TEMPLATES``), and nothing else enforced that. Commit 4d26224
+#: changed ``pr-validate.yml`` without recording its predecessor, which left every
+#: already-scaffolded hub reporting "customized" and unable to auto-refresh -- and the
+#: suite stayed green, because the only check compared hub generations against the
+#: *dataplatform* template, which they can never equal.
+_LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
+    "github-workflows/managed-check.yml":
+        "4aaadabbbe8e7461fea44118f85dbeb1a19a94dde439ca882c4977481b8a5602",
+    "github-workflows/pr-validate.yml":
+        "aa27e2bd30b56781b430c27bb28fe0337c7557e91144673b339ac76bc9bda5a5",
+    "github-workflows/full-validate.yml":
+        "609ed048d3cb9b127ce0a157408bd589511865f56b54bfe85b1aece436ac83ff",
+    "github-workflows/release-projections.yml":
+        "29a9b7c597a788d46e79f4ed76bde8e242cd5a0263df040859cdcb6f5905e6da",
+    "github-workflows/assign-copilot.yml":
+        "06e75b76b56fe7d8444c2e0d1555b3e23c752791f3f42338c41b36b23ed63938",
+    "github-workflows/copilot-setup-steps.yml":
+        "63b90be2aec5ddb4b26b51b3844ba64128491f78660af599ce09e9b19ddaa9e6",
+    "dataplatform/.github/workflows/pr-validate.yml.template":
+        "47a65849a957fe4d0caa1c7c931380e60a734dc24f8b6ddc46d23e9ee446f6a9",
+    "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template":
+        "b04bbc1fce0915184fbdca4b06aea4e2f3bf086d2849d49935cdc1f5555d6cb0",
+}
+
+
+def test_live_workflow_templates_match_their_recorded_digests():
+    """Changing a workflow template must be a deliberate, two-part act.
+
+    If this fails you edited a template. That is fine -- but before updating the digest
+    below, copy the *previous* bytes of that file to
+    ``scaffold/superseded-workflows/<slug>/<n>.template`` and add it to
+    ``_SUPERSEDED_WORKFLOW_TEMPLATES`` in ``cli/shared.py``. Skip that and every repo
+    already holding the old generation classifies as "customized" and silently stops
+    receiving template fixes, which is the failure this tripwire exists to prevent.
+    """
+    import hashlib
+
+    tracked = set(_HUB_WORKFLOW_SOURCES.values()) | set(_DATAPLATFORM_WORKFLOW_SOURCES.values())
+    assert set(_LIVE_WORKFLOW_TEMPLATE_DIGESTS) == tracked, (
+        "the digest table and the managed-workflow source maps have drifted; add or "
+        "remove the entry for the workflow you just registered"
+    )
+    for relative, expected in sorted(_LIVE_WORKFLOW_TEMPLATE_DIGESTS.items()):
+        path = _SCAFFOLD_DIR / relative
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert actual == expected, (
+            f"{relative} changed. Record the outgoing generation under "
+            f"scaffold/superseded-workflows/, register it in "
+            f"_SUPERSEDED_WORKFLOW_TEMPLATES, then set this digest to {actual}."
+        )
+
+
+def test_pre_erd_and_single_job_hub_generations_are_refreshable(tmp_path):
+    """Both hub generations recorded in this change must classify as refreshable.
+
+    Generation 2 predates the ERD relocation (its drift gate still diffed
+    ``ontology-hub-publish/powerbi``); generation 3 is the single-job shape, before
+    validation and compile were split. A hub sitting on either must be offered the
+    upgrade automatically rather than reported as locally customized.
+    """
+    destination = ".github/workflows/pr-validate.yml"
+    current = (_SCAFFOLD_DIR / _HUB_WORKFLOW_SOURCES[destination]).read_text(encoding="utf-8")
+    superseded = _superseded_workflow_templates(destination)
+
+    hub_generations = [
+        text
+        for name, text in zip(_SUPERSEDED_WORKFLOW_TEMPLATES[destination], superseded)
+        if name.startswith("hub-pr-validate/")
+    ]
+    assert len(hub_generations) == 3, "expected three recorded hub generations"
+
+    for generation in hub_generations[1:]:
+        scaffolded = tmp_path / "pr-validate.yml"
+        scaffolded.write_text(generation, encoding="utf-8")
+        status = classify(scaffolded, current, superseded)
+        assert status.state == "outdated"
+        assert status.refreshable

@@ -33,6 +33,7 @@ jobs:
           # 404s from a GitHub Enterprise Server host (astral-sh/uv doesn't exist
           # there). Pinning a known-good version skips that lookup entirely.
           version: "0.12.5"
+          enable-cache: true
 
       - name: Install toolkit and dependencies
         run: uv sync --locked

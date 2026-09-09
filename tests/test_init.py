@@ -1413,9 +1413,9 @@ def test_new_repo_includes_pr_validate_workflow(tmp_path):
 def test_init_pr_validate_workflow_content(tmp_path):
     """init's pr-validate.yml must validate, regenerate-and-diff, then check the dbt package.
 
-    DD-206 §4 ("Hub pull request"): restore deps, validate ontology/SHACL,
-    compile-check every bound domain, regenerate the tracked publish output and
-    fail on drift, then validate the assembled dbt package.
+    DD-206 §4 ("Hub pull request"): restore deps, validate ontology/SHACL, regenerate
+    the tracked output and fail on drift, then validate the assembled dbt package --
+    now across two parallel jobs, since neither reads what the other writes.
     """
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
@@ -1431,9 +1431,38 @@ def test_init_pr_validate_workflow_content(tmp_path):
             assert "pull_request:" in content
             assert "branches: [main]" in content
 
+            # Two parallel jobs. The `validate` job id is load-bearing: it is the
+            # status-check context a hub's branch protection may already require, so
+            # renaming it would leave that check permanently pending.
+            assert "\n  validate:\n" in content
+            assert "\n  compile:\n" in content
+
+            # A superseded run's verdict describes bytes nobody will merge. The ref
+            # must be in the group or this cancels across concurrent PRs.
+            assert "concurrency:" in content
+            assert "cancel-in-progress: true" in content
+            assert "github.ref" in content
+
             # Ontology/SHACL/binding validation.
             assert "kairos-ontology validate " in content or "kairos-ontology validate \\" in content
-            assert "kairos-ontology compile --all --check --format json" in content
+            assert "kairos-ontology validate-dbt-contracts" in content
+
+            # `compile --all --check` is gone from the PR path: rendering is forced in
+            # every mode and every gate is mode-blind, so it was `--emit` minus the
+            # disk write. It still runs in full-validate.yml.
+            #
+            # Asserted over non-comment lines: the header comment explains the removal
+            # and legitimately names the step, so a raw substring check would fail on
+            # its own rationale.
+            steps = "".join(
+                line
+                for line in content.splitlines(keepends=True)
+                if not line.lstrip().startswith("#")
+            )
+            assert "compile --all --check" not in steps
+
+            # uv's own cache, restored per job -- the split pays setup twice.
+            assert "enable-cache: true" in content
 
             # Regenerate tracked output and fail on drift: the dbt package a
             # dataplatform pins, and the ERDs now tracked in the authored hub.
@@ -1459,6 +1488,42 @@ def test_init_pr_validate_workflow_content(tmp_path):
 
             # This workflow runs alongside managed-check.yml, not instead of it.
             assert "alongside" in content
+
+
+def test_init_full_validate_workflow_keeps_the_serial_gate_set(tmp_path):
+    """The unhurried counterpart to pr-validate.yml.
+
+    pr-validate.yml drops `compile --all --check` because it duplicates `--emit`. That
+    mode is still the only one that can never abort mid-loop, so the hub-wide,
+    write-free verdict has to live somewhere -- here, on main and on a schedule. A run
+    on the base branch is also the only one that can populate a cache later PRs
+    restore, since GitHub scopes a PR-branch cache to that PR.
+    """
+    runner = CliRunner()
+    with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(returncode=0)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(cli, ["init", "--company-domain", "test.com"])
+            assert result.exit_code == 0
+            wf = Path(".github/workflows/full-validate.yml")
+            assert wf.is_file()
+            content = wf.read_text(encoding="utf-8")
+
+            assert "schedule:" in content
+            assert "workflow_dispatch:" in content
+            assert "branches: [main]" in content
+
+            # The gate the PR path deliberately drops.
+            assert "kairos-ontology compile --all --check --format json" in content
+            # And every gate the PR path runs, so this is a superset, not a subset.
+            assert (
+                "kairos-ontology validate " in content
+                or "kairos-ontology validate \\" in content
+            )
+            assert "kairos-ontology validate-dbt-contracts" in content
+            assert "kairos-ontology compile --all --emit --confirm-emit" in content
+            assert "kairos-ontology validate-dbt" in content
+            assert "validate-dbt --structural-only" not in content
 
 
 def test_init_release_workflow_uses_supported_project_options(tmp_path):
