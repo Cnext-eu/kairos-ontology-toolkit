@@ -104,6 +104,13 @@ class TargetSpec:
     compatibility_name: Optional[str] = None
     include_in_all: bool = True
     external_dispatch: Optional[ExternalDispatch] = None
+    #: Resolve ``output_subdir`` against the *hub root* rather than the publish root.
+    #: Almost every target is derived output that belongs outside the authored tree, so
+    #: this defaults to False. The declared-contract ERD is the exception: it is drawn
+    #: for human review, the publish root is ignored wholesale by the scaffolded
+    #: ``.gitignore``, and it is a pure function of an authored contract file -- so it
+    #: is written beside the contract it describes, in ``model/contracts/diagrams``.
+    hub_relative: bool = False
 
     @property
     def accepted_names(self) -> tuple[str, ...]:
@@ -238,7 +245,12 @@ for _target_spec in (
     ),
     TargetSpec("ddd", "architecture/ddd", OutputCategory.ARCHITECTURE),
     TargetSpec("erd", "architecture/erd", OutputCategory.ARCHITECTURE),
-    TargetSpec("contract-erd", "architecture/contract-erd", OutputCategory.ARCHITECTURE),
+    TargetSpec(
+        "contract-erd",
+        "model/contracts/diagrams",
+        OutputCategory.ARCHITECTURE,
+        hub_relative=True,
+    ),
 ):
     _register_target_spec(_target_spec)
 del _target_spec
@@ -945,10 +957,19 @@ def run_projections(
         if target_spec is not None and target_spec.execution_phase is ExecutionPhase.POST_DOMAIN:
             continue
         print(f"📦 Generating {target_name} projection...")
+        # A hub-relative target resolves against the authored hub; every other target
+        # against the publish root. `hub_root` is derived from the ontology directory
+        # above and is None when that layout does not hold, in which case there is no
+        # hub to write into and the publish root remains the only sane destination.
+        target_root = (
+            hub_root
+            if target_spec is not None and target_spec.hub_relative and hub_root is not None
+            else output_path
+        )
         target_output = (
-            target_spec.output_path(output_path)
+            target_spec.output_path(target_root)
             if target_spec is not None
-            else output_path / target_name
+            else target_root / target_name
         )
         if not check_only:
             target_output.mkdir(parents=True, exist_ok=True)

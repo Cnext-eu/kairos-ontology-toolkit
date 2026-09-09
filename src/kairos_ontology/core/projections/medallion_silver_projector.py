@@ -37,6 +37,7 @@ from .dbt.specs import (
     SilverModelSpec,
     SilverPhysicalPlan,
 )
+from .shared import is_mermaid_provenance_line, mermaid_provenance_comment
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,7 @@ def _render_erd(plan: SilverPhysicalPlan) -> str:
     emitted = {model.model_name for model in plan.models}
     lines = [
         "erDiagram",
+        mermaid_provenance_comment(),
         (f"    %% Silver ERD: {plan.domain_name}; adapter={plan.adapter}/{plan.adapter_version}"),
         "    %% Relationships come only from emitted SilverForeignKeySpec values. A referenced",
         "    %% model outside this domain is drawn as a stub and its edge labelled [external].",
@@ -515,30 +517,74 @@ def generate_silver_artifacts(
     return artifacts, status
 
 
+#: Silver per-domain ERD suffix, plus the suffixes that must not be mistaken for one.
+#: Every ERD family now shares one flat directory (``model/contracts/diagrams``), and
+#: ``*-erd.mmd`` matches all of them -- ``party-gold-erd.mmd`` and
+#: ``party-contract-erd.mmd`` included. Merging those into the Silver master would
+#: fabricate a diagram no compile plan describes, so the scan tests the exact suffix
+#: set rather than trusting the glob.
+_SILVER_ERD_SUFFIX = "-erd.mmd"
+_NON_SILVER_ERD_SUFFIXES = ("-gold-erd.mmd", "-contract-erd.mmd")
+MASTER_ERD_NAME = "master-erd.mmd"
+
+
+def is_silver_domain_erd(name: str) -> bool:
+    """Return True when *name* is a per-domain Silver ERD, not another family's."""
+    return (
+        name.endswith(_SILVER_ERD_SUFFIX)
+        and name != MASTER_ERD_NAME
+        and not any(name.endswith(suffix) for suffix in _NON_SILVER_ERD_SUFFIXES)
+    )
+
+
+def _erd_domain_label(mmd_file: Path) -> str:
+    """Return the domain an ERD file belongs to.
+
+    Was ``mmd_file.parent.name``, which relied on the retired
+    ``docs/diagrams/<domain>/<domain>-erd.mmd`` nesting. The files are flat now, so the
+    domain comes off the file name -- falling back to the parent directory so a hub
+    still holding nested output from an older build merges rather than labelling every
+    domain "diagrams".
+    """
+    return mmd_file.name.removesuffix(_SILVER_ERD_SUFFIX) or mmd_file.parent.name
+
+
 def generate_master_erd(
-    dbt_output_path: Path,
+    diagrams_path: Path,
     hub_name: str = "master",
+    *,
+    metadata_path: Path | None = None,
 ) -> str | None:
-    """Merge deterministic per-domain ERDs without changing their relationships."""
-    diagrams_dir = dbt_output_path / "docs" / "diagrams"
+    """Merge deterministic per-domain ERDs without changing their relationships.
+
+    *diagrams_path* is the flat directory holding ``<domain>-erd.mmd`` -- the hub's
+    ``model/contracts/diagrams``. *metadata_path* is where the
+    ``*-silver-constraints.json`` documents supplying cross-domain foreign keys live,
+    which is still the dbt publish root's ``metadata/``: those are consumed by dbt, not
+    reviewed by a human, so they stay with the rest of the generated project. It
+    defaults to *diagrams_path* for a caller that keeps both in one place.
+    """
+    diagrams_dir = diagrams_path
     if not diagrams_dir.exists():
         return None
     domain_erds: list[tuple[str, str]] = []
     for mmd_file in sorted(diagrams_dir.rglob("*-erd.mmd")):
-        if mmd_file.name == "master-erd.mmd":
+        if not is_silver_domain_erd(mmd_file.name):
             continue
         body = "\n".join(
             line
             for line in mmd_file.read_text(encoding="utf-8").splitlines()
-            if line.strip() != "erDiagram" and not line.strip().startswith("%% Silver ERD:")
+            if line.strip() != "erDiagram"
+            and not line.strip().startswith("%% Silver ERD:")
+            and not is_mermaid_provenance_line(line)
         ).strip()
         if body:
-            domain_erds.append((mmd_file.parent.name, body))
+            domain_erds.append((_erd_domain_label(mmd_file), body))
     if not domain_erds:
         return None
     emitted: set[str] = set()
     relationships: set[str] = set()
-    metadata_dir = dbt_output_path / "metadata"
+    metadata_dir = metadata_path if metadata_path is not None else diagrams_path
     metadata_documents: list[dict] = []
     if metadata_dir.exists():
         for path in sorted(metadata_dir.glob("*-silver-constraints.json")):
@@ -578,6 +624,7 @@ def generate_master_erd(
     ]
     lines = [
         "erDiagram",
+        mermaid_provenance_comment(),
         f"    %% Master ERD — {hub_name} (all domains)",
         "",
     ]

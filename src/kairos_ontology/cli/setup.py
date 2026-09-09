@@ -924,7 +924,7 @@ def migrate(check, dry_run, hub_path):
         if check:
             print(
                 "  DELETE  application-models/  "
-                "(ERDs now in ontology-hub-publish/medallion/dbt/docs/diagrams/)"
+                "(ERDs now in ontology-hub/model/contracts/diagrams/)"
             )
         else:
             shutil.rmtree(app_models)

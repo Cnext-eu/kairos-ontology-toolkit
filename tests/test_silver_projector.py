@@ -223,12 +223,34 @@ def test_erd_draws_a_cross_domain_foreign_key_as_an_external_stub_and_edge():
 
 
 def _write_domain(root: Path, domain: str, erd: str, models: list[dict]) -> None:
-    diagram = root / "docs" / "diagrams" / domain / f"{domain}-erd.mmd"
+    """Lay out one domain the way `compile --emit` now does.
+
+    The per-domain ERD is flat in the hub's ``model/contracts/diagrams``; the
+    constraint metadata that supplies cross-domain foreign keys stays in the dbt
+    publish root, so the two roots are passed to ``generate_master_erd`` separately.
+    """
+    diagram = _diagrams_dir(root) / f"{domain}-erd.mmd"
     diagram.parent.mkdir(parents=True, exist_ok=True)
     diagram.write_text(erd, encoding="utf-8")
-    metadata = root / "metadata" / f"{domain}-silver-constraints.json"
+    metadata = _metadata_dir(root) / f"{domain}-silver-constraints.json"
     metadata.parent.mkdir(parents=True, exist_ok=True)
     metadata.write_text(json.dumps({"models": models}), encoding="utf-8")
+
+
+def _diagrams_dir(root: Path) -> Path:
+    return root / "ontology-hub" / "model" / "contracts" / "diagrams"
+
+
+def _metadata_dir(root: Path) -> Path:
+    return root / "ontology-hub-publish" / "medallion" / "dbt" / "metadata"
+
+
+def _master_erd(root: Path, hub_name: str) -> str | None:
+    return generate_master_erd(
+        _diagrams_dir(root),
+        hub_name=hub_name,
+        metadata_path=_metadata_dir(root),
+    )
 
 
 def test_master_erd_replaces_an_external_stub_once_its_domain_is_emitted(tmp_path):
@@ -253,7 +275,7 @@ def test_master_erd_replaces_an_external_stub_once_its_domain_is_emitted(tmp_pat
         ],
     )
 
-    client_only = generate_master_erd(tmp_path, hub_name="acme")
+    client_only = _master_erd(tmp_path, hub_name="acme")
     assert client_only is not None
     assert client_only.count(_EXTERNAL_STUB.rstrip("\n")) == 1
     assert client_only.count(f"{_CROSS_DOMAIN_URI} [temporal=current] [external]") == 1
@@ -261,7 +283,7 @@ def test_master_erd_replaces_an_external_stub_once_its_domain_is_emitted(tmp_pat
     billing_erd = "erDiagram\n    REGION {\n        VARCHAR_8000_ region_sk PK\n    }\n"
     _write_domain(tmp_path, "billing", billing_erd, [{"model_name": "region", "constraints": []}])
 
-    both = generate_master_erd(tmp_path, hub_name="acme")
+    both = _master_erd(tmp_path, hub_name="acme")
     assert both is not None
     assert "model from another domain" not in both
     # The master strips each domain body, so the first entity line may sit at column 0.

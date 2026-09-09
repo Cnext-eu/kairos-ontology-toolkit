@@ -30,6 +30,7 @@ from .dbt.gold_render import render_powerbi_artifacts
 from .dbt.gold_materialize import materialize_gold_product
 from .dbt.gold_shape import GoldDomainInput, shape_gold_product, shape_gold_products
 from .dbt.gold_specs import GoldContractError
+from .shared import is_mermaid_provenance_line, mermaid_provenance_comment
 from .dbt.gold_specs import GoldProductLogicalSpec, GoldProductPhysicalSpec
 
 if TYPE_CHECKING:
@@ -376,26 +377,54 @@ def plan_gold_projection(
     return shaped, plan
 
 
+#: Gold per-domain ERD suffix and the merged output's name. Unlike the Silver suffix
+#: this one is unambiguous -- no other ERD family ends in ``-gold-erd.mmd`` -- so the
+#: glob needs no exclusion list beyond the master itself.
+_GOLD_ERD_SUFFIX = "-gold-erd.mmd"
+MASTER_GOLD_ERD_NAME = "master-gold-erd.mmd"
+
+
+def _gold_erd_domain_label(path: Path) -> str:
+    """Return the domain a Gold ERD belongs to.
+
+    Was ``path.parent.name``, valid only while each domain had its own
+    ``<domain>/`` folder under the Power BI publish root. The files are flat in
+    ``model/contracts/diagrams`` now, so the domain comes off the file name, with the
+    old nesting as a fallback for output left by an earlier build.
+    """
+    return path.name.removesuffix(_GOLD_ERD_SUFFIX) or path.parent.name
+
+
 def generate_master_gold_erd(
-    gold_output_path: Path,
+    gold_diagrams_path: Path,
     hub_name: str = "master",
 ) -> str | None:
-    """Merge deterministic per-domain Gold ERDs after successful projection."""
+    """Merge deterministic per-domain Gold ERDs after successful projection.
+
+    *gold_diagrams_path* is the flat directory holding ``<domain>-gold-erd.mmd`` --
+    the hub's ``model/contracts/diagrams``, shared with the Silver and declared-contract
+    diagrams.
+    """
+    gold_output_path = gold_diagrams_path
     if not gold_output_path.exists():
         return None
     sections: list[tuple[str, list[str]]] = []
     for path in sorted(gold_output_path.rglob("*-gold-erd.mmd")):
-        if path.name == "master-gold-erd.mmd":
+        if path.name == MASTER_GOLD_ERD_NAME:
             continue
         lines = [
             line
             for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip() != "erDiagram"
+            if line.strip() != "erDiagram" and not is_mermaid_provenance_line(line)
         ]
-        sections.append((path.parent.name, lines))
+        sections.append((_gold_erd_domain_label(path), lines))
     if not sections:
         return None
-    result = ["erDiagram", f"    %% Gold data products: {hub_name}"]
+    result = [
+        "erDiagram",
+        mermaid_provenance_comment(),
+        f"    %% Gold data products: {hub_name}",
+    ]
     for domain, lines in sections:
         result.append(f"    %% Domain: {domain}")
         result.extend(lines)

@@ -25,7 +25,7 @@ def _emit(tmp_path: Path) -> Path:
     hub = tmp_path / "hub"
     shutil.copytree(_HUB, hub)
     target = tmp_path / "publish" / "medallion" / "dbt"
-    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target)
+    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target, hub)
     return target
 
 
@@ -68,7 +68,7 @@ def test_every_digest_matches_the_authored_file_on_disk(tmp_path):
     hub = tmp_path / "hub"
     shutil.copytree(_HUB, hub)
     target = tmp_path / "publish" / "medallion" / "dbt"
-    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target)
+    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target, hub)
 
     document = _document(target)
     digests = {item["name"]: item["sha256"] for item in document["inputs"]}
@@ -100,12 +100,12 @@ def test_editing_one_binding_moves_one_digest_and_the_hash(tmp_path):
     shutil.copytree(_HUB, hub)
     target = tmp_path / "publish" / "medallion" / "dbt"
 
-    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target)
+    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target, hub)
     before = _document(target)
 
     binding = hub / "integration" / "bindings" / "customer.binding.yaml"
     binding.write_text(binding.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
-    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target)
+    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target, hub)
     after = _document(target)
 
     assert before["provenanceHash"] != after["provenanceHash"]
@@ -123,9 +123,9 @@ def test_re_emitting_unchanged_inputs_is_byte_identical(tmp_path):
     target = tmp_path / "publish" / "medallion" / "dbt"
     sidecar = target / "metadata" / "party.provenance.json"
 
-    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target)
+    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target, hub)
     first = sidecar.read_bytes()
-    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target)
+    _emit_compile_artifacts(compile_domain(hub, "party", CompileMode.EMIT), target, hub)
 
     assert sidecar.read_bytes() == first
 

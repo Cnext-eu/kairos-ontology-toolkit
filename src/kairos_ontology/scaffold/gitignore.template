@@ -14,20 +14,32 @@ venv/
 # Node.js
 node_modules/
 
-# Generated projection output. Ignored by default, with an explicit allowlist for
-# the release-relevant lanes DD-206 (Branching and Collaboration Guide) requires a
-# hub release to publish from an exact commit: the dbt package a dataplatform pins
-# by SHA, and the Power BI PBIP output a hub release packages and checksums. Every
-# other projection target (neo4j, azure-search, a2ui, prompt, mdm, architecture/*,
-# reports/details) stays ignored -- reports/details in particular can carry
-# PII-adjacent validation detail, and the rest are alternate export targets, not
-# part of the dbt+Power BI release lane. Track more only after a deliberate,
-# per-hub review (see CICD.md), never by widening this default silently.
+# Generated projection output. Ignored, with exactly one exception: the dbt package.
+#
+# `ontology-hub-publish/medallion/dbt` must stay tracked because a dataplatform
+# consumes it as a dbt package pinned by `git` + `revision` + `subdirectory`, which
+# `dbt deps` resolves out of the *committed* tree at that tag. Untracked, the path
+# does not exist at the revision and `dbt deps` fails outright -- and DD-206 §4 wants
+# a release to publish exactly the bytes reviewed and merged at the tagged commit,
+# which pr-validate.yml enforces by regenerating and diffing it before merge.
+#
+# Everything else is ignored, the Power BI PBIP output included: it used to be
+# allowlisted for the release lane, but `package-powerbi-release` renders and zips it
+# in CI from the compile plan, so nothing needs it committed. Every other target
+# (neo4j, azure-search, a2ui, prompt, mdm, architecture/*, reports/details) is an
+# alternate export, and reports/details can carry PII-adjacent validation detail.
+#
+# ERDs are not here at all. They are written into the *authored* tree, at
+# `ontology-hub/model/contracts/diagrams/`, beside the contracts they are drawn from,
+# because a diagram is the one generated artifact a human actually reviews and it has
+# to be visible in the pull request.
+#
+# Track anything more only after a deliberate, per-hub review (see CICD.md), never by
+# widening this default silently.
 ontology-hub-publish/**
 !ontology-hub-publish/**/
 !ontology-hub-publish/**/.gitkeep
 !ontology-hub-publish/medallion/dbt/**
-!ontology-hub-publish/powerbi/**
 
 # IDE
 .vscode/

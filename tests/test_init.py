@@ -495,8 +495,13 @@ def test_new_repo_contributing_guide_describes_branch_prefixes(tmp_path):
     assert "kairos-ontology update --upgrade" in contributing
 
 
-def test_new_repo_publish_gitignore_allows_release_relevant_output(tmp_path):
-    """new-repo's .gitignore should track dbt + Power BI output, ignore the rest."""
+def test_new_repo_publish_gitignore_tracks_only_the_dbt_package(tmp_path):
+    """new-repo's .gitignore tracks the dbt package and ignores every other lane.
+
+    The dbt package stays tracked because a dataplatform pins it by SHA and
+    subdirectory. Power BI dropped off the allowlist: it is rendered and zipped in CI
+    by ``package-powerbi-release``, so nothing needs it committed.
+    """
     runner = CliRunner()
     with mock.patch("kairos_ontology.cli.main.subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(returncode=0)
@@ -505,12 +510,26 @@ def test_new_repo_publish_gitignore_allows_release_relevant_output(tmp_path):
 
     gitignore = (tmp_path / "contoso-ontology-hub" / ".gitignore").read_text(encoding="utf-8")
     assert "ontology-hub-publish/**" in gitignore
-    assert "!ontology-hub-publish/medallion/dbt/**" in gitignore
-    assert "!ontology-hub-publish/powerbi/**" in gitignore
-    # Everything else under ontology-hub-publish/ (neo4j, azure-search, reports/details,
-    # etc.) stays ignored by the blanket pattern -- no allowlist entry for them.
-    assert "!ontology-hub-publish/neo4j/**" not in gitignore
-    assert "!ontology-hub-publish/reports/**" not in gitignore
+    assert "!ontology-hub-publish/**/.gitkeep" in gitignore
+    # The dbt package is the only lane exempt; the rest are directory markers.
+    negations = {
+        line.strip()
+        for line in gitignore.splitlines()
+        if line.strip().startswith("!ontology-hub-publish")
+    }
+    assert negations == {
+        "!ontology-hub-publish/**/",
+        "!ontology-hub-publish/**/.gitkeep",
+        "!ontology-hub-publish/medallion/dbt/**",
+    }
+    # And no *rule* mentions the diagrams directory, which lives in the authored hub
+    # and is tracked. Comment lines are excluded: the block above explains the move.
+    rules = [
+        line.strip()
+        for line in gitignore.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert not [rule for rule in rules if "diagrams" in rule]
 
 
 def test_new_repo_fails_if_dir_exists(tmp_path):
@@ -1416,12 +1435,13 @@ def test_init_pr_validate_workflow_content(tmp_path):
             assert "kairos-ontology validate " in content or "kairos-ontology validate \\" in content
             assert "kairos-ontology compile --all --check --format json" in content
 
-            # Regenerate tracked publish output and fail on drift (only the two
-            # tracked lanes under ontology-hub-publish/, per gitignore.template).
+            # Regenerate tracked output and fail on drift: the dbt package a
+            # dataplatform pins, and the ERDs now tracked in the authored hub.
+            # ontology-hub-publish/powerbi is no longer tracked, so it is not diffed.
             assert "kairos-ontology compile --all --emit --confirm-emit" in content
             assert "git diff --exit-code" in content
             assert "ontology-hub-publish/medallion/dbt" in content
-            assert "ontology-hub-publish/powerbi" in content
+            assert "ontology-hub/model/contracts/diagrams" in content
 
             # Assembled dbt package validation: the FULL offline gate, not
             # --structural-only, which stops after the ref() scan and so cannot detect a
