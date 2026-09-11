@@ -102,6 +102,36 @@ later; splitting each runtime service into its own repository.
 
 ---
 
+## MDM-DD-005 — The `mdm-profile` release carries an explicit `schema_version`
+
+**Status:** Accepted · **Refs:** MDM-DD-003
+
+**Context.** `kairos-mdm-runtime`'s `contracts/mdm-profile.schema.json` and
+`contracts/compatibility.md` already specify a `schema_version` string and a fail-closed
+compatibility check against it, anticipating this field before the toolkit emitted it.
+Until now the toolkit emitted no such field, so every runtime reader had to treat every
+profile as the undocumented "baseline" version — safe only as long as the profile shape
+never changed.
+
+**Decision.** `MdmProfile` carries a `schema_version` field, defaulting to the module
+constant `kairos_ontology.mdm.model.MDM_PROFILE_SCHEMA_VERSION` (`"1.0.0"`, matching the
+baseline the runtime's compatibility doc already assumes for a missing field — so existing
+readers built against that assumption keep working unmodified). It is included in
+`to_dict()` and therefore in `content_digest` — a profile-shape bump is a real content
+change, not a volatile provenance field like `generated_at`/`toolkit_version`. The constant
+is bumped only when the profile JSON *shape* changes (a field added, renamed or removed),
+never on an ordinary toolkit release — it is independent of `__version__`.
+
+**Consequences.** `kairos-mdm-runtime` can now read `schema_version` directly instead of
+inferring the baseline from its absence; its `compatibility.md` note ("the toolkit does not
+emit this field yet") is stale as of this decision and should be updated on that repo's own
+side. No other profile field changed shape, so existing pinned digests for previously
+generated profiles will not match a re-generation — expected, since a re-generation from an
+unchanged reviewed hub state was already required to refresh `toolkit_version`-only
+provenance drift; this adds a `schema_version` value where before there was silently none.
+
+---
+
 ## Template
 
 ```markdown

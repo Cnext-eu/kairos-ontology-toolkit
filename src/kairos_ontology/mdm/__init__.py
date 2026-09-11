@@ -20,6 +20,7 @@ live in the separate ``kairos-mdm-runtime`` repository — none of that lives he
 
 from kairos_ontology.mdm.vocabulary import KAIROS_MDM, discover_mdm_extension
 from kairos_ontology.mdm.model import (
+    MDM_PROFILE_SCHEMA_VERSION,
     DataQualityRule,
     MasteredConcept,
     MatchAttribute,
@@ -40,6 +41,7 @@ from kairos_ontology.mdm.profile_projector import (
 
 __all__ = [
     "KAIROS_MDM",
+    "MDM_PROFILE_SCHEMA_VERSION",
     "discover_mdm_extension",
     "DataQualityRule",
     "MasteredConcept",
