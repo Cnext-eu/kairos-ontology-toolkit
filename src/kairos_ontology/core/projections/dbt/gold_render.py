@@ -578,15 +578,17 @@ def _erd(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
                 "    }",
             ]
         )
+    # Calendar role edges live in `spec.relationships` since #792; they used to be
+    # appended by a second loop over `spec.calendar.roles`, which would double-emit
+    # them now. An inactive relationship is still real and stays on the diagram.
     for relationship in spec.relationships:
+        label = relationship.role_name or relationship.name
+        suffix = "" if relationship.is_active else " (inactive)"
         lines.append(
             f"    {relationship.target_table.upper()} ||--o{{ "
             f"{relationship.source_table.upper()} : "
-            f'"{relationship.name}"'
+            f'"{label}{suffix}"'
         )
-    if spec.calendar is not None and spec.calendar.approved:
-        for role in spec.calendar.roles:
-            lines.append(f'    DIM_DATE ||--o{{ {role.table_name.upper()} : "{role.role_name}"')
     return "\n".join(lines) + "\n"
 
 
@@ -976,26 +978,27 @@ def _date_tmdl(
 
 
 def _relationships_tmdl(spec: DimensionalGoldSpec) -> str:
+    """Render the shaped relationship set.
+
+    Pure rendering since #792: the calendar role edges used to be invented here,
+    which kept them out of `spec.relationships` and so out of reach of anything
+    reasoning over the graph. `guid_seed` preserves their original names, because in
+    Fabric a renamed relationship is a new object, not an edit.
+    """
     lines: list[str] = []
     for relationship in spec.relationships:
+        seed = relationship.guid_seed or (relationship.name + relationship.source_table)
         lines.extend(
             [
-                f"relationship {_guid(relationship.name + relationship.source_table)}",
+                f"relationship {_guid(seed)}",
+                # Only the surplus paths are annotated, so a model that never had an
+                # ambiguity keeps exactly the bytes it had before.
+                *([] if relationship.is_active else ["\tisActive: false"]),
                 (f"\tfromColumn: {relationship.source_table}.{relationship.source_column}"),
                 (f"\ttoColumn: {relationship.target_table}.{relationship.target_column}"),
                 "",
             ]
         )
-    if spec.calendar is not None and spec.calendar.approved:
-        for role in spec.calendar.roles:
-            lines.extend(
-                [
-                    f"relationship {_guid('calendar.' + role.role_name)}",
-                    f"\tfromColumn: {role.table_name}.{role.column_name}",
-                    "\ttoColumn: dim_date.full_date",
-                    "",
-                ]
-            )
     return "\n".join(lines)
 
 
@@ -1173,6 +1176,27 @@ def gold_product_report(
                 ]
             }
             if spec.unresolved_relationships
+            else {}
+        ),
+        # The relationships the projector deactivated to leave one filter path
+        # between any two tables (#792). Reported because the choice is a modelling
+        # decision the report depends on -- the active date role is the one time
+        # intelligence follows -- and a silent pick would change a report's meaning
+        # with no diff to review. Author `goldPrimaryRelationship` to decide it.
+        **(
+            {
+                "deactivated_relationships": [
+                    {
+                        "name": item.name,
+                        "role": item.role_name or None,
+                        "from": f"{item.source_table}.{item.source_column}",
+                        "to": f"{item.target_table}.{item.target_column}",
+                    }
+                    for item in spec.relationships
+                    if not item.is_active
+                ]
+            }
+            if any(not item.is_active for item in spec.relationships)
             else {}
         ),
         "adapter": {

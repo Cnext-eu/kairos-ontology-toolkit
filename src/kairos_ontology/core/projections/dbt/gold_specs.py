@@ -119,6 +119,17 @@ class GoldRelationshipSpec:
     cardinality: str
     version_binding: DimensionVersionBinding | None
     role_name: str = ""
+    #: False for a relationship Power BI must not filter through (#792). Only one path
+    #: between any two tables may be active, so every edge beyond a spanning forest --
+    #: the surplus date roles on a fact, a snowflake shortcut duplicating a two-hop path
+    #: -- is emitted `isActive: false`. It stays in the model and DAX can still traverse
+    #: it with USERELATIONSHIP.
+    is_active: bool = True
+    #: Overrides the seed the emitted TMDL relationship name is derived from. Calendar
+    #: role edges were invented in the renderer under a `calendar.<role>` seed before
+    #: #792 moved them into the shaper; keeping the seed keeps a hub's relationship
+    #: identities stable, and in Fabric a renamed relationship is a *new* one.
+    guid_seed: str = ""
 
 
 @dataclass(frozen=True, slots=True)

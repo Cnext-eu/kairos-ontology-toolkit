@@ -1,0 +1,92 @@
+# DD-226: Only one filter path between two tables is active, and the author can say which
+
+**Status:** Accepted
+**Date:** 2026-09-16
+**Affects:** `core/projections/dbt/gold_specs.py` (`GoldRelationshipSpec.is_active`,
+`.guid_seed`), `core/projections/dbt/gold_shape.py` (`_calendar_relationships`,
+`_resolve_ambiguous_paths`, `_primary_relationship_keys`, `_column_by_property`,
+`_shape_dimensional_product` ordering), `core/projections/dbt/gold_render.py`
+(`_relationships_tmdl`, `_erd`, `gold_product_report`),
+`core/projections/dbt/policy_{specs,bind,normalize}.py`, `scaffold/kairos-ext.ttl`
+(new `kairos-ext:goldPrimaryRelationship`), new `tests/test_gold_relationship_activation.py`
+**Issue:** #792
+
+### Context
+
+Power BI allows exactly one **active** filter path between any two tables. The projector
+emitted every relationship active — not one carried `isActive: false` — while routinely
+emitting role-playing dimensions (several date roles on one fact) and snowflake shortcuts
+(a direct edge alongside the two-hop path it duplicates). The resulting model is unloadable
+in Fabric and in Desktop.
+
+On the product that surfaced this, **21 of 50 relationships closed a cycle**. The service
+reports one offending pair per attempt, so discovering them by publishing costs 21 round
+trips. Both offline gates passed: one never reads TMDL, the other only proves it
+deserializes.
+
+Worse, the role-playing edges were **invented in the renderer**, one per calendar role,
+straight into `relationships.tmdl`. They never existed in `spec.relationships`, so nothing
+that reasoned over the relationship set could see the edges causing most of the ambiguity.
+
+### Decision
+
+**Calendar role edges are shaped, not invented.** `_calendar_relationships` builds a
+`GoldRelationshipSpec` per role and `_relationships_tmdl` becomes a pure renderer. This is
+also what DD-110 already required: render may not choose deviations, and inventing an edge
+is a shape concern.
+
+**Every edge beyond a spanning forest is emitted `isActive: false`.** Union-find over the
+undirected relationship graph, in a fixed priority order. Cycle is an over-approximation of
+ambiguity in general, but every edge emitted here is single-direction many-to-one, and for
+those the two coincide.
+
+**The priority order is: authored primary, then ordinary foreign-key and bridge edges, then
+calendar roles.** Keeping role edges last means a business relationship is never deactivated
+in favour of a date role. Within a group the existing deterministic sort applies.
+
+**When several roles are undeclared, pick deterministically and report loudly — do not fail
+closed.** Which date role is active is load-bearing: `DATESYTD('dim_date'[full_date])`
+follows the active edge, so the choice is the product's fiscal semantics. Failing closed
+would block every existing multi-role hub; picking silently would change a report's meaning
+with nothing to review. So the projector picks, and lists every deactivated relationship in
+`gold_product_report` under `deactivated_relationships`.
+
+**The author overrides with `kairos-ext:goldPrimaryRelationship`, an edge-level term.**
+`"Table.column -> Table.column"`, repeatable on the `owl:Ontology` resource, fail-closed on
+a value matching no emitted relationship (`gold.unknown-primary-relationship`), mirroring
+`goldExcludeColumn` (DD-217). One term covers both ambiguity sources — a primary date role
+and a snowflake shortcut between two arbitrary tables.
+
+Deliberately **not** in `kairos.yaml`'s `gold.products` block (DD-222). That block is
+product *scope*, a delivery concern, and `GoldProductConfig` never reaches the shaper:
+`shape_gold_products` takes a product *name*, and `shape.py`'s `shape_gold_product` is a
+pure function over the `ProjectionContract` with no `hub_root`. Authoring it there would
+make `compile --emit` compute a different forest than `emit-gold` — precisely the two-path
+divergence DD-225 was about.
+
+**`guid_seed` preserves the emitted relationship names.** Calendar edges were seeded
+`calendar.<role>` in the renderer and ordinary edges `name + source_table`. In Fabric a
+renamed relationship is a *new object*, not an edit, so moving role edges into the shaper
+must not silently re-identify every date relationship in every hub.
+
+**`dim_date` becomes resolvable as a measure column dependency.** Deactivating an edge
+forces report authors onto `USERELATIONSHIP`, which needs `dim_date[full_date]` as a
+declared dependency — and `_column_by_property` resolved only against `spec.tables`, which
+never contains the synthesized calendar. Without this, #792 would deactivate edges and
+simultaneously make the only DAX workaround uncompilable.
+
+### Consequences
+
+- A hub with no ambiguity emits **byte-identical** output. Verified across every artifact of
+  both scenario fixtures: 55 artifacts, zero differences.
+- A hub *with* ambiguity gets a model that loads. Its `relationships.tmdl` gains
+  `isActive: false` lines, and its ERD labels the edge `(inactive)`.
+- An inactive relationship is still in the model: it carries its endpoints, is reachable
+  from DAX with `USERELATIONSHIP`, and is reported so the choice can be reviewed.
+- The spanning forest is stable for a given relationship set, but adding a new dimension can
+  change which of two pre-existing edges is active. That is why the deactivated set is
+  reported and why the authored override exists — a hub that cares should declare it rather
+  than depend on the tie-break.
+- `GoldRelationshipSpec.cardinality` is still computed and still unread by any renderer.
+  Emitting `fromCardinality`/`toCardinality` would change bytes for every existing hub for
+  no correctness gain today, so it stays out of this change.
