@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Cnext.eu
 """Semantic assertions over the emitted Power BI artifacts.
 
 The two gates that already run are structural. `pbip_validate` checks the package JSON
