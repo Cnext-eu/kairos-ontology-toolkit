@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +22,7 @@ from kairos_ontology.core.projector import (
     projection_targets_for_all,
     run_projections,
 )
+from kairos_ontology.core.projections.dbt.gold_render import render_gold_dbt_artifacts
 from kairos_ontology.core.projections.dbt.gold_specs import GoldContractError
 from kairos_ontology.core.projections.medallion_gold_projector import (
     generate_gold_from_compile_plan,
@@ -196,6 +198,91 @@ def test_gold_projection_survives_fk_match_count_columns(tmp_path):
     assert not plan.blocked, [item.render() for item in plan.diagnostics.items]
     artifacts = generate_gold_from_compile_plan(plan)
     assert artifacts
+    # #793: and no emitted Gold artifact declares them any more. The product report is
+    # the deliberate exception -- its `silver_authority.registry_columns` records what
+    # *Silver* holds, which is exactly where these diagnostics still live.
+    emitted = {
+        path: content
+        for path, content in artifacts.items()
+        if path.endswith((".tmdl", ".sql", ".yml", ".mmd"))
+    }
+    assert emitted
+    assert not any("_kairos_fk_" in content for content in emitted.values())
+    report = json.loads(artifacts["party/party-gold-product.json"])
+    assert not any(
+        "_kairos_fk_" in column for table in report["tables"] for column in table["columns"]
+    )
+    assert any(
+        "_kairos_fk_" in column
+        for columns in report["silver_authority"]["registry_columns"].values()
+        for column in columns
+    ), "Silver is still their home"
+
+
+def test_the_two_gold_emit_paths_agree_on_every_table_column_set(tmp_path):
+    """#793: they disagreed, and nothing offline noticed.
+
+    There is one `CompilePlan` but two `GoldTableSpec` objects shaped at different ages.
+    `shape_project` shapes `gold_product` first; `kernel._project_relationship_match_counts`
+    then appends the DD-109 diagnostic columns to `silver_models` and `replace()`s the
+    shaped project *without* re-shaping `gold_product`. So `compile --emit`, which renders
+    the Gold dbt models from that now-stale spec, omitted the columns, while `emit-gold`
+    re-shaped from the augmented models and declared them in the TMDL and the Gold DDL.
+    dbt builds the table, so the physical Delta table never matched the semantic model and
+    a Direct Lake refresh failed with a Delta protocol violation.
+
+    Excluding the diagnostics makes the two ages agree, but only incidentally -- the
+    staleness is still there, so this asserts the property that actually matters and will
+    fail if anything else is ever injected after shaping.
+    """
+    hub = tmp_path / "hub"
+    shutil.copytree(_V5_FK_HUB, hub)
+    ext_dir = hub / "model" / "extensions"
+    ext_dir.mkdir(parents=True, exist_ok=True)
+    (ext_dir / "party-gold-ext.ttl").write_text(
+        """
+        @prefix party: <https://example.test/ontology/party#> .
+        @prefix kairos-ext: <https://kairos.cnext.eu/ext#> .
+
+        <https://example.test/ontology/party>
+          kairos-ext:goldSchema "gold" ;
+          kairos-ext:goldProductProfile "dimensional-powerbi-v1" .
+
+        party:Customer
+          kairos-ext:goldTableType "dimension" ;
+          kairos-ext:goldTableName "dim_customer" ;
+          kairos-ext:goldSourceModel "customer" ;
+          kairos-ext:goldSourceVersion "1.0.0" ;
+          kairos-ext:dimensionExposure "current-only" ;
+          kairos-ext:dimensionVersionBinding "current" .
+        """,
+        encoding="utf-8",
+    )
+
+    plan = build_compile_plan(hub, "party")
+    assert not plan.blocked, [item.render() for item in plan.diagnostics.items]
+
+    # Path A -- `emit-gold`: re-shapes from the post-injection Silver models.
+    powerbi = generate_gold_from_compile_plan(plan)
+    tmdl = powerbi[next(p for p in powerbi if p.endswith("dim_customer.tmdl"))]
+    tmdl_columns = re.findall(r"^\tcolumn (.+)$", tmdl, re.MULTILINE)
+
+    # Path B -- `compile --emit`: renders from `shaped.gold_product`, shaped earlier.
+    dbt = render_gold_dbt_artifacts(
+        plan.shaped_project.gold_product,
+        plan.materialization_plan.gold,
+    )
+    sql = dbt[next(p for p in dbt if p.endswith("dim_customer.sql"))]
+    dbt_columns = [
+        line.strip().split(" as ")[-1].rstrip(",")
+        for line in sql.splitlines()
+        if " as " in line and line.startswith("    ")
+    ]
+
+    assert tmdl_columns == dbt_columns, (
+        "the semantic model and the dbt model that builds its table disagree:\n"
+        f"  TMDL: {tmdl_columns}\n  dbt : {dbt_columns}"
+    )
 
 
 def test_gold_relationship_uses_surrogate_fk_not_natural_key_despite_match_count_column(

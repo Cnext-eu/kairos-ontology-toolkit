@@ -116,6 +116,35 @@ def _primary_key(model: SilverModelSpec) -> str:
     return model.columns[0].name if model.columns else ""
 
 
+def _emitted_primary_key(
+    model: SilverModelSpec,
+    columns: tuple[GoldColumnSpec, ...],
+    resource_uri: str,
+) -> str:
+    """Return the table's primary key, proving it is a column Gold actually emits.
+
+    `_primary_key` reads the raw Silver model, while the emitted column set is filtered
+    -- by `goldExcludeColumn` (DD-217) and, since #793, by the DD-109 match-count
+    diagnostic. Nothing reconciled the two, so a key could name a column the product does
+    not contain, and the failure was silent four ways over: `_shape_relationships` points
+    `toColumn` at a column that is not there, while `isKey`, the dbt `unique` test and the
+    ERD `PK` marker all just stop appearing. Power BI accepts the dangling endpoint at
+    validation and fails when it loads the model.
+    """
+    key = _primary_key(model)
+    if key and not any(column.name == key for column in columns):
+        _fail(
+            "gold.primary-key-not-emitted",
+            (
+                f"{model.identity.model_name} has primary key {key!r}, which this Gold "
+                "product does not emit"
+            ),
+            rule_id="DD-112-silver-binding",
+            resource_uri=resource_uri,
+        )
+    return key
+
+
 #: Silver column roles always hidden from a report author's field list (#744).
 #:
 #: The columns a dimensional model needs but nobody browses: the surrogate key, the
@@ -140,6 +169,27 @@ _HIDDEN_COLUMN_ROLES = frozenset(
         SilverColumnRole.HISTORY.value,
     }
 )
+
+
+#: The rule tag both producers of a DD-109 match-count column agree on. The compiler
+#: injects one flavour (`kernel._project_relationship_match_counts`, provenance
+#: `relationship:<uri>`) and the shaper another (`shape.py`, provenance `property:<uri>`),
+#: so neither the name nor the `property:` tag identifies the pair -- but both carry this.
+_MATCH_COUNT_RULE = "rule:DD-109-temporal-fk"
+
+
+def _is_match_count_diagnostic(column) -> bool:
+    """Return whether *column* is a DD-109 temporal-lookup match-count diagnostic.
+
+    These count how many parent rows a temporal lookup matched. They are a *Silver*
+    quality signal, and they stay in Silver (#793).
+
+    Deliberately not decided by `_is_hidden_by_role`: that predicate matches any
+    `foreign-key` column without a `property:` tag, which is both this column *and* the
+    DD-133 generated `{target}_sk` surrogate -- the column relationships actually join
+    on. Filtering Gold on that predicate would strip every surrogate key.
+    """
+    return _MATCH_COUNT_RULE in column.provenance
 
 
 def _is_hidden_by_role(column) -> bool:
@@ -219,6 +269,16 @@ def _columns(
     result: list[GoldColumnSpec] = []
     for column in model.columns:
         if column.name in excluded:
+            continue
+        # #793. The compiler adds these to `silver_models` *after* `shape_project` has
+        # already shaped `gold_product`, so the two Gold consumers disagreed about the
+        # table's shape: `compile --emit` rendered the dbt model from the stale spec and
+        # omitted them, while `emit-gold` re-shaped from the augmented models and put
+        # them in the TMDL and the Gold DDL. dbt builds the table, so the physical Delta
+        # table never had the column the semantic model declared, and a Direct Lake
+        # refresh failed with a Delta protocol violation. Excluding them here is the one
+        # place every Gold writer derives from, so all three agree by construction.
+        if _is_match_count_diagnostic(column):
             continue
         if column.canonical_type is None or column.nullable is None:
             _fail(
@@ -1045,6 +1105,7 @@ def _shape_tables(
             # should hear about it.
             if name not in table_excluded and any(column.name == name for column in model.columns)
         )
+        emitted_columns = _columns(model, authored.resource_uri, table_excluded, table_hidden)
         tables.append(
             GoldTableSpec(
                 resource_uri=authored.resource_uri,
@@ -1053,8 +1114,12 @@ def _shape_tables(
                 role=authored.role.value,
                 source_model=actual_name,
                 source_version=actual_version,
-                columns=_columns(model, authored.resource_uri, table_excluded, table_hidden),
-                primary_key=_primary_key(model),
+                columns=emitted_columns,
+                primary_key=_emitted_primary_key(
+                    model,
+                    emitted_columns,
+                    authored.resource_uri,
+                ),
                 fact_grain=(authored.fact_grain.value if authored.fact_grain is not None else ""),
                 fact_type=(authored.fact_type.value if authored.fact_type is not None else None),
                 version_binding=(
