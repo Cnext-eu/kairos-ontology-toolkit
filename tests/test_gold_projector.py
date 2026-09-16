@@ -388,7 +388,7 @@ def test_measure_dax_referencing_unemitted_table_blocks(tmp_path: Path):
     # stale `dim_`-prefixed name) used to render silently instead of failing closed.
     text = _gold_text("invoice").replace(
         'kairos-ext:measureExpression "SUM([total_amount])" ;',
-        'kairos-ext:measureExpression "SUM([total_amount]) + COUNTROWS(\'dim_acmeparty\')" ;',
+        "kairos-ext:measureExpression \"SUM([total_amount]) + COUNTROWS('dim_acmeparty')\" ;",
         1,
     )
     with pytest.raises(GoldContractError, match="unresolved-dax-table-reference"):
@@ -803,6 +803,7 @@ def test_direct_lake_emits_promotable_parameterisation(client_gold):
     # lineageTags, where rewriting it would be wrong.
     assert entry["find_value"].count("/") >= 4
 
+
 def test_direct_lake_named_expression_is_emitted_and_referenced(client_gold):
     # #619 Bugs 4/6: Direct Lake has no per-table connection string -- every partition
     # resolves through one shared OneLake named expression, quoted wherever referenced
@@ -1061,8 +1062,7 @@ def test_pbip_declares_the_published_schema_uri_exactly(invoice_gold):
     """
     pbip = json.loads(invoice_gold["invoice/Invoice.pbip"])
     assert pbip["$schema"] == (
-        "https://developer.microsoft.com/json-schemas/fabric/pbip/"
-        "pbipProperties/1.0.0/schema.json"
+        "https://developer.microsoft.com/json-schemas/fabric/pbip/pbipProperties/1.0.0/schema.json"
     )
     assert "/fabric/item/pbipProperties/" not in pbip["$schema"]
 
@@ -1116,3 +1116,104 @@ def test_every_emitted_package_file_validates_against_its_declared_schema(invoic
     assert any(name.endswith(".platform") for name in checked)
     assert any(name.endswith(".pbir") for name in checked)
     assert any(name.endswith(".pbism") for name in checked)
+
+
+class TestCalculationGroupIsALoadableTomObject:
+    """#790/#791: both offline gates passed and Fabric refused to create the model.
+
+    A calculation group is a table. The engine enforces rules on it that
+    `TmdlSerializer.DeserializeDatabaseFromFolder` does not, so a group carrying nothing
+    but `calculationItem` lines parsed cleanly, shipped, and was rejected at create time.
+    """
+
+    def _group(self, artifacts: dict[str, str]) -> str:
+        path = next(path for path in artifacts if "/calculationGroups/" in path)
+        return artifacts[path]
+
+    def _model(self, artifacts: dict[str, str]) -> str:
+        return artifacts[next(path for path in artifacts if path.endswith("/model.tmdl"))]
+
+    def test_the_group_declares_its_name_and_ordinal_columns(self, invoice_gold):
+        group = self._group(invoice_gold)
+        columns = re.findall(r"^\tcolumn (.+)$", group, re.MULTILINE)
+        assert columns == ["'Time Calculation'", "Ordinal"], group
+
+    def test_the_name_column_sorts_by_the_ordinal_not_alphabetically(self, invoice_gold):
+        group = self._group(invoice_gold)
+        assert "\t\tsortByColumn: Ordinal" in group
+        assert "\t\tsourceColumn: Name" in group
+        # The sort target has to exist, or the reference dangles and the model is
+        # rejected for a second, less obvious reason.
+        assert "\tcolumn Ordinal" in group
+
+    def test_the_ordinal_column_is_hidden_from_the_field_list(self, invoice_gold):
+        group = self._group(invoice_gold)
+        ordinal = group.split("\tcolumn Ordinal")[1]
+        assert "\t\tisHidden" in ordinal
+
+    def test_every_calculation_item_carries_a_deterministic_ordinal(self, invoice_gold):
+        group = self._group(invoice_gold)
+        items = re.findall(r"^\t\tcalculationItem (\S+) =", group, re.MULTILINE)
+        ordinals = re.findall(r"^\t\t\tordinal: (\d+)$", group, re.MULTILINE)
+        assert items == ["Current", "YTD", "QTD", "MTD"]
+        assert ordinals == ["0", "1", "2", "3"]
+
+    def test_the_group_has_a_partition(self, invoice_gold):
+        assert "\tpartition 'Time Intelligence' = calculationGroup" in self._group(invoice_gold)
+
+    def test_the_model_discourages_implicit_measures(self, invoice_gold):
+        """The engine will not create *any* calculation group without it (#791)."""
+        assert "\tdiscourageImplicitMeasures" in self._model(invoice_gold)
+
+    def test_the_model_refs_the_calculation_group_table(self, invoice_gold):
+        assert "ref table 'Time Intelligence'" in self._model(invoice_gold)
+
+    def test_a_model_without_a_calendar_discourages_nothing(self, client_gold):
+        """`client` has no approved calendar, so it emits no group and needs no flag."""
+        assert not any("/calculationGroups/" in path for path in client_gold)
+        assert "discourageImplicitMeasures" not in self._model(client_gold)
+
+
+class TestGoldSemanticGate:
+    """The gate #623 asked for and never got: checks TOM deserialization cannot make."""
+
+    def test_a_column_less_calculation_group_is_rejected(self):
+        from kairos_ontology.core.projections.dbt.gold_assert import assert_gold_semantics
+
+        artifacts = {
+            "x.SemanticModel/definition/model.tmdl": (
+                "model Model\n\tdiscourageImplicitMeasures\n"
+            ),
+            "x.SemanticModel/definition/calculationGroups/t.tmdl": (
+                "table 'Time Intelligence'\n"
+                "\tcalculationGroup\n"
+                "\t\tcalculationItem Current = SELECTEDMEASURE()\n"
+            ),
+        }
+        with pytest.raises(GoldContractError, match="gold.calculation-group-columns"):
+            assert_gold_semantics(artifacts)
+
+    def test_a_calculation_group_without_discouraged_implicit_measures_is_rejected(self):
+        from kairos_ontology.core.projections.dbt.gold_assert import assert_gold_semantics
+
+        group = (
+            "table 'Time Intelligence'\n"
+            "\tcalculationGroup\n"
+            "\t\tcalculationItem Current = SELECTEDMEASURE()\n"
+            "\t\t\tordinal: 0\n"
+            "\tcolumn 'Time Calculation'\n"
+            "\t\tsortByColumn: Ordinal\n"
+            "\tcolumn Ordinal\n"
+            "\tpartition 'Time Intelligence' = calculationGroup\n"
+        )
+        artifacts = {
+            "x.SemanticModel/definition/model.tmdl": "model Model\n\tculture: en-GB\n",
+            "x.SemanticModel/definition/calculationGroups/t.tmdl": group,
+        }
+        with pytest.raises(GoldContractError, match="gold.implicit-measures-not-discouraged"):
+            assert_gold_semantics(artifacts)
+
+    def test_a_model_with_no_calculation_group_is_not_asked_for_the_flag(self):
+        from kairos_ontology.core.projections.dbt.gold_assert import assert_gold_semantics
+
+        assert_gold_semantics({"x.SemanticModel/definition/model.tmdl": "model Model\n"})

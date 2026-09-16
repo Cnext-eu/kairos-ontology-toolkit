@@ -11,6 +11,7 @@ from datetime import date
 import yaml
 
 from .capabilities import physical_canonical_type
+from .gold_assert import assert_gold_semantics
 from .gold_connection import (
     GOLD_CONNECTION_RULE_ID,
     GOLD_DIRECT_LAKE_RULE_ID,
@@ -107,6 +108,10 @@ _REPORT_DEFINITION_VERSION = "2.0.0"
 # `expressionSource` points at. TMDL names containing spaces/hyphens must be
 # single-quoted (Bug 6) wherever they are referenced.
 _DIRECT_LAKE_EXPRESSION_NAME = "DirectLake - Kairos Gold"
+
+#: The calculation-group table's name. Quoted wherever it is referenced, because TMDL
+#: requires single quotes around a name containing a space.
+_TIME_INTELLIGENCE_TABLE = "Time Intelligence"
 
 # fabric-cicd reads exactly this file from the root of the ``repository_directory``
 # it is pointed at (``fabric_cicd.constants.PARAMETER_FILE_NAME``), so the artifact
@@ -695,6 +700,10 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
             f"\tculture: {locale}",
             "\tdefaultPowerBIDataSourceVersion: powerBI_V3",
             f"\tsourceQueryCulture: {locale}",
+            # #791. The engine refuses to create *any* calculation group unless the model
+            # discourages implicit measures, so this is coupled to the calendar flag that
+            # gates emitting the group at all -- not an independent preference.
+            *(("\tdiscourageImplicitMeasures",) if has_calendar else ()),
             "\tdataAccessOptions",
             "\t\tlegacyRedirects",
             "\t\treturnErrorValuesAsNull",
@@ -705,7 +714,14 @@ def _model_tmdl(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
             f"\tannotation __PBI_TimeIntelligenceEnabled = {time_enabled}",
             "",
             *(f"ref table {table.name}" for table in spec.tables),
-            *(("ref table dim_date",) if has_calendar else ()),
+            # A calculation group is a table and needs its own `ref` for the engine to
+            # discover `calculationGroups/time-intelligence.tmdl`, exactly as #619 found
+            # for the ordinary tables.
+            *(
+                ("ref table dim_date", f"ref table '{_TIME_INTELLIGENCE_TABLE}'")
+                if has_calendar
+                else ()
+            ),
             *(
                 (f"ref expression '{_DIRECT_LAKE_EXPRESSION_NAME}'",)
                 if physical.semantic_mode == "directLake"
@@ -1036,30 +1052,73 @@ def _perspectives_tmdl(spec: DimensionalGoldSpec) -> str:
     return "\n".join(lines)
 
 
+#: The time-intelligence calculation items, in the order a report author reads them. The
+#: ordinal is emitted explicitly and drives `sortByColumn: Ordinal`, so the group sorts
+#: chronologically instead of alphabetically (which would read Current, MTD, QTD, YTD).
+_TIME_INTELLIGENCE_ITEMS: tuple[tuple[str, str], ...] = (
+    ("Current", "SELECTEDMEASURE()"),
+    ("YTD", "CALCULATE(SELECTEDMEASURE(), DATESYTD('dim_date'[full_date]))"),
+    ("QTD", "CALCULATE(SELECTEDMEASURE(), DATESQTD('dim_date'[full_date]))"),
+    ("MTD", "CALCULATE(SELECTEDMEASURE(), DATESMTD('dim_date'[full_date]))"),
+)
+
+
 def _time_intelligence_tmdl(calendar: GoldCalendarSpec) -> str:
-    return "\n".join(
+    """Render the time-intelligence calculation group as a loadable TOM object.
+
+    A calculation group is a table, and the engine enforces three things a bare list of
+    `calculationItem`s does not satisfy (#790):
+
+    * it carries **1-2 data columns** -- the name column the user picks from and the
+      ordinal that sorts it. Emitting only the items produced a table with *zero*
+      columns;
+    * the name column sorts by the ordinal, so the items read chronologically;
+    * it has a partition, of the `calculationGroup` source type.
+
+    None of that is visible to the bundled gate: `tmdl_validate` only runs
+    `TmdlSerializer.DeserializeDatabaseFromFolder`, and a column-less calculation group
+    deserializes cleanly. The service rejects it at create time instead, with
+    "The total number of data columns inside the calculation group table 'Time
+    Intelligence' is 0, while calculation group table only supports 1 or 2 data columns."
+    """
+    lines = [
+        f"table '{_TIME_INTELLIGENCE_TABLE}'",
+        f"\tlineageTag: {_guid('time-intelligence')}",
+        '\tannotation Kairos_CalendarProfile = "approved"',
+        "",
+        "\tcalculationGroup",
+    ]
+    for ordinal, (name, expression) in enumerate(_TIME_INTELLIGENCE_ITEMS):
+        lines.extend(
+            [
+                f"\t\tcalculationItem {name} = {expression}",
+                f"\t\t\tordinal: {ordinal}",
+                "",
+            ]
+        )
+    lines.extend(
         [
-            "table 'Time Intelligence'",
-            f"\tlineageTag: {_guid('time-intelligence')}",
-            '\tannotation Kairos_CalendarProfile = "approved"',
+            "\tcolumn 'Time Calculation'",
+            "\t\tdataType: string",
+            f"\t\tlineageTag: {_guid('time-intelligence.name')}",
+            "\t\tsourceColumn: Name",
+            "\t\tsortByColumn: Ordinal",
+            "\t\tsummarizeBy: none",
             "",
-            "\tcalculationGroup",
-            "\t\tcalculationItem Current = SELECTEDMEASURE()",
-            (
-                "\t\tcalculationItem YTD = CALCULATE("
-                "SELECTEDMEASURE(), DATESYTD('dim_date'[full_date]))"
-            ),
-            (
-                "\t\tcalculationItem QTD = CALCULATE("
-                "SELECTEDMEASURE(), DATESQTD('dim_date'[full_date]))"
-            ),
-            (
-                "\t\tcalculationItem MTD = CALCULATE("
-                "SELECTEDMEASURE(), DATESMTD('dim_date'[full_date]))"
-            ),
+            "\tcolumn Ordinal",
+            "\t\tdataType: int64",
+            "\t\tformatString: 0",
+            "\t\tisHidden",
+            f"\t\tlineageTag: {_guid('time-intelligence.ordinal')}",
+            "\t\tsourceColumn: Ordinal",
+            "\t\tsummarizeBy: sum",
+            "",
+            f"\tpartition '{_TIME_INTELLIGENCE_TABLE}' = calculationGroup",
+            "\t\tmode: import",
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 def _dax(spec: DimensionalGoldSpec) -> str:
@@ -1375,4 +1434,9 @@ def render_powerbi_artifacts(
         artifacts[PARAMETER_ARTIFACT_PATH] = _direct_lake_parameter_yaml(direct_lake_connection)
     elif connection is not None:
         artifacts[PARAMETER_ARTIFACT_PATH] = _parameter_yaml(connection)
+    # The third gate (#790/#791). `pbip_validate` never reads TMDL and `tmdl_validate`
+    # only proves it deserializes, so this is the only check that looks at what the
+    # engine will actually refuse. It runs here rather than in either CLI so `emit-gold`
+    # and `package-powerbi-release` both inherit it.
+    assert_gold_semantics(artifacts)
     return dict(sorted(artifacts.items()))
