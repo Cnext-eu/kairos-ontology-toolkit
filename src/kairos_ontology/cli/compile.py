@@ -788,6 +788,8 @@ def compile_cmd(
                 emit_mode=emit_mode,
                 no_cache=no_cache,
                 output_format=output_format,
+                whole_hub=all_domains,
+                quiet=quiet,
             )
             events.emit(
                 events.COMPILE_DOMAIN_COMPLETED,
@@ -896,6 +898,73 @@ def _gate_payload(domain: str, mode: CompileMode, diagnostics: list) -> dict[str
     }
 
 
+def _stale_dependent_domains(hub: Path, emit_target: Path, emitted: str) -> tuple[str, ...]:
+    """Return the other domains whose committed output no longer matches the hub (#796).
+
+    A domain's provenance sidecar records the sha256 of every authored file in its
+    transitive import closure, so editing one domain's `.ttl` or contract invalidates the
+    recorded provenance of every domain that imports it, directly or transitively. A
+    per-domain emit refreshes only the domain it was given, reports success, and leaves
+    the rest of the committed tree stale -- which nothing notices until CI's drift gate
+    re-emits everything and produces a large hash-only diff.
+
+    The toolkit already holds what it needs to say so: each sidecar enumerates its inputs
+    with their digests, so the answer is a lookup against the working tree, not an
+    inference. Reported, never fatal -- the output that was written is correct, just
+    incomplete.
+    """
+    metadata = emit_target / "metadata"
+    if not metadata.is_dir():
+        return ()
+    digests: dict[str, str | None] = {}
+
+    def digest(name: str) -> str | None:
+        if name not in digests:
+            path = hub / name
+            try:
+                content = path.read_text(encoding="utf-8")
+            except OSError:
+                # An input that cannot be read now cannot be compared. Staying quiet is
+                # right: the drift gate is the backstop, and a false alarm here would
+                # train people to ignore this warning.
+                digests[name] = None
+            else:
+                digests[name] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return digests[name]
+
+    stale: set[str] = set()
+    for sidecar in sorted(metadata.glob("*.provenance.json")):
+        try:
+            document = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        domain = document.get("domain")
+        if not isinstance(domain, str) or domain == emitted:
+            continue
+        for item in document.get("inputs", ()):
+            if not isinstance(item, dict):
+                continue
+            name, recorded = item.get("name"), item.get("sha256")
+            if not isinstance(name, str) or not isinstance(recorded, str):
+                continue
+            current = digest(name)
+            if current is not None and current != recorded:
+                stale.add(domain)
+                break
+    return tuple(sorted(stale))
+
+
+def _report_stale_dependents(domains: tuple[str, ...], *, quiet: bool) -> None:
+    if not domains or quiet:
+        return
+    click.echo(
+        f"! {len(domains)} other domain(s) record authored inputs that have changed "
+        "since they were emitted;"
+    )
+    click.echo(f"  their committed output is now stale: {', '.join(domains)}")
+    click.echo("  run: kairos-ontology compile --all --emit --confirm-emit")
+
+
 def _compile_one_domain(
     hub: Path,
     domain: str,
@@ -906,6 +975,8 @@ def _compile_one_domain(
     emit_mode: bool,
     no_cache: bool,
     output_format: str,
+    whole_hub: bool = False,
+    quiet: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Run every gate, then compile, for exactly one domain.
 
@@ -1056,12 +1127,19 @@ def _compile_one_domain(
         # not a second compile.
         result = replace(result, mode="check+explain")
     emit_target = None
+    stale_dependents: tuple[str, ...] = ()
     if emit_mode and result.can_emit:
         # The emit location is fixed and not configurable: derived dbt artifacts
         # always land in the sibling publish root, never inside the hub.
         requested_target = publish_root(hub) / _DBT_EMIT_SUBPATH
         emit_target = _emit_compile_artifacts(result, requested_target, hub)
+        # Only meaningful for a partial emit: `--all` has just refreshed everything,
+        # so anything it would report is already fixed (#796).
+        if not whole_hub:
+            stale_dependents = _stale_dependent_domains(hub, emit_target, domain)
     payload = _payload(result) if output_format == "json" else None
+    if payload is not None and stale_dependents:
+        payload["stale_dependent_domains"] = list(stale_dependents)
     if payload is None:
         for diagnostic in result.diagnostics.ordered:
             click.echo(diagnostic.render(), err=not result.succeeded)
@@ -1107,4 +1185,5 @@ def _compile_one_domain(
                 click.echo(
                     f"✓ {domain}: emitted {len(result.artifacts)} artifact(s) to {emit_target}"
                 )
+                _report_stale_dependents(stale_dependents, quiet=quiet)
     return result.succeeded, payload
