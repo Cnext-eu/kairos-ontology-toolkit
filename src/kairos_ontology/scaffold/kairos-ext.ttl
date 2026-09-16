@@ -262,6 +262,12 @@ kairos-ext:goldHideColumn a owl:AnnotationProperty ;
     rdfs:domain owl:Ontology ;
     rdfs:range xsd:string .
 
+kairos-ext:goldPrimaryRelationship a owl:AnnotationProperty ;
+    rdfs:label "gold primary relationship"@en ;
+    rdfs:comment "Declare which relationship stays active when several join the same two tables, as \"Table.column -> Table.column\" (issue #792). Power BI allows one active filter path between any two tables, so several date roles on one fact, or a snowflake shortcut alongside the multi-hop path it duplicates, make the model unloadable. The projector deactivates the surplus deterministically on its own; this annotation says which one it should keep, rather than letting emit order decide semantics the report depends on -- the active date role is the one time intelligence follows. Repeatable; set on the owl:Ontology resource. Fail-closed: a value matching no emitted relationship is rejected (gold.unknown-primary-relationship). A deactivated relationship is still in the model and is reachable from DAX with USERELATIONSHIP."@en ;
+    rdfs:domain owl:Ontology ;
+    rdfs:range xsd:string .
+
 kairos-ext:goldIncludeImports a owl:AnnotationProperty ;
     rdfs:label "gold include imports"@en ;
     rdfs:comment "Bulk-claim all first-level imported classes for gold projection (DD-021). Set on the owl:Ontology resource. Peer hub domain imports are excluded."@en ;

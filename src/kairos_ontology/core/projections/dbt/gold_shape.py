@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..uri_utils import camel_to_snake
 from .gold_specs import (
@@ -70,6 +70,12 @@ _CALENDAR_ROLE = re.compile(
     r"(?P<table>[A-Za-z_][A-Za-z0-9_]*)\."
     r"(?P<column>[A-Za-z_][A-Za-z0-9_]*)$"
 )
+#: The calendar table every role-playing date joins, and the column it joins on. It is
+#: synthesized by the renderer rather than shaped as a `GoldTableSpec`, so the ambiguity
+#: graph has to carry it as a node that no table lookup will ever resolve.
+CALENDAR_TABLE = "dim_date"
+CALENDAR_COLUMN = "full_date"
+
 _DAX_REFERENCE = re.compile(r"\[([^\]]+)\]")
 # #619 Bug 11: a DAX table reference is either a single-quoted name (DAX never uses single
 # quotes for string literals, only table names -- e.g. COUNTROWS('dim_acmeparty')) or a
@@ -312,9 +318,17 @@ def _columns(
     return tuple(result)
 
 
+#: `dim_date`'s emitted columns. The calendar table is synthesized by the renderer
+#: rather than shaped as a `GoldTableSpec`, so nothing that resolves against
+#: `spec.tables` can see it -- which made every measure referencing it unauthorable.
+_CALENDAR_COLUMNS = frozenset({CALENDAR_COLUMN, "date_key"})
+
+
 def _column_by_property(
     tables: tuple[GoldTableSpec, ...],
     dependency: str,
+    *,
+    has_calendar: bool = False,
 ) -> tuple[str, str] | None:
     exact = [
         (table.name, column.name)
@@ -333,6 +347,12 @@ def _column_by_property(
         )
     if "." in dependency and not dependency.startswith(("http://", "https://", "urn:")):
         table_name, column_name = dependency.rsplit(".", 1)
+        # #792 deactivates the surplus role-playing date relationships, and the only
+        # way a report author reaches an inactive one is USERELATIONSHIP -- which
+        # needs `dim_date[full_date]` as a declared column dependency. Resolving it
+        # here is what makes that measure authorable at all.
+        if has_calendar and table_name == CALENDAR_TABLE and column_name in _CALENDAR_COLUMNS:
+            return table_name, column_name
         if any(
             table.name == table_name and any(column.name == column_name for column in table.columns)
             for table in tables
@@ -388,7 +408,7 @@ def _shape_measures(
         measure_dependencies = tuple(shape(item) for item in source.dependencies.measures.value)
         column_dependencies: list[tuple[str, str]] = []
         for dependency in source.dependencies.columns.value:
-            resolved = _column_by_property(tables, dependency)
+            resolved = _column_by_property(tables, dependency, has_calendar=has_calendar)
             if resolved is None:
                 _fail(
                     "measure.missing-column-dependency",
@@ -885,6 +905,150 @@ def _shape_relationships(
     )
 
 
+_PRIMARY_RELATIONSHIP = re.compile(
+    r"^(?P<from_table>[A-Za-z_][A-Za-z0-9_]*)\.(?P<from_column>[A-Za-z_][A-Za-z0-9_]*)"
+    r"\s*->\s*"
+    r"(?P<to_table>[A-Za-z_][A-Za-z0-9_]*)\.(?P<to_column>[A-Za-z_][A-Za-z0-9_]*)$"
+)
+
+
+def _calendar_relationships(
+    calendar: GoldCalendarSpec | None,
+) -> tuple[GoldRelationshipSpec, ...]:
+    """Shape one relationship per role-playing date (#792).
+
+    These used to be invented in `_relationships_tmdl`, which meant they never appeared
+    in `spec.relationships` at all -- so nothing that reasoned over the relationship set
+    could see them, and they are exactly the edges that cause most of the ambiguity: N
+    date roles on one fact are N paths between that fact and `dim_date`.
+
+    The `guid_seed` preserves the renderer's old naming so a hub's relationship
+    identities do not all change the first time it re-emits.
+    """
+    if calendar is None or not calendar.approved:
+        return ()
+    return tuple(
+        GoldRelationshipSpec(
+            name=f"calendar_{role.role_name}",
+            source_table=role.table_name,
+            source_column=role.column_name,
+            target_table=CALENDAR_TABLE,
+            target_column=CALENDAR_COLUMN,
+            cardinality="many-to-one",
+            version_binding=None,
+            role_name=role.role_name,
+            guid_seed=f"calendar.{role.role_name}",
+        )
+        for role in calendar.roles
+    )
+
+
+def _primary_relationship_keys(
+    policy: MedallionPolicySpec,
+    relationships: tuple[GoldRelationshipSpec, ...],
+) -> frozenset[tuple[str, str, str, str]]:
+    """Return the endpoints the author declared primary, failing closed on a stale one.
+
+    Mirrors `goldExcludeColumn` (DD-217): the whole value of the term is that a specific
+    relationship stays active, so a value matching nothing must not read as success.
+    """
+    declared = tuple(getattr(policy.gold, "primary_relationships", ()) or ())
+    if not declared:
+        return frozenset()
+    available = {
+        (
+            item.source_table.casefold(),
+            item.source_column.casefold(),
+            item.target_table.casefold(),
+            item.target_column.casefold(),
+        )
+        for item in relationships
+    }
+    keys: set[tuple[str, str, str, str]] = set()
+    for value in declared:
+        match = _PRIMARY_RELATIONSHIP.fullmatch(value.strip())
+        if match is None:
+            _fail(
+                "gold.unknown-primary-relationship",
+                (f'goldPrimaryRelationship {value!r} must use "Table.column -> Table.column"'),
+                rule_id="DD-112-relationship-activation",
+                resource_uri=policy.gold.ontology_uri,
+            )
+        key = (
+            match.group("from_table").casefold(),
+            match.group("from_column").casefold(),
+            match.group("to_table").casefold(),
+            match.group("to_column").casefold(),
+        )
+        if key not in available:
+            _fail(
+                "gold.unknown-primary-relationship",
+                f"goldPrimaryRelationship {value!r} names no emitted relationship",
+                rule_id="DD-112-relationship-activation",
+                resource_uri=policy.gold.ontology_uri,
+            )
+        keys.add(key)
+    return frozenset(keys)
+
+
+def _resolve_ambiguous_paths(
+    relationships: tuple[GoldRelationshipSpec, ...],
+    primary: frozenset[tuple[str, str, str, str]],
+) -> tuple[GoldRelationshipSpec, ...]:
+    """Deactivate every relationship beyond a spanning forest (#792).
+
+    Power BI allows one *active* filter path between any two tables. Treating the emitted
+    relationships as an undirected graph, every edge beyond a spanning forest closes a
+    cycle and so creates a second path; the engine refuses to load the model, reporting
+    one offending pair per attempt. On the product that surfaced this, 21 of 50 edges
+    closed a cycle -- 21 round trips to discover by publishing, one pass to compute here.
+
+    Cycle is an over-approximation of ambiguity in general, but every edge emitted here is
+    single-direction many-to-one, and for those the two coincide.
+
+    Edges are considered in a fixed priority order so the choice is deterministic and
+    reviewable: whatever the author declared primary, then the ordinary foreign-key and
+    bridge edges, then the calendar roles. Within a group the existing sort order applies.
+    Keeping role edges last means a business relationship is never deactivated in favour
+    of a date role.
+    """
+
+    def priority(item: GoldRelationshipSpec) -> tuple[int, str, str, str]:
+        key = (
+            item.source_table.casefold(),
+            item.source_column.casefold(),
+            item.target_table.casefold(),
+            item.target_column.casefold(),
+        )
+        if key in primary:
+            rank = 0
+        elif not item.role_name:
+            rank = 1
+        else:
+            rank = 2
+        return (rank, item.source_table, item.source_column, item.target_table)
+
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    active: set[int] = set()
+    for item in sorted(relationships, key=priority):
+        left, right = find(item.source_table), find(item.target_table)
+        if left == right:
+            continue
+        parent[left] = right
+        active.add(id(item))
+    return tuple(
+        item if id(item) in active else replace(item, is_active=False) for item in relationships
+    )
+
+
 def _shape_tables(
     policy: MedallionPolicySpec,
     registry: SilverRegistry,
@@ -1258,8 +1422,9 @@ def _shape_dimensional_product(
     for member in members:
         models.update({model.identity.model_name: model for model in member.silver_models})
         descriptors.extend(member.foreign_keys.descriptors)
-    relationships, unresolved = _shape_relationships(ordered, tuple(descriptors), models)
-
+    # The calendar is shaped *before* the relationships it contributes edges to: each
+    # role-playing date is a path between its fact and `dim_date`, and the spanning
+    # forest below cannot resolve ambiguity it cannot see (#792).
     calendar_owner = _sole(
         members,
         lambda member: member.policy.gold.calendar,
@@ -1269,6 +1434,13 @@ def _shape_dimensional_product(
     calendar = (
         _shape_calendar(calendar_owner.policy, ordered) if calendar_owner is not None else None
     )
+
+    relationships, unresolved = _shape_relationships(ordered, tuple(descriptors), models)
+    relationships = relationships + _calendar_relationships(calendar)
+    declared_primary: frozenset[tuple[str, str, str, str]] = frozenset()
+    for member in members:
+        declared_primary |= _primary_relationship_keys(member.policy, relationships)
+    relationships = _resolve_ambiguous_paths(relationships, declared_primary)
     security_owner = _sole(
         members,
         lambda member: member.policy.gold.security,

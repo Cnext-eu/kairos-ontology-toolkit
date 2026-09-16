@@ -3406,6 +3406,11 @@ def _normalize_gold(
         hidden_columns=(
             tuple(fact.hidden_columns.values) if fact.hidden_columns is not None else ()
         ),
+        primary_relationships=(
+            tuple(fact.primary_relationships.values)
+            if fact.primary_relationships is not None
+            else ()
+        ),
         ontology_uri=fact.ontology_uri,
         profile=profile,
         schema=(

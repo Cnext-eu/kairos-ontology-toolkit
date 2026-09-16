@@ -909,6 +909,9 @@ class GoldProductFact:
     excluded_columns: AuthoredValuesFact | None = None
     #: ``kairos-ext:goldHideColumn`` values, each ``"Table.column"`` (#744).
     hidden_columns: AuthoredValuesFact | None = None
+    #: ``kairos-ext:goldPrimaryRelationship`` values, each
+    #: ``"Table.column -> Table.column"`` (#792).
+    primary_relationships: AuthoredValuesFact | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1030,6 +1033,10 @@ class GoldProductSpec:
     #: ``kairos-ext:goldHideColumn`` values, each ``"Table.column"`` (#744). Carried
     #: verbatim for the same reason as ``excluded_columns``.
     hidden_columns: tuple[str, ...] = ()
+    #: ``kairos-ext:goldPrimaryRelationship`` values, each
+    #: ``"Table.column -> Table.column"`` (#792). Carried verbatim: the relationship set
+    #: they select from only exists once the tables have been shaped.
+    primary_relationships: tuple[str, ...] = ()
     #: The ontology this product was authored on, for diagnostics that have no table.
     ontology_uri: str = ""
 
