@@ -1290,3 +1290,18 @@ class TestPartialEmitReportsStaleDependents:
         _report_stale_dependents(("booking",), quiet=True)
 
         assert capsys.readouterr().out == ""
+
+    def test_an_input_path_escaping_the_hub_is_ignored(self, tmp_path):
+        """The sidecar is generated, but it is still a file this reads paths out of."""
+        hub, emit_target = self._hub_with_sidecars(tmp_path, shared="# original\n")
+        (emit_target / "metadata" / "booking.provenance.json").write_text(
+            json.dumps(
+                {
+                    "domain": "booking",
+                    "inputs": [{"name": "../../etc/passwd", "sha256": "0" * 64}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert _stale_dependent_domains(hub, emit_target, "party") == ()

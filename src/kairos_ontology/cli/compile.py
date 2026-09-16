@@ -920,7 +920,13 @@ def _stale_dependent_domains(hub: Path, emit_target: Path, emitted: str) -> tupl
 
     def digest(name: str) -> str | None:
         if name not in digests:
-            path = hub / name
+            # The sidecar is toolkit-generated, but it is still a file on disk this
+            # reads paths out of, so keep the lookup inside the hub.
+            candidate = Path(name)
+            if candidate.is_absolute() or ".." in candidate.parts:
+                digests[name] = None
+                return digests[name]
+            path = hub / candidate
             try:
                 content = path.read_text(encoding="utf-8")
             except OSError:
