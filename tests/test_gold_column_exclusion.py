@@ -101,3 +101,27 @@ def test_the_vocabulary_declares_the_term():
     text = (_SCAFFOLD_DIR / "kairos-ext.ttl").read_text(encoding="utf-8")
     assert "kairos-ext:goldExcludeColumn a owl:AnnotationProperty" in text
     assert "rdfs:domain owl:Ontology" in text
+
+
+class TestThePrimaryKeyMustBeEmitted:
+    """#793: `_primary_key` read the raw Silver model, `_columns` the filtered set.
+
+    Nothing reconciled them, so excluding the key left `GoldTableSpec.primary_key`
+    naming a column the product does not contain -- and every consequence was silent.
+    The relationship shaper points `toColumn` at it, and `isKey`, the dbt `unique` test
+    and the ERD `PK` marker simply stop appearing. Power BI accepts the dangling
+    endpoint at validation and rejects the model when it loads it.
+    """
+
+    def test_excluding_the_key_fails_closed(self, tmp_path):
+        baseline = _tmdl(harness._generate("client"))
+        assert "sourceColumn: client_type_sk" in baseline, "fixture must emit the key"
+        assert "isKey" in baseline
+
+        with pytest.raises(GoldContractError) as excinfo:
+            _with_exclusions(tmp_path, "dim_client.client_type_sk")
+        assert excinfo.value.code == "gold.primary-key-not-emitted"
+
+    def test_excluding_an_ordinary_column_still_works(self, tmp_path):
+        """Non-vacuity: the guard must fire on the key, not on every exclusion."""
+        assert _with_exclusions(tmp_path, _TARGET)

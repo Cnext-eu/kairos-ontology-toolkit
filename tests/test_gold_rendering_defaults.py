@@ -117,13 +117,15 @@ class TestTechnicalColumnsAreHidden:
     def test_audit_and_source_identity_columns_are_hidden(self, tmdl, name):
         assert "isHidden" in _column_block(tmdl, name)
 
-    def test_the_fk_match_count_diagnostic_is_hidden(self, tmdl):
-        name = next(
-            line.strip().removeprefix("column ")
-            for line in tmdl.splitlines()
-            if line.strip().startswith("column _kairos_fk_")
-        )
-        assert "isHidden" in _column_block(tmdl, name)
+    def test_the_fk_match_count_diagnostic_never_reaches_gold(self, tmdl):
+        """It used to be hidden here. #793 excludes it instead.
+
+        Hiding is presentation, so a hidden column still has to exist in the Delta table
+        -- and the Gold dbt model never selected these, while the TMDL and the Gold DDL
+        declared them. The semantic model described a table shape that never existed and
+        Direct Lake refresh failed on it. They are a Silver quality signal and stay there.
+        """
+        assert "_kairos_fk_" not in tmdl
 
     @pytest.mark.parametrize("name", ["customer_id", "customer_name"])
     def test_business_columns_stay_visible(self, tmdl, name):

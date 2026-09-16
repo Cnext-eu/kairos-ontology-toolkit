@@ -258,8 +258,10 @@ def normalize_contract(
             "is_current",
         }:
             return CanonicalTypeSpec(CanonicalTypeKind.BOOLEAN)
-        if column.name.startswith("_kairos_fk_match_count_"):
-            return CanonicalTypeSpec(CanonicalTypeKind.INT64)
+        # A `_kairos_fk_match_count_*` branch used to sit here. No producer ever emitted
+        # that spelling -- `canonical_hash.temporal_match_count_column` builds
+        # `_kairos_fk_<hash>_match_count` -- so the branch was unreachable, and the
+        # columns get their INT64 type from their producer anyway (#793).
         if column.name.endswith(("_sk", "_iri", "_integration_key", "_label")):
             return CanonicalTypeSpec(CanonicalTypeKind.STRING)
         if column.name in {
