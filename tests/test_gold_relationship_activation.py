@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,8 +22,10 @@ from kairos_ontology.core.projections.dbt.gold_shape import (
     CALENDAR_COLUMN,
     CALENDAR_TABLE,
     _calendar_relationships,
+    _has_unique_key_evidence,
     _resolve_ambiguous_paths,
 )
+from kairos_ontology.core.projections.dbt.specs import SilverKeySpec
 from kairos_ontology.core.projections.dbt.gold_specs import (
     GoldCalendarRoleSpec,
     GoldCalendarSpec,
@@ -213,7 +216,15 @@ class TestEndToEnd:
     def _relationships(self, artifacts: dict[str, str]) -> str:
         return artifacts[next(path for path in artifacts if path.endswith("relationships.tmdl"))]
 
-    def test_one_role_stays_active_and_the_rest_do_not(self, tmp_path):
+    def test_two_roles_on_disconnected_facts_both_stay_active(self, tmp_path):
+        """Only a *cycle* is ambiguous, and deactivating an edge can remove one.
+
+        `fact_invoice_line` reaches `dim_date` twice only while it also reaches
+        `fact_invoice`. That edge is itself inactive (#794: its one side is
+        `_source_system`, which no declared key backs), so the two calendar roles sit in
+        different components and both are legitimately active. Asserting "exactly one
+        active date edge" would be asserting an over-approximation rather than the rule.
+        """
         artifacts = self._emit(
             tmp_path,
             '    kairos-ext:rolePlayingDate "InvoiceDate=Invoice.invoice_date" ;\n'
@@ -222,23 +233,35 @@ class TestEndToEnd:
         tmdl = self._relationships(artifacts)
         blocks = [block for block in tmdl.split("relationship ") if "dim_date" in block]
         assert len(blocks) == 2, tmdl
-        assert sum("isActive: false" in block for block in blocks) == 1, tmdl
+        assert not any("isActive: false" in block for block in blocks), tmdl
 
-    def test_the_single_role_product_is_unchanged(self, tmp_path):
-        """Compatibility: a model that never had an ambiguity keeps its exact bytes."""
-        baseline = self._relationships(harness._generate("invoice"))
-        assert "isActive" not in baseline
-
-    def test_the_deactivation_is_reported(self, tmp_path):
+    def test_every_deactivation_is_reported_with_its_reason(self, tmp_path):
         """A silent pick would change a report's meaning with nothing to review."""
-        artifacts = self._emit(
-            tmp_path,
-            '    kairos-ext:rolePlayingDate "InvoiceDate=Invoice.invoice_date" ;\n'
-            '    kairos-ext:rolePlayingDate "LoadedDate=fact_invoice_line._loaded_at" ;',
-        )
+        report = harness._report(harness._generate("invoice"), "invoice")
+        deactivated = report["deactivated_relationships"]
+
+        assert [item["reason"] for item in deactivated] == ["unproven-key"]
+        assert deactivated[0]["to"] == "fact_invoice._source_system"
+
+    def test_a_single_role_product_has_no_ambiguous_path(self, tmp_path):
+        """Compatibility: nothing is deactivated for ambiguity when there is none.
+
+        The fixture does carry one inactive relationship, but for the unrelated #794
+        reason -- its one side is `fact_invoice._source_system`, which no declared
+        key backs. The calendar edge, the only candidate for an ambiguous path here,
+        stays active.
+        """
+        artifacts = harness._generate("invoice")
         report = harness._report(artifacts, "invoice")
-        assert len(report["deactivated_relationships"]) == 1
-        assert report["deactivated_relationships"][0]["to"] == "dim_date.full_date"
+        reasons = {item["reason"] for item in report.get("deactivated_relationships", ())}
+        assert "ambiguous-path" not in reasons
+
+        calendar_block = next(
+            block
+            for block in self._relationships(artifacts).split("relationship ")
+            if "dim_date" in block
+        )
+        assert "isActive: false" not in calendar_block
 
     def test_an_override_naming_no_relationship_fails_closed(self, tmp_path):
         """Mirrors `goldExcludeColumn`: a stale value must not read as success."""
@@ -258,3 +281,73 @@ def test_the_vocabulary_declares_the_term():
 
     text = (_SCAFFOLD_DIR / "kairos-ext.ttl").read_text(encoding="utf-8")
     assert "kairos-ext:goldPrimaryRelationship a owl:AnnotationProperty" in text
+
+
+class TestTheOneSideNeedsADeclaredUniqueKey:
+    """#794: the engine enforces uniqueness when it builds the relationship index.
+
+    Not at validation. A model with a non-unique "one" side publishes, refreshes green,
+    answers single-table measures, and fails on the first query whose plan traverses the
+    relationship -- so it can look entirely healthy and still be broken.
+
+    `_primary_key` never consulted a declared key: it walks a role priority list and
+    falls back to "first non-nullable column, else first column". On the `invoice`
+    fixture that lands on `fact_invoice._source_system`, the same value on every row of a
+    source. `_table_tmdl` already refused to mark such a column `isKey` for exactly this
+    reason; nothing protected the relationship endpoint.
+    """
+
+    def _model(self, primary=None, unique=()):
+        return SimpleNamespace(primary_key=primary, unique_keys=tuple(unique))
+
+    def test_a_declared_single_column_primary_key_is_evidence(self):
+        model = self._model(primary=SilverKeySpec(("customer_sk",)))
+        assert _has_unique_key_evidence(model, "customer_sk", filtered=False)
+
+    def test_a_declared_unique_key_is_evidence(self):
+        model = self._model(unique=[SilverKeySpec(("customer_code",))])
+        assert _has_unique_key_evidence(model, "customer_code", filtered=False)
+
+    def test_an_undeclared_column_is_not(self):
+        """The real failure: `_source_system` is not a key of anything."""
+        model = self._model(primary=SilverKeySpec(("invoice_sk",)))
+        assert not _has_unique_key_evidence(model, "_source_system", filtered=False)
+
+    def test_a_composite_key_is_not_evidence_about_one_column(self):
+        """`GoldTableSpec.primary_key` is a single column and cannot express a grain."""
+        model = self._model(primary=SilverKeySpec(("source_system", "record_key")))
+        assert not _has_unique_key_evidence(model, "source_system", filtered=False)
+
+    def test_a_predicated_key_needs_the_table_to_apply_the_same_filter(self):
+        """An SCD2 grain is unique only among current rows."""
+        model = self._model(primary=SilverKeySpec(("customer_sk",), predicate="is_current = 1"))
+        assert not _has_unique_key_evidence(model, "customer_sk", filtered=False)
+        assert _has_unique_key_evidence(model, "customer_sk", filtered=True)
+
+    def test_a_missing_model_is_not_evidence(self):
+        assert not _has_unique_key_evidence(None, "customer_sk", filtered=False)
+
+
+class TestTheUnprovenRelationshipIsEmittedInactive:
+    """Inactive, not refused: failing closed would block hubs that publish today."""
+
+    def test_the_fixture_relationship_is_deactivated_and_explained(self):
+        artifacts = harness._generate("invoice")
+        tmdl = artifacts[next(path for path in artifacts if path.endswith("relationships.tmdl"))]
+        block = next(item for item in tmdl.split("relationship ") if "_source_system" in item)
+        assert "isActive: false" in block
+
+        report = harness._report(artifacts, "invoice")
+        assert [item["reason"] for item in report["deactivated_relationships"]] == ["unproven-key"]
+
+    def test_an_unproven_edge_never_displaces_a_sound_one(self):
+        """It must not claim a place in the spanning forest and deactivate a real one."""
+        unproven = replace(
+            _edge("fact_b", "a_sk", "fact_a"), is_active=False, inactive_reason="unproven-key"
+        )
+        sound = _edge("fact_b", "a2_sk", "fact_a")
+        resolved = _resolve_ambiguous_paths((unproven, sound), frozenset())
+
+        assert _active(resolved) == ["fact_b_a2_sk"]
+        reasons = {item.name: item.inactive_reason for item in resolved if not item.is_active}
+        assert reasons == {"fact_b_a_sk": "unproven-key"}
