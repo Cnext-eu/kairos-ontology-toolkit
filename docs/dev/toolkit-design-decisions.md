@@ -287,5 +287,6 @@ during cleanup.
 | [DD-222](decisions/dd-222-gold-product-scope-is-a-bus-matrix-concern-declared-in-kairosyaml.md) | Gold product scope is a bus-matrix concern, declared in kairos.yaml | Accepted | 2026-09-05 |
 | [DD-223](decisions/dd-223-report-usage-is-harvested-and-insights-are-authored-evidence.md) | Report usage is harvested, and insights are authored evidence | Accepted | 2026-09-05 |
 | [DD-224](decisions/dd-224-desktop-is-a-proposal-tool-edits-are-harvested-never-merged.md) | Desktop is a proposal tool; edits are harvested, never merged | Accepted | 2026-09-06 |
+| [DD-225](decisions/dd-225-the-dd-109-match-count-diagnostic-stays-in-silver-and-never-reaches-gold.md) | The DD-109 match-count diagnostic stays in Silver and never reaches Gold | Accepted | 2026-09-16 |
 
 ---
