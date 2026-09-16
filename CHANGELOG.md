@@ -10,21 +10,166 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > below shipped as part of this one release — those headings are the per-change record of how it
 > was built, not separate releases. The same holds for `5.13.0rc1`–`rc31` under 5.14.0.
 >
-> **5.18.0rc1** is a pre-release, published for hub testing and not marked Latest. It adds two
-> gates that fail closed, so a hub that compiled green on 5.17.0 can newly fail CI — which is
-> the reason it ships as an RC first. Both reject something that was already broken at run time:
-> `relationship.external-reference-key-column-unknown` blocks a binding whose
+> **5.18.0rc2** is the current pre-release, published for hub testing and not marked Latest. It
+> carries everything in 5.18.0rc1 plus five Gold/Power BI fixes found by publishing rc1 to a real
+> Fabric workspace (#790–#794). **Expect a large diff on your first re-emit**, and expect the
+> drift gate to be noisy until each hub has re-emitted once: Gold tables no longer carry the
+> DD-109 `_kairos_fk_*_match_count` diagnostics, and any relationship that closed an ambiguous
+> filter path or put an unproven key on its "one" side is now emitted `isActive: false`. Both are
+> the fixes working — the previous output could not be loaded or refreshed by Fabric at all. Read
+> DD-225, DD-226 and DD-227 before re-emitting, and `deactivated_relationships` in the Gold
+> product report to see what the projector chose and why.
+>
+> It also carries rc1's two fail-closed gates, so a hub that compiled green on 5.17.0 can newly
+> fail CI — which is the reason this line ships as an RC. Both reject something that was already
+> broken at run time: `relationship.external-reference-key-column-unknown` blocks a binding whose
 > `externalReference.key[].column` the parent domain's contract does not declare (only when that
 > parent *has* a contract — an ungoverned parent is unaffected), and
 > `dbt-contract.dialect-uncastable-type` fails `validate-dbt-contracts` on a `cast(... as
 > boolean|timestamp|string|…)` in authored SQL. Expect to fix real defects, not to suppress the
 > gates.
 >
+> None of the rc2 Gold fixes is proven by an offline gate — every one of them passed both
+> `package-powerbi-release` and TOM/TMDL validation before it was found. Validating this RC by
+> publishing and refreshing against a real Fabric warehouse is the point of cutting it, and #794
+> in particular only surfaces at query time, after a refresh that reports success.
+>
 > Read **5.11.0** before upgrading: `propose-alignment` now refuses to run without
 > `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop. `--without-anchors`
 > is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.18.0rc2] — 2026-09-16
+
+### Added
+- **A semantic gate on the emitted Power BI model.** `pbip_validate` never reads TMDL and
+  `tmdl_validate` only proves the TMDL deserializes, which is why every defect in #619, #623 and
+  #790–#794 passed both and was rejected downstream. A new `gold_assert` module runs over the
+  artifacts `emit-gold` and `package-powerbi-release` are about to write and fails closed on
+  engine rules the serializer cannot see — starting with calculation-group columns, sort order,
+  partition and ordinals, and the model-level `discourageImplicitMeasures` coupling. This is the
+  gate #623's second fix item asked for.
+- **`kairos-ext:goldPrimaryRelationship` declares which path stays active.** Which date role is
+  active is not cosmetic — time intelligence follows it, so it is the product's fiscal semantics.
+  The projector picks deterministically rather than failing closed, so existing hubs keep
+  publishing, and reports every deactivated relationship in the Gold product report under
+  `deactivated_relationships` so a silent pick cannot change a report's meaning unreviewed.
+  Author `"Table.column -> Table.column"` on the `owl:Ontology` resource to decide it yourself;
+  repeatable, and fail-closed on a value naming no emitted relationship
+  (`gold.unknown-primary-relationship`). See DD-226.
+- **A partial emit reports the domains it left stale.** `compile <domain> --emit --confirm-emit`
+  now compares every other domain's recorded input digests against the working tree and names the
+  ones whose committed output no longer matches:
+
+  ```
+  ✓ party: emitted 47 artifact(s) to ...
+  ! 8 other domain(s) record authored inputs that have changed since they were emitted;
+    their committed output is now stale: booking, consignment, equipment, ...
+    run: kairos-ontology compile --all --emit --confirm-emit
+  ```
+
+  The toolkit already held everything needed to say this — each `metadata/<domain>.provenance.json`
+  enumerates its inputs with their digests, so it is a lookup rather than an inference. Silent
+  under `--all` (which has just refreshed everything), silent under `--quiet`, and silent when an
+  input cannot be read, because a false alarm would train people to ignore the warning. The same
+  fact appears in `--format json` as `stale_dependent_domains`. It never fails the command: the
+  output that was written is correct, just incomplete.
+
+### Changed
+- **Role-playing date relationships are shaped rather than invented during rendering.** They were
+  built directly into `relationships.tmdl` by the renderer, so they never appeared in the shaped
+  relationship set and nothing reasoning over the model could see them — which is why the
+  ambiguity they cause went undetected. Their emitted names are unchanged: in Fabric a renamed
+  relationship is a new object, not an edit.
+
+### Removed
+- **A dead type-inference branch for `_kairos_fk_match_count_*` columns.** No producer ever
+  emitted that spelling — the real name is `_kairos_fk_<hash>_match_count` — so the branch was
+  unreachable.
+
+### Fixed
+- **The emitted time-intelligence calculation group can actually be created (issues #790, #791).**
+  A calculation group is a table, and the Analysis Services engine enforces rules on it that the
+  bundled TMDL validator does not. Kairos emitted the four `calculationItem` lines and nothing
+  else, so the group had zero columns; the model also never set `discourageImplicitMeasures`,
+  which the engine requires before it will create any calculation group at all. Both offline
+  gates reported success — `package-powerbi-release` passed and TOM/TMDL structural validation
+  reported no failures — and the Fabric service then refused to create the semantic model with
+  `The total number of data columns inside the calculation group table 'Time Intelligence' is 0`.
+  The group now carries the `'Time Calculation'` name column and the hidden `Ordinal` column it
+  sorts by, an explicit `ordinal:` on every item so they read chronologically rather than
+  alphabetically, and its own partition; the model sets `discourageImplicitMeasures` and declares
+  `ref table 'Time Intelligence'` whenever a calendar is approved.
+- **The emitted semantic model has one active filter path between any two tables (issue #792).**
+  Power BI allows only one, and the projector emitted every relationship active — not one carried
+  `isActive: false` — while routinely emitting several date roles on one fact and snowflake
+  shortcuts alongside the multi-hop paths they duplicate. The model was unloadable in Fabric and
+  in Desktop, and the service reports one offending pair per attempt, so on the product that
+  surfaced this, finding all 21 ambiguities of 50 relationships would have cost 21 publish round
+  trips. The projector now treats the relationships as an undirected graph and deactivates every
+  edge beyond a spanning forest, in one offline pass, in a fixed priority order that never
+  deactivates a business relationship in favour of a date role. A deactivated relationship stays
+  in the model and is reachable from DAX with `USERELATIONSHIP`. A product with no ambiguity emits
+  byte-identical output.
+- **A measure can reference `dim_date`.** `_column_by_property` resolved column dependencies only
+  against the product's tables, and the calendar is synthesized by the renderer rather than shaped
+  as one — so `dim_date.full_date` was unresolvable and any measure declaring it failed with
+  `measure.missing-column-dependency`. That is the dependency a `USERELATIONSHIP` measure needs,
+  so without this the fix above would have deactivated relationships while making the only
+  workaround uncompilable.
+- **The semantic model no longer declares columns the Gold table does not have (issue #793).**
+  The DD-109 `_kairos_fk_*_match_count` diagnostics reached the TMDL and the Gold DDL but never
+  the dbt models that build the Gold tables, so the semantic model described a table shape that
+  never existed and a Direct Lake refresh failed with `Delta protocol violation: the column
+  _kairos_fk_<hash>_match_count is not found in delta table`. The cause is two `GoldTableSpec`
+  objects shaped at different ages from one compile plan: `shape_project` shapes the Gold product
+  before the compiler injects the diagnostics, and only `emit-gold` re-shapes afterwards, so
+  `compile --emit` rendered the dbt models from the older spec. The diagnostics are now excluded
+  from the Gold projection in the one function every Gold writer derives from, so the dbt model,
+  the DDL, the TMDL, the ERD and the schema YAML agree by construction. They remain exactly where
+  they belong, in Silver, and the Gold product report still records them under
+  `silver_authority`. See DD-225, which supersedes DD-221 on this one column only — the rule that
+  hiding is decided on provenance rather than role is unchanged.
+- **A Gold table's primary key must be a column the product actually emits.** `_primary_key` read
+  the raw Silver model while the emitted column set is filtered, and nothing reconciled them, so
+  authoring `goldExcludeColumn` against a table's key left the key naming a column that is not
+  there. Every consequence was silent: the relationship shaper pointed `toColumn` at a missing
+  column, and `isKey`, the dbt `unique` test and the ERD `PK` marker simply stopped appearing —
+  Power BI accepted the dangling endpoint at validation and rejected the model on load. This now
+  fails closed as `gold.primary-key-not-emitted`.
+- **A relationship's "one" side now needs a declared unique key (issue #794).** Analysis Services
+  enforces uniqueness on that side when it builds the relationship index — not at validation — so
+  a model with a non-unique key published, refreshed green, answered any measure that stayed on
+  one table, and failed on the first query whose plan traversed the relationship with
+  `Column <key> in Table <fact> contains a duplicate value`. Nothing offline caught it: the
+  projector checked only that the target *had* a key, and `_primary_key` never consulted a
+  declared one — it walks a role priority list and then falls back to "first non-nullable column,
+  else first column". On the toolkit's own `invoice` fixture that produced
+  `fact_invoice_line.invoice_sk -> fact_invoice._source_system`, putting a source-system name on
+  the one side. The projector now requires a declared single-column key on the target's Silver
+  model, and emits the relationship inactive when there is none rather than refusing the whole
+  emit — an unproven relationship is a modelling smell, not necessarily an error, and the model
+  stays loadable. Every deactivation is named in the Gold product report with a `reason`, either
+  `unproven-key` or `ambiguous-path`. A composite key is not evidence about a single-column
+  endpoint, and an SCD2 key predicated on `is_current` counts only where the emitted table applies
+  that filter. See DD-227.
+
+  `kairos-ext:factGrain` is deliberately not used for this: it is free text, emitted only as a
+  comment, and cannot be parsed. Nor is a DAX probe against the published model reliable —
+  `DISTINCTCOUNT` reported no duplicates on a column a `SUMMARIZE`-based count found many of.
+- **`kairos-execute-project` now emits the whole hub, and says why (issue #796).** The skill
+  prescribed `compile <domain> --emit --confirm-emit`, and `compile --all` appeared in no skill at
+  all — while CI's drift gate runs `compile --all --emit --confirm-emit`. So the documented local
+  workflow and the gate that judges it disagreed by construction. On any hub with more than one
+  domain that reliably produced stale committed output: a domain's provenance records the hash of
+  every authored file in its transitive import closure, so editing one domain's `.ttl` or contract
+  invalidates the recorded provenance of every domain that imports it, directly or transitively.
+  The emit succeeded, reported success, and the staleness surfaced minutes later in CI as a large
+  hash-only diff — no SQL, model or contract-output differences — that reads like a serious
+  failure when nothing is actually wrong. `docs/toolkit/how-to/compile-and-emit.md` and the
+  scaffolded `CICD.md` say the same thing; the how-to's claim that `--all` is "a wall-clock
+  optimisation, not a semantic one" was true of `--check` and wrong of `--emit`.
 
 ## [5.18.0rc1] — 2026-09-10
 
