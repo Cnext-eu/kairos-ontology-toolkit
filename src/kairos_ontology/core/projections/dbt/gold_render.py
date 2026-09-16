@@ -1189,6 +1189,7 @@ def gold_product_report(
                     {
                         "name": item.name,
                         "role": item.role_name or None,
+                        "reason": item.inactive_reason,
                         "from": f"{item.source_table}.{item.source_column}",
                         "to": f"{item.target_table}.{item.target_column}",
                     }

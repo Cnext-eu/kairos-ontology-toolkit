@@ -130,6 +130,10 @@ class GoldRelationshipSpec:
     #: #792 moved them into the shaper; keeping the seed keeps a hub's relationship
     #: identities stable, and in Fabric a renamed relationship is a *new* one.
     guid_seed: str = ""
+    #: Why this relationship is inactive, for the product report. "ambiguous-path" when
+    #: it closed a cycle (#792); "unproven-key" when the one side has no declared unique
+    #: key to back the cardinality (#794). Empty for an active relationship.
+    inactive_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)

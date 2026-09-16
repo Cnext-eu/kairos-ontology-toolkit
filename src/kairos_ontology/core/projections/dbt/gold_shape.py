@@ -800,6 +800,45 @@ def _relationship_column(
     return candidates[0] if len(candidates) == 1 else ""
 
 
+def _has_unique_key_evidence(
+    model: SilverModelSpec | None,
+    column_name: str,
+    *,
+    filtered: bool,
+) -> bool:
+    """Return whether *column_name* is declared unique on *model* (#794).
+
+    Power BI requires the "one" side of a many-to-one relationship to be unique, and
+    enforces it when it builds the relationship index -- not at validation. A model with
+    a non-unique key publishes, refreshes green, answers single-table measures, and then
+    fails on the first query whose plan traverses the relationship.
+
+    `_primary_key` does not consult any declared key. It walks a role priority list and
+    falls back to "first non-nullable column, else first column", so on a fact it can
+    land on `_source_system` -- the same value on every row of a source. `_table_tmdl`
+    already refuses to mark such a column `isKey` for exactly this reason; nothing
+    protected the relationship endpoint.
+
+    Evidence is a declared single-column `SilverKeySpec`. Two things deliberately do not
+    count:
+
+    * a **composite** key, because `GoldTableSpec.primary_key` is a single column and
+      cannot represent one -- so a composite grain is not evidence about this endpoint;
+    * a **predicated** key (an SCD2 grain carrying `is_current = 1`) unless the emitted
+      table applies the same filter, which it does only for a current-only dimension.
+    """
+    if model is None:
+        return False
+    candidates = [model.primary_key, *model.unique_keys]
+    for key in candidates:
+        if key is None or tuple(key.columns) != (column_name,):
+            continue
+        if key.predicate and not filtered:
+            continue
+        return True
+    return False
+
+
 def _shape_relationships(
     tables: tuple[GoldTableSpec, ...],
     descriptors: tuple[ForeignKeyDescriptorSpec, ...],
@@ -859,6 +898,15 @@ def _shape_relationships(
                 rule_id="DD-112-silver-binding",
                 resource_uri=descriptor.property_uri,
             )
+        # #794. Emitted inactive rather than refused: a relationship whose one side
+        # is unproven is a modelling smell, not necessarily an error, and failing
+        # closed would block hubs that publish today. Inactive keeps the model
+        # loadable and queryable, and the product report names every one.
+        proven = _has_unique_key_evidence(
+            silver_models.get(target.source_model),
+            target.primary_key,
+            filtered=target.dimension_exposure is DimensionExposure.CURRENT_ONLY,
+        )
         relationships.append(
             GoldRelationshipSpec(
                 name=camel_to_snake(_local_name(descriptor.property_uri)),
@@ -868,6 +916,8 @@ def _shape_relationships(
                 target_column=target.primary_key,
                 cardinality="many-to-one",
                 version_binding=source.version_binding,
+                is_active=proven,
+                inactive_reason="" if proven else "unproven-key",
             )
         )
     for bridge in tables:
@@ -1039,13 +1089,25 @@ def _resolve_ambiguous_paths(
 
     active: set[int] = set()
     for item in sorted(relationships, key=priority):
+        # An edge already deactivated for its own reason (#794: the one side carries
+        # no declared unique key) must not claim a place in the forest, or a sound
+        # relationship would be deactivated in favour of an unsound one.
+        if not item.is_active:
+            continue
         left, right = find(item.source_table), find(item.target_table)
         if left == right:
             continue
         parent[left] = right
         active.add(id(item))
     return tuple(
-        item if id(item) in active else replace(item, is_active=False) for item in relationships
+        item
+        if id(item) in active
+        else replace(
+            item,
+            is_active=False,
+            inactive_reason=item.inactive_reason or "ambiguous-path",
+        )
+        for item in relationships
     )
 
 
