@@ -15,15 +15,36 @@ kairos-ontology compile billing --check
 kairos-ontology compile billing --explain --format json
 
 # Produce artifacts. The only side-effecting mode.
-kairos-ontology compile billing --emit --confirm-emit
+# Emit every domain: see "Emit the whole hub" below.
+kairos-ontology compile --all --emit --confirm-emit
 ```
 
 `--check` and `--explain` combine. `--emit` is mutually exclusive with both and requires
 `--confirm-emit`, so a design-time session cannot emit by accident.
 
-Compile every domain at once with `--all`. That is a wall-clock optimisation, not a
-semantic one: each domain still compiles independently and is emitted atomically; they
-only share the process's read-only parse caches.
+## Emit the whole hub
+
+For `--check` and `--explain`, `--all` is a wall-clock optimisation: each domain is
+analysed independently and they only share the process's read-only parse caches.
+
+For `--emit` on a hub with more than one domain it is **not** optional. A domain's
+provenance records the hash of every authored file in its transitive import closure,
+so editing one domain's `.ttl` or contract invalidates the recorded provenance of
+every domain that imports it, directly or transitively. Emitting only the domain you
+changed succeeds, reports success, and leaves the rest of the committed tree stale:
+
+```bash
+kairos-ontology compile --all --emit --confirm-emit
+```
+
+This is exactly what CI's drift gate runs. A partial emit therefore shows up minutes
+later as a large hash-only diff — no SQL, model or contract-output differences, just
+`sha256` entries and rolled-up `provenanceHash` values — which reads like a serious
+failure when nothing is actually wrong.
+
+A per-domain `compile <domain> --emit --confirm-emit` is correct on a single-domain
+hub, or when nothing else imports what you changed. The command tells you when that
+is not the case: it names the domains whose recorded inputs this emit just rewrote.
 
 ## Where output goes
 

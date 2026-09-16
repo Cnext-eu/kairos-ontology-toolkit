@@ -9,8 +9,9 @@ description: >
 
 Use `compile` directly; do not add orchestration around it.
 
-1. Resolve the hub root from `kairos.yaml`, choose one domain, and verify at least
-   one `integration/bindings/*.binding.yaml` selects it in `metadata.domain`.
+1. Resolve the hub root from `kairos.yaml`, choose the domain you are working on,
+   and verify at least one `integration/bindings/*.binding.yaml` selects it in
+   `metadata.domain`.
 2. Check without writing:
 
    ```powershell
@@ -24,10 +25,26 @@ Use `compile` directly; do not add orchestration around it.
    `uv run kairos-ontology compile <domain> --explain --format json` and present
    normalized entities, sources, grain, identity, relationships, capabilities,
    and planned artifact paths.
-5. After a successful check and explicit output-path confirmation, run
-   `uv run kairos-ontology compile <domain> --emit --confirm-emit`. `--confirm-emit`
-   is required alongside `--emit` — this is the one skill that legitimately
-   passes it.
+5. After a successful check and explicit output-path confirmation, emit:
+
+   ```powershell
+   uv run kairos-ontology compile --all --emit --confirm-emit
+   ```
+
+   Emit **every** domain, not just the one you changed. A domain's provenance
+   records the hash of every authored file in its transitive import closure, so
+   editing one domain's `.ttl` or contract makes the committed output of every
+   domain that imports it — directly or transitively — stale. A per-domain emit
+   succeeds silently and CI's drift gate, which runs exactly this command, then
+   fails with a large hash-only diff that reads like a serious failure when nothing
+   is actually wrong.
+
+   `uv run kairos-ontology compile <domain> --emit --confirm-emit` is correct only
+   on a single-domain hub, or when you have confirmed no other domain imports what
+   you changed. The command warns you when it rewrote an input other domains record.
+
+   `--confirm-emit` is required alongside `--emit` — this is the one skill that
+   legitimately passes it.
 6. Verify the command succeeded and report emitted paths from the current result.
 
 Compiler input is the authored ontology, source/dbt contracts, and closed

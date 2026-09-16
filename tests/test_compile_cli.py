@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import textwrap
@@ -12,7 +13,11 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from kairos_ontology.cli.compile import _emit_compile_artifacts
+from kairos_ontology.cli.compile import (
+    _emit_compile_artifacts,
+    _report_stale_dependents,
+    _stale_dependent_domains,
+)
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.compiler import CompileMode, compile_domain
 from kairos_ontology.core.observability import reset_logging
@@ -1196,3 +1201,107 @@ class TestDomainProgress:
 
         assert result.exit_code == 0, result.output
         assert "[1/1]" not in result.output
+
+
+class TestPartialEmitReportsStaleDependents:
+    """#796: a per-domain emit on a multi-domain hub silently leaves the rest stale.
+
+    A domain's provenance records the sha256 of every authored file in its transitive
+    import closure, so editing one domain's `.ttl` invalidates the recorded provenance of
+    every domain that imports it. Emitting only the changed domain reports success, and
+    the staleness surfaces minutes later as a CI drift failure with a large hash-only
+    diff that reads like a serious fault when nothing is actually wrong.
+    """
+
+    def _hub_with_sidecars(self, tmp_path: Path, *, shared: str) -> tuple[Path, Path]:
+        """A hub whose `party` and `booking` both record `reference-data.ttl`."""
+        hub = tmp_path / "hub"
+        (hub / "model" / "ontologies").mkdir(parents=True)
+        (hub / "model" / "ontologies" / "reference-data.ttl").write_text(shared, encoding="utf-8")
+        emit_target = tmp_path / "publish"
+        metadata = emit_target / "metadata"
+        metadata.mkdir(parents=True)
+        digest = hashlib.sha256(shared.encode("utf-8")).hexdigest()
+        for domain in ("party", "booking"):
+            (metadata / f"{domain}.provenance.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "kairos.eu/compile-provenance/v1",
+                        "domain": domain,
+                        "inputs": [
+                            {
+                                "name": "model/ontologies/reference-data.ttl",
+                                "sha256": digest,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return hub, emit_target
+
+    def test_a_dependent_domain_is_named_when_a_shared_input_moved(self, tmp_path):
+        hub, emit_target = self._hub_with_sidecars(tmp_path, shared="# original\n")
+        # The author edits the shared ontology and re-emits only `party`.
+        (hub / "model" / "ontologies" / "reference-data.ttl").write_text(
+            "# edited\n", encoding="utf-8"
+        )
+
+        assert _stale_dependent_domains(hub, emit_target, "party") == ("booking",)
+
+    def test_the_domain_just_emitted_is_never_reported(self, tmp_path):
+        """Its sidecar is about to be rewritten by this very emit."""
+        hub, emit_target = self._hub_with_sidecars(tmp_path, shared="# original\n")
+        (hub / "model" / "ontologies" / "reference-data.ttl").write_text(
+            "# edited\n", encoding="utf-8"
+        )
+
+        assert "party" not in _stale_dependent_domains(hub, emit_target, "party")
+        assert "booking" not in _stale_dependent_domains(hub, emit_target, "booking")
+
+    def test_an_unchanged_tree_reports_nothing(self, tmp_path):
+        """Non-vacuity: the warning must be silent on the common case."""
+        hub, emit_target = self._hub_with_sidecars(tmp_path, shared="# original\n")
+
+        assert _stale_dependent_domains(hub, emit_target, "party") == ()
+
+    def test_a_missing_publish_tree_reports_nothing(self, tmp_path):
+        """A first emit has no sidecars to compare against."""
+        hub = tmp_path / "hub"
+        hub.mkdir()
+
+        assert _stale_dependent_domains(hub, tmp_path / "nowhere", "party") == ()
+
+    def test_an_unreadable_input_is_not_reported_as_drift(self, tmp_path):
+        """A false alarm here would train people to ignore the warning."""
+        hub, emit_target = self._hub_with_sidecars(tmp_path, shared="# original\n")
+        (hub / "model" / "ontologies" / "reference-data.ttl").unlink()
+
+        assert _stale_dependent_domains(hub, emit_target, "party") == ()
+
+    def test_the_message_names_the_domains_and_the_command_that_fixes_it(self, capsys):
+        _report_stale_dependents(("booking", "consignment"), quiet=False)
+
+        out = capsys.readouterr().out
+        assert "booking, consignment" in out
+        assert "compile --all --emit --confirm-emit" in out
+
+    def test_quiet_suppresses_it(self, capsys):
+        _report_stale_dependents(("booking",), quiet=True)
+
+        assert capsys.readouterr().out == ""
+
+    def test_an_input_path_escaping_the_hub_is_ignored(self, tmp_path):
+        """The sidecar is generated, but it is still a file this reads paths out of."""
+        hub, emit_target = self._hub_with_sidecars(tmp_path, shared="# original\n")
+        (emit_target / "metadata" / "booking.provenance.json").write_text(
+            json.dumps(
+                {
+                    "domain": "booking",
+                    "inputs": [{"name": "../../etc/passwd", "sha256": "0" * 64}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert _stale_dependent_domains(hub, emit_target, "party") == ()

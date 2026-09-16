@@ -12,17 +12,23 @@ authoring and review conventions.
 
 ## Pull-request checks
 
-From `ontology-hub/`, run the focused checks for every changed domain:
+From `ontology-hub/`, check the domains you changed, then emit the whole hub:
 
 ```powershell
 uv sync --locked
 uv run kairos-ontology compile <domain> --check --format json
 uv run kairos-ontology compile <domain> --explain --format json
-uv run kairos-ontology compile <domain> --emit --confirm-emit
+uv run kairos-ontology compile --all --emit --confirm-emit
 ```
 
+Emit every domain, not just the changed one. A domain's provenance records the hash of every
+authored file in its transitive import closure, so editing one domain's `.ttl` or contract
+makes the committed output of every domain that imports it stale. Emitting only the changed
+domain succeeds and reports success, and the drift gate below — which runs exactly the `--all`
+form — then fails on a hash-only diff.
+
 The pull request must include any release-relevant generated diff required by repository policy.
-CI must regenerate the same output and fail on drift. A green result proves compilation and
+CI regenerates the same output and fails on drift. A green result proves compilation and
 structural validation; it does not replace a real downstream dbt build.
 
 ## Release
