@@ -34,4 +34,4 @@ jobs:
         run: uv sync --locked
 
       - name: Verify managed files
-        run: uv run --no-sync kairos-ontology update --check
+        run: uv run kairos-ontology update --check

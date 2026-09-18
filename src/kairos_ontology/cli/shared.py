@@ -2569,7 +2569,19 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         # Single-job hub generation, before validation and compile were split into two
         # parallel jobs and the redundant `compile --all --check` step was removed.
         "hub-pr-validate/3.template",
+        # Pre-#721/#771 hub generation, before KAIROS_SKILL_CONTEXT moved to workflow
+        # level and every `uv run` gained `--no-sync`.
+        "hub-pr-validate/4.template",
+        # Pre-#721/#771 dataplatform generation, same two changes.
+        "dataplatform-pr-validate/3.template",
     ),
+    # Pre-#771 generation, before every `uv run` gained `--no-sync`. Also carries the
+    # pre-#721 skill-context placement for full-validate.
+    ".github/workflows/full-validate.yml": ("hub-full-validate/1.template",),
+    ".github/workflows/managed-check.yml": ("hub-managed-check/1.template",),
+    # Pre-#771/#773 generation, before `--no-sync`, the missing `--locked`, and the
+    # GH_HOST / --prerelease fixes that make a GHES release possible at all.
+    ".github/workflows/release-projections.yml": ("hub-release-projections/1.template",),
 }
 
 

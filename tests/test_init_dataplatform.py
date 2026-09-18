@@ -412,15 +412,15 @@ class TestInitDataplatform:
         assert "runs-on: ubuntu-latest" in content
 
         assert "uv sync --locked" in content
-        assert "uv run dbt deps" in content
-        assert "uv run dbt parse --profiles-dir .dbt --target ci" in content
-        assert "uv run dbt compile --profiles-dir .dbt --target ci" in content
+        assert "uv run --no-sync dbt deps" in content
+        assert "uv run --no-sync dbt parse --profiles-dir .dbt --target ci" in content
+        assert "uv run --no-sync dbt compile --profiles-dir .dbt --target ci" in content
         assert "kairos-ontology validate-source-bindings" in content
         # Group B dependency must be documented, not silently assumed.
         assert "feature/cicd-group-b-source-binding" in content
 
         # Full `dbt build` must only appear as a commented-out, opt-in step.
-        assert "uv run dbt build --profiles-dir .dbt --target ci" in content
+        assert "uv run --no-sync dbt build --profiles-dir .dbt --target ci" in content
         for line in content.splitlines():
             if "dbt build" in line:
                 assert line.strip().startswith("#"), (

@@ -20,14 +20,6 @@ on:
 permissions:
   contents: read
 
-# CI is a sanctioned caller. Every skill-managed command would otherwise print "prefer the
-# <skill> skill in your AI coding session" into a log where there is no session to redirect
-# to and no skill to prefer -- and the advisory claims the run skipped validation gates that
-# adjacent steps here perform explicitly. Set at workflow level, not per step: it was on one
-# of five steps, and a step added later must inherit it rather than silently regress (#721).
-env:
-  KAIROS_SKILL_CONTEXT: "1"
-
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -86,11 +78,11 @@ jobs:
             echo "If the hub repository is private, dbt deps will fail with 'Repository not found'; add HUB_REPO_TOKEN (Contents:read on the hub) as a repository secret."
             exit 0
           fi
-          host="$(uv run --no-sync python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;print(_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).host)')"
+          host="$(uv run python -c 'import pathlib;from kairos_ontology.cli.shared import _parse_hub_package_pin;print(_parse_hub_package_pin(pathlib.Path("packages.yml").read_text(encoding="utf-8")).host)')"
           git config --global url."https://x-access-token:${HUB_REPO_TOKEN}@${host}/".insteadOf "https://${host}/"
 
       - name: dbt deps
-        run: uv run --no-sync dbt deps
+        run: uv run dbt deps
 
       # dbt refuses to run against a --target with no matching profiles.yml
       # output at all, even though neither `dbt parse` nor `dbt compile` opens
@@ -109,7 +101,7 @@ jobs:
           PROFILE_EOF
 
       - name: dbt parse
-        run: uv run --no-sync dbt parse --profiles-dir .dbt --target ci
+        run: uv run dbt parse --profiles-dir .dbt --target ci
 
       # `dbt compile` is deliberately NOT run here (#705). The premise stated above --
       # that neither parse nor compile opens a real connection -- does not hold for
@@ -122,7 +114,7 @@ jobs:
       # Re-enable it alongside the opt-in `dbt build` steps below, which need a real,
       # credential-isolated `ci` target anyway.
       # - name: dbt compile
-      #   run: uv run --no-sync dbt compile --profiles-dir .dbt --target ci
+      #   run: uv run dbt compile --profiles-dir .dbt --target ci
 
       # DD-206 §5: physical source-binding validation must fail before any
       # warehouse execution when a logical source used by the package lacks a
@@ -143,7 +135,7 @@ jobs:
       # change the path if yours lives elsewhere.
       - name: Validate physical source bindings
         run: |
-          uv run --no-sync kairos-ontology validate-source-bindings \
+          uv run kairos-ontology validate-source-bindings \
             --project-dir . \
             --models-dir models/hub \
             --format json
@@ -164,7 +156,7 @@ jobs:
       # secret, never committed) and the placeholder-profile step above removed
       # or skipped. See CICD.md.
       # - name: dbt build --empty (opt-in, needs real ci credentials)
-      #   run: uv run --no-sync dbt build --empty --profiles-dir .dbt --target ci
+      #   run: uv run dbt build --empty --profiles-dir .dbt --target ci
       #
       # - name: dbt build (opt-in, full run with data)
-      #   run: uv run --no-sync dbt build --profiles-dir .dbt --target ci
+      #   run: uv run dbt build --profiles-dir .dbt --target ci
