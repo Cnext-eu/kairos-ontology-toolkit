@@ -399,7 +399,10 @@ def render_canonical_project(
     for name in shaped.macros.names:
         artifacts[f"macros/{name}"] = (macro_root / name).read_text(encoding="utf-8")
 
-    _validate_dbt_artifacts(artifacts)
+    _validate_dbt_artifacts(
+        artifacts,
+        known_models=set(plan.release.known_models),
+    )
     return artifacts
 
 
@@ -1340,19 +1343,22 @@ def _check_refs(path: str, content: str, model_names: set[str]) -> None:
             )
         elif target not in model_names:
             # Deliberately not phrased as "dangling". This scan sees one domain's
-            # freshly-rendered artifacts plus the directly-bound contract names, and
-            # cannot see the manifest-owned dependency artifacts the compiler copies
-            # into `models/intermediate/` later (`cli/compile.py`'s
-            # `_reconciled_dbt_dependencies`). On a healthy project that produced 15
-            # confident-sounding warnings whose targets were all present and tracked --
-            # which is how authors learn to ignore `dbt validation:` output, including
-            # the line that matters (#699 part 4).
+            # freshly-rendered artifacts plus every model name its bindings declare as a
+            # contracted source, but not the manifest-owned dependency artifacts the
+            # compiler copies into `models/intermediate/` later (`cli/compile.py`'s
+            # `_reconciled_dbt_dependencies`), nor a `ref()` between two such
+            # intermediates.
+            #
+            # The declared-contract half used to be claimed here and was not actually
+            # true: `contracts` was hard-coded empty on the v5 binding path, so
+            # `known_models` was empty on *every* compile and even a binding's own
+            # directly-bound contract warned. That produced 24 unique / 48 emitted
+            # warnings on one hub, all false, drowning the 43 unresolved source paths and
+            # 2 undeclared PII properties that mattered (#728, #699 part 4).
             #
             # The authoritative check is the whole-project on-disk scan in
             # `core/dbt_validation._dangling_refs`, which globs `models/**/*.sql` and so
-            # does see them; the scaffolded PR gate runs it. Folding the planned
-            # dependency names into `known_models` here needs them plumbed from the
-            # kernel through bind/normalize/materialize and is left to a follow-up.
+            # does see the copied intermediates; the scaffolded PR gate runs it.
             logger.warning(
                 "dbt validation: ref('%s') in %s matched no model in this domain's "
                 "render scope; if it names a copied intermediate this is expected -- "

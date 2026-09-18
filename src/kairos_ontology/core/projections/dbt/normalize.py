@@ -138,6 +138,33 @@ def _foreign_key_policy(bound: BoundSources) -> ForeignKeyPolicy:
     )
 
 
+def _declared_ref_models(bound: BoundSources) -> tuple[str, ...]:
+    """Return the dbt model names this domain's bindings declare as their source.
+
+    A binding on ``source.dbtModel`` reads a contracted model by ``ref()``. That name is
+    already carried as ``SourceTableFact.ref_model`` -- set wherever the resolved relation
+    has ``connection_type == "dbt"`` -- so it needs no new plumbing from the kernel.
+
+    Without these the render-time ``ref()`` scan warned on every contracted intermediate a
+    Silver model depends on: 24 unique warnings and 48 occurrences per CI run on one hub,
+    all false, which is the single largest warning category in the PR gate and is how
+    authors learn to ignore ``dbt validation:`` output entirely (#728, #699 part 4). The
+    check is not weakened -- a ``ref()`` naming something that is neither a rendered model
+    nor any binding's declared contract is still reported, and that is the case worth
+    reporting.
+    """
+    return tuple(
+        sorted(
+            {
+                table.ref_model
+                for system in bound.systems
+                for table in system.tables
+                if table.ref_model
+            }
+        )
+    )
+
+
 def normalize_contract(
     bound: BoundSources,
     mode: ExecutionMode = ExecutionMode.FAIL_FAST,
@@ -432,7 +459,12 @@ def normalize_contract(
             has_sources=bound.has_sources,
             systems=bound.systems,
             mappings=mapping_contract,
-            contracts=tuple(name for name, _ in bound.contracts),
+            contracts=tuple(
+                sorted(
+                    {name for name, _ in bound.contracts}
+                    | set(_declared_ref_models(bound))
+                )
+            ),
             virtual_table_uris=bound.virtual_table_uris,
             replacement_input_uris=bound.replacement_input_uris,
             contracted_input_uris=bound.contracted_input_uris,
