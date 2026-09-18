@@ -2574,10 +2574,17 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "hub-pr-validate/4.template",
         # Pre-#721/#771 dataplatform generation, same two changes.
         "dataplatform-pr-validate/3.template",
+        # Pre-#774 hub generation, before the drift gate regenerated and diffed
+        # `ontology-hub-publish/architecture`.
+        "hub-pr-validate/5.template",
     ),
     # Pre-#771 generation, before every `uv run` gained `--no-sync`. Also carries the
     # pre-#721 skill-context placement for full-validate.
-    ".github/workflows/full-validate.yml": ("hub-full-validate/1.template",),
+    ".github/workflows/full-validate.yml": (
+        "hub-full-validate/1.template",
+        # Pre-#774, same drift-gate change as pr-validate above.
+        "hub-full-validate/2.template",
+    ),
     ".github/workflows/managed-check.yml": ("hub-managed-check/1.template",),
     # Pre-#771/#773 generation, before `--no-sync`, the missing `--locked`, and the
     # GH_HOST / --prerelease fixes that make a GHES release possible at all.
