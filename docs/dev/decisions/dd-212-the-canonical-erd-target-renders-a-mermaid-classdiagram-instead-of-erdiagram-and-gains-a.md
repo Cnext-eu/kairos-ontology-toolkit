@@ -88,3 +88,33 @@ Verified against `mmdc` 11.12.0: the stereotype, the `#` member prefix and the `
 label all render. Both pre-existing scoping tests still pass unchanged —
 `test_only_domain_local_classes_are_rendered` uses an *orphan* foreign class (still excluded, since
 nothing reaches it) and the restriction test's parent is a blank node.
+
+### Amended (#805): locality is what the domain file declares, not what its IRI starts with
+
+The amendment above moved the *stub* rule onto reachability but left the *locality* rule where it
+was: `_collect_classes` asked whether a class IRI starts with the domain namespace. That is a
+string test, and it fails on exactly the modelling style the previous amendment was written to
+support. `kairos-design-domain` tells authors to reuse a reference-model class rather than mint a
+local one, re-declaring the imported IRI in the domain `.ttl` to attach `rdfs:label`/`rdfs:comment`.
+The class keeps its reference-model IRI, so it is never local, and a domain modelled entirely that
+way has *no* local classes — `generate_erd_artifacts` returns `{}` and emits nothing.
+
+Measured on a real hub: **5 of 12** domains produced no ERD. Passing the correct namespace
+explicitly did not help, because there was no class under it to find. Both the empty case and the
+"domain genuinely has nothing to draw" case were silent, and the CLI reported success either way.
+
+Locality is now the union of two signals: the IRI sits under the domain namespace (as before), **or**
+the domain file itself declares the class. "Declares" means *subject-side in the domain `.ttl`
+alone* — a class merely referenced as an object, as `imo-pc:SeaLeg` is in
+`:SeaLeg rdfs:subClassOf imo-pc:SeaLeg`, stays external, which is what keeps a domain-scoped diagram
+domain-scoped. The class test itself is applied against the closure, so a domain file may attach an
+annotation without repeating `a owl:Class`.
+
+The domain's own graph is already loaded — `load_ontology` retains one `LoadedOntologySource` per
+closure member — so the projector receives it rather than re-parsing the file, which would cut
+against the parse-site boundary that `tests/test_semantic_loading_boundary.py` guards. The parameter
+is optional: the in-memory `project_graph` entry point has no source file, and falls back to the
+namespace test alone.
+
+Consequence: a projection target that returns no artifacts now says so, per domain, naming the
+namespace it tested. Silence was the reason this went unnoticed.

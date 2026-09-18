@@ -112,15 +112,48 @@ def _multiplicity(min_bound: Optional[int], max_bound: Optional[int]) -> str:
     return "1..*" if at_least_one else "0..*"
 
 
-def _collect_classes(graph: Graph, namespace: str) -> list[URIRef]:
-    """Return every domain-local ``owl:Class`` (or ``rdfs:Class``), sorted by URI."""
+def _declared_classes(local_graph: Optional[Graph], closure: Graph) -> set[URIRef]:
+    """Return the classes the domain file itself declares, whatever namespace they are in.
+
+    ``kairos-design-domain`` directs authors to reuse a reference-model class rather than
+    mint a local one, re-declaring the imported IRI in the domain ``.ttl`` to attach
+    ``rdfs:label``/``rdfs:comment``. Such a class keeps its reference-model IRI, so an
+    IRI-prefix test never sees it as local and a domain modelled entirely that way
+    produced no diagram at all (#805).
+
+    Subject-side only: a class merely *referenced* by the domain file -- ``:SeaLeg
+    rdfs:subClassOf imo-pc:SeaLeg`` names ``imo-pc:SeaLeg`` as an object -- stays external,
+    which is what keeps a domain-scoped diagram domain-scoped. The class test is applied
+    against the *closure*, because the domain file may attach an annotation without
+    repeating ``a owl:Class``.
+    """
+    if local_graph is None:
+        return set()
+    typed = set(closure.subjects(RDF.type, OWL.Class)) | set(closure.subjects(RDF.type, RDFS.Class))
+    return {
+        subject
+        for subject in set(local_graph.subjects(None, None))
+        if isinstance(subject, URIRef) and subject in typed
+    }
+
+
+def _collect_classes(
+    graph: Graph, namespace: str, local_graph: Optional[Graph] = None
+) -> list[URIRef]:
+    """Return every domain-local ``owl:Class`` (or ``rdfs:Class``), sorted by URI.
+
+    Locality is the union of two signals: the IRI sits under the domain namespace, or the
+    domain file declares it (#805). The union keeps a hub that mints local IRIs rendering
+    exactly as before; *local_graph* is optional because the in-memory ``project_graph``
+    entry point has no source file to offer.
+    """
     classes = {
         cls
         for cls in set(graph.subjects(RDF.type, OWL.Class))
         | set(graph.subjects(RDF.type, RDFS.Class))
         if isinstance(cls, URIRef) and str(cls).startswith(namespace)
     }
-    return sorted(classes, key=str)
+    return sorted(classes | _declared_classes(local_graph, graph), key=str)
 
 
 # The hierarchy walkers used to live here; they are now the shared projector-level authority
@@ -340,12 +373,17 @@ def generate_erd_artifacts(
     ontology_name: str,
     ontology_metadata: Optional[dict] = None,
     overlay_path: Optional[Path] = None,
+    local_graph: Optional[Graph] = None,
 ) -> dict:
     """Generate a binding-independent canonical class diagram for one ontology domain.
 
     Returns ``{}`` only when the domain has no local classes at all; unlike ``ddd``,
     this target has no opt-in overlay vocabulary to gate on, so any modeled class or
     relationship renders regardless of ``EntityBinding``/compile-plan/DDD status.
+
+    *local_graph* is the domain ``.ttl``'s own parsed graph, without its import closure.
+    It is what decides which classes are local; without it locality falls back to the
+    IRI-prefix test, which misses a domain that re-declares imported IRIs (#805).
 
     *overlay_path* is an optional ``{domain}-erd-ext.ttl`` file (mirroring the ``ddd``
     overlay convention) whose triples are merged into the working graph before rendering.
@@ -362,7 +400,7 @@ def generate_erd_artifacts(
             working_graph.add(triple)
         working_graph.parse(overlay_path, format="turtle")
 
-    classes = _collect_classes(working_graph, namespace)
+    classes = _collect_classes(working_graph, namespace, local_graph)
     if not classes:
         return {}
 
