@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import textwrap
 from pathlib import Path
 
@@ -559,3 +560,59 @@ def test_inputs_walk_flags_two_docs_spellings_for_one_seed():
     assert [item.code for item in diagnostics] == ["dbt-source.dependency-ambiguous"]
     (closure,) = closures
     assert closure.seed_properties_paths == ()
+
+
+def test_a_binding_declared_contract_does_not_warn_as_an_unknown_ref(tmp_path, caplog):
+    """#728: the render-time ref() scan warned on every contracted intermediate.
+
+    `known_models` derives from `NormalizedProject.contracts`, which was built from
+    `BoundSources.contracts` -- hard-coded empty on the v5 binding path. So the set was
+    empty on *every* compile and even a binding's own directly-bound contract warned.
+    On one hub that produced 24 unique / 48 emitted warnings per CI run, all false, and
+    they drowned the 43 unresolved source paths and 2 undeclared PII properties that
+    actually mattered.
+    """
+    hub = _use_contracted_customer(
+        _hub(tmp_path),
+        "select customer_id, customer_name from {{ source('crm', 'customers') }}\n",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = compile_domain(hub, "party", CompileMode.EMIT)
+
+    assert result.succeeded, [item.render() for item in result.diagnostics.items]
+    scan_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if "matched no model in this domain's render scope" in record.getMessage()
+    ]
+    assert not scan_warnings, scan_warnings
+    assert "customer_stage" not in " ".join(scan_warnings)
+
+
+def test_the_scan_still_reports_a_ref_nothing_declares(caplog):
+    """The check must not be weakened into silence.
+
+    Exercised directly on the renderer's validation entry point: a dangling ref has to be
+    in *rendered* output to reach the scan, and the renderer will not emit one. A ref
+    naming something that is neither a rendered model nor a declared contract is the case
+    worth reporting, and it must survive the #728 fix.
+    """
+    from kairos_ontology.core.projections.dbt.render import _validate_dbt_artifacts
+
+    artifacts = {
+        "models/silver/party/customer.sql": (
+            # Not a `join ... ref()`: `_collect_join_ref_targets` whitelists every join
+            # target outright, so one can never reach the scan.
+            "select * from {{ ref('customer_stage') }}\n"
+            "union all select * from {{ ref('no_such_model') }}\n"
+        )
+    }
+
+    with caplog.at_level(logging.WARNING):
+        _validate_dbt_artifacts(artifacts, known_models={"customer_stage"})
+
+    warned = " ".join(record.getMessage() for record in caplog.records)
+    assert "no_such_model" in warned, warned
+    # ...and the declared contract beside it stays quiet.
+    assert "ref('customer_stage')" not in warned, warned
