@@ -190,6 +190,21 @@ def resolve_pbip_pointer(pointer_path: Path) -> list[Path]:
     return resolved
 
 
+def _incomplete_suffix(model: TmdlModel) -> str:
+    """Qualify a table count that an incomplete export makes misleading.
+
+    A bare ``- Tables: 0`` read as "this model has no tables" when the truth was "this
+    export shipped no table bodies" -- the two were indistinguishable in every artifact
+    the command wrote (#807).
+    """
+    if not model.unresolved_table_refs:
+        return ""
+    return (
+        f" ({len(model.unresolved_table_refs)} more declared in model.tmdl but absent "
+        "from this export -- see Incomplete Export below)"
+    )
+
+
 def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
     """Generate an Engineering Pack markdown document from a parsed TMDL model.
 
@@ -217,7 +232,7 @@ def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
     lines.extend(
         [
             "## Global Inventory",
-            f"- Tables: {len(model.tables)}",
+            f"- Tables: {len(model.tables)}{_incomplete_suffix(model)}",
             f"- Columns: {total_columns}",
             f"- Measures: {total_measures}",
             f"- Relationships: {len(model.relationships)}",
@@ -228,6 +243,20 @@ def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
     if model.default_mode:
         lines.append(f"- Default Mode: {model.default_mode}")
     lines.append("")
+
+    if model.unresolved_table_refs:
+        lines.extend(
+            [
+                "## Incomplete Export",
+                "",
+                f"`model.tmdl` declares {len(model.unresolved_table_refs)} table(s) whose "
+                "definition files are absent from this export, so nothing below "
+                "describes them. Re-export with the full `definition/tables/` folder.",
+                "",
+            ]
+        )
+        lines.extend(f"- `{name}`" for name in model.unresolved_table_refs)
+        lines.append("")
 
     # Table summary
     lines.extend(
@@ -357,7 +386,11 @@ def generate_concept_mapping(model: TmdlModel) -> str:
     return header + yaml.dump(data, default_flow_style=False, sort_keys=False, width=100)
 
 
-def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
+def run_import_tmdl(
+    source: Path,
+    output_dir: Path | None = None,
+    partial_models: list[str] | None = None,
+) -> list[Path]:
     """Main entry point: detect input, parse, and generate outputs.
 
     Args:
@@ -368,6 +401,10 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
             cwd-relative default would create a stray ``integration/`` tree
             outside the hub whenever the command is run from the repo root
             (issue #296).
+        partial_models: optional list, appended with the name of every model whose
+            ``model.tmdl`` declared tables this export does not contain (#807). The
+            return value stays a plain list of paths, so existing callers are
+            unaffected; a caller that wants to fail on a partial input passes a list.
 
     Returns:
         List of generated output file paths
@@ -403,7 +440,7 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
                 return []
             for def_dir in definition_dirs:
                 model = parse_model_folder(def_dir)
-                files = _write_outputs(model, output_dir, str(source))
+                files = _write_outputs(model, output_dir, str(source), partial_models)
                 generated_files.extend(files)
             generated_files.extend(_write_report_usage(extracted, output_dir, str(source)))
 
@@ -424,7 +461,7 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
             return []
         for def_dir in definition_dirs:
             model = parse_model_folder(def_dir)
-            files = _write_outputs(model, output_dir, str(source))
+            files = _write_outputs(model, output_dir, str(source), partial_models)
             generated_files.extend(files)
         for folder in artifact_dirs:
             generated_files.extend(_write_report_usage(folder, output_dir, str(source)))
@@ -436,7 +473,7 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
             return []
         for def_dir in definition_dirs:
             model = parse_model_folder(def_dir)
-            files = _write_outputs(model, output_dir, str(source))
+            files = _write_outputs(model, output_dir, str(source), partial_models)
             generated_files.extend(files)
         generated_files.extend(_write_report_usage(source, output_dir, str(source)))
 
@@ -450,7 +487,7 @@ def run_import_tmdl(source: Path, output_dir: Path | None = None) -> list[Path]:
                 model.tables.append(item)
             else:
                 model.relationships.append(item)
-        files = _write_outputs(model, output_dir, str(source))
+        files = _write_outputs(model, output_dir, str(source), partial_models)
         generated_files.extend(files)
 
     return generated_files
@@ -485,8 +522,29 @@ def _write_report_usage(search_root: Path, output_dir: Path, source_label: str) 
     return generated
 
 
-def _write_outputs(model: TmdlModel, output_dir: Path, source_label: str) -> list[Path]:
+def _write_outputs(
+    model: TmdlModel,
+    output_dir: Path,
+    source_label: str,
+    partial_models: list[str] | None = None,
+) -> list[Path]:
     """Write engineering pack and concept mapping for a model."""
+    if model.unresolved_table_refs:
+        # An incomplete export used to be silent, and downstream `design-landscape`
+        # then reported no BI weight for a model that looked like it genuinely had no
+        # tables. On one hub this hid a 34-table / 375-field semantic model (#807).
+        if partial_models is not None:
+            partial_models.append(model.name or "unnamed-model")
+        shown = model.unresolved_table_refs[:10]
+        suffix = "" if len(model.unresolved_table_refs) == len(shown) else ", ..."
+        logger.warning(
+            "%s: model.tmdl declares %d table(s) with no definition file in this "
+            "export, so they are missing from every artifact written: %s%s",
+            model.name or "unnamed-model",
+            len(model.unresolved_table_refs),
+            ", ".join(shown),
+            suffix,
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
 

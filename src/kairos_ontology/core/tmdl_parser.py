@@ -117,6 +117,10 @@ class TmdlModel:
     tables: list[TmdlTable] = field(default_factory=list)
     relationships: list[TmdlRelationship] = field(default_factory=list)
     source_path: str = ""
+    #: Tables ``model.tmdl`` declares but whose definition files are absent from the
+    #: export. A non-empty list means the input is incomplete, not that the model is
+    #: empty -- the two were indistinguishable in every artifact written (#807).
+    unresolved_table_refs: list[str] = field(default_factory=list)
 
 
 def _get_indent(line: str) -> int:
@@ -517,6 +521,28 @@ def parse_model_tmdl(content: str) -> dict[str, str]:
     return metadata
 
 
+def parse_model_table_refs(content: str) -> list[str]:
+    """Return the table names ``model.tmdl`` declares via ``ref table`` pointers.
+
+    Table discovery is otherwise a glob over ``definition/tables/``, so an export whose
+    table bodies are missing is indistinguishable from a model that genuinely has no
+    tables -- `import-tmdl` reported ``Tables: 0`` on a 34-table model and exited 0
+    (#807). ``model.tmdl`` names every table it expects, which is enough to notice.
+
+    Names may be bare or single-quoted (TMDL quotes any name with a space in it).
+    Order is the model's own, not the filesystem's, and duplicates are dropped.
+    """
+    names: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("ref table "):
+            continue
+        name = _strip_quotes(stripped[len("ref table ") :].strip())
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def parse_model_folder(definition_dir: Path) -> TmdlModel:
     """Parse an entire SemanticModel/definition/ folder into a TmdlModel.
 
@@ -532,10 +558,13 @@ def parse_model_folder(definition_dir: Path) -> TmdlModel:
 
     # Parse model.tmdl for metadata
     model_file = definition_dir / "model.tmdl"
+    declared_tables: list[str] = []
     if model_file.exists():
-        meta = parse_model_tmdl(model_file.read_text(encoding="utf-8"))
+        model_text = model_file.read_text(encoding="utf-8")
+        meta = parse_model_tmdl(model_text)
         model.compatibility_level = meta.get("compatibilityLevel", "")
         model.default_mode = meta.get("defaultMode", "")
+        declared_tables = parse_model_table_refs(model_text)
 
     # Parse tables
     tables_dir = definition_dir / "tables"
@@ -555,6 +584,13 @@ def parse_model_folder(definition_dir: Path) -> TmdlModel:
         for item in items:
             if isinstance(item, TmdlRelationship):
                 model.relationships.append(item)
+
+    # Compared case-insensitively: the pointer and the filename are the same name and
+    # TMDL does not guarantee they agree on case.
+    parsed = {table.name.casefold() for table in model.tables}
+    model.unresolved_table_refs = [
+        name for name in declared_tables if name.casefold() not in parsed
+    ]
 
     # Derive model name from parent folder
     # e.g., "MyModel.SemanticModel/definition/" → "MyModel"

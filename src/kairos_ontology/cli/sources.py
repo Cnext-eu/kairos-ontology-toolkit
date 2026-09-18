@@ -33,7 +33,15 @@ from .shared import (
     help="Output directory (default: <hub root>/integration/discovery/bi/). "
     "An explicit path is used verbatim, relative to the current directory.",
 )
-def import_tmdl(source, output):
+@click.option(
+    "--fail-on-partial",
+    is_flag=True,
+    default=False,
+    help="Exit non-zero if any model.tmdl declares tables this export does not "
+    "contain. Off by default: a batch import of many exports should not fail "
+    "wholesale because one of them is incomplete.",
+)
+def import_tmdl(source, output, fail_on_partial):
     """Import and inventory TMDL/PBIP files for ontology modeling.
 
     SOURCE is a path to a PBIP ZIP archive, a SemanticModel folder, or a
@@ -78,12 +86,26 @@ def import_tmdl(source, output):
 
     click.echo(f"📦 Importing TMDL from: {source_path}")
     click.echo(f"📂 Writing to: {output_path}")
-    generated = run_import_tmdl(source_path, output_path)
+    partial_models: list[str] = []
+    generated = run_import_tmdl(source_path, output_path, partial_models)
+
+    if partial_models:
+        # Loud on the way out as well as in the log: the written artifacts were the only
+        # record, and a bare `Tables: 0` reads as a model that genuinely has none (#807).
+        click.echo(
+            "\n⚠️  Incomplete export: model.tmdl declares tables absent from it, for "
+            f"{len(partial_models)} model(s): {', '.join(partial_models)}.\n"
+            "   The Engineering Pack names them under 'Incomplete Export'. "
+            "Re-export with the full definition/tables/ folder.",
+            err=True,
+        )
 
     if generated:
         click.echo(f"\n✅ Generated {len(generated)} file(s):")
         for f in generated:
             click.echo(f"   {f}")
+        if partial_models and fail_on_partial:
+            raise SystemExit(1)
     else:
         click.echo("\n⚠️  No TMDL content found. Check input path.", err=True)
         raise SystemExit(1)
