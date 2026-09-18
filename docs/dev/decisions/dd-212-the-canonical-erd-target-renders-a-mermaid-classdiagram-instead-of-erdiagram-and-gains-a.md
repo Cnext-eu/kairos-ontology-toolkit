@@ -118,3 +118,29 @@ namespace test alone.
 
 Consequence: a projection target that returns no artifacts now says so, per domain, naming the
 namespace it tested. Silence was the reason this went unnoticed.
+
+### Amended (#804): the stub rule follows inheritance, not "imported"
+
+The reachability amendment above drew *every* non-local class as a member-less stub, on the
+reasoning that "its own attributes are listed on the domain classes that inherit them, so
+repeating them here would double every inherited attribute". That reasoning is sound for an
+inheritance ancestor and false for a class reached only across an object property: nothing
+inherits from it, so blanking it means its attributes appear **nowhere in the diagram at all**.
+It is the #678 defect again, one hop across an edge, and the same misreading is available —
+absence reads as non-existence.
+
+This is the common case for the recommended modelling style. On one hub's `vessel-maritime`
+domain, `:SeaLeg --partOfVoyage--> imo-pc:Voyage` and `:SeaLeg --hasVessel--> imo:Vessel` both
+rendered as empty boxes, hiding `voyageNumber`, `vesselName`, `imoNumber`, `draftValue` and every
+certificate, survey, crew-list and security-plan class hanging off `imo:Vessel`.
+
+Both signals are already separate at the point of rendering, so the split is exact:
+
+- a class that is an **inheritance ancestor or descendant** of a rendered class keeps the stub —
+  its members are listed, prefixed `#`, on the classes that inherit them;
+- a class reached **only as a relationship endpoint** renders its own members;
+- a class that is both keeps the stub, because the heir already carries them.
+
+The stereotype is now independent of the stub decision. Every imported class carries one whether
+or not it lists members — without it, a class drawn with members is indistinguishable from a
+domain-local one, which would trade one misreading for another.
