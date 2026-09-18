@@ -120,6 +120,11 @@ _SOURCE_TO_FABRIC: dict[str, str] = {
     "bigint": "BIGINT",
     "smallint": "SMALLINT",
     "tinyint": "SMALLINT",
+    # Spark/Databricks spellings of the three above; a Databricks-backed hub
+    # declares these and without them they fell through to the string default (#808).
+    "long": "BIGINT",
+    "short": "SMALLINT",
+    "byte": "SMALLINT",
     "bit": "BIT",
     "decimal": "DECIMAL(18,4)",
     "numeric": "DECIMAL(18,4)",
@@ -149,6 +154,11 @@ _SOURCE_TO_DATABRICKS: dict[str, str] = {
     "bigint": "BIGINT",
     "smallint": "SMALLINT",
     "tinyint": "SMALLINT",
+    # Spark/Databricks spellings of the three above; a Databricks-backed hub
+    # declares these and without them they fell through to the string default (#808).
+    "long": "BIGINT",
+    "short": "SMALLINT",
+    "byte": "SMALLINT",
     "bit": "BOOLEAN",
     "decimal": "DECIMAL(18,4)",
     "numeric": "DECIMAL(18,4)",
