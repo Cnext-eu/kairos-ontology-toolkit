@@ -1408,13 +1408,27 @@ def _normalize_identities(
             if source_ref
         }
     )
-    source_ref_by_relation: dict[str, str] = {}
-    source_ref_by_relation.update(
-        {
-            contract.virtual_source_iri: contract.identity_resource_uri
-            for contract in contract_by_identity.values()
-        }
-    )
+    # Keyed by (class, relation), not by relation alone. Two EntityBindings may bind the
+    # same physical source.relation to *different* canonical classes -- the documented
+    # "one source table, several canonical entities" pattern -- and a flat table_uri key
+    # let whichever candidate was processed last overwrite the other's identity ref, so
+    # one class was then attributed the other's contributor and failed
+    # identity.source-contributor-mismatch on a binding that was correct (#809). The
+    # neighbouring `available_columns` was already keyed this way.
+    source_ref_by_relation: dict[tuple[str, str], str] = {}
+    # Class-agnostic fallback for the contract layer alone, whose target_class may be
+    # empty. The candidate layers below always know their class and deliberately do not
+    # write here: a candidate carrying no identity ref of its own must resolve to None,
+    # not silently inherit whatever another class registered for the same table.
+    source_ref_by_relation_any: dict[str, str] = {}
+    for contract in contract_by_identity.values():
+        source_ref_by_relation_any.setdefault(
+            contract.virtual_source_iri, contract.identity_resource_uri
+        )
+        if contract.target_class:
+            source_ref_by_relation[(contract.target_class, contract.virtual_source_iri)] = (
+                contract.identity_resource_uri
+            )
     identity_fact_by_class = {fact.resource_uri: fact for fact in facts}
     sources_by_class: dict[str, dict[str, object]] = {}
     for candidate in candidates:
@@ -1429,15 +1443,14 @@ def _normalize_identities(
             else ()
         )
         for source, source_ref in zip(class_sources.values(), source_refs, strict=False):
-            source_ref_by_relation.setdefault(source.table_uri, source_ref)
-    source_ref_by_relation.update(
-        {
-            source.table_uri: candidate.source_identity_ref
-            for candidate in candidates
-            if candidate.source_identity_ref
-            for source in candidate.sources
-        }
-    )
+            source_ref_by_relation.setdefault((class_uri, source.table_uri), source_ref)
+    for candidate in candidates:
+        if not candidate.source_identity_ref:
+            continue
+        for source in candidate.sources:
+            source_ref_by_relation[(candidate.identity.class_uri, source.table_uri)] = (
+                candidate.source_identity_ref
+            )
     available_columns: dict[tuple[str, str], set[str]] = {}
     contributor_refs: dict[str, set[str]] = {}
     for candidate in candidates:
@@ -1447,7 +1460,9 @@ def _normalize_identities(
             if not _NULL_EXPRESSION.match(column.expression or "")
         }
         for source in candidate.sources:
-            source_ref = source_ref_by_relation.get(source.table_uri)
+            source_ref = source_ref_by_relation.get(
+                (candidate.identity.class_uri, source.table_uri)
+            ) or source_ref_by_relation_any.get(source.table_uri)
             if source_ref is not None:
                 contributor_refs.setdefault(
                     candidate.identity.class_uri,
