@@ -384,6 +384,67 @@ class TestOverlayExtension:
         assert with_missing_overlay == without_overlay
 
 
+class TestRelationshipOnlyEndpoints:
+    """#804: an imported class reached only across an object property.
+
+    The stub rule was justified by "its own attributes are listed on the domain classes
+    that inherit them". That holds for an inheritance ancestor. Nothing inherits from a
+    class reached only by a relationship, so blanking it means its attributes appear
+    nowhere in the diagram at all -- the mirror image of #678, one hop across an edge. On
+    one hub that hid every certificate, survey and crew-list class hanging off imo:Vessel.
+    """
+
+    @staticmethod
+    def _graph():
+        """`Order --shipsTo--> ref:Address`, where Address is no one's superclass."""
+        g = _base_graph()
+        g.add((REF.Address, RDF.type, OWL.Class))
+        g.add((REF.street, RDF.type, OWL.DatatypeProperty))
+        g.add((REF.street, RDFS.domain, REF.Address))
+        g.add((REF.street, RDFS.range, XSD.string))
+        g.add((REF.postalCode, RDF.type, OWL.DatatypeProperty))
+        g.add((REF.postalCode, RDFS.domain, REF.Address))
+        g.add((REF.postalCode, RDFS.range, XSD.string))
+        g.add((ORDER.shipsTo, RDF.type, OWL.ObjectProperty))
+        g.add((ORDER.shipsTo, RDFS.domain, ORDER.Order))
+        g.add((ORDER.shipsTo, RDFS.range, REF.Address))
+        return g
+
+    def _content(self):
+        return generate_erd_artifacts(self._graph(), NS, "order")["order-erd.mmd"]
+
+    def test_its_members_are_rendered(self):
+        block = self._content().split("class Address {")[1].split("}")[0]
+        assert "string street" in block
+        assert "string postalCode" in block
+
+    def test_it_keeps_the_stereotype_naming_its_model(self):
+        assert "<<ont/ref>>" in self._content()
+
+    def test_an_inheritance_ancestor_is_still_blanked(self):
+        """Both rules in one diagram: only the relationship endpoint gains members."""
+        g = self._graph()
+        g.add((REF.TradeParty, RDF.type, OWL.Class))
+        g.add((REF.legalName, RDF.type, OWL.DatatypeProperty))
+        g.add((REF.legalName, RDFS.domain, REF.TradeParty))
+        g.add((REF.legalName, RDFS.range, XSD.string))
+        g.add((ORDER.Customer, RDFS.subClassOf, REF.TradeParty))
+        content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+
+        assert "legalName" not in content.split("class TradeParty {")[1].split("}")[0]
+        assert "#string legalName" in content  # carried by the heir instead
+        assert "string street" in content.split("class Address {")[1].split("}")[0]
+
+    def test_a_class_that_is_both_stays_a_stub(self):
+        """Ancestry wins: the heir already lists the members, so drawing them again
+        on the ancestor would double them -- the case the stub rule exists for."""
+        g = self._graph()
+        g.add((ORDER.Customer, RDFS.subClassOf, REF.Address))
+        content = generate_erd_artifacts(g, NS, "order")["order-erd.mmd"]
+        assert "street" not in content.split("class Address {")[1].split("}")[0]
+        assert "#string street" in content
+
+
 class TestReDeclaredImportedClasses:
     """#805: `kairos-design-domain` directs authors to reuse a reference-model class and
     re-declare its IRI locally to attach labels. Such a class keeps its reference-model
