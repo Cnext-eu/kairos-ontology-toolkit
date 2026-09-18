@@ -497,6 +497,60 @@ class TestReDeclaredImportedClasses:
         )
 
 
+class TestNodeIdCollisions:
+    """#806: two IRIs sharing a local name collided on one Mermaid node id.
+
+    The canonical case is the one `kairos-design-domain` recommends -- a local subclass
+    named after the reference-model class it specialises. Mermaid merged the two blocks
+    and drew an inheritance edge from the node to itself, so the diagram asserted
+    something the ontology does not.
+    """
+
+    @staticmethod
+    def _graph():
+        """`order:Customer rdfs:subClassOf ref:Customer` -- same local name, two IRIs."""
+        g = Graph()
+        g.add((ORDER.Customer, RDF.type, OWL.Class))
+        g.add((ORDER.orderCount, RDF.type, OWL.DatatypeProperty))
+        g.add((ORDER.orderCount, RDFS.domain, ORDER.Customer))
+        g.add((ORDER.orderCount, RDFS.range, XSD.integer))
+        g.add((REF.Customer, RDF.type, OWL.Class))
+        g.add((ORDER.Customer, RDFS.subClassOf, REF.Customer))
+        return g
+
+    def _content(self):
+        return generate_erd_artifacts(self._graph(), NS, "order")["order-erd.mmd"]
+
+    def test_the_two_classes_get_distinct_node_ids(self):
+        content = self._content()
+        assert content.count("    class ") == 2
+        ids = {
+            line.split("class ", 1)[1].split(" ", 1)[0]
+            for line in content.splitlines()
+            if line.startswith("    class ")
+        }
+        assert len(ids) == 2, ids
+
+    def test_no_false_self_inheritance_edge(self):
+        for line in self._content().splitlines():
+            if "<|--" in line:
+                parent, child = (part.strip() for part in line.split("<|--"))
+                assert parent != child, line
+
+    def test_the_disambiguated_id_names_the_source_model(self):
+        assert "Customer_ont_ref" in self._content()
+
+    def test_a_name_claimed_by_one_class_is_left_untouched(self):
+        """Hubs track and drift-gate these files, so uncontested output must not move."""
+        content = generate_erd_artifacts(_base_graph(), NS, "order")["order-erd.mmd"]
+        assert "    class Customer {" in content
+        assert "    class Order {" in content
+        assert "Customer_" not in content
+
+    def test_ids_are_deterministic(self):
+        assert self._content() == self._content()
+
+
 class TestCliLevelProjection:
     """End-to-end ``project --target erd`` coverage, mirroring how the flat
     ``neo4j``/``azure-search`` targets are exercised in test_projector.py."""

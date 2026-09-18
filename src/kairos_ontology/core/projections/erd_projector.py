@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Optional
 
 from rdflib import Graph, URIRef
@@ -236,6 +237,39 @@ def _external_label(cls: URIRef) -> str:
     return re.sub(r"[^0-9A-Za-z_./-]", "_", label) or "imported"
 
 
+def _node_ids(classes: Iterable[URIRef]) -> dict[URIRef, str]:
+    """Assign one Mermaid node id per class, disambiguating shared local names.
+
+    The node id was the local name alone, so two distinct IRIs with the same fragment
+    became the same node: ``:SeaLeg rdfs:subClassOf imo-pc:SeaLeg`` -- the style
+    ``kairos-design-domain`` recommends -- rendered two ``class SeaLeg`` blocks that
+    Mermaid merged, plus an inheritance edge from the node to itself, so the diagram
+    asserted something the ontology does not (#806).
+
+    A name claimed by exactly one class is left untouched: these diagrams are tracked and
+    drift-gated in hubs, so existing output must stay byte-identical. A contested name
+    takes the source-model label as a suffix (``SeaLeg_imo_port_call``), and IRI order
+    breaks any residual tie so the result stays deterministic.
+    """
+    by_name: dict[str, list[URIRef]] = {}
+    for cls in sorted(set(classes), key=str):
+        by_name.setdefault(_sanitize(extract_local_name(str(cls))), []).append(cls)
+
+    ids: dict[URIRef, str] = {}
+    for name, claimants in by_name.items():
+        if len(claimants) == 1:
+            ids[claimants[0]] = name
+            continue
+        used: set[str] = set()
+        for cls in claimants:
+            candidate = f"{name}_{_sanitize(_external_label(cls))}"
+            if candidate in used or candidate == name:
+                candidate = f"{candidate}_{len(used) + 1}"
+            used.add(candidate)
+            ids[cls] = candidate
+    return ids
+
+
 def _collect_relationships(graph: Graph, classes: list[URIRef]) -> list[Edge]:
     """Return ``(left, declared_on, property, range, inherited, inverse)`` edges to render.
 
@@ -322,7 +356,12 @@ def _datatype_properties(graph: Graph, owner: URIRef) -> list[URIRef]:
 
 
 def _class_block(
-    graph: Graph, cls: URIRef, *, stub: bool = False, external: bool = False
+    graph: Graph,
+    cls: URIRef,
+    *,
+    stub: bool = False,
+    external: bool = False,
+    node_id: Optional[str] = None,
 ) -> str:
     """Render one Mermaid ``classDiagram`` class block.
 
@@ -342,7 +381,7 @@ def _class_block(
     was a party class rendering 5 of its 14 attributes, so a reader reasonably concluded
     the model had no party name or registration number (#678).
     """
-    node = _sanitize(extract_local_name(str(cls)))
+    node = node_id or _sanitize(extract_local_name(str(cls)))
     lines = [f"    class {node} {{"]
     if stub or external:
         lines.append(f"        <<{_external_label(cls)}>>")
@@ -451,23 +490,30 @@ def generate_erd_artifacts(
     # edge (#804). A class that is both keeps the stub: the heir still lists its members.
     inheritance_stubs = {parent for parent, _ in inheritance}
     inheritance_stubs |= {subclass for _, subclass in inheritance}
+    # Ids are assigned once over every class the diagram will draw, because a collision
+    # is a property of the rendered set rather than of any one class (#806).
+    node_ids = _node_ids(local | external)
     for cls in classes:
-        lines.append(_class_block(working_graph, cls))
+        lines.append(_class_block(working_graph, cls, node_id=node_ids[cls]))
     for cls in sorted(external, key=str):
         lines.append(
             _class_block(
-                working_graph, cls, stub=cls in inheritance_stubs, external=True
+                working_graph,
+                cls,
+                stub=cls in inheritance_stubs,
+                external=True,
+                node_id=node_ids[cls],
             )
         )
 
     for superclass, subclass in inheritance:
-        parent = _sanitize(extract_local_name(str(superclass)))
-        child = _sanitize(extract_local_name(str(subclass)))
+        parent = node_ids[superclass]
+        child = node_ids[subclass]
         lines.append(f"    {parent} <|-- {child}")
 
     for domain_cls, declared_on, prop, range_cls, inherited, inverse in relationships:
-        left = _sanitize(extract_local_name(str(domain_cls)))
-        right = _sanitize(extract_local_name(str(range_cls)))
+        left = node_ids[domain_cls]
+        right = node_ids[range_cls]
         min_bound, max_bound = _effective_bounds(working_graph, domain_cls, declared_on, prop)
         if max_bound is None and (prop, RDF.type, OWL.FunctionalProperty) in working_graph:
             max_bound = 1
