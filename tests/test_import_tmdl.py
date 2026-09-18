@@ -3,6 +3,7 @@
 """Integration tests for the import-tmdl command and orchestration."""
 
 import json
+import logging
 import zipfile
 from pathlib import Path
 
@@ -302,6 +303,101 @@ class TestConceptMapping:
 # ---------------------------------------------------------------------------
 # Full pipeline (run_import_tmdl) tests
 # ---------------------------------------------------------------------------
+
+
+class TestIncompleteExport:
+    """#807: an export whose `ref table` pointers do not resolve.
+
+    `model.tmdl` names every table the model expects, but table discovery was a glob over
+    `definition/tables/` and the pointers were never read. A partial export therefore
+    produced `Tables: 0`, `tables: []` and a success exit -- indistinguishable, in every
+    artifact written, from a model that genuinely has no tables. Downstream
+    `design-landscape` then reported no BI weight for it, which on one hub hid a 34-table
+    / 375-field / 163-measure semantic model.
+    """
+
+    MODEL_WITH_REFS = (
+        MODEL_TMDL
+        + "\nref table d_Customer\nref table f_Sales\nref table 'f Missing'\nref table _measures\n"
+    )
+
+    @staticmethod
+    def _parse(definition_dir):
+        from kairos_ontology.core.tmdl_parser import parse_model_folder
+
+        return parse_model_folder(definition_dir)
+
+    def _partial(self, tmp_path):
+        """A well-formed export with two of its four declared tables shipped."""
+        sm_dir = _create_semantic_model(tmp_path / "input")
+        (sm_dir / "definition" / "model.tmdl").write_text(
+            self.MODEL_WITH_REFS, encoding="utf-8"
+        )
+        return sm_dir
+
+    def test_ref_table_pointers_are_parsed(self):
+        from kairos_ontology.core.tmdl_parser import parse_model_table_refs
+
+        assert parse_model_table_refs(self.MODEL_WITH_REFS) == [
+            "d_Customer",
+            "f_Sales",
+            "f Missing",
+            "_measures",
+        ]
+
+    def test_unresolved_pointers_are_recorded_not_silently_dropped(self, tmp_path):
+        model = self._parse(self._partial(tmp_path) / "definition")
+        assert model.unresolved_table_refs == ["f Missing", "_measures"]
+
+    def test_a_complete_export_reports_nothing_unresolved(self, tmp_path):
+        model = self._parse(_create_semantic_model(tmp_path / "in") / "definition")
+        assert model.unresolved_table_refs == []
+
+    def test_the_engineering_pack_names_the_missing_tables(self, tmp_path):
+        output = tmp_path / "output"
+        run_import_tmdl(self._partial(tmp_path), output)
+        pack = next(output.glob("*-engineering-pack.md")).read_text(encoding="utf-8")
+
+        assert "## Incomplete Export" in pack
+        assert "`f Missing`" in pack
+        assert "`_measures`" in pack
+        # The count itself is qualified: a bare number is what misled.
+        assert "absent from this export" in pack
+
+    def test_a_complete_export_has_no_incomplete_section(self, tmp_path):
+        output = tmp_path / "output"
+        run_import_tmdl(_create_semantic_model(tmp_path / "in"), output)
+        pack = next(output.glob("*-engineering-pack.md")).read_text(encoding="utf-8")
+        assert "## Incomplete Export" not in pack
+
+    def test_the_caller_can_observe_the_partial_model(self, tmp_path):
+        partial: list[str] = []
+        run_import_tmdl(self._partial(tmp_path), tmp_path / "output", partial)
+        assert partial == ["TestModel"]
+
+    def test_it_warns_and_names_them(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING):
+            run_import_tmdl(self._partial(tmp_path), tmp_path / "output")
+        assert "f Missing" in caplog.text
+        assert "_measures" in caplog.text
+
+    def test_exit_code_is_zero_by_default_and_opt_in_under_the_flag(self, tmp_path):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.sources import import_tmdl
+
+        source = str(self._partial(tmp_path))
+        runner = CliRunner()
+
+        # A batch import of many exports must not fail wholesale over one bad input.
+        default = runner.invoke(import_tmdl, [source, "-o", str(tmp_path / "a")])
+        assert default.exit_code == 0, default.output
+        assert "Incomplete export" in default.output
+
+        strict = runner.invoke(
+            import_tmdl, [source, "-o", str(tmp_path / "b"), "--fail-on-partial"]
+        )
+        assert strict.exit_code == 1, strict.output
 
 
 class TestRunImportTmdl:

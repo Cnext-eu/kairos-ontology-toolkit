@@ -901,6 +901,7 @@ kairos-ontology import-tmdl [OPTIONS] SOURCE
 | Option | Default | Description |
 |---|---|---|
 | `--output`, `-o` |  | Output directory (default: <hub root>/integration/discovery/bi/). An explicit path is used verbatim, relative to the current directory. |
+| `--fail-on-partial` |  | Exit non-zero if any model.tmdl declares tables this export does not contain. Off by default: a batch import of many exports should not fail wholesale because one of them is incomplete. |
 
 
 ## init
