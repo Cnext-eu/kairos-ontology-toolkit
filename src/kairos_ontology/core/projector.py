@@ -1112,6 +1112,7 @@ def run_projections(
                     semantic_index=load_result.semantic_index,
                     plan_only=check_only,
                     diagnostic_mode=diagnostic_mode,
+                    local_graph=_own_source_graph(load_result),
                 )
                 if check_only:
                     continue
@@ -1141,6 +1142,14 @@ def run_projections(
                         # Check if gold models were produced
                         if any(k.startswith("models/gold/") for k in artifacts):
                             dbt_gold_domains.append(onto_name)
+                else:
+                    # A projector returning nothing used to be indistinguishable from a
+                    # domain with nothing to draw, and the run still reported success --
+                    # five of twelve domains on one hub silently emitted no ERD (#805).
+                    print(
+                        f"  [{onto_name}] ⚠️  {target_name} produced no artifacts "
+                        f"(namespace: {onto_namespace})"
+                    )
             except Exception as e:
                 print(f"  [{onto_name}] ✗ Failed: {e}")
                 _tb.print_exc()
@@ -1835,6 +1844,20 @@ def _discover_whitelisted_imports(
     return imported_classes
 
 
+def _own_source_graph(load_result):
+    """Return the graph of the domain file itself, without its import closure.
+
+    ``load_result.sources`` is sorted by ``(import_depth, source_identity)``, so depth 0 is
+    the file that was asked for. Selected by depth rather than by index so a future change
+    to that ordering cannot silently hand back a reference model instead. Returns None when
+    the loader kept no per-source graphs, which leaves callers on their previous behaviour.
+    """
+    for source in getattr(load_result, "sources", ()) or ():
+        if source.manifest.import_depth == 0:
+            return source.graph
+    return None
+
+
 def _run_projection(
     target: str,
     graph: Graph,
@@ -1857,6 +1880,7 @@ def _run_projection(
     semantic_index=None,
     plan_only: bool = False,
     diagnostic_mode: str = "fail_fast",
+    local_graph=None,
 ) -> dict:
     """Run a specific projection type using simplified logic.
 
@@ -1909,6 +1933,7 @@ def _run_projection(
             ontology_name=ontology_name or "domain",
             ontology_metadata=ontology_metadata or {},
             overlay_path=projection_ext_path,
+            local_graph=local_graph,
         )
 
     # Declared Silver contract diagram (DD-216 / issue #698). Reads the authored

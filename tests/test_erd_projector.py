@@ -384,6 +384,58 @@ class TestOverlayExtension:
         assert with_missing_overlay == without_overlay
 
 
+class TestReDeclaredImportedClasses:
+    """#805: `kairos-design-domain` directs authors to reuse a reference-model class and
+    re-declare its IRI locally to attach labels. Such a class keeps its reference-model
+    IRI, so an IRI-prefix locality test never saw it and the domain emitted no diagram at
+    all -- silently, with the CLI reporting success. Five of twelve domains on one hub."""
+
+    def _closure_and_local(self):
+        """A domain whose only class is an imported IRI it re-declares."""
+        local = Graph()
+        local.add((REF.Consignment, RDF.type, OWL.Class))
+        local.add((REF.Consignment, RDFS.label, Literal("Consignment")))
+
+        closure = Graph()
+        for triple in local:
+            closure.add(triple)
+        closure.add((REF.consignmentNumber, RDF.type, OWL.DatatypeProperty))
+        closure.add((REF.consignmentNumber, RDFS.domain, REF.Consignment))
+        closure.add((REF.consignmentNumber, RDFS.range, XSD.string))
+        return closure, local
+
+    def test_a_domain_of_only_imported_iris_still_renders(self):
+        closure, local = self._closure_and_local()
+
+        assert generate_erd_artifacts(closure, NS, "consignment") == {}, (
+            "precondition: the IRI-prefix test alone finds nothing here"
+        )
+
+        artifacts = generate_erd_artifacts(closure, NS, "consignment", local_graph=local)
+        assert artifacts, "the domain declares a class; it must produce a diagram"
+        body = artifacts["consignment-erd.mmd"]
+        assert "class Consignment {" in body
+        assert "string consignmentNumber" in body
+
+    def test_a_class_only_referenced_by_the_domain_file_stays_external(self):
+        """Subject-side only. `:SeaLeg rdfs:subClassOf imo:SeaLeg` names the parent as an
+        object; treating that as local would pull the whole reference model in."""
+        closure, local = self._closure_and_local()
+        local.add((REF.Consignment, RDFS.subClassOf, REF.TransportDocument))
+        closure.add((REF.Consignment, RDFS.subClassOf, REF.TransportDocument))
+        closure.add((REF.TransportDocument, RDF.type, OWL.Class))
+
+        from kairos_ontology.core.projections.erd_projector import _collect_classes
+
+        assert REF.TransportDocument not in _collect_classes(closure, NS, local)
+
+    def test_local_graph_is_optional_and_changes_nothing_for_namespace_local_domains(self):
+        graph = _base_graph()
+        assert generate_erd_artifacts(graph, NS, "order") == generate_erd_artifacts(
+            graph, NS, "order", local_graph=Graph()
+        )
+
+
 class TestCliLevelProjection:
     """End-to-end ``project --target erd`` coverage, mirroring how the flat
     ``neo4j``/``azure-search`` targets are exercised in test_projector.py."""
