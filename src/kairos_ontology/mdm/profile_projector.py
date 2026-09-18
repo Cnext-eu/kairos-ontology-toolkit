@@ -298,6 +298,7 @@ def _render_markdown(profile: MdmProfile, digest: str) -> str:
     lines: List[str] = []
     lines.append(f"# MDM profile — {p.provenance.domain}")
     lines.append("")
+    lines.append(f"- **Schema version:** {p.schema_version}")
     lines.append(f"- **Ontology:** `{p.provenance.ontology_iri}`")
     lines.append(f"- **Ontology version:** {p.provenance.ontology_version or '—'}")
     lines.append(f"- **Toolkit version:** {p.provenance.toolkit_version}")

@@ -9,6 +9,7 @@ import json
 import pytest
 from rdflib import Graph
 
+from kairos_ontology.mdm.model import MDM_PROFILE_SCHEMA_VERSION
 from kairos_ontology.mdm.profile_projector import (
     extract_profile,
     generate_mdm_profile_artifacts,
@@ -158,6 +159,7 @@ def test_generate_artifacts_emits_json_and_md_with_stable_digest(tmp_path):
 
     payload = json.loads(artifacts["client-mdm-profile.json"])
     assert payload["content_digest"].startswith("sha256:")
+    assert payload["schema_version"] == MDM_PROFILE_SCHEMA_VERSION
     assert payload["provenance"]["domain"] == "client"
     assert len(payload["mastered_concepts"]) == 1
 
@@ -170,6 +172,22 @@ def test_generate_artifacts_emits_json_and_md_with_stable_digest(tmp_path):
     assert payload["content_digest"] == payload2["content_digest"]
 
     assert "# MDM profile — client" in artifacts["client-mdm-profile.md"]
+    assert f"**Schema version:** {MDM_PROFILE_SCHEMA_VERSION}" in artifacts["client-mdm-profile.md"]
+
+
+def test_schema_version_change_changes_the_digest(valid_graph):
+    """The digest covers schema_version too — a profile-shape bump is a real content change,
+    not a volatile field like generated_at/toolkit_version (kairos-mdm-runtime's
+    compatibility.md fail-closed rule depends on this)."""
+    from kairos_ontology.mdm.profile_projector import _content_digest
+
+    profile = extract_profile(valid_graph, NS, "client", None)
+    baseline_digest = _content_digest(profile.to_dict())
+
+    profile.schema_version = "9.9.9"
+    bumped_digest = _content_digest(profile.to_dict())
+
+    assert bumped_digest != baseline_digest
 
 
 def test_generate_artifacts_empty_when_no_extension(tmp_path):

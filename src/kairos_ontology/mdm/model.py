@@ -18,6 +18,13 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+#: MDM-profile artifact schema version (MDM-DD-005). ``kairos-mdm-runtime``'s
+#: ``contracts/compatibility.md`` treats a *missing* ``schema_version`` as this same
+#: baseline, so emitting it explicitly is backward compatible with readers built against
+#: that baseline. Bump only when the profile JSON *shape* changes (a field is added,
+#: renamed or removed), never on an ordinary toolkit release.
+MDM_PROFILE_SCHEMA_VERSION = "1.0.0"
+
 
 @dataclass
 class ProfileProvenance:
@@ -178,9 +185,11 @@ class MdmProfile:
     reference_lists: List[ReferenceListPolicy] = field(default_factory=list)
     steward_roles: List[StewardRole] = field(default_factory=list)
     probabilistic_artifact: Optional[ProbabilisticArtifactRef] = None
+    schema_version: str = MDM_PROFILE_SCHEMA_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "provenance": self.provenance.to_dict(),
             "mastered_concepts": [c.to_dict() for c in self.mastered_concepts],
             "reference_lists": [r.to_dict() for r in self.reference_lists],
