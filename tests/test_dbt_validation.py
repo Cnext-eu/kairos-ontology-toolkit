@@ -143,6 +143,96 @@ def test_structural_check_passes_with_resolvable_refs(tmp_path: Path) -> None:
     assert result.compile_status == "passed"
 
 
+def test_structural_check_catches_a_duplicate_model_name(tmp_path: Path) -> None:
+    """#786: the one defect class that makes an emitted package unparseable.
+
+    dbt resolves ref() in a single resource namespace, so no --select works around this
+    and no dataplatform can consume the package. #777 and #779 were both this shape and
+    both passed `--structural-only`, which ran exactly one check: the dangling-ref scan.
+    """
+    project = _project(tmp_path)
+    for domain in ("consignment", "booking"):
+        models = project / "models" / "silver" / domain
+        models.mkdir(parents=True)
+        (models / "transportleg.sql").write_text("select 1", encoding="utf-8")
+
+    def runner(args, **kwargs):
+        raise AssertionError("dbt must not run once the structural scan fails")
+
+    with pytest.raises(DbtValidationError, match="two dbt resources claim one name"):
+        validate_dbt_project(project, "fabric-warehouse", runner=runner)
+
+
+def test_structural_check_catches_a_model_and_seed_sharing_a_name(tmp_path: Path) -> None:
+    """Seeds share the ref() namespace, which is why they are checked together."""
+    project = _project(tmp_path)
+    models = project / "models" / "silver" / "reference"
+    models.mkdir(parents=True)
+    (models / "country.sql").write_text("select 1", encoding="utf-8")
+    seeds = project / "seeds"
+    seeds.mkdir(parents=True)
+    (seeds / "country.csv").write_text("code\nBE\n", encoding="utf-8")
+
+    with pytest.raises(DbtValidationError, match="two dbt resources claim one name"):
+        validate_dbt_project(project, "fabric-warehouse", runner=lambda *a, **k: _result())
+
+
+def test_structural_check_catches_a_repeated_generic_test(tmp_path: Path) -> None:
+    """The #777/#779 shape: dbt derives one name from test name plus arguments."""
+    project = _project(tmp_path)
+    models = project / "models" / "silver" / "cargo"
+    models.mkdir(parents=True)
+    (models / "cargounit.sql").write_text("select 1", encoding="utf-8")
+    (models / "cargounit.yml").write_text(
+        "version: 2\n"
+        "models:\n"
+        "  - name: cargounit\n"
+        "    columns:\n"
+        "      - name: parent_source_id\n"
+        "        data_tests:\n"
+        "          - kairos_temporal_fk_cardinality:\n"
+        "              arguments:\n"
+        "                cardinality: zero-or-one\n"
+        "          - kairos_temporal_fk_cardinality:\n"
+        "              arguments:\n"
+        "                cardinality: zero-or-one\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DbtValidationError, match="declared twice with identical arguments"):
+        validate_dbt_project(project, "fabric-warehouse", runner=lambda *a, **k: _result())
+
+
+def test_structural_check_allows_distinct_tests_on_one_column(tmp_path: Path) -> None:
+    """Two tests differing in their arguments render to distinct names and are fine."""
+    project = _project(tmp_path)
+    _manifest(project)
+    models = project / "models" / "silver" / "cargo"
+    models.mkdir(parents=True)
+    (models / "cargounit.sql").write_text("select 1", encoding="utf-8")
+    (models / "cargounit.yml").write_text(
+        "version: 2\n"
+        "models:\n"
+        "  - name: cargounit\n"
+        "    columns:\n"
+        "      - name: parent_source_id\n"
+        "        data_tests:\n"
+        "          - not_null\n"
+        "          - unique\n"
+        "          - kairos_temporal_fk_cardinality:\n"
+        "              arguments:\n"
+        "                cardinality: zero-or-one\n"
+        "          - kairos_temporal_fk_cardinality:\n"
+        "              arguments:\n"
+        "                cardinality: exactly-one\n",
+        encoding="utf-8",
+    )
+
+    result = validate_dbt_project(project, "fabric-warehouse", runner=lambda *a, **k: _result())
+
+    assert result.compile_status == "passed"
+
+
 def test_structural_only_never_invokes_dbt(tmp_path: Path) -> None:
     project = _project(tmp_path)
     models = project / "models" / "silver" / "party"

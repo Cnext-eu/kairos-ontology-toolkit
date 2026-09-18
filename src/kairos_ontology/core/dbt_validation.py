@@ -190,6 +190,84 @@ def _dangling_refs(project_dir: Path) -> dict[str, list[str]]:
     return problems
 
 
+def _duplicate_resource_names(project_dir: Path) -> dict[str, list[str]]:
+    """Map each contested dbt resource name to the paths claiming it.
+
+    dbt resolves ``ref()`` in a **single** resource namespace, so two resources sharing a
+    name make the assembled project fail to *parse* -- no ``--select`` or ``--exclude``
+    works around it and no downstream dataplatform can consume the package at all. It is
+    the one defect class with that property, and `--structural-only` could not see it:
+    #777 and #779 were both this shape, and both passed `compile --check`, `--emit` and
+    `validate-dbt --structural-only` before dbt itself rejected the manifest downstream
+    (#786).
+
+    Model SQL stems and seed CSV stems share that namespace, so they are checked together
+    -- the same pairing `_dangling_refs` already makes, and the same reasoning behind
+    `dbt-contract.seed-model-collision` being an error rather than a warning.
+
+    Needs no warehouse and no dbt install: a scan of the assembled tree, which is what
+    lets it live in the structural phase a hub's release loop actually runs.
+    """
+    claims: dict[str, list[str]] = {}
+    for directory, pattern in (("models", "*.sql"), ("seeds", "*.csv")):
+        root = project_dir / directory
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob(pattern)):
+            relative = path.relative_to(project_dir).as_posix()
+            claims.setdefault(path.stem, []).append(relative)
+    return {name: paths for name, paths in sorted(claims.items()) if len(paths) > 1}
+
+
+def _duplicate_test_names(project_dir: Path) -> dict[str, list[str]]:
+    """Map each properties file to ``data_tests`` entries it repeats on one column.
+
+    dbt derives a generic test's name from the test name plus its arguments, so two
+    byte-identical entries render to the same test name and collide. That is the #777 /
+    #779 shape exactly: a multi-source model emitted duplicate FK cardinality tests, and a
+    conformance group emitted one relationship test per member binding.
+
+    Deduplicating on the rendered entry is an approximation -- two entries differing only
+    in key order would be missed -- but it is what would have caught both, and it cannot
+    produce a false positive: a repeated identical entry is never intentional.
+    """
+    models_dir = project_dir / "models"
+    if not models_dir.is_dir():
+        return {}
+
+    problems: dict[str, list[str]] = {}
+    for path in sorted(models_dir.rglob("*.yml")):
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            continue  # `dbt parse` is the authority on malformed YAML, not this scan.
+        if not isinstance(document, dict):
+            continue
+        repeated: list[str] = []
+        for model in document.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            owners: list[tuple[str, object]] = [(str(model.get("name") or ""), model)]
+            owners += [
+                (f"{model.get('name')}.{column.get('name')}", column)
+                for column in (model.get("columns") or [])
+                if isinstance(column, dict)
+            ]
+            for label, owner in owners:
+                entries = owner.get("data_tests") or owner.get("tests") or []
+                if not isinstance(entries, list):
+                    continue
+                seen: set[str] = set()
+                for entry in entries:
+                    rendered = yaml.safe_dump(entry, sort_keys=True).strip()
+                    if rendered in seen:
+                        repeated.append(f"{label}: {rendered.splitlines()[0]}")
+                    seen.add(rendered)
+        if repeated:
+            problems[path.relative_to(project_dir).as_posix()] = sorted(set(repeated))
+    return problems
+
+
 def _node_name(node: dict[str, object]) -> str:
     return str(node.get("name") or "")
 
@@ -337,6 +415,28 @@ def validate_dbt_project(
         raise DbtValidationError("preflight", f"no dbt_project.yml under {project_dir}")
 
     with timed_phase("structural", platform=platform, project_dir=str(project_dir)):
+        # Ordered before the ref() scan: a duplicate name makes the project unparseable,
+        # so every other structural finding is downstream noise until it is resolved.
+        duplicates = _duplicate_resource_names(project_dir)
+        if duplicates:
+            details = "; ".join(f"{name} -> {paths}" for name, paths in duplicates.items())
+            raise DbtValidationError(
+                "structural",
+                "two dbt resources claim one name, so the assembled project cannot be "
+                f"parsed: {details}",
+            )
+
+        repeated_tests = _duplicate_test_names(project_dir)
+        if repeated_tests:
+            details = "; ".join(
+                f"{path} -> {entries}" for path, entries in sorted(repeated_tests.items())
+            )
+            raise DbtValidationError(
+                "structural",
+                "a generic test is declared twice with identical arguments, so dbt "
+                f"derives one name for both: {details}",
+            )
+
         dangling = _dangling_refs(project_dir)
         if dangling:
             details = "; ".join(f"{path} -> {refs}" for path, refs in sorted(dangling.items()))
