@@ -176,19 +176,19 @@ def test_superseded_templates_ship_in_the_package():
 #: *dataplatform* template, which they can never equal.
 _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "github-workflows/managed-check.yml":
-        "4aaadabbbe8e7461fea44118f85dbeb1a19a94dde439ca882c4977481b8a5602",
+        "f771095121f58aa3d5ed2d304b9664355c3cff8cdaba08d05f6f7716e13e3641",
     "github-workflows/pr-validate.yml":
-        "aa27e2bd30b56781b430c27bb28fe0337c7557e91144673b339ac76bc9bda5a5",
+        "9d36a537a9fe89f4a5f94dc303b18cc93e371968a7e32d8bffaff6923315a23c",
     "github-workflows/full-validate.yml":
-        "609ed048d3cb9b127ce0a157408bd589511865f56b54bfe85b1aece436ac83ff",
+        "d3ed3298ec3eff8760fd187cfb255690966a5fbbe53c2b1f90f74e1a3d4b32ea",
     "github-workflows/release-projections.yml":
-        "29a9b7c597a788d46e79f4ed76bde8e242cd5a0263df040859cdcb6f5905e6da",
+        "5d3e4bcf74dd494b3ab7fb2194bfed1978f643d1d063f594790ac12e32597765",
     "github-workflows/assign-copilot.yml":
         "06e75b76b56fe7d8444c2e0d1555b3e23c752791f3f42338c41b36b23ed63938",
     "github-workflows/copilot-setup-steps.yml":
         "63b90be2aec5ddb4b26b51b3844ba64128491f78660af599ce09e9b19ddaa9e6",
     "dataplatform/.github/workflows/pr-validate.yml.template":
-        "47a65849a957fe4d0caa1c7c931380e60a734dc24f8b6ddc46d23e9ee446f6a9",
+        "d4d0f6f0ade4c6e2c9aa828fce67d52402f8024879339beedd7755328e1bbaad",
     "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template":
         "b04bbc1fce0915184fbdca4b06aea4e2f3bf086d2849d49935cdc1f5555d6cb0",
 }
@@ -221,13 +221,19 @@ def test_live_workflow_templates_match_their_recorded_digests():
         )
 
 
-def test_pre_erd_and_single_job_hub_generations_are_refreshable(tmp_path):
-    """Both hub generations recorded in this change must classify as refreshable.
+def test_recorded_hub_generations_are_refreshable(tmp_path):
+    """Every recorded hub generation must classify as refreshable, not customized.
 
     Generation 2 predates the ERD relocation (its drift gate still diffed
     ``ontology-hub-publish/powerbi``); generation 3 is the single-job shape, before
-    validation and compile were split. A hub sitting on either must be offered the
-    upgrade automatically rather than reported as locally customized.
+    validation and compile were split; generation 4 predates #721/#771, before
+    ``KAIROS_SKILL_CONTEXT`` moved to workflow level and every ``uv run`` gained
+    ``--no-sync``. A hub sitting on any of them must be offered the upgrade
+    automatically rather than reported as locally customized -- that is the whole
+    point of recording the outgoing bytes.
+
+    The count is asserted so that adding a generation without recording it here fails
+    loudly; bump it when you record a new one.
     """
     destination = ".github/workflows/pr-validate.yml"
     current = (_SCAFFOLD_DIR / _HUB_WORKFLOW_SOURCES[destination]).read_text(encoding="utf-8")
@@ -238,7 +244,7 @@ def test_pre_erd_and_single_job_hub_generations_are_refreshable(tmp_path):
         for name, text in zip(_SUPERSEDED_WORKFLOW_TEMPLATES[destination], superseded)
         if name.startswith("hub-pr-validate/")
     ]
-    assert len(hub_generations) == 3, "expected three recorded hub generations"
+    assert len(hub_generations) == 4, "expected four recorded hub generations"
 
     for generation in hub_generations[1:]:
         scaffolded = tmp_path / "pr-validate.yml"
@@ -246,3 +252,32 @@ def test_pre_erd_and_single_job_hub_generations_are_refreshable(tmp_path):
         status = classify(scaffolded, current, superseded)
         assert status.state == "outdated"
         assert status.refreshable
+
+
+def test_every_changed_workflow_records_its_outgoing_generation(tmp_path):
+    """A hub on the previous generation of *any* managed workflow stays refreshable.
+
+    #771/#773 changed four hub workflows at once, and only `pr-validate.yml` had a
+    recorded history before that. Without an entry per workflow, a hub holding the
+    shipped bytes of `full-validate.yml`, `managed-check.yml` or
+    `release-projections.yml` would classify as "customized" and silently stop
+    receiving template fixes -- the exact failure the ledger exists to prevent, and the
+    one #772 is about.
+    """
+    for destination in (
+        ".github/workflows/pr-validate.yml",
+        ".github/workflows/full-validate.yml",
+        ".github/workflows/managed-check.yml",
+        ".github/workflows/release-projections.yml",
+    ):
+        current = (
+            _SCAFFOLD_DIR / _HUB_WORKFLOW_SOURCES[destination]
+        ).read_text(encoding="utf-8")
+        superseded = _superseded_workflow_templates(destination)
+        assert superseded, f"{destination} has no recorded outgoing generation"
+
+        scaffolded = tmp_path / "workflow.yml"
+        scaffolded.write_text(superseded[-1], encoding="utf-8")
+        status = classify(scaffolded, current, superseded)
+        assert status.state == "outdated", f"{destination}: {status.state}"
+        assert status.refreshable, destination

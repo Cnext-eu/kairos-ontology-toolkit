@@ -34,14 +34,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# CI is a sanctioned caller. Every skill-managed command would otherwise print "prefer the
-# <skill> skill in your AI coding session" into a log where there is no session to redirect
-# to and no skill to prefer -- and the advisory claims the run skipped validation gates that
-# adjacent steps here perform explicitly. Set at workflow level, not per step: it was on one
-# of five steps, and a step added later must inherit it rather than silently regress (#721).
-env:
-  KAIROS_SKILL_CONTEXT: "1"
-
 jobs:
   full-validate:
     name: Full validation
@@ -69,26 +61,28 @@ jobs:
 
       - name: Validate ontologies (syntax, SHACL, consistency)
         run: |
-          uv run --no-sync kairos-ontology validate \
+          uv run kairos-ontology validate \
             --ontologies ontology-hub/model/ontologies \
             --shapes ontology-hub/model/shapes \
             --all
 
       - name: Lint hand-authored dbt transforms
+        env:
+          KAIROS_SKILL_CONTEXT: "1"
         run: |
-          uv run --no-sync kairos-ontology validate-dbt-contracts --format json
+          uv run kairos-ontology validate-dbt-contracts --format json
 
       # The hub-wide, write-free verdict for every bound domain. Deliberately kept here
       # and not in the PR workflow, where it is 110s of duplicated compile work.
       - name: Compile-check every bound domain
         run: |
-          uv run --no-sync kairos-ontology compile --all --check --format json
+          uv run kairos-ontology compile --all --check --format json
 
       # See pr-validate.yml: the extra is resolved by the toolkit, never composed.
       - name: Install dbt adapter for the full offline gate
         run: |
           set -euo pipefail
-          extra="$(uv run --no-sync python -c 'import re,pathlib;from kairos_ontology.core.adapters import dbt_validate_extra;t=pathlib.Path("ontology-hub/kairos.yaml").read_text(encoding="utf-8");m=re.search(r"^adapter:\s*([A-Za-z0-9._-]+)",t,re.M);print(dbt_validate_extra(m.group(1)) if m else "")')"
+          extra="$(uv run python -c 'import re,pathlib;from kairos_ontology.core.adapters import dbt_validate_extra;t=pathlib.Path("ontology-hub/kairos.yaml").read_text(encoding="utf-8");m=re.search(r"^adapter:\s*([A-Za-z0-9._-]+)",t,re.M);print(dbt_validate_extra(m.group(1)) if m else "")')"
           if [ -z "$extra" ]; then
             echo "::error::ontology-hub/kairos.yaml declares no 'adapter:' - the dbt gate cannot run."
             exit 1
@@ -101,7 +95,7 @@ jobs:
       - name: Regenerate tracked output and fail on drift
         run: |
           set -euo pipefail
-          uv run --no-sync kairos-ontology compile --all --emit --confirm-emit
+          uv run kairos-ontology compile --all --emit --confirm-emit
           for path in ontology-hub-publish/medallion/dbt ontology-hub/model/contracts/diagrams; do
             if [ -d "$path" ] && [ -z "$(git ls-files "$path")" ]; then
               echo "::error::$path exists but is not tracked - the drift gate cannot verify it."
@@ -114,4 +108,4 @@ jobs:
 
       - name: Validate assembled dbt package
         run: |
-          uv run --no-sync kairos-ontology validate-dbt
+          uv run kairos-ontology validate-dbt
