@@ -150,15 +150,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-sync kairos-ontology compile --all --emit --confirm-emit
-          # `architecture/**` comes from `project`, not from `compile --emit`, so tracking
-          # it without regenerating it here would be worse than not tracking it: the files
-          # would look authoritative and never be checked (#774).
-          uv run --no-sync kairos-ontology project --target erd
-          uv run --no-sync kairos-ontology project --target ddd
-          for path in \
-            ontology-hub-publish/medallion/dbt \
-            ontology-hub-publish/architecture \
-            ontology-hub/model/contracts/diagrams; do
+          for path in ontology-hub-publish/medallion/dbt ontology-hub/model/contracts/diagrams; do
             if [ -d "$path" ] && [ -z "$(git ls-files "$path")" ]; then
               echo "::error::$path exists but is not tracked - the drift gate cannot verify it."
               exit 1
@@ -166,7 +158,6 @@ jobs:
           done
           git diff --exit-code -- \
             ontology-hub-publish/medallion/dbt \
-            ontology-hub-publish/architecture \
             ontology-hub/model/contracts/diagrams
 
       # DD-206 §4.2: "validates the assembled dbt package".

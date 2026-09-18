@@ -14,7 +14,8 @@ venv/
 # Node.js
 node_modules/
 
-# Generated projection output. Ignored, with exactly one exception: the dbt package.
+# Generated projection output. Ignored, with two exceptions: the dbt package and the
+# architecture diagrams.
 #
 # `ontology-hub-publish/medallion/dbt` must stay tracked because a dataplatform
 # consumes it as a dbt package pinned by `git` + `revision` + `subdirectory`, which
@@ -23,16 +24,25 @@ node_modules/
 # a release to publish exactly the bytes reviewed and merged at the tagged commit,
 # which pr-validate.yml enforces by regenerating and diffing it before merge.
 #
+# `ontology-hub-publish/architecture` is tracked for a different reason: the canonical
+# class diagrams and DDD maps are how the model gets reviewed and explained, so a
+# reviewer should see them change in a pull request rather than regenerate locally to
+# find out. Left untracked they rot invisibly -- one hub's had drifted into mixed
+# vintages, some domains regenerated weeks apart, and nothing surfaced it because
+# nothing was watching. pr-validate.yml regenerates and diffs this path, so tracking it
+# is load-bearing rather than decorative (#774).
+#
 # Everything else is ignored, the Power BI PBIP output included: it used to be
 # allowlisted for the release lane, but `package-powerbi-release` renders and zips it
 # in CI from the compile plan, so nothing needs it committed. Every other target
-# (neo4j, azure-search, a2ui, prompt, mdm, architecture/*, reports/details) is an
+# (neo4j, azure-search, a2ui, prompt, mdm, reports/details) is an
 # alternate export, and reports/details can carry PII-adjacent validation detail.
 #
-# ERDs are not here at all. They are written into the *authored* tree, at
-# `ontology-hub/model/contracts/diagrams/`, beside the contracts they are drawn from,
-# because a diagram is the one generated artifact a human actually reviews and it has
-# to be visible in the pull request.
+# The Silver and declared-contract ERDs are not here. They are written into the
+# *authored* tree, at `ontology-hub/model/contracts/diagrams/`, beside the contracts
+# they are drawn from. Same reasoning as the architecture diagrams above -- a diagram
+# is the one generated artifact a human actually reviews, so it has to be visible in
+# the pull request -- only the destination differs.
 #
 # Track anything more only after a deliberate, per-hub review (see CICD.md), never by
 # widening this default silently.
@@ -40,6 +50,7 @@ ontology-hub-publish/**
 !ontology-hub-publish/**/
 !ontology-hub-publish/**/.gitkeep
 !ontology-hub-publish/medallion/dbt/**
+!ontology-hub-publish/architecture/**
 
 # IDE
 .vscode/
