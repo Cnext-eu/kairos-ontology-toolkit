@@ -2674,16 +2674,18 @@ def suggest_type_cmd(source_type):
     Kairos canonical type kinds. Useful when authoring technicalFields
     in EntityBindings.
     """
-    from ..core.projections.dbt.policy_normalize import _source_type
+    from ..core.projections.dbt.policy_normalize import (
+        _SOURCE_TYPE_ALIASES,
+        _source_type,
+    )
 
     spec = _source_type(source_type)
     if spec is None:
+        # Rendered from the compiler's own table, not restated here: a hand-kept copy
+        # went stale and omitted the Spark names the compiler had just learned (#808).
+        supported = ", ".join(sorted(_SOURCE_TYPE_ALIASES))
         raise click.ClickException(
-            f"Unrecognized source type: {source_type!r}. "
-            "Supported: bigint, binary, bit, bool, boolean, char, date, datetime, "
-            "datetime2, decimal, double, float, image, int, integer, json, money, "
-            "nchar, ntext, numeric, nvarchar, real, smallint, string, text, time, "
-            "timestamp, tinyint, uniqueidentifier, varbinary, varchar, variant, xml"
+            f"Unrecognized source type: {source_type!r}. Supported: {supported}"
         )
     result = {"source_type": source_type, "canonical_kind": spec.kind.value}
     if spec.precision is not None:

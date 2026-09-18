@@ -254,6 +254,39 @@ def _token_list(tokens: tuple[str, ...], *, limit: int = 12) -> str:
     return ", ".join(head) + suffix
 
 
+def _unresolved_column_message(column: str, unrecognised_types: dict[str, str]) -> str:
+    """Explain why *column* did not resolve against the bound relation.
+
+    The relation may well have the column: if its declared physical type is one the
+    compiler has no alias for, it is dropped from the symbol table and every later
+    reference reads as though the column were absent. Naming the type turns a
+    schema hunt into a one-line fix (#808, same reasoning as #751).
+    """
+    declared = unrecognised_types.get(column)
+    if declared:
+        return (
+            f"source column '{column}' has declared type '{declared}', which is not a "
+            "recognised source type; the column exists but cannot be typed. Run "
+            "'kairos-ontology suggest-type' to see the recognised names"
+        )
+    return f"source column '{column}' is not a column of the bound relation"
+
+
+def _no_usable_columns_message(unrecognised_types: dict[str, str]) -> str:
+    """Say why a bound relation offered no typed columns at all.
+
+    On a Databricks-backed source every integer column can be declared ``long``, so the
+    whole relation drops out at once and the bare message reads as an empty table (#808).
+    """
+    if not unrecognised_types:
+        return "source relation has no usable columns"
+    types = ", ".join(sorted(set(unrecognised_types.values())))
+    return (
+        "source relation has no usable columns: every column declares a source type "
+        f"this compiler does not recognise ({types})"
+    )
+
+
 def _ambiguous_targets_by_uri(items: tuple[ResolvedClass | ResolvedProperty, ...]) -> str:
     parts: list[str] = []
     for uri in sorted({item.uri for item in items}):
@@ -320,6 +353,10 @@ class _ExprBuilder:
     source_path: str
     resource_base: str
     diagnostics: list[CompileDiagnostic] = field(default_factory=list)
+    #: Columns the relation really has but whose declared physical type this compiler
+    #: does not recognise, so they never reached ``symbols``. Kept only to tell the
+    #: author what actually went wrong instead of 'no such column' (#808).
+    unrecognised_types: dict[str, str] = field(default_factory=dict)
     _counter: int = 0
 
     def _uid(self, kind: str) -> str:
@@ -404,7 +441,7 @@ class _ExprBuilder:
             self._diag(
                 expr,
                 "binding.unknown-column",
-                f"source column '{expr.column}' is not a column of the bound relation",
+                _unresolved_column_message(expr.column, self.unrecognised_types),
             )
             return self._placeholder()
         fact = AuthoredExpressionFact(
@@ -786,21 +823,34 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
     if relation is None or klass is None:
         raise CompileError(order_compile_diagnostics(diagnostics))
 
-    symbols = {
-        column.name: _Symbol(
+    # A column whose declared physical type this compiler cannot resolve is kept out of
+    # the symbol table -- every binding expression is typed, so an untyped symbol has
+    # nothing to offer. Remember why it was dropped: reporting it later as 'not a column
+    # of the bound relation' sent four separate authors hunting a schema problem that did
+    # not exist (#808).
+    symbols: dict[str, _Symbol] = {}
+    unrecognised_types: dict[str, str] = {}
+    for column in relation.columns:
+        resolved = _source_type(column.data_type)
+        if resolved is None:
+            unrecognised_types[column.name] = column.data_type
+            continue
+        symbols[column.name] = _Symbol(
             uri=relation.column_uri(column.name),
-            type=_source_type(column.data_type) or _STRING,
+            type=resolved,
             nullable=column.nullable,
         )
-        for column in relation.columns
-        if _source_type(column.data_type) is not None
-    }
 
     model_name = _slug(klass.name)
     resource_base = f"urn:kairos:v5:{context.domain}:{model_name}:binding:{_slug(binding.name)}"
     meta = OntologyMetadataSpec(iri=context.ontology_iri, version=context.ontology_version)
 
-    builder = _ExprBuilder(symbols=symbols, source_path=path, resource_base=resource_base)
+    builder = _ExprBuilder(
+        symbols=symbols,
+        source_path=path,
+        resource_base=resource_base,
+        unrecognised_types=unrecognised_types,
+    )
     column_mappings: list[ColumnMappingFact] = []
     column_specs: list[ColumnSpec] = []
     field_records: list[tuple[Expression, str]] = []
@@ -870,7 +920,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 diagnostics.append(
                     CompileDiagnostic(
                         code="binding.unknown-column",
-                        message="source relation has no usable columns",
+                        message=_no_usable_columns_message(unrecognised_types),
                         location=SourceLocation(path=path, pointer=f"/fields/{index}/expression"),
                     )
                 )
@@ -938,7 +988,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 diagnostics.append(
                     CompileDiagnostic(
                         code="binding.unknown-column",
-                        message="source relation has no usable columns",
+                        message=_no_usable_columns_message(unrecognised_types),
                         location=SourceLocation(path=path, pointer=f"{pointer}/expression"),
                     )
                 )
@@ -1019,7 +1069,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
                 diagnostics.append(
                     CompileDiagnostic(
                         code="binding.unknown-key-column",
-                        message=f"column '{column}' is not a column of the bound relation",
+                        message=_unresolved_column_message(column, unrecognised_types),
                         location=SourceLocation(path=path, pointer=pointer),
                     )
                 )

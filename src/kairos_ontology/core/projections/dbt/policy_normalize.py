@@ -579,47 +579,66 @@ def _canonical_type(fact: AuthoredValuesFact, rule_id: str) -> EffectiveValue[Ca
     return _effective(CanonicalTypeSpec(kind), fact, rule_id)
 
 
+#: Physical source type name -> canonical kind. Module level so ``suggest-type`` can
+#: render the supported list rather than keep a hand-maintained copy that drifts.
+_SOURCE_TYPE_ALIASES: dict[str, CanonicalTypeKind] = {
+    "bigint": CanonicalTypeKind.INT64,
+    "binary": CanonicalTypeKind.BINARY,
+    "bit": CanonicalTypeKind.BOOLEAN,
+    "bool": CanonicalTypeKind.BOOLEAN,
+    "boolean": CanonicalTypeKind.BOOLEAN,
+    "byte": CanonicalTypeKind.INT16,
+    "char": CanonicalTypeKind.STRING,
+    "date": CanonicalTypeKind.DATE,
+    "datetime": CanonicalTypeKind.TIMESTAMP,
+    "datetime2": CanonicalTypeKind.TIMESTAMP,
+    "decimal": CanonicalTypeKind.DECIMAL,
+    "double": CanonicalTypeKind.FLOAT64,
+    "float": CanonicalTypeKind.FLOAT64,
+    "image": CanonicalTypeKind.BINARY,
+    "int": CanonicalTypeKind.INT32,
+    "integer": CanonicalTypeKind.INT32,
+    "json": CanonicalTypeKind.JSON,
+    "long": CanonicalTypeKind.INT64,
+    "money": CanonicalTypeKind.DECIMAL,
+    "nchar": CanonicalTypeKind.STRING,
+    "ntext": CanonicalTypeKind.STRING,
+    "numeric": CanonicalTypeKind.DECIMAL,
+    "nvarchar": CanonicalTypeKind.STRING,
+    "real": CanonicalTypeKind.FLOAT64,
+    "short": CanonicalTypeKind.INT16,
+    "smallint": CanonicalTypeKind.INT16,
+    "string": CanonicalTypeKind.STRING,
+    "text": CanonicalTypeKind.STRING,
+    "time": CanonicalTypeKind.TIME,
+    "timestamp": CanonicalTypeKind.TIMESTAMP,
+    "tinyint": CanonicalTypeKind.INT16,
+    "uniqueidentifier": CanonicalTypeKind.STRING,
+    "varbinary": CanonicalTypeKind.BINARY,
+    "varchar": CanonicalTypeKind.STRING,
+    "variant": CanonicalTypeKind.JSON,
+    "xml": CanonicalTypeKind.STRING,
+}
+
+
 def _source_type(value: str) -> CanonicalTypeSpec | None:
+    """Resolve a *physical* source column type to its canonical kind.
+
+    The spellings are whatever the source catalog reported: ``extract_schema`` writes
+    ``data_type`` through verbatim (lowercased), so a Databricks-backed hub declares
+    Spark's names. ``long``/``short``/``byte`` are Spark's spellings of
+    ``bigint``/``smallint``/``tinyint`` and must resolve the same way -- without them a
+    column is dropped from the bound relation's symbol table entirely and every
+    reference to it fails as though the column did not exist (#808).
+
+    Returns ``None`` for a name this table does not know; callers treat that as
+    unresolvable and should say *which* type was unrecognised.
+    """
     match = _DECLARED_SOURCE_TYPE.fullmatch(value)
     if match is None:
         return None
     base, first, second = match.groups()
-    aliases = {
-        "bigint": CanonicalTypeKind.INT64,
-        "binary": CanonicalTypeKind.BINARY,
-        "bit": CanonicalTypeKind.BOOLEAN,
-        "bool": CanonicalTypeKind.BOOLEAN,
-        "boolean": CanonicalTypeKind.BOOLEAN,
-        "char": CanonicalTypeKind.STRING,
-        "date": CanonicalTypeKind.DATE,
-        "datetime": CanonicalTypeKind.TIMESTAMP,
-        "datetime2": CanonicalTypeKind.TIMESTAMP,
-        "decimal": CanonicalTypeKind.DECIMAL,
-        "double": CanonicalTypeKind.FLOAT64,
-        "float": CanonicalTypeKind.FLOAT64,
-        "image": CanonicalTypeKind.BINARY,
-        "int": CanonicalTypeKind.INT32,
-        "integer": CanonicalTypeKind.INT32,
-        "json": CanonicalTypeKind.JSON,
-        "money": CanonicalTypeKind.DECIMAL,
-        "nchar": CanonicalTypeKind.STRING,
-        "ntext": CanonicalTypeKind.STRING,
-        "numeric": CanonicalTypeKind.DECIMAL,
-        "nvarchar": CanonicalTypeKind.STRING,
-        "real": CanonicalTypeKind.FLOAT64,
-        "smallint": CanonicalTypeKind.INT16,
-        "string": CanonicalTypeKind.STRING,
-        "text": CanonicalTypeKind.STRING,
-        "time": CanonicalTypeKind.TIME,
-        "timestamp": CanonicalTypeKind.TIMESTAMP,
-        "tinyint": CanonicalTypeKind.INT16,
-        "uniqueidentifier": CanonicalTypeKind.STRING,
-        "varbinary": CanonicalTypeKind.BINARY,
-        "varchar": CanonicalTypeKind.STRING,
-        "variant": CanonicalTypeKind.JSON,
-        "xml": CanonicalTypeKind.STRING,
-    }
-    kind = aliases.get(base.lower())
+    kind = _SOURCE_TYPE_ALIASES.get(base.lower())
     if kind is None:
         return None
     if kind is CanonicalTypeKind.DECIMAL:
