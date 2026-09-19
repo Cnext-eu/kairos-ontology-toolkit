@@ -225,6 +225,13 @@ class DimensionalGoldSpec:
     #: decision (add the owning domain to the product, or accept the column), and before
     #: #744 this vanished silently, which is how a cross-domain product lost half its star.
     unresolved_relationships: tuple[tuple[str, str, str], ...] = ()
+    #: ``(bridge_name, endpoint_uri)`` for each bridge endpoint that is not a Gold
+    #: table of *this* shaping. A bridge may legitimately span two domains, so on a
+    #: single-domain `compile --check` the other endpoint is simply not in scope --
+    #: raising there made a cross-domain bridge unauthorable, since the per-domain
+    #: compile applied a union-only rule to a union of one (#763). At product level
+    #: the union is real and an endpoint outside it still fails.
+    unresolved_bridges: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

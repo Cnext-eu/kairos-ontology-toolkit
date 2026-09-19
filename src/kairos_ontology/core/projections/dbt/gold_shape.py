@@ -924,7 +924,12 @@ def _shape_relationships(
         if bridge.role is not GoldTableRole.BRIDGE:
             continue
         for endpoint_uri, column_name in bridge.bridge_endpoint_bindings:
-            target = by_resource[endpoint_uri]
+            # Absent when the endpoint was deferred rather than failed: the bridge column
+            # exists but the table it points at belongs to another domain, so there is no
+            # relationship to draw here. Reported via `unresolved_bridges` instead (#763).
+            target = by_resource.get(endpoint_uri)
+            if target is None:
+                continue
             relationships.append(
                 GoldRelationshipSpec(
                     name=f"{bridge.name}_{target.name}",
@@ -1424,6 +1429,8 @@ def _sole(
 def _shape_dimensional_product(
     members: tuple["GoldDomainInput", ...],
     product_name: str,
+    *,
+    defer_bridges: bool = False,
 ) -> DimensionalGoldSpec:
     """Assemble one Gold product from one or more compiled domains (#744).
 
@@ -1467,11 +1474,21 @@ def _shape_dimensional_product(
     ordered = tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
 
     # Checked over the union, not per domain: a bridge may span two domains' tables.
+    # `defer_bridges` is the single-domain compile, where the union is a union of one and
+    # the other endpoint is legitimately out of scope. Failing there made a cross-domain
+    # bridge -- the construct that gives Power BI a customer slicer over consignments, and
+    # the reason `bridge` exists -- impossible to author at all (#763).
     included = {table.resource_uri for table in ordered}
+    unresolved_bridges: list[tuple[str, str]] = []
     for table in ordered:
-        if table.role is GoldTableRole.BRIDGE and (
-            table.bridge_endpoints is None or not set(table.bridge_endpoints).issubset(included)
-        ):
+        if table.role is not GoldTableRole.BRIDGE:
+            continue
+        endpoints = set(table.bridge_endpoints or ())
+        missing = sorted(endpoints - included)
+        if table.bridge_endpoints is None or missing:
+            if defer_bridges:
+                unresolved_bridges.extend((table.name, uri) for uri in missing)
+                continue
             _fail(
                 "gold.bridge-endpoint-not-materialized",
                 f"bridge {table.name!r} endpoints must both be explicit Gold tables",
@@ -1583,6 +1600,7 @@ def _shape_dimensional_product(
         silver_registry_columns=tuple(sorted(set(registry_columns))),
         domains=tuple(member.ontology_name for member in members),
         unresolved_relationships=unresolved,
+        unresolved_bridges=tuple(sorted(set(unresolved_bridges))),
     )
 
 
@@ -1607,6 +1625,7 @@ def _shape_dimensional(
             ),
         ),
         ontology_name,
+        defer_bridges=True,
     )
 
 
