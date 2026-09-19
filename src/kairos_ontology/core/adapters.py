@@ -80,6 +80,68 @@ DBT_ADAPTER_PACKAGES: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# The dbt stack this toolkit emits into (#789)
+# ---------------------------------------------------------------------------
+# These constraints were previously undeclared: they existed only as pins copied into
+# the scaffolded ``pyproject.toml`` and were rediscovered by trial whenever a hub or a
+# dataplatform broke. Both ends of the range are load-bearing and neither is arbitrary.
+#
+# FLOOR -- ``dbt-core>=1.10``. The v5 Silver path emits generic-test config under the
+# dbt 1.10+ ``arguments:`` key (``projections/dbt/shape.py``'s ``_generic_test``). On dbt
+# 1.9 that fails at parse with "macro '...' takes no keyword argument 'arguments'", so a
+# hub pinned below 1.10 cannot parse the package this toolkit emits for it. That
+# contradiction shipped: the scaffold pinned ``>=1.9,<1.10`` while the emitter had
+# already moved.
+#
+# CEILING -- ``dbt-fabric==1.10.0``, exactly. 1.10.1 replaced pyodbc with mssql-python,
+# which parses the connection string eagerly and rejects the ``Authority Id`` keyword
+# that dbt-fabric derives from the ``ActiveDirectoryServicePrincipal`` auth mode used by
+# ``dbt_validation._offline_profile``. pyodbc accepted the string and failed later at
+# connect, which ``validate-dbt`` tolerates as ``environment-blocked``; mssql-python
+# fails at parse, so the offline gate cannot pass on any dbt-fabric >= 1.10.1.
+# Lifting this means changing the offline profile's auth mode -- tracked separately.
+#
+# The dbt-core range is the intersection that satisfies *both* adapters, so a hub and the
+# dataplatform consuming its output can agree on one dbt-core. dbt-databricks pins
+# dbt-core tightly and moves fast (1.10.19 requires ``dbt-core<1.10.20,>=1.10.1``), which
+# is what sets the upper bound here rather than anything about dbt itself.
+#
+# Verify against PyPI metadata when changing these, never by assumption.
+#
+#: What the *emitted package* requires of whoever installs it. Floor only: the floor is
+#: a property of the SQL and YAML this toolkit generates, whereas the ceiling below is
+#: a property of one hub's offline validation gate. Putting the ceiling in the emitted
+#: `require-dbt-version` would reject a dataplatform running a newer dbt with a
+#: different adapter, which is none of this package's business.
+DBT_CORE_FLOOR = ">=1.10"
+
+#: What a *scaffolded hub* installs: the intersection that satisfies every supported
+#: adapter at once, so a hub and the dataplatform consuming its output can agree on one
+#: dbt-core. Narrower than the floor by necessity, not by preference.
+DBT_CORE_REQUIREMENT = ">=1.10.1,<1.10.20"
+
+#: Canonical id -> the version specifier for its dbt adapter distribution.
+DBT_ADAPTER_REQUIREMENTS: dict[str, str] = {
+    AdapterName.FABRIC_WAREHOUSE.value: "==1.10.0",
+    AdapterName.DATABRICKS.value: ">=1.10.19,<1.11",
+}
+
+#: dbt package -> version range emitted into the generated ``packages.yml``. The emitter
+#: hard-codes call sites against these packages' APIs (``dbt_utils`` argument shapes, for
+#: one), so the range is part of the toolkit's contract rather than a suggestion.
+DBT_PACKAGE_REQUIREMENTS: dict[str, tuple[str, str]] = {
+    "dbt-labs/dbt_utils": (">=1.0.0", "<2.0.0"),
+    "metaplane/dbt_expectations": (">=0.10.0", "<1.0.0"),
+}
+
+
+def dbt_adapter_requirement(adapter: str) -> str:
+    """Return the ``pip`` requirement string for one canonical adapter id."""
+    canonical, _ = resolve_adapter(adapter)
+    return f"{DBT_ADAPTER_PACKAGES[canonical]}{DBT_ADAPTER_REQUIREMENTS[canonical]}"
+
+
 def dbt_profile_type(adapter: str) -> str:
     """Return the ``profiles.yml`` ``type:`` key for one canonical adapter id."""
     canonical, _ = resolve_adapter(adapter)

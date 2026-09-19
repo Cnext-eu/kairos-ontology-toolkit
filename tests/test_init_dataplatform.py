@@ -11,6 +11,8 @@ import re
 import pytest
 from click.testing import CliRunner
 
+from kairos_ontology.core.adapters import dbt_adapter_requirement
+
 from kairos_ontology.cli.main import cli
 from kairos_ontology.cli.setup import _activate_profile_platform
 
@@ -496,7 +498,8 @@ class TestInitDataplatformEdgeCases:
         )
 
         pyproject = (dp_dir / "pyproject.toml").read_text(encoding="utf-8")
-        assert "dbt-fabric>=1.9.0" in pyproject
+        # The declared requirement, shared with the hub scaffold (#789).
+        assert dbt_adapter_requirement("fabric-warehouse") in pyproject
         assert "dbt-core" not in pyproject
 
     def test_pr_validate_ci_profile_matches_platform(self, mock_hub):

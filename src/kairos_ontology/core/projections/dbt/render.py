@@ -4,7 +4,11 @@
 
 from __future__ import annotations
 
-from ...adapters import FABRIC_WAREHOUSE
+from ...adapters import (
+    DBT_CORE_FLOOR,
+    DBT_PACKAGE_REQUIREMENTS,
+    FABRIC_WAREHOUSE,
+)
 
 import hashlib
 import json
@@ -198,8 +202,11 @@ def _render_project_config(
             domains=[{"name": name} for name in plan.project.domains],
             gold_domains=[{"name": name} for name in plan.project.gold_domains],
             adapter=plan.adapter.platform,
+            require_dbt_version=DBT_CORE_FLOOR,
         ),
-        "packages.yml": env.get_template("packages.yml.jinja2").render(),
+        "packages.yml": env.get_template("packages.yml.jinja2").render(
+            dbt_packages=sorted(DBT_PACKAGE_REQUIREMENTS.items()),
+        ),
     }
     platform = plan.adapter.platform
     if platform == FABRIC_WAREHOUSE:
