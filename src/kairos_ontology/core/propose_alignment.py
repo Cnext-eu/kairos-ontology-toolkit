@@ -169,45 +169,50 @@ class AlignmentTotalFailureError(RuntimeError):
 
 #: Lower-cased substrings that identify likely operational/audit custom columns.
 #: They only inform the proposal bucket; they never remove a coverage obligation.
-_OPERATIONAL_PATTERNS = (
-    "created_",
-    "updated_",
-    "modified_",
-    "inserted_",
-    "deleted_",
-    "_created",
-    "_updated",
-    "_modified",
-    "createdat",
-    "updatedat",
-    "_by",
-    "createdby",
-    "modifiedby",
-    "systemcreate",
-    "systemlastedit",
-    "timestamp",
-    "rowversion",
-    "row_version",
-    "loaddate",
-    "load_date",
-    "load_ts",
-    "loadts",
-    "etl_",
-    "_etl",
-    "_dwh",
-    "dwh_",
-    "is_deleted",
-    "isdeleted",
-    "source_id",
-    "sourceid",
-    "source_system",
-    "sourcesystem",
-    "_guid",
-    "guid",
-    "uuid",
-    "_uid",
-    "_hash",
-    "checksum",
+#: Extra whole-token spellings on top of the DD-169 gate's own audit vocabulary.
+#:
+#: Matched as *tokens*, not substrings. The old list was matched with a bare ``in``, so
+#: ``timestamp`` caught ``transaction_timestamp``, ``pickup_start_timestamp`` and
+#: ``timestamp_posted`` -- occurrence times, which are the central fact of an event or
+#: ledger row -- while ``source_id`` caught ``resource_id`` and ``_by`` caught
+#: ``owned_by_subco``. On one hub 114 of 185 columns auto-dispositioned from this reason
+#: were contradicted by the aligner's own output in the same run (#522).
+#:
+#: The base vocabulary is ``gap_decisions._AUDIT_NAME_TOKENS``, reused rather than copied:
+#: the gate and the aligner disagreeing about what "audit" means is how this class of bug
+#: arises. These are the concatenated spellings a tokenizer cannot split, which the gate
+#: does not need because it never sees them.
+#:
+#: ``timestamp`` is deliberately absent from both: audit intent is carried by the *action*
+#: (``created``, ``loaded``, ``ingested``), never by the type suffix.
+_OPERATIONAL_EXTRA_TOKENS = frozenset(
+    {
+        "createdat",
+        "createdby",
+        "updatedat",
+        "modifiedby",
+        "systemcreate",
+        "systemlastedit",
+        "isdeleted",
+        "loaddate",
+        "loadts",
+        "sourceid",
+    }
+)
+
+#: Tokens that mark a column operational only in *final* position. ``owned_by_subco`` is a
+#: business relationship; ``created_by`` is not.
+_OPERATIONAL_TRAILING_TOKENS = frozenset({"by"})
+
+#: Adjacent token pairs that are operational together and innocuous apart -- ``source id``
+#: is a pipeline identifier, ``resource id`` is a business foreign key.
+_OPERATIONAL_TOKEN_PAIRS = frozenset(
+    {
+        ("source", "id"),
+        ("load", "date"),
+        ("load", "ts"),
+        ("is", "deleted"),
+    }
 )
 
 _CF_SLOT_RE = re.compile(r"^cf[a-z]*\d+$", re.IGNORECASE)
@@ -252,10 +257,28 @@ _AUDIT_AUTO_PATTERNS = (
 
 
 def _is_operational_column(column: str) -> bool:
-    """Return whether a custom column looks operational/audit-oriented."""
+    """Return whether a custom column looks operational/audit-oriented.
 
-    name = (column or "").lower()
-    return any(pattern in name for pattern in _OPERATIONAL_PATTERNS)
+    Token-based, not substring-based. This predicate is load-bearing: ``operational`` is
+    one of two reason codes DD-186 auto-dispositions to ``not-business-data`` without
+    human review, and that is the only disposition which *removes* a column from the
+    DD-169 gate rather than deferring it. A false positive therefore deletes real business
+    data from the pipeline, which is why the matching has to respect name boundaries
+    (#522). #521 added a cross-check at the write site so the loss is no longer
+    irreversible; this fixes the classification itself.
+    """
+    # The same splitter the DD-169 gate uses, so the two stages tokenize a name
+    # identically rather than each having its own idea of a word boundary.
+    from .gap_decisions import _AUDIT_NAME_TOKENS, _name_tokens
+
+    tokens = _name_tokens(column)
+    if not tokens:
+        return False
+    if set(tokens) & (_AUDIT_NAME_TOKENS | _OPERATIONAL_EXTRA_TOKENS):
+        return True
+    if len(tokens) > 1 and tokens[-1] in _OPERATIONAL_TRAILING_TOKENS:
+        return True
+    return any(pair in _OPERATIONAL_TOKEN_PAIRS for pair in zip(tokens, tokens[1:]))
 
 
 def is_generic_vendor_slot(column: str) -> bool:
