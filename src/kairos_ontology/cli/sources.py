@@ -1593,10 +1593,20 @@ def propose_alignment_cmd(
     # accuracy-sensitive step, unless the operator pinned a model explicitly. When
     # neither is given, a per-role model override (KAIROS_AI_ALIGNMENT_MODEL) acts
     # as the default so it stays consistent with KAIROS_AI_ALIGNMENT_ENDPOINT.
-    if high_accuracy and llm_model == DEFAULT_MODEL:
+    # Record *why*, not just what: `model_used: gpt-5.4` on its own reads as a silent
+    # downgrade to an operator who configured gpt-5.5, when it is the preferred tier being
+    # applied (#545).
+    if llm_model != DEFAULT_MODEL:
+        model_source = "explicit-model"
+    elif high_accuracy:
         llm_model = HIGH_ACCURACY_MODEL
-    elif llm_model == DEFAULT_MODEL:
-        llm_model = resolve_role_model(ROLE_ALIGNMENT, DEFAULT_MODEL)
+        model_source = "high-accuracy-tier"
+    else:
+        resolved = resolve_role_model(ROLE_ALIGNMENT, DEFAULT_MODEL)
+        model_source = (
+            "role-env-override" if resolved != DEFAULT_MODEL else "default"
+        )
+        llm_model = resolved
 
     # Auto-detect analysis directory
     if analysis is None:
@@ -1709,6 +1719,7 @@ def propose_alignment_cmd(
             catalog_path=catalog_path,
             output_dir=output_path,
             model=llm_model,
+            model_source=model_source,
             domains_filter=filter_list,
             report=reporter,
             include_mapping_hints=include_mapping_hints,

@@ -1178,6 +1178,11 @@ def _render_ai_config_text(report) -> None:
             click.echo(f"     error:    {role_result.error}")
         if role_result.remediation:
             click.echo(f"     fix:      {role_result.remediation}")
+        if role_result.advisory:
+            # Reachable and authenticated is not the same as well chosen: an operator
+            # reading a bare "ok" here then found a different model in the artifact and
+            # reasonably concluded the run had degraded (#545).
+            click.echo(f"     ⚠ tier:   {role_result.advisory}")
         click.echo("")
     _render_tracing_status()
     if report.is_blocking:

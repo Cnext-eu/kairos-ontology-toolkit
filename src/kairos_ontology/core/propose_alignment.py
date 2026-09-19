@@ -545,6 +545,12 @@ class DomainAlignment:
     domain_uris: list[str]
     generated_at: str
     model_used: str
+    #: *Why* `model_used` is what it is (#545). `model_used` alone invited a
+    #: misreading: an operator who had configured `gpt-5.5` saw `gpt-5.4` recorded and
+    #: reasonably concluded the run had degraded to a weaker model after a provider
+    #: error. It had not -- `--high-accuracy` selects the tier this role prefers, and
+    #: the configured value was the one at odds with the toolkit's own advice.
+    model_source: str = ""
     tables: list[TableAlignment] = field(default_factory=list)
     reference_rollup: list[dict[str, Any]] = field(default_factory=list)
     #: DD-070 (issue #166) — sibling/shared-module classes that source columns
@@ -4085,6 +4091,7 @@ def _propose_alignments(
     catalog_path: Path | None,
     output_dir: Path | None,
     model: str = DEFAULT_MODEL,
+    model_source: str = "",
     domains_filter: list[str] | None = None,
     report=None,
     include_mapping_hints: bool = False,
@@ -4700,6 +4707,7 @@ def _propose_alignments(
             domain_uris=domain_uris,
             generated_at=datetime.now(timezone.utc).isoformat(),
             model_used=model,
+            model_source=model_source,
             affinity_sha256=affinity_hash,
             alignment_params_sha256=params_hash or None,
             excluded_tables=excluded_by_domain.get(domain_id, []),
@@ -5797,6 +5805,7 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         "domain_uris": alignment.domain_uris,
         "generated_at": alignment.generated_at,
         "model_used": alignment.model_used,
+        **({"model_source": alignment.model_source} if alignment.model_source else {}),
         # DD-094: digest of the affinity (system, table) set for the freshness gate.
         "source_sha256": alignment.affinity_sha256,
         "tables": [],
