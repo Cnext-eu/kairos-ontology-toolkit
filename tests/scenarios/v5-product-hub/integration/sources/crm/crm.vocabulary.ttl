@@ -18,6 +18,9 @@ src:customer_name a kb:SourceColumn ; kb:sourceTable src:customers ;
 src:customer_country a kb:SourceColumn ; kb:sourceTable src:customers ;
   kb:columnName "country_code" ; kb:dataType "char(2)" ;
   kb:sampleValues "BE | NL" ; kb:nullable "false"^^xsd:boolean .
+src:customer_signed_up_on a kb:SourceColumn ; kb:sourceTable src:customers ;
+  kb:columnName "signed_up_on" ; kb:dataType "date" ;
+  kb:sampleValues "2021-03-04 | 2022-11-17" ; kb:nullable "false"^^xsd:boolean .
 src:customer_operation a kb:SourceColumn ; kb:sourceTable src:customers ;
   kb:columnName "operation" ; kb:dataType "varchar(1)" ;
   kb:nullable "false"^^xsd:boolean .

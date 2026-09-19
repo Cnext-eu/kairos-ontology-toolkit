@@ -21,6 +21,9 @@ billing:amount a owl:DatatypeProperty ;
 billing:customer_id a owl:DatatypeProperty ;
   rdfs:domain billing:Invoice ; rdfs:range xsd:string ;
   rdfs:comment "Customer business key the invoice is billed to." .
+billing:invoice_date a owl:DatatypeProperty ;
+  rdfs:domain billing:Invoice ; rdfs:range xsd:date ;
+  rdfs:comment "Calendar date the invoice was issued on." .
 billing:billedTo a owl:ObjectProperty ;
   rdfs:domain billing:Invoice ; rdfs:range party:Customer ;
   rdfs:comment "The customer this invoice is billed to." .
