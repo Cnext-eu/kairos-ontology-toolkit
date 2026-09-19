@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from .calendar_columns import CALENDAR_COLUMN_NAMES
 from ..uri_utils import camel_to_snake
 from .gold_specs import (
     DimensionalGoldSpec,
@@ -321,7 +322,10 @@ def _columns(
 #: `dim_date`'s emitted columns. The calendar table is synthesized by the renderer
 #: rather than shaped as a `GoldTableSpec`, so nothing that resolves against
 #: `spec.tables` can see it -- which made every measure referencing it unauthorable.
-_CALENDAR_COLUMNS = frozenset({CALENDAR_COLUMN, "date_key"})
+#: Every column the generated calendar carries, from the one declaration (#747). This
+#: was `{full_date, date_key}`, so a measure depending on `dim_date.month_number` --
+#: a column the dbt model and the DDL both built -- did not resolve.
+_CALENDAR_COLUMNS = CALENDAR_COLUMN_NAMES
 
 
 def _column_by_property(
