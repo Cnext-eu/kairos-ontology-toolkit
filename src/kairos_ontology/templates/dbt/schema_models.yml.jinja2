@@ -15,6 +15,11 @@ models:
       {{ key }}: "{{ value }}"
 {%- endfor %}
 {%- endif %}
+{#- Generic-test arguments are nested under `arguments:` (dbt 1.10+). The old
+    top-level form raises MissingArgumentsPropertyInGenericTestDeprecation on dbt
+    1.12 and is slated to become a hard error, at which point the emitted package
+    stops parsing (#826). `config` is a dbt-level concern rather than a test
+    argument, so it deliberately stays at the top level. -#}
 {%- if model.data_tests or (model.grain_columns and model.grain_columns | length > 1) %}
     data_tests:
 {%- for test in model.data_tests %}
@@ -22,9 +27,10 @@ models:
 {%- endfor %}
 {%- if model.grain_columns and model.grain_columns | length > 1 %}
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
+          arguments:
+            combination_of_columns:
 {%- for grain_column in model.grain_columns %}
-            - {{ grain_column }}
+              - {{ grain_column }}
 {%- endfor %}
 {%- if model.grain_where %}
           config:
@@ -32,9 +38,10 @@ models:
 {%- endif %}
 {%- if model.source_identity_columns != model.grain_columns %}
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
+          arguments:
+            combination_of_columns:
 {%- for identity_column in model.source_identity_columns %}
-            - {{ identity_column }}
+              - {{ identity_column }}
 {%- endfor %}
 {%- if model.grain_where %}
           config:
