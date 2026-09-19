@@ -809,6 +809,110 @@ _TRIPLE_QUOTED_RE = re.compile(r'"""(.*?)"""', re.DOTALL)
 _HASH_LINE_RE = re.compile(r"^\s*#", re.MULTILINE)
 
 
+def _effective_ranges(graph: Graph, prop: URIRef) -> dict[URIRef, URIRef]:
+    """``range -> the property that declares it``, widened over ``rdfs:subPropertyOf``.
+
+    Mirrors the widening ``semantic_index`` performs when it builds
+    ``PropertyRecord.ranges``: a subproperty inherits its superproperty's range as well as
+    declaring its own. Walked here rather than read from the index because the naming
+    lints run against a raw graph.
+    """
+    ranges: dict[URIRef, URIRef] = {}
+    seen: set[URIRef] = {prop}
+    frontier = [prop]
+    while frontier:
+        current = frontier.pop()
+        for value in graph.objects(current, RDFS.range):
+            if isinstance(value, URIRef):
+                ranges.setdefault(value, current)
+        for parent in graph.objects(current, RDFS.subPropertyOf):
+            if isinstance(parent, URIRef) and parent not in seen:
+                seen.add(parent)
+                frontier.append(parent)
+    return ranges
+
+
+def _subsumes(graph: Graph, lower: URIRef, upper: URIRef) -> bool:
+    """Whether *lower* is, or descends from, *upper* via ``rdfs:subClassOf``."""
+    if lower == upper:
+        return True
+    seen: set[URIRef] = {lower}
+    frontier = [lower]
+    while frontier:
+        current = frontier.pop()
+        for parent in graph.objects(current, RDFS.subClassOf):
+            if not isinstance(parent, URIRef) or parent in seen:
+                continue
+            if parent == upper:
+                return True
+            seen.add(parent)
+            frontier.append(parent)
+    return False
+
+
+def _check_range_subsumption(
+    graph: Graph,
+    warnings: list["NamingDiagnostic"],
+) -> None:
+    """Warn when an object property's effective ranges do not form a subsumption chain.
+
+    RDFS says the object of a property must be in **every** declared range -- the
+    intersection. That only makes sense if the ranges are related by ``rdfs:subClassOf``:
+    for ``hasCustomer rdfs:subPropertyOf hasParty`` with ranges ``Customer`` and ``Party``,
+    the intersection is inhabited precisely because ``Customer`` is a ``Party``. Reference
+    models routinely declare a subproperty's range without asserting that chain, leaving a
+    property whose effective range is ``A ∩ B`` with no proof the intersection is
+    inhabited by anything (#731).
+
+    A warning in the validator, deliberately not an error in the compiler: #729's
+    relationship-endpoint check accepts a target that is or descends from **any** declared
+    range, because intersection semantics would turn today-green hubs red on exactly this
+    ontology-quality issue. The compiler's non-suppressible safety kernel is the wrong
+    place to adjudicate reference-model quality; this is the right one.
+    """
+    for prop in sorted(set(graph.subjects(RDF.type, OWL.ObjectProperty)), key=str):
+        if not isinstance(prop, URIRef):
+            continue
+        ranges = _effective_ranges(graph, prop)
+        if len(ranges) < 2:
+            continue
+        unrelated = sorted(
+            {
+                (str(left), str(right))
+                for left in ranges
+                for right in ranges
+                if str(left) < str(right)
+                and not _subsumes(graph, left, right)
+                and not _subsumes(graph, right, left)
+            }
+        )
+        if not unrelated:
+            continue
+        pairs = "; ".join(
+            f"{_local_name(left)} and {_local_name(right)}" for left, right in unrelated[:3]
+        )
+        declared_by = sorted({str(owner) for owner in ranges.values()})
+        inherited = [uri for uri in declared_by if uri != str(prop)]
+        via = (
+            f" (inherited from {', '.join(_local_name(uri) for uri in inherited)})"
+            if inherited
+            else ""
+        )
+        warnings.append(
+            NamingDiagnostic(
+                level="warning",
+                code="range_not_subsumption_chain",
+                message=(
+                    f"Object property {prop} has effective ranges that are not related by "
+                    f"rdfs:subClassOf: {pairs}{via}. RDFS requires the object to be in "
+                    "every range, so this asserts an intersection nothing is proven to "
+                    "inhabit. Assert the missing rdfs:subClassOf, or narrow the range."
+                ),
+                term_uri=str(prop),
+            )
+        )
+
+
 def _check_alt_label_whitespace(
     graph: Graph,
     warnings: list["NamingDiagnostic"],
@@ -1305,6 +1409,7 @@ def validate_naming_conventions(
 
     # Phase D authoring-quality lints (issues #474, #475).
     _check_alt_label_whitespace(graph, warnings)
+    _check_range_subsumption(graph, warnings)
     _check_hash_in_triple_quoted(ontology_content, warnings)
     _check_source_system_names_in_comments(graph, warnings, source_system_names)
 
