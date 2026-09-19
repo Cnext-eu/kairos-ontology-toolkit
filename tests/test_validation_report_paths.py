@@ -124,3 +124,32 @@ def test_a_file_outside_the_repo_falls_back_rather_than_raising(tmp_path, outsid
     except SystemExit:
         pass
     assert report.is_file()
+
+
+def test_the_markdown_sibling_is_repo_relative_too(tmp_path: Path):
+    """#822 fixed the JSON report; the Markdown one written beside it by default still
+    embedded the absolute checkout path in its options table and its file list."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shutil.copytree(_HUB, repo / "ontology-hub")
+    hub = repo / "ontology-hub"
+    markdown = repo / "report.md"
+    try:
+        run_validation(
+            ontologies_path=hub / "model" / "ontologies",
+            shapes_path=hub / "model" / "shapes",
+            catalog_path=hub / "catalog-v001.xml",
+            do_syntax=True,
+            do_shacl=False,
+            do_consistency=False,
+            report_path=repo / "report.json",
+            markdown_report_path=markdown,
+            repo_root=repo,
+        )
+    except SystemExit:
+        pass
+    text = markdown.read_text(encoding="utf-8")
+    assert str(repo) not in text
+    assert str(repo.resolve()) not in text
+    assert "`ontology-hub/model/ontologies/party.ttl`" in text
+    assert "| `ontologies` | ontology-hub/model/ontologies |" in text

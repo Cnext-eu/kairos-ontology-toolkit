@@ -80,11 +80,10 @@ def _active_source_inputs(
     property?", and a property declared on an ancestor genuinely applies to its
     descendants. That is compatibility, not ownership.
 
-    The widened set used to be consulted *only* in the fallback arm of the column filter --
-    for columns whose ``source_column_uri`` did not resolve to a known table -- so whether
-    the ancestor walk had any effect depended on whether the source column happened to be
-    registered, which is not a semantic distinction. It now scopes the property filter
-    itself, which is what it was always for.
+    The widened set has always scoped ``active_properties``; what #735 bounded is the walk
+    that produces it. ``class_ancestors`` follows named ``rdfs:subClassOf`` parents only,
+    with cycle protection, and the W3C namespaces are excluded so an ``owl:Thing`` ancestor
+    never widens the filter to every property in the closure.
     """
 
     active_contracts = {

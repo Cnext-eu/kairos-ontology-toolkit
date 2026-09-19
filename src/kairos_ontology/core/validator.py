@@ -856,6 +856,11 @@ def _check_range_subsumption(
 ) -> None:
     """Warn when an object property's effective ranges do not form a subsumption chain.
 
+    Scoped to range classes the file itself describes; see the filter below. A chain that
+    runs through an imported class is out of this lint's sight either way, so a
+    superproperty declared in an import is also not widened here -- the compiler's
+    semantic index is the place that sees the whole closure.
+
     RDFS says the object of a property must be in **every** declared range -- the
     intersection. That only makes sense if the ranges are related by ``rdfs:subClassOf``:
     for ``hasCustomer rdfs:subPropertyOf hasParty`` with ranges ``Customer`` and ``Party``,
@@ -874,6 +879,15 @@ def _check_range_subsumption(
         if not isinstance(prop, URIRef):
             continue
         ranges = _effective_ranges(graph, prop)
+        # Only ranges this file *describes* can be judged here. The naming lints run on
+        # one domain file with no owl:imports resolution, so a range class merely
+        # referenced -- `party:Shipper`, declared and subclassed in the shared kernel --
+        # has no rdfs:subClassOf visible from this graph, and every such pair looked
+        # unrelated: 132 spurious warnings across the installed reference models, and
+        # a remedy ("assert the missing rdfs:subClassOf") for an axiom that exists.
+        ranges = {
+            cls: owner for cls, owner in ranges.items() if (cls, None, None) in graph
+        }
         if len(ranges) < 2:
             continue
         unrelated = sorted(
@@ -1543,6 +1557,7 @@ def render_validation_markdown(
     degraded: bool,
     ontology_files: list[Path],
     state_proposal: Optional[LifecycleStateProposal] = None,
+    repo_root: Optional[Path] = None,
 ) -> str:
     """Render a deterministic Markdown validation report.
 
@@ -1550,12 +1565,25 @@ def render_validation_markdown(
     accelerator, the scope of scanned files, and the findings — all derived only
     from the passed-in values, so identical input always renders byte-identical
     Markdown regardless of dict/glob iteration order or wall-clock time.
+
+    *repo_root*, when given, renders every path repo-relative with forward slashes --
+    the same treatment #822 gave ``validation-report.json``. The Markdown sibling kept
+    the absolute paths, so a hub tracking it still saw the file rewrite on every other
+    checkout and still leaked the developer's filesystem layout when pasted.
     """
+
+    def _shown(path: object) -> str:
+        if not isinstance(path, Path) or repo_root is None:
+            return str(path)
+        try:
+            return path.resolve().relative_to(Path(repo_root).resolve()).as_posix()
+        except ValueError:
+            return str(path)
     lines: list[str] = []
     lines.append("# Kairos Ontology Validation Report")
     lines.append("")
     lines.append(f"- **Toolkit version:** {toolkit_version}")
-    lines.append(f"- **Catalog:** {catalog_path if catalog_path else '_none resolved_'}")
+    lines.append(f"- **Catalog:** {_shown(catalog_path) if catalog_path else '_none resolved_'}")
     lines.append(f"- **Accelerator:** {accelerator if accelerator else '_none_'}")
     lines.append("")
     lines.append("## Effective command options")
@@ -1563,10 +1591,10 @@ def render_validation_markdown(
     lines.append("| Option | Value |")
     lines.append("|--------|-------|")
     options: list[tuple[str, object]] = [
-        ("ontologies", ontologies_path),
-        ("shapes", shapes_path),
-        ("catalog", catalog_path or "_(auto-detect)_"),
-        ("ref-models", ref_models_dir or "_(auto-detect)_"),
+        ("ontologies", _shown(ontologies_path)),
+        ("shapes", _shown(shapes_path)),
+        ("catalog", _shown(catalog_path) if catalog_path else "_(auto-detect)_"),
+        ("ref-models", _shown(ref_models_dir) if ref_models_dir else "_(auto-detect)_"),
         ("accelerator", accelerator or "_(none)_"),
         ("syntax", do_syntax),
         ("shacl", do_shacl),
@@ -1578,7 +1606,7 @@ def render_validation_markdown(
     lines.append("")
     lines.append("## Scope / files")
     lines.append("")
-    sorted_files = sorted(str(f) for f in ontology_files)
+    sorted_files = sorted(_shown(f) for f in ontology_files)
     if sorted_files:
         for f in sorted_files:
             lines.append(f"- `{f}`")
@@ -2263,6 +2291,7 @@ def run_validation(
                 degraded=degraded,
                 ontology_files=ontology_files,
                 state_proposal=state_proposal,
+                repo_root=repo_root,
             ),
             encoding="utf-8",
         )

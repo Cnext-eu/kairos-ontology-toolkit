@@ -378,3 +378,17 @@ class TestProbeFallsBackFromModelListing:
                 _real_probe_client(self._config())
 
         client.chat.completions.create.assert_not_called()
+
+
+def test_the_unprobed_path_still_carries_the_tier_advisory(github_provider_env, monkeypatch):
+    """The tier judgement is a reading of the model name, not of the endpoint, yet #545
+    attached it only after a successful probe -- so `check-ai-config --no-probe`, the CI
+    path, was exactly where the misreading it pre-empts kept recurring."""
+    from kairos_ontology.core.ai_preflight import ROLE_ALIGNMENT, preflight_ai_provider
+
+    monkeypatch.setenv("KAIROS_AI_ALIGNMENT_MODEL", "gpt-5.5")
+    result = preflight_ai_provider(ROLE_ALIGNMENT, probe=False)
+
+    assert result.status == STATUS_UNPROBED
+    assert result.model == "gpt-5.5"
+    assert "non-reasoning" in result.advisory

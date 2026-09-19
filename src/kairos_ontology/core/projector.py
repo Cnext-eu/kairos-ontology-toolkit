@@ -129,6 +129,10 @@ class TargetSpec:
 
 _TARGET_REGISTRY: dict[str, TargetSpec] = {}
 TARGET_REGISTRY: Mapping[str, TargetSpec] = MappingProxyType(_TARGET_REGISTRY)
+
+#: Targets driven by an opt-in overlay or contract, for which a domain that produces no
+#: artifact is the normal case rather than a silent failure worth a warning.
+_OVERLAY_GATED_TARGETS = frozenset({"ddd", "contract-erd"})
 RETIRED_COMPILER_TARGETS = ("dbt", "silver")
 COMPILE_PLAN_ONLY_TARGETS = ("powerbi", "gold", "mdm-profile")
 
@@ -544,31 +548,6 @@ def _discover_extensions(
         ext_path = external_dispatch.discover_ext(onto_name, src_file, extensions_dir)
 
     return ext_path, gold_ext_path
-
-
-def _discover_silver_extension_for_sync(
-    onto_name: str,
-    onto_info: dict,
-    extensions_dir: Optional[Path],
-) -> Path:
-    """Return the exact silver extension path used by the claim sync gate.
-
-    Projection discovery has legacy wildcard fallbacks. The claim-authority gate
-    must not borrow another domain's silver extension, because that can mask or
-    create drift in multi-domain hubs.
-    """
-    filename = f"{onto_name}-silver-ext.ttl"
-    src_file: Path = onto_info["file"]
-
-    grouped_exact = extensions_dir / filename if extensions_dir is not None else None
-    if grouped_exact is not None and grouped_exact.exists():
-        return grouped_exact
-
-    legacy_exact = src_file.parent / filename
-    if legacy_exact.exists():
-        return legacy_exact
-
-    return grouped_exact if grouped_exact is not None else legacy_exact
 
 
 def _write_artifacts(artifacts: dict[str, str], target_output: Path) -> int:
@@ -1142,10 +1121,14 @@ def run_projections(
                         # Check if gold models were produced
                         if any(k.startswith("models/gold/") for k in artifacts):
                             dbt_gold_domains.append(onto_name)
-                else:
+                elif target_name not in _OVERLAY_GATED_TARGETS:
                     # A projector returning nothing used to be indistinguishable from a
                     # domain with nothing to draw, and the run still reported success --
                     # five of twelve domains on one hub silently emitted no ERD (#805).
+                    # Not for the opt-in targets: a domain without a DDD overlay or a
+                    # contract legitimately yields nothing, and the managed CI lane runs
+                    # `ddd` on every hub, so the warning would fire once per domain on
+                    # the default hub and become the noise #805 was fixing.
                     print(
                         f"  [{onto_name}] ⚠️  {target_name} produced no artifacts "
                         f"(namespace: {onto_namespace})"
@@ -1311,8 +1294,10 @@ def run_projections(
 
     # ── Post-domain targets (span all ontology domains) ──────────────────
     if "erd" in targets_to_run:
-        # Merged after the per-domain loop, from the files it just wrote, so the master is
-        # always consistent with them rather than a second derivation of the same graphs.
+        # Drawn from the same loaded graphs the per-domain loop used, with node ids
+        # assigned once over the whole hub. Merging the per-domain *files* keyed on the
+        # Mermaid node id collapsed two classes that share a local name into one and
+        # drew one IRI as several nodes (#753 follow-up).
         from .projections.erd_projector import (
             MASTER_CLASS_DIAGRAM_NAME,
             generate_master_class_diagram,
@@ -1320,7 +1305,17 @@ def run_projections(
 
         erd_output = TARGET_REGISTRY["erd"].output_path(output_path)
         hub_name = hub_root.name if hub_root is not None else "master"
-        master = generate_master_class_diagram(erd_output, hub_name)
+        master = generate_master_class_diagram(
+            (
+                (
+                    info["graph"],
+                    namespace if namespace is not None else _auto_detect_namespace(info["graph"]),
+                    _own_source_graph(info["load_result"]),
+                )
+                for info in ontology_graphs
+            ),
+            hub_name,
+        )
         if master is not None:
             write_text_lf(erd_output / MASTER_CLASS_DIAGRAM_NAME, master)
             print(f"  ✓ {MASTER_CLASS_DIAGRAM_NAME}")

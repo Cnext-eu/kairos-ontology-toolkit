@@ -1010,12 +1010,16 @@ def _date_tmdl(
     # the semantic model, so insight coverage was right to reject it -- the emitter was
     # under-declaring the table, not the checker under-resolving it (#747).
     for column in CALENDAR_COLUMNS:
+        # A TMDL description precedes the object it describes, at the object's own
+        # indent -- the same shape `_table_tmdl` renders. Placed after `sourceColumn:`
+        # inside the body it is an unparseable line: the TOM serializer rejects the
+        # whole model ("Unexpected line type: Empty!") and Fabric cannot load it.
+        lines.append(f"\t/// {column.description}")
         lines.append(f"\tcolumn {column.name}")
         lines.append(f"\t\tdataType: {_CALENDAR_TMDL_TYPES[column.kind]}")
         if column.is_key:
             lines.append("\t\tisKey")
         lines.append(f"\t\tsourceColumn: {column.name}")
-        lines.append(f"\t\t/// {column.description}")
         lines.append("")
     lines.extend(_partition("dim_date", "gold_shared", product, connection))
     return "\n".join(lines)

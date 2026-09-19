@@ -161,7 +161,6 @@ class GoldMeasureSpec:
     tests: tuple[str, ...]
     evidence: tuple[str, ...]
     emitted: bool
-    data_validated: bool = False
 
 
 @dataclass(frozen=True, slots=True)

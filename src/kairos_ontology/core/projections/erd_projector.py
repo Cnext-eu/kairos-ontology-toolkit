@@ -457,6 +457,35 @@ def generate_erd_artifacts(
     if not classes:
         return {}
 
+    lines = [
+        # Which toolkit drew this, stamped into the artifact. These diagrams are
+        # tracked and drift-gated, so a wall-clock time would fail the gate on every
+        # run; *when* is what git history records, and only *which version* cannot be
+        # recovered afterwards (#774).
+        mermaid_provenance_comment(indent=""),
+        "%% Canonical ontology class diagram: binding-independent, reflects the",
+        "%% ontology graph rather than compile-plan coverage.",
+        "%% An imported class is stereotyped with the model it comes from. One reached as",
+        "%% a superclass is drawn as a stub with no members -- they are listed, prefixed #,",
+        "%% on the classes that inherit them. One reached across a relationship lists its",
+        "%% own members, because nothing else in the diagram carries them.",
+        "%% A member prefixed # is inherited from a superclass; an edge labelled",
+        "%% (inherited) is declared on a superclass and applies to this class.",
+        "%% An edge labelled a / b is one owl:inverseOf pair drawn once: read left to right",
+        "%% it is a, right to left it is b.",
+        "classDiagram",
+    ]
+    lines.extend(_render_class_diagram(working_graph, classes))
+    return {f"{domain}-erd.mmd": "\n".join(lines) + "\n"}
+
+
+def _render_class_diagram(working_graph: Graph, classes: list[URIRef]) -> list[str]:
+    """Render the ``classDiagram`` body -- blocks, then edges -- for *classes*.
+
+    Shared by the per-domain diagram and the hub-wide master, so the two can never
+    disagree about how a class, an inheritance edge or a relationship is drawn. *classes*
+    are the local ones; anything they reach is drawn as an external.
+    """
     relationships = _collect_relationships(working_graph, classes)
     inheritance = _collect_inheritance(working_graph, classes)
 
@@ -476,28 +505,11 @@ def generate_erd_artifacts(
         if node not in local
     }
 
-    lines = [
-        # Which toolkit drew this, stamped into the artifact. These diagrams are
-        # tracked and drift-gated, so a wall-clock time would fail the gate on every
-        # run; *when* is what git history records, and only *which version* cannot be
-        # recovered afterwards (#774).
-        mermaid_provenance_comment(indent=""),
-        "%% Canonical ontology class diagram: binding-independent, reflects the",
-        "%% ontology graph rather than compile-plan coverage.",
-        "%% An imported class is stereotyped with the model it comes from. One reached as",
-        "%% a superclass is drawn as a stub with no members -- they are listed, prefixed #,",
-        "%% on the classes that inherit them. One reached across a relationship lists its",
-        "%% own members, because nothing else in the diagram carries them.",
-        "%% A member prefixed # is inherited from a superclass; an edge labelled",
-        "%% (inherited) is declared on a superclass and applies to this class.",
-        "%% An edge labelled a / b is one owl:inverseOf pair drawn once: read left to right",
-        "%% it is a, right to left it is b.",
-        "classDiagram",
-    ]
     # Blank only what inheritance already renders inline. A class reached solely as a
     # relationship endpoint has no heir to carry its attributes, so drawing it empty
     # hides them completely -- the mirror image of the #678 defect, one hop across an
     # edge (#804). A class that is both keeps the stub: the heir still lists its members.
+    lines: list[str] = []
     inheritance_stubs = {parent for parent, _ in inheritance}
     inheritance_stubs |= {subclass for _, subclass in inheritance}
     # Ids are assigned once over every class the diagram will draw, because a collision
@@ -550,107 +562,50 @@ def generate_erd_artifacts(
             label = f"{label} (inherited)"
         lines.append(f'    {left} "{left_mult}" --> "{right_mult}" {right} : {label}')
 
-    return {f"{domain}-erd.mmd": "\n".join(lines) + "\n"}
+    return lines
 
 
-def _block_rank(body: list[str]) -> tuple[int, int]:
-    """Rank one rendering of a class, for choosing between a hub's several drawings of it.
-
-    More members first -- a domain that renders a class fully outranks one that draws it
-    as a member-less stub.
-
-    Then *prefer no stereotype*. In a per-domain diagram a stereotype marks a class as
-    imported from elsewhere; in the merged hub-wide one every domain is local, so the
-    owning domain's drawing (which carries no stereotype) is the right one and an
-    importing domain's is misleading. Equal members with and without a stereotype is
-    exactly the owner-versus-importer case.
-    """
-    members = [line for line in body if not line.strip().startswith("<<")]
-    return (len(members), 0 if len(members) != len(body) else 1)
-
-
-#: Name of the merged canonical diagram, beside the per-domain files it is built from.
+#: The hub-wide master, written beside the per-domain ``{domain}-erd.mmd`` files (#753).
 MASTER_CLASS_DIAGRAM_NAME = "master-class-diagram.mmd"
 
+#: One domain's contribution to the master: its import closure, the namespace that decides
+#: IRI-prefix locality, and its own file's graph for declared locality (#805).
+MasterErdDomain = tuple[Graph, str, Optional[Graph]]
 
-def generate_master_class_diagram(diagrams_path: Path, hub_name: str = "master") -> Optional[str]:
-    """Merge every per-domain canonical ERD into one hub-wide ``classDiagram`` (#753).
 
-    The bound Silver/Gold families already have a master (``generate_master_erd`` in
-    ``medallion_silver_projector``) and this target did not, so a reader wanting the whole
-    canonical surface had to open twelve files and hold them in their head.
+def generate_master_class_diagram(
+    domains: Iterable[MasterErdDomain], hub_name: str = "master"
+) -> Optional[str]:
+    """Render every domain's canonical classes into one hub-wide ``classDiagram``.
 
-    That function is **not** reusable here, for two reasons worth recording so the next
-    reader does not try. It emits and merges ``erDiagram`` bodies, while this target emits
-    ``classDiagram`` -- different dialect, different member syntax, different edge syntax --
-    so concatenating one into the other produces a file Mermaid cannot parse. And its
-    cross-domain block is synthesised from ``*-silver-constraints.json``, which is
-    compile-plan-derived; this target is binding-independent by construction (DD-209), so
-    its cross-domain edges come from the ontology closure instead. They already do: an
-    imported class reached from a domain is drawn in that domain's file.
+    Drawn from the graphs, not merged from the per-domain files. A text merge keyed on
+    the Mermaid node id -- the class's local name -- collapsed two different classes that
+    share a name (``party:Address`` and ``billing:Address``) into one block and dropped
+    the other silently, and drew one IRI as several nodes wherever two domains had
+    disambiguated it differently, because #806 assigns ids per rendered set. Here the
+    rendered set *is* the whole hub: ``_node_ids`` disambiguates once, hub-wide, and one
+    IRI is one node by construction. A per-domain file left behind by a renamed domain no
+    longer leaks into the master either.
 
-    Deduplication is the actual work. An imported class is drawn in *every* domain that
-    reaches it, so naive concatenation emits the same ``class Vessel { ... }`` block
-    several times and Mermaid merges them into one node with the members repeated. The
-    richest block for a given node id wins -- a domain that renders members outranks one
-    that renders a stub -- and edges are deduplicated exactly.
-
-    Returns ``None`` when there is nothing to merge, which the caller reports rather than
-    writing an empty diagram.
+    Returns ``None`` when no domain has a class to draw, which the caller reports rather
+    than writing an empty diagram.
     """
-    directory = Path(diagrams_path)
-    if not directory.is_dir():
-        return None
-    sources = sorted(
-        path
-        for path in directory.glob("*-erd.mmd")
-        if path.name != MASTER_CLASS_DIAGRAM_NAME
-    )
-    if not sources:
-        return None
-
-    blocks: dict[str, list[str]] = {}
-    block_domain: dict[str, str] = {}
-    edges: dict[str, None] = {}
-    for path in sources:
-        domain = path.name[: -len("-erd.mmd")]
-        current: Optional[str] = None
-        body: list[str] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("%%") or stripped == "classDiagram" or not stripped:
-                continue
-            if current is not None:
-                if stripped == "}":
-                    existing = blocks.get(current)
-                    if existing is None or _block_rank(body) > _block_rank(existing):
-                        blocks[current] = body
-                        block_domain[current] = domain
-                    current, body = None, []
-                else:
-                    body.append(line)
-                continue
-            if stripped.startswith("class ") and stripped.endswith("{"):
-                current = stripped[len("class ") : -1].strip()
-                body = []
-                continue
-            edges.setdefault(line.rstrip(), None)
-
-    if not blocks and not edges:
+    merged = Graph()
+    classes: set[URIRef] = set()
+    for graph, namespace, local_graph in domains:
+        classes.update(_collect_classes(graph, namespace, local_graph))
+        for triple in graph:
+            merged.add(triple)
+    if not classes:
         return None
 
     lines = [
         mermaid_provenance_comment(indent=""),
         f"%% Master canonical class diagram for {hub_name}: every domain merged into one.",
         "%% Binding-independent: reflects the ontology graph, not compile-plan coverage.",
-        "%% A class drawn by more than one domain appears once, with the richest block --",
-        "%% an imported class is reached from every domain that uses it.",
+        "%% Drawn from the domain graphs together: a class two domains reach is one node,",
+        "%% and two classes that merely share a local name stay two.",
         "classDiagram",
     ]
-    for node in sorted(blocks):
-        lines.append(f"    class {node} {{")
-        lines.extend(blocks[node])
-        lines.append("    }")
-    lines.extend(sorted(edges))
+    lines.extend(_render_class_diagram(merged, sorted(classes, key=str)))
     return "\n".join(lines) + "\n"
-

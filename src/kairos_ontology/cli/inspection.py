@@ -28,22 +28,6 @@ from .shared import (
 )
 
 
-def _format_refmodels_version(ref_models_dir: Path) -> str:
-    """Return a non-blocking reference-model VERSION status for CLI output."""
-    version_path = ref_models_dir / "VERSION"
-    if not version_path.exists():
-        return "not present (version metadata optional; checking local files)"
-    if not version_path.is_file():
-        return "unavailable (VERSION path is not a file)"
-    try:
-        version = version_path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeError) as exc:
-        return f"unavailable (could not read VERSION: {exc})"
-    if not version:
-        return "unavailable (VERSION is empty)"
-    return version
-
-
 @click.command(name="resolve-ontology")
 @click.argument("ontology")
 @click.option("--catalog", type=click.Path(exists=True, dir_okay=False), default=None)

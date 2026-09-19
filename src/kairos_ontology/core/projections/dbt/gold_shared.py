@@ -108,6 +108,28 @@ def _union_model(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str
     return {**incoming, "meta": meta}
 
 
+def sole_contributor_may_replace(existing: str, incoming: str) -> bool:
+    """Whether the domain rendering *incoming* is the only contributor recorded on disk.
+
+    The union above exists for *two* domains: when every calendar profile the on-disk
+    schema yml credits is also a profile of the incoming render, there is no second domain
+    to disagree with, and the incoming bytes simply supersede what the same domain wrote
+    last time. Without this, a domain could never change its own calendar -- extending
+    ``calendar_end`` by a year, or picking up a renderer that emits more columns after a
+    toolkit upgrade -- because its previous output was read back as a rival contributor
+    and the union failed closed naming "two domains" that were one.
+    """
+    return _all_contributors(existing) <= _all_contributors(incoming)
+
+
+def _all_contributors(models_yml: str) -> set[str]:
+    document = yaml.safe_load(models_yml) or {}
+    found: set[str] = set()
+    for model in document.get("models", []) or []:
+        found |= _contributors(dict(model.get("meta") or {}))
+    return found
+
+
 def _contributors(meta: dict[str, Any]) -> set[str]:
     value = meta.get(_CONTRIBUTED_KEY)
     if isinstance(value, list):

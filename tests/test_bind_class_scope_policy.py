@@ -6,10 +6,9 @@ One input, three filters, and the split was undocumented and partly accidental:
 
 * the contract filter and the table-mapping filter compared against the bare set;
 * the property filter walked `rdfs:subClassOf` upward transitively;
-* the widened set was then consulted **only in the fallback arm** of the column filter --
-  for columns whose `source_column_uri` did not resolve to a known table -- so whether the
-  ancestor walk had any effect depended on whether the source column happened to be
-  registered. That is not a semantic distinction.
+* that upward walk had no upper bound and no cycle protection, so a hub asserting
+  `rdfs:subClassOf owl:Thing` widened the property filter to every property in the
+  closure.
 
 Under #729's policy (*traverse for compatibility, exact for identity*): contracts and
 table mappings answer "does this domain own this?", which does not inherit; the property

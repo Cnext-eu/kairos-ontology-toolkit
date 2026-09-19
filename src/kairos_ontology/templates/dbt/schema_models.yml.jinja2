@@ -64,13 +64,24 @@ models:
 {%- endfor %}
 {%- endif %}
 {%- if column.tests %}
+{#- Same shape as the model-level block above (#826): arguments under `arguments:`,
+    `config` at the test's own level. Values are emitted as JSON, which YAML reads,
+    rather than as Python reprs. The `tests:` key itself is not deprecated. #}
         tests:
 {%- for test in column.tests %}
 {%- if test is mapping %}
-          - {{ test.keys() | first }}:
-{%- for key, value in test[test.keys() | first].items() %}
-              {{ key }}: {{ value }}
+{%- set test_name = test.keys() | first %}
+{%- set body = test[test_name] %}
+          - {{ test_name }}:
+{%- if body | reject('equalto', 'config') | list %}
+              arguments:
+{%- for key, value in body.items() if key != 'config' %}
+                {{ key }}: {{ value | tojson }}
 {%- endfor %}
+{%- endif %}
+{%- if 'config' in body %}
+              config: {{ body['config'] | tojson }}
+{%- endif %}
 {%- else %}
           - {{ test }}
 {%- endif %}

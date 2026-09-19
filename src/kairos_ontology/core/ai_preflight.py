@@ -343,6 +343,10 @@ def preflight_ai_provider(
             provider=config.provider,
             model=config.model,
             endpoint=_safe_endpoint(config.endpoint),
+            # The tier judgement is static -- a reading of the model name -- so it holds
+            # whether or not the endpoint was probed. `--no-probe` is the common CI path,
+            # and it was exactly there that the misreading #545 pre-empts kept recurring.
+            advisory=tier_advisory(role, config.model),
         )
 
     try:

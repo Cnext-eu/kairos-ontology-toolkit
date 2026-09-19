@@ -737,14 +737,17 @@ def run_design_landscape(
                 f"{candidates} TMDL concept-mapping table(s) carry a proposed "
                 "reference_model_match awaiting confirmation (action: candidate). "
                 "They are not counted as BI weight until a modeller confirms them -- "
-                "clear the action field to accept, or correct the match."
+                "set action to use or specialize to accept, or correct the match."
             )
         if scan.tables_unfilled:
             # Reported as absent *evidence*, not as a backlog. A row triaged to `skip`
             # or `new_class` correctly carries no reference_model_match, so this number
             # legitimately never reaches zero; `scan.tables_untriaged` is the one that
             # does, and only `next` recommends on it (issue #687).
-            decided = scan.tables_unfilled - scan.tables_untriaged
+            # Candidate rows are *filled* yet untriaged (#762), so the untriaged count
+            # is no longer a subset of the unfilled one; without this the difference
+            # went negative and the note was silently dropped.
+            decided = max(0, scan.tables_unfilled - (scan.tables_untriaged - candidates))
             decided_note = (
                 f" {decided} of them already record an action (skip/new_class), for "
                 "which an empty match is the correct outcome."

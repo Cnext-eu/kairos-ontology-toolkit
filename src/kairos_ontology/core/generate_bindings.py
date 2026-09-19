@@ -91,9 +91,12 @@ def _canonical_type(arrow_or_sql: str) -> str:
         return "date"
     if lowered.startswith("time") :
         return "time"
-    sql_aliases = {"bigint": "int64", "int": "int32", "integer": "int32",
-                   "smallint": "int16", "tinyint": "int16", "bit": "boolean",
-                   "boolean": "boolean", "json": "json"}
+    # Spark's `long`/`short`/`byte` beside the T-SQL spellings: a Databricks `long` grain
+    # column otherwise fell through to `string` and baked the wrong type into the
+    # generated binding -- the defect #808 fixed for `scaffold-binding`, one path over.
+    sql_aliases = {"bigint": "int64", "long": "int64", "int": "int32", "integer": "int32",
+                   "smallint": "int16", "short": "int16", "tinyint": "int16",
+                   "byte": "int16", "bit": "boolean", "boolean": "boolean", "json": "json"}
     if lowered in sql_aliases:
         return sql_aliases[lowered]
     return _ARROW_TO_CANONICAL.get(lowered, "string")

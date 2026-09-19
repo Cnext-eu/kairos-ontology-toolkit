@@ -53,7 +53,7 @@ when you do. If the hub declares no adapter at all, that is the thing to fix —
 ### Prerequisites for tier 2 (`validate-dbt`)
 
 `dbt` is **not** installed by default in the hub. It ships only as opt-in `uv` extras in the
-hub's `pyproject.toml` (pinned `dbt-core>=1.9,<1.10` plus the matching adapter). Once the
+hub's `pyproject.toml` (pinned `dbt-core>=1.10.1,<1.10.20` plus the matching adapter). Once the
 platform is confirmed, check whether it is already synced; if `kairos-ontology validate-dbt`
 fails preflight with "not installed", the fix is always one of:
 

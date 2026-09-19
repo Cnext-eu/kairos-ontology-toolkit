@@ -6,6 +6,7 @@ import click
 
 from ..core.adapters import (
     ADAPTER_CHOICES,
+    DBT_CORE_REQUIREMENT,
     FABRIC_WAREHOUSE,
     SUPPORTED_ADAPTER_IDS,
     dbt_adapter_requirement,
@@ -1758,6 +1759,11 @@ def init_dataplatform(name, dest, platform, org_override):
         # No `.get` default: an unmapped platform must fail loudly rather than pin the
         # Fabric adapter into a project that does not target Fabric (DD-215).
         "{DBT_ADAPTER}": adapter_map[resolve_adapter(platform)[0]],
+        # The same dbt-core range the hub installs (#789). The adapter alone does not
+        # pin it -- dbt-fabric declares only a floor -- so a dataplatform resolved the
+        # newest dbt-core while its hub sat on 1.10, and deprecations the hub never saw
+        # fired downstream. One declaration, both scaffolds.
+        "{DBT_CORE}": DBT_CORE_REQUIREMENT,
         "{DBT_CI_PROFILE_YAML}": _ci_profile_yaml_block(project_name, platform),
         "{toolkit_ref}": toolkit_ref,
         "{toolkit_version}": toolkit_version,

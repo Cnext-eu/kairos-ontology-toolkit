@@ -39,7 +39,9 @@ comment that would be invalid YAML. `update` reports drift; only
 kairos-ontology update --refresh-workflows
 ```
 
-writes. A workflow reported as `customized` was edited locally and is left alone.
+writes. A workflow reported as `customized` was edited locally: declare it under
+`[tool.kairos] customized-workflows` in `pyproject.toml` to keep it (see `CICD.md`), or it
+fails `update --check` until it is refreshed or declared.
 
 ## What the toolkit owns, and what stays yours
 

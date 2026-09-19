@@ -147,12 +147,16 @@ class TestTheOtherHalfOfTheSameMistake:
         }
 
     def test_the_domain_incompatible_message_names_the_owning_class(self, tmp_path):
+        """The *declaring* class, `acc:TradeParty`. `party:LocalTradeParty` merely inherits
+        the property; naming it as the declarer sent the author to a class that declares
+        nothing, while the unresolved variant of the same mistake named the real one."""
         message = _messages(
             _compile(tmp_path, ontology=_WITH_LOCAL_SUBCLASS, property_token="acc:partyName"),
             *_INCOMPATIBLE,
         )
-        assert "'party:LocalTradeParty'" in message
-        assert "https://example.test/party#LocalTradeParty" not in message
+        assert "'acc:TradeParty'" in message
+        assert "LocalTradeParty" not in message
+        assert "https://example.test/accelerator/party#TradeParty" not in message
 
     def test_both_failures_offer_the_same_route(self, tmp_path):
         unresolved = _messages(

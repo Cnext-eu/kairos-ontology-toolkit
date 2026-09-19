@@ -127,3 +127,36 @@ def test_a_class_cycle_terminates():
         :p a owl:ObjectProperty ; rdfs:range :A .
         :r a owl:ObjectProperty ; rdfs:subPropertyOf :p ; rdfs:range :C .
     """)
+
+
+def test_a_range_the_file_only_references_is_not_judged():
+    """The subsumption chain may live in an import. A shared kernel asserts
+    `party:Shipper rdfs:subClassOf party:ShippingParty`; the booking module that declares
+    `hasShipper rdfs:subPropertyOf hasParty` merely references both classes. The naming
+    lints run on one file with no owl:imports resolution, so from here the pair looked
+    unrelated -- 132 spurious warnings across the installed reference models, each with a
+    remedy ("assert the missing rdfs:subClassOf") for an axiom that already exists.
+    Only ranges this file itself describes can be judged."""
+    found = _warnings("""
+        @prefix party: <https://example.test/party#> .
+        :hasParty a owl:ObjectProperty ; rdfs:range party:ShippingParty .
+        :hasShipper a owl:ObjectProperty ;
+            rdfs:subPropertyOf :hasParty ;
+            rdfs:range party:Shipper .
+    """)
+    assert found == []
+
+
+def test_a_referenced_range_beside_two_described_ones_still_warns_on_the_described_pair():
+    found = _warnings("""
+        @prefix party: <https://example.test/party#> .
+        :Party a owl:Class .
+        :Customer a owl:Class .
+        :hasParty a owl:ObjectProperty ; rdfs:range :Party .
+        :hasCustomer a owl:ObjectProperty ;
+            rdfs:subPropertyOf :hasParty ;
+            rdfs:range :Customer , party:Shipper .
+    """)
+    assert len(found) == 1
+    assert "Customer" in found[0].message and "Party" in found[0].message
+    assert "Shipper" not in found[0].message

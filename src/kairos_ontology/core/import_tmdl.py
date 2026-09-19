@@ -457,9 +457,10 @@ def generate_concept_mapping(
         "#   new_class  — no reference model match; create a local class\n"
         "#   skip       — not relevant for ontology (e.g., measure-only table)\n"
         "#   candidate  - a lexical match this tool proposed, NOT a decision.\n"
-        "#                Confirm by clearing the action field (or setting\n"
-        "#                use/specialize); correct the match; or set skip/new_class.\n"
-        "#                Until confirmed it is not counted as BI weight evidence.\n"
+        "#                Confirm by setting action to use or specialize; correct\n"
+        "#                the match first if it is wrong; or set skip/new_class.\n"
+        "#                An empty action is untriaged, not confirmed. Until\n"
+        "#                confirmed it is not counted as BI weight evidence.\n"
         "\n"
     )
     return header + yaml.dump(data, default_flow_style=False, sort_keys=False, width=100)
