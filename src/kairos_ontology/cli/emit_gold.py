@@ -211,6 +211,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     if not confirm_emit:
         click.echo(f"✅ Would emit {summary}")
     _report_unresolved(artifacts, product)
+    _report_unresolved_bridges(artifacts, product)
     _report_insight_coverage(hub_root, logical, product)
     if not confirm_emit:
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
@@ -406,6 +407,38 @@ def _report_unresolved(artifacts: dict[str, str], product) -> None:
     click.echo(
         "     Add the owning domain to this product in kairos.yaml (gold.products), "
         "or author the target as a Gold table in a participating domain."
+    )
+
+
+def _report_unresolved_bridges(artifacts: dict[str, str], product) -> None:
+    """Warn about a bridge endpoint this shaping does not materialize (#763).
+
+    A bridge legitimately spans two domains, so on a single-domain compile one endpoint is
+    out of scope by construction. That used to fail closed, which made a cross-domain
+    bridge -- the construct that gives Power BI a slicer across two facts, and the reason
+    `bridge` exists -- unauthorable. At product level an endpoint outside the union still
+    fails, so this only ever fires where the check could not have been meaningful.
+    """
+    import json
+
+    report = next(
+        (content for name, content in artifacts.items() if name.endswith("-gold-product.json")),
+        None,
+    )
+    if report is None:
+        return
+    unresolved = json.loads(report).get("unresolved_bridges") or []
+    if not unresolved:
+        return
+    click.echo(
+        f"   ⚠ {len(unresolved)} bridge endpoint(s) are not Gold tables of this product; "
+        "the bridge is emitted but those relationships are not:"
+    )
+    for item in unresolved:
+        click.echo(f"       {item['bridge']} -> {item['endpoint']}")
+    click.echo(
+        "     Add the domain owning that endpoint to this product in kairos.yaml "
+        "(gold.products), or author the endpoint as a Gold table in a participating domain."
     )
 
 

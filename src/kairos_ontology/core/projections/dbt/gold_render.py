@@ -1178,6 +1178,20 @@ def gold_product_report(
             if spec.unresolved_relationships
             else {}
         ),
+        # A bridge endpoint that is not a Gold table of this shaping. On a single-domain
+        # compile that is expected -- the other endpoint belongs to another domain -- so
+        # it is reported rather than raised (#763). At product level the union is real and
+        # an endpoint outside it still fails closed.
+        **(
+            {
+                "unresolved_bridges": [
+                    {"bridge": bridge, "endpoint": endpoint}
+                    for bridge, endpoint in spec.unresolved_bridges
+                ]
+            }
+            if spec.unresolved_bridges
+            else {}
+        ),
         # The relationships the projector deactivated to leave one filter path
         # between any two tables (#792). Reported because the choice is a modelling
         # decision the report depends on -- the active date role is the one time
