@@ -205,6 +205,13 @@ class ResolutionContext:
     #: this graph-free adapter needing back the graph/ontology-loader state that computed
     #: the ambiguity in the first place.
     prefix_alternatives: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: Unresolved field property token -> the class token(s) that declare it somewhere in
+    #: the import closure, e.g. {"imo:flagStateCountryCode": ("imo:FlagState",)}. Computed
+    #: where the graph is, for the same reason as ``prefix_alternatives`` above: this
+    #: adapter is graph-free and would otherwise have to call a property that demonstrably
+    #: exists "unresolved in the ontology" (#853). Only ever populated for tokens that
+    #: already failed to resolve in scope.
+    closure_property_owners: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def relation(self, ref: str) -> ResolvedRelation | None:
         """Return the resolved relation for an author ``source.relation`` token."""
@@ -311,6 +318,74 @@ def _prefix_ambiguity_hint(context: ResolutionContext, token: str) -> str:
     return (
         f" '{prefix}' is an ambiguous imported prefix with no root declaration "
         f"(see safety.prefix-ambiguous); did you mean {suggestions}?"
+    )
+
+
+def _preferred_token(candidates: tuple[str, ...], fallback: str) -> str:
+    """Pick the token an author would actually type: a qname before a bare IRI.
+
+    Both are valid in `target.class`, but a resolved class carries *both* refs and sorting
+    picks between them by first character -- so the message named `acc:TradeParty` and
+    `https://example.test/party#LocalTradeParty` for the same kind of thing (#853).
+    """
+    qualified = tuple(item for item in candidates if "://" not in item)
+    return next(iter(qualified or candidates), fallback)
+
+
+def _owning_class_route(property_token: str, owners: tuple[str, ...]) -> str:
+    """The shared second half of both messages: name the owner and the way to reach it.
+
+    Single-sourced because the two diagnostics below describe the *same* authoring
+    mistake and differ only in whether the property happened to be pulled into scope by
+    something else in the compile (#853). An author who hit one and then the other should
+    not have to work out that they were told the same thing twice.
+    """
+    owner_list = " or ".join(repr(owner) for owner in owners)
+    plural = "es" if len(owners) > 1 else ""
+    return (
+        f"it is declared on class{plural} {owner_list}, not on the bound class. Bind that "
+        "class in its own EntityBinding -- an imported class needs no local "
+        "rdfs:subClassOf to be bindable (DD-144) -- and reach it from here with a "
+        "relationships: entry, or carry the raw value with technicalFields: (DD-139)."
+    )
+
+
+def _unknown_property_message(property_token: str, context) -> str:
+    """Explain a field property that resolved against nothing *in scope*.
+
+    It may still exist: the compiler indexes the whole ``owl:imports`` closure (DD-103), so
+    a property on a class nothing in this compile pulled in resolves against no token here
+    while sitting one hop away in the graph. Saying "does not resolve in the ontology" sent
+    the author hunting for a typo or a missing import (#853).
+    """
+    owners = context.closure_property_owners.get(property_token)
+    if owners:
+        return (
+            f"property '{property_token}' does not resolve against any class in this "
+            "compile, but it exists in the import closure: "
+            + _owning_class_route(property_token, owners)
+        )
+    return (
+        f"property '{property_token}' does not resolve in the ontology; "
+        f"usable property tokens: {_token_list(context.property_tokens())}"
+    )
+
+
+def _property_domain_message(
+    property_token: str,
+    target_class: str,
+    prop: ResolvedProperty,
+    context,
+) -> str:
+    """Name the class(es) that *do* declare the property, not only the one that does not."""
+    owners = tuple(
+        _preferred_token(context.class_tokens(uri), uri) for uri in sorted(prop.domain_uris)
+    )
+    if not owners:
+        return f"property '{property_token}' does not apply to class '{target_class}'"
+    return (
+        f"property '{property_token}' does not apply to class '{target_class}': "
+        + _owning_class_route(property_token, owners)
     )
 
 
@@ -874,10 +949,7 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
             diagnostics.append(
                 CompileDiagnostic(
                     code="binding.unknown-property",
-                    message=(
-                        f"property '{field_map.property}' does not resolve in the ontology; "
-                        f"usable property tokens: {_token_list(context.property_tokens())}"
-                    ),
+                    message=_unknown_property_message(field_map.property, context),
                     location=SourceLocation(path=path, pointer=f"/fields/{index}/property"),
                 )
             )
@@ -886,9 +958,8 @@ def adapt_binding(binding: EntityBinding, context: ResolutionContext) -> BoundSo
             diagnostics.append(
                 CompileDiagnostic(
                     code="binding.property-domain-incompatible",
-                    message=(
-                        f"property '{field_map.property}' does not apply to "
-                        f"class '{binding.target_class}'"
+                    message=_property_domain_message(
+                        field_map.property, binding.target_class, prop, context
                     ),
                     location=SourceLocation(path=path, pointer=f"/fields/{index}/property"),
                 )
