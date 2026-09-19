@@ -551,3 +551,106 @@ def generate_erd_artifacts(
         lines.append(f'    {left} "{left_mult}" --> "{right_mult}" {right} : {label}')
 
     return {f"{domain}-erd.mmd": "\n".join(lines) + "\n"}
+
+
+def _block_rank(body: list[str]) -> tuple[int, int]:
+    """Rank one rendering of a class, for choosing between a hub's several drawings of it.
+
+    More members first -- a domain that renders a class fully outranks one that draws it
+    as a member-less stub.
+
+    Then *prefer no stereotype*. In a per-domain diagram a stereotype marks a class as
+    imported from elsewhere; in the merged hub-wide one every domain is local, so the
+    owning domain's drawing (which carries no stereotype) is the right one and an
+    importing domain's is misleading. Equal members with and without a stereotype is
+    exactly the owner-versus-importer case.
+    """
+    members = [line for line in body if not line.strip().startswith("<<")]
+    return (len(members), 0 if len(members) != len(body) else 1)
+
+
+#: Name of the merged canonical diagram, beside the per-domain files it is built from.
+MASTER_CLASS_DIAGRAM_NAME = "master-class-diagram.mmd"
+
+
+def generate_master_class_diagram(diagrams_path: Path, hub_name: str = "master") -> Optional[str]:
+    """Merge every per-domain canonical ERD into one hub-wide ``classDiagram`` (#753).
+
+    The bound Silver/Gold families already have a master (``generate_master_erd`` in
+    ``medallion_silver_projector``) and this target did not, so a reader wanting the whole
+    canonical surface had to open twelve files and hold them in their head.
+
+    That function is **not** reusable here, for two reasons worth recording so the next
+    reader does not try. It emits and merges ``erDiagram`` bodies, while this target emits
+    ``classDiagram`` -- different dialect, different member syntax, different edge syntax --
+    so concatenating one into the other produces a file Mermaid cannot parse. And its
+    cross-domain block is synthesised from ``*-silver-constraints.json``, which is
+    compile-plan-derived; this target is binding-independent by construction (DD-209), so
+    its cross-domain edges come from the ontology closure instead. They already do: an
+    imported class reached from a domain is drawn in that domain's file.
+
+    Deduplication is the actual work. An imported class is drawn in *every* domain that
+    reaches it, so naive concatenation emits the same ``class Vessel { ... }`` block
+    several times and Mermaid merges them into one node with the members repeated. The
+    richest block for a given node id wins -- a domain that renders members outranks one
+    that renders a stub -- and edges are deduplicated exactly.
+
+    Returns ``None`` when there is nothing to merge, which the caller reports rather than
+    writing an empty diagram.
+    """
+    directory = Path(diagrams_path)
+    if not directory.is_dir():
+        return None
+    sources = sorted(
+        path
+        for path in directory.glob("*-erd.mmd")
+        if path.name != MASTER_CLASS_DIAGRAM_NAME
+    )
+    if not sources:
+        return None
+
+    blocks: dict[str, list[str]] = {}
+    block_domain: dict[str, str] = {}
+    edges: dict[str, None] = {}
+    for path in sources:
+        domain = path.name[: -len("-erd.mmd")]
+        current: Optional[str] = None
+        body: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("%%") or stripped == "classDiagram" or not stripped:
+                continue
+            if current is not None:
+                if stripped == "}":
+                    existing = blocks.get(current)
+                    if existing is None or _block_rank(body) > _block_rank(existing):
+                        blocks[current] = body
+                        block_domain[current] = domain
+                    current, body = None, []
+                else:
+                    body.append(line)
+                continue
+            if stripped.startswith("class ") and stripped.endswith("{"):
+                current = stripped[len("class ") : -1].strip()
+                body = []
+                continue
+            edges.setdefault(line.rstrip(), None)
+
+    if not blocks and not edges:
+        return None
+
+    lines = [
+        mermaid_provenance_comment(indent=""),
+        f"%% Master canonical class diagram for {hub_name}: every domain merged into one.",
+        "%% Binding-independent: reflects the ontology graph, not compile-plan coverage.",
+        "%% A class drawn by more than one domain appears once, with the richest block --",
+        "%% an imported class is reached from every domain that uses it.",
+        "classDiagram",
+    ]
+    for node in sorted(blocks):
+        lines.append(f"    class {node} {{")
+        lines.extend(blocks[node])
+        lines.append("    }")
+    lines.extend(sorted(edges))
+    return "\n".join(lines) + "\n"
+
