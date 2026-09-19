@@ -5656,53 +5656,91 @@ def _build_reference_rollup(
     WS4 (issue #182): only properties that genuinely belong to a class's reference
     model are counted as matched, so ``coverage_pct`` can never exceed 100% (the
     previous code added *any* ``ref_property`` blindly, producing >100% coverage —
-    a hallucination signal that misled the modeler). Properties matched against a
-    class that does not declare them are recorded as ``hallucinated_properties`` and
-    surfaced (count + capped sample) rather than silently normalized away.
-    """
-    #: Max hallucinated-property names retained per class for the surfaced sample.
-    _MAX_HALLUCINATED_SAMPLE = 10
-    class_data: dict[str, dict[str, Any]] = {}
+    a hallucination signal that misled the modeler).
 
-    # Initialize from reference model
+    Keyed on the class **URI**, not the local name (#523). Two imported modules may each
+    declare a ``Terminal``; keying on the name collapsed them, and a property carried by
+    only one copy was then reported as ``hallucinated`` — a false accusation of model
+    error, which is close to the worst kind of bad signal because it directs review at a
+    working mapping. On one hub that cost real time: the finding was investigated as a
+    strict-schema gap before the duplicate name was found.
+
+    Alignments name a class by its *local* name, so an ambiguous name is resolved the way
+    the aligner already resolves it: to whichever same-named class actually declares the
+    property. Display names stay bare while unique and are qualified with the module when
+    not, rather than merged.
+    """
+    #: Max property names retained per class for each surfaced sample.
+    _MAX_HALLUCINATED_SAMPLE = 10
+
+    def _key(cls: dict[str, Any]) -> str:
+        return str(cls.get("source_uri") or cls.get("ref_class_id") or cls["name"])
+
+    names: dict[str, list[str]] = {}
+    for cls in ref_classes:
+        names.setdefault(cls["name"], []).append(_key(cls))
+
+    #: Every property name anywhere in the closure. Lets the report separate "no such
+    #: property exists" -- a genuine hallucination -- from "exists, but on another class",
+    #: which is a misassignment and calls for a different response (#523).
+    closure_properties = {
+        prop["name"] for cls in ref_classes for prop in cls.get("properties", [])
+    }
+
+    class_data: dict[str, dict[str, Any]] = {}
     for cls in ref_classes:
         cls_name = cls["name"]
         ref_props = {p["name"] for p in cls.get("properties", [])}
-        class_data[cls_name] = {
-            "ref_class": cls_name,
+        ambiguous = len(names[cls_name]) > 1
+        class_data[_key(cls)] = {
+            "ref_class": (
+                str(cls.get("ref_class_id") or cls_name) if ambiguous else cls_name
+            ),
             "ref_label": cls.get("label", cls_name),
             "ref_props": ref_props,
             "ref_properties_total": len(ref_props),
             "matched_properties": set(),
             "hallucinated_properties": set(),
+            "foreign_properties": set(),
             "source_tables": [],
             "custom_extensions": [],
         }
+
+    def _resolve(name: str, prop: str | None) -> list[str]:
+        """Resolve a local class name to the rollup keys it refers to."""
+        candidates = names.get(name, [])
+        if len(candidates) <= 1 or prop is None:
+            return candidates
+        declaring = [key for key in candidates if prop in class_data[key]["ref_props"]]
+        # None declares it: the property is misassigned or invented, and saying so against
+        # every same-named copy is the honest answer when nothing disambiguates.
+        return declaring or candidates
 
     # Populate from alignments
     for ta in alignment.tables:
         # Track which tables feed each class
         primary_cls = ta.ref_class
-        if primary_cls and primary_cls in class_data:
-            class_data[primary_cls]["source_tables"].append(f"{ta.system}.{ta.table}")
+        primary_keys = _resolve(primary_cls, None) if primary_cls else []
+        for key in primary_keys:
+            class_data[key]["source_tables"].append(f"{ta.system}.{ta.table}")
 
         for ca in ta.columns:
             cls_name = ca.ref_class or primary_cls
-            if cls_name not in class_data:
+            if not cls_name or not ca.ref_property:
                 continue
-            if not ca.ref_property:
-                continue
-            cd = class_data[cls_name]
-            if ca.ref_property in cd["ref_props"]:
-                cd["matched_properties"].add(ca.ref_property)
-            else:
-                # A property mapped to a class that does not declare it — an
-                # AI-hallucination signal. Count it, never inflate coverage.
-                cd["hallucinated_properties"].add(ca.ref_property)
+            for key in _resolve(cls_name, ca.ref_property):
+                cd = class_data[key]
+                if ca.ref_property in cd["ref_props"]:
+                    cd["matched_properties"].add(ca.ref_property)
+                elif ca.ref_property in closure_properties:
+                    # Real property, wrong class. A misassignment, not an invention.
+                    cd["foreign_properties"].add(ca.ref_property)
+                else:
+                    cd["hallucinated_properties"].add(ca.ref_property)
 
         for cc in ta.custom_columns:
-            if primary_cls and primary_cls in class_data:
-                class_data[primary_cls]["custom_extensions"].append(
+            for key in primary_keys:
+                class_data[key]["custom_extensions"].append(
                     {
                         "column": cc["column"],
                         "suggested_property": cc.get("suggested_property", ""),
@@ -5712,13 +5750,14 @@ def _build_reference_rollup(
 
     # Convert to serializable list
     rollup = []
-    for cls_name, data in class_data.items():
+    for data in class_data.values():
         matched = data["matched_properties"]
         total = data["ref_properties_total"]
         coverage = round(len(matched) / total * 100, 1) if total else 0.0
         hallucinated = sorted(data["hallucinated_properties"])
+        foreign = sorted(data["foreign_properties"])
         entry = {
-            "ref_class": cls_name,
+            "ref_class": data["ref_class"],
             "ref_label": data["ref_label"],
             "ref_properties_total": total,
             "matched_properties": len(matched),
@@ -5729,9 +5768,12 @@ def _build_reference_rollup(
         if hallucinated:
             entry["hallucinated_properties_count"] = len(hallucinated)
             entry["hallucinated_properties"] = hallucinated[:_MAX_HALLUCINATED_SAMPLE]
+        if foreign:
+            entry["foreign_properties_count"] = len(foreign)
+            entry["foreign_properties"] = foreign[:_MAX_HALLUCINATED_SAMPLE]
         rollup.append(entry)
 
-    return sorted(rollup, key=lambda r: r["coverage_pct"], reverse=True)
+    return sorted(rollup, key=lambda r: (-r["coverage_pct"], r["ref_class"]))
 
 
 # ---------------------------------------------------------------------------
