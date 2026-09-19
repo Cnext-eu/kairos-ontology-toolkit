@@ -1,5 +1,6 @@
+# Ranges declared in kairos_ontology.core.adapters (#789). The emitter hard-codes call
+# sites against these packages' APIs, so the range is part of the toolkit's contract.
 packages:
-  - package: dbt-labs/dbt_utils
-    version: [">=1.0.0", "<2.0.0"]
-  - package: metaplane/dbt_expectations
-    version: [">=0.10.0", "<1.0.0"]
+{% for name, (lower, upper) in dbt_packages %}  - package: {{ name }}
+    version: ["{{ lower }}", "{{ upper }}"]
+{% endfor %}

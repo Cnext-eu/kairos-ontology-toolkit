@@ -6,9 +6,9 @@ import click
 
 from ..core.adapters import (
     ADAPTER_CHOICES,
-    DBT_ADAPTER_PACKAGES,
     FABRIC_WAREHOUSE,
     SUPPORTED_ADAPTER_IDS,
+    dbt_adapter_requirement,
     resolve_adapter,
 )
 import json
@@ -1734,15 +1734,14 @@ def init_dataplatform(name, dest, platform, org_override):
     (repo_dir / ".dbt").mkdir(parents=True)
 
     # Template substitutions
-    # Upper-bounded below dbt Core 2.0 (the former "Fusion" engine, now in beta as of
-    # 2026-08 -- see dbt-labs/dbt-core's 2026-06-announcing-v2.md roadmap doc): it ships a
-    # stricter codified language spec than v1.x, and neither adapter has a 2.0-compatible
-    # release yet, so an unbounded floor-only pin would silently let a future `uv sync`
-    # resolve into it. Revisit this ceiling once the adapters publish 2.0-line releases and
-    # the generated dbt project has been validated against the new spec.
+    # One declaration, shared with the hub scaffold (#789). This used to be an independent
+    # `>=1.9.0,<2.0.0` pin, so a dataplatform resolved a different dbt than the hub whose
+    # package it consumes -- and the deprecations the hub emits were only observable
+    # downstream, where nobody was looking for them. The ceiling that reasoning was about
+    # (dbt Core 2.0 / "Fusion", a stricter codified language spec that no adapter targets
+    # yet) is subsumed: the declared ranges sit well below it.
     adapter_map = {
-        adapter: f"{DBT_ADAPTER_PACKAGES[adapter]}>=1.9.0,<2.0.0"
-        for adapter in SUPPORTED_ADAPTER_IDS
+        adapter: dbt_adapter_requirement(adapter) for adapter in SUPPORTED_ADAPTER_IDS
     }
     # Same channel-based toolkit pin the hub scaffold uses (issue: dataplatform
     # `update --upgrade` previously had no [tool.kairos] channel to resolve against

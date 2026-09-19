@@ -12,17 +12,21 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+# Pinned from the toolkit's declared dbt contract (core.adapters, #789). The floor is
+# set by the 1.10+ `arguments:` generic-test syntax this toolkit emits; the
+# dbt-fabric ceiling by the offline validate-dbt gate. Do not widen by hand -- a test
+# asserts these match the constants.
 dbt-validate = [
-    "dbt-core>=1.9,<1.10",
-    "dbt-fabric>=1.9,<1.10",
+    "dbt-core>=1.10.1,<1.10.20",
+    "dbt-fabric==1.10.0",
 ]
 dbt-validate-fabric = [
-    "dbt-core>=1.9,<1.10",
-    "dbt-fabric>=1.9,<1.10",
+    "dbt-core>=1.10.1,<1.10.20",
+    "dbt-fabric==1.10.0",
 ]
 dbt-validate-databricks = [
-    "dbt-core>=1.9,<1.10",
-    "dbt-databricks>=1.9,<1.10",
+    "dbt-core>=1.10.1,<1.10.20",
+    "dbt-databricks>=1.10.19,<1.11",
 ]
 # Toolkit extras. These deliberately carry NO URL: the single direct reference in
 # [project.dependencies] above is the one and only place the toolkit version is pinned,

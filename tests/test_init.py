@@ -471,9 +471,11 @@ def test_new_repo_creates_full_structure(tmp_path):
     assert "kairos-ontology-toolkit" in pyproject
     assert "contoso-ontology-hub" in pyproject
     assert "dbt-validate" in pyproject
-    assert '"dbt-core>=1.9,<1.10"' in pyproject
-    assert '"dbt-fabric>=1.9,<1.10"' in pyproject
-    assert '"dbt-databricks>=1.9,<1.10"' in pyproject
+    # Exact pins are asserted against the declaration in tests/test_scaffold_dbt_pins.py
+    # (#789); here we only check the extras are populated at all.
+    assert "dbt-core" in pyproject
+    assert "dbt-fabric" in pyproject
+    assert "dbt-databricks" in pyproject
     assert "flatfile = [" in pyproject
     assert "kairos-ontology-toolkit[flatfile]" in pyproject
 

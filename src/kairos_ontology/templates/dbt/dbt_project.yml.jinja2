@@ -2,6 +2,12 @@ name: '{{ project_name }}'
 version: '1.0.0'
 config-version: 2
 
+# Declared by the toolkit, not chosen per project: this package emits generic-test
+# config under the dbt 1.10+ `arguments:` key, which older dbt rejects at parse with a
+# message about the macro rather than about the version (#789). Failing here instead
+# makes the real cause the first thing a consumer reads.
+require-dbt-version: '{{ require_dbt_version }}'
+
 profile: '{{ project_name }}'
 
 model-paths: ["models"]
