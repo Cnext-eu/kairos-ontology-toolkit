@@ -14,6 +14,7 @@ This module coordinates the full import-tmdl workflow:
 from __future__ import annotations
 
 import json
+import re
 import logging
 import tempfile
 import zipfile
@@ -322,7 +323,70 @@ def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
     return "\n".join(lines)
 
 
-def generate_concept_mapping(model: TmdlModel) -> str:
+#: Score at or above which a lexical match is worth proposing. `rank_candidates` already
+#: drops anything below its own floor; this is deliberately stricter -- 0.8 is the
+#: "qualified form" tier (`TransportParty` for `Party`), and below that the proposal costs
+#: more to read than it saves.
+_PREFILL_SCORE_FLOOR = 0.8
+
+
+def propose_reference_matches(
+    model: TmdlModel,
+    catalog_path: Path | None,
+) -> dict[str, tuple[str, float, str]]:
+    """Propose a ``reference_model_match`` per TMDL table, by name (#762).
+
+    The worksheets shipped 100% empty, so on a hub with a large legacy estate
+    ``design-landscape`` reported no BI weight at all until hundreds of rows were triaged
+    by hand -- 368 on the reported hub. Nothing infers this downstream, by design, so the
+    proposal has to be made here or not at all.
+
+    Deliberately lexical and deterministic, reusing ``class_anchoring.rank_candidates`` --
+    the same matcher ``suggest-anchor`` uses. No LLM: ``design-landscape`` states plainly
+    that it performs no classification of its own, and a confident-looking score from an
+    opaque similarity would make the modeller's judgement harder rather than easier.
+
+    Only an *unambiguous* winner is proposed. Where two reference classes tie, the choice
+    is the modelling judgement this pass exists to support, not to pre-empt.
+
+    Returns ``{tmdl_table_name: (reference_class_name, score, reason)}``.
+    """
+    if catalog_path is None or not Path(catalog_path).is_file():
+        return {}
+    try:
+        from .class_anchoring import rank_candidates, read_reference_terms
+
+        pool = read_reference_terms(Path(catalog_path))
+    except Exception as exc:  # pragma: no cover - advisory pass, never fatal
+        logger.debug("reference terms unavailable, skipping match proposals: %s", exc)
+        return {}
+    if not pool:
+        return {}
+
+    proposals: dict[str, tuple[str, float, str]] = {}
+    for table in model.tables:
+        # `d_Customer`, `f_vyr_leg`, `_measures` -- strip the modelling prefix a BI
+        # developer uses for table role, which is never part of the concept's name.
+        local = re.sub(r"^(?:d|f|dim|fact|v|tbl)[_\s]+", "", table.name, flags=re.IGNORECASE)
+        local = local.strip("_ ")
+        if not local:
+            continue
+        candidates = rank_candidates(local, "class", pool)
+        if not candidates:
+            continue
+        best = candidates[0]
+        if best.score < _PREFILL_SCORE_FLOOR:
+            continue
+        if len(candidates) > 1 and candidates[1].score >= best.score:
+            continue  # a tie is the modeller's call, not this pass's
+        proposals[table.name] = (best.name, round(best.score, 2), best.reason)
+    return proposals
+
+
+def generate_concept_mapping(
+    model: TmdlModel,
+    proposals: dict[str, tuple[str, float, str]] | None = None,
+) -> str:
     """Generate a Concept Mapping YAML template from a parsed TMDL model.
 
     The YAML includes pre-filled TMDL information and empty fields for the
@@ -355,6 +419,17 @@ def generate_concept_mapping(model: TmdlModel) -> str:
             "action": "",
             "notes": "",
         }
+        proposed = (proposals or {}).get(t.name)
+        if proposed:
+            # Marked `candidate`, never `confirmed`: this is a lexical proposal, and
+            # `design-landscape` counts it as a row awaiting confirmation rather than as
+            # BI weight evidence. Confirming a proposal is far cheaper than authoring one,
+            # which is the whole saving (#762).
+            match_name, score, reason = proposed
+            table_entry["reference_model_match"] = match_name
+            table_entry["action"] = "candidate"
+            table_entry["match_confidence"] = score
+            table_entry["match_reason"] = reason
         if t.is_hidden:
             table_entry["is_hidden"] = True
         data["tables"].append(table_entry)
@@ -381,6 +456,10 @@ def generate_concept_mapping(model: TmdlModel) -> str:
         "#   specialize — needs a subclass of a reference model class\n"
         "#   new_class  — no reference model match; create a local class\n"
         "#   skip       — not relevant for ontology (e.g., measure-only table)\n"
+        "#   candidate  - a lexical match this tool proposed, NOT a decision.\n"
+        "#                Confirm by clearing the action field (or setting\n"
+        "#                use/specialize); correct the match; or set skip/new_class.\n"
+        "#                Until confirmed it is not counted as BI weight evidence.\n"
         "\n"
     )
     return header + yaml.dump(data, default_flow_style=False, sort_keys=False, width=100)
@@ -522,6 +601,24 @@ def _write_report_usage(search_root: Path, output_dir: Path, source_label: str) 
     return generated
 
 
+def _hub_catalog_path() -> Path | None:
+    """Locate the hub's ``catalog-v001.xml``, or None when not run inside a hub.
+
+    `import-tmdl` runs against an export that lives outside the hub, so the catalog is
+    found the same way the output directory is, and its absence is simply "no proposals".
+    """
+    from .hub_utils import find_hub_root
+
+    try:
+        hub_root = find_hub_root(Path.cwd(), require_model=False)
+    except Exception:  # pragma: no cover - advisory pass, never fatal
+        return None
+    if hub_root is None:
+        return None
+    candidate = Path(hub_root) / "catalog-v001.xml"
+    return candidate if candidate.is_file() else None
+
+
 def _write_outputs(
     model: TmdlModel,
     output_dir: Path,
@@ -559,7 +656,9 @@ def _write_outputs(
 
     # Concept Mapping
     mapping_path = output_dir / f"{slug}-concept-mapping.yaml"
-    mapping_content = generate_concept_mapping(model)
+    mapping_content = generate_concept_mapping(
+        model, propose_reference_matches(model, _hub_catalog_path())
+    )
     mapping_path.write_text(mapping_content, encoding="utf-8")
     generated.append(mapping_path)
     logger.info("Generated: %s", mapping_path)
