@@ -331,38 +331,6 @@ def _tokens(name: str) -> set[str]:
     }
 
 
-def _class_property_names(catalog_path: Path, modules: set[str]) -> dict[str, list[str]]:
-    """``class uri -> property local names``, from the resolved closure.
-
-    A second pass over the modules :func:`read_reference_terms` just read, because
-    that loader flattens classes and properties into one list and drops the link
-    between them, and it lives in a module this one only imports. The repeat parse
-    costs ~10s on a 109-module hub against a stage that then spends minutes in the
-    model — cheap for the thing it buys, which is knowing that a candidate anchor
-    class cannot carry a single column.
-
-    Advisory: a failure degrades the tie-break to ownership order rather than
-    failing the run.
-    """
-    if not modules:
-        return {}
-    try:
-        # Local import: propose_alignment imports this module.
-        from .propose_alignment import extract_ref_model_inventory
-
-        inventory = extract_ref_model_inventory(sorted(modules), Path(catalog_path))
-    except Exception:  # noqa: BLE001 - enrichment only; anchoring must still run
-        logger.warning("Could not resolve class properties; anchor tie-break degraded.")
-        return {}
-    return {
-        str(cls.get("uri")): [
-            str(p.get("name")) for p in cls.get("properties") or [] if p.get("name")
-        ]
-        for cls in inventory
-        if cls.get("uri")
-    }
-
-
 def build_class_catalog(
     catalog_path: Path,
     ref_models_dir: Path | None,
@@ -409,18 +377,21 @@ def build_class_catalog(
         if term.kind != "class":
             continue
         module = str(term.module).rstrip("#")
-        index.setdefault(term.name, []).append({"module": module, "uri": str(term.uri)})
+        index.setdefault(term.name, []).append(
+            {
+                "module": module,
+                "uri": str(term.uri),
+                # Straight off the loader now (#524). This used to be a second full
+                # resolution of the same closure, ~13s on a 109-module hub, purely
+                # because `read_reference_terms` dropped the class-to-property link it
+                # already had in hand.
+                "properties": list(term.property_names),
+            }
+        )
         # Keep the richest description across copies — the point of the line.
         text = _first_sentence(term.comment) or str(term.label or "")
         if len(text) > len(comments.get(term.name, "")):
             comments[term.name] = text
-
-    properties = _class_property_names(
-        Path(catalog_path), {copy["module"] for copies in index.values() for copy in copies}
-    )
-    for copies in index.values():
-        for copy in copies:
-            copy["properties"] = list(properties.get(copy["uri"], ()))
 
     # One line per NAME, ownership merged across every copy. Rendering each copy
     # separately gave the model contradictory lines ("Contact [owned by 'party']"
