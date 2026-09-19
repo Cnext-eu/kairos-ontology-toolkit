@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from ..compiler.plan import CompilePlan
 
 
-def _domain_input(compile_plan: "CompilePlan") -> GoldDomainInput:
+def _domain_input(compile_plan: "CompilePlan", *, shared: bool = False) -> GoldDomainInput:
     """Validate one compile plan and reduce it to the inputs Gold shaping needs."""
     if compile_plan.blocked:
         raise GoldContractError(
@@ -66,6 +66,7 @@ def _domain_input(compile_plan: "CompilePlan") -> GoldDomainInput:
         foreign_keys=contract.fk_classification,
         ontology_name=compile_plan.resolution.ontology_name,
         ontology_version=compile_plan.resolution.ontology_version,
+        shared=shared,
     )
 
 
@@ -110,7 +111,12 @@ def plan_gold_from_compile_plans(
             f"Gold product {product.name!r} has no participating domain",
             rule_id="DD-222-gold-product-scope",
         )
-    members = tuple(_domain_input(plan) for plan in compile_plans)
+    members = tuple(
+        _domain_input(
+            plan, shared=plan.resolution.ontology_name in set(product.shared_domains)
+        )
+        for plan in compile_plans
+    )
     logical = shape_gold_products(members, product_name=product.name, required=True)
     assert logical is not None
     materialized = compile_plans[0].materialization_plan

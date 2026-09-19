@@ -509,6 +509,15 @@ def _ddl(
                 f"-- Silver: {logical.source_model}@{logical.source_version}",
             ]
         )
+        if logical.shared:
+            # The issue's explicit ask (#829): a reader of the DDL must be able to tell
+            # where a table is built. Still declared rather than omitted -- the DDL
+            # documents the shape this product reads, as it already does for dim_date --
+            # but never presented as something this product's emit creates.
+            lines.append(
+                f"-- Conformed dimension owned by domain {logical.owner_domain!r}; "
+                "built once there, read here."
+            )
         if logical.fact_grain:
             lines.append(f"-- Grain: {logical.fact_grain}")
             lines.append(f"-- Fact type: {logical.fact_type.value}")
@@ -1295,6 +1304,14 @@ def gold_product_report(
                 "bridge_weight_column": table.bridge_weight_column or None,
                 "bridge_allocation": table.bridge_allocation or None,
                 "columns": [column.name for column in table.columns],
+                # Where the table is actually built (#829). Only for a shared one: every
+                # other table is built by this product's own emit, so a key saying so on
+                # every existing hub's report would be churn for a value already implied.
+                **(
+                    {"materialized_by": {"domain": table.owner_domain, "shared": True}}
+                    if table.shared
+                    else {}
+                ),
             }
             for table in spec.tables
         ],

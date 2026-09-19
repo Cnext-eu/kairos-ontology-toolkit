@@ -58,6 +58,9 @@ class GoldDomainInput:
     foreign_keys: ForeignKeyPolicy
     ontology_name: str
     ontology_version: str
+    #: True when the hub declared this domain shared (#829): its tables reach the product
+    #: as a conformed dimension it reads, materialized once by this domain's own compile.
+    shared: bool = False
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1474,7 +1477,11 @@ def _shape_dimensional_product(
                     resource_uri=table.resource_uri,
                 )
             owner_of[table.name.casefold()] = member.ontology_name
-            tables.append(table)
+            tables.append(
+                table
+                if not member.shared
+                else replace(table, shared=True, owner_domain=member.ontology_name)
+            )
     ordered = tuple(sorted(tables, key=lambda item: (item.role.value, item.name)))
 
     # Checked over the union, not per domain: a bridge may span two domains' tables.

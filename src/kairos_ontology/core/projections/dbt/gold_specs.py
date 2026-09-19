@@ -107,6 +107,14 @@ class GoldTableSpec:
     bridge_weight_column: str = ""
     bridge_allocation: str = ""
     perspectives: tuple[str, ...] = ()
+    #: True when this table reaches the product from a domain the hub declared shared
+    #: (#829) -- a conformed dimension the product *reads* rather than builds. It is
+    #: materialized once by its own domain's compile, into that domain's `goldSchema`,
+    #: which is why `schema_name` above is already per-table rather than per-product.
+    shared: bool = False
+    #: The domain that binds and materializes this table. Empty for a table the product
+    #: owns, where the product's own domains already answer the question.
+    owner_domain: str = ""
 
 
 @dataclass(frozen=True, slots=True)
