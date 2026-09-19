@@ -1310,6 +1310,23 @@ def run_projections(
         return None
 
     # ── Post-domain targets (span all ontology domains) ──────────────────
+    if "erd" in targets_to_run:
+        # Merged after the per-domain loop, from the files it just wrote, so the master is
+        # always consistent with them rather than a second derivation of the same graphs.
+        from .projections.erd_projector import (
+            MASTER_CLASS_DIAGRAM_NAME,
+            generate_master_class_diagram,
+        )
+
+        erd_output = TARGET_REGISTRY["erd"].output_path(output_path)
+        hub_name = hub_root.name if hub_root is not None else "master"
+        master = generate_master_class_diagram(erd_output, hub_name)
+        if master is not None:
+            write_text_lf(erd_output / MASTER_CLASS_DIAGRAM_NAME, master)
+            print(f"  ✓ {MASTER_CLASS_DIAGRAM_NAME}")
+        else:
+            print("  ℹ  no per-domain ERDs to merge into a master diagram")
+
     if "report" in targets_to_run:
         print("📦 Generating report projection...")
         report_output = TARGET_REGISTRY["report"].output_path(output_path)
