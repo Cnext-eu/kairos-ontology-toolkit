@@ -95,6 +95,32 @@ def _domain_integrity_failures(hub: Path, domain: str) -> list:
     return [item for item in report.errors if item.code in NON_DEGRADABLE_CODES]
 
 
+def _deferred_bridges(result) -> list[dict[str, str]]:
+    """Bridge endpoints this single-domain compile could not resolve (#763).
+
+    The check is deferred on the single-domain path because a bridge legitimately spans
+    two domains, so one endpoint is out of scope by construction. Deferred is not the
+    same as silent: `emit-gold` on the product fails closed on the same endpoint, and an
+    author who only ever ran `compile --check` had no warning that it would.
+    """
+    shaped = result.plan.shaped_project if result.plan is not None else None
+    product = getattr(shaped, "gold_product", None)
+    unresolved = getattr(product, "unresolved_bridges", ()) or ()
+    return [{"bridge": bridge, "endpoint": endpoint} for bridge, endpoint in unresolved]
+
+
+def _report_deferred_bridges(domain: str, result) -> None:
+    deferred = _deferred_bridges(result)
+    if not deferred:
+        return
+    click.echo(
+        f"  ⚠ {domain}: {len(deferred)} bridge endpoint(s) are outside this domain's scope; "
+        "the bridge compiles here but emit-gold needs the owning domain in the same product:"
+    )
+    for item in deferred:
+        click.echo(f"      {item['bridge']} -> {item['endpoint']}")
+
+
 def _payload(result) -> dict:
     return {
         "domain": result.domain,
@@ -105,6 +131,7 @@ def _payload(result) -> dict:
         "diagnostics": [asdict(item) for item in result.diagnostics.ordered],
         "explain": asdict(result.explain) if result.explain is not None else None,
         "artifacts": [path for path, _ in result.artifacts],
+        "unresolved_bridges": _deferred_bridges(result),
     }
 
 
@@ -901,10 +928,12 @@ def _regenerate_master_silver_erd(hub: Path) -> None:
         generate_master_erd,
     )
 
+    from ..core.hub_config import hub_display_name
+
     diagrams_dir = contract_diagrams_dir(hub)
     master_mmd = generate_master_erd(
         diagrams_dir,
-        hub_name=hub.name,
+        hub_name=hub_display_name(hub),
         # Cross-domain foreign keys come from the per-domain constraint documents,
         # which are dbt's own inputs and stay in the publish root.
         metadata_path=publish_root(hub) / _DBT_EMIT_SUBPATH / "metadata",
@@ -1202,6 +1231,7 @@ def _compile_one_domain(
         if result.succeeded:
             if check_mode:
                 click.echo(f"✓ {domain}: compile check passed")
+                _report_deferred_bridges(domain, result)
             if explain_mode:
                 report = result.explain
                 click.echo(f"✓ {domain}: {len(report.entities)} entity binding(s)")

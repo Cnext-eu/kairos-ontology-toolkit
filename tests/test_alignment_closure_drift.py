@@ -112,3 +112,14 @@ def test_the_written_artifact_carries_the_fingerprint(tmp_path):
         )
     )
     assert document["closure_sha256"] == closure_fingerprint(_WAS)
+
+
+def test_a_stem_fallback_domain_is_not_suffixed_twice():
+    """A hand-edited artifact without a `domain` key falls back to the file stem, which
+    already ends in `-alignment`; the message said `equipment-alignment-alignment.yaml`."""
+    from kairos_ontology.core.alignment_closure import ClosureDrift
+
+    message = ClosureDrift(domain="equipment-alignment", added=("x",), removed=()).describe()
+
+    assert message.startswith("equipment-alignment.yaml is stale")
+    assert "alignment-alignment" not in message

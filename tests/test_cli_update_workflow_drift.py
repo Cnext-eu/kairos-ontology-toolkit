@@ -164,3 +164,51 @@ class TestUpdateCheckGate:
 
         assert result.exit_code == 1, result.output
         assert _WORKFLOW in result.output
+
+
+class TestDeclaredOutdatedWorkflow:
+    """CICD.md: a declared workflow is never auto-refreshed and never fails `--check`.
+
+    #772 delivered that for a workflow edited past every shipped generation. One pinned
+    to an *older* shipped generation classifies as `outdated`, and that state still failed
+    the check and was overwritten by `--refresh-workflows`.
+    """
+
+    @staticmethod
+    def _pin_to_previous_generation(hub: Path) -> str:
+        previous = (
+            _SCAFFOLD / "superseded-workflows" / "hub-pr-validate" / "5.template"
+        ).read_text(encoding="utf-8")
+        (hub / _WORKFLOW).write_text(previous, encoding="utf-8")
+        return previous
+
+    def test_a_declared_outdated_workflow_passes_the_check(self, runner, tmp_path, monkeypatch):
+        hub = _hub(tmp_path, declared=[_WORKFLOW])
+        _populate(runner, hub, monkeypatch)
+        self._pin_to_previous_generation(hub)
+
+        result = runner.invoke(cli, ["update", "--check"])
+
+        assert result.exit_code == 0, result.output
+        assert "need refreshing" not in result.output
+
+    def test_a_declared_outdated_workflow_is_not_refreshed(self, runner, tmp_path, monkeypatch):
+        hub = _hub(tmp_path, declared=[_WORKFLOW])
+        _populate(runner, hub, monkeypatch)
+        previous = self._pin_to_previous_generation(hub)
+
+        result = runner.invoke(cli, ["update", "--refresh-workflows"])
+
+        assert result.exit_code == 0, result.output
+        assert (hub / _WORKFLOW).read_text(encoding="utf-8") == previous
+
+    def test_an_undeclared_outdated_workflow_still_fails_and_refreshes(
+        self, runner, tmp_path, monkeypatch
+    ):
+        hub = _hub(tmp_path)
+        _populate(runner, hub, monkeypatch)
+        previous = self._pin_to_previous_generation(hub)
+
+        assert runner.invoke(cli, ["update", "--check"]).exit_code == 1
+        runner.invoke(cli, ["update", "--refresh-workflows"])
+        assert (hub / _WORKFLOW).read_text(encoding="utf-8") != previous

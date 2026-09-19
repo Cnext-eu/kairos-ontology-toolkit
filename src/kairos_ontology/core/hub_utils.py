@@ -307,6 +307,24 @@ def find_hub_root(
     return None
 
 
+def repo_root_for(hub_root: Path) -> Path:
+    """The repository root that contains *hub_root*: the nearest ancestor with ``.git``.
+
+    Report paths are rendered relative to this so they read ``ontology-hub/model/...``
+    the way the drift gate and a pull-request diff do (#822). ``hub_root.parent`` was the
+    first approximation, which is right for the scaffolded layout and wrong for a
+    flat-layout hub (where the hub *is* the repository, so the parent is whatever the
+    checkout happens to sit in) and for a hub nested more than one level down. Falls back
+    to the parent when no ``.git`` is found, so a hub outside any repository still gets a
+    stable, short prefix.
+    """
+    hub_root = Path(hub_root)
+    for candidate in (hub_root, *hub_root.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return hub_root.parent
+
+
 def resolve_hub_output_dir(
     relative: Path | str,
     *,

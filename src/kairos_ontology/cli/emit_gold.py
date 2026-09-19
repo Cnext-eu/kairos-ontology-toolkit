@@ -246,7 +246,9 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     if diagrams:
         click.echo(f"   → {len(diagrams)} ERD(s) to {diagrams_target}")
 
-    _regenerate_master_gold_erd(diagrams_target, hub_name=hub_root.name)
+    from ..core.hub_config import hub_display_name
+
+    _regenerate_master_gold_erd(diagrams_target, hub_name=hub_display_name(hub_root))
 
 
 @click.command(name="harvest-gold")

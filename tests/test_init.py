@@ -547,7 +547,6 @@ def test_the_drift_gate_regenerates_every_tracked_publish_lane(tmp_path):
     """
     scaffold = Path(__import__("kairos_ontology").__file__).parent / "scaffold"
     gitignore = (scaffold / "gitignore.template").read_text(encoding="utf-8")
-    workflow = (scaffold / "github-workflows" / "pr-validate.yml").read_text(encoding="utf-8")
 
     tracked = {
         line.strip().removeprefix("!").removesuffix("/**")
@@ -556,11 +555,14 @@ def test_the_drift_gate_regenerates_every_tracked_publish_lane(tmp_path):
     }
     assert tracked, "no publish lane is allowlisted"
 
-    gate = workflow.split("Regenerate tracked output and fail on drift", 1)[1]
-    for path in tracked:
-        assert path in gate, f"{path} is tracked but the drift gate never diffs it"
-    assert "project --target erd" in gate
-    assert "project --target ddd" in gate
+    # Both gates received the same change; pinning only one let them drift apart.
+    for name in ("pr-validate.yml", "full-validate.yml"):
+        workflow = (scaffold / "github-workflows" / name).read_text(encoding="utf-8")
+        gate = workflow.split("Regenerate tracked output and fail on drift", 1)[1]
+        for path in tracked:
+            assert path in gate, f"{path} is tracked but {name} never diffs it"
+        assert "project --target erd" in gate, name
+        assert "project --target ddd" in gate, name
 
 
 def test_new_repo_fails_if_dir_exists(tmp_path):

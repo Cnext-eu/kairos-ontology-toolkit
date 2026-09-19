@@ -355,12 +355,17 @@ def _tmdl_nodes(
         ref_match = str(table.get("reference_model_match") or "")
         if table_domain != domain:
             continue
-        label = ref_match or str(table.get("tmdl_name") or "UnroutedTmdl")
+        action = str(table.get("action") or "").strip()
+        # A `candidate` match is a lexical guess `import-tmdl` wrote, not a modeller's
+        # decision (#762). Letting it name the node -- and pick up glossary evidence under
+        # that name -- would let the guess vote on the design; the node keeps the TMDL
+        # table's own name until someone confirms the match.
+        confirmed_match = ref_match if action.lower() != "candidate" else ""
+        label = confirmed_match or str(table.get("tmdl_name") or "UnroutedTmdl")
         evidence = ["tmdl-only"]
         glossary = _term_matches(label, glossary_terms)
         if glossary:
             evidence.append("glossary-supported")
-        action = str(table.get("action") or "").strip()
         disposition = {
             "use": "claim",
             "specialize": "specialize",

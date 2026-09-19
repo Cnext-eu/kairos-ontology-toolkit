@@ -184,3 +184,40 @@ class TestProductLevelShaping:
             "gold.bridge-endpoint-not-materialized",
             "gold.invalid-bridge-endpoint-binding",
         }
+
+
+class TestTheDeferredEndpointIsPrinted:
+    """Deferred on the plan but never shown: `compile party --check` was green with no word
+    about the endpoint, and `emit-gold` on the product then failed on exactly that."""
+
+    def test_compile_check_names_the_bridge_and_the_endpoint(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        monkeypatch.chdir(_cross_domain_hub(tmp_path))
+        result = CliRunner().invoke(cli, ["compile", "party", "--check"])
+
+        assert result.exit_code == 0, result.output
+        assert "compile check passed" in result.output
+        assert "bridge endpoint(s) are outside this domain" in result.output
+        assert "bridge_customer_invoice -> https://example.test/ontology/billing#Invoice" in (
+            result.output
+        )
+
+    def test_the_json_payload_carries_them_too(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        monkeypatch.chdir(_cross_domain_hub(tmp_path))
+        result = CliRunner().invoke(cli, ["compile", "party", "--check", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)  # the skill notice goes to stderr
+        assert payload["unresolved_bridges"] == [
+            {
+                "bridge": "bridge_customer_invoice",
+                "endpoint": "https://example.test/ontology/billing#Invoice",
+            }
+        ]

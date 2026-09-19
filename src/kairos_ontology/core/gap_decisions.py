@@ -226,7 +226,10 @@ _NON_FAMILY_TOKENS = frozenset(
 )
 
 _FAMILY_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
-_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+#: A lower-to-upper step, or the last capital of an acronym run before a capitalised word:
+#: ``ETLLoadDate`` splits to ``ETL``, ``Load``, ``Date`` rather than ``ETLLoad``, ``Date``,
+#: which no vocabulary can match. The substring matcher this replaced caught it by accident.
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 def family_of(column_name: str) -> str:

@@ -124,6 +124,13 @@ def test_a_file_outside_the_repo_falls_back_rather_than_raising(tmp_path, outsid
     except SystemExit:
         pass
     assert report.is_file()
+    paths = _reported_paths(json.loads(report.read_text(encoding="utf-8")))
+    assert paths
+    if outside:
+        # The fallback is the absolute path, not a `../..` climb out of the anchor.
+        assert all(Path(p).is_absolute() and ".." not in Path(p).parts for p in paths), paths
+    else:
+        assert all(not Path(p).is_absolute() for p in paths), paths
 
 
 def test_the_markdown_sibling_is_repo_relative_too(tmp_path: Path):

@@ -144,7 +144,7 @@ kairos-ontology analyse-sources [OPTIONS]
 | `--ref-models` |  | Path to ontology-reference-models/ directory (default: auto-detect). |
 | `--output`, `-o` |  | Output directory (default: integration/sources/_analysis/). |
 | `--threshold` | `0.3` | Deprecated; ignored in table-centric (schema_version 2) analysis. |
-| `--model` | `gpt-5.4-mini` | LLM model for semantic matching (default: gpt-5.4-mini). |
+| `--model` |  | LLM model for semantic matching (default: gpt-5.4-mini). |
 | `--max-domains` |  | Maximum reference domains to analyse (rate limit protection). |
 | `--domains` |  | Comma-separated domain names — OUTPUT filter only (issue #189): tables are always classified against the full domain set, then only matching primary domains are written (case-insensitive substring match). |
 | `--materialize` |  | Write the resolved analysis context (manifest + per-domain YAML) to this directory for inspection. |
@@ -1173,7 +1173,7 @@ kairos-ontology propose-alignment [OPTIONS]
 | `--sources` |  | Path to integration/sources/ directory (default: auto-detect). |
 | `--catalog` |  | Path to catalog-v001.xml (default: auto-detect from hub). |
 | `--output`, `-o` |  | Advisory alignment output directory (default: source _analysis/ directory). |
-| `--model` | `gpt-5.4-mini` | LLM model for semantic alignment (default: gpt-5.4-mini). |
+| `--model` |  | LLM model for semantic alignment (default: gpt-5.4-mini). |
 | `--domains` |  | Comma-separated domain names to include (case-insensitive substring match). |
 | `--verbose`, `-v` |  | Show per-table alignment details. |
 | `--quiet`, `-q` |  | Suppress progress output (errors still shown). |
@@ -1537,7 +1537,7 @@ kairos-ontology suggest-type [OPTIONS] SOURCE_TYPE
 
 ## update
 
-Update toolkit-managed files to the installed toolkit version. Scans .github/ for files stamped by kairos-ontology-toolkit and refreshes them from the currently installed package. Missing managed files (e.g., newly added skills) are created automatically. Skills that have the managed marker but are no longer in the current scaffold (renamed or removed) are deleted. Use --check to preview what would change without writing anything. Use --upgrade to upgrade the toolkit dependency based on the channel configured in [tool.kairos] of pyproject.toml (stable or preview). Use --test-ref to resolve a branch or SHA to an immutable Git commit, lock, sync, and force a managed-file refresh without changing the configured release channel. Then use --restore to return to the exact dependency source saved before the test. --upgrade never moves the pin backwards: if the channel resolves to a version older than the hub's current pin it refuses, unless --allow-downgrade is given.  Exit codes (with --check): 0 All managed files are up to date 1 One or more files are outdated, missing, or stale  Managed files (do not edit manually -- `update` replaces them): CICD.md, CONTRIBUTING.md .github/copilot-instructions.md .claude/skills/*/SKILL.md the per-directory README.md guides under ontology-hub/ and .import/ ontology-hub/decisions/{README.md,HUB-DD-template.md.template} Yours, and never overwritten: .gitignore, .gitattributes, .openwikiignore-style rule files (gaps are reported), .claude/settings.json (replaced only when it matches a known superseded generation), and the decisions/ and feedback/ index.md files, which `kairos-ontology decision` and `... feedback` regenerate from your own records.
+Update toolkit-managed files to the installed toolkit version. Scans .github/ for files stamped by kairos-ontology-toolkit and refreshes them from the currently installed package. Missing managed files (e.g., newly added skills) are created automatically. Skills that have the managed marker but are no longer in the current scaffold (renamed or removed) are deleted. Use --check to preview what would change without writing anything. Use --upgrade to upgrade the toolkit dependency based on the channel configured in [tool.kairos] of pyproject.toml (stable or preview). Use --test-ref to resolve a branch or SHA to an immutable Git commit, lock, sync, and force a managed-file refresh without changing the configured release channel. Then use --restore to return to the exact dependency source saved before the test. --upgrade never moves the pin backwards: if the channel resolves to a version older than the hub's current pin it refuses, unless --allow-downgrade is given.  Exit codes (with --check): 0 All managed files are up to date 1 One or more files are outdated, missing or stale, or a scaffolded workflow diverges without being declared under [tool.kairos] customized-workflows  Managed files (do not edit manually -- `update` replaces them): CICD.md, CONTRIBUTING.md .github/copilot-instructions.md .claude/skills/*/SKILL.md the per-directory README.md guides under ontology-hub/ and .import/ ontology-hub/decisions/{README.md,HUB-DD-template.md.template} Yours, and never overwritten: .gitignore, .gitattributes, .openwikiignore-style rule files (gaps are reported), .claude/settings.json (replaced only when it matches a known superseded generation), and the decisions/ and feedback/ index.md files, which `kairos-ontology decision` and `... feedback` regenerate from your own records.
 
 ```
 kairos-ontology update [OPTIONS]

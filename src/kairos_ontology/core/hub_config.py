@@ -61,6 +61,18 @@ def load_hub_config(hub_root: Path, *, strict: bool = False) -> dict[str, Any]:
     return raw
 
 
+def hub_display_name(hub_root: Path) -> str:
+    """The hub's declared ``name`` from ``kairos.yaml``, else the hub directory's name.
+
+    For text stamped into tracked, drift-gated artifacts -- the master ERD headers. The
+    directory name is whatever a contributor cloned or worktree'd into, so two checkouts
+    of one hub regenerated a one-line header difference and the gate failed on it. The
+    declared name is the same on every machine.
+    """
+    name = load_hub_config(hub_root).get("name")
+    return str(name).strip() if isinstance(name, str) and name.strip() else Path(hub_root).name
+
+
 def configured_adapter(hub_root: Path) -> str | None:
     """Return the hub's canonical adapter id, or ``None`` when absent or unsupported.
 
