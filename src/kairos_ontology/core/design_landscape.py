@@ -663,6 +663,7 @@ def run_design_landscape(
     bi_weight_by_class: dict[str, list[BiWeightSignal]] = {}
     bi_dir = hub_root / _BI_DISCOVERY_SUBDIR
     scan = scan_concept_mapping_worksheets(hub_root)
+    candidates = 0
     if scan.directories_found:
         for mapping_path, message in scan.errors:
             gaps.append(f"could not read {mapping_path}: {message}")
@@ -672,6 +673,13 @@ def run_design_landscape(
             if not match:
                 # Not a bug: import-tmdl leaves this blank for a human to fill in;
                 # counted once in scan.tables_unfilled.
+                continue
+            if str(table_dict.get("action") or "").strip().lower() == "candidate":
+                # A lexical proposal `import-tmdl` wrote, not a human's decision (#762).
+                # Counting it as BI weight would let a guess vote on the design, which is
+                # the opposite of what this signal is for -- it is evidence of what the
+                # business actually reports on. Awaiting confirmation, not ignored.
+                candidates += 1
                 continue
             resolved_uri = _resolve_universe_token(match, class_record, name_to_uris)
             if resolved_uri is None:
@@ -687,6 +695,13 @@ def run_design_landscape(
                     tmdl_table=tmdl_name,
                     reference_model_match=match,
                 )
+            )
+        if candidates:
+            gaps.append(
+                f"{candidates} TMDL concept-mapping table(s) carry a proposed "
+                "reference_model_match awaiting confirmation (action: candidate). "
+                "They are not counted as BI weight until a modeller confirms them -- "
+                "clear the action field to accept, or correct the match."
             )
         if scan.tables_unfilled:
             # Reported as absent *evidence*, not as a backlog. A row triaged to `skip`
