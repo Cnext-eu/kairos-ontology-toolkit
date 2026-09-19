@@ -16,9 +16,9 @@ warehouse. But coverage was telling the truth about Power BI: with only ``date_k
 model. The defect was the emitter under-declaring the table, not only the checker
 under-resolving it.
 
-Everything that needs to know about a calendar column now reads this tuple. Adding one
-means adding it here, and the SQL builder is checked against these names by test so the
-two cannot drift apart again.
+The dbt model SQL and the TMDL table read this tuple, and the SQL builder is checked
+against these names by test so the two cannot drift apart again. The DDL
+(``gold_render._ddl``) still lists its columns by hand: keep it in step when adding one.
 """
 
 from __future__ import annotations
@@ -91,6 +91,7 @@ CALENDAR_COLUMNS: tuple[CalendarColumn, ...] = (
     ),
 )
 
-#: ``{table}.{column}`` for every calendar column, for the checks that resolve an authored
-#: reference against what the product carries.
+#: The bare column name of every calendar column, for the checks that resolve an authored
+#: ``dim_date.<column>`` reference against what the product carries; callers prefix the
+#: table themselves.
 CALENDAR_COLUMN_NAMES: frozenset[str] = frozenset(item.name for item in CALENDAR_COLUMNS)

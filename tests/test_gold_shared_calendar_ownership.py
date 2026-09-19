@@ -212,6 +212,45 @@ class TestOneCalendarIsUnchanged:
 
 
 class TestGenuineDisagreement:
+    def test_a_sole_contributor_can_change_its_own_calendar(self, tmp_path, monkeypatch):
+        """Extending `calendar_end` is yearly maintenance, and a toolkit upgrade that
+        renders more calendar columns re-emits changed bytes on every calendar hub. Both
+        read the domain's own previous output back as a second contributor and failed
+        closed -- naming "two domains" that were one, with `models/gold/shared/` deletion
+        as the only recovery."""
+        hub = _hub(tmp_path)
+        assert _compile(hub, "party", monkeypatch).exit_code == 0
+        dim_date = _dbt(hub).joinpath("models", "gold", "shared", "dim_date.sql")
+        before = dim_date.read_text(encoding="utf-8")
+
+        (hub / "model" / "extensions" / "party-gold-ext.ttl").write_text(
+            _PARTY_GOLD.replace("__PARTY_END__", "2036-12-31"), encoding="utf-8"
+        )
+        result = _compile(hub, "party", monkeypatch)
+
+        assert result.exit_code == 0, str(result.exception) or result.output
+        assert _meta(hub)["calendar_end"] == "2036-12-31"
+        assert _meta(hub)["calendar_profile"] == _PARTY_PROFILE
+        # The model SQL is superseded along with the schema yml, not unioned against.
+        assert dim_date.read_text(encoding="utf-8") != before
+
+    def test_a_second_contributor_still_blocks_a_unilateral_change(self, tmp_path, monkeypatch):
+        """Ownership is decided from the schema yml's recorded profiles: once billing has
+        also contributed, party changing the bounds alone is a real disagreement."""
+        hub = _hub(tmp_path)
+        assert _compile(hub, "party", monkeypatch).exit_code == 0
+        assert _compile(hub, "billing", monkeypatch).exit_code == 0
+
+        (hub / "model" / "extensions" / "party-gold-ext.ttl").write_text(
+            _PARTY_GOLD.replace("__PARTY_END__", "2036-12-31"), encoding="utf-8"
+        )
+        result = _compile(hub, "party", monkeypatch)
+
+        assert result.exit_code != 0
+        message = str(result.exception) if result.exception else result.output
+        assert "calendar_end" in message
+        assert _meta(hub)["calendar_end"] == "2035-12-31"
+
     def test_different_bounds_still_fail(self, tmp_path, monkeypatch):
         """Sharing the subtree must not turn a real conflict into last-writer-wins: two
         bounds is one physical table with two incompatible definitions."""

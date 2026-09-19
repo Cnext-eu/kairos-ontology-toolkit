@@ -10,9 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > below shipped as part of this one release — those headings are the per-change record of how it
 > was built, not separate releases. The same holds for `5.13.0rc1`–`rc31` under 5.14.0.
 >
-> **5.18.0rc2** is the current pre-release, published for hub testing and not marked Latest. It
-> carries everything in 5.18.0rc1 plus five Gold/Power BI fixes found by publishing rc1 to a real
-> Fabric workspace (#790–#794). **Expect a large diff on your first re-emit**, and expect the
+> **5.18.0rc3** is the current pre-release, published for hub testing and not marked Latest. It
+> carries everything in rc2 plus the thirty-one changes merged since, and a pre-release review
+> of that delta that found two blockers in it: an approved calendar's `dim_date.tmdl` was
+> structurally invalid and could not be loaded by Fabric, and a domain could not re-emit its own
+> shared calendar after any change. Both are fixed here. **Your first `compile --emit` on rc3
+> rewrites `models/gold/shared/` once**, the hub-wide master class diagram changes bytes on the
+> next `project --target erd`, and `draft-gap-decisions --dry-run` will show columns that the
+> operational-column predicate no longer silences.
+>
+> **5.18.0rc2** carried everything in 5.18.0rc1 plus five Gold/Power BI fixes found by publishing
+> rc1 to a real Fabric workspace (#790–#794). **Expect a large diff on your first re-emit**, and expect the
 > drift gate to be noisy until each hub has re-emitted once: Gold tables no longer carry the
 > DD-109 `_kairos_fk_*_match_count` diagnostics, and any relationship that closed an ambiguous
 > filter path or put an unproven key on its "one" side is now emitted `isActive: false`. Both are
@@ -39,6 +47,749 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.18.0rc3] — 2026-09-19
+
+### Added
+- **An alignment artifact stale against its domain's activated module list is now reported
+  (issue #518).** `<domain>-alignment.yaml` recorded the `domain_uris` it was generated
+  against and nothing ever compared them to anything, so a blueprint change that added or
+  removed an activated module left the file silently stale while downstream stages consumed
+  it as current. (A change *inside* an activated module, or an added bridge, does not alter
+  that list and is not detected by this check.)
+
+  The failure was invisible *and pointed the wrong way*: what surfaced was
+  `integrity.managed-import-unused` — "this domain imports a module and references nothing
+  from it" — which reads as a **sourcing** gap when the cause is a **staleness** gap. On a
+  hub using those warnings as a sourcing backlog (DD-187), a stale file corrupts the
+  backlog.
+
+  `design-landscape` now names the modules added or removed since the alignment was
+  generated, and says explicitly that an unused-import finding for an added module is
+  staleness rather than missing data. Artifacts also record a `closure_sha256` fingerprint
+  of that module list.
+- **`foreign_properties` separates a misassignment from an invention.** A property that
+  exists elsewhere in the closure but not on this class is a different finding from one
+  that exists nowhere, and only the second is a hallucination. They call for different
+  responses, and the report now says which it is.
+- **`check-ai-config` now flags a model whose *tier* is wrong for the role (issue #545).**
+  It reported `ok` with no caveat for `KAIROS_AI_ALIGNMENT_MODEL=gpt-5.5`, and the run then
+  recorded `model_used: gpt-5.4` — which reads as a silent downgrade to a weaker model
+  after a provider error. It is not: `--high-accuracy` selects `gpt-5.4` *on purpose* for
+  this role, because alignment is deterministic closed-vocabulary matching and a reasoning
+  model adds latency and cost without benefit. The configured value was the one at odds
+  with the toolkit's own advice, and a parameter rejection can never change the model.
+
+  Reconstructing that took reading `ai_provider.py`. The advisory now says it at
+  pre-flight, which is where DD-159 wants it caught, and explicitly pre-empts the
+  downgrade reading. It is a note, not a failure — the run works.
+
+- **Alignment artifacts record `model_source` alongside `model_used`.** `high-accuracy-tier`,
+  `explicit-model`, `role-env-override` or `default`, so the outcome carries its reason.
+  Omitted when a library caller does not supply one, which keeps the previous artifact
+  shape.
+- **`validate` warns when an object property's effective ranges are not a subsumption
+  chain (issue #731).** Ranges are superproperty-widened: for `hasCustomer
+  rdfs:subPropertyOf hasParty`, with `hasParty rdfs:range Party` and `hasCustomer
+  rdfs:range Customer`, the effective ranges are `{Customer, Party}`.
+
+  RDFS requires the object to be in **every** declared range — the intersection — which
+  only makes sense if the ranges are related by `rdfs:subClassOf`. Reference models
+  routinely declare a subproperty's range without asserting that chain, leaving a property
+  whose effective range is `Customer ∩ Party` with nothing proving the intersection is
+  inhabited by anything.
+
+  The new `range_not_subsumption_chain` warning names the unrelated pair, says which
+  property contributed the inherited range, and states the two remedies: assert the missing
+  `rdfs:subClassOf`, or narrow the range.
+- **`dim_date` gains `quarter_number` and `month_name`.** Both are pure functions of the
+  date and the macros to compute them already existed; month name was sliced on 32 times
+  across 4 reports in the surveyed client estate. Every emitted surface picks them up
+  automatically from the declaration.
+- **`project --target erd` now writes a hub-wide `master-class-diagram.mmd` (issue #753).**
+  The bound Silver and Gold ERD families already merge their per-domain diagrams into a
+  master; the canonical target did not, so reading the whole canonical surface meant
+  opening every domain file and holding them in your head.
+
+  A class drawn by several domains appears once. That is the actual work: an imported class
+  is drawn in *every* domain that reaches it, so naive concatenation emits the same block
+  repeatedly. The owning domain's drawing wins — in a per-domain diagram a stereotype marks
+  a class as imported *from that domain's view*, but in the merged hub-wide diagram every
+  domain is local, so the importer's stereotype would be misleading.
+
+  It is merged from the files the same run just wrote, so the master can never disagree
+  with them, and the drift gate already regenerates it (`project --target erd`, added with
+  #774).
+- **`import-tmdl` now proposes a `reference_model_match` per table (issue #762).**
+  Concept-mapping worksheets shipped 100% empty and nothing downstream infers the field by
+  design, so on a hub with a large legacy estate `design-landscape` reported no BI weight
+  at all until hundreds of rows were triaged by hand — 368 on the reported hub, across 18
+  PBIP exports. The report-usage packs already rank fields and measures by real placement;
+  the concept mapping is the only bridge from those to accelerator classes, and it started
+  blank.
+
+  The proposal reuses `class_anchoring.rank_candidates`, the same deterministic, lexical,
+  explainable matcher `suggest-anchor` uses. No LLM: `design-landscape` performs no
+  classification of its own by design, and a confident-looking score from an opaque
+  similarity would make the modeller's judgement harder rather than easier. Only an
+  unambiguous winner above the "qualified form" tier is proposed — a tie is the modelling
+  judgement this pass exists to support, not to pre-empt. A BI role prefix (`d_`, `f_`) is
+  stripped first, since it encodes table role and never the concept's name.
+- **`[tool.kairos] customized-workflows` declares a workflow you edited on purpose.** A
+  declared workflow is never auto-refreshed and never fails the check; it is still listed,
+  so the divergence stays visible in review. An **undeclared** one now fails
+  `update --check`, and the message prints the exact stanza to paste.
+
+  Failing on *any* divergence was rejected deliberately: workflows legitimately carry local
+  customization — an org CA bundle, extra credentials, a job nothing upstream knows about —
+  which is why they were kept out of the marker-based managed-file set to begin with.
+  Declaring is the middle ground. It also covers the second meaning of "customized", a
+  generation this toolkit no longer ships, which a hub that skipped several releases can
+  hit without having edited anything.
+- **`validate-dbt --structural-only` now detects duplicate dbt resource names (issue
+  #786).** It previously ran exactly one check — a dangling-`ref()` text scan — so it could
+  not see two resources sharing a name, which is the one defect class that makes an
+  assembled package fail at *parse* time. No `--select` or `--exclude` works around that,
+  and no downstream dataplatform can consume the package at all. #777 and #779 were both
+  this shape, and both passed `compile --check`, `--emit` and `--structural-only` before
+  dbt itself rejected the manifest downstream. The compiler bugs behind them are fixed;
+  this is the gate that stops the next one reaching a hub the same way.
+
+  Two scans, both needing no warehouse and no dbt install, which is what lets them live in
+  the phase a hub's CI release loop actually runs: model SQL stems against seed CSV stems
+  (they share the `ref()` namespace, the same pairing the dangling-ref scan already makes),
+  and `data_tests` entries that repeat identically on one model or column — dbt derives a
+  generic test's name from the test name plus its arguments, so byte-identical entries
+  collide. Both run before the dangling-`ref()` scan, since a duplicate name makes every
+  other structural finding downstream noise.
+- **The supported dbt stack is declared as toolkit config** (`core.adapters`), instead of
+  existing only as pins copied into templates and rediscovered by trial. `DBT_CORE_FLOOR`
+  is what the emitted package requires of its consumer; `DBT_CORE_REQUIREMENT` is the
+  narrower intersection a hub installs so every supported adapter agrees on one dbt-core;
+  `DBT_ADAPTER_REQUIREMENTS` and `DBT_PACKAGE_REQUIREMENTS` cover the adapters and the dbt
+  packages the emitter hard-codes call sites against. Each records *why* both ends of its
+  range exist. A test binds every surface that repeats them to the declaration.
+- **The emitted dbt package declares `require-dbt-version`.** A consumer on an
+  incompatible dbt now gets a dbt-native version error first, rather than a macro error
+  several steps removed from the cause. Deliberately the floor only: the ceiling is one
+  hub's offline-gate concern and would wrongly reject a dataplatform on a newer dbt with a
+  different adapter.
+- **`import-tmdl --fail-on-partial`** exits non-zero when any `model.tmdl` declares tables
+  its export does not contain. Off by default, since a batch import of many exports should
+  not fail wholesale because one of them is incomplete.
+- **A conformed dimension can be shared across Gold products (issue #829, DD-228).** A new
+  `gold.shared_domains` list in `kairos.yaml` names the domains several products may claim:
+
+  ```yaml
+  gold:
+    shared_domains: [party, reference-data]
+    products:
+      - name: shipment-performance
+        domains: [consignment, party, reference-data]
+      - name: financial-performance
+        domains: [billing, party, reference-data]
+  ```
+
+  DD-222 fixed the one-owner rule on *domains*, while the thing that must not be duplicated
+  is a *table*. Those coincide for a fact-bearing domain and diverge for a dimension-only
+  one — which is exactly what a conformed dimension is. A hub that needed `party` in two
+  products had to choose between one product absorbing everything, or shipping a model
+  whose customer slicer has no customer table.
+
+  Sharing is **declared, never inferred**. Guessing it from a domain having no facts would
+  mean that adding the first fact silently re-materializes all of its tables in every
+  consuming product — a change in physical layout with no edit to say so.
+
+- **`emit-gold` reports which tables a product builds and which it reads.** The issue's
+  explicit ask. The product report carries `materialized_by: {domain, shared: true}`, the
+  DDL block names the owning domain, and the emit prints the split:
+
+  ```
+  1 table(s) built by this product, 1 read as shared:
+      dim_customer (owned by party)
+  ```
+- **The `mdm-profile` release now emits a `schema_version` field.** `kairos-mdm-runtime`'s
+  profile contract already specified `schema_version` and a fail-closed compatibility check
+  against it, treating its absence as an undocumented baseline. The toolkit now emits it
+  explicitly (`"1.0.0"`, matching that assumed baseline), so runtime readers can check
+  compatibility directly instead of inferring it. `schema_version` is covered by
+  `content_digest` like the rest of the profile policy, so a `{domain}-mdm-profile.json`
+  regenerated from an unchanged reviewed hub state will have a different digest than one
+  produced before this change — re-pin dataplatform digests after upgrading.
+
+### Changed
+- **`read_reference_terms` now carries each class's property names (issue #524).** The
+  loader flattened classes and properties into one list and dropped the link between them,
+  so any caller needing "which properties does this class carry" had to resolve the closure
+  a second time. `build_class_catalog` did exactly that for #519's anchor tie-break, and
+  `propose_alignment` independently built its own indices for #517/#520 — the same
+  relationship derived three times from two loaders.
+
+  It is carried on `ReferenceTerm.property_names` now, which is where the loader already
+  knew it. The duplicate resolution in `anchor_tables` is gone.
+- **The three ways `_active_source_inputs` consumes `class_uris` are now documented and
+  deliberate**, under the #729 policy (*traverse for compatibility, exact for identity*).
+  Contracts and table mappings answer "does this domain own this?", which does not
+  inherit, and stay exact. The property filter answers "could a class in scope carry
+  this?", which does, and traverses up.
+
+- The inline walk is replaced by the promoted `projections.shared.class_ancestors` — the
+  ninth hand-rolled `rdfs:subClassOf` walker found in the #729 inventory, now the eighth.
+- **A proposed match is not counted as BI weight until confirmed.** It is written as
+  `action: candidate` alongside `match_confidence` and `match_reason`, and
+  `design-landscape` reports it as awaiting confirmation rather than as evidence. BI weight
+  exists to say what the business actually reports on; letting a name guess vote on that
+  would invert its meaning. Confirming a proposal is far cheaper than authoring one, which
+  is where the saving is.
+- **The workflow header says what is actually true.** It read
+  `Auto-generated by kairos-ontology-toolkit — do not edit`; it now explains that an
+  undeclared edit is silently reverted, how to declare one, and that an edit worth having
+  everywhere should go upstream instead. Both local edits this issue cited as legitimate —
+  `uv run --no-sync` and the `architecture` drift gate — have since become upstream
+  defaults, which is the argument for making that path explicit.
+- **Scaffolded hubs now track `ontology-hub-publish/architecture/**` (issue #774).** The
+  canonical class diagrams and DDD maps are how a model actually gets reviewed and
+  explained — an architecture ERD shows the full canonical surface, including everything
+  inherited from the industry tier. Left untracked they rot invisibly: one hub's had
+  drifted into mixed vintages, some domains regenerated weeks apart, and nothing surfaced
+  it because nothing was watching.
+
+  Tracking alone would be worse than not tracking, so the drift gate regenerates them too:
+  `architecture/**` comes from `project`, not from `compile --emit`, so `pr-validate.yml`
+  and `full-validate.yml` now run `project --target erd` and `--target ddd` before the diff,
+  and the tracked-ness guard covers the new path. A test pins the two halves together — any
+  lane the template allowlists must appear in the gate that diffs it.
+
+- **Canonical ERD and DDD diagrams carry a provenance stamp.** They were the only generated
+  Mermaid artifacts without one, so a diagram produced by an older projector was
+  indistinguishable from a current one — exactly the mixed-vintage problem above. They now
+  use the same `mermaid_provenance_comment` helper as the Silver, Gold and contract
+  diagrams, which records the toolkit version and deliberately carries **no timestamp**: a
+  wall-clock stamp in a tracked, drift-gated file would fail CI on every run. *When* a
+  diagram changed is what git history records; only *which version* drew it cannot be
+  recovered afterwards.
+- **SHACL is skipped for an orphan overlay rather than run against nothing.** Before, an
+  overlay using `kairos-ddd:aggregateRoot` failed rule 4 with *"must point to an owl:Class
+  present in the merged domain graph"* — which reads as a modelling error in the overlay
+  when the real cause is that the file is orphaned, sending the reader to entirely the
+  wrong place. That message is now replaced, not merely accompanied. The projection-leak
+  scan still runs, because it reads the overlay alone and stays meaningful.
+- The summary line reads `Checked N DDD overlay(s)` rather than `Validated N`, which was
+  the specific claim an orphan made false.
+- **`_shared__gold_models.yml` records every contributing calendar profile, not the last
+  one to compile.** Two domains declaring the same bounds render a byte-identical
+  `dim_date.sql` and differ only in the profile URI recorded as provenance — one table
+  with two contributors, not a conflict. `calendar_profile` stays a scalar while one
+  domain declares it, so every hub shipping today is byte-for-byte unchanged, and becomes
+  a sorted list once several do.
+
+### Removed
+- Five helpers that lost their last caller in earlier releases: the medallion projector's
+  `_build_sk_expression`, `_build_iri_expression` and `_fk_child_parents` (#234), the
+  projector's `_discover_silver_extension_for_sync` (v5.0.0) and the CLI's
+  `_format_refmodels_version` (DD-173); the never-read `GoldMeasureSpec.data_validated`.
+
+### Fixed
+- **The `operational` column rule no longer sweeps up business data (issue #522).**
+  `_OPERATIONAL_PATTERNS` was matched by bare substring, so `timestamp` caught
+  `transaction_timestamp`, `pickup_start_timestamp` and `timestamp_posted` — occurrence
+  times, which are the central fact of an event or ledger row — while `source_id` caught
+  `resource_id` and `_by` caught `owned_by_subco`.
+
+  This matters more than a misreported reason code: `operational` is one of two reason
+  codes DD-186 auto-dispositions to `not-business-data` without human review, and that is
+  the only disposition which *removes* a column from the DD-169 gate rather than deferring
+  it. On one hub, 114 of 185 columns auto-dispositioned from this reason were contradicted
+  by the aligner's own output in the same run.
+
+  Matching is now on name tokens with boundaries: `timestamp` alone decides nothing (audit
+  intent is carried by the action — `created`, `loaded`, `ingested` — never by the type
+  suffix), `by` counts only as a trailing token, and `source id` only as an adjacent pair.
+
+  The vocabulary is `gap_decisions._AUDIT_NAME_TOKENS`, reused rather than copied: the
+  gate and the aligner disagreeing about what "audit" means is how this class of bug
+  arises. The aligner stays deliberately wider for pipeline artifacts the gate has no
+  token for, and a test pins that it is never narrower.
+- **The reference rollup no longer accuses a correct mapping of hallucinating (issue
+  #523).** It deduplicated reference classes by **local name**, so where two imported
+  modules each declare a `Terminal` with different property sets, the two collapsed and a
+  property carried by only one copy was reported as `hallucinated_properties`.
+
+  That is a false accusation of model error — close to the worst kind of bad signal,
+  because it directs review at a working mapping and away from real defects. On the
+  reported hub it was investigated as a strict-schema gap before the duplicate name was
+  found. It also under-reported coverage, scoring a legitimately mapped column as unmapped.
+
+  The rollup is now keyed on the class URI. An ambiguous local name is resolved the way
+  the aligner already resolves it — to whichever same-named class actually declares the
+  property — so the two components no longer disagree about the same data. Display names
+  stay bare while unique and are qualified with the module (`tic/locations:Terminal`) when
+  not, rather than merged.
+- **The langfuse install command in `.env.example` now works (issue #544).** It said
+  `uv sync --group langfuse`, but the hub scaffold declares no `[dependency-groups]` table
+  at all — the extra lives under `[project.optional-dependencies]`, so the documented
+  command simply failed. Every sibling line in the same file already said `--extra`. This
+  was the last of the issue's three causes still standing; the extra itself and the
+  silent-skip warning were fixed earlier.
+- **The Gold insight example no longer references a column the calendar never emits.**
+  `kairos-design-gold` and the how-to guide both used `dim_date.week` in a `dimensions:`
+  list. The emitted calendar has no `week` column, so the example could not pass insight
+  coverage — copying it produced a "not answerable" status with no obvious cause.
+- **`import-tmdl --help` describes what it actually writes.** It claimed "only the two
+  generated artifacts are written" and listed the Engineering Pack and Concept Mapping,
+  omitting the per-report usage pack — which on a client estate is the most useful thing
+  the command produces, and was findable only by reading the source.
+- **The dbt `ref()` scan no longer warns on every contracted intermediate (issue #728).**
+  `compile --check` and `compile --emit` each reported `ref('X') … matched no model in this
+  domain's render scope` for every contracted model a Silver model reads — 24 unique
+  warnings and 48 occurrences per CI run on one hub, with a **100% false-positive rate**.
+  It was the single largest warning category in the PR gate, and it buried the warnings
+  that mattered: 43 unresolved source paths and 2 undeclared PII properties.
+
+  Two independent causes, either of which was enough on its own. `render_canonical_project`
+  — the v5 render path — never passed `known_models` to the validation step at all, so the
+  scan always ran against an empty set. And the set it would have passed was empty anyway,
+  because `BoundSources.contracts` is hard-coded empty on the v5 binding path, so even a
+  binding's own directly-bound contract was unknown to the scan. The comment in `render.py`
+  claimed the scan saw "the directly-bound contract names", which had not been true.
+
+  The model names now come from `SourceTableFact.ref_model`, already set wherever a
+  resolved relation is a dbt model, so no new plumbing from the kernel was needed. The
+  check is not weakened: a `ref()` naming something that is neither a rendered model nor
+  any binding's declared contract is still reported.
+- **`owl:Thing` no longer widens the dbt source scope (issue #735).** The ancestor walk in
+  `_active_source_inputs` had no upper bound, unlike every other guarded class walk in the
+  tree. A hub asserting `rdfs:subClassOf owl:Thing` put it in scope, and any property
+  declaring `rdfs:domain owl:Thing` — a common symptom of a missing `owl:imports` — then
+  matched every class at once.
+- **A date-sliced insight is no longer reported as unanswerable (issue #747).** Insight
+  coverage resolved `dim_date` against a two-element allowlist (`date_key`, `full_date`),
+  so any insight slicing by month or year came back "not answerable yet" naming a column
+  the warehouse demonstrably had. On one hub that was 6 of 9 insights — essentially every
+  legacy report compares a period against a prior period — and the false negatives drowned
+  the two real findings. The brief is the hand-off artifact to the BI engineer, so it was
+  telling them the model could not answer questions it could.
+
+- **…and `dim_date` now actually carries those columns in Power BI.** This is the half the
+  issue did not reach: the TMDL declared only `date_key` and `full_date`, so
+  `dim_date.month_number` was genuinely *absent from the semantic model* even though the
+  dbt model and the DDL both built it. Coverage was telling the truth; the emitter was
+  under-declaring the table. Widening the checker alone would have made the brief lie in
+  the other direction.
+
+  The column list was restated in seven places and they had drifted. It is now declared
+  once, in `core.projections.dbt.calendar_columns`, and the dbt model, the DDL, the TMDL,
+  the dbt `schema.yml`, the ERD, the measure-dependency allowlist and the insight-coverage
+  allowlist all read it.
+- **A cross-domain Gold bridge can now be authored (issue #763).** `gold_shape` documents
+  its bridge-endpoint check as running "over the union, not per domain: a bridge may span
+  two domains' tables" — but `compile <domain> --check` reaches that code through
+  `_shape_dimensional`, which wraps a single domain in a 1-tuple. The union was a union of
+  one, so `gold.bridge-endpoint-not-materialized` fired for every cross-domain bridge, and
+  `emit-gold` failed too because it compiles each member domain first.
+
+  Net effect: the one construct that gives Power BI a slicer across two facts — the reason
+  `bridge` exists — could not be authored on a multi-domain product at all, and the error
+  pointed at a binding that was correct.
+
+  The check is now deferred on the single-domain path, where the other endpoint is out of
+  scope by construction, and reported as `unresolved_bridges` on the compile plan, in the
+  product JSON, and by `emit-gold`. At product level the union is real, so an endpoint
+  genuinely outside it still fails closed — deferring does not become "never check".
+- **`update --check` now reports drift in toolkit-managed GitHub workflows (issue #772).**
+  A locally edited workflow was listed informationally and the run then printed
+  `✅ All managed files are up to date` and exited 0 — so the `managed-check` job stayed
+  green, a hub's deliberate CI fix got no signal, and the next `update` reverted it. The
+  files carry a "do not edit" marker while nothing enforced it: the marker and the gate
+  disagreed, which is what this issue is really about.
+- **Tagged releases now work on GitHub Enterprise Server (issue #773).**
+  `release-projections.yml` set `GH_TOKEN` but not `GH_HOST`, so `gh` fell back to
+  inspecting the git remote, did not recognise a non-`github.com` hostname and gave up —
+  *after* compile, emit, validation and packaging had all succeeded. No release object was
+  created and the artifacts the job had just built were discarded with the runner. The host
+  is now derived from `GITHUB_SERVER_URL`, which is correct on both github.com and GHES.
+- **An RC tag now publishes as a pre-release.** GitHub does not infer pre-release status
+  from a tag name, so `v0.2.0-rc.1` published as a normal release — which defeats cutting
+  an RC, and misleads a consumer that pins by release.
+- **Managed workflows no longer re-resolve dependencies on every command (issue #771).**
+  Each workflow ran `uv sync --locked` in its own step and then invoked `uv run` up to six
+  more times; because the toolkit and reference models are pinned as direct URLs rather
+  than registry packages, every one of those was a fresh network fetch of the wheel
+  metadata. A single job made roughly seven round trips where one would do, and any of them
+  could catch a transient upstream error and fail the run — with a misleading message
+  naming the URL, which reads as "the URL is corrupt" rather than "the registry blipped".
+  Every invocation now passes `--no-sync`, and the one `uv sync` that was missing
+  `--locked` has it.
+- **`KAIROS_SKILL_CONTEXT` is set for the whole workflow, not one step of five (issue
+  #721).** Every other skill-managed command printed a "prefer the skill in your AI coding
+  session" advisory into CI logs, where there is no session to redirect to and no skill to
+  prefer — and it implied the run had skipped validation gates that adjacent steps perform
+  explicitly. Setting it at workflow level also means a step added later inherits it rather
+  than silently regressing.
+- **A freshly scaffolded hub can now parse the package the toolkit emits for it (issue
+  #789).** The v5 Silver path emits generic-test config under the dbt 1.10+ `arguments:`
+  key, while the scaffold pinned `dbt-core>=1.9,<1.10` — so `validate-dbt` failed at parse
+  with `macro '...' takes no keyword argument 'arguments'`, a message about the macro
+  rather than the version. The scaffolded pins now start at the floor the emitter actually
+  requires.
+- **The hub and the dataplatform no longer resolve different dbt versions.** The
+  dataplatform built its own `>=1.9.0,<2.0.0` adapter pin, independent of the hub's, so
+  each hid what the other would catch — deprecations emitted *by the hub* were only
+  observable *in the dataplatform*, where nobody was looking. Both now read one
+  declaration.
+- **An imported class reached only by a relationship now shows its attributes (issue
+  #804).** `project --target erd` drew every non-local class as a member-less stub. That
+  is right for an inheritance ancestor — its attributes are already listed, prefixed `#`,
+  on the classes that inherit them — but wrong for a class reached only across an object
+  property, because nothing inherits from it and its attributes then appeared nowhere in
+  the diagram at all. On one hub that hid `vesselName`, `imoNumber`, `draftValue` and
+  every certificate, survey and crew-list class hanging off `imo:Vessel`. A class that is
+  both an ancestor and an endpoint still renders as a stub, and every imported class keeps
+  the stereotype naming the model it comes from.
+- **A domain that re-declares imported classes now produces an ERD (issue #805).**
+  `project --target erd` decided which classes belonged to a domain with an IRI-prefix
+  string test. `kairos-design-domain` directs authors to reuse a reference-model class
+  rather than mint a local one, re-declaring the imported IRI in the domain `.ttl` to
+  attach labels — such a class keeps its reference-model IRI, so it was never local, and a
+  domain modelled entirely that way emitted nothing at all. On one hub that was 5 of 12
+  domains, and passing the right namespace explicitly did not help. Locality is now the
+  union of the namespace test and what the domain file itself declares; a class the domain
+  file only *references* (a reference-model superclass, say) still stays external.
+- **A projection target that produces no artifacts now says so.** Both "this domain has
+  nothing to draw" and "the projector found nothing" were silent, and the CLI reported
+  success either way — which is why the above went unnoticed.
+- **Two classes sharing a local name no longer collide on one ERD node (issue #806).**
+  `project --target erd` derived every Mermaid node id from the class's local name alone,
+  so two distinct IRIs with the same fragment became the same node. The canonical case is
+  the modelling style `kairos-design-domain` recommends — a local subclass named after the
+  reference-model class it specialises — which rendered two `class SeaLeg` blocks that
+  Mermaid merged, plus an inheritance edge from the node to itself, making the diagram
+  assert something the ontology does not. A contested name now takes the source-model
+  label as a suffix (`SeaLeg_imo_port_call`); a name claimed by one class is untouched, so
+  existing tracked diagrams stay byte-identical.
+- **`import-tmdl` no longer reports an incomplete export as an empty model (issue #807).**
+  Table discovery was a glob over `definition/tables/`, and the `ref table` pointers in
+  `model.tmdl` — which name every table the model expects — were never read. An export
+  shipped without its table bodies therefore produced `Tables: 0`, `tables: []` and a
+  success exit, indistinguishable in every artifact written from a model that genuinely
+  has no tables. Downstream, `design-landscape` then reported no BI weight for it and gave
+  no hint anything was missing; on one hub that hid a 34-table / 375-field / 163-measure
+  semantic model, the largest piece of BI demand evidence available. `import-tmdl` now
+  names the unresolved pointers in a warning and in an `## Incomplete Export` section of
+  the Engineering Pack, and qualifies the table count rather than printing a bare zero.
+- **Spark's `long`, `short` and `byte` are now recognised source types (issue #808).** The
+  compiler's type-alias table was T-SQL-flavoured and had no entry for Spark's integer
+  names, but `import-source` writes the source catalog's `data_type` through verbatim — so
+  on a Databricks-backed hub every 64-bit integer arrives as `long`. A column whose type
+  missed the table was dropped from the bound relation's symbol table before any binding
+  expression touched it, and referencing it anywhere — `fields:`, `grain.columns`,
+  `identity.sourceKey`, `quality:` — failed with `safety.column-unresolved: not a column of
+  the bound relation`. On one real hub that was 123 columns, essentially every weight,
+  dimension, tonnage and monetary amount, producing a Silver contract with almost no
+  measures in it. There was no binding-side workaround: `cast` is deliberately outside the
+  closed scalar-expression grammar, so the only escape was a hand-written passthrough dbt
+  model per affected table.
+- **`scaffold-binding` no longer proposes `VARCHAR(255)` for an integer column.** The
+  Fabric and Databricks warehouse type maps had the same gap and fell through to their
+  string default, so the wrong type was baked into authored bindings before the compiler
+  ever saw them.
+- **An unrecognised source type now says so.** The diagnostic names the offending type and
+  points at `kairos-ontology suggest-type` instead of claiming the column does not exist —
+  the old message sent four separate authors hunting a schema problem that did not exist.
+  `suggest-type`'s own "Supported:" list is now rendered from the compiler's table rather
+  than hand-maintained beside it, which is how it came to omit these names in the first
+  place.
+- **Two EntityBindings may bind one `source.relation` to different canonical classes
+  (issue #809).** The documented "one source table, several canonical entities" pattern
+  failed `compile --check`: `_normalize_identities` kept its relation-to-identity-ref
+  lookup keyed on the physical `table_uri` alone, so when two bindings shared a relation
+  whichever was processed last silently overwrote the other's entry, and one class was
+  then attributed the other's identity contributor. It surfaced as
+  `safety.type-incompatible` / `identity.source-contributor-mismatch` pointing at a
+  binding that was in fact correct, and the only workaround was a contracted dbt
+  passthrough model per class — pure ceremony with no transformation in it — purely to
+  mint distinct `virtual_source_iri` values. The lookup is now keyed by
+  `(class, relation)`, matching the neighbouring `available_columns` map.
+- **`validation-report.json` no longer embeds absolute machine-local paths (issue #822).**
+  Every `file` entry carried the resolved path of the ontology file — leaking the
+  developer's filesystem layout into an artifact routinely pasted into issues, PRs and
+  support threads, and causing the report to ping-pong between contributors on any hub that
+  deliberately tracks it. Paths are now rendered against the repo root with forward slashes
+  (`ontology-hub/model/ontologies/customs.ttl`), matching how the drift gate and the dbt
+  ref scan already report, and clickable in a pull request.
+
+  Twelve emission sites, including the `shacl.semantic_context` dict **keys**, which are
+  file paths too and would otherwise have left the report internally inconsistent.
+
+  `run_validation` is a documented library entry point with direct callers, so the new
+  `repo_root` argument defaults to off and their output is unchanged; the CLI passes it.
+- **A dangling `ref()` in a join position is now reported (issue #823).** The dbt ref scan
+  built its set of acceptable targets partly *from the content it was about to check*: a
+  regex collected every `join ... ref('X')` in the artifacts and added X to the known set.
+  A ref in a join position therefore whitelisted itself and could never be reported —
+  including when the name was a typo naming nothing at all. It was the one place a
+  dangling ref could hide from this scan completely.
+
+  The exemption turned out to be load-bearing rather than dead weight, which measuring
+  before deleting it revealed: one of the three join-position refs across the committed
+  scenario hubs is a legitimate **cross-domain relationship join**, which is neither in the
+  domain's render scope nor any binding's declared contract. Simply removing the exemption
+  would have reintroduced a false positive of exactly the class #728 removed.
+
+  The scan now consults the joins the project actually *declares* — `JoinSpec` already
+  carries the referenced model as structured data — so a declared cross-domain join is
+  known while a string that merely appears in a join position is not.
+- **Generated properties YAML no longer emits generic tests in dbt's deprecated top-level
+  argument form (issue #826).** dbt 1.10 moved a generic test's arguments under an
+  `arguments:` key. The toolkit was half converted: its own tests nested correctly while
+  the two `dbt_utils.unique_combination_of_columns` emissions kept the old form, so both
+  shapes appeared in the same generated file. On dbt 1.12 each of those raises
+  `MissingArgumentsPropertyInGenericTestDeprecation`, and dbt has them slated to become
+  hard errors — at which point the emitted package stops parsing outright.
+
+  This was invisible from the hub: it validated on dbt 1.10 while the dataplatform
+  consuming its output ran 1.12, so deprecations emitted *by the hub* only surfaced
+  *downstream*. That divergence closed with the version contract; this makes the emitted
+  syntax match it.
+
+  `config` deliberately stays at the top level — it scopes the test (the `where` clause
+  that restricts a grain test to current rows) rather than being an argument to it, and
+  nesting it would silently stop the scoping from applying.
+- **`validate --ddd` no longer reports an orphan overlay as passing (issue #848).** A
+  `*-ddd-ext.ttl` whose filename matches no domain ontology was validated against an
+  **empty graph** and printed a green tick. So a typo in an overlay filename silently
+  disabled validation for that overlay, and the run-level summary counted it as validated.
+
+  The shapes that would have caught it cannot fire: `AggregateRootTargetShape` confirms a
+  class is present in the merged domain graph, and with an empty domain graph there is
+  nothing to confirm against.
+
+  An overlay with no matching domain ontology is now a failure naming the file that was
+  looked for:
+
+  ```
+  ❌ clint-ddd-ext.ttl
+     no domain ontology at model/ontologies/clint.ttl -- an overlay is validated merged
+     with the ontology its filename names, so this one was not validated at all. Rename
+     the overlay to match its domain, or remove it.
+  ```
+- **Two domains with an approved calendar can now compile into one target (issue #849).**
+  An approved `kairos-ext:calendarProfile` renders to `models/gold/shared/dim_date.sql`,
+  deliberately outside the declaring domain's tree because one hub materializes one
+  governed calendar. But `cli/compile.py` did not recognise that subtree as shared, so
+  those files were claimed by the **per-domain** manifest — and the second domain in a hub
+  to author an approved calendar could not `compile --emit` at all:
+
+  ```
+  ArtifactCollisionError: artifact destination collides with an unowned path:
+  'models/gold/shared/_shared__gold_models.yml'
+  ```
+
+  The message named a path the author never wrote and gave no hint that two calendars were
+  the cause. `models/gold/shared/` now belongs to the shared manifest, like every other
+  cross-domain artifact.
+- **A property one hop away in the import closure is named, not denied (issue #853).** A
+  binding field targeting a property declared on another class reported:
+
+  ```
+  property 'imo:flagStateCountryCode' does not resolve in the ontology
+  ```
+
+  It does resolve. The compiler indexes the whole `owl:imports` closure (DD-103), so the
+  property was sitting one hop away on a class a binding could target directly (DD-144).
+  The message sent authors hunting for a typo, a missing prefix or a missing import, when
+  the answer is "that property belongs to another class — bind it and link the two".
+
+  Both halves of the same mistake now say so, and name the route:
+
+  ```
+  property 'acc:partyName' does not resolve against any class in this compile, but it
+  exists in the import closure: it is declared on class 'acc:TradeParty', not on the
+  bound class. Bind that class in its own EntityBinding -- an imported class needs no
+  local rdfs:subClassOf to be bindable (DD-144) -- and reach it from here with a
+  relationships: entry, or carry the raw value with technicalFields: (DD-139).
+  ```
+
+- **`binding.property-domain-incompatible` names the class that *does* declare the
+  property**, not only the one that does not. Which of the two diagnostics an author gets
+  depends on whether something else in the compile happened to pull the property's class
+  into scope — invisible to them and irrelevant to their mistake — so both now carry the
+  same guidance.
+- **An approved calendar's `dim_date.tmdl` could not be loaded by Fabric.** #747 declared
+  every calendar column in the semantic model, but placed each column's `///` description
+  after its `sourceColumn:` line, inside the column body, where TMDL has no such line. The
+  TOM validator rejected the whole model (`Unexpected line type: Empty!`), so `emit-gold`
+  failed on every hub with an approved calendar, and with `--skip-tmdl-validation` it wrote
+  a model Desktop and Fabric refused to open. Descriptions now precede the column
+  declaration, as they do for every other table.
+- **A domain can change its own shared calendar again.** #849 reconciled
+  `models/gold/shared/` against whatever was on disk, with no notion of who wrote it, so a
+  domain that extended its own `calendar_end` by a year -- or simply re-emitted after this
+  upgrade, which renders more calendar columns -- was told two domains disagreed about one
+  table, and the only way out was deleting the subtree by hand. When every calendar profile
+  the on-disk schema yml credits is a profile of the incoming render, the incoming bytes
+  supersede it; a genuine second contributor still fails closed as before. **Expect your
+  first `compile --emit` after upgrading to rewrite `models/gold/shared/` once.**
+- **The hub-wide master class diagram is drawn from the graphs, not merged from the
+  per-domain files.** The first master (#753) merged text keyed on the Mermaid node id,
+  the class's local name. Two classes that merely share a name (`party:Address`,
+  `billing:Address`) collapsed into one block and one vanished silently; one IRI two
+  domains had disambiguated differently was drawn as several nodes with the edges on a
+  stub. Node ids are now assigned once over the whole hub, so one IRI is one node. The
+  master's bytes change on your next `project --target erd`; the per-domain diagrams do
+  not.
+- **`binding.property-domain-incompatible` names the class that declares the property.**
+  #853 made both "wrong class bound" diagnostics point at the owning class, but this one
+  read the classes that *expose* the property, so a local `rdfs:subClassOf` heir was
+  named as the declarer while the unresolved variant named the real one. Both now name the
+  declaring class, as the same bindable token.
+- **`_is_operational_column` no longer silences business columns.** #522 moved the
+  predicate to whole-name tokens but took its vocabulary from the DD-169 gate's audit
+  list, which was written as a generous *narrowing* check. Reused as the classifier it
+  auto-dispositioned `batch_number`, `tariff_version`, `tenant_name`, `snapshot_date`,
+  `sync_status` and `delete_reason` to `not-business-data` with no review. The predicate
+  now has its own narrower vocabulary; ambiguous words decide only in a pair
+  (`row_version`, `tenant_id`, `source_system`). The parallel substring list behind
+  `recommended_disposition` is gone too, so `unload_date` and `upload_date` stop coming
+  back `skip`. Re-run `draft-gap-decisions --dry-run` to see what changes on your hub.
+- **`range_not_subsumption_chain` (#731) only judges range classes the file itself
+  describes.** The naming lints run on one domain file with no `owl:imports` resolution, so
+  a chain asserted in the shared kernel was invisible and every such pair was reported as
+  unrelated -- 132 spurious warnings across the installed reference models -- with a
+  remedy for an axiom that already exists.
+- **`validation-report.md` carries repo-relative paths.** #822 fixed the JSON report; the
+  Markdown sibling written by default still embedded the absolute checkout path in its
+  options table and file list, so a hub tracking it still saw the file rewrite between
+  contributors.
+- **The `--no-probe` pre-flight carries the model-tier advisory.** #545 attached it only
+  when the endpoint probe succeeded, so the CI path that never probes was exactly the one
+  that kept producing the misreading it was meant to pre-empt.
+- **The dataplatform scaffold pins `dbt-core` to the same range as the hub (#789).**
+  `dbt-fabric` declares only a floor, so a dataplatform resolved the newest dbt-core while
+  its hub sat on 1.10 -- the hub/dataplatform divergence #826 described as closed was not,
+  for the default adapter. Existing dataplatforms: add `dbt-core>=1.10.1,<1.10.20` to
+  `pyproject.toml` and re-lock.
+- **Column-level generic tests nest their arguments under `arguments:` (#826).**
+  Model-level tests were converted; a column `accepted_values` or a SCD2 `unique` with a
+  `where` still rendered the top-level form dbt 1.12 deprecates. Argument values are now
+  emitted as JSON rather than Python reprs, so a list argument changes bytes on re-emit.
+- **`generate-bindings` and the relationship proposer know Spark's `long`/`short`/`byte`**
+  (#808 covered `scaffold-binding` and the compiler). A Databricks `long` grain column no
+  longer becomes `string` in a generated binding, and a `long` foreign key is
+  identifier-shaped for proposals.
+- **`ddd` and `contract-erd` no longer warn "produced no artifacts" for every domain
+  without an overlay or contract.** The managed CI lane runs `ddd` on every hub, so the
+  #805 warning fired once per domain on the default hub.
+- **The concept-mapping worksheet's `candidate` instruction was wrong.** It said to
+  confirm a proposed match by clearing `action`; an empty action is *untriaged*, so `next`
+  kept recommending triage forever. Confirm by setting `use` or `specialize`. The
+  design-landscape "decided" count no longer goes negative when candidate rows exist.
+- **Stale text:** the `kairos-execute-validate` skill named the pre-#789 dbt-core pin.
+
+### Security
+- `uv.lock` moves `anyio` to 4.15.1 (CVE-2026-63374, CVE-2026-64847) and `pypdf` to
+  6.19.0 (PYSEC-2026-3910/3911/3913), the two packages the dependency audit on `main` was
+  failing on.
+
+### Performance
+- **`build_class_catalog` is roughly 3× faster.** Measured on the committed reference-model
+  fixture (1271 classes): **22.9s → 7.2s**.
+
+### Documentation
+- Recorded the decision as `MDM-DD-005` in `docs/dev/mdm/mdm-design-decisions.md`.
+
+### Notes
+- Deliberately quiet where it cannot be sure: an unreadable artifact, one predating the
+  fingerprint, or a closure that resolves to nothing is **not** reported as stale. This
+  warns about a real difference; guessing would train readers to ignore it.
+- The issue's third suggestion — having `integrity.managed-import-unused` itself
+  distinguish "the alignment covered this module" from "the alignment never saw it" — is
+  not done here, but the fingerprint it needs now exists.
+- #521's cross-check now withholds fewer candidates, because fewer are misclassified in
+  the first place. That is the intended direction: the cross-check is a safety net, not
+  the fix.
+- The property sets are now **strictly more complete**: on that fixture, 0 classes lose a
+  property and 71 gain one. The second pass resolved only the modules that contributed a
+  class copy, while the loader resolves each module's full `owl:imports` closure (the
+  canonical DD-103 path), so the old narrower set was an artifact of the workaround. More
+  properties can only strengthen #519's overlap-based tie-break, never weaken it — but it
+  is a behaviour change, recorded here rather than left to be discovered.
+- Deliberately a validator warning rather than a compiler error. #729's
+  relationship-endpoint check accepts a target that is, or descends from, *any* declared
+  range — because intersection semantics would turn today-green hubs red on exactly this
+  ontology-quality issue. The compiler's non-suppressible safety kernel is the wrong place
+  to adjudicate reference-model quality; the validator is the right one.
+- This path is live on the **Gold** side: `medallion_gold_projector` calls `bind_sources`.
+  The issue scopes itself to the legacy graph-driven projector, which is not the whole
+  story.
+- `medallion_silver_projector.generate_master_erd` is deliberately **not** reused: it emits
+  and merges `erDiagram` bodies while this target emits `classDiagram`, so feeding one into
+  the other produces a file Mermaid cannot parse. Its cross-domain block is also synthesised
+  from `*-silver-constraints.json`, which is compile-plan-derived, while this target is
+  binding-independent by construction (DD-209).
+- The SVG half of #753 is **declined**, per DD-211 — see the issue for the reasoning.
+- Hubs and dataplatforms on the previous generation of any of these four workflows are
+  offered an automatic refresh rather than being reported as locally customized: the
+  outgoing bytes are recorded under `scaffold/superseded-workflows/`. Only `pr-validate.yml`
+  had a recorded history before this change, so `full-validate.yml`, `managed-check.yml`
+  and `release-projections.yml` gain one.
+- Builtin `unique` and `not_null` were checked and are unaffected: they are emitted as
+  bare strings or with `config` only, neither of which is a deprecated form.
+- **The materialization premise in the issue was wrong, and worth recording.** A Gold dbt
+  model is emitted per *domain*, to `models/gold/<domain>/<table>.sql`, by that domain's
+  own `compile --emit`; products exist only in the Power BI lane. So a conformed dimension
+  was always built exactly once, and sharing changes only which semantic models may read
+  it. That is why this change is as small as it is.
+- A shared table keeps its own domain's `goldSchema`, so both products' TMDL partitions
+  name `gold_party` and point at the one physical relation. Verified end-to-end rather
+  than assumed — it is the assumption that would otherwise produce a model silently
+  reading the wrong schema, discovered in Fabric.
+- `emit-gold <shared-domain>` now fails with `gold.domain-shared-across-products` naming
+  every product that reads it, rather than picking one arbitrarily.
+- A genuine table-name collision still fails: sharing relaxes *who materializes* a table,
+  not whether two different tables may carry one name.
+- Undeclared sharing still fails with DD-222's original message, which now also names
+  `gold.shared_domains` as the way to say otherwise.
+- A deliberately orphaned overlay — for example a hub-level `_contexts-ddd-ext.ttl` for
+  shared `BoundedContext` declarations — used to validate "successfully" by accident,
+  which made an unsupported pattern look supported. It now fails, which is the honest
+  answer until such a pattern is actually designed.
+- Overlays that do match an ontology are unaffected; the shipped `acme-hub` overlays pass
+  unchanged.
+- A **genuine** disagreement still fails, and now says why. Domains declaring different
+  bounds, week patterns or fiscal year starts describe one physical table two incompatible
+  ways; reconciling that silently would be worse than the collision it replaces. The error
+  names the field that differs and both values, rather than a path.
+- Found while building #829, which needs the same subtree to be hub-owned; fixed on its
+  own because it blocks any two-calendar hub regardless of Gold products.
+- **Nothing changes about which bindings compile.** Both cases failed before and fail now;
+  only the messages moved. A genuinely unknown token — a typo, an undeclared prefix — still
+  reports as unknown with the usable-token list, which is the honest answer there.
+- Split out of #811, and it **replaces that issue's "wall 2"**. #811 reported this as a
+  reachability asymmetry — range-class scalars supposedly usable only when the hub declares
+  a local subclass of the range. Measured both ways, neither shape makes the property
+  usable from the parent binding, and the companion-binding route works with no local
+  subclass at all. The defect underneath was always the diagnostic.
+- The owning class is named with the token an author would type rather than a bare IRI: a
+  resolved class carries both refs, and sorting between them was picking by first
+  character.
+
+### Known issues
+- `dropped_params` is not yet persisted. A reviewer comparing two runs still has no record
+  that one of them ran without `temperature` after a provider rejection. That needs state
+  threaded from the provider retry through a threaded fan-out to the artifact, which is a
+  larger change than the rest of this and is deliberately left out.
+- A `ref()` between two copied intermediates is still outside this scan's view; the
+  authoritative whole-project check remains `validate-dbt`, which the scaffolded PR gate
+  runs.
+- `week_number` is still not emitted, even though the calendar records a `week_pattern`.
+  That column depends on a week-numbering convention nothing currently implements, so
+  emitting it would repeat the mistake `week_pattern` already makes — declaring a
+  convention the dimension does not honour. Tracked separately.
+- `dbt-fabric` is pinned to exactly `1.10.0`. 1.10.1 replaced pyodbc with mssql-python,
+  which parses the connection string eagerly and rejects the `Authority Id` keyword the
+  offline validation profile produces, so the offline gate cannot pass on any later
+  release. The constant records this; lifting it is tracked separately.
 
 ## [5.18.0rc2] — 2026-09-16
 

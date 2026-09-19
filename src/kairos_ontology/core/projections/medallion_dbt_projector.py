@@ -2071,28 +2071,6 @@ def _build_merge_superset(
     return canonical_columns, padded_per_source
 
 
-def _build_sk_expression(graph: Graph, class_uri: str) -> str:
-    """Build the SK expression for a class, using normalised target column names."""
-    natural_key_cols = _get_natural_key(graph, class_uri)
-    if natural_key_cols:
-        sk_cols_str = "', '".join(natural_key_cols)
-        return f"{{{{ dbt_utils.generate_surrogate_key(['{sk_cols_str}']) }}}}"
-    return "CAST(NULL AS {{ dbt.type_string() }})"
-
-
-def _build_iri_expression(graph: Graph, class_uri: str, namespace: str) -> str:
-    """Build the IRI expression for a class, using normalised target column names."""
-    natural_key_cols = _get_natural_key(graph, class_uri)
-    if natural_key_cols:
-        if len(natural_key_cols) == 1:
-            return (
-                f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {natural_key_cols[0]})"
-            )
-        parts = ", '_', ".join(natural_key_cols)
-        return f"CONCAT('{namespace}', '{extract_local_name(class_uri)}/', {parts})"
-    return "CAST(NULL AS {{ dbt.type_string() }})"
-
-
 def _build_sk_iri_columns(
     graph: Graph,
     class_uri: str,
@@ -3077,30 +3055,6 @@ def _build_enum_case(source_expr: str, enum_values: list[dict]) -> str:
     parts.append(f"        ELSE CONCAT('Unknown (', CAST({source_expr} AS VARCHAR(50)), ')')")
     parts.append("    END")
     return "\n".join(parts)
-
-
-def _fk_child_parents(
-    graph: Graph,
-    class_uri: str,
-    fk_classification: ForeignKeyClassification | None = None,
-) -> list[str]:
-    """Local names of parent classes for which ``class_uri`` is an FK-child.
-
-    A class is an FK-child (weak entity) when an object property declares
-    ``kairos-ext:silverForeignKeyOn`` pointing at it, so the FK column lands on
-    this class's table pointing back to the property's other end (the parent).
-    Such entities typically derive their identity from the parent (composite key)
-    rather than from a standalone natural key. Used only to enrich warnings.
-    """
-    parents: list[str] = []
-    classification = fk_classification or classify_foreign_keys(graph)
-    for fk in classification.descriptors:
-        if not fk.reverse or fk.junction_table_name or str(fk.source_class) != class_uri:
-            continue
-        local = extract_local_name(str(fk.target_class))
-        if local not in parents:
-            parents.append(local)
-    return parents
 
 
 def _get_natural_key(graph: Graph, class_uri: str, _visited: set[str] | None = None) -> list[str]:

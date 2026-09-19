@@ -160,6 +160,13 @@ class ResolvedProperty:
     #: absent or a class expression -- the DD-133 §7 "deferred range" short-circuit. A
     #: relationship target is compatible when it *is*, or descends from, **any** member (#729).
     range_uris: tuple[str, ...] = ()
+    #: The classes the property is *declared* on -- its named ``rdfs:domain`` values, read
+    #: off the closure graph -- as opposed to ``domain_uris``, the classes that merely
+    #: expose it. Carried as bindable tokens (``acc:TradeParty``), not URIs, because this
+    #: adapter is graph-free and cannot label an imported class itself. Only diagnostics
+    #: read this: an author who bound the wrong class is told which class to bind instead,
+    #: and that is the declaring class, not another heir of it in scope (#853).
+    declared_domain_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,7 +339,7 @@ def _preferred_token(candidates: tuple[str, ...], fallback: str) -> str:
     return next(iter(qualified or candidates), fallback)
 
 
-def _owning_class_route(property_token: str, owners: tuple[str, ...]) -> str:
+def _owning_class_route(owners: tuple[str, ...]) -> str:
     """The shared second half of both messages: name the owner and the way to reach it.
 
     Single-sourced because the two diagnostics below describe the *same* authoring
@@ -362,8 +369,7 @@ def _unknown_property_message(property_token: str, context) -> str:
     if owners:
         return (
             f"property '{property_token}' does not resolve against any class in this "
-            "compile, but it exists in the import closure: "
-            + _owning_class_route(property_token, owners)
+            "compile, but it exists in the import closure: " + _owning_class_route(owners)
         )
     return (
         f"property '{property_token}' does not resolve in the ontology; "
@@ -377,15 +383,22 @@ def _property_domain_message(
     prop: ResolvedProperty,
     context,
 ) -> str:
-    """Name the class(es) that *do* declare the property, not only the one that does not."""
-    owners = tuple(
+    """Name the class(es) that *do* declare the property, not only the one that does not.
+
+    ``declared_domain_refs`` rather than ``domain_uris``: the latter is every class in
+    scope that *exposes* the property, so with ``acc:partyName rdfs:domain acc:TradeParty``
+    and a local ``party:LocalTradeParty rdfs:subClassOf acc:TradeParty`` it named the local
+    heir as the declarer -- a class that declares nothing -- while the unresolved variant
+    of this same mistake named ``acc:TradeParty``. Both routes now point at the same class.
+    """
+    owners = prop.declared_domain_refs or tuple(
         _preferred_token(context.class_tokens(uri), uri) for uri in sorted(prop.domain_uris)
     )
     if not owners:
         return f"property '{property_token}' does not apply to class '{target_class}'"
     return (
         f"property '{property_token}' does not apply to class '{target_class}': "
-        + _owning_class_route(property_token, owners)
+        + _owning_class_route(owners)
     )
 
 

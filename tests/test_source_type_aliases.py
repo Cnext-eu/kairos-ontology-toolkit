@@ -186,3 +186,27 @@ def test_suggest_type_reports_long_and_lists_it_when_asked_for_something_else():
     # The supported list is rendered from the compiler's table, so it cannot go stale.
     assert "long" in failure.output
     assert set(_SOURCE_TYPE_ALIASES) <= set(failure.output.replace(",", " ").split())
+
+
+def test_generate_bindings_maps_spark_integers_like_their_tsql_spellings():
+    """`generate-bindings` had its own alias table without `long`/`short`/`byte`, so a
+    Databricks 64-bit grain column fell through to `string` and the wrong type was baked
+    into the authored binding -- the defect #808 fixed for `scaffold-binding`, one path
+    over."""
+    from kairos_ontology.core.generate_bindings import _canonical_type
+
+    assert _canonical_type("long") == _canonical_type("bigint") == "int64"
+    assert _canonical_type("short") == _canonical_type("smallint") == "int16"
+    assert _canonical_type("byte") == _canonical_type("tinyint") == "int16"
+
+
+@pytest.mark.parametrize("spark, tsql", [("long", "bigint"), ("short", "smallint")])
+def test_a_spark_integer_column_is_identifier_shaped_like_its_tsql_equivalent(spark, tsql):
+    """The relationship proposer's storage-shape test listed the T-SQL integers only, so a
+    Databricks `long` foreign key with a non-id-shaped name was withheld from proposals
+    while the neighbouring `_SOURCE_ALIGNMENT` table in the same module knew the type."""
+    from kairos_ontology.core.propose_alignment import _looks_like_identifier_column
+
+    assert _looks_like_identifier_column("shipment_ref", spark) == _looks_like_identifier_column(
+        "shipment_ref", tsql
+    )

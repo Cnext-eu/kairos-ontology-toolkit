@@ -89,6 +89,25 @@ class TestEmittedSurfaces:
             assert f"sourceColumn: {column.name}" in tmdl, column.name
         assert "isKey" in tmdl
 
+    def test_each_description_precedes_its_column_declaration(self):
+        """A TMDL `///` description belongs *before* the object, at the object's indent,
+        which is how `_table_tmdl` renders every other table. Emitted after
+        `sourceColumn:` inside the column body it is not a description but an unparseable
+        line: the TOM serializer rejected every calendar-bearing model ("Unexpected line
+        type: Empty!") and Fabric could not load it. Substring checks passed regardless."""
+        from kairos_ontology.core.projections.dbt.gold_render import _date_tmdl
+
+        physical = SimpleNamespace(
+            semantic_mode="directLake", adapter="databricks", catalog="", schema_name=""
+        )
+        lines = _date_tmdl(_calendar(), physical, None).splitlines()
+
+        described = [index for index, line in enumerate(lines) if line.startswith("\t/// ")]
+        assert len(described) == len(CALENDAR_COLUMNS)
+        for index in described:
+            assert lines[index + 1].startswith("\tcolumn "), lines[index : index + 2]
+        assert not any(line.startswith("\t\t///") for line in lines)
+
     @pytest.mark.parametrize("adapter", ["databricks", "fabric-warehouse"])
     def test_the_dbt_model_selects_every_column(self, adapter):
         """The SQL is hand-built per adapter, so this keeps the generated *data* in step

@@ -189,8 +189,12 @@ class AlignmentTotalFailureError(RuntimeError):
 _OPERATIONAL_EXTRA_TOKENS = frozenset(
     {
         "createdat",
+        "createdon",
         "createdby",
         "updatedat",
+        "updatedon",
+        "updatedby",
+        "modifiedon",
         "modifiedby",
         "systemcreate",
         "systemlastedit",
@@ -198,6 +202,7 @@ _OPERATIONAL_EXTRA_TOKENS = frozenset(
         "loaddate",
         "loadts",
         "sourceid",
+        "tenantid",
     }
 )
 
@@ -210,51 +215,38 @@ _OPERATIONAL_TRAILING_TOKENS = frozenset({"by"})
 _OPERATIONAL_TOKEN_PAIRS = frozenset(
     {
         ("source", "id"),
+        ("source", "system"),
         ("load", "date"),
         ("load", "ts"),
         ("is", "deleted"),
+        ("row", "version"),
+        ("tenant", "id"),
+        ("system", "create"),
+        ("system", "last"),
+    }
+)
+
+#: Whole-name tokens that on their own mark a column as pipeline metadata.
+#:
+#: A deliberate *subset* of ``gap_decisions._AUDIT_NAME_TOKENS``, not that set itself. The
+#: gate's vocabulary is its narrowing check -- it only ever withholds a rescue from a
+#: column this predicate has already classified operational -- so it was written to be
+#: generous, and reusing it as the classifier inverted its role: ``batch_number``,
+#: ``tariff_version``, ``tenant_name``, ``snapshot_date``, ``sync_status`` and
+#: ``delete_reason`` were auto-dispositioned ``not-business-data`` with no review, because
+#: each merely contains a word an audit column might also use. A token earns a place here
+#: only when it names what was done to the *row* or a pipeline artifact unambiguously;
+#: the ambiguous words (``batch``, ``version``, ``system``, ``snapshot``, ``sync``,
+#: ``tenant``, ``delete``, ``archive``, ``dw``) decide only inside a pair above.
+_OPERATIONAL_TOKENS = frozenset(
+    {
+        "created", "creation", "updated", "modified", "inserted",
+        "ingest", "ingested", "ingestion", "etl", "dwh",
+        "rowversion", "guid", "uuid", "hash", "checksum", "sourcesystem",
     }
 )
 
 _CF_SLOT_RE = re.compile(r"^cf[a-z]*\d+$", re.IGNORECASE)
-
-_AUDIT_AUTO_PATTERNS = (
-    "created_",
-    "_created",
-    "createdon",
-    "createdby",
-    "createdat",
-    "updated_",
-    "_updated",
-    "updatedon",
-    "updatedby",
-    "updatedat",
-    "modified_",
-    "_modified",
-    "modifiedon",
-    "modifiedby",
-    "inserted_",
-    "is_deleted",
-    "isdeleted",
-    "systemcreate",
-    "systemlastedit",
-    "rowversion",
-    "row_version",
-    "loaddate",
-    "load_date",
-    "load_ts",
-    "loadts",
-    "last_ingest",
-    "ingest_date",
-    "etl_",
-    "_etl",
-    "_dwh",
-    "dwh_",
-    "tenant_id",
-    "tenantid",
-    "_hash",
-    "checksum",
-)
 
 
 def _is_operational_column(column: str) -> bool:
@@ -267,15 +259,19 @@ def _is_operational_column(column: str) -> bool:
     data from the pipeline, which is why the matching has to respect name boundaries
     (#522). #521 added a cross-check at the write site so the loss is no longer
     irreversible; this fixes the classification itself.
+
+    Every name this returns True for is also ``gap_decisions.is_audit_named`` -- the #521
+    cross-check must agree with the classification it guards -- but not the reverse: the
+    gate's vocabulary is wider on purpose, and this predicate must stay the narrower one.
     """
     # The same splitter the DD-169 gate uses, so the two stages tokenize a name
     # identically rather than each having its own idea of a word boundary.
-    from .gap_decisions import _AUDIT_NAME_TOKENS, _name_tokens
+    from .gap_decisions import _name_tokens
 
     tokens = _name_tokens(column)
     if not tokens:
         return False
-    if set(tokens) & (_AUDIT_NAME_TOKENS | _OPERATIONAL_EXTRA_TOKENS):
+    if set(tokens) & (_OPERATIONAL_TOKENS | _OPERATIONAL_EXTRA_TOKENS):
         return True
     if len(tokens) > 1 and tokens[-1] in _OPERATIONAL_TRAILING_TOKENS:
         return True
@@ -289,12 +285,14 @@ def is_generic_vendor_slot(column: str) -> bool:
 
 
 def auto_disposition(column: str) -> str | None:
-    """Return the narrow auto-fillable disposition, if one is safe."""
+    """Return the narrow auto-fillable disposition, if one is safe.
 
-    name = (column or "").lower()
-    if any(pattern in name for pattern in _AUDIT_AUTO_PATTERNS):
-        return "skip"
-    return None
+    One classifier, not two: this used to keep its own substring list beside
+    :func:`_is_operational_column`, so ``unload_date`` and ``upload_date`` -- business
+    events containing ``load_date`` -- still came back ``skip`` after #522 had moved the
+    predicate to whole tokens.
+    """
+    return "skip" if _is_operational_column(column) else None
 
 
 def normalize_local_proposal(raw: Any) -> dict[str, str] | None:
@@ -426,7 +424,7 @@ def recommend_disposition(column: str) -> str:
 
     if is_generic_vendor_slot(column):
         return "silver-passthrough"
-    if _is_operational_column(column) or auto_disposition(column) == "skip":
+    if _is_operational_column(column):
         return "skip"
     return ""
 
@@ -3465,6 +3463,10 @@ _IDENTIFIER_DATA_TYPE_TOKENS = frozenset(
         "smallint",
         "tinyint",
         "integer",
+        # Spark spellings (#808); `_SOURCE_ALIGNMENT` above already knew them.
+        "long",
+        "short",
+        "byte",
         "uuid",
         "guid",
         "uniqueidentifier",

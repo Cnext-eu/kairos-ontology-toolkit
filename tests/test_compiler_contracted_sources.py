@@ -602,8 +602,8 @@ def test_the_scan_still_reports_a_ref_nothing_declares(caplog):
 
     artifacts = {
         "models/silver/party/customer.sql": (
-            # Not a `join ... ref()`: `_collect_join_ref_targets` whitelists every join
-            # target outright, so one can never reach the scan.
+            # Not a `join ... ref()`: a join target that is a declared join model is exempt
+            # from the scan (#823), so one can never reach it.
             "select * from {{ ref('customer_stage') }}\n"
             "union all select * from {{ ref('no_such_model') }}\n"
         )

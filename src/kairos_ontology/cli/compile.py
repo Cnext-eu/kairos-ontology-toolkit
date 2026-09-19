@@ -243,6 +243,9 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
         for path, content in result.artifact_dict().items()
         if _is_shared_artifact(path)
     }
+    # What *this* run rendered, before the on-disk re-read below folds in every other
+    # domain's shared files: the Gold reconciliation needs to tell the two apart.
+    rendered_paths = frozenset(shared)
     current_source_paths = {path for path in shared if _is_source_catalog_artifact(path)}
     plan = result.plan.materialization_plan if result.plan is not None else None
     if plan is not None and plan.project.emit:
@@ -285,6 +288,7 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
     from ..core.projections.dbt.gold_shared import (
         SHARED_GOLD_MODELS_PATH,
         SharedGoldUnionError,
+        sole_contributor_may_replace,
         union_shared_gold_artifact,
     )
 
@@ -296,9 +300,23 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
         (path for path in shared if is_shared_gold_artifact(path)),
         key=lambda path: (path != SHARED_GOLD_MODELS_PATH, path),
     )
+    # The union reconciles *two* domains. When the schema yml on disk credits no calendar
+    # profile beyond the ones this run renders, the previous bytes are this same domain's
+    # last emit, and it may change its own calendar without being told two domains
+    # disagree. Decided once from the yml, because `dim_date.sql` carries no provenance.
+    models_yml_on_disk = target.joinpath(*SHARED_GOLD_MODELS_PATH.split("/"))
+    replaces_own_output = (
+        SHARED_GOLD_MODELS_PATH in rendered_paths
+        and models_yml_on_disk.is_file()
+        and sole_contributor_may_replace(
+            models_yml_on_disk.read_text(encoding="utf-8"), shared[SHARED_GOLD_MODELS_PATH]
+        )
+    )
     for path in gold_shared_paths:
         existing = target.joinpath(*path.split("/"))
         if not existing.is_file():
+            continue
+        if replaces_own_output and path in rendered_paths:
             continue
         from ..core.compiler.emit import ArtifactCollisionError
 

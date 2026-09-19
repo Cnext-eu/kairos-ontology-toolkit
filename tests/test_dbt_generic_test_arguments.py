@@ -118,3 +118,48 @@ def test_config_stays_outside_arguments():
     # `config:` sits at the same indentation as `arguments:`, directly under the test name.
     assert "          config:" in template
     assert "          arguments:" in template
+
+
+def test_column_level_generic_tests_nest_their_arguments_too():
+    """The column block kept the pre-1.10 shape after the model block was converted: a
+    source-context `accepted_values` rendered `values:` at the test's top level (as a Python
+    repr, at that). Same rule as above: arguments under `arguments:`, `config` beside it."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import kairos_ontology
+    from kairos_ontology.core.projections.dbt.render import _template_environment
+
+    column = SimpleNamespace(
+        name="status",
+        description="Lifecycle state",
+        data_type=None,
+        meta={},
+        tests=[
+            {"accepted_values": {"values": ["A", "B"], "config": {"severity": "warn"}}},
+            {"unique": {"config": {"where": "is_current = 1"}}},
+            "not_null",
+        ],
+    )
+    model = SimpleNamespace(
+        name="silver_order",
+        description="",
+        contract_enforced=False,
+        meta={},
+        data_tests=[],
+        grain_columns=["order_id"],
+        grain_where=None,
+        source_identity_columns=["order_id"],
+        columns=[column],
+    )
+    template_root = Path(kairos_ontology.__file__).parent / "templates" / "dbt"
+    text = _template_environment(str(template_root)).get_template(
+        "schema_models.yml.jinja2"
+    ).render(models=[model])
+
+    rendered = yaml.safe_load(text)["models"][0]["columns"][0]["tests"]
+    assert rendered[0] == {
+        "accepted_values": {"arguments": {"values": ["A", "B"]}, "config": {"severity": "warn"}}
+    }
+    assert rendered[1] == {"unique": {"config": {"where": "is_current = 1"}}}
+    assert rendered[2] == "not_null"

@@ -21,10 +21,11 @@ BI_DISCOVERY_RELPATH = Path("integration") / "discovery" / "bi"
 #: Legacy pre-DD-147 location where older toolkit versions wrote the same artifacts.
 LEGACY_BI_SOURCES_RELPATH = Path("integration") / "sources"
 
-#: The ``action`` values ``import-tmdl`` offers in the worksheet header it generates
-#: (``core/import_tmdl.py``). Any one of them is a recorded human decision, which is
-#: what makes a row triaged -- ``skip`` and ``new_class`` included, even though neither
-#: ever carries a ``reference_model_match`` (issue #687).
+#: The ``action`` values that record a human decision, out of those ``import-tmdl``
+#: offers in the worksheet header it generates (``core/import_tmdl.py``). Any one of them
+#: makes a row triaged -- ``skip`` and ``new_class`` included, even though neither ever
+#: carries a ``reference_model_match`` (issue #687). ``candidate`` is deliberately absent:
+#: it marks a match the tool proposed, not one a modeller confirmed (#762).
 CONCEPT_MAPPING_ACTIONS = frozenset({"use", "specialize", "new_class", "skip"})
 
 

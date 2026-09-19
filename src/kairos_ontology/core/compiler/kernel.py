@@ -557,6 +557,42 @@ def _index_class_by_token(loaded, root_path: Path, index, token: str):
     return index.class_by_uri(namespace + local)
 
 
+def _declared_domain_refs(
+    loaded, root_path: Path, graph: Graph, property_uri: str
+) -> tuple[str, ...]:
+    """Bindable tokens for the named ``rdfs:domain`` classes of *property_uri*.
+
+    The same reading and the same labelling :func:`_closure_property_owners` uses for a
+    property nothing in scope exposes, so the resolved and unresolved variants of the
+    "wrong class bound" diagnostic name the same declaring class the same way (#853).
+    """
+    declaring = sorted(
+        {
+            str(owner)
+            for owner in graph.objects(URIRef(property_uri), RDFS.domain)
+            if isinstance(owner, URIRef)
+        }
+    )
+    return _owner_labels(loaded, root_path, graph, declaring)
+
+
+def _owner_labels(loaded, root_path: Path, graph: Graph, owners: list[str]) -> tuple[str, ...]:
+    """Label each owner URI the way an author has to *type* it into ``target.class``.
+
+    Prefer the bindable alias the resolver accepts there. The merged graph's namespace
+    manager does not carry the source Turtle's ``@prefix`` bindings, so ``_qnames`` alone
+    would usually yield a bare IRI.
+    """
+    labels: list[str] = []
+    for owner in owners:
+        aliases = _declared_prefix_aliases(loaded, root_path, owner) or _qnames(
+            graph, URIRef(owner)
+        )
+        qualified = tuple(item for item in aliases if "://" not in item)
+        labels.append(next(iter(qualified or aliases), owner))
+    return tuple(labels)
+
+
 def _closure_property_owners(
     loaded,
     root_path: Path,
@@ -597,18 +633,7 @@ def _closure_property_owners(
         )
         if not declaring:
             continue
-        # The author has to *type* the owner into `target.class`, so prefer the same
-        # bindable alias the resolver accepts there. The merged graph's namespace manager
-        # does not carry the source Turtle's @prefix bindings, so `_qnames` alone would
-        # usually yield a bare IRI here.
-        labels: list[str] = []
-        for owner in declaring:
-            aliases = _declared_prefix_aliases(loaded, root_path, owner) or _qnames(
-                graph, URIRef(owner)
-            )
-            qualified = tuple(item for item in aliases if "://" not in item)
-            labels.append(next(iter(qualified or aliases), owner))
-        owners[token] = tuple(labels)
+        owners[token] = _owner_labels(loaded, root_path, graph, list(declaring))
     return owners
 
 
@@ -815,6 +840,7 @@ def _ontology_symbols(
             property_refs = set(_qnames(graph, URIRef(prop.uri)))
             property_refs.update(_declared_prefix_aliases(loaded, ontology_path, prop.uri))
             property_refs.add(f"{domain_prefix}:{prop.name}")
+            declared_domains = _declared_domain_refs(loaded, ontology_path, graph, prop.uri)
             for ref in sorted(property_refs):
                 key = (ref, prop.uri)
                 previous = properties.get(key)
@@ -828,6 +854,7 @@ def _ontology_symbols(
                     is_object_property=prop.is_object_property,
                     domain_uris=domains,
                     range_uris=prop.range_uris,
+                    declared_domain_refs=declared_domains,
                 )
     # DD-144: accelerator-direct binding resolution. The local-namespace pass above never
     # sees an imported (e.g. accelerator) class an author references without a local
@@ -858,6 +885,7 @@ def _ontology_symbols(
             data_type = _XSD_TYPES.get(prop.range_uri, prop.range_uri)
             property_refs = set(_qnames(graph, URIRef(prop.uri)))
             property_refs.update(_declared_prefix_aliases(loaded, ontology_path, prop.uri))
+            declared_domains = _declared_domain_refs(loaded, ontology_path, graph, prop.uri)
             for ref in sorted(property_refs):
                 key = (ref, prop.uri)
                 previous = properties.get(key)
@@ -871,6 +899,7 @@ def _ontology_symbols(
                     is_object_property=prop.is_object_property,
                     domain_uris=domains,
                     range_uris=prop.range_uris,
+                    declared_domain_refs=declared_domains,
                 )
     closure_paths = tuple(
         sorted(

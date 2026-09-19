@@ -11,7 +11,7 @@ import re
 import pytest
 from click.testing import CliRunner
 
-from kairos_ontology.core.adapters import dbt_adapter_requirement
+from kairos_ontology.core.adapters import DBT_CORE_REQUIREMENT, dbt_adapter_requirement
 
 from kairos_ontology.cli.main import cli
 from kairos_ontology.cli.setup import _activate_profile_platform
@@ -498,9 +498,11 @@ class TestInitDataplatformEdgeCases:
         )
 
         pyproject = (dp_dir / "pyproject.toml").read_text(encoding="utf-8")
-        # The declared requirement, shared with the hub scaffold (#789).
+        # The declared requirements, shared with the hub scaffold (#789). dbt-core is
+        # pinned explicitly: dbt-fabric only declares a floor, so without it the
+        # dataplatform resolved a newer dbt-core than the hub that emits its models.
         assert dbt_adapter_requirement("fabric-warehouse") in pyproject
-        assert "dbt-core" not in pyproject
+        assert f"dbt-core{DBT_CORE_REQUIREMENT}" in pyproject
 
     def test_pr_validate_ci_profile_matches_platform(self, mock_hub):
         """The placeholder CI profile's `type:` must track --platform, not always fabric."""
