@@ -103,5 +103,11 @@ because one Gold table would then be emitted twice under two model names with no
 report author to tell which is authoritative. If a genuinely shared conformed dimension
 needs to appear in several products, that is a real requirement and gets its own decision.
 
+**Decided since, in DD-228 (#829):** the requirement was real. A domain declared under
+`gold.shared_domains` may be read by several products. The premise above turned out to be
+wrong in one respect worth recording — a Gold table is materialized per *domain*, never per
+product, so it was never emitted twice; what a shared domain changes is only which semantic
+models may read the one copy.
+
 DD-112's per-domain framing is superseded for *scope only*; its profile, role and grain
 rules are unchanged.

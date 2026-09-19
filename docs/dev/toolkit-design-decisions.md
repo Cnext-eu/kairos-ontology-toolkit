@@ -290,5 +290,6 @@ during cleanup.
 | [DD-225](decisions/dd-225-the-dd-109-match-count-diagnostic-stays-in-silver-and-never-reaches-gold.md) | The DD-109 match-count diagnostic stays in Silver and never reaches Gold | Accepted | 2026-09-16 |
 | [DD-226](decisions/dd-226-only-one-filter-path-between-two-tables-is-active-and-the-author-can-say-which.md) | Only one filter path between two tables is active, and the author can say which | Accepted | 2026-09-16 |
 | [DD-227](decisions/dd-227-the-one-side-of-a-relationship-needs-a-declared-unique-key.md) | The "one" side of a relationship needs a declared unique key | Accepted | 2026-09-16 |
+| [DD-228](decisions/dd-228-a-domain-may-be-declared-shared-and-is-then-read-by-several-products-rather-than-built-by.md) | A domain may be declared shared, and is then read by several products rather than built by them | Accepted | 2026-09-19 |
 
 ---

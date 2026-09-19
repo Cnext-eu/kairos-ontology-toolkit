@@ -375,7 +375,9 @@ def load_gold_direct_lake_connection(
 GOLD_PRODUCT_RULE_ID = "DD-222-gold-product-scope"
 
 _PRODUCTS_KEY = "products"
+_SHARED_DOMAINS_KEY = "shared_domains"
 _PRODUCTS_CONFIG_PATH = f"{_GOLD_KEY}.{_PRODUCTS_KEY}"
+_SHARED_DOMAINS_CONFIG_PATH = f"{_GOLD_KEY}.{_SHARED_DOMAINS_KEY}"
 #: Used verbatim in artifact paths and as the stem of the manifest filename, so the same
 #: character class the emitter already sanitises domains to.
 _PRODUCT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -396,6 +398,14 @@ class GoldProductConfig:
     #: False for a product the hub never declared -- one Gold-configured domain standing
     #: alone under its own name, which is what every hub emitted before #744.
     declared: bool = True
+    #: Which of *this product's* `domains` the hub declared shared (#829). A conformed
+    #: dimension is materialized once by the domain that binds it and read by every
+    #: product that needs it, so these contribute tables the product does not own.
+    shared_domains: tuple[str, ...] = ()
+
+    def owns(self, domain: str) -> bool:
+        """Whether this product's emit is where *domain*'s tables are actually built."""
+        return domain not in self.shared_domains
 
     @property
     def model_name(self) -> str:
@@ -430,6 +440,7 @@ def parse_gold_products(config: object) -> tuple[GoldProductConfig, ...]:
     if not isinstance(raw, list) or not raw:
         raise _product_invalid("expected a non-empty list of products")
 
+    shared_domains = _parse_shared_domains(gold)
     products: list[GoldProductConfig] = []
     seen_names: set[str] = set()
     domain_owner: dict[str, str] = {}
@@ -458,6 +469,11 @@ def parse_gold_products(config: object) -> tuple[GoldProductConfig, ...]:
         if len(set(domains)) != len(domains):
             raise _product_invalid(f"product {name!r} repeats a domain")
         for domain in domains:
+            if domain in shared_domains:
+                # A conformed dimension is materialized once by the domain that binds it
+                # and read by every product that needs it, so the rule below does not
+                # apply -- see `_parse_shared_domains` for why this must be declared.
+                continue
             owner = domain_owner.get(domain)
             if owner is not None:
                 # One Gold table belongs to one semantic model. Two products over the same
@@ -465,7 +481,9 @@ def parse_gold_products(config: object) -> tuple[GoldProductConfig, ...]:
                 # author would have no way to tell which copy is authoritative.
                 raise _product_invalid(
                     f"domain {domain!r} is claimed by both {owner!r} and {name!r}; "
-                    "a domain belongs to exactly one Gold product"
+                    "a domain belongs to exactly one Gold product "
+                    f"(declare it under {_SHARED_DOMAINS_CONFIG_PATH} if it is a "
+                    "conformed dimension both products read)"
                 )
             domain_owner[domain] = name
         display_name = entry.get("display_name", "")
@@ -476,9 +494,46 @@ def parse_gold_products(config: object) -> tuple[GoldProductConfig, ...]:
                 name=name,
                 domains=tuple(domains),
                 display_name=display_name.strip(),
+                shared_domains=tuple(item for item in domains if item in shared_domains),
             )
         )
+    conflicting = sorted(shared_domains & seen_names)
+    if conflicting:
+        raise _shared_domains_invalid(
+            f"{conflicting} name(s) a declared product; a shared domain contributes "
+            "tables to products and is not one itself"
+        )
     return tuple(products)
+
+
+def _parse_shared_domains(gold: dict) -> frozenset[str]:
+    """Parse ``gold.shared_domains`` -- the domains several products may claim (#829).
+
+    Declared, never inferred. Sharing could be guessed from a domain authoring only
+    dimensions, but then adding the first fact to it would silently re-materialize every
+    one of its tables in every consuming product -- a change in physical layout with no
+    edit to say so. An explicit list makes that a decision somebody wrote down.
+
+    A domain nothing references yet is accepted: declaring the conformed dimension before
+    adding the second product is the natural authoring order, and this function raises
+    rather than warns, so there is nowhere for a softer signal to go.
+    """
+    raw = gold.get(_SHARED_DOMAINS_KEY)
+    if raw is None:
+        return frozenset()
+    if not isinstance(raw, list) or not all(isinstance(item, str) and item for item in raw):
+        raise _shared_domains_invalid("expected a list of domain names")
+    if len(set(raw)) != len(raw):
+        raise _shared_domains_invalid("a domain is listed twice")
+    return frozenset(raw)
+
+
+def _shared_domains_invalid(detail: str) -> GoldContractError:
+    return GoldContractError(
+        "gold.shared-domains-invalid",
+        f"{_SHARED_DOMAINS_CONFIG_PATH} is malformed: {detail}",
+        rule_id=GOLD_PRODUCT_RULE_ID,
+    )
 
 
 def load_gold_products(hub_root: Path | None) -> tuple[GoldProductConfig, ...]:
@@ -529,9 +584,23 @@ def resolve_gold_product(
             )
         if product.name == requested:
             return product
-    claimed = {domain: product for product in products for domain in product.domains}
-    owner = claimed.get(requested)
-    if owner is not None:
+    claiming = [product for product in products if requested in product.domains]
+    if len(claiming) > 1:
+        # A shared domain has no product of its own to stand in for it, and picking one of
+        # several would emit a model whose name says nothing about which it is.
+        raise GoldContractError(
+            "gold.domain-shared-across-products",
+            (
+                f"domain {requested!r} is a conformed dimension shared by "
+                f"{', '.join(repr(product.name) for product in claiming)}; it is "
+                "materialized by `compile` and read by each of them. Emit the product "
+                "that needs it: "
+                + " or ".join(f"`emit-gold {product.name}`" for product in claiming)
+            ),
+            rule_id=GOLD_PRODUCT_RULE_ID,
+        )
+    if claiming:
+        owner = claiming[0]
         raise GoldContractError(
             "gold.domain-belongs-to-product",
             (

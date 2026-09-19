@@ -212,6 +212,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         click.echo(f"✅ Would emit {summary}")
     _report_unresolved(artifacts, product)
     _report_unresolved_bridges(artifacts, product)
+    _report_shared_tables(artifacts, product)
     _report_insight_coverage(hub_root, logical, product)
     if not confirm_emit:
         click.echo("   (dry run -- pass --confirm-emit to write these files)")
@@ -229,7 +230,7 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
         artifacts,
         target,
         manifest_name=manifest_name,
-        replace_unowned_paths=(PARAMETER_ARTIFACT_PATH,),
+        replace_unowned_paths=(PARAMETER_ARTIFACT_PATH, *_shared_domain_artifacts(product)),
     )
     if diagrams:
         emit_artifacts(
@@ -408,6 +409,49 @@ def _report_unresolved(artifacts: dict[str, str], product) -> None:
         "     Add the owning domain to this product in kairos.yaml (gold.products), "
         "or author the target as a Gold table in a participating domain."
     )
+
+
+def _shared_domain_artifacts(product) -> tuple[str, ...]:
+    """Paths a shared domain writes into this directory from more than one product (#829).
+
+    A provenance sidecar is emitted per *participating domain*, not per product, and a
+    conformed dimension participates in several. The document is a pure function of that
+    domain's own build scope -- `build_provenance_document` reads nothing about the
+    product -- so every product emitting it writes byte-identical content. Without
+    declaring it, the second product to emit sees a file owned by the first's manifest and
+    fails closed, exactly as `parameter.yml` did in #664.
+    """
+    from ..core.compiler.provenance import provenance_artifact_path
+
+    return tuple(
+        provenance_artifact_path(domain, lane="gold") for domain in product.shared_domains
+    )
+
+
+def _report_shared_tables(artifacts: dict[str, str], product) -> None:
+    """Say which of this product's tables it reads rather than builds (#829).
+
+    Informational, not a warning: sharing a conformed dimension is the intended shape, and
+    the point is that an operator reading the emit output can tell the two apart. Without
+    it, a product whose customer dimension comes from another domain looks identical to
+    one that owns it, right up until somebody wonders why `emit-gold` never rebuilt it.
+    """
+    import json
+
+    report = next(
+        (content for name, content in artifacts.items() if name.endswith("-gold-product.json")),
+        None,
+    )
+    if report is None:
+        return
+    tables = json.loads(report).get("tables") or []
+    shared = [item for item in tables if (item.get("materialized_by") or {}).get("shared")]
+    if not shared:
+        return
+    owned = len(tables) - len(shared)
+    click.echo(f"   {owned} table(s) built by this product, {len(shared)} read as shared:")
+    for item in sorted(shared, key=lambda entry: entry["name"]):
+        click.echo(f"       {item['name']} (owned by {item['materialized_by']['domain']})")
 
 
 def _report_unresolved_bridges(artifacts: dict[str, str], product) -> None:
