@@ -75,6 +75,33 @@ generation the toolkit knows it shipped), and `decisions/index.md` and
 `.import/modeling/feedback/index.md`, which are regenerated from your own records by
 `kairos-ontology decision` and `kairos-ontology feedback`.
 
+## GitHub workflows: managed, but yours to extend
+
+`.github/workflows/*.yml` sit between the two categories above. The toolkit ships them and
+`update --refresh-workflows` replaces one **while it still matches a generation the toolkit
+recognises** — that is how a fix to the PR gate reaches a hub that already exists. But
+workflows legitimately carry local customization: an org CA bundle, extra credentials, a
+job nothing upstream knows about.
+
+So an edit is yours to keep, provided you say so. Declare it in `pyproject.toml`:
+
+```toml
+[tool.kairos]
+customized-workflows = [
+  ".github/workflows/pr-validate.yml",
+]
+```
+
+A declared workflow is never auto-refreshed and never fails `update --check`; it is listed
+so the divergence stays visible in review. An **undeclared** one fails `update --check`,
+because the alternative is what used to happen: the run reported the difference, then
+printed "All managed files are up to date" and exited 0, and the next `update` reverted a
+deliberate fix with no warning.
+
+Declaring is not the only option, and often not the best one. If the edit would help every
+hub, send it upstream instead — `uv run --no-sync` in every workflow step, and the drift
+gate covering `ontology-hub-publish/architecture`, both started as local edits in one hub.
+
 Adopt a newer managed guide and toolkit release in an isolated upgrade PR:
 
 ```powershell

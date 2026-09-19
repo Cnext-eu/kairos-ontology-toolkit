@@ -176,19 +176,19 @@ def test_superseded_templates_ship_in_the_package():
 #: *dataplatform* template, which they can never equal.
 _LIVE_WORKFLOW_TEMPLATE_DIGESTS: dict[str, str] = {
     "github-workflows/managed-check.yml":
-        "f771095121f58aa3d5ed2d304b9664355c3cff8cdaba08d05f6f7716e13e3641",
+        "fcf849a71384c23250814333b970dbc49efe54441ab0dff128596e66274ade6c",
     "github-workflows/pr-validate.yml":
-        "80a01fe20997a97ad9787042bad8f1bab2285c98d3db83c6766415b25ee4ac33",
+        "c34d242539a455cf035c7564eeccfcbaed5029096b9a4e9bddfb0e43f68af560",
     "github-workflows/full-validate.yml":
-        "589d64f081c88894197bdcb067577dc44f46e7edbdcc27920e49370fbc3e523a",
+        "7c623689179e2e27d2c6a8cfc031719d7e910802899590de37014ae46ccbc56b",
     "github-workflows/release-projections.yml":
-        "5d3e4bcf74dd494b3ab7fb2194bfed1978f643d1d063f594790ac12e32597765",
+        "110256da4cafdc252cc50b1569717819fa9ec864f583bca9bfd773fd4f3076fc",
     "github-workflows/assign-copilot.yml":
         "06e75b76b56fe7d8444c2e0d1555b3e23c752791f3f42338c41b36b23ed63938",
     "github-workflows/copilot-setup-steps.yml":
         "63b90be2aec5ddb4b26b51b3844ba64128491f78660af599ce09e9b19ddaa9e6",
     "dataplatform/.github/workflows/pr-validate.yml.template":
-        "d4d0f6f0ade4c6e2c9aa828fce67d52402f8024879339beedd7755328e1bbaad",
+        "a8512836f7412d6a2d2d954bbe5ee9d63cff1d48103cc911bdce6a6b4e33d211",
     "dataplatform/.github/workflows/deploy-powerbi-semantic-model.yml.template":
         "b04bbc1fce0915184fbdca4b06aea4e2f3bf086d2849d49935cdc1f5555d6cb0",
 }
@@ -244,7 +244,7 @@ def test_recorded_hub_generations_are_refreshable(tmp_path):
         for name, text in zip(_SUPERSEDED_WORKFLOW_TEMPLATES[destination], superseded)
         if name.startswith("hub-pr-validate/")
     ]
-    assert len(hub_generations) == 5, "expected five recorded hub generations"
+    assert len(hub_generations) == 6, "expected six recorded hub generations"
 
     for generation in hub_generations[1:]:
         scaffolded = tmp_path / "pr-validate.yml"
