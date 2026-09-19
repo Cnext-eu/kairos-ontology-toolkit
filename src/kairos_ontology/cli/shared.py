@@ -2577,6 +2577,10 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         # Pre-#774 hub generation, before the drift gate regenerated and diffed
         # `ontology-hub-publish/architecture`.
         "hub-pr-validate/5.template",
+        # Pre-#772 generations, before the do-not-edit header was replaced by the
+        # declare-your-edit header.
+        "hub-pr-validate/6.template",
+        "dataplatform-pr-validate/4.template",
     ),
     # Pre-#771 generation, before every `uv run` gained `--no-sync`. Also carries the
     # pre-#721 skill-context placement for full-validate.
@@ -2584,12 +2588,60 @@ _SUPERSEDED_WORKFLOW_TEMPLATES: dict[str, tuple[str, ...]] = {
         "hub-full-validate/1.template",
         # Pre-#774, same drift-gate change as pr-validate above.
         "hub-full-validate/2.template",
+        "hub-full-validate/3.template",
     ),
-    ".github/workflows/managed-check.yml": ("hub-managed-check/1.template",),
+    ".github/workflows/managed-check.yml": (
+        "hub-managed-check/1.template",
+        "hub-managed-check/2.template",
+    ),
     # Pre-#771/#773 generation, before `--no-sync`, the missing `--locked`, and the
     # GH_HOST / --prerelease fixes that make a GHES release possible at all.
-    ".github/workflows/release-projections.yml": ("hub-release-projections/1.template",),
+    ".github/workflows/release-projections.yml": (
+        "hub-release-projections/1.template",
+        "hub-release-projections/2.template",
+    ),
 }
+
+
+#: Key under ``[tool.kairos]`` by which a repo declares a workflow it edits on purpose.
+DECLARED_WORKFLOWS_KEY = "customized-workflows"
+
+
+def declared_customized_workflows(repo_root: Path) -> frozenset[str]:
+    """Return the workflows this repo declares it has deliberately edited (#772).
+
+    Workflow templates carry a do-not-edit marker, but ``update --check`` printed a
+    divergence informationally and then reported "All managed files are up to date" and
+    exited 0 -- so a hub could carry a real local fix, get no signal, and have it reverted
+    by the next ``update``. The marker and the gate disagreed.
+
+    Simply failing on any divergence is ruled out on purpose: workflows legitimately carry
+    local customization -- environment steps, extra credentials, org-specific jobs -- which
+    is why they were kept out of the marker-based managed-file mechanism in the first place
+    (see this module's ``_HUB_WORKFLOW_SOURCES`` notes and ``cli/workflow_refresh``).
+    Declaring one is the middle ground: it stays informational, is visible in review, and
+    is one line to write.
+
+    It also covers the second meaning of "customized" -- a generation this toolkit no
+    longer ships -- which a repo that skipped several releases can hit without having
+    edited anything.
+
+    Unreadable or absent config yields an empty set: this decides whether to *fail* a
+    check, so it must never fail closed on a malformed file that some other tool owns.
+    """
+    pyproject = repo_root / "pyproject.toml"
+    if not pyproject.is_file():
+        return frozenset()
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return frozenset()
+    declared = (data.get("tool", {}).get("kairos", {}) or {}).get(DECLARED_WORKFLOWS_KEY, [])
+    if not isinstance(declared, list):
+        return frozenset()
+    return frozenset(
+        str(item).strip().replace("\\", "/") for item in declared if str(item).strip()
+    )
 
 
 def _workflow_sources(repo_root: Path) -> dict[str, Path]:

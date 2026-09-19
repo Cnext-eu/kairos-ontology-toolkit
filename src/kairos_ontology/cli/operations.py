@@ -29,6 +29,7 @@ from .workflow_refresh import _PLACEHOLDER, _SHELL_ESCAPED
 from .workflow_refresh import classify as classify_workflow
 from .workflow_refresh import render as render_workflow
 from .shared import (
+    DECLARED_WORKFLOWS_KEY,
     _DependencyFilesSnapshot,
     _KNOWN_CLAUDE_SETTINGS_GENERATIONS,
     _superseded_workflow_templates,
@@ -41,6 +42,7 @@ from .shared import (
     _ToolkitTestRefState,
     _add_toolkit_test_ref_state,
     _copy_managed,
+    declared_customized_workflows,
     _dependency_files_transaction,
     _get_managed_version,
     _has_kairos_channel,
@@ -811,6 +813,13 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
 
     outdated_workflows = [item.path for item in workflow_statuses if item.state == "outdated"]
     customized_workflows = [item.path for item in workflow_statuses if item.state == "customized"]
+    declared_workflows = declared_customized_workflows(repo_root)
+    # Only *undeclared* divergence fails the check. A declared one is a deliberate,
+    # reviewable choice; failing on it would break every repo with a legitimate extra
+    # CI step, which is why workflows were excluded from the managed-file set (#772).
+    undeclared_workflows = [
+        path for path in customized_workflows if path not in declared_workflows
+    ]
     missing_workflows = [
         item.path
         for item in workflow_statuses
@@ -853,14 +862,36 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
                 "init-dataplatform step if that reports no change needed. See CICD.md."
             )
         if customized_workflows:
-            print(f"ℹ  {len(customized_workflows)} workflow(s) differ from the shipped template:")
-            for path in customized_workflows:
-                print(f"   {path}")
-            print(
-                "   They carry local edits (or a generation this toolkit no longer "
-                "ships) and were left alone. Diff them against the current template "
-                "by hand if you want a recent fix."
-            )
+            declared = [p for p in customized_workflows if p in declared_workflows]
+            undeclared = [p for p in customized_workflows if p not in declared_workflows]
+            if undeclared:
+                print(f"⚠  {len(undeclared)} workflow(s) differ from the shipped template:")
+                for path in undeclared:
+                    print(f"   {path}")
+                print(
+                    "   They carry local edits (or a generation this toolkit no longer "
+                    "ships) and were left alone — the next `update` will not revert them, "
+                    "but nothing is checking them either."
+                )
+                print(
+                    "   Declare each one you meant to edit, in this repo's pyproject.toml:"
+                )
+                print("     [tool.kairos]")
+                print(f"     {DECLARED_WORKFLOWS_KEY} = [")
+                for path in undeclared:
+                    print(f'       "{path}",')
+                print("     ]")
+                print(
+                    "   If the edit is worth having everywhere, send it upstream instead — "
+                    "that is how `--no-sync` and the architecture drift gate became "
+                    "defaults."
+                )
+            if declared:
+                print(
+                    f"ℹ  {len(declared)} declared workflow customization(s), left alone:"
+                )
+                for path in declared:
+                    print(f"   {path}")
         _report_git_hygiene_gaps(git_hygiene_gaps)
         for rel_path, template_name in _GIT_HYGIENE_FILES:
             if (_SCAFFOLD_DIR / template_name).is_file() and not (repo_root / rel_path).is_file():
@@ -889,6 +920,7 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
             and not outdated_workflows
             and not missing_workflows
             and not git_hygiene_gaps
+            and not undeclared_workflows
             and claude_settings_status != "outdated"
         ):
             print(f"✅ All managed files are up to date (v{_toolkit_version})")
