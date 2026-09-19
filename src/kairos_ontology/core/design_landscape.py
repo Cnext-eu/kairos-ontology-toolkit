@@ -50,6 +50,7 @@ from .conformance_artifact import ARTIFACT_RELPATH, ConformanceArtifactError, re
 from .evidence_loaders import scan_concept_mapping_worksheets
 from .fit_report import FitReportError, resolve_token_uri, run_fit_report
 from .ontology_loader import SemanticProfile, load_ontology
+from .alignment_closure import detect_closure_drift
 from .reference_modules import build_reference_module_context, resolve_hub_accelerator_detailed
 
 SCHEMA_VERSION = 1
@@ -275,6 +276,30 @@ def _local_name(uri: str) -> str:
     """Trailing fragment/path segment of *uri*, used as a display name of last resort."""
     parsed = urlsplit(uri)
     return (parsed.fragment or parsed.path.rstrip("/").rsplit("/", 1)[-1]).strip() or uri
+
+
+def _current_domain_uris(
+    ref_models_dir: Path | None, accelerator: str | None
+) -> dict[str, tuple[str, ...]]:
+    """``domain -> the module URIs the blueprint activates for it today``.
+
+    The same source `propose-alignment` reads when it records `domain_uris`, so the two
+    sides of the staleness comparison cannot disagree about what a closure is (#518).
+    Empty when the blueprint cannot be resolved, which means no drift is reported rather
+    than every module being called removed.
+    """
+    if ref_models_dir is None or not accelerator:
+        return {}
+    try:
+        from .analyse_sources import load_data_domains
+
+        domains = load_data_domains(Path(ref_models_dir), accelerator=accelerator)
+    except Exception:  # pragma: no cover - advisory; must never fail the report
+        return {}
+    return {
+        domain: tuple(str(uri) for uri in (meta.get("uris") or []))
+        for domain, meta in domains.items()
+    }
 
 
 def _resolve_universe_token(
@@ -592,7 +617,18 @@ def run_design_landscape(
             gaps.append(
                 f"no propose-alignment output (*-alignment.yaml) found under {analysis_dir}."
             )
+        # An alignment records the closure it was generated against and nothing compared
+        # the two, so a refmodels upgrade that widened owl:imports left the file silently
+        # stale -- and the symptom that surfaced was an "unused import" finding, which
+        # reads as a sourcing gap when the cause is "we never looked" (#518).
+        current_domain_uris = _current_domain_uris(ref_models_dir, resolved_accelerator)
         for alignment_path in alignment_files:
+            drift = detect_closure_drift(
+                alignment_path,
+                current_domain_uris.get(alignment_path.stem.removesuffix("-alignment"), ()),
+            )
+            if drift is not None:
+                gaps.append(drift.describe())
             try:
                 document = yaml.safe_load(alignment_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, yaml.YAMLError) as exc:
