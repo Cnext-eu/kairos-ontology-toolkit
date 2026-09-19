@@ -493,19 +493,47 @@ class TestAutoDispositionConflicts:
         assert ("qargo", "companies", "created_at") in load_dispositions(tmp_path)
 
     def test_a_proposed_local_property_contradicts_no_business_meaning(self, tmp_path):
-        """The aligner asking for a property is a claim that the data is real."""
+        """The aligner asking for a property is a claim that the data is real.
+
+        The example must be a column the *operational* rule catches but `is_audit_named`
+        does not, because an audit-named column is deliberately not rescued by a proposal
+        (an audit column stays audit whatever the aligner says). `source_id` is exactly
+        that: a pipeline identifier by name, so a proposed business property for it is a
+        real disagreement worth surfacing.
+
+        `owned_by_subco` used to serve here. #522 stopped the name predicate
+        misclassifying it at all, so it never becomes a candidate and there is no conflict
+        left to withhold -- covered below as its own case. This cross-check is the safety
+        net, and fixing the root cause means the net legitimately catches less.
+        """
         analysis = tmp_path / "integration" / "sources" / "_analysis"
         write_alignment(analysis, "financial", "revenue_and_costs", [
-            {"column": "owned_by_subco", "data_type": "bit",
-             "proposed_local_property": {"name": "ownedBySubcontractor",
+            {"column": "source_id", "data_type": "varchar(max)",
+             "proposed_local_property": {"name": "originatingSource",
                                          "on_class": "ResourceAllocation"}},
-            {"column": "created_by", "data_type": "varchar(max)"},
+            {"column": "row_version", "data_type": "varchar(max)"},
         ])
         stats = apply_auto_dispositions(tmp_path)
         recorded = load_dispositions(tmp_path)
-        assert ("qargo", "revenue_and_costs", "owned_by_subco") not in recorded
-        assert ("qargo", "revenue_and_costs", "created_by") in recorded
+        assert ("qargo", "revenue_and_costs", "source_id") not in recorded
+        assert ("qargo", "revenue_and_costs", "row_version") in recorded
         assert stats["withheld_conflicting"] == 1
+
+    def test_a_business_relationship_is_no_longer_a_candidate_at_all(self, tmp_path):
+        """#522: `owned_by_subco` is not audit-named, so it never reaches the cross-check.
+
+        Before, a bare `_by` substring match made it a candidate and #521's cross-check had
+        to rescue it. Not being classified in the first place is the stronger outcome --
+        the cross-check only fires when the aligner happens to have said something.
+        """
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        write_alignment(analysis, "financial", "revenue_and_costs", [
+            {"column": "owned_by_subco", "data_type": "bit"},
+        ])
+        stats = apply_auto_dispositions(tmp_path)
+
+        assert ("qargo", "revenue_and_costs", "owned_by_subco") not in load_dispositions(tmp_path)
+        assert stats["withheld_conflicting"] == 0
 
     def test_the_conflict_is_surfaced_in_the_decision_sheet(self, tmp_path):
         """Surfaced, not resolved in favour of whichever stage ran first."""
