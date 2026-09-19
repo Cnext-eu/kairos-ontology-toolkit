@@ -557,6 +557,72 @@ def _index_class_by_token(loaded, root_path: Path, index, token: str):
     return index.class_by_uri(namespace + local)
 
 
+def _closure_property_owners(
+    loaded,
+    root_path: Path,
+    graph: Graph,
+    tokens: frozenset[str],
+) -> dict[str, tuple[str, ...]]:
+    """Map each unresolved property *token* to the class tokens that declare it (#853).
+
+    A property living on a class nothing in scope pulled in was reported as "does not
+    resolve in the ontology" -- but the DD-103 graph already covers the whole
+    ``owl:imports`` closure, so the property is right there, one hop away, on a class a
+    binding could target directly (DD-144). Naming that class turns a hunt for a typo or a
+    missing import into the actual next step.
+
+    Bounded by the tokens that already failed, so it never walks the closure's whole term
+    universe -- the same restraint the DD-144 class fallback applies.
+
+    Returns only tokens that resolve to a property with at least one named ``rdfs:domain``.
+    A token matching nothing anywhere still falls through to the unchanged "unknown"
+    diagnostic, which is the honest answer for a typo.
+    """
+    owners: dict[str, tuple[str, ...]] = {}
+    for token in sorted(tokens):
+        uri = _token_uri(loaded, root_path, token)
+        if uri is None:
+            continue
+        subject = URIRef(uri)
+        if (subject, None, None) not in graph:
+            continue
+        declaring = tuple(
+            sorted(
+                {
+                    str(owner)
+                    for owner in graph.objects(subject, RDFS.domain)
+                    if isinstance(owner, URIRef)
+                }
+            )
+        )
+        if not declaring:
+            continue
+        # The author has to *type* the owner into `target.class`, so prefer the same
+        # bindable alias the resolver accepts there. The merged graph's namespace manager
+        # does not carry the source Turtle's @prefix bindings, so `_qnames` alone would
+        # usually yield a bare IRI here.
+        labels: list[str] = []
+        for owner in declaring:
+            aliases = _declared_prefix_aliases(loaded, root_path, owner) or _qnames(
+                graph, URIRef(owner)
+            )
+            qualified = tuple(item for item in aliases if "://" not in item)
+            labels.append(next(iter(qualified or aliases), owner))
+        owners[token] = tuple(labels)
+    return owners
+
+
+def _token_uri(loaded, root_path: Path, token: str) -> str | None:
+    """Expand a full IRI or ``prefix:Local`` qname to a URI, or ``None``."""
+    if "://" in token or token.startswith("urn:"):
+        return token
+    if ":" not in token:
+        return None
+    prefix, _, local = token.partition(":")
+    namespace = _declared_namespace_for_prefix(loaded, root_path, prefix)
+    return None if namespace is None else namespace + local
+
+
 def _class_index_properties(index, class_uri: str, graph: Graph) -> tuple[PropertyInfo, ...]:
     """Return direct + subclass-inherited datatype/object properties for a bound class.
 
@@ -661,7 +727,10 @@ def _domain_namespace(loaded, graph: Graph) -> str:
 
 
 def _ontology_symbols(
-    ontology_path: Path, hub_root: Path, referenced_tokens: frozenset[str] = frozenset()
+    ontology_path: Path,
+    hub_root: Path,
+    referenced_tokens: frozenset[str] = frozenset(),
+    referenced_property_tokens: frozenset[str] = frozenset(),
 ) -> tuple[
     Graph,
     str,
@@ -671,6 +740,7 @@ def _ontology_symbols(
     tuple[ResolvedProperty, ...],
     tuple[str, ...],
     tuple[CompileDiagnostic, ...],
+    dict[str, tuple[str, ...]],
     dict[str, tuple[str, ...]],
 ]:
     # DD-108/DD-103: resolve binding symbols against a non-asserted (RDFS) profile so that
@@ -819,6 +889,13 @@ def _ontology_symbols(
         closure_paths or (str(ontology_path),),
         prefix_warnings,
         _prefix_alternatives(loaded, ontology_path),
+        _closure_property_owners(
+            loaded,
+            ontology_path,
+            graph,
+            # Only the tokens that did not resolve in scope: the rest need no explaining.
+            referenced_property_tokens - {item.ref for item in properties.values()},
+        ),
     )
 
 
@@ -962,10 +1039,16 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
                 )
             ]
         )
+    binding_documents = {path: path.read_text(encoding="utf-8") for path in binding_paths}
     referenced_tokens = frozenset(
         token
-        for path in binding_paths
-        for token in _binding_referenced_class_tokens(path.read_text(encoding="utf-8"))
+        for document in binding_documents.values()
+        for token in _binding_referenced_class_tokens(document)
+    )
+    referenced_property_tokens = frozenset(
+        token
+        for document in binding_documents.values()
+        for token in _binding_referenced_property_tokens(document)
     )
     (
         graph,
@@ -977,7 +1060,8 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
         ontology_paths,
         prefix_warnings,
         prefix_alternatives,
-    ) = _ontology_symbols(ontology_path, root, referenced_tokens)
+        closure_property_owners,
+    ) = _ontology_symbols(ontology_path, root, referenced_tokens, referenced_property_tokens)
     relations = list(
         _dedupe_relations(
             [relation for path in source_paths for relation in parsed_source_relations[path]]
@@ -1093,6 +1177,7 @@ def resolve_scope(hub_root: Path, domain: str) -> tuple[BuildScope, ResolutionCo
             graph, _EXT_NS, frozenset(item.uri for item in classes)
         ),
         prefix_alternatives=prefix_alternatives,
+        closure_property_owners=closure_property_owners,
     )
     return scope, context
 
@@ -2828,6 +2913,31 @@ def _binding_referenced_class_tokens(text: str) -> tuple[str, ...]:
             if isinstance(relationship, dict) and relationship.get("target"):
                 tokens.append(str(relationship["target"]))
     return tuple(tokens)
+
+
+def _binding_referenced_property_tokens(text: str) -> tuple[str, ...]:
+    """Read every ontology property token a binding's ``fields:`` names (#853).
+
+    The sibling of :func:`_binding_referenced_class_tokens`, and best-effort in the same
+    way. Used only to decide whether a token that failed to resolve *in scope* exists
+    somewhere in the import closure, so the diagnostic can say which class declares it
+    instead of claiming it does not exist. ``technicalFields`` are deliberately excluded:
+    they carry no ontology property by construction (DD-139).
+    """
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return ()
+    if not isinstance(document, dict):
+        return ()
+    fields = document.get("fields")
+    if not isinstance(fields, list):
+        return ()
+    return tuple(
+        str(field_map["property"])
+        for field_map in fields
+        if isinstance(field_map, dict) and field_map.get("property")
+    )
 
 
 def _external_target_domain(hub_root: str, current_domain: str, target_class: str) -> str | None:
