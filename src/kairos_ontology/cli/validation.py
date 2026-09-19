@@ -640,6 +640,10 @@ def validate(
         decisions_path=decisions_path,
         gdpr_warnings=gdpr_warning_count,
         modes_served=configured_modes_served(effective_hub_root),
+        # The repo root, not the hub root: `ontology-hub/model/ontologies/x.ttl`
+        # matches how the drift gate and `_dangling_refs` report paths, and is what a
+        # reviewer can click in a pull request (#822).
+        repo_root=effective_hub_root.parent,
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through

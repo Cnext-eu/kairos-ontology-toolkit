@@ -1559,6 +1559,7 @@ def run_validation(
     decisions_path: Optional[Path] = None,
     gdpr_warnings: int = 0,
     modes_served: Optional[list[str]] = None,
+    repo_root: Optional[Path] = None,
 ):
     """Run validation pipeline.
 
@@ -1577,6 +1578,13 @@ def run_validation(
             a location relative to the process's current working directory.
             CLI callers should always pass
             ``<repo>/ontology-hub-publish/validation-report.json``.
+        repo_root: Optional anchor for the ``file`` paths in the report. When given,
+            every path is emitted relative to it with forward slashes, so the report is
+            comparable across machines and clickable in a pull request. Absolute,
+            machine-local paths were embedded before (#822): they leak the developer's
+            filesystem layout into an artifact routinely pasted into issues, and a hub
+            that tracks the report saw ~130 lines rewrite on every other checkout. Omitted
+            by default, which keeps the previous output for direct library callers.
         markdown_report_path: Additive: explicit path to also (or instead) write a
             deterministic Markdown validation report (toolkit version, effective
             command options, catalog, accelerator, scope/files, and findings — see
@@ -1594,6 +1602,22 @@ def run_validation(
             warnings are open. Defaults to 0 (unchanged behavior) for callers that ran no
             GDPR scan or don't pass it.
     """
+
+    def _report_path(path: Path) -> str:
+        """Render *path* for the report: repo-relative and POSIX when we can (#822).
+
+        `.as_posix()` unconditionally, because a `str()` of a relative Windows path still
+        differs across platforms and would defeat the cross-machine comparability this
+        exists for. Falls back to the absolute path for anything outside the tree, which a
+        library caller passing no root also gets.
+        """
+        if repo_root is None:
+            return str(path)
+        try:
+            return path.resolve().relative_to(Path(repo_root).resolve()).as_posix()
+        except ValueError:
+            return str(path)
+
 
     print("🔍 Kairos Ontology Validation")
     print("=" * 50)
@@ -1646,7 +1670,7 @@ def run_validation(
             active_master_imports = None
             results["imports"]["warnings"].append(
                 {
-                    "file": str(master_path),
+                    "file": _report_path(master_path),
                     "message": f"_master.ttl could not be read for the import-sync check: {exc}",
                 }
             )
@@ -1661,7 +1685,7 @@ def run_validation(
                 if declared_iri.rstrip("/") not in active_master_imports:
                     results["imports"]["warnings"].append(
                         {
-                            "file": str(ontology_file),
+                            "file": _report_path(ontology_file),
                             "message": (
                                 f"_master.ttl does not import {ontology_file.stem} "
                                 f"({declared_iri}) — run "
@@ -1718,7 +1742,7 @@ def run_validation(
                 )
             except Exception as exc:  # noqa: BLE001
                 results["imports"]["failed"] += 1
-                results["imports"]["errors"].append({"file": str(ontology_file), "error": str(exc)})
+                results["imports"]["errors"].append({"file": _report_path(ontology_file), "error": str(exc)})
                 print(f"  ✗ {ontology_file.name}: {exc}")
                 continue
 
@@ -1727,12 +1751,12 @@ def run_validation(
             hard_errors = [item for item in errors if item.code != "missing_managed_import"]
             degradable_errors = [item for item in errors if item.code == "missing_managed_import"]
             results["imports"]["warnings"].extend(
-                {"file": str(ontology_file), **item.to_dict()} for item in warnings
+                {"file": _report_path(ontology_file), **item.to_dict()} for item in warnings
             )
             if hard_errors or (degradable_errors and not degraded):
                 results["imports"]["failed"] += 1
                 results["imports"]["errors"].extend(
-                    {"file": str(ontology_file), **item.to_dict()} for item in errors
+                    {"file": _report_path(ontology_file), **item.to_dict()} for item in errors
                 )
                 print(f"  ✗ {ontology_file.name}: {len(errors)} missing/invalid import(s)")
                 for item in errors:
@@ -1741,7 +1765,7 @@ def run_validation(
                 results["imports"]["passed"] += 1
                 if degradable_errors:
                     results["imports"]["warnings"].extend(
-                        {"file": str(ontology_file), **item.to_dict()} for item in degradable_errors
+                        {"file": _report_path(ontology_file), **item.to_dict()} for item in degradable_errors
                     )
                     print(
                         f"  ⚠ {ontology_file.name}: degraded mode accepted "
@@ -1997,7 +2021,7 @@ def run_validation(
                 print(f"  ✓ {ontology_file.name}")
             except Exception as e:
                 results["syntax"]["failed"] += 1
-                results["syntax"]["errors"].append({"file": str(ontology_file), "error": str(e)})
+                results["syntax"]["errors"].append({"file": _report_path(ontology_file), "error": str(e)})
                 print(f"  ✗ {ontology_file.name}: {e}")
                 continue
 
@@ -2009,7 +2033,7 @@ def run_validation(
             if naming_result["errors"]:
                 results["naming"]["failed"] += 1
                 results["naming"]["errors"].extend(
-                    {"file": str(ontology_file), **e} for e in naming_result["errors"]
+                    {"file": _report_path(ontology_file), **e} for e in naming_result["errors"]
                 )
                 print(
                     f"    ✗ {len(naming_result['errors'])} naming/annotation error(s) "
@@ -2018,7 +2042,7 @@ def run_validation(
             else:
                 results["naming"]["passed"] += 1
             results["naming"]["warnings"].extend(
-                {"file": str(ontology_file), **w} for w in naming_result["warnings"]
+                {"file": _report_path(ontology_file), **w} for w in naming_result["warnings"]
             )
 
         print(f"\n  Passed: {results['syntax']['passed']}, Failed: {results['syntax']['failed']}\n")
@@ -2068,12 +2092,12 @@ def run_validation(
             if outcome.error is not None:
                 results["shacl"]["failed"] += 1
                 results["shacl"]["errors"].append(
-                    {"file": str(ontology_file), "error": outcome.error}
+                    {"file": _report_path(ontology_file), "error": outcome.error}
                 )
                 print(f"  ✗ {ontology_file.name}: {outcome.error}")
             elif outcome.conforms:
                 results["shacl"]["passed"] += 1
-                results["shacl"].setdefault("semantic_context", {})[str(ontology_file)] = {
+                results["shacl"].setdefault("semantic_context", {})[_report_path(ontology_file)] = {
                     "profile": outcome.profile,
                     "closure_hash": outcome.closure_hash,
                     "import_complete": outcome.import_complete,
@@ -2082,7 +2106,7 @@ def run_validation(
             else:
                 results["shacl"]["failed"] += 1
                 results["shacl"]["errors"].append(
-                    {"file": str(ontology_file), "report": outcome.report_text}
+                    {"file": _report_path(ontology_file), "report": outcome.report_text}
                 )
                 print(f"  ✗ {ontology_file.name}")
                 print(f"    {outcome.report_text}")
