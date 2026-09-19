@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from rdflib import Graph, OWL, RDF, RDFS, URIRef
 
 from ...ontology_loader import load_ontology
-from ..shared import effective_domain_classes, properties_with_domain
+from ..shared import class_ancestors, effective_domain_classes, properties_with_domain
 from .context import (
     ActiveSourceScope,
     ActiveSourceTable,
@@ -66,7 +66,26 @@ def _active_source_inputs(
     graph: Graph,
     policy_facts=None,
 ) -> tuple[list[dict], SourceMappings, dict, ActiveSourceScope]:
-    """Scope loaded source authorities once for every downstream dbt stage."""
+    """Scope loaded source authorities once for every downstream dbt stage.
+
+    ``class_uris`` is consumed three ways here, and the split is deliberate (#735, under
+    the #729 policy: *traverse for compatibility, exact for identity*).
+
+    **Contracts and table mappings: EXACT.** Both answer "does this domain own this?", and
+    ownership does not inherit. A contract declared against an accelerator ancestor belongs
+    to whoever declared it, not to every domain that specialises the class -- widening here
+    would pull a peer domain's contract into this compile.
+
+    **The property filter: widened UP.** It answers "could a class in scope carry this
+    property?", and a property declared on an ancestor genuinely applies to its
+    descendants. That is compatibility, not ownership.
+
+    The widened set used to be consulted *only* in the fallback arm of the column filter --
+    for columns whose ``source_column_uri`` did not resolve to a known table -- so whether
+    the ancestor walk had any effect depended on whether the source column happened to be
+    registered, which is not a semantic distinction. It now scopes the property filter
+    itself, which is what it was always for.
+    """
 
     active_contracts = {
         name: contract
@@ -94,16 +113,21 @@ def _active_source_inputs(
         for table in system["tables"]
         for column in table["columns"]
     }
-    class_scope = set(class_uris)
-    frontier = [URIRef(uri) for uri in class_uris]
-    while frontier:
-        current = frontier.pop()
-        for parent in graph.objects(current, RDFS.subClassOf):
-            if not isinstance(parent, URIRef) or str(parent) in class_scope:
-                continue
-            class_scope.add(str(parent))
-            frontier.append(parent)
-    class_scope_uris = {URIRef(uri) for uri in class_scope}
+    # The promoted projector-level authority (#729) rather than a ninth hand-rolled
+    # walker: breadth-first, cycle-safe, and it skips blank-node `subClassOf` objects,
+    # which are OWL restrictions rather than superclasses.
+    #
+    # `owl:Thing` and friends are excluded for the same reason every other guarded walk in
+    # the tree excludes them: a hub that asserts `rdfs:subClassOf owl:Thing` would
+    # otherwise put it in scope, and any property declaring `rdfs:domain owl:Thing` -- a
+    # common symptom of a missing `owl:imports` -- would match every class at once.
+    class_scope_uris = {URIRef(uri) for uri in class_uris}
+    for uri in class_uris:
+        class_scope_uris.update(
+            ancestor
+            for ancestor in class_ancestors(graph, URIRef(uri))
+            if not str(ancestor).startswith("http://www.w3.org/")
+        )
     active_properties = {
         str(prop)
         for prop in properties_with_domain(graph)
