@@ -409,6 +409,7 @@ def render_canonical_project(
     _validate_dbt_artifacts(
         artifacts,
         known_models=set(plan.release.known_models),
+        join_models=_declared_join_models(shaped),
     )
     return artifacts
 
@@ -1229,6 +1230,7 @@ def render_project(
     _validate_dbt_artifacts(
         artifacts,
         known_models=set(plan.release.known_models),
+        join_models=_declared_join_models(shaped),
     )
     return artifacts
 
@@ -1281,6 +1283,7 @@ def _validate_dbt_artifacts(
     artifacts: dict[str, str],
     *,
     known_models: set[str] | None = None,
+    join_models: set[str] | None = None,
 ) -> None:
     # Blocking, unlike the ref/Jinja scans below: a duplicate model name is never valid
     # output. This used to surface only as a "self-referential ref(...)" warning from
@@ -1288,7 +1291,7 @@ def _validate_dbt_artifacts(
     # project-wide name collision, and `compile --check`/`--emit` both passed (issue #685).
     _check_duplicate_model_names(artifacts)
     model_names = _extract_model_names(artifacts) | (known_models or set())
-    known_refs = model_names | _collect_join_ref_targets(artifacts)
+    known_refs = model_names | (join_models or set())
     for path, content in artifacts.items():
         if path.endswith(".sql"):
             _check_jinja_syntax(path, content)
@@ -1298,21 +1301,6 @@ def _validate_dbt_artifacts(
 def _extract_model_names(artifacts: dict[str, str]) -> set[str]:
     return {
         path.rsplit("/", 1)[-1].removesuffix(".sql") for path in artifacts if path.endswith(".sql")
-    }
-
-
-_JOIN_REF_PATTERN = re.compile(
-    r"""join\s+\{?\{?\s*ref\(\s*['"]([^'"]+)['"]\s*\)""",
-    re.I,
-)
-
-
-def _collect_join_ref_targets(artifacts: dict[str, str]) -> set[str]:
-    return {
-        match.group(1)
-        for path, content in artifacts.items()
-        if path.endswith(".sql")
-        for match in _JOIN_REF_PATTERN.finditer(content)
     }
 
 
@@ -1331,6 +1319,33 @@ def _check_jinja_syntax(path: str, content: str) -> None:
 
 
 _REF_PATTERN = re.compile(r"""\bref\(\s*['"]([^'"]+)['"]\s*\)""")
+
+
+def _declared_join_models(shaped: ShapedProject) -> set[str]:
+    """Model names this project's joins actually reference.
+
+    A cross-domain relationship joins another domain's Silver model, which is not in this
+    domain's render scope and is not any binding's declared contract either -- so without
+    these the ref() scan reports it, and it is the single legitimate case a join ref has
+    for pointing outside the current render.
+
+    This used to be a regex over the rendered SQL, whitelisting *any* `join ... ref('X')`.
+    That made the known set partly derived from the very text being checked, so a typo in
+    a join position whitelisted itself and could never be reported (#823). `JoinSpec`
+    already carries the referenced model name as structured data, which answers the same
+    question without the circularity.
+    """
+    targets: set[str] = set()
+    for model in shaped.silver_models:
+        for join in model.joins:
+            # `referenced_model` holds the rendered expression -- "{{ ref('customer') }}"
+            # -- rather than a bare name, because it is written straight into the SQL.
+            match = _REF_PATTERN.search(join.referenced_model or "")
+            if match:
+                targets.add(match.group(1))
+            elif join.referenced_model:
+                targets.add(join.referenced_model)
+    return targets
 
 
 def _check_refs(path: str, content: str, model_names: set[str]) -> None:
