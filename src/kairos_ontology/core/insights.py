@@ -28,6 +28,9 @@ from pathlib import Path
 
 import yaml
 
+from .projections.dbt.calendar_columns import CALENDAR_COLUMN_NAMES
+from .projections.dbt.gold_shape import CALENDAR_TABLE
+
 logger = logging.getLogger(__name__)
 
 #: Repo-relative location, shared with the harvested TMDL/report evidence (DD-147).
@@ -187,8 +190,13 @@ def check_coverage(insights: tuple[Insight, ...], spec) -> tuple[InsightCoverage
     }
     if spec.calendar is not None and spec.calendar.approved:
         # `dim_date` is generated rather than shaped from Silver, so its columns are not
-        # in `spec.tables`; an insight may legitimately slice by it.
-        columns.update({"dim_date.date_key", "dim_date.full_date"})
+        # in `spec.tables`; an insight may legitimately slice by it. Every declared
+        # calendar column, not the two this listed: on one hub 6 of 9 insights reported as
+        # unanswerable while naming columns the warehouse demonstrably had, because
+        # essentially every legacy report compares a period against a prior period (#747).
+        columns.update(
+            f"{CALENDAR_TABLE}.{name}".casefold() for name in CALENDAR_COLUMN_NAMES
+        )
     results: list[InsightCoverage] = []
     for insight in insights:
         results.append(

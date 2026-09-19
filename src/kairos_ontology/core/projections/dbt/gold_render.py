@@ -10,6 +10,7 @@ from datetime import date
 
 import yaml
 
+from .calendar_columns import CALENDAR_COLUMNS
 from .capabilities import physical_canonical_type
 from .gold_assert import assert_gold_semantics
 from .gold_connection import (
@@ -280,7 +281,11 @@ def _dbt_calendar_sql(calendar: GoldCalendarSpec, adapter: str) -> str:
             f"    {date_key} as date_key,",
             "    cast(date_day as date) as full_date,",
             f"    {_part('year')} as year_number,",
+            f"    {_part('quarter')} as quarter_number,",
             f"    {_part('month')} as month_number,",
+            # Month name needs a dialect function rather than a date part, and the macro
+            # already dispatches it (DATENAME on T-SQL, DATE_FORMAT on Spark).
+            '    {{ kairos_month_name("date_day") }} as month_name,',
             f"    {_part('day')} as day_of_month,",
             f"    {calendar.fiscal_year_start_month} as fiscal_year_start_month,",
             f"    {_quoted(calendar.week_pattern)} as week_pattern,",
@@ -455,15 +460,17 @@ def render_gold_dbt_artifacts(
                         },
                         "columns": [
                             {
-                                "name": "date_key",
-                                "description": "YYYYMMDD date key.",
-                                "tests": ["not_null", "unique"],
-                            },
-                            {
-                                "name": "full_date",
-                                "description": "Calendar date.",
-                                "tests": ["not_null", "unique"],
-                            },
+                                "name": column.name,
+                                "description": column.description,
+                                **(
+                                    {"tests": ["not_null", "unique"]}
+                                    if column.is_key or column.name == "full_date"
+                                    else {}
+                                    if column.nullable
+                                    else {"tests": ["not_null"]}
+                                ),
+                            }
+                            for column in CALENDAR_COLUMNS
                         ],
                     }
                 ],
@@ -537,7 +544,9 @@ def _ddl(
                 "    date_key BIGINT NOT NULL,",
                 "    full_date DATE NOT NULL,",
                 "    year_number INT NOT NULL,",
+                "    quarter_number INT NOT NULL,",
                 "    month_number INT NOT NULL,",
+                f"    month_name {text_type} NOT NULL,",
                 "    day_of_month INT NOT NULL,",
                 "    fiscal_year_start_month INT NOT NULL,",
                 f"    week_pattern {text_type} NOT NULL,",
@@ -573,8 +582,11 @@ def _erd(spec: DimensionalGoldSpec, physical: GoldPhysicalPlan) -> str:
         lines.extend(
             [
                 "    DIM_DATE {",
-                "        BIGINT date_key PK",
-                "        DATE full_date",
+                *(
+                    f"        {_CALENDAR_ERD_TYPES[column.kind]} {column.name}"
+                    f"{' PK' if column.is_key else ''}"
+                    for column in CALENDAR_COLUMNS
+                ),
                 "    }",
             ]
         )
@@ -951,6 +963,26 @@ def _table_tmdl(
     return "\n".join(lines)
 
 
+#: Canonical calendar kind -> TMDL dataType. Kept here rather than on CalendarColumn
+#: because the DDL and the ERD need different spellings of the same kind.
+_CALENDAR_TMDL_TYPES = {
+    "int64": "Int64",
+    "int32": "Int64",
+    "date": "DateTime",
+    "string": "String",
+    "boolean": "Boolean",
+}
+
+#: Same kinds, in the Mermaid erDiagram spellings the rest of the ERD already uses.
+_CALENDAR_ERD_TYPES = {
+    "int64": "BIGINT",
+    "int32": "INT",
+    "date": "DATE",
+    "string": "VARCHAR",
+    "boolean": "BOOLEAN",
+}
+
+
 def _date_tmdl(
     calendar: GoldCalendarSpec,
     product: GoldPhysicalPlan,
@@ -963,16 +995,19 @@ def _date_tmdl(
         f'\tannotation Kairos_CalendarApproval = "{"approved" if calendar.approved else "draft"}"',
         f'\tannotation Kairos_CalendarBounds = "{calendar.start_date}/{calendar.end_date}"',
         "",
-        "\tcolumn date_key",
-        "\t\tdataType: Int64",
-        "\t\tisKey",
-        "\t\tsourceColumn: date_key",
-        "",
-        "\tcolumn full_date",
-        "\t\tdataType: DateTime",
-        "\t\tsourceColumn: full_date",
-        "",
     ]
+    # Every declared calendar column, not the two this table used to expose. With only
+    # `date_key` and `full_date` here, `dim_date.month_number` was genuinely absent from
+    # the semantic model, so insight coverage was right to reject it -- the emitter was
+    # under-declaring the table, not the checker under-resolving it (#747).
+    for column in CALENDAR_COLUMNS:
+        lines.append(f"\tcolumn {column.name}")
+        lines.append(f"\t\tdataType: {_CALENDAR_TMDL_TYPES[column.kind]}")
+        if column.is_key:
+            lines.append("\t\tisKey")
+        lines.append(f"\t\tsourceColumn: {column.name}")
+        lines.append(f"\t\t/// {column.description}")
+        lines.append("")
     lines.extend(_partition("dim_date", "gold_shared", product, connection))
     return "\n".join(lines)
 
