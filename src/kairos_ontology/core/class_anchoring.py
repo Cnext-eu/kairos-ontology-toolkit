@@ -67,6 +67,14 @@ class ReferenceTerm:
     comment: str
     module: str
     kind: str  # "class" | "property"
+    #: For a class: the local names of the properties it carries in the closure, own and
+    #: inherited. Empty for a property term.
+    #:
+    #: The loader always had this in hand and discarded it, so every caller that needed
+    #: "which properties does this class carry" resolved the closure a second time --
+    #: three derivations from two loaders, and ~13s of duplicated work on a 109-module
+    #: hub (#524). Carried here instead, which is where it is already known.
+    property_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -338,6 +346,15 @@ def _read_reference_terms_uncached(
                     comment=str(cls.get("comment") or ""),
                     module=_module_of(uri),
                     kind="class",
+                    property_names=tuple(
+                        sorted(
+                            {
+                                str(prop.get("name") or _local_name(str(prop.get("uri") or "")))
+                                for prop in cls.get("properties") or []
+                                if prop.get("name") or prop.get("uri")
+                            }
+                        )
+                    ),
                 )
             )
         for prop in cls.get("properties") or []:
