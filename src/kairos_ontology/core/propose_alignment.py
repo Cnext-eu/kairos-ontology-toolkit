@@ -143,6 +143,7 @@ HIGH_ACCURACY_MODEL = "gpt-5.4"
 
 # ---------------------------------------------------------------------------
 # Alignment-reliability — typed per-table generation outcomes
+from kairos_ontology.core.alignment_closure import closure_fingerprint  # noqa: E402
 from kairos_ontology.core.generation_outcome import (  # noqa: E402
     OUTCOME_FALLBACK_ONLY,
     OUTCOME_PROVIDER_FAILURE,
@@ -5808,6 +5809,10 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         **({"model_source": alignment.model_source} if alignment.model_source else {}),
         # DD-094: digest of the affinity (system, table) set for the freshness gate.
         "source_sha256": alignment.affinity_sha256,
+        # Digest of the resolved import closure this alignment was generated against
+        # (#518). `domain_uris` alone was recorded and never compared to anything, so a
+        # refmodels upgrade that widened owl:imports left the file silently stale.
+        "closure_sha256": closure_fingerprint(alignment.domain_uris),
         "tables": [],
         "reference_rollup": alignment.reference_rollup,
     }
