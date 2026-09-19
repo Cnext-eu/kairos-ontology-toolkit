@@ -68,3 +68,24 @@ def test_strict_mode_refuses_to_guess(tmp_path, body):
 )
 def test_configured_adapter_resolves_or_reports_nothing(tmp_path, body, expected):
     assert configured_adapter(_hub(tmp_path, body)) == expected
+
+
+class TestHubDisplayName:
+    """The master ERD headers stamp this; it must not depend on the checkout directory."""
+
+    def test_the_declared_name_wins(self, tmp_path):
+        from kairos_ontology.core.hub_config import hub_display_name
+
+        hub = tmp_path / "some-clone-name"
+        hub.mkdir()
+        (hub / "kairos.yaml").write_text("name: acme-ontology-hub\n", encoding="utf-8")
+        assert hub_display_name(hub) == "acme-ontology-hub"
+
+    def test_the_directory_is_the_fallback(self, tmp_path):
+        from kairos_ontology.core.hub_config import hub_display_name
+
+        hub = tmp_path / "acme-hub"
+        hub.mkdir()
+        assert hub_display_name(hub) == "acme-hub"
+        (hub / "kairos.yaml").write_text("name: ''\n", encoding="utf-8")
+        assert hub_display_name(hub) == "acme-hub"

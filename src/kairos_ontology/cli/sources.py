@@ -753,7 +753,7 @@ def import_flatfile(
 @click.option(
     "--model",
     "llm_model",
-    default="gpt-5.4-mini",
+    default=None,
     help="LLM model for semantic matching (default: gpt-5.4-mini).",
 )
 @click.option(
@@ -882,7 +882,7 @@ def analyse_sources_cmd(
     # Issue #182 (role collapsed into alignment by issue #562): a per-role
     # model override (KAIROS_AI_ALIGNMENT_MODEL) acts as the default for this
     # step unless the operator pinned --model explicitly.
-    if llm_model == DEFAULT_MODEL:
+    if llm_model is None:
         llm_model = resolve_role_model(ROLE_ALIGNMENT, DEFAULT_MODEL)
 
     # Auto-detect hub paths
@@ -1363,7 +1363,10 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
 @click.option(
     "--model",
     "llm_model",
-    default="gpt-5.4-mini",
+    # `None`, not the default model's name: an operator who *types* the default must be
+    # recorded as `explicit-model`, and only the option's absence may fall through to the
+    # role override and the default (#545).
+    default=None,
     help="LLM model for semantic alignment (default: gpt-5.4-mini).",
 )
 @click.option(
@@ -1596,7 +1599,7 @@ def propose_alignment_cmd(
     # Record *why*, not just what: `model_used: gpt-5.4` on its own reads as a silent
     # downgrade to an operator who configured gpt-5.5, when it is the preferred tier being
     # applied (#545).
-    if llm_model != DEFAULT_MODEL:
+    if llm_model is not None:
         model_source = "explicit-model"
     elif high_accuracy:
         llm_model = HIGH_ACCURACY_MODEL

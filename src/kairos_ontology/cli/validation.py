@@ -494,7 +494,7 @@ def validate(
     report_path,
 ):
     """Validate ontologies (syntax, SHACL, consistency, GDPR PII scan, DDD overlays)."""
-    from ..core.hub_utils import find_hub_root, publish_root
+    from ..core.hub_utils import find_hub_root, publish_root, repo_root_for
     from ..core.hub_inspection import configured_modes_served
 
     cwd = Path.cwd()
@@ -643,7 +643,7 @@ def validate(
         # The repo root, not the hub root: `ontology-hub/model/ontologies/x.ttl`
         # matches how the drift gate and `_dangling_refs` report paths, and is what a
         # reviewer can click in a pull request (#822).
-        repo_root=effective_hub_root.parent,
+        repo_root=repo_root_for(effective_hub_root),
     )
 
     # run_validation() exits non-zero on its own failures; if it fell through

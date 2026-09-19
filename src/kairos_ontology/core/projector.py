@@ -1303,8 +1303,10 @@ def run_projections(
             generate_master_class_diagram,
         )
 
+        from .hub_config import hub_display_name
+
         erd_output = TARGET_REGISTRY["erd"].output_path(output_path)
-        hub_name = hub_root.name if hub_root is not None else "master"
+        hub_name = hub_display_name(hub_root) if hub_root is not None else "master"
         master = generate_master_class_diagram(
             (
                 (

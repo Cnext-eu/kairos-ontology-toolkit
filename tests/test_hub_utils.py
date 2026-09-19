@@ -349,3 +349,41 @@ class TestBodyIsUneditedTemplate:
         template = "# Context\n\n<fill in>\n"
         edited = "# Context\n\nReal, authored content.\n"
         assert body_is_unedited_template(edited, template) is False
+
+
+class TestRepoRootFor:
+    """Report paths anchor on the repository, not on the hub's parent (#822 follow-up)."""
+
+    def test_the_scaffolded_layout_resolves_to_the_repository(self, tmp_path):
+        from kairos_ontology.core.hub_utils import repo_root_for
+
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        hub = repo / "ontology-hub"
+        hub.mkdir()
+        assert repo_root_for(hub) == repo
+
+    def test_a_flat_layout_hub_is_its_own_repository(self, tmp_path):
+        """The hub *is* the checkout: `hub_root.parent` was the directory the clone sits
+        in, so every path began with the clone's name and still differed per contributor."""
+        from kairos_ontology.core.hub_utils import repo_root_for
+
+        hub = tmp_path / "flat-hub"
+        (hub / ".git").mkdir(parents=True)
+        assert repo_root_for(hub) == hub
+
+    def test_a_deeper_nesting_climbs_to_the_repository(self, tmp_path):
+        from kairos_ontology.core.hub_utils import repo_root_for
+
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        hub = repo / "platform" / "ontology-hub"
+        hub.mkdir(parents=True)
+        assert repo_root_for(hub) == repo
+
+    def test_no_repository_falls_back_to_the_parent(self, tmp_path):
+        from kairos_ontology.core.hub_utils import repo_root_for
+
+        hub = tmp_path / "loose" / "ontology-hub"
+        hub.mkdir(parents=True)
+        assert repo_root_for(hub) == hub.parent

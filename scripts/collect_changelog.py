@@ -121,6 +121,10 @@ def apply(section: str, changelog: Path = CHANGELOG) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Fragments are UTF-8 and use characters a Windows console code page cannot encode
+    # (an intersection sign, for one); printing the preview must not be what fails.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--apply",

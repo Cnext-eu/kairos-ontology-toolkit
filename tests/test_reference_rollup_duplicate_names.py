@@ -158,3 +158,24 @@ def test_the_rollup_is_deterministic():
     assert [entry["ref_class"] for entry in first] == [
         entry["ref_class"] for entry in second
     ]
+
+
+def test_an_ambiguous_anchor_is_credited_to_the_copy_its_columns_align_to():
+    """`tic.terminals` anchored to the bare name `Terminal` was listed under both copies,
+    and every custom column with it, so the hub-wide extension count doubled."""
+    rollup = _build_reference_rollup(
+        _alignment(_column("terminal_name", "terminalName")), _REF_CLASSES
+    )
+    by_class = _by_class(rollup)
+
+    assert by_class["tic/terminal-infrastructure:Terminal"]["source_tables"] == ["tic.terminals"]
+    assert by_class["tic/locations:Terminal"]["source_tables"] == []
+
+
+def test_an_ambiguous_anchor_with_nothing_to_go_on_stays_ambiguous():
+    """No aligned property points at either copy: naming both is the honest answer."""
+    rollup = _build_reference_rollup(_alignment(), _REF_CLASSES)
+    by_class = _by_class(rollup)
+
+    assert by_class["tic/terminal-infrastructure:Terminal"]["source_tables"] == ["tic.terminals"]
+    assert by_class["tic/locations:Terminal"]["source_tables"] == ["tic.terminals"]

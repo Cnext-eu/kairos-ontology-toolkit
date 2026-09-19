@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""Detect an alignment artifact that is stale against its domain's import closure (#518).
+"""Detect an alignment artifact stale against its domain's activated module list (#518).
 
-A ``<domain>-alignment.yaml`` records the ``domain_uris`` it was generated against. When
-the domain's ``owl:imports`` later change -- a reference-models upgrade, a blueprint
-change, a bridge being added -- the file is silently stale and downstream stages consume it
-as if it were current.
+A ``<domain>-alignment.yaml`` records the ``domain_uris`` it was generated against: the
+``imports[].uri`` list of the blueprint's data domain, which is also what the current side
+of the comparison reads. When a blueprint change adds or removes an activated module, the
+file is silently stale and downstream stages consume it as if it were current.
+
+What this does *not* see: a change inside an activated module (a reference-models upgrade
+that adds an ``owl:imports`` two hops down) or an added ``cross_domain_relationships``
+bridge. Both change the class inventory the alignment was built from and leave the module
+list unchanged. A resolved-closure comparison would need the catalog at check time; this
+one deliberately stays a cheap list comparison.
 
 The failure is invisible *and it points the wrong way*. What surfaces is
 ``integrity.managed-import-unused``: "this domain imports a module and references nothing
@@ -48,8 +54,11 @@ class ClosureDrift:
             parts.append(
                 f"{len(self.removed)} module(s) removed since: {', '.join(self.removed)}"
             )
+        # A hand-edited artifact without a `domain` key falls back to the file stem, which
+        # already ends in `-alignment`; do not say `-alignment-alignment.yaml`.
+        name = self.domain.removesuffix("-alignment")
         return (
-            f"{self.domain}-alignment.yaml is stale against the domain's import closure -- "
+            f"{name}-alignment.yaml is stale against the domain's activated module list -- "
             + "; ".join(parts)
             + ". Nothing in it could have referenced an added module, so an "
             "'unused import' finding for one is a staleness gap, not a sourcing gap. "

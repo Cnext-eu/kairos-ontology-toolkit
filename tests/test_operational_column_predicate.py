@@ -155,3 +155,22 @@ def test_the_recommendation_uses_the_same_classifier():
 def test_an_empty_or_junk_name_is_not_operational():
     assert not _is_operational_column("")
     assert not _is_operational_column("___")
+
+
+@pytest.mark.parametrize(
+    "column, tokens",
+    [
+        ("ETLLoadDate", ["etl", "load", "date"]),
+        ("DWHLoadDate", ["dwh", "load", "date"]),
+        ("ETLBatchID", ["etl", "batch", "id"]),
+        ("SystemCreateTimeUtc", ["system", "create", "time", "utc"]),
+    ],
+)
+def test_an_acronym_run_splits_before_the_next_word(column, tokens):
+    """The camel-case boundary only knew lower-to-upper, so `ETLLoadDate` tokenised to
+    `etlload`, `date` -- a token no vocabulary can match. The substring matcher this
+    replaced caught it by accident; the token matcher has to split it on purpose."""
+    from kairos_ontology.core.gap_decisions import _name_tokens
+
+    assert _name_tokens(column) == tokens
+    assert _is_operational_column(column), column

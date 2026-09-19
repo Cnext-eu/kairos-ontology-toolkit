@@ -5727,11 +5727,33 @@ def _build_reference_rollup(
         # every same-named copy is the honest answer when nothing disambiguates.
         return declaring or candidates
 
+    def _resolve_primary(ta: TableAlignment) -> list[str]:
+        """Resolve a table's anchor class, using its aligned properties as the tie-break.
+
+        With a bare name and no property there is nothing to disambiguate on, so a table
+        anchored to an ambiguous name was credited -- with its custom columns -- to every
+        same-named copy, and the rollup counted the extensions once per copy (#523). The
+        copy the table's own column alignments point at is the one it feeds.
+        """
+        candidates = names.get(ta.ref_class, []) if ta.ref_class else []
+        if len(candidates) <= 1:
+            return candidates
+        aligned = {
+            ca.ref_property
+            for ca in ta.columns
+            if ca.ref_property and (ca.ref_class or ta.ref_class) == ta.ref_class
+        }
+        scores = {key: len(aligned & class_data[key]["ref_props"]) for key in candidates}
+        best = max(scores.values())
+        if best == 0:
+            return candidates
+        return [key for key in candidates if scores[key] == best]
+
     # Populate from alignments
     for ta in alignment.tables:
         # Track which tables feed each class
         primary_cls = ta.ref_class
-        primary_keys = _resolve(primary_cls, None) if primary_cls else []
+        primary_keys = _resolve_primary(ta)
         for key in primary_keys:
             class_data[key]["source_tables"].append(f"{ta.system}.{ta.table}")
 

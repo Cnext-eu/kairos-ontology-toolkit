@@ -606,12 +606,14 @@ def _hub_catalog_path() -> Path | None:
     """Locate the hub's ``catalog-v001.xml``, or None when not run inside a hub.
 
     `import-tmdl` runs against an export that lives outside the hub, so the catalog is
-    found the same way the output directory is, and its absence is simply "no proposals".
+    found the same way the output directory is -- :func:`resolve_hub_output_dir`, which
+    also walks ancestors (DD-064), so a run from ``ontology-hub/integration/`` still finds
+    it -- and its absence is simply "no proposals".
     """
-    from .hub_utils import find_hub_root
+    from .hub_utils import resolve_hub_output_dir
 
     try:
-        hub_root = find_hub_root(Path.cwd(), require_model=False)
+        _, hub_root = resolve_hub_output_dir(Path("."), cwd=Path.cwd())
     except Exception:  # pragma: no cover - advisory pass, never fatal
         return None
     if hub_root is None:

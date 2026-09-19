@@ -217,3 +217,32 @@ def test_draft_model_report_cli_writes_data_product_artifacts(tmp_path):
     assert (contract.parent / "data-product-report.md").exists()
     assert (contract.parent / "data-product-erd.mmd").exists()
     assert "Data-product vertical-slice plan" in result.output
+
+
+def test_a_candidate_match_does_not_name_the_node():
+    """A `candidate` match is `import-tmdl`'s lexical guess, not a decision (#762). As the
+    node label it could also pick up glossary evidence under the guessed name; the node
+    keeps the TMDL table's own name until a modeller confirms the match."""
+    from kairos_ontology.core.draft_model_report import _tmdl_nodes
+
+    tables = [
+        {
+            "tmdl_name": "d_Customer",
+            "domain": "party",
+            "columns": [],
+            "reference_model_match": "TradeParty",
+            "action": "candidate",
+        },
+        {
+            "tmdl_name": "d_Vendor",
+            "domain": "party",
+            "columns": [],
+            "reference_model_match": "Vendor",
+            "action": "use",
+        },
+    ]
+    nodes = {node["tmdl_table"]: node for node in _tmdl_nodes("party", tables, [])}
+
+    assert nodes["d_Customer"]["label"] == "d_Customer"
+    assert nodes["d_Customer"]["disposition_suggestion"] == "defer"
+    assert nodes["d_Vendor"]["label"] == "Vendor"

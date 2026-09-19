@@ -348,7 +348,8 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
     \b
     Exit codes (with --check):
       0  All managed files are up to date
-      1  One or more files are outdated, missing, or stale
+      1  One or more files are outdated, missing or stale, or a scaffolded workflow
+         diverges without being declared under [tool.kairos] customized-workflows
 
     \b
     Managed files (do not edit manually -- `update` replaces them):
@@ -775,6 +776,13 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
     refreshed_workflows: list[str] = []
     templated_destinations: set[str] = set()
     workflow_statuses: list = []
+    # Read once, before the loop: a declared workflow is the hub's to keep in *any*
+    # state. CICD.md promises it is never auto-refreshed and never fails `--check`, and
+    # that has to hold for one pinned to an older shipped generation (`outdated`) as much
+    # as for one edited past every generation (`customized`) -- #772 only covered the
+    # latter, so `update --refresh-workflows` overwrote a declared, deliberately held-back
+    # workflow.
+    declared_workflows = declared_customized_workflows(repo_root)
     for destination, template_path in _workflow_sources(repo_root).items():
         status = classify_workflow(
             repo_root / destination,
@@ -786,6 +794,8 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
         if template_path.name.endswith(".template"):
             templated_destinations.add(destination)
         if check or not refresh_workflows or not status.refreshable:
+            continue
+        if destination in declared_workflows:
             continue
         if status.state == "missing" and template_path.name.endswith(".template"):
             # A templated workflow generally needs substitution values only
@@ -811,9 +821,12 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
         (repo_root / destination).write_text(rendered, encoding="utf-8")
         refreshed_workflows.append(destination)
 
-    outdated_workflows = [item.path for item in workflow_statuses if item.state == "outdated"]
+    outdated_workflows = [
+        item.path
+        for item in workflow_statuses
+        if item.state == "outdated" and item.path not in declared_workflows
+    ]
     customized_workflows = [item.path for item in workflow_statuses if item.state == "customized"]
-    declared_workflows = declared_customized_workflows(repo_root)
     # Only *undeclared* divergence fails the check. A declared one is a deliberate,
     # reviewable choice; failing on it would break every repo with a legitimate extra
     # CI step, which is why workflows were excluded from the managed-file set (#772).
