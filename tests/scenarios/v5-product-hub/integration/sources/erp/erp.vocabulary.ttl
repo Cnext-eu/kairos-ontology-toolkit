@@ -29,3 +29,7 @@ src:invoice_customer a kb:SourceColumn ; kb:sourceTable src:invoices ;
 src:invoice_amount a kb:SourceColumn ; kb:sourceTable src:invoices ;
   kb:columnName "amount" ; kb:dataType "decimal(18,2)" ;
   kb:nullable "false"^^xsd:boolean .
+
+src:invoice_date a kb:SourceColumn ; kb:sourceTable src:invoices ;
+  kb:columnName "invoice_date" ; kb:dataType "date" ;
+  kb:nullable "false"^^xsd:boolean .

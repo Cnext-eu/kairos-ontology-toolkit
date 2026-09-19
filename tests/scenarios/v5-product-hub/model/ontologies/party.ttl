@@ -16,6 +16,8 @@ party:customer_name a owl:DatatypeProperty ;
   rdfs:domain party:Customer ; rdfs:range xsd:string .
 party:country_code a owl:DatatypeProperty ;
   rdfs:domain party:Customer ; rdfs:range xsd:string .
+party:signed_up_on a owl:DatatypeProperty ;
+  rdfs:domain party:Customer ; rdfs:range xsd:date .
 party:code a owl:DatatypeProperty ;
   rdfs:domain party:Country ; rdfs:range xsd:string .
 party:country_name a owl:DatatypeProperty ;

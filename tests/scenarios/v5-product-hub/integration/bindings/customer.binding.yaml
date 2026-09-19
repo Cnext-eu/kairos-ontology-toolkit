@@ -25,6 +25,8 @@ fields:
       nullPolicy: propagate
   - property: party:country_code
     expression: country_code
+  - property: party:signed_up_on
+    expression: signed_up_on
 relationships:
   - property: party:country
     target: party:Country

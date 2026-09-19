@@ -23,6 +23,7 @@ from ..core.observability import events
 from ..core.determinism import write_text_lf
 from ..core.hub_utils import contract_diagrams_dir, find_hub_root, publish_root
 from ..core.observability import current_operation_id
+from ..core.projections.dbt.gold_shared import is_shared_gold_artifact
 
 #: dbt project sub-path under the publish root (``<publish_root>/medallion/dbt``).
 _DBT_EMIT_SUBPATH = Path("medallion") / "dbt"
@@ -198,6 +199,10 @@ def _is_shared_artifact(path: str) -> bool:
         path in _PACKAGE_ARTIFACTS
         or path.startswith("macros/")
         or _is_source_catalog_artifact(path)
+        # The governed calendar is materialized once for the hub, so it belongs to the
+        # shared manifest. Claiming it for the declaring domain made the second
+        # calendar-bearing domain uncompilable against the same target (issue #849).
+        or is_shared_gold_artifact(path)
     )
 
 
@@ -276,6 +281,33 @@ def _reconciled_shared_artifacts(result, target: Path) -> dict[str, str]:
                 raise ArtifactCollisionError(
                     f"conflicting source metadata across domains in {path!r}: {exc}"
                 ) from exc
+
+    from ..core.projections.dbt.gold_shared import (
+        SHARED_GOLD_MODELS_PATH,
+        SharedGoldUnionError,
+        union_shared_gold_artifact,
+    )
+
+    # Schema yml first, deliberately: calendar bounds appear in both it and the model SQL,
+    # and only the yml union can say *which* field the two domains disagree on. Leaving
+    # the order to `artifact_dict()` would make the quality of the error message
+    # incidental.
+    gold_shared_paths = sorted(
+        (path for path in shared if is_shared_gold_artifact(path)),
+        key=lambda path: (path != SHARED_GOLD_MODELS_PATH, path),
+    )
+    for path in gold_shared_paths:
+        existing = target.joinpath(*path.split("/"))
+        if not existing.is_file():
+            continue
+        from ..core.compiler.emit import ArtifactCollisionError
+
+        try:
+            shared[path] = union_shared_gold_artifact(
+                path, existing.read_text(encoding="utf-8"), shared[path]
+            )
+        except SharedGoldUnionError as exc:
+            raise ArtifactCollisionError(f"conflicting shared Gold artifact {path!r}: {exc}") from exc
     return shared
 
 

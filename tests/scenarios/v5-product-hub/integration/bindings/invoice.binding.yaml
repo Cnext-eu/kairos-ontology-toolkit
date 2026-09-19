@@ -21,6 +21,8 @@ fields:
     expression: amount
   - property: billing:customer_id
     expression: customer_id
+  - property: billing:invoice_date
+    expression: invoice_date
 relationships:
   - property: billing:billedTo
     target: party:Customer
