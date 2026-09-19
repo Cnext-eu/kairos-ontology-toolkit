@@ -53,11 +53,21 @@ def overlay_domain_name(overlay_path: Path) -> str:
     return overlay_path.name[: -len(_OVERLAY_SUFFIX)]
 
 
+def expected_domain_ontology(overlay_path: Path, ontologies_dir: Path) -> Path:
+    """Return where *overlay_path*'s domain ontology must live, whether or not it does.
+
+    Split out of :func:`find_domain_ontology` so a caller reporting the miss can name the
+    file it looked for (#848). "No matching domain ontology" is only actionable if the
+    reader is told which name was expected.
+    """
+    return Path(ontologies_dir) / f"{overlay_domain_name(overlay_path)}.ttl"
+
+
 def find_domain_ontology(overlay_path: Path, ontologies_dir: Path) -> Optional[Path]:
     """Locate the domain ontology TTL matching *overlay_path*."""
     if ontologies_dir is None or not ontologies_dir.is_dir():
         return None
-    candidate = ontologies_dir / f"{overlay_domain_name(overlay_path)}.ttl"
+    candidate = expected_domain_ontology(overlay_path, ontologies_dir)
     return candidate if candidate.exists() else None
 
 
@@ -121,12 +131,18 @@ def validate_ddd_overlay(
     """Validate a single DDD overlay.
 
     Returns a dict with keys:
-        ``passed`` (bool), ``syntax`` {passed, errors}, ``shacl`` {passed, report},
-        ``ext_leak`` {passed, predicates}.
+        ``passed`` (bool), ``syntax`` {passed, errors}, ``domain`` {passed, expected},
+        ``shacl`` {passed, report}, ``ext_leak`` {passed, predicates}.
+
+    *domain_ontology_path* of ``None`` is a **failure**, not a mode (#848). SHACL would
+    otherwise run against ``empty graph + overlay + vocabulary``, where the shapes that
+    would catch the miss cannot fire -- the triples they target are exactly the ones that
+    went missing -- so the overlay was reported as passing while nothing had validated it.
     """
     result: dict = {
         "passed": True,
         "syntax": {"passed": True, "errors": []},
+        "domain": {"passed": True, "expected": ""},
         "shacl": {"passed": True, "report": ""},
         "ext_leak": {"passed": True, "predicates": []},
     }
@@ -148,7 +164,18 @@ def validate_ddd_overlay(
         result["ext_leak"]["passed"] = False
         result["ext_leak"]["predicates"] = leaked
 
-    # 3. SHACL over the merged graph (domain + overlay + vocab).
+    # 3. The overlay must have a domain ontology to be merged with.
+    if domain_ontology_path is None:
+        result["passed"] = False
+        result["domain"]["passed"] = False
+        result["domain"]["expected"] = f"{overlay_domain_name(overlay_path)}.ttl"
+        # SHACL is deliberately not run. Against an empty domain graph an overlay using
+        # `kairos-ddd:aggregateRoot` fails rule 4 with "must point to an owl:Class present
+        # in the merged domain graph", which reads as a modelling error in the overlay and
+        # sends the reader looking in entirely the wrong place.
+        return result
+
+    # 4. SHACL over the merged graph (domain + overlay + vocab).
     try:
         merged = build_merged_graph(overlay_path, domain_ontology_path, catalog_path)
         shapes_graph = Graph()
@@ -203,6 +230,13 @@ def run_ddd_validation(
         if not res["syntax"]["passed"]:
             for err in res["syntax"]["errors"]:
                 print(f"     syntax: {err}")
+        if not res["domain"]["passed"]:
+            print(
+                "     no domain ontology at "
+                f"{expected_domain_ontology(overlay, ontologies_dir)} -- an overlay is "
+                "validated merged with the ontology its filename names, so this one was "
+                "not validated at all. Rename the overlay to match its domain, or remove it."
+            )
         if not res["ext_leak"]["passed"]:
             preds = ", ".join(res["ext_leak"]["predicates"])
             print(
@@ -213,5 +247,7 @@ def run_ddd_validation(
             report = res["shacl"]["report"].strip()
             print(f"     SHACL:\n{report}")
 
-    print(f"\n  Validated {len(overlays)} DDD overlay(s), {failures} failed")
+    # "Checked", not "Validated": an overlay with no domain ontology is counted here but
+    # was never validated against anything, and the summary used to assert otherwise.
+    print(f"\n  Checked {len(overlays)} DDD overlay(s), {failures} failed")
     return failures
