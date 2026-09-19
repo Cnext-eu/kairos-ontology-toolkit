@@ -42,7 +42,7 @@ business semantics.
       comparison: prior week          # a KPI alone is a number; against a comparison
       product: bookings-overview      # it is information
       measures: [On Time Rate]
-      dimensions: [dim_terminal.terminal_name, dim_date.week]
+      dimensions: [dim_terminal.terminal_name, dim_date.full_date]
       status: draft
   ```
 

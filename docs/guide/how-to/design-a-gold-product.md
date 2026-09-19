@@ -65,7 +65,7 @@ insights:
     comparison: prior week
     product: bookings-overview
     measures: [On Time Rate]
-    dimensions: [dim_terminal.terminal_name, dim_date.week]
+    dimensions: [dim_terminal.terminal_name, dim_date.full_date]
     status: confirmed
 ```
 

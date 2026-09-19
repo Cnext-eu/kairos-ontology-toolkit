@@ -50,6 +50,8 @@ def import_tmdl(source, output, fail_on_partial):
     \b
     - An Engineering Pack (markdown) with table/column/measure inventory
     - A Concept Mapping template (YAML) for reference model alignment
+    - A report-usage pack (YAML) per `*.Report` folder found, recording which
+      measures and fields are actually placed on visuals
 
     Power BI/TMDL is downstream **demand evidence**, not a canonical input
     source, so output lands under ``integration/discovery/bi/`` (alongside the
@@ -58,7 +60,7 @@ def import_tmdl(source, output, fail_on_partial):
     \b
     That path is resolved against the **hub root**, not the current directory,
     so running this from the repository root (where raw exports usually live)
-    still writes inside ``ontology-hub/``. Only the two generated artifacts are
+    still writes inside ``ontology-hub/``. Only the generated artifacts above are
     written: a PBIP archive is expanded in a temporary directory, never into the
     hub. Pass --output to write somewhere else; an explicit path is used as
     given.
