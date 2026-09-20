@@ -2658,6 +2658,15 @@ def _unrealized_relationship_diagnostics(
     CLdN ``Qlik-routes`` binding marks every carrier ``purpose: identity``);
     ``kairos-ontology propose-relationships`` covers that case by matching join keys
     against other bindings directly.
+
+    The remedy names what that command can and cannot do, because pointing at it
+    unconditionally sent authors after a tool with nothing to offer them. Measured on two
+    hubs: of nine warnings on one, five named bindings that appear as a child in no
+    proposal at all, and the single genuine hit rendered a ``<CONFIRM_PROPERTY>`` choice
+    rather than a pasteable entry. The causes it cannot resolve are structural -- no object
+    property between the two bound classes (the commonest), a polymorphic carrier that can
+    never be one relationship, and the container-to-contained shape where the key is on the
+    parent (#723) -- and none of them is fixed by running the command again.
     """
     if binding.relationships:
         return ()
@@ -2677,9 +2686,12 @@ def _unrealized_relationship_diagnostics(
                 f"binding '{binding.name}' carries {len(carriers)} technical field(s) with "
                 f"purpose 'relationship' ({names}) but authors no relationships: entry, so "
                 "the foreign key reaches Silver as a raw column with no join, no surrogate "
-                "key, and no orphan window. Run 'kairos-ontology propose-relationships' to "
-                "derive the entry, or keep the carrier deliberately if the parent is not "
-                "bound yet."
+                "key, and no orphan window. 'kairos-ontology propose-relationships' derives "
+                "the entry when an object property links the two bound classes and a join "
+                "key matches; it reports, rather than derives, when no such property exists, "
+                "when the parent is not bound, or when the key sits on the parent because "
+                "the property is declared container-to-contained. Keeping the carrier is "
+                "the right answer in those cases."
             ),
             location=SourceLocation(path=binding.source_path, pointer="/relationships"),
             rule_id="DD-139",
