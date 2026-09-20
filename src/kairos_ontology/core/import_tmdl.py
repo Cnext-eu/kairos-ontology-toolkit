@@ -102,11 +102,17 @@ def find_definition_dirs(base: Path) -> list[Path]:
         results.append(base / "definition")
         return results
 
-    # Search recursively for definition dirs containing model.tmdl
+    # Search recursively for any directory holding a model.tmdl.
+    #
+    # This used to require the directory be literally named "definition", which is the
+    # same assumption #874 removed from parse_model_folder one call downstream. The effect
+    # was that a flat-layout export -- model.tmdl beside its table files, no definition/
+    # folder -- was found when named directly and invisible to a directory scan. Pointing
+    # import-tmdl at a staging folder of flat exports imported nothing, exited 0, and told
+    # the operator to check a path that was correct (#904). .import/powerbi/ is a
+    # scaffolded location, so a hub routinely has several exports in one directory.
     for model_file in base.rglob("model.tmdl"):
-        parent = model_file.parent
-        if parent.name == "definition":
-            results.append(parent)
+        results.append(model_file.parent)
 
     return sorted(set(results))
 
@@ -572,6 +578,10 @@ def run_import_tmdl(
         # resolved, feed each artifact folder into the same
         # find_definition_dirs()/parse_model_folder() pipeline the "folder"
         # branch uses (a .Report folder simply yields no definition dirs).
+        # Raises ValueError with an actionable message when the pointer's artifact
+        # folders are absent. Kept as a raise rather than a warning: a programmatic
+        # caller needs to know the import did not happen, and the CLI renders it as a
+        # clean failure rather than a traceback (#904).
         artifact_dirs = resolve_pbip_pointer(source)
         definition_dirs = sorted(
             {d for folder in artifact_dirs for d in find_definition_dirs(folder)}

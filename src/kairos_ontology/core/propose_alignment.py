@@ -255,6 +255,21 @@ _OPERATIONAL_TOKENS = frozenset(
 _CF_SLOT_RE = re.compile(r"^cf[a-z]*\d+$", re.IGNORECASE)
 
 
+#: How many glossary concepts reach a prompt by default (#908).
+#:
+#: Was 120, chosen when a glossary was a few dozen hand-written terms. A hub that runs
+#: discovery over its client's own documents now produces far more: the one this was
+#: raised for holds 201, so a fifth of its vocabulary never reached alignment and the
+#: selection among the rest was alphabetical.
+#:
+#: 500 is a cap, not a target. It exists because the prompt has to stay bounded for a hub
+#: with a pathological glossary, not because 500 terms is a sensible amount of context --
+#: at roughly 120 characters per rendered entry that is about 60 KB, which is real money
+#: on a per-table call. A hub that trips it should prune its glossary rather than raise
+#: this, and `propose-alignment` now says "N of M in scope" so tripping it is visible.
+GLOSSARY_PROMPT_LIMIT = 500
+
+
 def _is_operational_column(column: str) -> bool:
     """Return whether a custom column looks operational/audit-oriented.
 
@@ -401,7 +416,7 @@ def flag_risky_proposals(
 
 
 def load_glossary_entries(
-    hub_root: Path | None, *, limit: int = 120
+    hub_root: Path | None, *, limit: int = GLOSSARY_PROMPT_LIMIT
 ) -> list[tuple[str, str]]:
     """``(prefLabel, definition)`` from ``businessdiscovery/*.ttl`` (DD-048/DD-171).
 
@@ -439,13 +454,17 @@ def load_glossary_entries(
             definition_match = definition_re.search(block)
             raw = definition_match.group(1) if definition_match else ""
             entries.setdefault(label_match.group(1).strip(), " ".join(raw.split())[:240])
-        if len(entries) >= limit:
-            break
+        # Deliberately no early break on `limit`. It used to break out of the *file* loop,
+        # so a hub with two glossary files could have the second one never read at all --
+        # on a real hub an authored file of 52 concepts consumed the budget and only ~68
+        # of the 164 generated concepts were ever seen, with which 68 decided by filename
+        # sort order (#908). Reading every file costs a few small YAML/TTL reads; the cap
+        # is applied once, at the end, to a complete corpus.
     return sorted(entries.items())[:limit]
 
 
 def load_glossary_records(
-    hub_root: Path | None, *, limit: int = 120
+    hub_root: Path | None, *, limit: int = GLOSSARY_PROMPT_LIMIT
 ) -> list[dict[str, str]]:
     """``{label, definition, see_also}`` per authored glossary concept (#884).
 
@@ -492,12 +511,10 @@ def load_glossary_records(
                     "see_also": see_also_match.group(1) if see_also_match else "",
                 },
             )
-        if len(records) >= limit:
-            break
     return [records[key] for key in sorted(records)][:limit]
 
 
-def load_glossary_terms(hub_root: Path | None, *, limit: int = 120) -> list[str]:
+def load_glossary_terms(hub_root: Path | None, *, limit: int = GLOSSARY_PROMPT_LIMIT) -> list[str]:
     """Return the business's own vocabulary from ``businessdiscovery/*.ttl`` (DD-171).
 
     Grounding, not authority. A proposal should reuse the term the business already uses
@@ -520,8 +537,6 @@ def load_glossary_terms(hub_root: Path | None, *, limit: int = 120) -> list[str]
         except OSError:
             continue
         labels.update(m.group(1).strip() for m in label_re.finditer(text))
-        if len(labels) >= limit:
-            break
     return sorted(labels)[:limit]
 
 
@@ -4708,7 +4723,17 @@ def _propose_alignments(
     if class_cautions:
         report(f"  🧭 {len(class_cautions)} pattern-library caution(s) in scope")
     if glossary_terms:
-        report(f"  📖 {len(glossary_terms)} business glossary term(s) in scope")
+        # "N in scope" read as "all of them" on a hub with 201 authored concepts and a
+        # default cap of 120 (#908). The cap is a real editorial choice about prompt size;
+        # it just has to be visible, so a hub that outgrows it knows to say so.
+        authored = len(load_glossary_terms(_hub_root_for_glossary, limit=1_000_000))
+        if authored > len(glossary_terms):
+            report(
+                f"  📖 {len(glossary_terms)} of {authored} business glossary term(s) in "
+                "scope — the rest are past the prompt cap"
+            )
+        else:
+            report(f"  📖 {len(glossary_terms)} business glossary term(s) in scope")
 
     domain_order = sorted(domain_tables.items())
     total_tables = sum(len(t) for t in domain_tables.values())

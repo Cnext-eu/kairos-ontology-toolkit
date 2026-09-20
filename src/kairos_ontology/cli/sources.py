@@ -91,7 +91,14 @@ def import_tmdl(source, output, fail_on_partial):
     click.echo(f"📦 Importing TMDL from: {source_path}")
     click.echo(f"📂 Writing to: {output_path}")
     partial_models: list[str] = []
-    generated = run_import_tmdl(source_path, output_path, partial_models)
+    try:
+        generated = run_import_tmdl(source_path, output_path, partial_models)
+    except ValueError as exc:
+        # An incomplete export -- a .pbip pointer whose artifact folders are absent -- is
+        # a fact about the input, not a toolkit failure. The message already names the
+        # missing folder and what to do; it reached the operator as a raw traceback,
+        # which buried it (#904).
+        raise click.ClickException(str(exc)) from exc
 
     if partial_models:
         # Loud on the way out as well as in the log: the written artifacts were the only

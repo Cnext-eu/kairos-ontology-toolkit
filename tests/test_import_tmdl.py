@@ -732,3 +732,125 @@ class TestRunImportTmdlFromPbipPointer:
         assert data["model_name"] == "TestModel"
         assert len(data["tables"]) == 2
         assert len(data["relationships"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# A directory of flat-layout exports (#904)
+# ---------------------------------------------------------------------------
+
+
+def _flat_export(root, name, table="Sales"):
+    export = root / name
+    export.mkdir(parents=True)
+    (export / "model.tmdl").write_text(f"model M\n\tref table {table}\n", encoding="utf-8")
+    (export / f"{table}.tmdl").write_text(f"table {table}\n", encoding="utf-8")
+    return export
+
+
+def _nested_export(root, name, table="Sales"):
+    definition = root / f"{name}.SemanticModel" / "definition"
+    (definition / "tables").mkdir(parents=True)
+    (definition / "model.tmdl").write_text(f"model M\n\tref table {table}\n", encoding="utf-8")
+    (definition / "tables" / f"{table}.tmdl").write_text(f"table {table}\n", encoding="utf-8")
+    return definition
+
+
+class TestFlatExportsInADirectory:
+    """`.import/powerbi/` is a scaffolded location (DD-233), so a hub routinely stages
+    several exports in one directory. Requiring the directory be literally named
+    `definition` is the same assumption #874 removed one call downstream: a flat export was
+    found when named directly and invisible to a directory scan, so pointing import-tmdl at
+    the staging folder imported nothing and exited 0.
+    """
+
+    def test_a_directory_of_flat_exports_is_found(self, tmp_path):
+        from kairos_ontology.core.import_tmdl import find_definition_dirs
+
+        _flat_export(tmp_path, "export_a")
+        _flat_export(tmp_path, "export_b")
+
+        found = find_definition_dirs(tmp_path)
+
+        assert sorted(p.name for p in found) == ["export_a", "export_b"]
+
+    def test_a_flat_export_named_directly_still_works(self, tmp_path):
+        from kairos_ontology.core.import_tmdl import find_definition_dirs
+
+        export = _flat_export(tmp_path, "export_a")
+
+        assert find_definition_dirs(export) == [export]
+
+    def test_the_canonical_nested_layout_still_works(self, tmp_path):
+        from kairos_ontology.core.import_tmdl import find_definition_dirs
+
+        definition = _nested_export(tmp_path, "model_a")
+
+        assert find_definition_dirs(tmp_path) == [definition]
+
+    def test_a_mixed_directory_finds_both_shapes(self, tmp_path):
+        from kairos_ontology.core.import_tmdl import find_definition_dirs
+
+        _flat_export(tmp_path, "flat_one")
+        _nested_export(tmp_path, "nested_one")
+
+        found = find_definition_dirs(tmp_path)
+
+        assert len(found) == 2
+
+    def test_a_directory_with_no_model_yields_nothing(self, tmp_path):
+        from kairos_ontology.core.import_tmdl import find_definition_dirs
+
+        (tmp_path / "empty").mkdir()
+
+        assert find_definition_dirs(tmp_path) == []
+
+    def test_one_export_is_not_reported_twice(self, tmp_path):
+        """A nested export must not match both as `definition/` and via its parent."""
+        from kairos_ontology.core.import_tmdl import find_definition_dirs
+
+        _nested_export(tmp_path, "model_a")
+
+        assert len(find_definition_dirs(tmp_path)) == 1
+
+
+class TestDanglingPointer:
+    """A .pbip whose artifact folders are absent is an incomplete export, not a toolkit
+    failure. The ValueError message is good and actionable and reached the operator as a
+    raw traceback, which buried it.
+
+    `run_import_tmdl` keeps raising -- a programmatic caller has to know the import did
+    not happen, and an existing test pins that contract. The rendering is the CLI's job,
+    which is where it was missing.
+    """
+
+    @staticmethod
+    def _pointer(tmp_path):
+        import json
+
+        pointer = tmp_path / "report.pbip"
+        pointer.write_text(
+            json.dumps({"version": "1.0", "artifacts": [{"report": {"path": "report.Report"}}]}),
+            encoding="utf-8",
+        )
+        return pointer
+
+    def test_the_core_still_raises_for_a_programmatic_caller(self, tmp_path):
+        import pytest
+
+        from kairos_ontology.core.import_tmdl import run_import_tmdl
+
+        with pytest.raises(ValueError, match="none of them exist on disk"):
+            run_import_tmdl(self._pointer(tmp_path), output_dir=tmp_path / "out")
+
+    def test_the_cli_renders_it_as_a_failure_not_a_traceback(self, tmp_path):
+        from click.testing import CliRunner
+
+        from kairos_ontology.cli.main import cli
+
+        result = CliRunner().invoke(
+            cli, ["import-tmdl", str(self._pointer(tmp_path)), "--output", str(tmp_path / "out")]
+        )
+
+        assert result.exit_code != 0
+        assert "none of them exist on disk" in result.output
+        assert "Traceback" not in result.output

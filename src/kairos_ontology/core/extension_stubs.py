@@ -105,7 +105,10 @@ def _skip(report: ExtensionStubReport, name: str, reason: str) -> None:
 
 
 def collect_extension_properties(
-    hub_root: Path, *, class_uris: dict[str, str] | None = None
+    hub_root: Path,
+    *,
+    class_uris: dict[str, str] | None = None,
+    unresolvable: set[str] | None = None,
 ) -> ExtensionStubReport:
     """Gather every accepted `registered-extension` decision that names a property.
 
@@ -171,6 +174,16 @@ def collect_extension_properties(
                 name,
                 f"range {prop.range!r} is not a datatype; an object property needs a "
                 "target class and a relationship decision",
+            )
+            continue
+        if prop.on_class in (unresolvable or set()):
+            _skip(
+                report,
+                name,
+                f"class {prop.on_class!r} is not in this domain's import closure, so a "
+                "property declared on it would render, validate clean and be invisible to "
+                "generate-bindings. Add the module to the domain's owl:imports, or "
+                "re-anchor the table to a class the domain already imports",
             )
             continue
         if prop.range not in _compilable_xsd_ranges():
@@ -313,6 +326,39 @@ def anchor_classes_for_domain(analysis_dir: Path, domain: str) -> dict[str, str]
     return resolved
 
 
+def unresolvable_classes(hub_root: Path, domain: str, class_uris: dict[str, str]) -> set[str]:
+    """Anchor classes the domain's ontology cannot resolve (#912).
+
+    Global anchoring (DD-185) picks from the whole class catalog; a domain's imports are
+    scoped by its blueprint. The two can disagree, and when they do the result is silent:
+    a property declared on an unresolvable class renders fine, passes ``validate``
+    (syntax and SHACL both accept a ``rdfs:domain`` pointing anywhere), and is invisible
+    to ``generate-bindings``, which resolves through the domain's own closure. Measured on
+    one hub: 33 properties, rendered and merged and inert, until the missing
+    ``owl:imports`` was added by hand.
+
+    Returns the subset of *class_uris* values the domain cannot see. Any failure to load
+    the closure returns an empty set: this check exists to add a warning, and must never
+    be the reason a render fails.
+    """
+    if not class_uris:
+        return set()
+    try:
+        from .generate_bindings import hub_local_properties  # noqa: F401
+        from .ontology_loader import load_ontology
+
+        master = Path(hub_root) / "model" / "ontologies" / "_master.ttl"
+        catalog = Path(hub_root) / "catalog-v001.xml"
+        if not master.is_file():
+            return set()
+        loaded = load_ontology(master, catalog_path=catalog if catalog.is_file() else None)
+        graph = getattr(loaded, "graph", loaded)
+        known = {str(term) for term in graph.all_nodes() if str(term).startswith("http")}
+    except Exception:  # noqa: BLE001 - advisory only; never fail a render on this
+        return set()
+    return {uri for uri in class_uris.values() if uri and uri not in known}
+
+
 def build_extension_stubs(
     hub_root: Path, *, domain: str, namespace: str
 ) -> tuple[str, ExtensionStubReport]:
@@ -320,5 +366,7 @@ def build_extension_stubs(
     hub_root = Path(hub_root)
     analysis = hub_root / "integration" / "sources" / "_analysis"
     classes = anchor_classes_for_domain(analysis, domain)
-    report = collect_extension_properties(hub_root, class_uris=classes)
+    report = collect_extension_properties(
+        hub_root, class_uris=classes, unresolvable=unresolvable_classes(hub_root, domain, classes)
+    )
     return render_extension_ttl(report, namespace=namespace, domain=domain), report
