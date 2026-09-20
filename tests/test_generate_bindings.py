@@ -228,3 +228,110 @@ class TestGuards:
     def test_missing_sheet_is_a_hard_error_naming_the_fix(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="anchor-tables"):
             _run(tmp_path / "hub")
+
+
+# ---------------------------------------------------------------------------
+# A column aligned to another class is a decision, not a missing property (#887)
+# ---------------------------------------------------------------------------
+
+
+ANCHOR = "https://ref.example.com/ont/cargo#CargoItem"
+
+
+def _sheet_entry():
+    return {
+        "system": "src",
+        "table": "cargo",
+        "anchor_uri": ANCHOR,
+        "domain": "roro",
+        "grain_columns": ["REFXX"],
+        "natural_key": ["REFXX"],
+    }
+
+
+def _alignment(columns):
+    return {"system": "src", "table": "cargo", "ref_class": "CargoItem", "columns": columns}
+
+
+def _column(name, prop, ref_class):
+    return {"column": name, "ref_property": prop, "ref_class": ref_class,
+            "data_type": "varchar(50)", "confidence": 0.9}
+
+
+class TestColumnsAlignedToAnotherClass:
+    """The measured case: a 155-column cargo table where the aligner put 18 columns on
+    Weight, Dimension, HandlingInstructions and ShippingMarks. Binding those onto the
+    anchor would be a grain error dressed as coverage; counting them as 'property does
+    not resolve' hid a modelling decision behind a lookup failure."""
+
+    def _run(self, columns, monkeypatch):
+        from kairos_ontology.core import generate_bindings as module
+
+        monkeypatch.setattr(
+            module, "_class_pools",
+            lambda *_a, **_k: ({"cargoDescription": f"{ANCHOR[:-9]}#cargoDescription"}, set()),
+        )
+        monkeypatch.setattr(module, "hub_local_properties", lambda *_a, **_k: {})
+        report = module.GenerateBindingsReport()
+        doc, reason = module.generate_binding_doc(
+            _sheet_entry(), _alignment(columns), catalog_path=Path("unused"),
+            profile=None, report=report,
+        )
+        return doc, reason, report
+
+    def test_it_lands_on_the_secondary_worklist_not_the_unresolved_list(self, monkeypatch):
+        columns = [
+            _column("GOODDESCRIPTION", "cargoDescription", "CargoItem"),
+            _column("GROSSWEIGHT", "weightValue", "Weight"),
+        ]
+
+        _doc, _reason, report = self._run(columns, monkeypatch)
+
+        assert [i["class"] for i in report.secondary_entity_worklist] == ["Weight"]
+        assert report.unresolved_properties == []
+
+    def test_the_note_names_the_decision_to_make(self, monkeypatch):
+        columns = [
+            _column("GOODDESCRIPTION", "cargoDescription", "CargoItem"),
+            _column("GROSSWEIGHT", "weightValue", "Weight"),
+        ]
+
+        _doc, _reason, report = self._run(columns, monkeypatch)
+        note = report.secondary_entity_worklist[0]["note"]
+
+        assert "secondary entity at its own grain" in note
+        assert "hub-local property on the anchor" in note
+
+    def test_it_is_not_bound_onto_the_anchor(self, monkeypatch):
+        """Putting a weight value on a cargo-item row is a grain error, not coverage."""
+        columns = [
+            _column("GOODDESCRIPTION", "cargoDescription", "CargoItem"),
+            _column("GROSSWEIGHT", "weightValue", "Weight"),
+        ]
+
+        doc, _reason, _report = self._run(columns, monkeypatch)
+
+        assert [f["expression"] for f in doc["fields"]] == ["GOODDESCRIPTION"]
+
+    def test_a_genuinely_missing_property_is_still_unresolved(self, monkeypatch):
+        """Same anchor class, property nothing has — a lookup failure, not a decision."""
+        columns = [
+            _column("GOODDESCRIPTION", "cargoDescription", "CargoItem"),
+            _column("MYSTERY", "noSuchProperty", "CargoItem"),
+        ]
+
+        _doc, _reason, report = self._run(columns, monkeypatch)
+
+        assert report.secondary_entity_worklist == []
+        assert [i["property"] for i in report.unresolved_properties] == ["noSuchProperty"]
+
+    def test_a_column_with_no_recorded_class_is_still_unresolved(self, monkeypatch):
+        columns = [
+            _column("GOODDESCRIPTION", "cargoDescription", "CargoItem"),
+            _column("MYSTERY", "noSuchProperty", ""),
+        ]
+
+        _doc, _reason, report = self._run(columns, monkeypatch)
+
+        assert report.secondary_entity_worklist == []
+        assert len(report.unresolved_properties) == 1
