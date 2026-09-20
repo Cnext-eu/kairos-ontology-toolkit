@@ -321,6 +321,10 @@ class HubInputSnapshot:
     discovery_conformance: DiscoveryConformanceStatus = DiscoveryConformanceStatus.NOT_RUN
     #: Source-vocabulary sample-evidence coverage (issue #298).
     source_samples: SourceSampleObservation = SourceSampleObservation()
+    #: Generated artifacts whose recorded business-glossary fingerprint no longer matches
+    #: the hub's (#885). Observed in hub_inspection, which is the layer allowed to read
+    #: the filesystem; this module stays a pure function of the snapshot.
+    glossary_stale_artifacts: tuple[str, ...] = ()
     #: DD-047 materialized reference-inventory freshness (issue #321). PRESENT by default
     #: so existing constructor call sites (tests, callers that never observed this) do not
     #: silently start reporting a spurious blocking gate.
@@ -523,6 +527,27 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                 ),
                 command="kairos-ontology (invoke kairos-design-source)",
                 priority=22,
+            )
+        )
+    # The business glossary is the one input to anchoring and alignment that a human
+    # maintains, so it is the one most likely to move underneath an artifact that was
+    # grounded in it. Reported here rather than left to a re-run nobody makes (#885).
+    stale = snapshot.glossary_stale_artifacts
+    if stale:
+        actions.append(
+            _action(
+                "regenerate-against-current-glossary",
+                ActionStatus.OPTIONAL,
+                rationale=(
+                    f"{len(stale)} generated artifact(s) were grounded in a different "
+                    "version of the business glossary than the hub has now: "
+                    f"{', '.join(sorted(stale)[:4])}"
+                    + (f" and {len(stale) - 4} more" if len(stale) > 4 else "")
+                    + ". Their proposed terms reflect the old vocabulary. Re-run "
+                    "anchor-tables and propose-alignment to ground them in the current one."
+                ),
+                command="kairos-ontology anchor-tables   # then: propose-alignment",
+                priority=26,
             )
         )
     # Gated on tables_untriaged, not tables_unfilled: `action: skip` and

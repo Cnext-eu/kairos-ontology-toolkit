@@ -144,6 +144,11 @@ HIGH_ACCURACY_MODEL = "gpt-5.4"
 # ---------------------------------------------------------------------------
 # Alignment-reliability — typed per-table generation outcomes
 from kairos_ontology.core.alignment_closure import closure_fingerprint  # noqa: E402
+from kairos_ontology.core.discovery_currency import (  # noqa: E402
+    GLOSSARY_FINGERPRINT_KEY,
+    UNGROUNDED,
+    glossary_fingerprint,
+)
 from kairos_ontology.core.generation_outcome import (  # noqa: E402
     OUTCOME_FALLBACK_ONLY,
     OUTCOME_PROVIDER_FAILURE,
@@ -609,6 +614,11 @@ class DomainAlignment:
     #: DD-094 — SHA-256 over the affinity ``(system, table)`` set this run saw,
     #: enabling the canonical completeness freshness check.
     affinity_sha256: str | None = None
+    #: Issue #885 — SHA-256 over the business glossary's (prefLabel, definition) pairs.
+    #: The glossary is the one input to this stage that a human maintains, so it is the
+    #: one most likely to move underneath an artifact; ``"none"`` records that the run
+    #: had no glossary in scope, which is otherwise visible only on the terminal.
+    glossary_sha256: str | None = None
     #: Issue #182 — algorithm/prompt-contract version this output was produced with.
     #: Lets the canonical completeness gate flag pre-hardening output as unverifiable.
     algorithm_version: int = ALIGNMENT_ALGORITHM_VERSION
@@ -4582,7 +4592,11 @@ def _propose_alignments(
             class_cautions = pattern_cautions(None, Path(ref_models_dir))
         except Exception:  # noqa: BLE001 - advisory prompt context only
             class_cautions = {}
-    glossary_terms = load_glossary_terms(Path(sources_dir).parent.parent)
+    _hub_root_for_glossary = Path(sources_dir).parent.parent
+    glossary_terms = load_glossary_terms(_hub_root_for_glossary)
+    # Recorded on every domain artifact this run writes, so a later edit to the glossary
+    # is detectable rather than silent (#885).
+    glossary_hash = glossary_fingerprint(_hub_root_for_glossary)
     if class_cautions:
         report(f"  🧭 {len(class_cautions)} pattern-library caution(s) in scope")
     if glossary_terms:
@@ -4760,6 +4774,7 @@ def _propose_alignments(
             model_source=model_source,
             affinity_sha256=affinity_hash,
             alignment_params_sha256=params_hash or None,
+            glossary_sha256=glossary_hash,
             excluded_tables=excluded_by_domain.get(domain_id, []),
         )
 
@@ -5884,6 +5899,10 @@ def alignment_to_dict(alignment: DomainAlignment) -> dict[str, Any]:
         # (#518). `domain_uris` alone was recorded and never compared to anything, so a
         # refmodels upgrade that widened owl:imports left the file silently stale.
         "closure_sha256": closure_fingerprint(alignment.domain_uris),
+        # Digest of the business glossary this alignment was grounded in (#885). The
+        # glossary is maintained by hand between runs, so it moves more often than
+        # either input above, and nothing recorded it.
+        GLOSSARY_FINGERPRINT_KEY: alignment.glossary_sha256 or UNGROUNDED,
         "tables": [],
         "reference_rollup": alignment.reference_rollup,
     }

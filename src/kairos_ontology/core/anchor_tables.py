@@ -65,6 +65,7 @@ from .analyse_sources import (
     parse_source_vocabulary,
 )
 from .class_anchoring import read_reference_terms
+from .discovery_currency import GLOSSARY_FINGERPRINT_KEY, glossary_fingerprint
 from .tracing import call_metadata, flush_tracing, new_session_id
 
 logger = logging.getLogger(__name__)
@@ -1271,6 +1272,12 @@ def run_anchor_tables(
         "generated_by": "anchor-tables",
         # DD-192 provenance: which human rulings shaped this run's prompt.
         "rulings_applied": [r.id for r in applicable],
+        # Digest of the business glossary in scope for this run (#885).
+        # anchor-tables decides what every table IS and everything downstream
+        # inherits that, so an artifact grounded in a vocabulary which has since
+        # moved is the most expensive kind of stale. "none" records a run that had
+        # no glossary at all.
+        GLOSSARY_FINGERPRINT_KEY: glossary_fingerprint(Path(sources_dir).parent.parent),
         "table_count": len(outline),
         "tables": tables,
         "unanchored": unanchored,
