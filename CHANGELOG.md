@@ -5,53 +5,193 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.19.0** is the latest GA release (2026-09-20), superseding **5.18.0**
-> (2026-09-20). It is the output of one adversarial dogfood session that built a real client hub
-> from source import through to a validated Silver contract, and it is almost entirely
-> gap-closing: sixteen defects found, fifteen fixed. The headline number from that hub is that
-> the Silver contract went from **29 columns to 81**, and the main cargo binding from **1 field
-> to 74** — not by modelling anything new, but by fixing five places where one stage computed the
-> right answer and the next could not see it.
+> **Release status.** **5.20.0** is the latest GA release (2026-09-20), superseding
+> **5.19.0** (2026-09-20). Where 5.19.0 fixed the plumbing between stages, this release
+> fixes what those stages *decide*: it is the output of taking one clean hub end to end
+> from source import to a validated Silver contract, which 5.19.0 had made possible for
+> the first time.
 >
-> **What to expect on the first run after upgrading from 5.18.0.** This release tightens gates
-> that were passing when they should not have been, so **a hub that compiled green may now
-> block**. Every one of them rejects something that was already wrong; fix the finding rather
-> than suppressing the gate.
+> **What to expect on the first run after upgrading from 5.19.0.** Three changes alter
+> output you may already have committed. All three are corrections; none needs a flag.
 >
-> | you will see | why | the fix |
-> |---|---|---|
-> | `alignment.gap-column-undecided` on columns that were quiet | a table-grain `deferred`, `bound` or `registered-extension` used to retire every one of a table's gap columns from the DD-169 gate. On one hub, 40 such records retired **1,643 columns** and the gate never fired | `kairos-ontology draft-gap-decisions --suggest` drafts them in bulk |
-> | `alignment.evidence-missing` | the DD-169 and DD-180 gates now assert their evidence exists before judging it. Deleting `integration/sources/_analysis/` used to take the gate from 661 findings to **a clean pass** (DD-234) | `kairos-ontology propose-alignment` |
-> | `gate.evaluation-failed` | a gate that raised used to be indistinguishable from a gate that passed | read the named gate's input, or report it as a toolkit defect |
-> | `import.evidence-unconsumed` on `validate` | client documents or Power BI exports staged under `.import/` that nothing downstream has read (DD-233). On one hub this was 31 documents in a folder no command looks in | move them under `.import/businessdiscovery/` or `.import/powerbi/` and process them; `--degraded` downgrades it to a warning |
-> | `source-disposition set` rejecting `bound` at table grain | authoring the EntityBinding is what states it; the DD-164 audit reads `integration/bindings/` before the ledger | author the binding. Still recordable for a single column |
+> | you will see | why |
+> |---|---|
+> | **`grain_columns` loses operational columns** on re-anchoring, and regenerated bindings lose the matching identity fields | A system-versioning column in the grain turns *one row per entity* into *one row per entity per version*. Measured: **21 of 39 tables** on one hub carried a row-validity timestamp in their grain, and five bindings had it as part of identity. This is a **Silver grain change** — re-emit deliberately rather than picking it up silently |
+> | **more glossary concepts, and different local names**, on the next `build-glossary` | Concepts were grouped by `linked_iri`, making the IRI the concept's identity. Sixteen party roles sharing one canonical class collapsed into one concept labelled with whichever was processed last; the glossary went **164 → 82 by adding the links the discovery skill asks for**. Grouping is now by label |
+> | **`generate-bindings` skipping tables** it used to write | A table recorded `not-business-data`, `blueprint-gap` or `deferred` no longer has a binding generated. `--force` used to resurrect every table-grain decision a hub had made |
 >
-> **Your first `compile --emit` rewrites `dbt_project.yml`.** The `require-dbt-version` floor was
-> spelled `>=1.10`, which dbt's own semver rejects outright, so `dbt deps` failed on every
-> emitted medallion project. It is now `>=1.10.0` — the same range, correctly spelled.
+> **`anchor-tables` now reports two things it could always have seen.** Replication lanes
+> — a CDC copy of a table plus a watermark, which anchors identically to its twin and
+> reads downstream as a multi-source merge that does not exist (eight pairs on one hub,
+> 21% of anchored tables and 25% of the alignment spend). And grain collapses — two tables
+> with different candidate entities and different key arity on one class, which the
+> `conformance.group-required` gate notices and then asks you to *merge*, the one remedy
+> that must not be applied.
 >
-> **Two new things worth knowing about before you need them.** `kairos-ontology gates` lists
-> every gate in the pipeline, the evidence it reads and the flag that bypasses it; `--mode
-> autopilot` or `KAIROS_MODE=autopilot` refuses the escape flags that downgrade a result, which
-> is what an unattended run should be using (DD-234). Artifacts now record the mode and any
-> escapes they were produced under, so a `*-alignment.yaml` written with `--without-discovery`
-> is no longer indistinguishable afterwards from a grounded one.
+> **The whole business glossary now reaches a prompt.** The cap was 120 and broke out of
+> the *file* loop, so a second glossary file could go unread and the survivors were chosen
+> alphabetically. On a hub with 201 authored concepts: **120 → 201 at alignment, 74 → 125
+> at anchoring**. The cap is now `GLOSSARY_PROMPT_LIMIT = 500` and truncation is reported.
 >
-> Everything recorded under the `5.18.0rc1`, `rc2` and `rc3` headings below shipped as part of
-> 5.18.0 — those headings are the per-change record of how it was built, not separate releases.
-> The same holds for `5.15.0rc*`/`5.16.0rc*` under 5.17.0 and for `5.13.0rc1`–`rc31` under
-> 5.14.0.
+> Everything recorded under the `5.18.0rc*` headings below shipped as part of 5.18.0 —
+> those are the per-change record of how it was built, not separate releases. The same
+> holds for `5.15.0rc*`/`5.16.0rc*` under 5.17.0 and `5.13.0rc*` under 5.14.0.
 >
-> **Upgrading from 5.17.0 or earlier?** Read the 5.18.0 section's own notes as well — its two
-> fail-closed gates (`relationship.external-reference-key-column-unknown` and
-> `dbt-contract.dialect-uncastable-type`), its large first `compile --emit` diff, and its
-> Mermaid and `architecture/ddd` changes all still apply on top of the above.
+> **Upgrading from 5.18.0 or earlier?** Read 5.19.0's notes as well — its five newly
+> blocking gates, its `dbt_project.yml` rewrite and its `enforcement:` provenance all
+> still apply on top of the above.
 >
-> Read **5.11.0** before upgrading: `propose-alignment` now refuses to run without
-> `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop. `--without-anchors`
-> is the escape hatch and `anchor-tables` is the one-command fix.
+> Read **5.11.0** before upgrading: `propose-alignment` refuses to run without
+> `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop.
+> `--without-anchors` is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.20.0] — 2026-09-20
+
+The output of taking one clean hub end to end — source import through discovery,
+anchoring, alignment, the DD-169 gate, domain authoring, binding, and on to an emitted and
+validated Silver contract. 5.19.0 fixed the plumbing between stages; this release fixes
+what the stages decide.
+
+Eleven defects, every one found by doing the work rather than by reading the code, and
+every one measured on a real hub before it was fixed. The pattern they share is worth
+naming: **a stage computing an answer its own downstream cannot use, and nothing
+objecting.** A grain that changes what a row means. A glossary that loses two thirds of
+itself by being linked. A binding generator that emits a type its own compiler rejects,
+and another that resurrects tables the hub decided against. Three separate causes
+producing one identical error message.
+
+The Silver contract that came out the far end: 3 models, 68 columns, `validate-dbt` clean,
+and an offline sample audit with zero errors.
+
+### Added
+- **`anchor-tables` reports tables of different grain anchored to one class.** The
+  `likely_entity` field has always been persisted so a detector could "detect when tables
+  with different candidate entities collapse onto one `ref_class`" — that detector was
+  never written. Meanwhile the collapse happens: on one hub a unit-grain table and an
+  item-grain table anchored to the same class, and a port-pair table and a multi-leg table
+  to another. Nothing objected until `compile` raised `conformance.group-required`, a gate
+  that asks the author to declare a **merge** — which for two different grains is exactly
+  the wrong remedy and fans out silently once followed. The report says so explicitly.
+
+  Two conditions are required and arity is the discriminator: differing *candidate
+  entities* and a differing *number* of natural-key columns. Two systems spelling one key
+  differently is not a grain difference, and a false "these are not the same entity"
+  invites a re-anchor that is wrong.
+
+- **`anchor-tables` reports replication lanes.** A CDC or data-factory copy exposes the
+  same business table plus a watermark; both copies then anchor identically and present as
+  a multi-source estate that does not exist. Measured on one hub: eight pairs, 21% of
+  anchored tables and 25% of the alignment spend, each contributing a false conformance
+  merge. Detection is on column sets, not names — a candidate whose columns are a superset
+  of another's within the same system, adding at most three columns, all of them
+  operational. The report deliberately does not recommend dropping the replica: a CDC lane
+  is often the *more current* copy, so it is a choice, not a cleanup.
+
+### Fixed
+- **The whole business glossary now reaches a prompt.** Three defects compounded: the
+  `limit` check broke out of the *file* loop, so a hub with two glossary files could have
+  the second never read at all; the survivors were then chosen alphabetically rather than
+  by relevance; and the default cap of 120 was set when a glossary was a few dozen
+  hand-written terms. On a hub whose discovery produced 201 concepts, **120 reached
+  alignment and 74 reached anchoring**. Every file is now read before the cap is applied,
+  the cap is a single named `GLOSSARY_PROMPT_LIMIT = 500`, and `propose-alignment` reports
+  `N of M ... in scope` when it truncates, so a hub that outgrows it can see that it has.
+
+  Measured after: **201 terms at alignment, 125 at anchoring** — the whole glossary, and
+  every concept carrying a linked class. The fingerprint that detects glossary drift is
+  unaffected: it already passed its own high limit.
+
+- **`import-tmdl` finds flat-layout exports in a directory.** The recursive scan required
+  a directory literally named `definition`, which is the assumption #874 removed one call
+  downstream. A flat export was found when named directly and invisible to a directory
+  scan, so pointing at a staging folder imported nothing and exited 0 while telling the
+  operator to check a path that was correct. `.import/powerbi/` is a scaffolded location,
+  so a hub routinely has several exports in one directory.
+
+  A `.pbip` pointer whose artifact folders are absent no longer reaches the operator as a
+  raw traceback. `run_import_tmdl` still raises — a programmatic caller has to know the
+  import did not happen, and a test already pinned that — but the CLI renders it as a
+  clean failure, which is where the handling was missing.
+
+- **`scaffold-extensions` refuses to render a property onto a class the domain cannot
+  resolve.** Global anchoring (DD-185) picks from the whole class catalog and a domain's
+  imports are scoped by its blueprint, so the two can disagree. When they did, the result
+  was silent: 33 properties rendered, merged into the ontology, passed `validate` — syntax
+  and SHACL both accept an `rdfs:domain` pointing anywhere — and were invisible to
+  `generate-bindings`, which resolves through the domain's own closure. The skip names
+  both ways out, because adding the import and re-anchoring the table are different
+  decisions.
+- **`build-glossary` no longer destroys business terms that share a canonical class.**
+  Concepts were grouped by `linked_iri` where one was present (DD-063), which made the
+  IRI the concept's *identity* rather than a reference. A glossary exists precisely
+  because many business words map onto few canonical classes, so on a real hub sixteen
+  party roles — cargo broker, freight forwarder, ship owner, ship manager, charterer and
+  others, each with its own authored definition — all legitimately carried the same
+  `TradeParty` IRI, collapsed into one concept labelled with whichever was processed
+  last, and the other fifteen were discarded without even becoming `skos:altLabel`. The
+  glossary went from **164 concepts to 82 by adding the links the
+  `kairos-design-discovery` skill instructs**, so the safe action and the documented
+  action were opposites.
+
+  Grouping is now always by normalized `prefLabel`, and `linked_iri` is carried as the
+  cross-reference it is — several concepts pointing at one class is what `rdfs:seeAlso`
+  means. Synonyms remain `altLabel`'s job, and the same term recorded in two documents
+  still merges. DD-063 is amended accordingly.
+
+  **On your next `build-glossary` run** a hub will see more concepts wherever terms had
+  been silently merged, and local names derived from the label rather than the IRI
+  fragment. A hand-authored glossary was never affected — only the generator collapsed
+  terms.
+- **A system-versioning column no longer becomes part of an entity's identity.**
+  `anchor-tables` put operational columns in `grain_columns` — on one real hub it proposed
+  `natural_key: [KLMEMO, SETNR]` and `grain_columns: [KLMEMO, SETNR, ttSysStartTime]` —
+  and `generate-bindings` turns every grain column into a `purpose: identity` technical
+  field. Five of seven generated bindings carried a SQL Server row-validity timestamp as
+  part of identity, which silently changes the Silver grain from *one row per consignment*
+  to *one row per consignment per version*: counts become version counts, uniqueness tests
+  pass that should fail, and a join on the entity fans out.
+
+  The grain is now filtered with the toolkit's own `_is_operational_column` predicate,
+  conservatively: a column the model itself placed in `natural_key` is never dropped, and
+  the grain is never emptied — a table with no grain is not a safer answer than one with a
+  questionable grain.
+
+- **`generate-bindings` no longer emits bindings its own compiler rejects.** Identity
+  technical fields were typed `string` unconditionally, because the alignment only carries
+  a type for columns it *mapped* and an identity column is often one it did not. `compile`
+  then failed with `technical-field.type-incompatible`. The physical type is now read from
+  the source vocabulary — the same place the compiler reads it from — when neither the
+  profile nor the alignment knows it.
+- **`generate-bindings` honours table-grain dispositions.** It loaded the ledger and used
+  only the column-grain half, so a table recorded as `not-business-data`, `blueprint-gap`
+  or `deferred` had a binding generated for it anyway. Since `--force` is the documented
+  way to pick up a corrected anchor, every legitimate regeneration silently undid every
+  table-grain decision a hub had made — nine tables on one hub, eight of them replicas
+  whose bindings had produced the false merge the dispositions were recorded to resolve.
+  That made the decisions look ineffective rather than ignored.
+
+  `bound` deliberately does not skip: it asserts a binding *exists*. An explicit `--table`
+  still generates, so one dispositioned table can be regenerated without clearing the
+  ledger.
+- **A hub-local property can no longer be proposed with a type the compiler cannot emit.**
+  `propose-alignment` asked the model for `"range": "<xsd type or class name>"` with no
+  constraint, so it reasonably proposed `xsd:duration` for a duration column. That was
+  accepted into the disposition ledger, rendered into the domain ontology by
+  `scaffold-extensions`, passed `validate` clean, and failed three stages later at
+  `compile` with `mapping.invalid-output-type` — after a human had already accepted it.
+
+  The prompt now names the fifteen datatype ranges the compiler can emit and says to
+  express a duration as a number with its unit in the rationale.
+
+  `scaffold-extensions`' allow-list was hand-maintained beside the compiler's own XSD
+  table and had drifted from it in both directions: it permitted `xsd:duration`, which has
+  no canonical output type, and omitted `xsd:int`, `xsd:short`, `xsd:token` and
+  `xsd:normalizedString`, which the compiler supports. It is now derived from that table,
+  so the two cannot disagree, and a datatype the compiler cannot emit is reported as its
+  own skip reason — distinct from a non-datatype range, and differently actionable: the
+  modelling is fine, the type is not buildable.
 
 ## [5.19.0] — 2026-09-20
 
