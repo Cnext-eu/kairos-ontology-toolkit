@@ -847,7 +847,10 @@ def suggest_family_dispositions(
     """
     families = sheet.get("families") or []
     if not families:
-        return {"families_described": 0}
+        # A hub that has decided every gap column builds an empty sheet, which is
+        # success, not an error state. Return the full shape so the caller can report
+        # it without a KeyError (#889).
+        return {"families_described": 0, "flagged_incoherent": 0}
 
     # Families are domain-scoped (the same token is a different decision in a
     # different domain), so the response key must carry the domain too. Keying on

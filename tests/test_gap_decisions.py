@@ -902,3 +902,15 @@ class TestGlossaryReachesDispositionEvaluation:
 
         assert prompt
         assert "BUSINESS'S OWN VOCABULARY" not in prompt
+
+
+class TestSuggestOnAFullyDecidedHub:
+    """An empty sheet is success, not an error state (issue #889)."""
+
+    def test_the_stats_shape_is_complete_when_there_is_nothing_to_describe(self):
+        stats = suggest_family_dispositions(
+            {"families": [], "decisions": []}, client=None, model="unused"
+        )
+
+        assert stats["families_described"] == 0
+        assert stats["flagged_incoherent"] == 0

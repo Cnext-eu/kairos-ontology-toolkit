@@ -4226,10 +4226,13 @@ def draft_gap_decisions_cmd(
                 ),
                 hub_root=hub,
             )
-            click.echo(
-                f"🧠 described {stats['families_described']} family/families "
-                f"({stats['flagged_incoherent']} flagged as not one concept)"
-            )
+            if stats.get("families_described"):
+                click.echo(
+                    f"🧠 described {stats['families_described']} family/families "
+                    f"({stats.get('flagged_incoherent', 0)} flagged as not one concept)"
+                )
+            else:
+                click.echo("🧠 no families left to describe — every gap column is decided")
         s = sheet["summary"]
         if not dry_run:
             path = write_decision_sheet(hub, sheet)
