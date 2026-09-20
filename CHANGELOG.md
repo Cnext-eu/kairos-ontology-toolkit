@@ -5,48 +5,206 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.17.0** is the latest GA release (2026-09-08), superseding **5.14.0**
-> (2026-08-23). Everything recorded under the individual `5.15.0rc*` and `5.16.0rc*` headings
-> below shipped as part of this one release — those headings are the per-change record of how it
-> was built, not separate releases. The same holds for `5.13.0rc1`–`rc31` under 5.14.0.
+> **Release status.** **5.18.0** is the latest GA release (2026-09-20), superseding **5.17.0**
+> (2026-09-08). Everything recorded under the `5.18.0rc1`, `rc2` and `rc3` headings below shipped
+> as part of this one release — those headings are the per-change record of how it was built,
+> not separate releases — plus the architecture layer landed since rc3 (DD-229 to DD-232) under
+> the 5.18.0 heading itself. The same holds for `5.15.0rc*`/`5.16.0rc*` under 5.17.0 and for
+> `5.13.0rc1`–`rc31` under 5.14.0.
 >
-> **5.18.0rc3** is the current pre-release, published for hub testing and not marked Latest. It
-> carries everything in rc2 plus the thirty-one changes merged since, and a pre-release review
-> of that delta that found two blockers in it: an approved calendar's `dim_date.tmdl` was
-> structurally invalid and could not be loaded by Fabric, and a domain could not re-emit its own
-> shared calendar after any change. Both are fixed here. **Your first `compile --emit` on rc3
-> rewrites `models/gold/shared/` once**, the hub-wide master class diagram changes bytes on the
-> next `project --target erd`, and `draft-gap-decisions --dry-run` will show columns that the
+> **What to expect on the first run after upgrading from 5.17.0.** Two fail-closed gates can
+> newly fail a hub that compiled green: `relationship.external-reference-key-column-unknown`
+> blocks a binding whose `externalReference.key[].column` the parent domain's contract does not
+> declare (only when that parent *has* a contract), and `dbt-contract.dialect-uncastable-type`
+> fails `validate-dbt-contracts` on a `cast(... as boolean|timestamp|string|…)` in authored SQL.
+> Both reject something that was already broken at run time — fix the defect, do not suppress
+> the gate. **Your first `compile --emit` produces a large diff**: Gold tables no longer carry the
+> DD-109 `_kairos_fk_*_match_count` diagnostics, a relationship that closed an ambiguous filter
+> path or put an unproven key on its "one" side is emitted `isActive: false` (read DD-225,
+> DD-226, DD-227 and the Gold product report's `deactivated_relationships`), and
+> `models/gold/shared/` is rewritten once. **Every tracked Mermaid diagram changes by four
+> lines** (the ELK layout frontmatter, #855) and the master class diagram changes bytes; run
+> `project --target erd` and `project --target ddd`, then **`git add
+> ontology-hub-publish/architecture/ddd`** — it now carries `ubiquitous-language.ttl`,
+> `concept-guide.md` and, for a hub with a DDD overlay, `contexts/**` and a projection manifest,
+> and the drift gate does not see untracked additions. The per-domain `{domain}-context-map.mmd`
+> is removed on that run. `validate` gains a class-disposition section that warns, never fails,
+> until a hub runs `class-disposition init`. `draft-gap-decisions --dry-run` shows columns the
 > operational-column predicate no longer silences.
 >
-> **5.18.0rc2** carried everything in 5.18.0rc1 plus five Gold/Power BI fixes found by publishing
-> rc1 to a real Fabric workspace (#790–#794). **Expect a large diff on your first re-emit**, and expect the
-> drift gate to be noisy until each hub has re-emitted once: Gold tables no longer carry the
-> DD-109 `_kairos_fk_*_match_count` diagnostics, and any relationship that closed an ambiguous
-> filter path or put an unproven key on its "one" side is now emitted `isActive: false`. Both are
-> the fixes working — the previous output could not be loaded or refreshed by Fabric at all. Read
-> DD-225, DD-226 and DD-227 before re-emitting, and `deactivated_relationships` in the Gold
-> product report to see what the projector chose and why.
->
-> It also carries rc1's two fail-closed gates, so a hub that compiled green on 5.17.0 can newly
-> fail CI — which is the reason this line ships as an RC. Both reject something that was already
-> broken at run time: `relationship.external-reference-key-column-unknown` blocks a binding whose
-> `externalReference.key[].column` the parent domain's contract does not declare (only when that
-> parent *has* a contract — an ungoverned parent is unaffected), and
-> `dbt-contract.dialect-uncastable-type` fails `validate-dbt-contracts` on a `cast(... as
-> boolean|timestamp|string|…)` in authored SQL. Expect to fix real defects, not to suppress the
-> gates.
->
-> None of the rc2 Gold fixes is proven by an offline gate — every one of them passed both
-> `package-powerbi-release` and TOM/TMDL validation before it was found. Validating this RC by
-> publishing and refreshing against a real Fabric warehouse is the point of cutting it, and #794
-> in particular only surfaces at query time, after a refresh that reports success.
+> The rc2 Gold fixes (#790–#794) were found by publishing rc1 to a real Fabric workspace and are
+> not proven by any offline gate; #794 in particular only surfaces at query time. The rc line
+> was cut for exactly that validation.
 >
 > Read **5.11.0** before upgrading: `propose-alignment` now refuses to run without
 > `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop. `--without-anchors`
 > is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.18.0] — 2026-09-20
+
+General availability of the 5.18 line. Everything under `5.18.0rc1`, `rc2` and `rc3` below is
+part of this release; the entries in this section are what landed after rc3 — the DDD
+architecture layer for the context engineer (DD-229 to DD-232) and the ELK diagram layout.
+
+### Added
+- **`project --target ddd` now draws bounded contexts hub-wide (DD-230, closes #846).** Under
+  `ontology-hub-publish/architecture/ddd/contexts/`: `context-map.mmd` (every context and every
+  relationship, whichever file declared it, border styled by subdomain type), `all-contexts.mmd`
+  (one `classDiagram`, one `namespace` per context — the subject-area view), one `{context}.mmd`
+  per non-empty context with neighbours as stubs, and `design-notes.md` (per context: subdomain,
+  classes, Silver status, invariants, language, design notes; then every hub class no context
+  claims). Membership is annotation-gated, so the import closure never floods a namespace;
+  namespace ids come from the context IRI, never the label. Same target, same tracked lane, no
+  workflow or gitignore change — a hub on rc3 gets the files on its next toolkit bump.
+- **Silver status inside the architecture.** Each class in a context diagram and in
+  `design-notes.md` is marked *in Silver contract*, *bound (no contract)* or *not in Silver*, read
+  from the authored `model/contracts/*.contract.yaml` and `integration/bindings/*.yaml` — never from
+  a CompilePlan. Silver is a subset of the architecture by construction; now it is visible.
+- **One hub-wide strategic DDD file, `model/extensions/ddd-contexts-ext.ttl` (DD-229, #846).**
+  Bounded contexts and the context map are declared once for the whole hub and referenced by
+  IRI from the per-domain `{domain}-ddd-ext.ttl` overlays, which now carry tactical design only.
+  `validate --ddd` validates the strategic file on its own, merges it into every overlay's
+  validation graph, and adds a hub-wide consistency audit that per-domain SHACL could not do:
+  `ddd.context-redeclared` (warning), `ddd.context-label-conflict`, `ddd.class-in-two-contexts`
+  and `ddd.tactical-in-strategic-file` (errors). A hub that still declares its contexts inside
+  each overlay validates as before and is told what to move.
+- **`kairos-ddd` vocabulary 1.1.0.** `kairos-ddd:subdomainType` classifies a context as
+  `CoreDomain`, `SupportingSubdomain` or `GenericSubdomain`; `kairos-ddd:invariant` records an
+  aggregate's business rules as repeatable prose beside its class. Overlays may also carry
+  `skos:scopeNote`, `skos:example` and `skos:altLabel` on class and property IRIs — the
+  context-specific language, which never redefines the canonical `rdfs:label`/`rdfs:comment`.
+- **Four new overlay shapes.** A `boundedContext` value must be a declared context (a typo used
+  to render as a new unlabelled box); an element belongs to at most one context;
+  `subdomainType` is closed; a context relationship joins two different contexts.
+- **A class-level disposition ledger, `integration/discovery/class-dispositions.yaml` (DD-231,
+  closes #847).** The class-side sibling of the source-table ledger: an `owl:Class` no
+  EntityBinding targets never enters the plan — correct — but "not bound yet, deliberately,
+  because X" had nowhere to live, so a context engineer's logical model in the ontology looked
+  forgotten. `kairos-ontology class-disposition set --class <IRI or prefix:Local> --disposition
+  deferred|architecture-only|abstract --rationale "..."` records the decision; `list
+  [--undecided]`, `clear` and `init` complete the surface. `bound` and `bound-via-subclass` are
+  derived from the bindings, never authored. **Adoption is opt-in, then binding:** until the hub
+  creates the ledger (`init`, or the first `set`) `validate` reports undecided classes as
+  warnings, so no existing hub goes red on upgrade; afterwards an undecided class is an error,
+  degradable with `--degraded` like DD-164. A malformed ledger is itself the error, never read as
+  empty; `decided_by` is closed in core; a disposition left behind on a class that a binding now
+  targets is reported as `class-disposition.stale`.
+- **The hub's ubiquitous language and concept guide, generated by `project --target ddd`
+  (DD-232).** `architecture/ddd/ubiquitous-language.ttl` is a SKOS vocabulary with one concept per
+  class the hub declares — `skos:exactMatch` to the class IRI, `skos:broadMatch` to its
+  reference-model superclasses, the canonical label and definition, synonyms from the DDD overlay
+  and the discovery glossary, context-specific scope notes and examples, source names as hidden
+  labels, and the Silver status (and DD-231 disposition) as an editorial note — grouped in one
+  `skos:Collection` per bounded context, or per domain for a hub without a DDD design.
+  `architecture/ddd/concept-guide.md` is its human-readable counterpart: the "three names, one
+  concept" rule, every concept described in its context, the relationship reference (*(realised)*
+  where a binding realises the edge), the concept-mapping table, and the discovery-glossary links
+  that have gone stale. Both are derived on every run, deterministic and timestamp-free, and are
+  emitted for **every** hub with a class; `git add` them with the upgrade. Sample values are
+  **off by default** — the import step's redacted `kairos-bronze:sampleValues` can still carry
+  personal data and the lane is tracked — and are switched on per hub with
+  `projections.concept_guide.samples: true` (`max_samples`, default 3) in `kairos.yaml`.
+- **`kairos-design-architecture`, the context engineer's skill.** Author the strategic file and
+  the per-domain overlays (contexts, context map, aggregates, invariants, scope notes, synonyms,
+  examples), record why a class is deliberately not in Silver, validate with `--ddd`, regenerate
+  the context diagrams, the ubiquitous language and the concept guide, and review them with the
+  SMEs. Shipped to every hub. `kairos-ontology next` / `kairos-flow` route two new actions to it:
+  `design-architecture` (optional, when an overlay or the strategic file exists) and
+  `record-class-disposition` (a human call per undecided hub class; blocking once the class
+  ledger is adopted). `next` schema version 8.
+
+### Changed
+- **The per-domain `{domain}-context-map.mmd` is retired.** It rendered only the edges its own
+  overlay declared, so every other domain's map read as empty. The first `project --target ddd`
+  after upgrading removes the old files and writes `contexts/**` plus a
+  `.kairos-projection-manifest.json` that reconciles the `ddd` output directory to the run's files
+  (a renamed context no longer leaves its diagram behind, #861 for `ddd`). **`git add` the new
+  files with the upgrade**: the drift gate diffs tracked paths and does not see untracked
+  additions. The manifest is written only for hubs with DDD output.
+- **`project --target ddd` per-domain reports show the contexts a domain participates in**, with
+  their subdomain type, the edges touching them, and a new `## Invariants` section, instead of
+  whatever the one overlay happened to declare. The hub-wide map follows in DD-230.
+- **Every generated Mermaid diagram now selects the ELK layout engine (#855).** Canonical and
+  master class diagrams, DDD maps, declared-contract ERDs, and the bound Silver and Gold ERDs
+  and their masters all open with four lines of frontmatter (`layout: elk`) ahead of the
+  `%% Generated by kairos-ontology` stamp. ELK routes edges orthogonally and clusters the stub
+  nodes every ERD family draws outside its main group, where Mermaid's default dagre scatters
+  them across the canvas. Renderers without ELK registered (GitHub, Azure DevOps wikis) log a
+  warning and draw the dagre layout they drew before; `mmdc` and the VS Code Mermaid Chart
+  extension render ELK. Layout happens at render time, so the rest of every file is
+  byte-identical: upgrading is one deterministic four-line diff per tracked diagram under
+  `ontology-hub-publish/architecture/**` and `ontology-hub/model/contracts/diagrams/` —
+  regenerate and commit them with the upgrade, or the drift gate reports the difference. A hub
+  whose renderer predates Mermaid 10.5 (which rejects frontmatter outright) opts out hub-wide
+  with `projections.mermaid_layout: none` in `kairos.yaml` and gets the previous bytes.
+
+### Fixed
+- **`validate --ddd` no longer parses an overlay into the ontology loader's cached graph.**
+  `build_merged_graph` merged the overlay into the graph object `load_ontology` memoizes per
+  path, so every overlay validated earlier in the process became part of the next one's
+  merged graph — and of the domain graph the rest of `validate` then read. Symptoms were
+  order-dependent: an `AggregateMember` without a root passed because an earlier overlay's
+  `aggregateRoot` triple was still there. The domain graph is now copied before merging.
+- **`compile --check` reports a deferred cross-domain bridge endpoint.** #763 deferred the
+  endpoint check on the single-domain path and recorded the result on the plan, but
+  nothing printed it: `compile party --check` was green and `emit-gold` on the product
+  then failed on the same endpoint. The check output and the JSON payload
+  (`unresolved_bridges`) now name the bridge and the endpoint the domain cannot see.
+- **A declared workflow customization is honoured in every state.** #772 exempted a
+  declared workflow from the `customized` failure, but one pinned to an older shipped
+  generation (`outdated`) still failed `update --check` and was overwritten by
+  `update --refresh-workflows`, contrary to what `CICD.md` promises. Declared workflows
+  are now skipped by the refresh and excluded from the outdated count.
+- **The master ERD headers carry the hub's declared name, not the checkout directory.**
+  All three masters (canonical, Silver, Gold) stamped `hub_root.name`, so two clones of
+  one hub under different directory names regenerated a one-line header difference and
+  failed the drift gate on it. They read `name:` from `kairos.yaml` and fall back to the
+  directory only when it is absent. **The headers change bytes once on your next run.**
+- **`validation-report.json` anchors on the repository root, not the hub's parent.**
+  #822 approximated the repo root as `hub_root.parent`, which is right for the scaffolded
+  layout and wrong for a flat-layout hub or a hub nested deeper: paths began with the
+  checkout's directory name and still differed between contributors. The nearest ancestor
+  carrying `.git` is used, with the parent as fallback.
+- **The reference rollup credits an ambiguous anchor to the copy the table's columns
+  align to.** #523 keyed the rollup on the class URI, but a table anchored to a bare
+  name declared by two modules was still credited -- with every custom column -- to both
+  copies, and `custom_extensions_count` summed twice over the hub.
+- **A `candidate` concept-mapping match does not name a draft-model node.** #762's lexical
+  proposal became the node label and could acquire glossary evidence under that name
+  before anyone confirmed it; the node keeps the TMDL table's own name until then.
+- **`import-tmdl` finds the hub catalog from inside the hub.** The match proposer located
+  the hub with a helper that does not walk parent directories, unlike the one that
+  places the output, so a run from `ontology-hub/integration/` wrote its artifacts and
+  proposed nothing.
+- **`--model` typed as the default is recorded as `explicit-model`.** #545's provenance
+  label used the default model's name as the "not passed" sentinel, so `--model
+  gpt-5.4-mini` was indistinguishable from the option's absence.
+- **Name tokens split an acronym run before a capitalised word.** `ETLLoadDate` tokenised
+  to `etlload`, `date` and matched nothing after #522; it is `etl`, `load`, `date`.
+- **A hand-edited alignment without a `domain` key no longer reads as
+  `<domain>-alignment-alignment.yaml` in the staleness message.**
+- **`scripts/collect_changelog.py` prints on a Windows console** whose code page cannot
+  encode a fragment's characters.
+
+### Documentation
+- **The workflow between the context engineer and the data engineer is written down.** New
+  practitioner page *How the context engineer and the data engineer work together* (ownership,
+  the handshake step by step, escalation routes, what each stage leaves behind, what the toolkit
+  enforces versus proposes), with matching sections in the context-engineer and data-engineer
+  methodology guides.
+- **New how-to, shipped to hubs:** *Document the architecture with a DDD overlay* — the subset
+  invariant, the two kinds of file, "annotate, do not move", the overlay rules, the class ledger,
+  the generated artifacts, the Lucid rule, and how to carry an external logical model.
+- `kairos-help`, `kairos-flow`, `kairos-execute-validate`, `kairos-execute-project`,
+  `kairos-design-domain` and `kairos-design-mapping` now name the architecture layer where it
+  touches them; the user guide lists the DDD files and the class ledger among the authored
+  inputs; *Design a domain* gains a "What you get" section.
+- `alignment_closure` states what #518 compares -- the blueprint's activated module list,
+  not a resolved `owl:imports` closure -- and what that does not detect.
+- `update --check`'s exit-code help names undeclared workflow divergence as a failure
+  cause; the lane test pins `full-validate.yml` as well as `pr-validate.yml`.
 
 ## [5.18.0rc3] — 2026-09-19
 
