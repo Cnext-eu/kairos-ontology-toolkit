@@ -791,3 +791,125 @@ class TestTargetResolvability:
 
     def test_a_resolvable_target_says_nothing(self):
         assert "owl:imports" not in _proposal(_GENERIC).to_yaml()
+
+class TestContainerToContainedIsExplained:
+    """#723 -- the relationship runs the wrong way for the foreign key that exists.
+
+    The ontology puts ``rdfs:domain`` on the container, so the container becomes the
+    child, but the key is on the contained side. v5's cardinality enum has no
+    ``one-to-many``, so this is not mis-cardinalitied -- it is unauthorable on the side
+    the command proposes it. Measured before building, as the issue asked: the reverse
+    resolved for 2 of 11 unresolved proposals on one hub and 0 of 3 on another, and
+    neither of the two could be turned into a proposal.
+    """
+
+    CONTAINER = "https://ref.test/ont/c#Container"
+    CONTAINED = "https://ref.test/ont/c#Contained"
+    CONTAINS = "https://ref.test/ont/c#contains"
+    PART_OF = "https://ref.test/ont/c#partOf"
+
+    def _ontology(self, inverse: str = "", inverse_domain: str = "") -> str:
+        text = (
+            "@prefix : <https://ref.test/ont/c#> .\n"
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+            "<https://ref.test/ont/c> a owl:Ontology .\n"
+            ":Container a owl:Class .\n"
+            ":Contained a owl:Class .\n"
+            ":contains a owl:ObjectProperty ;\n"
+            "    rdfs:domain :Container ;\n"
+            "    rdfs:range :Contained"
+        )
+        text += (" ;\n    owl:inverseOf :partOf .\n" if inverse else " .\n")
+        if inverse:
+            text += (
+                ":partOf a owl:ObjectProperty ;\n"
+                f"    rdfs:domain :{inverse_domain} ;\n"
+                "    rdfs:range :Container .\n"
+            )
+        return text
+
+    def _hub(self, tmp_path, inverse="", inverse_domain="Contained"):
+        hub_root = tmp_path / "hub"
+        bindings = hub_root / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        ontologies = hub_root / "model" / "ontologies"
+        ontologies.mkdir(parents=True)
+        (ontologies / "c.ttl").write_text(
+            self._ontology(inverse, inverse_domain), encoding="utf-8"
+        )
+        (hub_root / "kairos.yaml").write_text("adapter: fabric\n", encoding="utf-8")
+        # The container knows nothing of the contained side; the key is on the contained
+        # binding, which carries the container's key column.
+        (bindings / "containers.binding.yaml").write_text(
+            _binding("containers", "c", self.CONTAINER, "container_id",
+                     key_property=":containerReference"),
+            encoding="utf-8",
+        )
+        (bindings / "contained.binding.yaml").write_text(
+            _binding(
+                "contained", "c", self.CONTAINED, "line_id",
+                "technicalFields:\n"
+                "  - name: container_id\n"
+                "    expression: container_id\n"
+                "    type: string\n"
+                "    nullable: false\n"
+                "    purpose: relationship\n",
+                key_property=":lineReference",
+            ),
+            encoding="utf-8",
+        )
+        ref_models = tmp_path / "ontology-reference-models"
+        (ref_models / "accelerator-packs" / "logistics" / "client-hub-blueprint").mkdir(
+            parents=True
+        )
+        (ref_models / "accelerator-packs" / "logistics" / "client-hub-blueprint"
+         / "data-domains.yaml").write_text("data_domains: []\n", encoding="utf-8")
+        return hub_root
+
+    def _reverse(self, hub):
+        [proposal] = [
+            p for p in _report(hub).proposals
+            if p.property_uri == self.CONTAINS
+        ]
+        return proposal
+
+    def test_the_shape_is_detected_and_the_key_side_named(self, tmp_path):
+        proposal = self._reverse(self._hub(tmp_path))
+        assert proposal.join_resolved is False, "nothing on the container side to join"
+        assert proposal.reverse_join is not None
+        assert proposal.reverse_join["binding"] == "contained"
+        assert proposal.reverse_join["local"] == "container_id"
+
+    def test_an_undeclared_inverse_is_reported_as_the_fix(self, tmp_path):
+        proposal = self._reverse(self._hub(tmp_path))
+        assert proposal.reverse_join["inverse"] is None
+        rendered = proposal.to_yaml()
+        assert "container-to-contained" in rendered
+        assert "No owl:inverseOf is declared" in rendered
+
+    def test_a_usable_declared_inverse_is_named(self, tmp_path):
+        proposal = self._reverse(self._hub(tmp_path, inverse="partOf"))
+        assert proposal.reverse_join["inverse"] == self.PART_OF
+        assert proposal.reverse_join["inverse_usable"] is True
+        assert "Author it there as" in proposal.to_yaml()
+
+    def test_a_declared_inverse_whose_domain_excludes_the_key_side_is_rejected(self, tmp_path):
+        """The case that makes 'just read owl:inverseOf' insufficient.
+
+        Observed in a real reference module: an inverse pair whose domain and range are
+        not swapped, so the declared inverse cannot be authored on the class that holds
+        the key.
+        """
+        hub = self._hub(tmp_path, inverse="partOf", inverse_domain="Container")
+        proposal = self._reverse(hub)
+        assert proposal.reverse_join["inverse"] == self.PART_OF
+        assert proposal.reverse_join["inverse_usable"] is False
+        assert "rdfs:domain does not include" in proposal.reverse_join["reason"]
+        assert "cannot carry it" in proposal.to_yaml()
+
+    def test_a_resolved_proposal_carries_no_reverse_facts(self, tmp_path):
+        """The reverse check is for proposals that failed, not a second opinion."""
+        for proposal in _report(self._hub(tmp_path)).proposals:
+            if proposal.join_resolved:
+                assert proposal.reverse_join is None

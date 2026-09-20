@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+from rdflib.namespace import OWL
 
 from .projections.shared import camel_to_snake
 
@@ -556,6 +557,14 @@ class RelationshipProposal:
     #: column, say -- so one entry carries them all rather than N entries each claiming to
     #: be derived.
     competing_properties: tuple[str, ...] = ()
+    #: Set when this proposal's own join is unresolved but the *reverse* direction
+    #: resolves -- the relationship runs container-to-contained and the foreign key sits
+    #: on the parent. Carries what an author needs to act: which binding holds the key,
+    #: on which column, whether an ``owl:inverseOf`` exists, and whether that inverse can
+    #: actually be used. The v5 ``cardinality`` enum has no ``one-to-many``, so the
+    #: container side is not mis-cardinalitied but unauthorable; the only correct entry is
+    #: the inverse property on the key-carrying side (#723).
+    reverse_join: Optional[dict[str, Any]] = None
     #: False when the child domain's own import closure cannot resolve ``target_class``.
     #: An authored relationship like that fails ``compile`` with
     #: ``safety.relationship-endpoint``; naming the missing import beats discovering it.
@@ -575,6 +584,7 @@ class RelationshipProposal:
             "join": [{"local": self.local_column, "foreign": self.foreign_column}],
             "join_resolved": self.join_resolved,
             "join_evidence": self.join_evidence,
+            "reverse_join": self.reverse_join,
             "narrower_alternatives": self.narrower_alternatives,
             "competing_properties": self.competing_properties,
             "target_resolvable": self.target_resolvable,
@@ -625,6 +635,8 @@ class RelationshipProposal:
                 "# This domain does not import the module declaring the target class."
             )
             prefix.append("# Add it to owl:imports first, or the paste will not compile.")
+        if self.reverse_join:
+            prefix.extend(_reverse_join_lines(self.reverse_join))
         return (chr(10).join([*prefix, rendered])) if prefix else rendered
 
 
@@ -810,6 +822,79 @@ def load_domain_class_closures(ontologies_dir: Path) -> dict[str, frozenset[str]
     return closures
 
 
+def _reverse_join_facts(
+    child: BoundEntity,
+    parent: BoundEntity,
+    property_uri: str,
+    fk_evidence: dict[tuple[str, str], dict[str, set[tuple[str, str]]]],
+    property_inverses: dict[str, dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Facts for a proposal whose own join fails but whose reverse resolves.
+
+    Measured before building (#723 asked for that): on one hub the reverse rescued
+    nothing, on a second it resolved for 2 of 11 unresolved proposals. Neither could be
+    turned into a proposal, for two different reasons -- one property declared no inverse
+    at all, and the other declared one whose ``rdfs:domain`` excluded the very class
+    holding the key. Both are reported, because they need different fixes.
+    """
+    local, foreign, resolved, _evidence = _match_join(parent, child, fk_evidence)
+    if not resolved:
+        return None
+    facts: dict[str, Any] = {
+        "binding": parent.name,
+        "local": local,
+        "foreign": foreign,
+        "property": property_uri,
+        "inverse": None,
+        "inverse_usable": False,
+        "reason": "",
+    }
+    declared = property_inverses.get(property_uri, {})
+    inverses = declared.get("inverses") or ()
+    if not inverses:
+        return facts
+    inverse = inverses[0]
+    facts["inverse"] = inverse
+    domains = property_inverses.get(inverse, {}).get("domains") or frozenset()
+    if not domains:
+        facts["reason"] = "it names no rdfs:domain this profile can resolve"
+    elif parent.target_class in domains:
+        facts["inverse_usable"] = True
+    else:
+        facts["reason"] = (
+            f"its rdfs:domain does not include {parent.target_class}, which is the class "
+            "that carries the key"
+        )
+    return facts
+
+
+def _reverse_join_lines(reverse: dict[str, Any]) -> list[str]:
+    """Operator-facing explanation of a container-to-contained relationship.
+
+    Says what is true and what to do, and stops short of the entry itself: proposing on
+    the other side needs a property URI, and DD-160 s3 forbids inventing one.
+    """
+    lines = [
+        "# Not authorable on this side: this relationship runs container-to-contained,",
+        "# and v5 cardinality has no one-to-many. The foreign key is on:",
+        f"#   {reverse['binding']}",
+        f"#   joining {reverse['local']} to {reverse['foreign']} on this binding.",
+        "# The entry belongs there, under the inverse property.",
+    ]
+    inverse = reverse.get("inverse")
+    if not inverse:
+        lines.append(
+            f"#   No owl:inverseOf is declared for {reverse['property']}. Declare one and"
+        )
+        lines.append("#   re-run to get a proposal on that side.")
+    elif reverse.get("inverse_usable"):
+        lines.append(f"#   Author it there as {inverse}.")
+    else:
+        lines.append(f"#   {inverse} is declared as the inverse but cannot carry it:")
+        lines.append(f"#   {reverse.get('reason', '')}")
+    return lines
+
+
 def _target_is_resolvable(
     domain_closures: dict[str, frozenset[str]],
     child_domain: str,
@@ -831,6 +916,49 @@ def _target_is_resolvable(
         return True
     resolved = hierarchy.resolve(target_class) or target_class
     return resolved in closure or target_class in closure
+
+
+def load_property_inverses(ontologies_dir: Path) -> dict[str, dict[str, Any]]:
+    """``property URI -> {"inverses": (uri, ...), "domains": {uri, ...}}`` for object properties.
+
+    Both halves answer one question: when a relationship runs container-to-contained, can
+    the author turn it around? An ``owl:inverseOf`` assertion alone does not settle it --
+    the inverse's own ``rdfs:domain`` has to admit the class that carries the foreign key,
+    and on a real reference module one did not (#723).
+
+    The inverses are read from the graph, not from the semantic index: the index is built
+    under the ``rdfs`` profile and ``owl:inverseOf`` is an OWL construct, so
+    ``PropertyRecord.inverse_properties`` is empty even for a module that asserts it.
+
+    ``domains`` comes from the index, which *does* expand an ``owl:unionOf`` domain into
+    its named members -- so a union is checkable here rather than opaque, and an empty set
+    means the property genuinely names no domain this profile can see.
+    """
+    inverse_of = OWL.inverseOf
+    facts: dict[str, dict[str, Any]] = {}
+    for _domain, result in _load_hub_ontologies(ontologies_dir):
+        graph = getattr(result, "graph", None)
+        asserted: dict[str, list[str]] = {}
+        if graph is not None:
+            try:
+                for subject, _predicate, obj in graph.triples((None, inverse_of, None)):
+                    # owl:inverseOf is symmetric in meaning; record both directions so a
+                    # module that states it once still answers for either property.
+                    asserted.setdefault(str(subject), []).append(str(obj))
+                    asserted.setdefault(str(obj), []).append(str(subject))
+            except Exception:  # noqa: BLE001 - advisory; never fail a proposal run on this
+                asserted = {}
+        for prop in result.semantic_index.properties:
+            if prop.property_type != "object":
+                continue
+            facts.setdefault(
+                prop.uri,
+                {
+                    "inverses": tuple(dict.fromkeys(asserted.get(prop.uri, ()))),
+                    "domains": frozenset(link.uri for link in prop.domains),
+                },
+            )
+    return facts
 
 
 def collapse_competing_properties(
@@ -912,6 +1040,7 @@ def build_relationship_proposals(
     ontologies_dir = Path(hub_root) / "model" / "ontologies"
     hierarchy = load_class_hierarchy(ontologies_dir)
     property_ancestors = load_property_ancestors(ontologies_dir)
+    property_inverses = load_property_inverses(ontologies_dir)
     domain_closures = load_domain_class_closures(ontologies_dir)
     by_class: dict[str, list[BoundEntity]] = {}
     by_local_name: dict[str, list[BoundEntity]] = {}
@@ -1024,6 +1153,13 @@ def build_relationship_proposals(
                         )
                 else:
                     foreign_output = foreign
+                reverse = (
+                    None
+                    if resolved
+                    else _reverse_join_facts(
+                        child, parent, property_uri, fk_evidence, property_inverses
+                    )
+                )
                 proposals.append(
                     RelationshipProposal(
                         child_binding=child.name,
@@ -1048,6 +1184,7 @@ def build_relationship_proposals(
                         join_candidates=(
                             () if resolved else child.relationship_columns
                         ),
+                        reverse_join=reverse,
                         target_resolvable=_target_is_resolvable(
                             domain_closures, child.domain, parent.target_class, hierarchy
                         ),
@@ -1096,6 +1233,21 @@ def build_relationship_proposals(
             f"{len(competing)} proposal(s) are a choice between properties that share one "
             "join and stand in no hierarchy — only one can be true of a single column. "
             "Pick one; see 'competing_properties'."
+        )
+    reversed_ = [p for p in proposals if p.reverse_join]
+    if reversed_:
+        undeclared = sum(1 for p in reversed_ if not p.reverse_join.get("inverse"))
+        notes.append(
+            f"{len(reversed_)} proposal(s) run container-to-contained: the join fails on "
+            "this side because the foreign key is on the parent. v5 cardinality has no "
+            "one-to-many, so the entry belongs on the key-carrying binding under the "
+            "inverse property"
+            + (
+                f", and {undeclared} of them have no owl:inverseOf declared to author it "
+                "with. Declaring one and re-running yields a proposal on that side."
+                if undeclared
+                else "."
+            )
         )
     unresolvable = [p for p in proposals if not p.target_resolvable]
     if unresolvable:
