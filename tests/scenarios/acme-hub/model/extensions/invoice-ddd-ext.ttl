@@ -2,33 +2,23 @@
 @prefix acme-ddd:   <https://acme.example/ddd/invoice#> .
 @prefix kairos-ddd: <https://kairos.cnext.eu/ddd#> .
 @prefix rdfs:       <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos:       <http://www.w3.org/2004/02/skos/core#> .
 
 # ---------------------------------------------------------------------------
 # DDD overlay for the Invoice domain (DD-091) — architecture documentation only.
+# Tactical design only (DD-229): the Billing and Taxation contexts and their
+# relationship are declared once, hub-wide, in ddd-contexts-ext.ttl.
 # ---------------------------------------------------------------------------
 
-# Strategic — bounded contexts
-acme-ddd:BillingContext a kairos-ddd:BoundedContext ;
-    rdfs:label "Billing" ;
-    kairos-ddd:publishedLanguage true ;
-    kairos-ddd:designNote "Owns invoicing, line items, and settlement." .
-
-acme-ddd:TaxContext a kairos-ddd:BoundedContext ;
-    rdfs:label "Taxation" ;
-    kairos-ddd:designNote "Computes and applies tax to invoice lines." .
-
-# Context map
-acme-ddd:BillingUsesTax a kairos-ddd:ContextRelationship ;
-    rdfs:label "Billing uses Tax" ;
-    kairos-ddd:sourceContext acme-ddd:BillingContext ;
-    kairos-ddd:targetContext acme-ddd:TaxContext ;
-    kairos-ddd:relationshipPattern kairos-ddd:CustomerSupplier .
-
-# Tactical — aggregate roots, members, value objects
 acme-inv:Invoice
     kairos-ddd:boundedContext acme-ddd:BillingContext ;
     kairos-ddd:tacticalPattern kairos-ddd:AggregateRoot ;
-    kairos-ddd:designNote "Invoice aggregate root; owns its lines." .
+    kairos-ddd:invariant "An invoice total equals the sum of its line amounts." ;
+    kairos-ddd:invariant "A settled invoice never changes its lines." ;
+    kairos-ddd:designNote "Invoice aggregate root; owns its lines." ;
+    skos:scopeNote "In Billing an invoice is the issued document, never the draft quote." ;
+    skos:example "INV-2026-000123 issued to Acme NV on 2026-03-01" ;
+    skos:altLabel "Bill"@en .
 
 acme-inv:InvoiceLine
     kairos-ddd:tacticalPattern kairos-ddd:AggregateMember ;

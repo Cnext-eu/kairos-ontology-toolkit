@@ -1930,14 +1930,21 @@ def _run_projection(
     # DDD documentation overlay (DD-091) — handled before class collection so
     # that import-only domains with DDD overlays still produce documentation.
     if target == "ddd":
+        from .ddd import find_strategic_file
         from .projections.ddd_projector import generate_ddd_artifacts
 
+        # The hub-wide strategic file (DD-229) sits beside the overlay; without an
+        # overlay there is nothing to draw for this domain, so no lookup is needed.
+        strategic_path = (
+            find_strategic_file(Path(projection_ext_path).parent) if projection_ext_path else None
+        )
         return generate_ddd_artifacts(
             graph=graph,
             namespace=namespace,
             ontology_name=ontology_name or "domain",
             overlay_path=projection_ext_path,
             ontology_metadata=ontology_metadata or {},
+            strategic_path=strategic_path,
         )
 
     # Canonical ontology ERD (DD-209) — binding-independent graph projection, same

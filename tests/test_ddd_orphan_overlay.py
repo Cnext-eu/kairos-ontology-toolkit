@@ -74,7 +74,7 @@ class TestOrphanIsReported:
         assert "sales-ddd-ext.ttl" in capsys.readouterr().out
 
     def test_the_message_names_the_ontology_it_looked_for(self, hub, capsys):
-        """"No matching domain ontology" is only actionable with the expected name."""
+        """ "No matching domain ontology" is only actionable with the expected name."""
         extensions, ontologies = _dirs(hub)
         (extensions / "sales-ddd-ext.ttl").write_text(_STRATEGIC, encoding="utf-8")
 
@@ -131,7 +131,9 @@ class TestOrphanIsReported:
 
         ddd.run_ddd_validation(extensions, ontologies)
 
-        assert "Checked 3 DDD overlay(s), 1 failed" in capsys.readouterr().out
+        # The copied acme hub also carries the hub-wide strategic file (DD-229), which is
+        # checked on its own and named in the summary rather than counted as an overlay.
+        assert "Checked 3 DDD overlay(s) + strategic file, 1 failed" in capsys.readouterr().out
 
 
 class TestMatchedOverlaysAreUnchanged:

@@ -4,12 +4,16 @@
 **Date:** 2026-07-05
 **Affects:** `src/kairos_ontology/scaffold/kairos-ddd.ttl`,
 `src/kairos_ontology/scaffold/kairos-ddd-shapes.shacl.ttl`,
-`src/kairos_ontology/ddd.py`,
-`src/kairos_ontology/projections/ddd_projector.py`, `projector.py`
-(`ddd` target), `cli/main.py` (`project --target ddd`, `validate --ddd`),
-`tests/scenarios/acme-hub/model/extensions/*-ddd-ext.ttl`, `kairos-help` skill
+`src/kairos_ontology/core/ddd.py`,
+`src/kairos_ontology/core/projections/ddd_projector.py`, `core/projector.py`
+(`ddd` target), `cli/validation.py` (`validate --ddd`), `cli/projections.py`
+(`project --target ddd`), `tests/scenarios/acme-hub/model/extensions/*-ddd-ext.ttl`
 **Implementation:** `kairos-ontology validate --ddd`,
-`kairos-ontology project --target ddd`
+`kairos-ontology project --target ddd`. Extended by
+[DD-229](dd-229-strategic-ddd-design-lives-in-one-hub-wide-file-overlays-annotate-classes.md)
+(hub-wide strategic file, vocabulary 1.1). The v4 paths this record originally named
+(`src/kairos_ontology/ddd.py`, `projections/ddd_projector.py`, `cli/main.py`) moved in the v5
+layout; the `kairos-help` skill mention did not survive the v5 rewrite of that skill.
 
 ### Context
 

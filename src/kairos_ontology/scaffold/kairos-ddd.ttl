@@ -11,10 +11,18 @@
 # ownership, approval, disposition, materialization, and certification remain in
 # the claim registry.
 #
-# These annotations belong in SEPARATE overlay files named `{domain}-ddd-ext.ttl`
-# under `model/extensions/`. Domain ontologies must remain free of DDD design
-# concerns (R1). Never reuse a local name across the kairos-ext / kairos-bronze /
-# kairos-map / kairos-ddd vocabularies.
+# These annotations belong in SEPARATE files under `model/extensions/` (DD-229):
+#   - ONE hub-wide strategic file, `ddd-contexts-ext.ttl`: the BoundedContext
+#     individuals (label, subdomainType, publishedLanguage, designNote) and the
+#     context map (ContextRelationship individuals). A bounded context cuts across
+#     domain ontologies, so it is declared once, for the whole hub.
+#   - ONE tactical overlay per domain, `{domain}-ddd-ext.ttl`: boundedContext,
+#     tacticalPattern, aggregateRoot, invariant and designNote on that domain's own
+#     classes, plus the context-specific language -- skos:scopeNote, skos:example and
+#     skos:altLabel are welcome here and never redefine rdfs:label / rdfs:comment.
+# Domain ontologies must remain free of DDD design concerns (R1). Never reuse a
+# local name across the kairos-ext / kairos-bronze / kairos-map / kairos-ddd
+# vocabularies.
 
 @prefix kairos-ddd: <https://kairos.cnext.eu/ddd#> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
@@ -25,7 +33,7 @@
 <https://kairos.cnext.eu/ddd> a owl:Ontology ;
     rdfs:label "Kairos DDD Overlay Vocabulary"@en ;
     rdfs:comment "Typed classes, properties, and controlled individuals for the optional Domain-Driven Design architecture overlay (DD-091). Documentation only — not a governance or projection-control source."@en ;
-    owl:versionInfo "1.0.0" .
+    owl:versionInfo "1.1.0" .
 
 # ===========================================================================
 # Classes
@@ -46,6 +54,10 @@ kairos-ddd:TacticalPattern a owl:Class ;
 kairos-ddd:ContextRelationshipPattern a owl:Class ;
     rdfs:label "Context Relationship Pattern"@en ;
     rdfs:comment "Controlled class whose named individuals enumerate the context-map relationship patterns (shared kernel, customer-supplier, conformist, ACL, etc.)."@en .
+
+kairos-ddd:SubdomainType a owl:Class ;
+    rdfs:label "Subdomain Type"@en ;
+    rdfs:comment "Controlled class whose named individuals classify a bounded context by strategic importance: core domain, supporting subdomain, or generic subdomain (DD-229)."@en .
 
 # ===========================================================================
 # Properties
@@ -95,6 +107,18 @@ kairos-ddd:relationshipPattern a owl:AnnotationProperty ;
     rdfs:comment "The context-map pattern of a relationship (e.g. shared kernel, customer-supplier). Value must be one of the kairos-ddd relationship pattern individuals."@en ;
     rdfs:domain kairos-ddd:ContextRelationship ;
     rdfs:range kairos-ddd:ContextRelationshipPattern .
+
+kairos-ddd:subdomainType a owl:AnnotationProperty ;
+    rdfs:label "subdomain type"@en ;
+    rdfs:comment "Classifies a bounded context as a core domain, a supporting subdomain, or a generic subdomain. Value must be one of the kairos-ddd subdomain type individuals. Documentation only: it steers where design attention goes, never what is generated."@en ;
+    rdfs:domain kairos-ddd:BoundedContext ;
+    rdfs:range kairos-ddd:SubdomainType .
+
+kairos-ddd:invariant a owl:AnnotationProperty ;
+    rdfs:label "invariant"@en ;
+    rdfs:comment "A business rule the aggregate or entity must always satisfy, in prose. Repeatable. Documentation only: an enforceable form of the same rule is a SHACL shape in model/shapes/ (validate time) or a DataQualityRule in the EntityBinding (runtime dbt test)."@en ;
+    rdfs:domain owl:Class ;
+    rdfs:range xsd:string .
 
 # ===========================================================================
 # Controlled individuals — tactical patterns
@@ -159,3 +183,19 @@ kairos-ddd:PublishedLanguage a kairos-ddd:ContextRelationshipPattern ;
 kairos-ddd:SeparateWays a kairos-ddd:ContextRelationshipPattern ;
     rdfs:label "Separate Ways"@en ;
     rdfs:comment "Contexts have no integration; each solves its needs independently."@en .
+
+# ===========================================================================
+# Controlled individuals — subdomain types (DD-229)
+# ===========================================================================
+
+kairos-ddd:CoreDomain a kairos-ddd:SubdomainType ;
+    rdfs:label "Core Domain"@en ;
+    rdfs:comment "The part of the business that differentiates it; where the deepest modelling investment belongs."@en .
+
+kairos-ddd:SupportingSubdomain a kairos-ddd:SubdomainType ;
+    rdfs:label "Supporting Subdomain"@en ;
+    rdfs:comment "Necessary for the core to work but not itself a differentiator; modelled to the extent the core needs it."@en .
+
+kairos-ddd:GenericSubdomain a kairos-ddd:SubdomainType ;
+    rdfs:label "Generic Subdomain"@en ;
+    rdfs:comment "A solved problem shared by many businesses (reference data, identity, calendars); adopt a standard rather than model afresh."@en .

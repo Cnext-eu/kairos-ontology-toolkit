@@ -27,6 +27,7 @@ def client_ddd_artifacts(client_ontology):
 
 @pytest.fixture(scope="module")
 def invoice_ddd_artifacts(invoice_ontology):
+    """The invoice overlay references contexts declared hub-wide (DD-229)."""
     graph, namespace, _classes = invoice_ontology
     overlay = EXTENSIONS_DIR / "invoice-ddd-ext.ttl"
     return generate_ddd_artifacts(
@@ -34,6 +35,7 @@ def invoice_ddd_artifacts(invoice_ontology):
         namespace=namespace,
         ontology_name="invoice",
         overlay_path=overlay if overlay.exists() else None,
+        strategic_path=EXTENSIONS_DIR / "ddd-contexts-ext.ttl",
     )
 
 
@@ -72,6 +74,44 @@ class TestDddProjectionOutput:
         assert "Customer-Supplier" in mmd
         assert "Billing" in mmd
         assert "Taxation" in mmd
+
+    def test_invoice_report_carries_subdomain_and_invariants(self, invoice_ddd_artifacts):
+        md = invoice_ddd_artifacts["invoice-ddd-report.md"]
+        assert "| Billing | Core Domain | yes |" in md
+        assert "| Taxation | Generic Subdomain |" in md
+        assert "## Invariants" in md
+        assert "- **Invoice:** An invoice total equals the sum of its line amounts." in md
+        assert "| Billing | Customer-Supplier | Taxation |" in md
+
+    def test_client_report_lists_only_its_own_contexts(self, client_ontology):
+        """With the strategic file merged, the client report must not list Billing/Taxation."""
+        graph, namespace, _classes = client_ontology
+        artifacts = generate_ddd_artifacts(
+            graph,
+            namespace,
+            "client",
+            overlay_path=EXTENSIONS_DIR / "client-ddd-ext.ttl",
+            strategic_path=EXTENSIONS_DIR / "ddd-contexts-ext.ttl",
+        )
+        md = artifacts["client-ddd-report.md"]
+        assert "Client Management" in md and "Reference Data" in md
+        assert "| Billing |" not in md and "| Taxation |" not in md
+        assert "2 other bounded context(s) are declared hub-wide" in md
+        mmd = artifacts["client-context-map.mmd"]
+        assert "Billing" not in mmd and "Conformist" in mmd
+
+    def test_strategic_file_alone_yields_nothing_for_a_domain(self, client_ontology):
+        graph, namespace, _classes = client_ontology
+        assert (
+            generate_ddd_artifacts(
+                graph,
+                namespace,
+                "client",
+                overlay_path=None,
+                strategic_path=EXTENSIONS_DIR / "ddd-contexts-ext.ttl",
+            )
+            == {}
+        )
 
     def test_deterministic(self, client_ontology):
         graph, namespace, _classes = client_ontology
