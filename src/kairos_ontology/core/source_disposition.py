@@ -38,8 +38,34 @@ DEFAULT_ROW_THRESHOLD = 100
 #: Where the ledger lives, relative to the hub root.
 DISPOSITIONS_RELPATH = Path("integration") / "sources" / "_analysis" / "table-dispositions.yaml"
 
+#: Dispositions whose cascade onto the table's own columns is the point of recording
+#: them (#881).
+#:
+#: A table-grain decision used to retire every gap column in that table from the DD-169
+#: gate, whatever the decision said. That reasoning holds for exactly two values:
+#: ``not-business-data`` (the table is not business data, so neither are its columns) and
+#: ``blueprint-gap`` (a claim about the reference model, which is a claim about what the
+#: columns needed).
+#:
+#: It does not hold for the rest, and the omissions were the damaging ones:
+#:
+#: * ``deferred`` means "in scope, not modelled yet" -- precisely the state DD-169 exists
+#:   to keep raising. It is also the only value that is not an assertion about the data
+#:   being junk or the blueprint being broken, so it is what an operator reaches for.
+#: * ``bound`` and ``registered-extension`` assert the table *is* being modelled. They
+#:   are when the gate matters most: an EntityBinding either maps a column or silently
+#:   leaves it behind, and by then the omission looks like a completed mapping.
+#:
+#: On one real hub, 40 table-grain ``deferred`` records retired 1,643 columns and the
+#: gate never fired once.
+CASCADING_DISPOSITIONS: frozenset[str] = frozenset({"not-business-data", "blueprint-gap"})
+
 #: The closed set of answers. Each is a decision someone can defend in review.
 DISPOSITIONS: dict[str, str] = {
+    # Derived, never recorded: `audit_source_dispositions` reads it from
+    # integration/bindings/ before it consults this ledger, so authoring the binding is
+    # what states it. A table-grain row saying `bound` adds nothing the bindings
+    # directory does not already say, and used to silence the table's columns (#881).
     "bound": "An EntityBinding maps this table to a canonical class.",
     "registered-extension": (
         "Real business data outside the archetype catalog, registered as an in-scope "
@@ -378,6 +404,14 @@ def record_disposition(
     if disposition not in DISPOSITIONS:
         raise ValueError(
             f"Unknown disposition {disposition!r}; expected one of {sorted(DISPOSITIONS)}."
+        )
+    if disposition == "bound" and not column:
+        raise ValueError(
+            "'bound' is not recorded in the ledger: the DD-164 audit reads it from "
+            "integration/bindings/ before it looks here, so authoring the EntityBinding "
+            "is what states it. Recording it as a table-grain row adds nothing and used "
+            "to retire the table's columns from the DD-169 gate (#881). Author the "
+            "binding, or record why the table is not being bound."
         )
     if disposition in _REQUIRES_RATIONALE and not rationale.strip():
         raise ValueError(f"Disposition {disposition!r} requires a rationale.")

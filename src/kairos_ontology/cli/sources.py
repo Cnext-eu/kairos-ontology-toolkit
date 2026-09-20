@@ -3398,12 +3398,6 @@ def source_disposition_group() -> None:
     """
 
 
-#: Table-grain dispositions whose cascade onto the table's columns is the point.
-#: ``deferred`` is deliberately absent: it means "in scope, not modelled yet", which is
-#: the state the DD-169 gate exists to keep raising (#881).
-_INTENTIONAL_CASCADE = frozenset({"not-business-data", "blueprint-gap"})
-
-
 def _cascade_warning(hub_root, system: str, table: str, disposition: str) -> list[str]:
     """Lines saying what a table-grain disposition just retired from the DD-169 gate.
 
@@ -3413,6 +3407,10 @@ def _cascade_warning(hub_root, system: str, table: str, disposition: str) -> lis
     it looked and found no gap columns (nothing to say), or it found some and they have
     just been decided in bulk.
     """
+    # The gate's own constant, so the warning and the gate can never disagree about
+    # which dispositions cascade -- they are two views of one rule (#881).
+    from ..core.source_disposition import CASCADING_DISPOSITIONS
+
     covered = _gap_columns_for_table(hub_root, system, table)
     if covered is None:
         return [
@@ -3422,7 +3420,7 @@ def _cascade_warning(hub_root, system: str, table: str, disposition: str) -> lis
         ]
     if not covered:
         return []
-    if disposition in _INTENTIONAL_CASCADE:
+    if disposition in CASCADING_DISPOSITIONS:
         return [
             f"  ℹ {len(covered)} gap column(s) retired with the table, which is what",
             f"    '{disposition}' means.",
