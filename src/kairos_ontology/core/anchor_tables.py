@@ -689,12 +689,50 @@ def detect_schema_catalogue_tables(
     return excluded
 
 
+def render_anchor_glossary(hub_root: Path | None, *, limit: int = 120) -> str:
+    """The client's vocabulary as evidence for what a table is (#885).
+
+    A glossary concept's ``rdfs:seeAlso`` names the reference class the business's own
+    term corresponds to, which is the question this stage answers. Only concepts that
+    carry one are rendered: a term with no class attached is vocabulary for naming, not
+    evidence for anchoring, and this prompt is already large.
+
+    Returns ``""`` when the hub has no authored glossary, so the section simply does not
+    appear rather than appearing empty.
+    """
+    if hub_root is None:
+        return ""
+    try:
+        from .propose_alignment import load_glossary_records
+
+        records = [r for r in load_glossary_records(hub_root, limit=limit) if r.get("see_also")]
+    except Exception:  # noqa: BLE001 - enrichment only; anchoring must still run
+        logger.debug("could not load the glossary for the anchoring prompt", exc_info=True)
+        return ""
+    if not records:
+        return ""
+    lines = "\n".join(
+        f"  - {r['label']} -> {r['see_also']}"
+        + (f"  ({r['definition']})" if r.get("definition") else "")
+        for r in records
+    )
+    return (
+        "\nTHE BUSINESS'S OWN VOCABULARY, and the reference class each term points at.\n"
+        "These are the client's words for their own concepts, with the class they said it\n"
+        "corresponds to. Where a table is one of these concepts, that mapping is strong\n"
+        "evidence for its anchor — stronger than a column-name impression. It is evidence,\n"
+        "not an instruction: a table that is plainly something else is something else.\n"
+        f"{lines}\n"
+    )
+
+
 def build_anchor_prompt(
     chunk: list[tuple[str, str, list[str]]],
     catalog: ClassCatalog,
     n_classes: int,
     profile_legend: str = "",
     rulings_text: str = "",
+    glossary_text: str = "",
 ) -> str:
     """One prompt: every table in *chunk* against the whole catalog.
 
@@ -704,6 +742,12 @@ def build_anchor_prompt(
     *rulings_text* is the rendered DD-192 human-rulings section — accumulated
     decisions that outrank the model's own reading wherever their condition
     matches.
+
+    *glossary_text* is the client's authored vocabulary (#885). It belongs here more
+    than anywhere else in the pipeline: each concept carries an ``rdfs:seeAlso`` naming
+    the reference class the business's own term corresponds to, which is precisely the
+    question this call answers — and until now anchoring never saw it, deciding what
+    every table *is* from column names alone.
     """
     tables_text = "\n".join(
         f"TABLE {system}.{table} ({len(cols)} columns): {', '.join(cols)}"
@@ -741,7 +785,7 @@ Rules:
   the catalog).
 {_PATTERN_RULES}
 {profile_legend}
-{rulings_text}
+{rulings_text}{glossary_text}
 SOURCE TABLES ({len(chunk)}):
 {tables_text}
 
@@ -1071,6 +1115,7 @@ def run_anchor_tables(
         rulings_result.rulings, set(catalog.index)
     )
     rulings_text = render_rulings_prompt(applicable)
+    glossary_text = render_anchor_glossary(Path(sources_dir).parent.parent)
     if applicable:
         say(
             f"  ⚖ {len(applicable)} human design ruling(s) applied to the prompt "
@@ -1097,6 +1142,7 @@ def run_anchor_tables(
                     "content": build_anchor_prompt(
                         chunk, catalog, n_classes,
                         profile_legend=profile_legend, rulings_text=rulings_text,
+                        glossary_text=glossary_text,
                     ),
                 }
             ],

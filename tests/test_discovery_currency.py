@@ -126,3 +126,68 @@ class TestDetectGlossaryDrift:
         path.write_text("this is not: valid: yaml: [[[", encoding="utf-8")
 
         assert detect_glossary_drift(path, hub) is None
+
+
+# ---------------------------------------------------------------------------
+# The vocabulary reaches the anchoring prompt (issue #885 item 2)
+# ---------------------------------------------------------------------------
+
+
+SEE_ALSO_GLOSSARY = """\
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix glossary: <https://example.com/glossary#> .
+
+glossary:Berth a skos:Concept ;
+    rdfs:seeAlso <https://ref.example.com/ont/tic#Berth> ;
+    skos:prefLabel "Berth"@en ;
+    skos:definition "A mooring location in a port."@en .
+
+glossary:HouseStyle a skos:Concept ;
+    skos:prefLabel "House Style"@en ;
+    skos:definition "An internal naming habit with no class attached."@en .
+"""
+
+
+class TestAnchorGlossaryBlock:
+    """anchor-tables decides what every table IS; the glossary says what the business
+    calls its concepts and which class each one is. It saw none of it (#885)."""
+
+    def _hub(self, tmp_path, ttl=SEE_ALSO_GLOSSARY):
+        hub = tmp_path / "ontology-hub"
+        (hub / "businessdiscovery").mkdir(parents=True)
+        if ttl is not None:
+            (hub / "businessdiscovery" / "acme-glossary.ttl").write_text(ttl, encoding="utf-8")
+        return hub
+
+    def test_a_term_with_a_class_is_rendered_with_it(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import render_anchor_glossary
+
+        text = render_anchor_glossary(self._hub(tmp_path))
+
+        assert "Berth -> https://ref.example.com/ont/tic#Berth" in text
+        assert "A mooring location in a port." in text
+
+    def test_a_term_with_no_class_is_not_evidence_for_anchoring(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import render_anchor_glossary
+
+        text = render_anchor_glossary(self._hub(tmp_path))
+
+        assert "House Style" not in text
+
+    def test_it_is_stated_as_evidence_not_as_an_instruction(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import render_anchor_glossary
+
+        text = render_anchor_glossary(self._hub(tmp_path))
+
+        assert "not an instruction" in text
+
+    def test_no_glossary_means_no_section_at_all(self, tmp_path):
+        from kairos_ontology.core.anchor_tables import render_anchor_glossary
+
+        assert render_anchor_glossary(self._hub(tmp_path, ttl=None)) == ""
+
+    def test_no_hub_is_not_an_error(self):
+        from kairos_ontology.core.anchor_tables import render_anchor_glossary
+
+        assert render_anchor_glossary(None) == ""
