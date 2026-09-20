@@ -95,12 +95,6 @@ def to_pascal_case(text: str) -> str:
     return pascal or "Concept"
 
 
-def _iri_fragment(iri: str) -> str:
-    """Return the local fragment of an IRI (after ``#`` or last ``/``)."""
-    tail = iri.split("#")[-1] if "#" in iri else iri.rstrip("/").split("/")[-1]
-    return tail
-
-
 def derive_glossary_namespace(company_domain: str) -> str:
     """Return the glossary namespace for a company domain.
 
@@ -186,6 +180,28 @@ def _normalize_relation(value: Any) -> str:
     return _SEE_ALSO
 
 
+def _unique_local_name(pref_label: str, key: str, used: dict[str, str]) -> str:
+    """A stable PascalCase local name for *pref_label*, unique within one build.
+
+    Two distinct labels can PascalCase to the same name ("Port of loading" and
+    "Port Of Loading"), and since #909 made the label the concept identity, a collision
+    would silently merge two concepts in the emitted graph -- the same class of defect
+    one level down. Collisions get a numeric suffix rather than being folded together.
+
+    *used* maps local name -> the group key that claimed it, so re-deriving a name for a
+    key that already owns it is idempotent.
+    """
+    base = to_pascal_case(pref_label)
+    if used.get(base) in (None, key):
+        used[base] = key
+        return base
+    index = 2
+    while used.get(f"{base}{index}") not in (None, key):
+        index += 1
+    used[f"{base}{index}"] = key
+    return f"{base}{index}"
+
+
 def aggregate_concepts(
     terms: list[dict[str, Any]],
     *,
@@ -193,9 +209,23 @@ def aggregate_concepts(
 ) -> tuple[list[GlossaryConcept], int]:
     """Group flat extracted terms into deduplicated SKOS concepts.
 
-    Terms are grouped by their resolved ``linked_iri`` when present, otherwise by
-    their normalized ``prefLabel``.  ``altLabel`` values are collected and
-    deduplicated per concept; the first non-empty ``definition`` wins.
+    Terms are grouped by their normalized ``prefLabel``.  ``altLabel`` values are
+    collected and deduplicated per concept; the first non-empty ``definition`` wins,
+    and the first non-empty ``linked_iri`` is carried as a cross-reference.
+
+    **Grouping is by label, not by linked IRI** (DD-063 as amended, issue #909). The
+    original rule keyed a concept on its ``linked_iri`` where one was present, which
+    made the IRI the concept's *identity* rather than a reference. A business glossary
+    exists precisely because many business words map onto few canonical classes, so on
+    a real hub sixteen party roles -- cargo broker, freight forwarder, ship owner, ship
+    manager, charterer and others -- all legitimately carried the same ``TradeParty``
+    IRI, collapsed into one concept, and fifteen prefLabels with their authored
+    definitions were discarded. The glossary went from 164 concepts to 82 by adding the
+    links the discovery skill asks for.
+
+    Several concepts referring to one class is correct and is what ``rdfs:seeAlso``
+    means. Synonyms are what ``altLabel`` is for, and grouping by label still merges
+    the same term recorded in two documents.
 
     Args:
         terms: Flat list of extracted-term dicts.
@@ -208,6 +238,7 @@ def aggregate_concepts(
     """
     grouped: dict[str, GlossaryConcept] = {}
     order: list[str] = []
+    used_local_names: dict[str, str] = {}
     skipped = 0
 
     for term in terms:
@@ -222,19 +253,22 @@ def aggregate_concepts(
 
         linked = term.get("linked_iri")
         linked = linked.strip() if isinstance(linked, str) and linked.strip() else None
-        key = linked or f"label::{pref.lower()}"
+        key = f"label::{pref.lower()}"
 
         concept = grouped.get(key)
         if concept is None:
-            local = _iri_fragment(linked) if linked else to_pascal_case(pref)
             concept = GlossaryConcept(
-                local_name=local,
+                local_name=_unique_local_name(pref, key, used_local_names),
                 pref_label=pref,
                 linked_iri=linked,
                 link_relation=_normalize_relation(term.get("link_relation")),
             )
             grouped[key] = concept
             order.append(key)
+        elif concept.linked_iri is None and linked is not None:
+            # The same term recorded in two documents, linked in only one of them.
+            concept.linked_iri = linked
+            concept.link_relation = _normalize_relation(term.get("link_relation"))
 
         alt = term.get("altLabel")
         if isinstance(alt, str) and alt.strip() and alt.strip() not in concept.alt_labels:
