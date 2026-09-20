@@ -1,0 +1,32 @@
+@prefix acme-ddd:   <https://acme.example/ddd/invoice#> .
+@prefix kairos-ddd: <https://kairos.cnext.eu/ddd#> .
+@prefix rdfs:       <http://www.w3.org/2000/01/rdf-schema#> .
+
+# ---------------------------------------------------------------------------
+# Hub-wide strategic DDD design (DD-229) — architecture documentation only.
+#
+# Bounded contexts and the context map are declared ONCE here and referenced by
+# IRI from the per-domain overlays. This file carries no class-level annotation:
+# tactical design (boundedContext, tacticalPattern, aggregateRoot, invariant)
+# lives in {domain}-ddd-ext.ttl, where it is validated against that domain.
+#
+# The Client domain's contexts deliberately stay inside client-ddd-ext.ttl, as a
+# hub that predates this file would have them — both layouts must validate.
+# ---------------------------------------------------------------------------
+
+acme-ddd:BillingContext a kairos-ddd:BoundedContext ;
+    rdfs:label "Billing" ;
+    kairos-ddd:subdomainType kairos-ddd:CoreDomain ;
+    kairos-ddd:publishedLanguage true ;
+    kairos-ddd:designNote "Owns invoicing, line items, and settlement." .
+
+acme-ddd:TaxContext a kairos-ddd:BoundedContext ;
+    rdfs:label "Taxation" ;
+    kairos-ddd:subdomainType kairos-ddd:GenericSubdomain ;
+    kairos-ddd:designNote "Computes and applies tax to invoice lines." .
+
+acme-ddd:BillingUsesTax a kairos-ddd:ContextRelationship ;
+    rdfs:label "Billing uses Tax" ;
+    kairos-ddd:sourceContext acme-ddd:BillingContext ;
+    kairos-ddd:targetContext acme-ddd:TaxContext ;
+    kairos-ddd:relationshipPattern kairos-ddd:CustomerSupplier .

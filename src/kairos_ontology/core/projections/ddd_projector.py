@@ -1,12 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Cnext.eu
-"""DDD documentation projector (DD-091).
+"""DDD documentation projector (DD-091, DD-229).
 
 One-way, documentation-only projection of the Domain-Driven Design overlay into:
 
-- ``{domain}-context-map.mmd``       — Mermaid context map (bounded contexts + edges)
+- ``{domain}-context-map.mmd``       — Mermaid context map: the contexts this domain
+                                       participates in and the edges touching them
 - ``{domain}-aggregate-overview.mmd``— Mermaid aggregate/tactical-pattern overview
 - ``{domain}-ddd-report.md``         — Markdown architecture report
+
+The graph rendered is the domain ontology + the hub-wide strategic file
+(``ddd-contexts-ext.ttl``, DD-229) + the domain's own ``{domain}-ddd-ext.ttl`` overlay +
+the packaged vocabulary. Only a domain that has its own overlay produces output: the
+strategic file alone describes the hub, not a domain, and a hub-wide view of it is a
+separate artifact.
 
 Output is deterministic (sorted, no embedded timestamps) and never influences
 silver/gold/dbt/Power BI generation.
@@ -38,15 +45,22 @@ def _label(graph: Graph, uri: URIRef) -> str:
     return str(lbl) if lbl else extract_local_name(str(uri))
 
 
-def _merge_overlay(graph: Graph, overlay_path: Optional[Path]) -> Graph:
-    """Return a graph combining the domain graph, the overlay, and the DDD vocab.
+def _merge_overlay(
+    graph: Graph,
+    overlay_path: Optional[Path],
+    strategic_path: Optional[Path] = None,
+) -> Graph:
+    """Return a graph combining the domain graph, the strategic file, the overlay, and the vocab.
 
-    The vocabulary is merged so controlled-individual labels (tactical patterns,
-    relationship patterns) resolve for rendering.
+    The strategic file supplies the context declarations an overlay references by IRI
+    (DD-229); the vocabulary is merged so controlled-individual labels (tactical patterns,
+    relationship patterns, subdomain types) resolve for rendering.
     """
     merged = Graph()
     for triple in graph:
         merged.add(triple)
+    if strategic_path and Path(strategic_path).exists():
+        merged.parse(strategic_path, format="turtle")
     if overlay_path and Path(overlay_path).exists():
         merged.parse(overlay_path, format="turtle")
     from ..ddd import load_ddd_vocabulary
@@ -56,8 +70,13 @@ def _merge_overlay(graph: Graph, overlay_path: Optional[Path]) -> Graph:
     return merged
 
 
-def _collect(graph: Graph) -> dict:
-    """Extract DDD structures from a merged graph."""
+def _collect(graph: Graph, overlay_graph: Graph) -> dict:
+    """Extract DDD structures from a merged graph.
+
+    *overlay_graph* is the domain's overlay alone; it decides which contexts this domain
+    *participates in* -- those it declares itself (a pre-DD-229 layout) or assigns a class
+    to -- so a per-domain report does not list every context in the hub.
+    """
     contexts = sorted(set(graph.subjects(RDF.type, DDD.BoundedContext)), key=str)
 
     relationships = []
@@ -82,6 +101,18 @@ def _collect(graph: Graph) -> dict:
     for elem, ctx in graph.subject_objects(DDD.boundedContext):
         assignments[elem] = ctx
 
+    # context -> subdomain type (DD-229)
+    subdomain: dict[URIRef, URIRef] = {}
+    for ctx, kind in graph.subject_objects(DDD.subdomainType):
+        subdomain[ctx] = kind
+
+    # class -> invariants (DD-229), sorted for determinism
+    invariants: dict[URIRef, list[str]] = {}
+    for cls, text in graph.subject_objects(DDD.invariant):
+        invariants.setdefault(cls, []).append(str(text))
+    for texts in invariants.values():
+        texts.sort()
+
     published = set()
     for subj, val in graph.subject_objects(DDD.publishedLanguage):
         if str(val).lower() in ("true", "1"):
@@ -92,31 +123,63 @@ def _collect(graph: Graph) -> dict:
         notes.append((subj, str(note)))
     notes.sort(key=lambda x: str(x[0]))
 
+    declared_here = set(overlay_graph.subjects(RDF.type, DDD.BoundedContext))
+    domain_contexts = declared_here | {
+        ctx for ctx in assignments.values() if isinstance(ctx, URIRef)
+    }
+
     return {
         "contexts": contexts,
         "relationships": relationships,
         "tactical": tactical,
         "members": members,
         "assignments": assignments,
+        "subdomain": subdomain,
+        "invariants": invariants,
         "published": published,
         "notes": notes,
+        "domain_contexts": domain_contexts,
     }
 
 
 def _has_content(data: dict) -> bool:
-    return bool(data["contexts"] or data["relationships"] or data["tactical"] or data["members"])
+    """True when the overlay says anything about this domain.
+
+    ``assignments`` counts: once contexts live in the strategic file (DD-229) an overlay
+    that only places classes into contexts is the normal case, and dropping it would make
+    the domain vanish from the output with nothing to say why.
+    """
+    return bool(
+        data["contexts"]
+        or data["relationships"]
+        or data["tactical"]
+        or data["members"]
+        or data["assignments"]
+    )
+
+
+def _domain_relationships(data: dict) -> list[tuple]:
+    """The context-map edges touching a context this domain participates in."""
+    own = data["domain_contexts"]
+    return [edge for edge in data["relationships"] if edge[1] in own or edge[2] in own]
 
 
 def _context_map_mmd(graph: Graph, data: dict, domain: str) -> str:
     lines = [
         *mermaid_header(indent=""),
-        "%% DDD context map",
+        f"%% DDD context map: the contexts the {domain} domain participates in",
         "graph LR",
     ]
-    for ctx in data["contexts"]:
+    edges = _domain_relationships(data)
+    shown = set(data["domain_contexts"])
+    for _rel, src, tgt, _pattern in edges:
+        shown.update(node for node in (src, tgt) if node is not None)
+    if not shown:
+        lines.append("    %% no bounded context is assigned in this domain's overlay")
+    for ctx in sorted(shown, key=str):
         node = _sanitize(extract_local_name(str(ctx)))
         lines.append(f'    ctx_{node}["{_label(graph, ctx)}"]')
-    for _rel, src, tgt, pattern in data["relationships"]:
+    for _rel, src, tgt, pattern in edges:
         if src is None or tgt is None:
             continue
         s = _sanitize(extract_local_name(str(src)))
@@ -178,27 +241,40 @@ def _report_md(graph: Graph, data: dict, domain: str, meta: dict) -> str:
     if version:
         lines += [f"**Toolkit version:** {version}", ""]
 
-    # Bounded contexts
+    # Bounded contexts this domain participates in (DD-229)
     lines += ["## Bounded Contexts", ""]
-    if data["contexts"]:
+    own = sorted(data["domain_contexts"], key=str)
+    if own:
         lines += [
-            "| Context | Published Language | Note |",
-            "|---------|--------------------|------|",
+            "| Context | Subdomain | Published Language | Note |",
+            "|---------|-----------|--------------------|------|",
         ]
         note_map = {s: n for s, n in data["notes"]}
-        for ctx in data["contexts"]:
+        for ctx in own:
+            kind = data["subdomain"].get(ctx)
+            kind_label = _label(graph, kind) if kind is not None else "—"
             pub = "yes" if ctx in data["published"] else "—"
             note = note_map.get(ctx, "—")
-            lines.append(f"| {_label(graph, ctx)} | {pub} | {note} |")
+            lines.append(f"| {_label(graph, ctx)} | {kind_label} | {pub} | {note} |")
+        others = len(data["contexts"]) - len(
+            [c for c in data["contexts"] if c in data["domain_contexts"]]
+        )
+        if others > 0:
+            lines += [
+                "",
+                f"_{others} other bounded context(s) are declared hub-wide and not "
+                "referenced by this domain._",
+            ]
     else:
-        lines.append("_No bounded contexts declared._")
+        lines.append("_No bounded contexts assigned in this domain's overlay._")
     lines.append("")
 
-    # Context relationships
+    # Context relationships touching this domain's contexts
     lines += ["## Context Map", ""]
-    if data["relationships"]:
+    edges = _domain_relationships(data)
+    if edges:
         lines += ["| Source | Pattern | Target |", "|--------|---------|--------|"]
-        for _rel, src, tgt, pattern in data["relationships"]:
+        for _rel, src, tgt, pattern in edges:
             s = _label(graph, src) if src is not None else "—"
             t = _label(graph, tgt) if tgt is not None else "—"
             p = (
@@ -207,8 +283,14 @@ def _report_md(graph: Graph, data: dict, domain: str, meta: dict) -> str:
                 else (str(pattern) if pattern else "—")
             )
             lines.append(f"| {s} | {p} | {t} |")
+        if len(edges) < len(data["relationships"]):
+            lines += [
+                "",
+                "_Only the relationships touching this domain's contexts are listed; the "
+                "strategic file holds the whole context map._",
+            ]
     else:
-        lines.append("_No context relationships declared._")
+        lines.append("_No context relationships touch this domain's contexts._")
     lines.append("")
 
     # Aggregates
@@ -234,6 +316,19 @@ def _report_md(graph: Graph, data: dict, domain: str, meta: dict) -> str:
         lines.append("_No tactical patterns declared._")
     lines.append("")
 
+    # Invariants (DD-229)
+    if data["invariants"]:
+        lines += ["## Invariants", ""]
+        lines.append(
+            "_Prose rules the aggregate must always satisfy. Enforceable forms live in "
+            "`model/shapes/` (SHACL) or in a binding's `DataQualityRule`._"
+        )
+        lines.append("")
+        for cls in sorted(data["invariants"], key=str):
+            for text in data["invariants"][cls]:
+                lines.append(f"- **{_label(graph, cls)}:** {text}")
+        lines.append("")
+
     # Design notes
     if data["notes"]:
         lines += ["## Design Notes", ""]
@@ -250,13 +345,20 @@ def generate_ddd_artifacts(
     ontology_name: str,
     overlay_path: Optional[Path] = None,
     ontology_metadata: Optional[dict] = None,
+    strategic_path: Optional[Path] = None,
 ) -> dict:
-    """Generate DDD documentation artifacts from the domain graph + overlay.
+    """Generate DDD documentation artifacts from the domain graph + strategic file + overlay.
 
-    Returns ``{}`` when the overlay contains no DDD content (feature is optional).
+    Returns ``{}`` when the domain has no overlay, or the overlay contains no DDD content
+    (the feature is optional). The strategic file alone never produces per-domain output.
     """
-    merged = _merge_overlay(graph, overlay_path)
-    data = _collect(merged)
+    if overlay_path is None or not Path(overlay_path).exists():
+        return {}
+    overlay_graph = Graph()
+    overlay_graph.parse(overlay_path, format="turtle")
+
+    merged = _merge_overlay(graph, overlay_path, strategic_path)
+    data = _collect(merged, overlay_graph)
     if not _has_content(data):
         return {}
 

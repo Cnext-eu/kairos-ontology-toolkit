@@ -69,6 +69,35 @@ exist under the shared publish root, so they accumulate correctly across separat
 single-domain `compile`/`emit-gold` invocations — running `compile party --emit` in a hub that
 already has a `billing` domain emitted updates the master ERD to include both, not just `party`.
 
+### `validate --ddd`: one strategic file, one overlay per domain (DD-229)
+
+The DDD layer has two kinds of file under `model/extensions/`. `ddd-contexts-ext.ttl` is the
+hub-wide **strategic** file: the `BoundedContext` individuals (label, `subdomainType`,
+`publishedLanguage`, `designNote`) and the `ContextRelationship` individuals of the context map.
+`{domain}-ddd-ext.ttl` is the per-domain **tactical** overlay: `boundedContext`,
+`tacticalPattern`, `aggregateRoot`, `invariant`, `designNote` and the context-specific language
+(`skos:scopeNote`, `skos:example`, `skos:altLabel`) on that domain's own classes.
+
+`validate --ddd` validates the strategic file on its own first (syntax, leak scan, SHACL over
+strategic + vocabulary; class-level tactical predicates there are an error), then each overlay
+merged with its domain ontology **and** the strategic file, then audits every file together for
+what per-file SHACL cannot see:
+
+| Code | Level | Meaning |
+|---|---|---|
+| `ddd.context-redeclared` | warning | one context IRI declared in several files with consistent labels — move it to the strategic file |
+| `ddd.context-label-conflict` | error | same IRI, different labels; the reports would render two names for one context |
+| `ddd.class-in-two-contexts` | error | two files place one class in different contexts |
+| `ddd.tactical-in-strategic-file` | error | `tacticalPattern` / `aggregateRoot` / `invariant` in `ddd-contexts-ext.ttl` |
+
+The strategic filename deliberately does not match the `*-ddd-ext.ttl` overlay glob, so it is
+never validated as the overlay of a domain called `ddd-contexts` and the #848 orphan check never
+fires on it. A hub that still declares contexts inside each overlay validates as before; the
+audit tells it what to move. Move contexts and their relationships **together**: a strategic file
+whose relationships name contexts still declared only in overlays fails rule 6 on its own, by
+design. These codes are validation diagnostics, so they live here and in DD-229 rather than in
+`diagnostic-codes.md`, whose catalogue is scanned from `core/compiler/` only.
+
 ### Diagram layout: every generated `.mmd` selects ELK (#855)
 
 Every Mermaid diagram the toolkit writes — canonical and master class diagrams, DDD maps,

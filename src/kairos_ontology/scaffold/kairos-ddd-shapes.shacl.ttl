@@ -7,6 +7,12 @@
 # Rule 7 ("overlays must not use kairos-ext:silver*/gold* predicates") is enforced
 # in Python against the overlay graph ALONE (ddd.py), because the merged graph may
 # legitimately contain kairos-ext annotations inherited from the domain ontology.
+#
+# DD-229: the merged graph also contains the hub-wide strategic file
+# (ddd-contexts-ext.ttl), so a context referenced from an overlay resolves without being
+# redeclared there. The same shapes run over the strategic file alone (plus vocabulary).
+# What no per-file shape can see -- one context declared twice with different labels, one
+# class placed in two contexts by two files -- is a Python audit (ddd.py).
 
 @prefix sh:         <http://www.w3.org/ns/shacl#> .
 @prefix owl:        <http://www.w3.org/2002/07/owl#> .
@@ -113,3 +119,57 @@ kairos-ddd:RelationshipPatternValueShape a sh:NodeShape ;
     ) ;
     sh:severity sh:Violation ;
     sh:message "kairos-ddd:relationshipPattern value must be a known context relationship pattern individual." .
+
+# ---------------------------------------------------------------------------
+# Rule 8 (DD-229): a boundedContext reference must resolve to a declared context
+# ---------------------------------------------------------------------------
+# A typo in a context IRI used to render silently as a new, unlabelled context.
+kairos-ddd:BoundedContextReferenceShape a sh:NodeShape ;
+    sh:targetObjectsOf kairos-ddd:boundedContext ;
+    sh:class kairos-ddd:BoundedContext ;
+    sh:severity sh:Violation ;
+    sh:message "kairos-ddd:boundedContext must point to a declared kairos-ddd:BoundedContext -- declare it in ddd-contexts-ext.ttl (or in this overlay)." .
+
+# ---------------------------------------------------------------------------
+# Rule 9 (DD-229): an element belongs to exactly one bounded context
+# ---------------------------------------------------------------------------
+# Catches two assignments inside one file; two files disagreeing is the Python audit.
+kairos-ddd:BoundedContextAssignmentShape a sh:NodeShape ;
+    sh:targetSubjectsOf kairos-ddd:boundedContext ;
+    sh:property [
+        sh:path kairos-ddd:boundedContext ;
+        sh:maxCount 1 ;
+        sh:severity sh:Violation ;
+        sh:message "An element is assigned to exactly one bounded context; a shared concept is a Shared Kernel relationship on the context map, not a second kairos-ddd:boundedContext." ;
+    ] .
+
+# ---------------------------------------------------------------------------
+# Rule 10 (DD-229): subdomainType values must be known subdomain type individuals
+# ---------------------------------------------------------------------------
+kairos-ddd:SubdomainTypeValueShape a sh:NodeShape ;
+    sh:targetObjectsOf kairos-ddd:subdomainType ;
+    sh:in (
+        kairos-ddd:CoreDomain
+        kairos-ddd:SupportingSubdomain
+        kairos-ddd:GenericSubdomain
+    ) ;
+    sh:severity sh:Violation ;
+    sh:message "kairos-ddd:subdomainType value must be one of CoreDomain, SupportingSubdomain, GenericSubdomain." .
+
+# ---------------------------------------------------------------------------
+# Rule 11 (DD-229): a context relationship joins two different contexts
+# ---------------------------------------------------------------------------
+kairos-ddd:ContextRelationshipEndpointsShape a sh:NodeShape ;
+    sh:targetClass kairos-ddd:ContextRelationship ;
+    sh:sparql [
+        sh:severity sh:Violation ;
+        sh:message "A context relationship must join two different bounded contexts." ;
+        sh:prefixes kairos-ddd: ;
+        sh:select """
+            PREFIX kairos-ddd: <https://kairos.cnext.eu/ddd#>
+            SELECT $this WHERE {
+                $this kairos-ddd:sourceContext ?ctx .
+                $this kairos-ddd:targetContext ?ctx .
+            }
+        """ ;
+    ] .
