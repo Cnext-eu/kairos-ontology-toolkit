@@ -121,6 +121,10 @@ def emit_gold_cmd(domain: str, confirm_emit: bool, skip_tmdl_validation: bool) -
     )
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
+    # Gold ERDs and their master take their layout from kairos.yaml (#855).
+    from ..core.projections.shared import configure_mermaid_layout
+
+    configure_mermaid_layout(hub_root)
     if hub_root is None:
         raise click.ClickException(
             "Cannot locate a hub (model/ + integration/) from the current directory."
@@ -299,6 +303,10 @@ def harvest_gold_cmd(product: str, source: Path) -> None:
     from ..core.tmdl_parser import parse_tmdl_content
 
     hub_root = find_hub_root(Path.cwd(), require_model=True)
+    # Gold ERDs and their master take their layout from kairos.yaml (#855).
+    from ..core.projections.shared import configure_mermaid_layout
+
+    configure_mermaid_layout(hub_root)
     if hub_root is None:
         raise click.ClickException(
             "Cannot locate a hub (model/ + integration/) from the current directory."

@@ -78,7 +78,8 @@ def test_erd_draws_cross_domain_targets_as_external_stubs(invoice_dbt_artifacts)
     emitted = {model["model_name"].upper() for model in metadata["models"]}
     erd = invoice_dbt_artifacts["docs/diagrams/invoice/invoice-erd.mmd"]
 
-    assert erd.startswith("erDiagram\n")
+    # Layout frontmatter first (#855), then the diagram keyword.
+    assert erd.startswith("---\nconfig:\n  layout: elk\n---\nerDiagram\n")
     assert "temporal=" in erd
     external_parents: set[str] = set()
     for line in erd.splitlines():

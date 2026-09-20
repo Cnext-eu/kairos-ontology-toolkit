@@ -10,6 +10,7 @@ import from here rather than maintaining local copies.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -82,6 +83,107 @@ def mermaid_provenance_comment(indent: str = "    ") -> str:
 def is_mermaid_provenance_line(line: str) -> bool:
     """Return True when *line* is a provenance stamp, at any indentation."""
     return line.strip().startswith(MERMAID_PROVENANCE_PREFIX)
+
+
+#: Layout engines a hub may select for every generated Mermaid diagram (#855). ``elk``
+#: routes edges orthogonally and clusters the nodes drawn outside the main group -- the
+#: stubs every ERD family emits -- where dagre scatters them and draws long diagonals.
+#: ``none`` emits no frontmatter at all: the pre-#855 bytes, for a hub whose renderer
+#: predates frontmatter.
+MERMAID_LAYOUT_ELK = "elk"
+MERMAID_LAYOUT_NONE = "none"
+MERMAID_LAYOUTS = (MERMAID_LAYOUT_ELK, MERMAID_LAYOUT_NONE)
+
+#: ``kairos.yaml`` location of the setting: ``projections: {mermaid_layout: elk | none}``.
+MERMAID_LAYOUT_CONFIG_SECTION = "projections"
+MERMAID_LAYOUT_CONFIG_KEY = "mermaid_layout"
+
+_mermaid_layout: str = MERMAID_LAYOUT_ELK
+
+
+def configure_mermaid_layout(hub_root: Path | None) -> str:
+    """Read the hub-wide diagram layout from ``kairos.yaml`` and make it current.
+
+    Hub-wide and never per target, so one hub's diagrams do not disagree with each other
+    about how they are laid out. Called once at the start of every run that renders a
+    diagram (``project``, ``compile --emit``, ``emit-gold``); the projectors themselves are
+    pure functions of the graph and read the module-level setting. ``None`` restores the
+    default, which is what a run with no hub root gets.
+
+    An unknown value is reported and the default kept. The knob is cosmetic, so a typo in
+    it must not block an emit -- but it must not silently become the default either.
+    """
+    global _mermaid_layout
+    _mermaid_layout = MERMAID_LAYOUT_ELK
+    if hub_root is None:
+        return _mermaid_layout
+    from ..hub_config import load_hub_config
+
+    section = load_hub_config(hub_root).get(MERMAID_LAYOUT_CONFIG_SECTION)
+    value = section.get(MERMAID_LAYOUT_CONFIG_KEY) if isinstance(section, dict) else None
+    if value is None:
+        return _mermaid_layout
+    if isinstance(value, str) and value.strip() in MERMAID_LAYOUTS:
+        _mermaid_layout = value.strip()
+    else:
+        print(
+            f"  ⚠ kairos.yaml {MERMAID_LAYOUT_CONFIG_SECTION}.{MERMAID_LAYOUT_CONFIG_KEY} "
+            f"{value!r} is not one of {', '.join(MERMAID_LAYOUTS)}; using {MERMAID_LAYOUT_ELK}"
+        )
+    return _mermaid_layout
+
+
+def current_mermaid_layout() -> str:
+    """The layout every diagram rendered in this process currently selects."""
+    return _mermaid_layout
+
+
+def mermaid_frontmatter() -> list[str]:
+    """The lines selecting the layout engine, or ``[]`` when the hub opted out.
+
+    Frontmatter has to be the very first bytes of the file -- before any ``%%`` comment
+    and before the diagram keyword -- and always sits at column 0, so there is no indent
+    parameter. Where the reader's renderer has no ELK registered (GitHub, Azure DevOps
+    wikis), Mermaid logs a warning and falls back to dagre, so on every renderer that
+    parses frontmatter the output is either better or unchanged. Renderers older than
+    Mermaid 10.5 fail the whole parse on frontmatter; ``none`` is for them.
+
+    Layout happens at render time, not in the file: the generated content is otherwise
+    byte-identical, so adopting this is one deterministic four-line diff across a hub's
+    tracked diagrams and nothing after that.
+    """
+    if _mermaid_layout == MERMAID_LAYOUT_NONE:
+        return []
+    return ["---", "config:", f"  layout: {_mermaid_layout}", "---"]
+
+
+def mermaid_header(indent: str = "    ") -> list[str]:
+    """Frontmatter followed by the provenance stamp: the top of every generated diagram.
+
+    One helper rather than each projector prepending its own, because the order is
+    load-bearing -- frontmatter first, then comments, then the diagram keyword -- and a
+    projector that got it wrong would produce a file that renders under dagre with no
+    error to say why.
+    """
+    return [*mermaid_frontmatter(), mermaid_provenance_comment(indent)]
+
+
+def strip_mermaid_header(lines: Iterable[str]) -> list[str]:
+    """Drop a leading frontmatter block and every provenance stamp from *lines*.
+
+    For the merges that assemble a master diagram out of per-domain files: each part
+    carries its own header and the master must carry exactly one. Only a block that opens
+    on the first line is treated as frontmatter, so a ``---`` inside a body is left alone.
+    """
+    remaining = list(lines)
+    if remaining and remaining[0].strip() == "---":
+        for index in range(1, len(remaining)):
+            if remaining[index].strip() == "---":
+                remaining = remaining[index + 1 :]
+                break
+        else:
+            remaining = []
+    return [line for line in remaining if not is_mermaid_provenance_line(line)]
 
 
 def split_erd_artifacts(artifacts: dict, suffix: str) -> dict:
