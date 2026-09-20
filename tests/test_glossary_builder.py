@@ -134,7 +134,14 @@ def test_collect_terms_keeps_partial_status(tmp_path: Path):
     assert excluded == []
 
 
-def test_aggregate_groups_by_linked_iri():
+def test_aggregate_merges_one_term_recorded_in_two_documents():
+    """Same label twice, linked both times -- one concept, both altLabels kept.
+
+    Previously named for grouping by linked_iri, which it never exercised: both terms
+    carry the *same* prefLabel, so it passes whichever key the implementation uses. The
+    case it appeared to cover is now covered for real by
+    :func:`test_distinct_labels_sharing_one_class_stay_distinct`.
+    """
     terms = [
         {
             "altLabel": "HBL",
@@ -156,6 +163,89 @@ def test_aggregate_groups_by_linked_iri():
     assert c.alt_labels == ["HBL", "House Bill"]
     assert c.definition == "A carrier document."
     assert c.linked_iri == "https://acme.com/ont/logistics#TransportDocument"
+
+
+def test_distinct_labels_sharing_one_class_stay_distinct():
+    """Different business terms that are the same canonical class are still different terms.
+
+    The #909 regression. A glossary exists because many business words map onto few
+    canonical classes: a cargo broker and a freight forwarder are both a TradeParty and
+    are not the same job. Keying the concept on the IRI collapsed them and kept whichever
+    was processed last -- on a real hub, sixteen party roles became one concept labelled
+    "Haulier", and the glossary shrank from 164 concepts to 82 by adding links.
+    """
+    party = "https://ref.example/ont/party#TradeParty"
+    terms = [
+        {"prefLabel": "Cargo broker", "linked_iri": party, "definition": "Books cargo."},
+        {"prefLabel": "Freight forwarder", "linked_iri": party, "definition": "Moves goods."},
+        {"prefLabel": "Ship owner", "linked_iri": party, "definition": "Owns the vessel."},
+    ]
+
+    concepts, skipped = aggregate_concepts(terms)
+
+    assert skipped == 0
+    assert [c.pref_label for c in concepts] == ["Cargo broker", "Freight forwarder", "Ship owner"]
+    # Every one of them still points at the class; several concepts referring to one
+    # class is what rdfs:seeAlso means.
+    assert {c.linked_iri for c in concepts} == {party}
+    assert [c.definition for c in concepts] == ["Books cargo.", "Moves goods.", "Owns the vessel."]
+
+
+def test_a_concepts_local_name_comes_from_its_label_not_its_class():
+    """Otherwise two labels sharing a class would still collide in the emitted graph."""
+    party = "https://ref.example/ont/party#TradeParty"
+    terms = [
+        {"prefLabel": "Cargo broker", "linked_iri": party},
+        {"prefLabel": "Ship owner", "linked_iri": party},
+    ]
+
+    concepts, _ = aggregate_concepts(terms)
+
+    assert sorted(c.local_name for c in concepts) == ["CargoBroker", "ShipOwner"]
+
+
+def test_labels_differing_only_in_case_still_merge():
+    """Case is not meaning; the grouping key is the lowered label, as it always was."""
+    terms = [
+        {"prefLabel": "Port of loading", "definition": "Where it is loaded."},
+        {"prefLabel": "Port Of Loading", "definition": "A second authoring of the same."},
+    ]
+
+    concepts, _ = aggregate_concepts(terms)
+
+    assert len(concepts) == 1
+    assert concepts[0].definition == "Where it is loaded."
+
+
+def test_distinct_labels_that_pascal_case_alike_get_distinct_local_names():
+    """The same defect one level down: two real terms, one local name in the graph.
+
+    Now that the label is the concept's identity, a local-name collision would silently
+    merge two concepts at serialisation time even though the grouping kept them apart.
+    """
+    terms = [
+        {"prefLabel": "Port of loading", "definition": "Where it is loaded."},
+        {"prefLabel": "port-of-loading", "definition": "A different term that slugs alike."},
+    ]
+
+    concepts, _ = aggregate_concepts(terms)
+
+    assert len(concepts) == 2
+    assert len({c.local_name for c in concepts}) == 2
+    assert all(c.local_name.startswith("PortOfLoading") for c in concepts)
+
+
+def test_a_term_linked_in_only_one_of_two_documents_keeps_the_link():
+    terms = [
+        {"prefLabel": "Berth", "definition": "A mooring location."},
+        {"prefLabel": "Berth", "linked_iri": "https://ref.example/ont/loc#Berth"},
+    ]
+
+    concepts, _ = aggregate_concepts(terms)
+
+    assert len(concepts) == 1
+    assert concepts[0].linked_iri == "https://ref.example/ont/loc#Berth"
+    assert concepts[0].definition == "A mooring location."
 
 
 def test_aggregate_groups_by_prefLabel_when_no_iri():
