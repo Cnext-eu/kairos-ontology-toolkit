@@ -3378,6 +3378,97 @@ def source_disposition_group() -> None:
     """
 
 
+#: Table-grain dispositions whose cascade onto the table's columns is the point.
+#: ``deferred`` is deliberately absent: it means "in scope, not modelled yet", which is
+#: the state the DD-169 gate exists to keep raising (#881).
+_INTENTIONAL_CASCADE = frozenset({"not-business-data", "blueprint-gap"})
+
+
+def _cascade_warning(hub_root, system: str, table: str, disposition: str) -> list[str]:
+    """Lines saying what a table-grain disposition just retired from the DD-169 gate.
+
+    The count is real rather than a generic caution: the columns are computable right
+    here. Three outcomes, because they need different words -- alignment never looked at
+    this table (the most dangerous case, and the one the flow walks an operator into),
+    it looked and found no gap columns (nothing to say), or it found some and they have
+    just been decided in bulk.
+    """
+    covered = _gap_columns_for_table(hub_root, system, table)
+    if covered is None:
+        return [
+            "  ⚠ alignment has not covered this table, so nothing yet knows which of its",
+            "    columns carry business data with no canonical home — and this decision",
+            "    already answers for all of them. Consider 'propose-alignment' first.",
+        ]
+    if not covered:
+        return []
+    if disposition in _INTENTIONAL_CASCADE:
+        return [
+            f"  ℹ {len(covered)} gap column(s) retired with the table, which is what",
+            f"    '{disposition}' means.",
+        ]
+    return [
+        f"  ⚠ {len(covered)} gap column(s) in this table now count as DECIDED. The DD-169",
+        "    pre-binding gate will not raise them again — including after you bind this",
+        "    table.",
+        f"    '{disposition}' means \"in scope, not modelled yet\", but the gate cannot",
+        "    tell that apart from \"out of scope\".",
+        "    Keep them in review:  kairos-ontology draft-gap-decisions --suggest",
+        "    Undo:                 kairos-ontology source-disposition clear "
+        f"--system {system} --table {table}",
+    ]
+
+
+def _gap_columns_for_table(hub_root, system: str, table: str):
+    """This table's DD-169 gap columns, or ``None`` if alignment never covered it.
+
+    ``None`` and ``[]`` are different answers and the caller says different things about
+    them: "no alignment has looked here" versus "alignment looked and found nothing
+    outstanding". Advisory throughout — an unreadable report returns ``None`` rather than
+    failing a decision the operator has already made.
+    """
+    try:
+        from ..core.alignment_report import build_alignment_report
+
+        report = build_alignment_report(
+            hub_root / "integration" / "sources" / "_analysis", hub_root=hub_root
+        )
+    except Exception:  # noqa: BLE001 - advisory only
+        return None
+    if not _alignment_covers_table(hub_root, system, table):
+        return None
+    return [
+        column
+        for domain in report.domains
+        for column in domain.gap_columns
+        if column.system == system and column.table == table
+    ]
+
+
+def _alignment_covers_table(hub_root, system: str, table: str) -> bool:
+    """Whether any ``*-alignment.yaml`` carries an entry for this exact relation."""
+    import yaml as _yaml
+
+    analysis = hub_root / "integration" / "sources" / "_analysis"
+    try:
+        paths = sorted(analysis.glob("*-alignment.yaml"))
+    except OSError:
+        return False
+    for path in paths:
+        try:
+            payload = _yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - a malformed file is not an answer
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for entry in payload.get("tables") or []:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("system") or "") == system and str(entry.get("table") or "") == table:
+                return True
+    return False
+
+
 @source_disposition_group.command(name="set")
 @click.option("--system", required=True, help="Source system the table belongs to.")
 @click.option("--table", required=True, help="Physical table name (source.relation's suffix).")
@@ -3399,7 +3490,13 @@ def source_disposition_group() -> None:
     "--disposition",
     required=True,
     type=click.Choice(sorted(_DISPOSITION_CHOICES())),
-    help="What the hub decided to do with this table.",
+    help="What the hub decided to do with this table. A TABLE-grain decision retires "
+    "every gap column in that table from the DD-169 pre-binding gate, so they are never "
+    "raised again -- including after the table is bound (#881). That is intended for "
+    "'not-business-data' (the table is not business data, so neither are its columns) "
+    "and defensible for 'blueprint-gap'. It is a trap for 'deferred', which means 'in "
+    "scope, not modelled yet' -- exactly what the gate exists to keep asking about. "
+    "Prefer --column, or draft-gap-decisions, when the columns still need deciding.",
 )
 @click.option("--rationale", default="", help="Why. Required for a non-obvious disposition.")
 @click.option(
@@ -3479,6 +3576,9 @@ def source_disposition_set_cmd(
             else f"{target_system}.{target_table}"
         )
         click.echo(f"✓ {label} recorded as '{disposition}'")
+        if not column:
+            for line in _cascade_warning(hub_root, target_system, target_table, disposition):
+                click.echo(line)
     click.echo(f"  {len(targets)} entr(y/ies) written to {path}")
 
 

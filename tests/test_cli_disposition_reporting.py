@@ -188,3 +188,101 @@ class TestProposeAlignmentEscapeHatch:
         assert result.exit_code == 0
         assert "--no-schema-catalogue-screen" in result.output
         assert "excluded_tables" in result.output, "say where the record lands"
+
+
+# ---------------------------------------------------------------------------
+# A table-grain disposition must say what it just retired (issue #881)
+# ---------------------------------------------------------------------------
+
+import yaml as _yaml
+
+from kairos_ontology.cli.sources import _cascade_warning
+
+
+def _write_alignment(hub, *, system, table, mapped, gaps):
+    """Minimal *-alignment.yaml the report loader accepts."""
+    analysis = hub / "integration" / "sources" / "_analysis"
+    analysis.mkdir(parents=True, exist_ok=True)
+    (analysis / "roro-alignment.yaml").write_text(
+        _yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "domain": "roro",
+                "tables": [
+                    {
+                        "system": system,
+                        "table": table,
+                        "ref_class": "CargoItem",
+                        "source_column_count": len(mapped) + len(gaps),
+                        "columns": [
+                            {"column": c, "data_type": "string",
+                             "ref_class": "CargoItem", "ref_property": "cargoDescription"}
+                            for c in mapped
+                        ],
+                        "custom_columns": [
+                            {"column": c, "data_type": "string", "suggested_property": None,
+                             "rationale": "no equivalent property"}
+                            for c in gaps
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestDispositionCascadeWarning:
+    """`deferred` on a table is the widest-blast-radius, mildest-sounding choice."""
+
+    def test_deferred_names_the_columns_it_retires(self, tmp_path):
+        _write_alignment(tmp_path, system="src", table="cargo",
+                         mapped=["DESCRIPTION"], gaps=["WIDGET_A", "WIDGET_B"])
+
+        lines = "\n".join(_cascade_warning(tmp_path, "src", "cargo", "deferred"))
+
+        assert "2 gap column(s)" in lines
+        assert "DECIDED" in lines
+        assert "DD-169" in lines
+        assert "draft-gap-decisions" in lines
+        assert "source-disposition clear" in lines
+
+    def test_not_business_data_is_informational_not_a_warning(self, tmp_path):
+        _write_alignment(tmp_path, system="src", table="cargo",
+                         mapped=["DESCRIPTION"], gaps=["WIDGET_A", "WIDGET_B"])
+
+        lines = "\n".join(_cascade_warning(tmp_path, "src", "cargo", "not-business-data"))
+
+        assert "2 gap column(s)" in lines
+        assert "which is what" in lines
+        assert "DECIDED" not in lines
+
+    def test_a_table_alignment_never_covered_says_so(self, tmp_path):
+        _write_alignment(tmp_path, system="src", table="cargo",
+                         mapped=["DESCRIPTION"], gaps=["WIDGET_A"])
+
+        lines = "\n".join(_cascade_warning(tmp_path, "src", "other_table", "deferred"))
+
+        assert "alignment has not covered this table" in lines
+        assert "propose-alignment" in lines
+
+    def test_no_alignment_at_all_still_warns(self, tmp_path):
+        (tmp_path / "integration" / "sources" / "_analysis").mkdir(parents=True)
+
+        lines = "\n".join(_cascade_warning(tmp_path, "src", "cargo", "deferred"))
+
+        assert "alignment has not covered this table" in lines
+
+    def test_a_fully_mapped_table_warns_about_nothing(self, tmp_path):
+        _write_alignment(tmp_path, system="src", table="cargo",
+                         mapped=["DESCRIPTION"], gaps=[])
+
+        assert _cascade_warning(tmp_path, "src", "cargo", "deferred") == []
+
+    def test_the_disposition_help_text_states_the_cascade(self):
+        result = CliRunner().invoke(cli, ["source-disposition", "set", "--help"])
+
+        assert result.exit_code == 0
+        assert "DD-169" in result.output
+        assert "deferred" in result.output
