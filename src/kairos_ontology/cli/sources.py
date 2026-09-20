@@ -4224,6 +4224,7 @@ def draft_gap_decisions_cmd(
                 anchors=load_table_anchors(
                     hub / "integration" / "sources" / "_analysis"
                 ),
+                hub_root=hub,
             )
             click.echo(
                 f"🧠 described {stats['families_described']} family/families "

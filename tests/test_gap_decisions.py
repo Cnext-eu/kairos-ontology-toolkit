@@ -30,6 +30,7 @@ from kairos_ontology.core.gap_decisions import (
     apply_decision_sheet,
     build_decision_sheet,
     propose_for_group,
+    suggest_family_dispositions,
     write_decision_sheet,
 )
 from kairos_ontology.core.source_disposition import DISPOSITIONS, load_dispositions
@@ -823,3 +824,81 @@ class TestNumberedRepeatingGroups:
 
         assert families == []
         assert len(loose) == 3
+
+
+# ---------------------------------------------------------------------------
+# The business vocabulary reaches disposition evaluation (issue #885)
+# ---------------------------------------------------------------------------
+
+
+GLOSSARY_TTL = """\
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix glossary: <https://example.com/glossary#> .
+
+glossary:Allocation a skos:Concept ;
+    skos:prefLabel "Allocation"@en ;
+    skos:definition "A verbal agreement giving a customer a set number of places on a ship."@en .
+
+glossary:Berth a skos:Concept ;
+    skos:prefLabel "Berth"@en ;
+    skos:definition "A designated location in a port used for mooring vessels."@en .
+"""
+
+
+class TestGlossaryReachesDispositionEvaluation:
+    """Naming a concept the client has already named needs their vocabulary."""
+
+    def _sheet(self):
+        return {
+            "families": [
+                {
+                    "family": "alloc",
+                    "domain": "booking",
+                    "distinct_names": 3,
+                    "source_columns": 6,
+                    "members": ["ALLOC_QTY", "ALLOC_REF", "ALLOC_STATUS"],
+                    "decision": "",
+                }
+            ],
+            "decisions": [],
+        }
+
+    def _captured_prompt(self, tmp_path, *, with_glossary):
+        if with_glossary:
+            bd = tmp_path / "businessdiscovery"
+            bd.mkdir(parents=True)
+            (bd / "acme-glossary.ttl").write_text(GLOSSARY_TTL, encoding="utf-8")
+
+        captured = {}
+
+        class _Client:
+            class chat:  # noqa: N801 - mirrors the OpenAI client shape
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured["prompt"] = kwargs["messages"][0]["content"]
+                        raise RuntimeError("stop after capture")
+
+        try:
+            suggest_family_dispositions(
+                self._sheet(),
+                client=_Client(),
+                model="test-model",
+                hub_root=tmp_path if with_glossary else None,
+            )
+        except Exception:  # noqa: BLE001 - the capture raises on purpose
+            pass
+        return captured.get("prompt", "")
+
+    def test_terms_and_definitions_are_in_the_prompt(self, tmp_path):
+        prompt = self._captured_prompt(tmp_path, with_glossary=True)
+
+        assert "BUSINESS'S OWN VOCABULARY" in prompt
+        assert "Allocation" in prompt
+        assert "set number of places on a ship" in prompt
+
+    def test_a_hub_without_a_glossary_gets_no_block(self, tmp_path):
+        prompt = self._captured_prompt(tmp_path, with_glossary=False)
+
+        assert prompt
+        assert "BUSINESS'S OWN VOCABULARY" not in prompt

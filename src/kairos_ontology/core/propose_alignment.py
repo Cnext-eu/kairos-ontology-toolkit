@@ -391,6 +391,50 @@ def flag_risky_proposals(
     return flagged
 
 
+def load_glossary_entries(
+    hub_root: Path | None, *, limit: int = 120
+) -> list[tuple[str, str]]:
+    """``(prefLabel, definition)`` from ``businessdiscovery/*.ttl`` (DD-048/DD-171).
+
+    :func:`load_glossary_terms` returns labels alone, which is enough to *reuse* a term
+    and not enough to *recognise* one. A label says the business has a word for
+    something; the definition says what it means -- that this client's "Allocation" is a
+    verbal capacity agreement rather than the generic sense of the word. Any consumer
+    asked to name a concept, rather than to pick a word, needs the second.
+
+    Definitions are collapsed to one line and truncated: this is prompt context, not
+    documentation. Returns ``[]`` when the hub has no authored glossary, which is common
+    early and must never be an error.
+    """
+    if hub_root is None:
+        return []
+    directory = Path(hub_root) / "businessdiscovery"
+    if not directory.is_dir():
+        return []
+    label_re = re.compile(r'skos:prefLabel\s+"([^"]+)"')
+    definition_re = re.compile(r'skos:definition\s+"([^"]+)"')
+    blank_line_re = re.compile(r"\n\s*\n")
+    entries: dict[str, str] = {}
+    for path in sorted(directory.glob("*.ttl")):
+        if path.name.startswith(("glossary-template", "_")):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # One concept per subject block; Turtle separates them with a blank line.
+        for block in blank_line_re.split(text):
+            label_match = label_re.search(block)
+            if not label_match:
+                continue
+            definition_match = definition_re.search(block)
+            raw = definition_match.group(1) if definition_match else ""
+            entries.setdefault(label_match.group(1).strip(), " ".join(raw.split())[:240])
+        if len(entries) >= limit:
+            break
+    return sorted(entries.items())[:limit]
+
+
 def load_glossary_terms(hub_root: Path | None, *, limit: int = 120) -> list[str]:
     """Return the business's own vocabulary from ``businessdiscovery/*.ttl`` (DD-171).
 

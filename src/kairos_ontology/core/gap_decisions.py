@@ -816,6 +816,7 @@ def suggest_family_dispositions(
     client: Any,
     model: str,
     anchors: dict[tuple[str, str], dict[str, Any]] | None = None,
+    hub_root: Path | None = None,
 ) -> dict[str, Any]:
     """Characterise each family in one model call, in place (DD-186).
 
@@ -835,6 +836,14 @@ def suggest_family_dispositions(
     Anchors are passed as context because "which class do these tables resolve
     to" is usually the deciding fact — a family whose tables anchor to a class
     that *already exists* is a mapping gap, not a blueprint gap.
+
+    The business glossary is passed for the same reason and carries more weight. This
+    step asks the model to *name the concept a family represents*, and the client has
+    usually already named it: the authored glossary is their own vocabulary, with a
+    definition per term. Without it the model invents a name from column spellings, and
+    a disposition gets argued in toolkit English about a concept the business has a word
+    for — which is the naming failure DD-171 exists to prevent, one stage further on
+    (#885).
     """
     families = sheet.get("families") or []
     if not families:
@@ -864,6 +873,25 @@ def suggest_family_dispositions(
             + (f"; anchors: {', '.join(anchor_names)}" if anchor_names else "")
         )
 
+    glossary_block = ""
+    if hub_root is not None:
+        from .propose_alignment import load_glossary_entries
+
+        entries = load_glossary_entries(hub_root)
+        if entries:
+            rendered = "\n".join(
+                f"- {label}: {definition}" if definition else f"- {label}"
+                for label, definition in entries
+            )
+            glossary_block = (
+                "\n\nTHE BUSINESS'S OWN VOCABULARY. Where a family is one of these "
+                "concepts, say so and use their word for it in 'reasoning'. A term here "
+                "is evidence the concept is real and in scope, so prefer "
+                "'registered-extension' over 'deferred' for it. Do not stretch a term to "
+                "fit; an unlisted concept is simply unlisted.\n"
+                f"{rendered}"
+            )
+
     prompt = f"""These groups of source columns share a leading token and have no reference-model
 property. For EACH family decide two things.
 
@@ -884,6 +912,7 @@ Prefer 'registered-extension' or 'deferred' over 'blueprint-gap' unless the conc
 clearly one the reference model ought to have had.
 
 Answer under the exact key shown at the start of each line (domain::family).
+{glossary_block}
 
 FAMILIES ({len(families)}):
 {chr(10).join(lines)}"""
