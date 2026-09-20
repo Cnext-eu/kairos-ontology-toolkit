@@ -897,20 +897,29 @@ def undecided_gap_columns(
     evidence-free columns are excluded by construction, so clearing this gate means
     deciding about real signal, not clicking through noise.
     """
-    from .source_disposition import load_dispositions
+    from .source_disposition import CASCADING_DISPOSITIONS, load_dispositions
 
     report = build_alignment_report(
         Path(hub_root) / "integration" / "sources" / "_analysis", hub_root=Path(hub_root)
     )
     scope = set(domains) if domains is not None else None
     recorded = load_dispositions(Path(hub_root))
-    decided = {
+    decided_columns = {
         (
             str(entry.get("system") or ""),
             str(entry.get("table") or ""),
             str(entry.get("column") or ""),
         )
         for entry in recorded.values()
+        if str(entry.get("column") or "")
+    }
+    # Table-grain entries are kept with their value, because only two of the five
+    # dispositions answer for the table's columns as well (#881).
+    cascading_tables = {
+        (str(entry.get("system") or ""), str(entry.get("table") or ""))
+        for entry in recorded.values()
+        if not str(entry.get("column") or "")
+        and str(entry.get("disposition") or "") in CASCADING_DISPOSITIONS
     }
 
     undecided: list[UnmappedColumn] = []
@@ -918,11 +927,13 @@ def undecided_gap_columns(
         if scope is not None and domain.domain not in scope:
             continue
         for column in domain.gap_columns:
-            # A table-grain disposition covers every column in it: deciding a whole
-            # table is out of scope also decides its columns.
-            if (column.system, column.table, "") in decided:
+            # A table-grain disposition covers this table's columns only when it says
+            # the columns are covered: `not-business-data` and `blueprint-gap`. A
+            # `deferred`, `bound` or `registered-extension` table still owes a decision
+            # per column, and used not to (#881).
+            if (column.system, column.table) in cascading_tables:
                 continue
-            if (column.system, column.table, column.column) in decided:
+            if (column.system, column.table, column.column) in decided_columns:
                 continue
             undecided.append(column)
     return undecided

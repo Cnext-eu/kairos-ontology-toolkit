@@ -618,9 +618,12 @@ def _hub_level_actions(snapshot: HubInputSnapshot) -> list[NextAction]:
                     f"recorded outcome ({obs.coverage:.0%} decided). `validate` fails on this "
                     "(DD-164), and nothing in the flow proposed it until now — which is how a "
                     "hub reached 70 outstanding decisions before anyone was told. Each table "
-                    "needs a human call: bound to a domain, or explicitly disposed as "
-                    "not-business-data, deferred, or a blueprint gap. This is the table-grain "
-                    "question 'is this in scope at all', not the column-grain gap gate."
+                    "needs a human call: author an EntityBinding for it, which satisfies "
+                    "this on its own, or record why it is not being bound — "
+                    "not-business-data, deferred, or a blueprint gap. This is the "
+                    "table-grain question 'is this in scope at all', not the column-grain "
+                    "gap gate, and a table you intend to bind wants a binding rather than "
+                    "a ledger row (#881)."
                 ),
                 command=(
                     "kairos-ontology source-disposition list --undecided   # then, per table:\n"

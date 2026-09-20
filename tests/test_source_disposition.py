@@ -12,6 +12,7 @@ import yaml
 from kairos_ontology.core.source_disposition import (
     DEFAULT_ROW_THRESHOLD,
     DISPOSITIONS,
+    DISPOSITIONS_RELPATH,
     audit_source_dispositions,
     load_bound_relations,
     load_dispositions,
@@ -115,7 +116,13 @@ def test_small_unbound_table_warns_but_does_not_block(tmp_path: Path) -> None:
     assert len(report.warnings) == 1
 
 
-@pytest.mark.parametrize("disposition", sorted(DISPOSITIONS))
+#: `bound` is excluded because it is no longer recordable at table grain (#881): the
+#: DD-164 audit reads it from integration/bindings/ before it consults the ledger, so a
+#: row claiming it was a statement no binding had to back.
+_RECORDABLE_AT_TABLE_GRAIN = sorted(set(DISPOSITIONS) - {"bound"})
+
+
+@pytest.mark.parametrize("disposition", _RECORDABLE_AT_TABLE_GRAIN)
 def test_every_disposition_value_clears_the_gate(tmp_path: Path, disposition: str) -> None:
     _write_source_table(tmp_path, "qargo", "comments", row_count=3149)
     record_disposition(
@@ -128,6 +135,37 @@ def test_every_disposition_value_clears_the_gate(tmp_path: Path, disposition: st
     report = audit_source_dispositions(hub_root=tmp_path)
     assert report.is_blocking is False
     assert report.tables_disposed == 1
+
+
+def test_bound_is_not_recordable_at_table_grain(tmp_path: Path) -> None:
+    """Authoring the EntityBinding is what states it (#881).
+
+    A ledger row saying `bound` satisfied DD-164 with no binding anywhere — a claim
+    nothing had to back — and, until the cascade was restricted, silenced every one of
+    the table's columns in the DD-169 gate as a side effect.
+    """
+    with pytest.raises(ValueError, match="not recorded in the ledger"):
+        record_disposition(
+            hub_root=tmp_path,
+            system="qargo",
+            table="comments",
+            disposition="bound",
+            rationale="an EntityBinding covers it",
+        )
+
+
+def test_bound_is_still_recordable_for_a_single_column(tmp_path: Path) -> None:
+    """The guard is about the table-grain claim, not the word."""
+    record_disposition(
+        hub_root=tmp_path,
+        system="qargo",
+        table="comments",
+        column="note_text",
+        disposition="bound",
+        rationale="mapped by the binding",
+    )
+
+    assert (tmp_path / DISPOSITIONS_RELPATH).is_file()
 
 
 def test_disposition_requiring_a_reason_is_rejected_without_one(tmp_path: Path) -> None:
