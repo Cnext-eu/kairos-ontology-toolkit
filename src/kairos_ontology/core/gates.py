@@ -378,7 +378,9 @@ GATES: tuple[Gate, ...] = (
 #:
 #: Being on this list is a claim that bypassing the flag costs the operator nothing a
 #: reviewer would want recorded -- speed, output verbosity, or overwriting a file they
-#: named themselves.
+#: named themselves. A claim about a flag that does not exist is not a classification,
+#: so the same test requires every entry here to match a flag actually declared in the
+#: CLI; two speculative entries were removed when that check was written.
 UNGATED_FLAGS: dict[str, str] = {
     "--allow": (
         "A per-invocation allowlist for `guard-scope --check-since`, which is advisory "
@@ -400,8 +402,6 @@ UNGATED_FLAGS: dict[str, str] = {
         "Suppresses masked example values from the output (DD-075). Errs toward less "
         "data leaving the hub, which is the safe direction -- the opposite of an escape."
     ),
-    "--no-verify": "Passed through to git; not a toolkit check.",
-    "--skip-empty": "Output filtering, not a check.",
 }
 
 

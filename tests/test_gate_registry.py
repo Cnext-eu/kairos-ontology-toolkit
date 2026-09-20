@@ -417,3 +417,20 @@ class TestTheLedgerDoesNotLeakBetweenInvocations:
 
         assert result.exit_code != 0
         assert "refused in autopilot mode" in result.output
+
+
+class TestUngatedFlagsAreRealFlags:
+    """A classification of a flag that does not exist is not a classification.
+
+    Written after two speculative entries (``--no-verify``, ``--skip-empty``) were found
+    in the list describing flags this CLI has never had. The AST scan stops the registry
+    going stale in one direction; this stops the exemption list going stale in the other.
+    """
+
+    def test_every_exempt_flag_is_declared_somewhere_in_the_cli(self):
+        declared = {flag for flag, _module in _plain_click_option_flags()}
+        dead = sorted(set(UNGATED_FLAGS) - declared)
+        assert not dead, (
+            "UNGATED_FLAGS claims these gate nothing, but no CLI command declares "
+            f"them: {dead}"
+        )
