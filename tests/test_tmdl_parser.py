@@ -425,3 +425,76 @@ class TestParseModelFolderLayouts:
 
         assert [t.name for t in model.tables] == ["f_sales"]
         assert model.unresolved_table_refs == ["d_date"]
+
+
+# ---------------------------------------------------------------------------
+# Fenced multi-line DAX (issue #875)
+# ---------------------------------------------------------------------------
+
+
+class TestFencedMeasureExpressions:
+    """The ``` fence is a delimiter, never expression text (issue #875)."""
+
+    def test_fence_is_not_part_of_the_expression(self):
+        content = (
+            "table f_sales\n"
+            "\n"
+            "\tmeasure 'Trailing Average' = ```\n"
+            "\t\t\tVAR _n = SELECTEDVALUE(f_sales[week])\n"
+            "\t\t\tRETURN _n\n"
+            "\t\t\t```\n"
+            "\t\tformatString: #,0\n"
+        )
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+        measure = tables[0].measures[0]
+
+        assert "```" not in measure.expression
+        assert measure.expression.startswith("VAR _n =")
+        assert measure.expression.endswith("RETURN _n")
+        assert measure.format_string == "#,0"
+
+    def test_fenced_expression_keeps_indentation_and_blank_lines(self):
+        content = (
+            "table f_sales\n"
+            "\n"
+            "\tmeasure Total = ```\n"
+            "\t\t\tVAR _a = 1\n"
+            "\n"
+            "\t\t\tVAR _b =\n"
+            "\t\t\t    SWITCH(\n"
+            "\t\t\t        TRUE(),\n"
+            "\t\t\t        _a\n"
+            "\t\t\t    )\n"
+            "\t\t\tRETURN _b\n"
+            "\t\t\t```\n"
+        )
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+        expression = tables[0].measures[0].expression
+
+        assert "        TRUE()," in expression
+        assert "\n\nVAR _b =" in expression
+
+    def test_fence_on_the_line_after_the_equals(self):
+        content = (
+            "table f_sales\n"
+            "\n"
+            "\tmeasure Total =\n"
+            "\t\t```\n"
+            "\t\tSUM(f_sales[amount])\n"
+            "\t\t```\n"
+        )
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+
+        assert tables[0].measures[0].expression == "SUM(f_sales[amount])"
+
+    def test_unterminated_fence_still_yields_the_dax_it_carries(self):
+        content = "table f_sales\n\n\tmeasure Total = ```\n\t\tSUM(f_sales[amount])\n"
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+
+        assert tables[0].measures[0].expression == "SUM(f_sales[amount])"
+
+    def test_single_line_expression_is_unchanged(self):
+        content = "table f_sales\n\n\tmeasure Total = SUM(f_sales[amount])\n"
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+
+        assert tables[0].measures[0].expression == "SUM(f_sales[amount])"

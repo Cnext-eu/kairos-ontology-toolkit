@@ -10,6 +10,7 @@ patterns needed for ontology engineering input, not a full TMDL grammar parser.
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -319,6 +320,34 @@ def _parse_column(lines: list[str], start: int, parent_indent: int) -> tuple[Tmd
     return col, i
 
 
+#: TMDL wraps a multi-line DAX expression in a ``` fence: the opening fence follows the
+#: `=`, the body is indented under it, and a bare ``` closes it. The fence is delimiter,
+#: never expression text (issue #875).
+_EXPRESSION_FENCE = "```"
+
+
+def _collect_fenced_expression(lines: list[str], start: int) -> tuple[str, int]:
+    """Collect a ```-fenced expression body, preserving its internal shape.
+
+    ``start`` is the line after the opening fence. Returns the dedented body and the
+    index of the line after the closing fence (or after the last line, if the fence is
+    unterminated -- a truncated export should still yield the DAX it does carry).
+    """
+    body: list[str] = []
+    i = start
+    while i < len(lines):
+        if lines[i].strip() == _EXPRESSION_FENCE:
+            i += 1
+            break
+        body.append(lines[i])
+        i += 1
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    return textwrap.dedent("\n".join(body)).rstrip(), i
+
+
 def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[TmdlMeasure, int]:
     """Parse a measure block, including multiline DAX expressions."""
     header = lines[start].strip()
@@ -339,7 +368,12 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
 
     # If we got an inline expression from the header, start collecting
     if first_expr is not None:
-        if first_expr:
+        if first_expr.startswith(_EXPRESSION_FENCE):
+            # `measure Name = ``` ` -> fenced multi-line DAX. Read to the closing
+            # fence rather than guessing the end from indentation, and keep the
+            # fence out of the expression text (issue #875).
+            measure.expression, i = _collect_fenced_expression(lines, i)
+        elif first_expr:
             # Single-line or start of multiline DAX
             expr_lines = [first_expr]
             while i < len(lines):
@@ -357,9 +391,16 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
                 i += 1
             measure.expression = "\n".join(expr_lines)
         else:
-            # `measure Name =` with empty RHS → multiline DAX follows
-            expr_lines = []
-            while i < len(lines):
+            # `measure Name =` with empty RHS → multiline DAX follows, either
+            # fenced or as a plain indented block.
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            if i < len(lines) and lines[i].strip() == _EXPRESSION_FENCE:
+                measure.expression, i = _collect_fenced_expression(lines, i + 1)
+                expr_lines = None
+            else:
+                expr_lines = []
+            while expr_lines is not None and i < len(lines):
                 next_line = lines[i]
                 next_stripped = next_line.strip()
                 next_indent = _get_indent(next_line)
@@ -372,7 +413,8 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
                     break
                 expr_lines.append(next_stripped)
                 i += 1
-            measure.expression = "\n".join(expr_lines)
+            if expr_lines is not None:
+                measure.expression = "\n".join(expr_lines)
 
     # Parse remaining properties
     while i < len(lines):
