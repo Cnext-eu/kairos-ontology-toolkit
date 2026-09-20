@@ -775,3 +775,67 @@ class TestRegroupByAnchor:
 
         grouped, moves = regroup_by_anchor(self._grouping(), {}, self.URIS)
         assert moves == [] and set(grouped) == {"events", "party"}
+
+
+# ---------------------------------------------------------------------------
+# An operational column is not part of the business grain (#914)
+# ---------------------------------------------------------------------------
+
+
+class TestBusinessGrain:
+    """``grain_columns`` becomes the Silver row's identity: generate-bindings turns each
+    one into a ``purpose: identity`` technical field. A system-versioning column in there
+    does not identify the entity more precisely, it changes what the entity *is*.
+
+    Measured on a real hub: the model proposed
+    ``natural_key: [KLMEMO, SETNR]`` and ``grain_columns: [KLMEMO, SETNR, ttSysStartTime]``,
+    and five of seven generated bindings then carried a row-validity timestamp as part of
+    identity -- turning "one row per consignment" into "one row per consignment per
+    version" with nothing objecting.
+    """
+
+    @staticmethod
+    def _grain(grain, natural_key):
+        from kairos_ontology.core.anchor_tables import _business_grain
+
+        return _business_grain(grain, natural_key)
+
+    def test_a_system_versioning_column_is_dropped(self):
+        assert self._grain(
+            ["KLMEMO", "SETNR", "ttSysStartTime"], ["KLMEMO", "SETNR"]
+        ) == ["KLMEMO", "SETNR"]
+
+    def test_a_business_grain_is_untouched(self):
+        assert self._grain(["REFXX", "VOLGNR"], ["REFXX", "VOLGNR"]) == ["REFXX", "VOLGNR"]
+
+    def test_a_column_the_model_put_in_the_natural_key_is_never_dropped(self):
+        """The stage that proposed the grain said this column identifies the entity.
+
+        That statement outranks a name-shaped guess, because `_is_operational_column` is
+        the narrow classifier whose false positives delete real data.
+        """
+        assert self._grain(["created_at"], ["created_at"]) == ["created_at"]
+
+    def test_an_all_operational_grain_is_returned_untouched(self):
+        """A table with no grain is not a safer answer than one with a questionable grain.
+
+        Emptying it would make `generate-bindings` skip the table entirely, turning a
+        reviewable oddity into a silent absence.
+        """
+        assert self._grain(["ttSysStartTime", "ttSysEndTime"], []) == [
+            "ttSysStartTime",
+            "ttSysEndTime",
+        ]
+
+    def test_natural_key_protection_ignores_case(self):
+        """The grain and the natural key are both model output and need not agree on case.
+
+        Only the protection is case-insensitive. Whether a name *looks* operational is
+        `_is_operational_column`'s business, and it is token-based -- an all-caps
+        concatenation like TTSYSSTARTTIME has no boundaries to split on and is therefore
+        not recognised. That is a property of the predicate, not of this filter.
+        """
+        assert self._grain(["klmemo", "ttSysStartTime"], ["KLMEMO"]) == ["klmemo"]
+
+    def test_an_empty_grain_stays_empty(self):
+        assert self._grain([], []) == []

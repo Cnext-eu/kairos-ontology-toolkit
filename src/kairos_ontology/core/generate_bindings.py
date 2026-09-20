@@ -43,6 +43,7 @@ duplicate claims, skipped tables, and the secondary-entity worklist.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -250,6 +251,35 @@ def _profile_column(profile: dict | None, table: str, column: str) -> dict[str, 
     ).get(column) or {}
 
 
+def load_source_column_types(sources_dir: Path, system: str) -> dict[str, dict[str, str]]:
+    """``{table: {column: declared physical type}}`` from a system's source vocabulary.
+
+    The bronze vocabulary is where ``compile`` reads a column's physical type from, so it
+    is the only answer that agrees with the gate a generated binding has to pass (#914).
+    The profile is preferred where it exists because it also carries a null ratio; this is
+    the fallback for a hub that has not run ``profile-sources``, and for the identity
+    columns alignment never typed because it never mapped them.
+
+    Text-scanned rather than parsed with rdflib: this runs once per source system inside a
+    generation loop, the shape is machine-written by ``import-source``, and a parse failure
+    here should cost a type hint rather than the whole run. An unreadable or absent
+    vocabulary yields ``{}``.
+    """
+    path = Path(sources_dir) / system / f"{system}.vocabulary.ttl"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return {}
+    types: dict[str, dict[str, str]] = {}
+    for block in text.split(" a kairos-bronze:SourceColumn ;"):
+        column = re.search(r'kairos-bronze:columnName\s+"([^"]+)"', block)
+        data_type = re.search(r'kairos-bronze:dataType\s+"([^"]+)"', block)
+        table = re.search(r"kairos-bronze:sourceTable\s+\S+?:(\S+?)\s*\.", block)
+        if column and data_type and table:
+            types.setdefault(table.group(1), {})[column.group(1)] = data_type.group(1)
+    return types
+
+
 def generate_binding_doc(
     entry: dict[str, Any],
     alignment_table: dict[str, Any],
@@ -259,6 +289,7 @@ def generate_binding_doc(
     report: GenerateBindingsReport,
     hub_root: Path | None = None,
     dispositions: dict[tuple[str, str, str], dict[str, Any]] | None = None,
+    source_column_types: dict[str, str] | None = None,
 ) -> tuple[Optional[dict[str, Any]], str]:
     """Assemble one closed EntityBinding document from sheet + alignment + profile.
 
@@ -408,13 +439,25 @@ def generate_binding_doc(
             )
         return None, "no scalar fields mapped for this table"
 
+    source_column_types = source_column_types or {}
+
     def _column_type(column: str) -> tuple[str, bool]:
         meta = _profile_column(profile, table, column)
         if meta:
             return _canonical_type(str(meta.get("type") or "")), (
                 float(meta.get("null_ratio") or 0.0) > 0
             )
-        return _canonical_type(align_types.get(column, "")), True
+        declared = align_types.get(column, "")
+        if not declared:
+            # The alignment only carries a type for columns it mapped, and an identity
+            # column is very often one it did not: an audit or system-versioning column is
+            # excluded from alignment by construction. Falling through to _canonical_type("")
+            # yields "string", which the compiler then rejects against the real physical
+            # type -- so generate-bindings emitted a binding its own compiler refused
+            # (#914). The source vocabulary is where the compiler reads that type from, so
+            # read it from there rather than guessing.
+            declared = source_column_types.get(column, "")
+        return _canonical_type(declared), True
 
     source_key = [str(c) for c in entry.get("natural_key") or []] or grain
     technical: list[dict[str, Any]] = []
@@ -518,6 +561,7 @@ def run_generate_bindings(
 
     report = GenerateBindingsReport()
     profiles: dict[str, dict | None] = {}
+    vocabulary_types: dict[str, dict[str, dict[str, str]]] = {}
     for (system, table), entry in sorted(anchors.items()):
         key = f"{system}.{table}"
         if tables and key not in tables:
@@ -539,10 +583,13 @@ def run_generate_bindings(
             continue
         if system not in profiles:
             profiles[system] = load_profile(sources_dir, system)
+        if system not in vocabulary_types:
+            vocabulary_types[system] = load_source_column_types(sources_dir, system)
         doc, skip_reason = generate_binding_doc(
             entry, found[1], catalog_path=catalog,
             profile=profiles[system], report=report,
             hub_root=hub_root, dispositions=dispositions,
+            source_column_types=vocabulary_types[system].get(table, {}),
         )
         if doc is None:
             report.generated.append(GeneratedBinding(

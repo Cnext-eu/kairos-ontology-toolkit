@@ -448,3 +448,95 @@ class TestHubLocalPropertiesAgainstARealOntology:
         from kairos_ontology.core.generate_bindings import hub_local_properties
 
         assert hub_local_properties(None, REF_CLASS) == {}
+
+
+# ---------------------------------------------------------------------------
+# An identity column's type comes from the source vocabulary (#914)
+# ---------------------------------------------------------------------------
+
+
+VOCAB_TTL = """\
+@prefix kairos-bronze: <https://kairos.example/bronze#> .
+@prefix src: <https://acme.example/src#> .
+
+src:orders_ORDER_ID a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "ORDER_ID" ;
+    kairos-bronze:dataType "string" ;
+    kairos-bronze:sourceTable src:orders .
+
+src:orders_ttSysStartTime a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "ttSysStartTime" ;
+    kairos-bronze:dataType "timestamp" ;
+    kairos-bronze:sourceTable src:orders .
+
+src:shipments_QTY a kairos-bronze:SourceColumn ;
+    kairos-bronze:columnName "QTY" ;
+    kairos-bronze:dataType "decimal(10,2)" ;
+    kairos-bronze:sourceTable src:shipments .
+"""
+
+
+class TestSourceColumnTypes:
+    """`technicalFields.type` is checked by the compiler against the source column's
+    physical type. The alignment only carries a type for columns it *mapped*, and an
+    identity column is very often one it did not -- an audit or system-versioning column
+    is excluded from alignment by construction. Falling through to `_canonical_type("")`
+    yields "string", so generate-bindings emitted bindings its own compiler rejected:
+
+        [error] technical-field.type-incompatible: technical field 'ttSysStartTime'
+        declares type 'string' but source column has incompatible physical type 'timestamp'
+    """
+
+    @staticmethod
+    def _sources(tmp_path):
+        system = tmp_path / "src"
+        system.mkdir(parents=True)
+        (system / "src.vocabulary.ttl").write_text(VOCAB_TTL, encoding="utf-8")
+        return tmp_path
+
+    def test_types_are_read_per_table(self, tmp_path):
+        from kairos_ontology.core.generate_bindings import load_source_column_types
+
+        types = load_source_column_types(self._sources(tmp_path), "src")
+
+        assert types["orders"] == {"ORDER_ID": "string", "ttSysStartTime": "timestamp"}
+        assert types["shipments"] == {"QTY": "decimal(10,2)"}
+
+    def test_a_system_versioning_column_is_typed_timestamp_not_string(self, tmp_path):
+        """The exact column that failed the compile on a real hub."""
+        from kairos_ontology.core.generate_bindings import load_source_column_types
+
+        types = load_source_column_types(self._sources(tmp_path), "src")
+
+        assert types["orders"]["ttSysStartTime"] == "timestamp"
+
+    def test_a_missing_vocabulary_yields_nothing_rather_than_failing(self, tmp_path):
+        """A hub mid-import should lose a type hint, not the whole generation run."""
+        from kairos_ontology.core.generate_bindings import load_source_column_types
+
+        assert load_source_column_types(tmp_path, "nosuchsystem") == {}
+
+    def test_an_unreadable_vocabulary_yields_nothing(self, tmp_path):
+        from kairos_ontology.core.generate_bindings import load_source_column_types
+
+        system = tmp_path / "src"
+        system.mkdir(parents=True)
+        (system / "src.vocabulary.ttl").write_bytes(b"\xff\xfe not utf-8 \xff")
+
+        assert load_source_column_types(tmp_path, "src") == {}
+
+    def test_a_column_with_no_declared_type_is_skipped(self, tmp_path):
+        from kairos_ontology.core.generate_bindings import load_source_column_types
+
+        system = tmp_path / "src"
+        system.mkdir(parents=True)
+        (system / "src.vocabulary.ttl").write_text(
+            '@prefix kairos-bronze: <https://kairos.example/bronze#> .\n'
+            '@prefix src: <https://acme.example/src#> .\n\n'
+            'src:orders_X a kairos-bronze:SourceColumn ;\n'
+            '    kairos-bronze:columnName "X" ;\n'
+            '    kairos-bronze:sourceTable src:orders .\n',
+            encoding="utf-8",
+        )
+
+        assert load_source_column_types(tmp_path, "src") == {}
