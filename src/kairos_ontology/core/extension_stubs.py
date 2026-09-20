@@ -90,12 +90,16 @@ def _skip(report: ExtensionStubReport, name: str, reason: str) -> None:
 
 
 def collect_extension_properties(
-    hub_root: Path, *, on_classes: set[str] | None = None
+    hub_root: Path, *, class_uris: dict[str, str] | None = None
 ) -> ExtensionStubReport:
     """Gather every accepted `registered-extension` decision that names a property.
 
-    *on_classes* filters to properties declared on those class URIs, which is how a
-    caller scopes the render to one domain's anchors.
+    ``propose-alignment`` records ``on_class`` as a bare **local name** (``CargoItem``),
+    not a URI — it names a class in the domain's own candidate pool. ``rdfs:domain``
+    needs the URI, so *class_uris* maps local name to anchor URI and doubles as the
+    scope: a decision naming a class outside it belongs to another domain's render.
+    A value that is already a URI is passed through, so a caller holding real IRIs does
+    not need the map.
 
     A decision recorded before `proposed_property` was structured carries the property
     only inside its prose rationale; it is counted and skipped rather than parsed back
@@ -107,6 +111,7 @@ def collect_extension_properties(
     merged: dict[str, ExtensionProperty] = {}
     evidence: dict[str, list[str]] = {}
     divergent: dict[str, set[str]] = {}
+    unresolved: dict[str, str] = {}
 
     for entry in load_dispositions(Path(hub_root)).values():
         if str(entry.get("disposition") or "") != "registered-extension":
@@ -118,8 +123,11 @@ def collect_extension_properties(
         name = str(proposal.get("name") or "")
         if not name:
             continue  # pre-#883 decision: the property lives only in the prose
-        on_class = str(proposal.get("on_class") or "")
-        if on_classes is not None and on_class not in on_classes:
+        named = str(proposal.get("on_class") or "")
+        on_class = _resolve_class(named, class_uris)
+        if not on_class:
+            if named:
+                unresolved.setdefault(name, named)
             continue
         source = f"{entry.get('system')}.{entry.get('table')}.{entry.get('column')}"
         evidence.setdefault(name, []).append(source)
@@ -167,7 +175,27 @@ def collect_extension_properties(
                 columns=tuple(sorted(evidence[name])),
             )
         )
+    for name, named in sorted(unresolved.items()):
+        if name in merged:
+            continue
+        _skip(
+            report,
+            name,
+            f"accepted on class {named!r}, which is not among this domain's anchors — "
+            "it belongs to another domain's render",
+        )
     return report
+
+
+def _resolve_class(named: str, class_uris: dict[str, str] | None) -> str:
+    """The class URI for a recorded ``on_class``, or ``""`` when out of scope."""
+    if not named:
+        return ""
+    if "#" in named or "://" in named:
+        return named if class_uris is None or named in class_uris.values() else ""
+    if class_uris is None:
+        return ""
+    return class_uris.get(named, "")
 
 
 def _label_of(name: str) -> str:
@@ -236,19 +264,27 @@ def render_extension_ttl(
     return "\n".join(lines)
 
 
-def anchor_classes_for_domain(analysis_dir: Path, domain: str) -> set[str]:
-    """Anchor class URIs the sheet assigns to *domain*, for scoping the render."""
+def anchor_classes_for_domain(analysis_dir: Path, domain: str) -> dict[str, str]:
+    """``local name -> anchor URI`` for the classes the sheet assigns to *domain*.
+
+    Keyed on the local name because that is how a decision records its owning class;
+    valued with the URI because that is what ``rdfs:domain`` needs.
+    """
     from .anchor_tables import load_table_anchors
 
     try:
         anchors = load_table_anchors(Path(analysis_dir))
     except Exception:  # noqa: BLE001 - advisory; an unreadable sheet scopes to nothing
-        return set()
-    return {
-        str(entry.get("anchor_uri") or "")
-        for entry in anchors.values()
-        if str(entry.get("domain") or "") == domain and entry.get("anchor_uri")
-    }
+        return {}
+    resolved: dict[str, str] = {}
+    for entry in anchors.values():
+        if str(entry.get("domain") or "") != domain:
+            continue
+        uri = str(entry.get("anchor_uri") or "")
+        if not uri:
+            continue
+        resolved.setdefault(uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1], uri)
+    return resolved
 
 
 def build_extension_stubs(
@@ -258,5 +294,5 @@ def build_extension_stubs(
     hub_root = Path(hub_root)
     analysis = hub_root / "integration" / "sources" / "_analysis"
     classes = anchor_classes_for_domain(analysis, domain)
-    report = collect_extension_properties(hub_root, on_classes=classes or None)
+    report = collect_extension_properties(hub_root, class_uris=classes)
     return render_extension_ttl(report, namespace=namespace, domain=domain), report

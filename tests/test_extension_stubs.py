@@ -94,7 +94,7 @@ class TestCollect:
             _entry("B", name="beta", on_class=OTHER_CLASS),
         ])
 
-        report = collect_extension_properties(hub, on_classes={CLASS})
+        report = collect_extension_properties(hub, class_uris={"CargoItem": CLASS})
 
         assert [p.name for p in report.properties] == ["alpha"]
 
@@ -176,3 +176,38 @@ class TestRender:
 
         assert "DRAFT" in ttl
         assert "model/ontologies/" in ttl
+
+
+class TestLocalNameResolution:
+    """propose-alignment records on_class as a bare local name, not a URI (#883).
+
+    The first cut compared those names against full anchor URIs, so nothing ever matched
+    and a real hub with 501 accepted decisions rendered zero properties.
+    """
+
+    def test_a_local_name_resolves_through_the_anchor_map(self, tmp_path):
+        entry = _entry("BLNR", name="billOfLadingNumber")
+        entry["proposed_property"]["on_class"] = "CargoItem"
+        hub = _ledger(tmp_path, [entry])
+
+        report = collect_extension_properties(hub, class_uris={"CargoItem": CLASS})
+
+        assert [p.on_class for p in report.properties] == [CLASS]
+
+    def test_a_class_outside_the_domain_is_skipped_with_a_reason(self, tmp_path):
+        entry = _entry("SHIPNAME", name="vesselName")
+        entry["proposed_property"]["on_class"] = "Vessel"
+        hub = _ledger(tmp_path, [entry])
+
+        report = collect_extension_properties(hub, class_uris={"CargoItem": CLASS})
+
+        assert report.properties == []
+        assert "another domain" in report.skipped[0]["reason"]
+
+    def test_no_map_means_nothing_resolves(self, tmp_path):
+        entry = _entry("BLNR", name="billOfLadingNumber")
+        entry["proposed_property"]["on_class"] = "CargoItem"
+
+        report = collect_extension_properties(_ledger(tmp_path, [entry]))
+
+        assert report.properties == []
