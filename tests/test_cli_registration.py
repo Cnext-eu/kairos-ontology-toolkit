@@ -61,6 +61,7 @@ RETAINED_COMMANDS = {
     "promote-transform",
     "scaffold-binding",
     "scaffold-contract",
+    "scaffold-extensions",
     "scaffold-staging",
     "scaffold-system",
     "scaffold-mapping",
