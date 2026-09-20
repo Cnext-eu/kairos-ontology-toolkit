@@ -365,3 +365,68 @@ class TestUnresolvableAnchorClass:
         from kairos_ontology.core.extension_stubs import unresolvable_classes
 
         assert unresolvable_classes(tmp_path, "d", {}) == set()
+
+class TestDispositionedTablesShapeNothing:
+    """#925 -- a ruled-out table still contributed anchor classes to the render."""
+
+    def _analysis(self, tmp_path):
+        import yaml as _yaml
+
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True, exist_ok=True)
+        (analysis / "table-anchors.yaml").write_text(
+            _yaml.safe_dump(
+                {
+                    "schema_version": 2,
+                    "tables": [
+                        {"system": "src", "table": "kept", "domain": "consignment",
+                         "anchor_uri": "https://ref.test/ont/consignment#Consignment"},
+                        {"system": "src", "table": "ruled_out", "domain": "consignment",
+                         "anchor_uri": "https://ref.test/ont/elsewhere#Gone"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return analysis
+
+    def _rule_out(self, tmp_path, disposition="deferred"):
+        import yaml as _yaml
+
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        (analysis / "table-dispositions.yaml").write_text(
+            _yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "tables": [{"system": "src", "table": "ruled_out",
+                                "disposition": disposition, "rationale": "not modelled"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_ruled_out_table_contributes_no_anchor_class(self, tmp_path):
+        from kairos_ontology.core.extension_stubs import anchor_classes_for_domain
+
+        analysis = self._analysis(tmp_path)
+        self._rule_out(tmp_path)
+        classes = anchor_classes_for_domain(analysis, "consignment", hub_root=tmp_path)
+        assert "Consignment" in classes
+        assert "Gone" not in classes, (
+            "a property rendered on it points outside the domain's imports and only "
+            "ever fails validate"
+        )
+
+    def test_without_a_hub_root_the_ledger_cannot_be_found(self, tmp_path):
+        from kairos_ontology.core.extension_stubs import anchor_classes_for_domain
+
+        analysis = self._analysis(tmp_path)
+        self._rule_out(tmp_path)
+        assert "Gone" in anchor_classes_for_domain(analysis, "consignment")
+
+    def test_bound_is_not_a_non_generating_disposition(self, tmp_path):
+        from kairos_ontology.core.extension_stubs import anchor_classes_for_domain
+
+        analysis = self._analysis(tmp_path)
+        self._rule_out(tmp_path, disposition="bound")
+        assert "Gone" in anchor_classes_for_domain(analysis, "consignment", hub_root=tmp_path)

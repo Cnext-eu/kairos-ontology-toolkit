@@ -4470,6 +4470,14 @@ def generate_bindings_cmd(tables, domain, analysis_opt, catalog_opt, force, dry_
         f"✅ generate-bindings: {written} written, {would} validated (dry-run), "
         f"{exists} left untouched, {invalid} invalid, {skipped} skipped"
     )
+    # Every skip already carries a written reason; the summary used to print the count
+    # and discard them, so a table vanishing between anchor-tables and compile could only
+    # be explained by importing run_generate_bindings and reading the report by hand
+    # (#926). At the stage where an operator is deciding what the hub covers, that is the
+    # wrong thing to leave out.
+    for item in result.generated:
+        if item.outcome == "skipped" and item.note:
+            click.echo(f"   ⏭ {item.system}.{item.table}: {item.note}")
     if result.unresolved_properties:
         click.echo(
             f"   ℹ {len(result.unresolved_properties)} mapped propert"

@@ -368,3 +368,66 @@ class TestProposedPropertyReachesTheLedger:
         entry = load_dispositions(tmp_path)[("src", "ships", "VESSELCLASS")]
 
         assert sorted(entry["proposed_property"]) == ["name", "on_class", "range", "why"]
+
+class TestBoundAndRuledOutIsAConflict:
+    """#925 -- the bound short-circuit returned before the ledger was ever read."""
+
+    def _hub(self, tmp_path, disposition):
+        import yaml as _yaml
+
+        sources = tmp_path / "integration" / "sources" / "src"
+        sources.mkdir(parents=True)
+        (sources / "src.vocabulary.ttl").write_text(
+            "src:Goods a kairos-bronze:SourceTable ;\n"
+            '    kairos-bronze:tableName "goods" ;\n'
+            "    kairos-bronze:rowCount 10000 .\n",
+            encoding="utf-8",
+        )
+        bindings = tmp_path / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        (bindings / "src-goods.binding.yaml").write_text(
+            _yaml.safe_dump(
+                {
+                    "apiVersion": "kairos.eu/v5",
+                    "kind": "EntityBinding",
+                    "metadata": {"name": "src-goods", "domain": "consignment"},
+                    "source": {"relation": "src.goods"},
+                    "target": {"class": "https://ref.test/ont/consignment#Consignment"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        analysis = tmp_path / "integration" / "sources" / "_analysis"
+        analysis.mkdir(parents=True, exist_ok=True)
+        (analysis / "table-dispositions.yaml").write_text(
+            _yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "tables": [
+                        {
+                            "system": "src",
+                            "table": "goods",
+                            "disposition": disposition,
+                            "rationale": "not modelled",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_a_ruled_out_table_that_is_still_bound_is_an_error(self, tmp_path):
+        report = audit_source_dispositions(hub_root=self._hub(tmp_path, "not-business-data"))
+        codes = {d.code for d in report.diagnostics}
+        assert "disposition.bound-and-ruled-out" in codes
+        [conflict] = [d for d in report.diagnostics
+                      if d.code == "disposition.bound-and-ruled-out"]
+        assert conflict.level == "error"
+        assert "reaches Silver despite the ruling" in conflict.message
+
+    def test_bound_agreeing_with_the_ledger_is_not_a_conflict(self, tmp_path):
+        report = audit_source_dispositions(hub_root=self._hub(tmp_path, "bound"))
+        assert not [d for d in report.diagnostics
+                    if d.code == "disposition.bound-and-ruled-out"]
+        assert report.tables_bound == 1

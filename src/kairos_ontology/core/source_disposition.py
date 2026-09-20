@@ -281,6 +281,34 @@ def audit_source_dispositions(
     for (system, table), row_count in sorted(tables.items()):
         key = (system, table)
         if key in bound:
+            # A bound table normally needs no ledger row -- authoring the binding is what
+            # states `bound`. But a table that is bound *and* ruled out is a contradiction
+            # the hub cannot act on, and it used to pass silently: this branch returned
+            # before the ledger was read, so a stale binding for a dispositioned table
+            # counted as bound and shipped to Silver (#925).
+            conflict = recorded.get((*key, ""))
+            ruling = str((conflict or {}).get("disposition") or "")
+            if ruling in NON_GENERATING_DISPOSITIONS:
+                report.diagnostics.append(
+                    DispositionDiagnostic(
+                        level="error",
+                        code="disposition.bound-and-ruled-out",
+                        message=(
+                            f"{system}.{table} is bound by a binding in integration/bindings/ "
+                            f"and also recorded as '{ruling}' in the ledger. The binding wins: "
+                            "compile reads the directory, so the table reaches Silver despite "
+                            "the ruling."
+                        ),
+                        system=system,
+                        table=table,
+                        remediation=(
+                            "Delete the binding if the ruling stands (re-running "
+                            "generate-bindings now does this), or clear the ledger row if "
+                            "the table is genuinely in scope."
+                        ),
+                    )
+                )
+                continue
             report.tables_bound += 1
             continue
 

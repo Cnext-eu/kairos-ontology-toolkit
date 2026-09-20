@@ -122,6 +122,7 @@ class GeneratedBinding:
     path: Optional[Path] = None
     fields: int = 0
     technical_fields: int = 0
+    relationships_preserved: int = 0
     note: str = ""
 
 
@@ -142,6 +143,7 @@ class GenerateBindingsReport:
                     "system": g.system, "table": g.table, "binding": g.binding_name,
                     "domain": g.domain, "outcome": g.outcome,
                     "fields": g.fields, "technical_fields": g.technical_fields,
+                    "relationships_preserved": g.relationships_preserved,
                     "note": g.note,
                 }
                 for g in self.generated
@@ -429,6 +431,32 @@ def generate_binding_doc(
         mapped_cols.add(column)
 
     if not fields:
+        # Why there are no fields matters more than the fact, because the three causes
+        # need three different actions. Reporting the relationship-wiring one for all of
+        # them sent an operator after propose-relationships for a sixty-column table that
+        # had nothing to do with relationships (#926).
+        elsewhere = sorted(
+            {
+                on_class
+                for on_class in align_classes.values()
+                if on_class and on_class != anchor_local
+            }
+        )
+        if elsewhere:
+            # Anchoring and alignment disagree about what this table is. Nothing
+            # reconciles them, so every column the aligner matched belongs to a class the
+            # anchor is not, and the table is dropped entirely -- before it can reach the
+            # secondary-entity worklist, which is the one report that words this well.
+            named = ", ".join(elsewhere[:3]) + (
+                f", +{len(elsewhere) - 3} more" if len(elsewhere) > 3 else ""
+            )
+            return None, (
+                f"anchored to {anchor_local}, but every column the aligner matched is on "
+                f"another class ({named}), so no scalar field belongs to the anchor. "
+                "Decide: re-anchor this table to the class alignment chose, or treat "
+                "those columns as a secondary entity at its own grain. Running "
+                "propose-relationships will not help -- no relationship is missing"
+            )
         # A carrier's presence changes the reason text, never the outcome: this
         # generator never emits relationships: (deferred to propose-relationships),
         # so an empty fields: is unwritable under the v5 contract either way.
@@ -538,6 +566,60 @@ def table_disposition(
     return value if value in NON_GENERATING_DISPOSITIONS else ""
 
 
+def _stale_binding_for(bindings_dir: Path, system: str, table: str) -> Optional[Path]:
+    """The binding file already written for a table the ledger now rules out (#925).
+
+    Matched on the binding's declared source rather than on its filename, because the
+    name is derived from the anchor and a re-anchor changes it -- leaving a file whose
+    name no longer mentions the table it binds.
+    """
+    if not bindings_dir.is_dir():
+        return None
+    for candidate in sorted(bindings_dir.glob("*.binding.yaml")):
+        try:
+            doc = yaml.safe_load(candidate.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - an unreadable neighbour is not our business
+            continue
+        if not isinstance(doc, dict):
+            continue
+        source = doc.get("source")
+        relation = source.get("relation") if isinstance(source, dict) else None
+        if not isinstance(relation, str):
+            continue
+        if relation == f"{system}.{table}":
+            return candidate
+    return None
+
+
+def _authored_relationships(out_path: Path) -> list[Any]:
+    """Relationships an author wrote into a binding this generator is about to rewrite.
+
+    This generator never authors relationships -- ``propose-relationships`` derives them
+    and the author pastes what they accept, because the command writes nothing itself.
+    Accepting a proposal therefore means hand-editing a *generated* file, and ``--force``
+    is the documented way to pick up a corrected anchor (#918). Without this, the two
+    collide: regenerating any table in a domain silently discarded every relationship
+    authored anywhere in it, and nothing failed afterwards, because a missing
+    relationship only downgrades ``safety.relationship-endpoint`` to the
+    ``relationship.unrealized-technical-field`` warning (#930).
+
+    Returns [] for a missing or unreadable file -- a carry-over must never be the reason
+    a regeneration fails. The caller re-validates the merged document, so a preserved
+    block that no longer fits the regenerated target is reported as ``invalid`` rather
+    than written.
+    """
+    if not out_path.is_file():
+        return []
+    try:
+        existing = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - an unreadable prior file is not this run's problem
+        return []
+    if not isinstance(existing, dict):
+        return []
+    authored = existing.get("relationships")
+    return authored if isinstance(authored, list) and authored else []
+
+
 def run_generate_bindings(
     hub_root: Path,
     *,
@@ -602,9 +684,19 @@ def run_generate_bindings(
             #
             # An explicit --table overrides, so an author can regenerate one dispositioned
             # table deliberately without clearing the ledger first.
+            # Skipping is not enough: a binding generated before the ruling stays on
+            # disk, and `compile` globs the directory. Measured on one hub, a table
+            # dispositioned `not-business-data` was skipped here and still emitted a
+            # Silver model, with no warning anywhere (#925). Retract it.
+            note = f"recorded as {ruled_out} in the disposition ledger"
+            stale = _stale_binding_for(bindings_dir, system, table)
+            if stale is not None:
+                note += f"; retracted the binding generated before that ruling ({stale.name})"
+                if not dry_run:
+                    stale.unlink()
             report.generated.append(GeneratedBinding(
                 system, table, "", str(entry.get("domain") or ""), "skipped",
-                note=f"recorded as {ruled_out} in the disposition ledger"))
+                note=note))
             continue
         if not entry.get("anchor_uri") or not entry.get("domain"):
             report.generated.append(GeneratedBinding(
@@ -635,6 +727,9 @@ def run_generate_bindings(
 
         name = doc["metadata"]["name"]
         out_path = bindings_dir / f"{name}.binding.yaml"
+        preserved = _authored_relationships(out_path)
+        if preserved:
+            doc["relationships"] = preserved
         text = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
         try:
             load_entity_binding(text, path=str(out_path))
@@ -648,6 +743,7 @@ def run_generate_bindings(
             system, table, name, doc["metadata"]["domain"], "would-write",
             path=out_path, fields=len(doc["fields"]),
             technical_fields=len(doc.get("technicalFields") or []),
+            relationships_preserved=len(preserved),
         )
         if out_path.exists() and not force:
             outcome.outcome = "exists"
@@ -657,8 +753,12 @@ def run_generate_bindings(
             out_path.write_text(text, encoding="utf-8")
             outcome.outcome = "written"
         report.generated.append(outcome)
+        kept = (
+            f", {outcome.relationships_preserved} authored relationship(s) kept"
+            if outcome.relationships_preserved else ""
+        )
         say(
             f"  ✅ {key} → {name} ({outcome.fields} field(s), "
-            f"{outcome.technical_fields} technical) [{outcome.outcome}]"
+            f"{outcome.technical_fields} technical{kept}) [{outcome.outcome}]"
         )
     return report
