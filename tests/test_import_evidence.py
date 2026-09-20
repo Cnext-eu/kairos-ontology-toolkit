@@ -166,3 +166,54 @@ class TestAuditImportEvidence:
         assert [f.kind for f in report.findings] == ["unextracted"]
         assert report.documents_total == 1
         assert report.documents_extracted == 0
+
+
+# ---------------------------------------------------------------------------
+# discovery-status must not answer "nothing to check" when there is (#885)
+# ---------------------------------------------------------------------------
+
+
+class TestDocumentsStagedElsewhere:
+    """The command a human runs to ask "what discovery evidence do I have?".
+
+    It read `.import/businessdiscovery/` alone, so on one real hub it printed
+    "(no discovery documents found — nothing to check)" while thirty client documents sat
+    one directory across. The sentence sounded like an answer, so nobody looked further.
+    """
+
+    def test_documents_filed_elsewhere_are_named(self, tmp_path):
+        from kairos_ontology.cli.sources import _documents_staged_elsewhere
+
+        (tmp_path / ".import" / "businessdiscovery").mkdir(parents=True)
+        stray = tmp_path / ".import" / "Input" / "Ports"
+        stray.mkdir(parents=True)
+        (stray / "definitions.docx").write_text("x", encoding="utf-8")
+
+        found = _documents_staged_elsewhere(tmp_path / ".import" / "businessdiscovery")
+
+        assert found == [".import/Input/Ports/definitions.docx"]
+
+    def test_a_hub_with_nothing_staged_reports_nothing(self, tmp_path):
+        from kairos_ontology.cli.sources import _documents_staged_elsewhere
+
+        (tmp_path / ".import" / "businessdiscovery").mkdir(parents=True)
+
+        assert _documents_staged_elsewhere(tmp_path / ".import" / "businessdiscovery") == []
+
+    def test_documents_in_the_right_place_are_not_reported_as_misplaced(self, tmp_path):
+        from kairos_ontology.cli.sources import _documents_staged_elsewhere
+
+        good = tmp_path / ".import" / "businessdiscovery" / "Ports"
+        good.mkdir(parents=True)
+        (good / "definitions.docx").write_text("x", encoding="utf-8")
+
+        assert _documents_staged_elsewhere(tmp_path / ".import" / "businessdiscovery") == []
+
+    def test_a_non_import_directory_is_left_alone(self, tmp_path):
+        """A caller pointing --import-dir somewhere custom is not making this mistake."""
+        from kairos_ontology.cli.sources import _documents_staged_elsewhere
+
+        custom = tmp_path / "elsewhere" / "docs"
+        custom.mkdir(parents=True)
+
+        assert _documents_staged_elsewhere(custom) == []

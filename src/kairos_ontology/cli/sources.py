@@ -1975,12 +1975,55 @@ def discovery_status_cmd(import_dir, extraction_dir, strict, warn_only, output_f
     elif report.has_warnings:
         click.echo("\n⚠ Discovery documents checked with warnings (not blocking).")
     elif nothing_found:
-        click.echo(
-            "\n   (no discovery documents found under .import/businessdiscovery/ — "
-            "nothing to check)"
-        )
+        # "Nothing to check" is true of the directory this command reads and can be the
+        # opposite of true about the hub. On one real hub it printed while thirty client
+        # documents sat one directory across, in a folder someone had filed by topic --
+        # and because the sentence sounded like an answer, nobody looked further (#885).
+        misplaced = _documents_staged_elsewhere(imp_path)
+        if misplaced:
+            click.echo(
+                f"\n⚠ No documents under {imp_path.name}/, but {len(misplaced)} business "
+                f"document(s) are staged elsewhere under .import/ where nothing reads them:"
+            )
+            for path in misplaced[:10]:
+                click.echo(f"     {path}")
+            if len(misplaced) > 10:
+                click.echo(f"     … and {len(misplaced) - 10} more")
+            click.echo(
+                "   Move them under .import/businessdiscovery/ (subfolders are scanned "
+                "recursively), or under .import/powerbi/ if they are report exports."
+            )
+        else:
+            click.echo(
+                "\n   (no discovery documents found under .import/businessdiscovery/ — "
+                "nothing to check)"
+            )
     else:
         click.echo("\n✅ All discovery documents are processed and up to date.")
+
+
+def _documents_staged_elsewhere(discovery_dir: Path) -> list[str]:
+    """Business documents under ``.import/`` that no command reads (#885).
+
+    The DD-233 gate reports these during ``validate``, which covers the blocking case.
+    This is the command a human runs to ask "what discovery evidence do I have?", so it
+    is the one that most needs to avoid answering "none" when the answer is "thirty, in
+    the wrong folder".
+
+    Advisory: any failure yields no findings rather than breaking the status report.
+    """
+    try:
+        from ..core.import_evidence import find_misplaced_documents
+
+        import_root = discovery_dir.parent
+        if import_root.name != ".import":
+            return []
+        return [
+            path.relative_to(import_root.parent).as_posix()
+            for path in find_misplaced_documents(import_root)
+        ]
+    except Exception:  # noqa: BLE001 - advisory only
+        return []
 
 
 @click.command(name="register-concept")

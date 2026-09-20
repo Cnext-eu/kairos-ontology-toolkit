@@ -174,6 +174,32 @@ Every proposed class/property must cite one or more of:
 General domain knowledge may appear only as a clearly labeled low-confidence
 suggestion and cannot enter the accepted patch without confirmation.
 
+**Read the decisions, not only the drafts.** `*-alignment.yaml` holds a drafted
+`proposed_local_property` for every column the reference model had no home for — but it
+holds them for *every* such column, including the ones a reviewer has since ruled out.
+Which were accepted lives elsewhere:
+
+| file | what it tells you |
+|---|---|
+| `integration/sources/_analysis/gap-decisions.yaml` | the review sheet: one entry per column name, with the proposed disposition and the reasoning |
+| `integration/sources/_analysis/table-dispositions.yaml` | the committed ledger: `registered-extension` marks a column whose hub-local property was accepted, with its `proposed_property` |
+
+Design against the ledger. A column dispositioned `deferred`, `not-business-data` or
+`blueprint-gap` has been ruled out, and modelling it anyway re-opens a decision someone
+already made.
+
+```powershell
+kairos-ontology scaffold-extensions --domain <d> --dry-run
+```
+
+renders the accepted ones as draft OWL — name, range, owning class and rationale, all
+from the ledger — so the properties are reviewed as a diff rather than re-derived by hand.
+It is a DRAFT written outside `model/ontologies/`: nothing is authored until you move it.
+
+Skipped entries are reported rather than guessed: a non-datatype range needs a
+relationship decision, and one name accepted with two different class or range readings
+needs the reviewer to pick.
+
 ### Gate 3: Bounded ontology patch
 
 One invocation works on one domain and one coherent canonical slice:
