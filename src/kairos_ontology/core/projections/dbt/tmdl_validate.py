@@ -132,8 +132,13 @@ def _ensure_built() -> Path:
             lock_path.unlink(missing_ok=True)
 
 
-def _run_validator(folder: Path) -> tuple[str, str]:
-    """Run the bundled validator against *folder*; return (status, message)."""
+def _invoke_validator(folder: Path) -> dict:
+    """Run the bundled validator against *folder* and return its raw JSON payload.
+
+    Always returns a dict with a ``status``; an environment problem comes back as
+    ``"unavailable"`` rather than raising, because a missing or broken .NET SDK is a
+    fact about the machine and never a statement about the TMDL.
+    """
     try:
         dll_path = _ensure_built()
         completed = subprocess.run(
@@ -143,16 +148,52 @@ def _run_validator(folder: Path) -> tuple[str, str]:
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return "unavailable", f"dotnet invocation failed: {exc}"
+        return {
+            "status": "unavailable",
+            "error_type": type(exc).__name__,
+            "message": f"dotnet invocation failed: {exc}",
+        }
 
     stdout_lines = completed.stdout.strip().splitlines()
     try:
         payload = json.loads(stdout_lines[-1])
     except (json.JSONDecodeError, IndexError):
         detail = completed.stderr.strip() or completed.stdout.strip()
-        return "unavailable", (
-            f"TmdlValidator produced no parseable output (exit {completed.returncode}): {detail}"
-        )
+        return {
+            "status": "unavailable",
+            "error_type": "NoParseableOutput",
+            "message": (
+                f"TmdlValidator produced no parseable output "
+                f"(exit {completed.returncode}): {detail}"
+            ),
+        }
+    if not isinstance(payload, dict):
+        return {"status": "unavailable", "message": "TmdlValidator returned a non-object"}
+    return payload
+
+
+def inspect_tmdl_folder(folder: Path) -> dict:
+    """The TOM SDK's own reading of an on-disk TMDL tree (issue #879).
+
+    The sibling of :func:`validate_tmdl_artifacts` for the *read* path: that one stages
+    generated artifacts and asks whether they are valid, this one points the same engine
+    at an export already on disk and asks what it contains. Used to cross-check the
+    hand-rolled parser against the engine Power BI Desktop and Fabric actually use.
+
+    Returns ``{"status": "unavailable", ...}`` when dotnet is absent. Never raises: a
+    cross-check that can break an import is worse than no cross-check.
+    """
+    if shutil.which("dotnet") is None:
+        return {"status": "unavailable", "message": "dotnet SDK not found on PATH"}
+    try:
+        return _invoke_validator(Path(folder))
+    except Exception as exc:  # noqa: BLE001 - advisory path, never fatal
+        return {"status": "unavailable", "message": f"{type(exc).__name__}: {exc}"}
+
+
+def _run_validator(folder: Path) -> tuple[str, str]:
+    """Run the bundled validator against *folder*; return (status, message)."""
+    payload = _invoke_validator(folder)
     status = payload.get("status")
     if status == "pass":
         return "pass", ""

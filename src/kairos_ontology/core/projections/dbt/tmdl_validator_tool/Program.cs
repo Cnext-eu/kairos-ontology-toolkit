@@ -4,7 +4,8 @@
 // One argument: a folder containing a TMDL "definition" tree (database.tmdl,
 // model.tmdl, tables/*.tmdl, ...). Deserializes it with the same TOM SDK engine
 // Power BI Desktop / Fabric use, and prints one line of JSON to stdout:
-//   {"status":"pass","table_count":N}
+//   {"status":"pass","table_count":N,"tables":[{"name":..,"column_count":N,"measure_count":N}],
+//    "relationship_count":N}
 //   {"status":"fail","error_type":"...","message":"..."}
 //   {"status":"unavailable","error_type":"...","message":"..."}
 // Exit code 0 on pass, 1 on fail, 2 on usage error, 3 on unavailable. Never talks to a
@@ -27,6 +28,17 @@ try
     var database = TmdlSerializer.DeserializeDatabaseFromFolder(args[0]);
     result["status"] = "pass";
     result["table_count"] = database.Model.Tables.Count;
+    // The inventory, not only the count. The count alone answers "did anything parse";
+    // the read-path cross-check (issue #879) has to answer "which tables and measures
+    // did our own parser not see", which is the difference between a warning a reader
+    // can act on and one they can only worry about.
+    result["tables"] = database.Model.Tables.Select(table => new Dictionary<string, object?>
+    {
+        ["name"] = table.Name,
+        ["column_count"] = table.Columns.Count,
+        ["measure_count"] = table.Measures.Count,
+    }).ToList();
+    result["relationship_count"] = database.Model.Relationships.Count;
 }
 catch (TmdlFormatException ex)
 {
