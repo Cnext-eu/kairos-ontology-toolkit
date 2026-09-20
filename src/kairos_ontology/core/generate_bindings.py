@@ -102,10 +102,6 @@ def _canonical_type(arrow_or_sql: str) -> str:
     return _ARROW_TO_CANONICAL.get(lowered, "string")
 
 
-#: OWL namespace, for the property-type check in :func:`hub_local_properties`.
-OWL = "http://www.w3.org/2002/07/owl#"
-
-
 def _module_of(class_uri: str) -> str:
     """The module URI a class IRI belongs to (fragment or last-segment strip)."""
     if "#" in class_uri:
@@ -183,50 +179,61 @@ def _class_pools(
     return scalar, objects
 
 
-def hub_local_properties(hub_root: Path | None, class_uri: str) -> dict[str, str]:
+def hub_local_properties(
+    hub_root: Path | None, class_uri: str, *, catalog_path: Path | None = None
+) -> dict[str, str]:
     """``property local name -> URI`` for hub properties declared on *class_uri* (#887).
 
-    A hub extends a reference class by declaring its own property with
-    ``rdfs:domain`` (or ``schema:domainIncludes``) pointing at that class -- the DD-170
-    pattern that the DD-169 gate's ``registered-extension`` outcome commits a column to.
-    ``_class_pools`` enumerates the reference model only, so those properties could never
-    enter the candidate pool however correctly they were authored, and the whole extension
+    A hub extends a reference class by declaring its own property with ``rdfs:domain``
+    (or ``schema:domainIncludes``) pointing at that class -- the DD-170 pattern that the
+    DD-169 gate's ``registered-extension`` outcome commits a column to. ``_class_pools``
+    enumerates the reference model only, so those properties could never enter the
+    candidate pool however correctly they were authored, and the whole extension
     mechanism stopped at the ontology.
 
-    Both domain predicates are read because the compiler already treats them as
-    equivalent domain sources (``effective_domain_classes``, ``class_properties``).
-    Advisory: an unparseable hub ontology yields ``{}`` rather than failing generation.
+    Resolution goes through the DD-103 canonical loader rather than a local rdflib
+    parse, which is not merely a boundary rule: ``SemanticIndex`` resolves the catalog,
+    the import closure, inherited properties, and the union-domain and
+    ``schema:domainIncludes`` spellings that ``effective_domain_classes`` treats as
+    equivalent. A direct parse of ``model/ontologies/*.ttl`` would see a hub property
+    declared on a superclass, or under ``owl:unionOf``, as absent.
+
+    Advisory: an unloadable hub ontology yields ``{}`` rather than failing generation,
+    matching every other enrichment path in this module.
     """
     if hub_root is None or not class_uri:
         return {}
-    ontologies = Path(hub_root) / "model" / "ontologies"
-    if not ontologies.is_dir():
+    master = Path(hub_root) / "model" / "ontologies" / "_master.ttl"
+    if not master.is_file():
         return {}
+    catalog = catalog_path or (Path(hub_root) / "catalog-v001.xml")
     try:
-        from rdflib import RDF, RDFS, Graph, URIRef
+        from .ontology_loader import SemanticProfile, load_ontology
 
-        graph = Graph()
-        for path in sorted(ontologies.glob("*.ttl")):
-            if path.name.startswith("_"):
-                continue
-            try:
-                graph.parse(path, format="turtle")
-            except Exception:  # noqa: BLE001 - one broken file must not lose the rest
-                continue
-    except Exception:  # noqa: BLE001 - rdflib unavailable or unusable; advisory only
+        loaded = load_ontology(
+            master,
+            catalog_path=catalog if catalog.is_file() else None,
+            profile=SemanticProfile.KAIROS_DESIGN,
+            degraded=True,
+        )
+        index = loaded.semantic_index
+    except Exception:  # noqa: BLE001 - enrichment only; generation must still run
+        logger.debug("hub property lookup failed for %s", class_uri, exc_info=True)
+        return {}
+    if index is None:
         return {}
 
-    target = URIRef(class_uri)
-    domain_includes = URIRef("https://schema.org/domainIncludes")
+    hub_namespace = _module_of(class_uri)
     found: dict[str, str] = {}
-    for predicate in (RDFS.domain, domain_includes):
-        for subject in graph.subjects(predicate, target):
-            if (subject, RDF.type, URIRef(f"{OWL}DatatypeProperty")) not in graph:
-                continue
-            uri = str(subject)
-            local = uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
-            if local:
-                found.setdefault(local, uri)
+    for prop in index.class_properties(class_uri):
+        uri = str(prop.get("uri") or "")
+        # Reference properties already reach the pool via _class_pools; this adds only
+        # what the hub authored for itself.
+        if not uri or _module_of(uri) == hub_namespace:
+            continue
+        local = uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+        if local:
+            found.setdefault(local, uri)
     return found
 
 
