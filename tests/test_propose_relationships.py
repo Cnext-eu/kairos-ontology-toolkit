@@ -18,6 +18,9 @@ from click.testing import CliRunner
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.propose_relationships import (
     SENTINEL_JOIN_COLUMN,
+    SENTINEL_PROPERTY,
+    RelationshipProposal,
+    collapse_competing_properties,
     build_relationship_proposals,
     load_blueprint_bridges,
 )
@@ -687,3 +690,104 @@ class TestTheJoinNamesTheColumnTheParentEmits:
             assert (
                 proposal.external_reference["key"][0]["column"] == proposal.foreign_column
             )
+
+def _proposal(prop: str, *, local="account_ref", foreign="party_id", child="bookings",
+              parent="parties") -> RelationshipProposal:
+    return RelationshipProposal(
+        child_binding=child, child_domain="booking",
+        parent_binding=parent, parent_domain="party",
+        property_uri=prop, target_class="p:Party",
+        evidence="ontology", evidence_id=prop.rsplit("#", 1)[-1],
+        endpoint_match="uri", local_column=local, foreign_column=foreign,
+        join_resolved=True, external_reference=None,
+    )
+
+
+_GENERIC = "https://ref.test/ont/c#hasParty"
+_CONSIGNEE = "https://ref.test/ont/c#hasConsignee"
+_CARRIER = "https://ref.test/ont/c#hasCarrier"
+_FROM = "https://ref.test/ont/c#fromLocation"
+_TO = "https://ref.test/ont/c#toLocation"
+
+
+class TestCollapsingCompetingProperties:
+    """#928 -- N properties between the same two classes became N equal proposals.
+
+    They share one join, so at most one of them can be true of it. Accepting the set as
+    printed asserted that one key was simultaneously every role in a reference model's
+    party hierarchy.
+    """
+
+    def test_a_declared_subproperty_is_folded_into_its_parent(self):
+        ancestors = {_CONSIGNEE: frozenset({_GENERIC}), _CARRIER: frozenset({_GENERIC}),
+                     _GENERIC: frozenset()}
+        out = collapse_competing_properties(
+            [_proposal(_GENERIC), _proposal(_CONSIGNEE), _proposal(_CARRIER)], ancestors
+        )
+        assert len(out) == 1
+        assert out[0].property_uri == _GENERIC, (
+            "the join says the rows are related, not which role the party plays"
+        )
+        assert out[0].narrower_alternatives == (_CARRIER, _CONSIGNEE)
+        assert out[0].competing_properties == ()
+
+    def test_the_generic_survivor_stays_pasteable(self):
+        ancestors = {_CONSIGNEE: frozenset({_GENERIC}), _GENERIC: frozenset()}
+        [out] = collapse_competing_properties(
+            [_proposal(_GENERIC), _proposal(_CONSIGNEE)], ancestors
+        )
+        assert SENTINEL_PROPERTY not in out.to_yaml()
+        assert _GENERIC in out.to_yaml()
+        assert "Narrow only if the source distinguishes the role" in out.to_yaml()
+
+    def test_siblings_with_no_hierarchy_become_one_explicit_choice(self):
+        out = collapse_competing_properties(
+            [_proposal(_FROM), _proposal(_TO)], {_FROM: frozenset(), _TO: frozenset()}
+        )
+        assert len(out) == 1
+        assert out[0].competing_properties == (_TO,)
+        assert out[0].narrower_alternatives == ()
+
+    def test_a_genuine_either_or_is_not_pasteable_as_one_arm(self):
+        """Two directional properties on one non-directional column: pick, do not paste."""
+        [out] = collapse_competing_properties(
+            [_proposal(_FROM), _proposal(_TO)], {_FROM: frozenset(), _TO: frozenset()}
+        )
+        rendered = out.to_yaml()
+        assert f"property: {SENTINEL_PROPERTY}" in rendered
+        assert _FROM in rendered and _TO in rendered, "both arms are named in the comment"
+
+    def test_different_joins_are_never_merged(self):
+        out = collapse_competing_properties(
+            [_proposal(_FROM, local="from_id"), _proposal(_TO, local="to_id")],
+            {_FROM: frozenset(), _TO: frozenset()},
+        )
+        assert len(out) == 2, "a source that distinguishes the roles keeps both"
+        assert all(not item.competing_properties for item in out)
+
+    def test_different_parents_are_never_merged(self):
+        out = collapse_competing_properties(
+            [_proposal(_FROM, parent="a"), _proposal(_FROM, parent="b")],
+            {_FROM: frozenset()},
+        )
+        assert len(out) == 2
+
+    def test_a_lone_proposal_is_untouched(self):
+        [out] = collapse_competing_properties([_proposal(_GENERIC)], {})
+        assert out.competing_properties == ()
+        assert out.narrower_alternatives == ()
+
+
+class TestTargetResolvability:
+    """#928 -- a proposal may name a class the child domain cannot resolve."""
+
+    def test_an_unresolvable_target_is_flagged_and_warned_about_in_yaml(self):
+        from dataclasses import replace
+
+        out = replace(_proposal(_GENERIC), target_resolvable=False)
+        rendered = out.to_yaml()
+        assert "does not import the module declaring the target class" in rendered
+        assert "the paste will not compile" in rendered
+
+    def test_a_resolvable_target_says_nothing(self):
+        assert "owl:imports" not in _proposal(_GENERIC).to_yaml()
