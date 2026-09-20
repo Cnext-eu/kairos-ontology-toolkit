@@ -9,7 +9,7 @@ and the next AI-backed command fails on a package nobody removed on purpose.
 """
 
 from kairos_ontology.cli.shared import uv_sync_command
-from kairos_ontology.core.active_extras import active_extras
+from kairos_ontology.core.active_extras import _SAFE_EXTRA_RE, active_extras
 
 PYPROJECT = """\
 [project]
@@ -74,3 +74,30 @@ class TestUvSyncCommand:
         )
 
         assert uv_sync_command(tmp_path) == ["uv", "sync"]
+
+
+EVIL_EXTRA = '\n"evil; rm -rf /" = ["pytest"]\n'
+SPACED_EXTRA = '\n"two words" = ["pytest"]\n'
+
+
+class TestExtraNameSafety:
+    """Extra names are interpolated into the Windows refresh shell's command line.
+
+    They come from a TOML key in the working tree, and a TOML key may be any quoted
+    string — so an ill-formed one would be a command injection into that shell.
+    """
+
+    def test_a_shell_metacharacter_name_is_ignored(self, tmp_path):
+        detected = active_extras(_hub(tmp_path, PYPROJECT + EVIL_EXTRA))
+
+        assert "installed" in detected, "the well-formed extras still resolve"
+        assert not any(";" in name for name in detected)
+
+    def test_a_whitespace_name_is_ignored(self, tmp_path):
+        detected = active_extras(_hub(tmp_path, PYPROJECT + SPACED_EXTRA))
+
+        assert not any(" " in name for name in detected)
+
+    def test_every_detected_name_is_shell_safe(self, tmp_path):
+        for name in active_extras(_hub(tmp_path, PYPROJECT + EVIL_EXTRA + SPACED_EXTRA)):
+            assert _SAFE_EXTRA_RE.match(name), name

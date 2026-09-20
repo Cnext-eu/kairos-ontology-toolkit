@@ -34,6 +34,15 @@ _REQUIREMENT_RE = re.compile(r"^\s*([A-Za-z0-9._-]+)\s*(?:\[([^\]]*)\])?")
 #: `... ; extra == 'name'` in a Requires-Dist line.
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*['"]([^'"]+)['"]""")
 
+#: A well-formed extra name, per PEP 685 normalisation.
+#:
+#: Enforced rather than assumed because these names come from a file in the working
+#: tree and are interpolated into the Windows refresh shell's `uv sync ...` command
+#: line. A TOML key may be any quoted string, so an ill-formed one would be a command
+#: injection into that shell. Nothing legitimate is excluded: pip rejects an extra
+#: outside this shape too.
+_SAFE_EXTRA_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+
 
 def _distribution_installed(name: str) -> bool:
     try:
@@ -110,6 +119,14 @@ def active_extras(hub_root: Path) -> list[str]:
     active: list[str] = []
     for extra, requirements in sorted(optional.items()):
         if not isinstance(requirements, list) or not requirements:
+            continue
+        if not _SAFE_EXTRA_RE.match(str(extra)):
+            logger.warning(
+                "Ignoring malformed extra name %r in %s; it will not be preserved "
+                "across the sync.",
+                extra,
+                pyproject,
+            )
             continue
         targets: list[str] = []
         for requirement in requirements:
