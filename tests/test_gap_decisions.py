@@ -675,3 +675,99 @@ class TestSchemaCatalogueTablesAreHonoured:
         summary = build_decision_sheet(self._hub(tmp_path, excluded=False))["summary"]
         assert summary["schema_catalogue_tables_excluded"] == 0
         assert summary["gap_columns_in_excluded_tables"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Drafted extension properties reach the sheet (issue #880)
+# ---------------------------------------------------------------------------
+
+
+def _unmapped(column: str, table: str, proposal: dict | None = None) -> UnmappedColumn:
+    return UnmappedColumn(
+        system="src",
+        table=table,
+        column=column,
+        domain="roro",
+        data_type="string",
+        reason="no reference property",
+        suggestion="",
+        recommended_disposition="",
+        proposal=proposal or {},
+    )
+
+
+def _group(column: str, *occurrences: UnmappedColumn) -> GapGroup:
+    group = GapGroup(column=column)
+    group.occurrences.extend(occurrences)
+    return group
+
+
+class TestDraftedPropertyReachesTheSheet:
+    """propose-alignment's proposed_local_property must not stop at the gap sheet."""
+
+    def test_drafted_property_is_carried_into_the_entry(self):
+        proposal = {
+            "name": "vesselClass",
+            "range": "xsd:string",
+            "on_class": "Vessel",
+            "why": "Hull class not represented in the reference model.",
+        }
+        group = _group("VESSELCLASS", _unmapped("VESSELCLASS", "ships", proposal))
+
+        drafted = propose_for_group(group, "vessel-maritime")
+
+        assert drafted.suggested_properties == [proposal]
+        assert drafted.to_entry()["suggested_properties"] == [proposal]
+
+    def test_a_drafted_property_proposes_registered_extension(self):
+        group = _group(
+            "VESSELCLASS",
+            _unmapped("VESSELCLASS", "ships", {"name": "vesselClass", "range": "xsd:string",
+                                               "on_class": "Vessel", "why": "..."}),
+        )
+
+        drafted = propose_for_group(group, "vessel-maritime")
+
+        assert drafted.proposed_disposition == "registered-extension"
+        assert "vesselClass" in drafted.reasoning
+        assert "Vessel" in drafted.reasoning
+        # A proposal is never a decision.
+        assert drafted.to_entry()["decision"] == ""
+
+    def test_divergent_proposals_are_shown_not_averaged(self):
+        group = _group(
+            "FLAG",
+            _unmapped("FLAG", "a", {"name": "animalProductIndicator", "range": "xsd:boolean",
+                                    "on_class": "CargoItem", "why": "..."}),
+            _unmapped("FLAG", "b", {"name": "containsAnimalProducts", "range": "xsd:boolean",
+                                    "on_class": "CargoItem", "why": "..."}),
+        )
+
+        drafted = propose_for_group(group, "roro")
+
+        assert len(drafted.suggested_properties) == 2
+        assert "animalProductIndicator" in drafted.reasoning
+        assert "containsAnimalProducts" in drafted.reasoning
+        assert "more than one reading" in drafted.reasoning
+
+    def test_no_drafted_property_still_leaves_the_decision_open(self):
+        group = _group("MYSTERY", _unmapped("MYSTERY", "a"))
+
+        drafted = propose_for_group(group, "roro")
+
+        assert drafted.proposed_disposition == ""
+        assert drafted.suggested_properties == []
+
+    def test_rule_branches_still_win_over_the_extension_proposal(self):
+        """A free-text column keeps its rule disposition even with a drafted property."""
+        group = _group(
+            "CARGO_REMARK",
+            _unmapped("CARGO_REMARK", "a", {"name": "remarkText", "range": "xsd:string",
+                                       "on_class": "CargoItem", "why": "..."}),
+        )
+
+        drafted = propose_for_group(group, "roro")
+
+        assert drafted.proposed_disposition == "not-business-data"
+        # ...and still shows the reviewer what was drafted.
+        assert drafted.suggested_properties[0]["name"] == "remarkText"

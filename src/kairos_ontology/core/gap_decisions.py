@@ -132,7 +132,10 @@ class GapProposal:
     proposed_disposition: str
     confidence: str
     reasoning: str
-    suggested_properties: list[str] = field(default_factory=list)
+    #: The hub-local properties ``propose-alignment`` already drafted for this column
+    #: (``name``/``range``/``on_class``/``why``). More than one means the aligner read
+    #: the same name differently in different tables -- shown, never averaged (#880).
+    suggested_properties: list[dict[str, str]] = field(default_factory=list)
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -161,7 +164,11 @@ def propose_for_group(group: GapGroup, domain: str = "") -> GapProposal:
     """
     name = group.column
     types = group.data_types
-    suggested = sorted({p.get("suggested_property", "") for p in group.proposals if p.get("suggested_property")})
+    # ``group.proposals`` holds ``proposed_local_property`` dicts -- keys are
+    # name/range/on_class/why. Reading ``suggested_property`` here (the key of the
+    # *other*, sibling field on the alignment entry) silently produced an empty list
+    # for every group, so the drafted property never reached the sheet (#880).
+    suggested = [p for p in group.proposals if p.get("name")]
 
     if _JSON_BLOB_RE.search(name) or any("json" in t.lower() for t in types):
         return GapProposal(
@@ -197,10 +204,30 @@ def propose_for_group(group: GapGroup, domain: str = "") -> GapProposal:
             "naming by a human before it counts as an upstream defect.",
             suggested,
         )
+    if suggested:
+        drafted = ", ".join(
+            f"{p['name']} ({p.get('range') or 'range unstated'}) on {p.get('on_class') or '?'}"
+            for p in suggested
+        )
+        divergent = (
+            " The aligner proposed more than one reading of this name across tables, so "
+            "pick one or split the column before accepting."
+            if len(suggested) > 1
+            else ""
+        )
+        return GapProposal(
+            name, domain, group.count, group.tables, types, "registered-extension", "low",
+            "Real business data with no reference property, and alignment already "
+            f"drafted a hub-local property for it: {drafted}. Registering it as an "
+            "extension is the proposal; confirm the name, range and owning class, or "
+            f"decide otherwise.{divergent}",
+            suggested,
+        )
     return GapProposal(
         name, domain, group.count, group.tables, types, "", "low",
-        "No rule applies. Decide from the tables and sample evidence: model it, "
-        "register it as an extension, or record why it is out of scope.",
+        "No rule applies, and alignment drafted no property for it. Decide from the "
+        "tables and sample evidence: model it, register it as an extension, or record "
+        "why it is out of scope.",
         suggested,
     )
 
