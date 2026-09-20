@@ -21,6 +21,16 @@ adapter: {adapter}
 # projections:
 #   mermaid_layout: elk
 
+# Concept guide sample values (DD-232). `project --target ddd` writes
+# architecture/ddd/concept-guide.md and ubiquitous-language.ttl for every hub. The guide
+# can quote the import step's redacted `kairos-bronze:sampleValues` beside each mapped
+# property, but the lane is tracked and samples can carry personal data even after
+# redaction, so they are OFF unless the hub decides otherwise here.
+# projections:
+#   concept_guide:
+#     samples: false
+#     max_samples: 3
+
 # Gold semantic-model connection. Required as soon as a domain authors a Gold
 # product profile: `emit-gold` fails closed with
 # `gold.direct-lake-connection-missing` without it, because a Direct Lake model

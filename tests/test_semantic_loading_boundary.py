@@ -50,6 +50,10 @@ ALLOWED_DIRECT_PARSE_SITES = {
         "DDD overlays and the hub-wide strategic file, merged over graphs the run has "
         "already loaded through ontology_loader"
     ),
+    "projections/ubiquitous_language_projector.py": "discovery SKOS glossaries (DD-232)",
+    "projections/concept_guide_projector.py": (
+        "source vocabularies, for the opt-in sample values only (DD-232)"
+    ),
     "projections/erd_projector.py": "ERD overlay",
     "projections/medallion_dbt_projector.py": "sources, mappings, extensions, and templates",
     "projections/medallion_gold_projector.py": "SHACL shapes",
