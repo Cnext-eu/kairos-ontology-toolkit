@@ -83,6 +83,7 @@ from .sources import (
     build_glossary_cmd,
     list_patterns_cmd,
 )
+from .class_disposition import class_disposition_group
 from .inspection import (
     resolve_ontology_cmd,
     show_class_inventory_cmd,
@@ -328,6 +329,7 @@ def register_commands(group: click.Group) -> None:
     group.add_command(discovery_conformance)
     group.add_command(register_concept_cmd)
     group.add_command(source_disposition_group)
+    group.add_command(class_disposition_group)
     group.add_command(build_glossary_cmd)
     group.add_command(list_patterns_cmd)
     group.add_command(resolve_ontology_cmd)

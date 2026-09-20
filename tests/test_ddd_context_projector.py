@@ -275,6 +275,33 @@ class TestSilverStatus:
         assert "| in Silver contract |" not in notes and "| bound (no contract) |" not in notes
         assert "| Invoice | invoice | AggregateRoot | — | not in Silver |" in notes
 
+    def test_a_recorded_disposition_says_why_a_class_is_not_in_silver(self, tmp_path):
+        """DD-231 ledger present: the Silver column carries the reason, not just the fact."""
+        ledger = tmp_path / "integration" / "discovery" / "class-dispositions.yaml"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text(
+            textwrap.dedent(
+                f"""
+                schema_version: 1
+                classes:
+                  - class: {INVOICE_NS}InvoiceLineTax
+                    disposition: architecture-only
+                    rationale: tax detail stays in the Taxation context until a source exists
+                    decided_by: user
+                """
+            ),
+            encoding="utf-8",
+        )
+        out = generate_context_artifacts(
+            [_domain("invoice")], strategic_path=STRATEGIC, hub_root=tmp_path
+        )
+        notes = out[_key(DESIGN_NOTES_NAME)]
+        assert (
+            "| Invoice Line Tax | invoice | AggregateMember | Invoice | not in Silver (architecture-only) |"
+            in notes
+        )
+        assert "| Invoice | invoice | AggregateRoot | — | not in Silver |" in notes
+
     def test_a_qname_without_a_load_result_is_reported_not_guessed(self, tmp_path):
         contracts = tmp_path / "contracts"
         contracts.mkdir()

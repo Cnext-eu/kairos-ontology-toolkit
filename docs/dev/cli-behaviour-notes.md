@@ -109,6 +109,35 @@ whose relationships name contexts still declared only in overlays fails rule 6 o
 design. These codes are validation diagnostics, so they live here and in DD-229 rather than in
 `diagnostic-codes.md`, whose catalogue is scanned from `core/compiler/` only.
 
+### `class-disposition`: why a hub class is deliberately not in Silver (DD-231)
+
+The class-side sibling of `source-disposition` (DD-164). Every `owl:Class` a domain file declares
+under its own `owl:Ontology` IRI is either **bound** (an EntityBinding targets it),
+**bound-via-subclass** (a hub-local subclass is bound), or needs an authored answer in
+`integration/discovery/class-dispositions.yaml`: `deferred` (rationale required),
+`architecture-only` (rationale required; the class exists for a bounded context, an aggregate or
+a logical model and has no Silver intent), or `abstract` (a grouping superclass). There is no
+`bound-via-superclass` on purpose: bindings carry no discriminator, so a bound `Party` says
+nothing about an unbound `Customer`. Reference-model IRIs re-declared locally for a label are not
+in the population.
+
+Adoption is opt-in, then binding. With no ledger file, `validate` reports undecided classes as
+warnings and says how to adopt; `class-disposition init` (or the first `set`) creates the file,
+and from then on an undecided class is an error, degradable with `--degraded`. A ledger that
+cannot be parsed is reported as `class-disposition.malformed-ledger`, never read as empty.
+
+| Code | Level |
+|---|---|
+| `class-disposition.undecided-class` | warning until the ledger exists, then error |
+| `class-disposition.unknown-value`, `.missing-rationale`, `.unknown-decider` | error |
+| `class-disposition.stale` (a binding now targets a disposed class), `.unknown-class` | warning |
+| `class-disposition.malformed-ledger` | error |
+
+`class-disposition set` accepts a `prefix:Local` token and resolves it against the domain files'
+own `@prefix` declarations; a token that names no hub class is refused, so a typo cannot record a
+decision about nothing. `clear` takes `--class`, `--disposition`, `--decided-by` and `--dry-run`,
+so an agent's blanket answers can be withdrawn without touching a human's.
+
 ### Diagram layout: every generated `.mmd` selects ELK (#855)
 
 Every Mermaid diagram the toolkit writes — canonical and master class diagrams, DDD maps,

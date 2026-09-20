@@ -2035,6 +2035,69 @@ def run_validation(
             )
             print()
 
+        # Class-level disposition (DD-231): the class-side sibling of DD-164. An owl:Class
+        # no binding targets never enters the plan -- correct as compile behaviour -- but
+        # "deliberately unbound, because X" had nowhere to live. A warning until the hub
+        # creates the ledger, so no existing hub goes red on upgrade; an error afterwards,
+        # degradable exactly like DD-164. A ledger that cannot be parsed is itself the
+        # error, never read as empty.
+        from .class_disposition import ClassDispositionError, audit_class_dispositions
+
+        class_report = None
+        try:
+            class_report = audit_class_dispositions(hub_root=ontologies_path.parent.parent)
+        except ClassDispositionError as exc:
+            results["integrity"]["failed"] += 1
+            results["integrity"]["errors"].append(
+                {"code": "class-disposition.malformed-ledger", "message": str(exc)}
+            )
+            print("🧾 Class dispositions")
+            print("-" * 50)
+            print(f"  ✗ {exc}")
+            print()
+        if class_report is not None:
+            results["integrity"]["class_dispositions"] = class_report.to_dict()
+        if class_report is not None and class_report.classes_total:
+            print("🧾 Class dispositions")
+            print("-" * 50)
+            class_errors = class_report.errors
+            results["integrity"]["warnings"].extend(
+                item.to_dict() for item in class_report.warnings
+            )
+            if class_errors and not degraded:
+                results["integrity"]["failed"] += len(class_errors)
+                results["integrity"]["errors"].extend(item.to_dict() for item in class_errors)
+                for item in class_errors:
+                    print(f"  ✗ {item.message}")
+                print(f"    ↪ {class_errors[0].remediation}")
+            elif class_errors:
+                results["integrity"]["warnings"].extend(item.to_dict() for item in class_errors)
+                print(f"  ⚠ degraded mode accepted {len(class_errors)} undecided class(es)")
+            elif class_report.classes_undecided:
+                print(
+                    f"  ⚠ {class_report.classes_undecided} class(es) neither bound nor "
+                    "explicitly disposed (warnings until the hub adopts the ledger)"
+                )
+            else:
+                print("  ✓ every hub class is bound or explicitly disposed")
+            shown = 0
+            for item in class_report.warnings:
+                if shown == 10:
+                    print(f"  ⚠ ... and {len(class_report.warnings) - shown} more")
+                    break
+                print(f"  ⚠ {item.message}")
+                shown += 1
+            for notice in class_report.notices:
+                print(f"  ℹ {notice}")
+            print(
+                f"\n  Decision coverage: {class_report.coverage():.0%} "
+                f"({class_report.classes_bound} bound, "
+                f"{class_report.classes_disposed} disposed, "
+                f"{class_report.classes_undecided} undecided "
+                f"of {class_report.classes_total})"
+            )
+            print()
+
         # Unmapped real signal (DD-169). A HARD stop, not degradable: alignment is the
         # first stage that can say "this column holds business data the canonical model
         # has nowhere to put", and entity binding is where that becomes permanent — a
