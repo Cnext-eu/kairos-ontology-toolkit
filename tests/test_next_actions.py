@@ -531,3 +531,34 @@ def test_undecided_classes_are_a_nudge_before_adoption_and_blocking_after():
     assert action.blocking
     assert "`validate` fails" in action.rationale
     assert action.skill == ACTION_SKILLS["record-class-disposition"]
+
+
+def test_every_emitted_action_kind_is_registered():
+    """`_action` looks its skill up with `ACTION_SKILLS[kind]`, so an unregistered kind
+    raises KeyError at the moment the router tries to report it — and only on a hub whose
+    state triggers that branch. A new action added without a registry entry therefore
+    ships green and fails in front of a user (#885).
+
+    Scanned from the source rather than exercised, because reaching every branch needs a
+    hub in every possible state.
+    """
+    import ast
+    import pathlib
+
+    from kairos_ontology.core import next_actions as module
+
+    tree = ast.parse(pathlib.Path(module.__file__).read_text(encoding="utf-8"))
+    emitted = {
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_action"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+
+    assert emitted, "no _action call sites found — the scan is broken, not the registry"
+    unregistered = sorted(emitted - set(ACTION_SKILLS))
+    assert not unregistered, f"action kind(s) missing from ACTION_SKILLS: {unregistered}"

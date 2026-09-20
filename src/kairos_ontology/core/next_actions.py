@@ -125,6 +125,11 @@ ACTION_SKILLS: dict[str, str] = {
     "design-discovery": "kairos-design-discovery",
     "resolve-discovery-open-questions": "kairos-design-discovery",
     "design-source": "kairos-design-source",
+    # Re-grounding an artifact in the current vocabulary is source-design work: the
+    # glossary it drifted from is that skill's output (#885).
+    "regenerate-against-current-glossary": "kairos-design-source",
+    # Re-grounding an artifact in the current vocabulary is source-design work: the
+    # glossary it drifted from is that skill's output (#885).
     # DD-164: the table-grain scope decision belongs to the source lifecycle owner. It is
     # the one gate `validate` enforced with no step proposing it.
     "record-source-disposition": "kairos-design-source",
