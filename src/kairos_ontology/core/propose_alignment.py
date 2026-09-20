@@ -443,6 +443,59 @@ def load_glossary_entries(
     return sorted(entries.items())[:limit]
 
 
+def load_glossary_records(
+    hub_root: Path | None, *, limit: int = 120
+) -> list[dict[str, str]]:
+    """``{label, definition, see_also}`` per authored glossary concept (#884).
+
+    A sibling of :func:`load_glossary_entries` rather than a change to it, deliberately:
+    that function's exact output is digested into every artifact's ``glossary_sha256``
+    (#885), so altering its shape would invalidate every recorded fingerprint and report
+    drift on hubs where nothing drifted.
+
+    ``see_also`` is the ``rdfs:seeAlso`` a glossary concept carries — the reference-model
+    class the business's own term corresponds to. It is the signal that makes a term's
+    relevance decidable semantically rather than lexically: a glossary is written in
+    business English and a legacy schema's columns are abbreviations, so the two share no
+    tokens *by construction*, which is exactly the gap the glossary exists to bridge.
+    """
+    if hub_root is None:
+        return []
+    directory = Path(hub_root) / "businessdiscovery"
+    if not directory.is_dir():
+        return []
+    label_re = re.compile(r'skos:prefLabel\s+"([^"]+)"')
+    definition_re = re.compile(r'skos:definition\s+"([^"]+)"')
+    see_also_re = re.compile(r"rdfs:seeAlso\s+<([^>]+)>")
+    blank_line_re = re.compile(r"\n\s*\n")
+    records: dict[str, dict[str, str]] = {}
+    for path in sorted(directory.glob("*.ttl")):
+        if path.name.startswith(("glossary-template", "_")):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for block in blank_line_re.split(text):
+            label_match = label_re.search(block)
+            if not label_match:
+                continue
+            definition_match = definition_re.search(block)
+            see_also_match = see_also_re.search(block)
+            raw = definition_match.group(1) if definition_match else ""
+            records.setdefault(
+                label_match.group(1).strip(),
+                {
+                    "label": label_match.group(1).strip(),
+                    "definition": " ".join(raw.split())[:240],
+                    "see_also": see_also_match.group(1) if see_also_match else "",
+                },
+            )
+        if len(records) >= limit:
+            break
+    return [records[key] for key in sorted(records)][:limit]
+
+
 def load_glossary_terms(hub_root: Path | None, *, limit: int = 120) -> list[str]:
     """Return the business's own vocabulary from ``businessdiscovery/*.ttl`` (DD-171).
 
@@ -1861,6 +1914,7 @@ def build_alignment_prompt(
     table_ref_classes: list[dict[str, Any]] | None = None,
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
+    glossary_records: list[dict[str, str]] | None = None,
     anchor_override: str | None = None,
     qualified_properties: bool = False,
 ) -> str:
@@ -1914,20 +1968,51 @@ def build_alignment_prompt(
         )
 
     glossary_block = ""
-    if glossary_terms:
-        # Audited on a live trace: the flat dump put 'Vessel Departure' and
-        # 'Postcode Zone' into a companies-table prompt. Keep only terms sharing
-        # a token with this table's own name or columns — the ones the model
-        # could actually use — with the full glossary still governing naming at
-        # review time.
+    if glossary_terms or glossary_records:
+        # Audited on a live trace: a flat dump put 'Vessel Departure' and 'Postcode Zone'
+        # into a companies-table prompt, so a term has to earn its place here.
+        #
+        # Earning it lexically is not enough on its own. A glossary is written in business
+        # English and a legacy schema's columns are abbreviations, so the two share no
+        # tokens *by construction* -- which is exactly the gap the glossary exists to
+        # bridge. Measured on one hub: 39 of 52 authored terms never reached a single
+        # prompt, and the widest table saw four, two of them accidental token matches
+        # (#884).
+        #
+        # A glossary concept's `rdfs:seeAlso` names the reference class the business's own
+        # term corresponds to. When that class is in this table's candidate pool, the term
+        # is relevant however it is spelled -- and 'Vessel Departure' still stays out of a
+        # companies-table prompt, because its class is not in that pool. Semantic where
+        # the signal exists, lexical where it does not.
         table_tokens = _tokenize_text(table_name)
         for col in columns:
             table_tokens |= _tokenize_text(str(col.get("name", "")))
-        relevant_terms = [t for t in glossary_terms if _tokenize_text(t) & table_tokens]
-        if relevant_terms:
+        pool_uris = {
+            str(entry.get("uri") or "")
+            for entry in list(ref_classes or []) + list(table_ref_classes or [])
+        } - {""}
+
+        relevant: list[str] = []
+        if glossary_records:
+            for record in glossary_records:
+                label = str(record.get("label") or "")
+                if not label:
+                    continue
+                see_also = str(record.get("see_also") or "")
+                lexical = bool(_tokenize_text(label) & table_tokens)
+                semantic = bool(see_also) and see_also in pool_uris
+                if not (lexical or semantic):
+                    continue
+                definition = str(record.get("definition") or "")
+                relevant.append(f"{label}: {definition}" if definition else label)
+        else:
+            relevant = [t for t in (glossary_terms or []) if _tokenize_text(t) & table_tokens]
+
+        if relevant:
+            joined = "\n".join(f"- {item}" for item in relevant) if glossary_records else ", ".join(relevant)
             glossary_block = (
                 "\n\nBUSINESS VOCABULARY (use these words where one fits; they are the "
-                "business's own terms):\n" + ", ".join(relevant_terms)
+                "business's own terms):\n" + joined
             )
 
     entity_hint = ""
@@ -2446,6 +2531,7 @@ def align_table(
     anchor_confidence: float | None = None,
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
+    glossary_records: list[dict[str, str]] | None = None,
     trace_session_id: str = "",
 ) -> dict[str, Any]:
     """Align one source table, splitting across calls when it is too wide.
@@ -2479,6 +2565,7 @@ def align_table(
             anchor_confidence=anchor_confidence,
             class_cautions=class_cautions,
             glossary_terms=glossary_terms,
+            glossary_records=glossary_records,
             trace_session_id=trace_session_id,
         )
 
@@ -2503,6 +2590,7 @@ def align_table(
         anchor_confidence=anchor_confidence,
         class_cautions=class_cautions,
         glossary_terms=glossary_terms,
+        glossary_records=glossary_records,
         trace_session_id=trace_session_id,
     )
     pinned = anchor_override or merged.get("ref_class")
@@ -2520,6 +2608,7 @@ def align_table(
             anchor_confidence=anchor_confidence,
             class_cautions=class_cautions,
             glossary_terms=glossary_terms,
+            glossary_records=glossary_records,
             trace_session_id=trace_session_id,
         )
         merged["column_alignments"].extend(part.get("column_alignments") or [])
@@ -2545,6 +2634,7 @@ def _align_table_once(
     anchor_confidence: float | None = None,
     class_cautions: dict[str, str] | None = None,
     glossary_terms: list[str] | None = None,
+    glossary_records: list[dict[str, str]] | None = None,
     trace_session_id: str = "",
 ) -> dict[str, Any]:
     """Run LLM alignment for one source table against reference model classes.
@@ -2604,6 +2694,7 @@ def _align_table_once(
         table_ref_classes=table_ref_classes,
         class_cautions=class_cautions,
         glossary_terms=glossary_terms,
+        glossary_records=glossary_records,
         anchor_override=anchor_override,
         qualified_properties=schema_uses_qualified_properties(response_format),
     )
@@ -4594,6 +4685,9 @@ def _propose_alignments(
             class_cautions = {}
     _hub_root_for_glossary = Path(sources_dir).parent.parent
     glossary_terms = load_glossary_terms(_hub_root_for_glossary)
+    # The same concepts with their definitions and rdfs:seeAlso, so a term's
+    # relevance to a table can be decided semantically rather than lexically (#884).
+    glossary_records = load_glossary_records(_hub_root_for_glossary)
     # Recorded on every domain artifact this run writes, so a later edit to the glossary
     # is detectable rather than silent (#885).
     glossary_hash = glossary_fingerprint(_hub_root_for_glossary)
@@ -4998,6 +5092,7 @@ def _propose_alignments(
                         anchor_confidence=anchor_confidence,
                         class_cautions=class_cautions,
                         glossary_terms=glossary_terms,
+                        glossary_records=glossary_records,
                         trace_session_id=trace_session_id,
                     )
                 else:
@@ -5022,6 +5117,7 @@ def _propose_alignments(
                         anchor_confidence=anchor_confidence,
                         class_cautions=class_cautions,
                         glossary_terms=glossary_terms,
+                        glossary_records=glossary_records,
                         trace_session_id=trace_session_id,
                     )
                     # An anchored table is never widened to the full inventory. The
@@ -5049,6 +5145,7 @@ def _propose_alignments(
                             anchor_confidence=anchor_confidence,
                             class_cautions=class_cautions,
                             glossary_terms=glossary_terms,
+                            glossary_records=glossary_records,
                             trace_session_id=trace_session_id,
                         )
                         if _alignment_result_score(

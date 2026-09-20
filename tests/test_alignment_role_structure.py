@@ -283,3 +283,78 @@ class TestPromptAnchorAndGlossary:
     def test_no_relevant_terms_means_no_vocabulary_block(self):
         text = self._prompt(glossary_terms=["Vessel Departure", "Postcode Zone"])
         assert "BUSINESS VOCABULARY" not in text
+
+
+# ---------------------------------------------------------------------------
+# Glossary relevance is semantic where the signal exists (issue #884)
+# ---------------------------------------------------------------------------
+
+
+VESSEL_CLASS = "https://ref.example.com/ont/vessel#Vessel"
+COMPANY_CLASS = "https://ref.example.com/ont/party#Company"
+
+RECORDS = [
+    {"label": "Vessel Departure", "definition": "A ship leaving a berth.",
+     "see_also": VESSEL_CLASS},
+    {"label": "Postcode Zone", "definition": "A delivery area.", "see_also": ""},
+    {"label": "Company Registration", "definition": "A legal registration number.",
+     "see_also": COMPANY_CLASS},
+]
+
+# Columns a legacy schema would actually carry: abbreviations sharing no token with
+# business English, which is the case the lexical filter cannot see.
+CRYPTIC_COLUMNS = [{"name": "BCPSTATE"}, {"name": "ANIMALPRODIND"}, {"name": "DOSNR"}]
+
+
+def _prompt(columns, pool, **kwargs):
+    from kairos_ontology.core.propose_alignment import build_alignment_prompt
+
+    return build_alignment_prompt("a_table", columns, pool, **kwargs)
+
+
+class TestSemanticGlossaryRelevance:
+    def test_a_term_whose_class_is_in_the_pool_reaches_a_cryptic_table(self):
+        """The whole point: a glossary is business English, a legacy schema is not."""
+        text = _prompt(CRYPTIC_COLUMNS, [{"uri": VESSEL_CLASS, "name": "Vessel"}],
+                       glossary_records=RECORDS)
+
+        assert "Vessel Departure" in text
+        assert "A ship leaving a berth." in text, "the definition goes too, not just the label"
+
+    def test_the_audited_noise_case_still_does_not_reach(self):
+        """'Vessel Departure' in a companies-table prompt was measured as noise."""
+        text = _prompt([{"name": "company_name"}], [{"uri": COMPANY_CLASS, "name": "Company"}],
+                       glossary_records=RECORDS)
+
+        assert "Vessel Departure" not in text
+        assert "Company Registration" in text
+
+    def test_a_term_with_no_see_also_still_qualifies_lexically(self):
+        text = _prompt([{"name": "postcode_zone"}], [], glossary_records=RECORDS)
+
+        assert "Postcode Zone" in text
+
+    def test_a_term_with_no_see_also_and_no_token_overlap_does_not(self):
+        text = _prompt(CRYPTIC_COLUMNS, [], glossary_records=RECORDS)
+
+        assert "Postcode Zone" not in text
+
+    def test_no_relevant_term_means_no_vocabulary_block(self):
+        text = _prompt(CRYPTIC_COLUMNS, [{"uri": "https://ref.example.com/ont/x#Other", "name": "Other"}],
+                       glossary_records=RECORDS)
+
+        assert "BUSINESS VOCABULARY" not in text
+
+    def test_the_cross_module_pool_counts_too(self):
+        text = _prompt(CRYPTIC_COLUMNS, [], table_ref_classes=[{"uri": VESSEL_CLASS, "name": "Vessel"}],
+                       glossary_records=RECORDS)
+
+        assert "Vessel Departure" in text
+
+    def test_the_label_only_path_is_unchanged(self):
+        """Callers passing bare labels keep the old lexical behaviour exactly."""
+        text = _prompt([{"name": "company_registration"}], [],
+                       glossary_terms=["Company Registration", "Vessel Departure"])
+
+        assert "Company Registration" in text
+        assert "Vessel Departure" not in text
