@@ -292,5 +292,6 @@ during cleanup.
 | [DD-227](decisions/dd-227-the-one-side-of-a-relationship-needs-a-declared-unique-key.md) | The "one" side of a relationship needs a declared unique key | Accepted | 2026-09-16 |
 | [DD-228](decisions/dd-228-a-domain-may-be-declared-shared-and-is-then-read-by-several-products-rather-than-built-by.md) | A domain may be declared shared, and is then read by several products rather than built by them | Accepted | 2026-09-19 |
 | [DD-229](decisions/dd-229-strategic-ddd-design-lives-in-one-hub-wide-file-overlays-annotate-classes.md) | Strategic DDD design lives in one hub-wide file; overlays annotate classes | Accepted | 2026-09-20 |
+| [DD-230](decisions/dd-230-the-ddd-target-draws-bounded-contexts-hub-wide-marked-with-their-silver-status.md) | The ddd target draws bounded contexts hub-wide, marked with their Silver status | Accepted | 2026-09-20 |
 
 ---

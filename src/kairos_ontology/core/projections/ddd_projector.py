@@ -4,10 +4,12 @@
 
 One-way, documentation-only projection of the Domain-Driven Design overlay into:
 
-- ``{domain}-context-map.mmd``       — Mermaid context map: the contexts this domain
-                                       participates in and the edges touching them
 - ``{domain}-aggregate-overview.mmd``— Mermaid aggregate/tactical-pattern overview
 - ``{domain}-ddd-report.md``         — Markdown architecture report
+
+The context map is hub-wide by nature and is drawn once, under ``contexts/``, by
+:mod:`ddd_context_projector` (DD-230); the per-domain ``{domain}-context-map.mmd`` that
+used to be written here rendered only the edges this domain's overlay declared (#846).
 
 The graph rendered is the domain ontology + the hub-wide strategic file
 (``ddd-contexts-ext.ttl``, DD-229) + the domain's own ``{domain}-ddd-ext.ttl`` overlay +
@@ -164,34 +166,6 @@ def _domain_relationships(data: dict) -> list[tuple]:
     return [edge for edge in data["relationships"] if edge[1] in own or edge[2] in own]
 
 
-def _context_map_mmd(graph: Graph, data: dict, domain: str) -> str:
-    lines = [
-        *mermaid_header(indent=""),
-        f"%% DDD context map: the contexts the {domain} domain participates in",
-        "graph LR",
-    ]
-    edges = _domain_relationships(data)
-    shown = set(data["domain_contexts"])
-    for _rel, src, tgt, _pattern in edges:
-        shown.update(node for node in (src, tgt) if node is not None)
-    if not shown:
-        lines.append("    %% no bounded context is assigned in this domain's overlay")
-    for ctx in sorted(shown, key=str):
-        node = _sanitize(extract_local_name(str(ctx)))
-        lines.append(f'    ctx_{node}["{_label(graph, ctx)}"]')
-    for _rel, src, tgt, pattern in edges:
-        if src is None or tgt is None:
-            continue
-        s = _sanitize(extract_local_name(str(src)))
-        t = _sanitize(extract_local_name(str(tgt)))
-        if pattern is not None:
-            edge = _label(graph, pattern) if isinstance(pattern, URIRef) else str(pattern)
-            lines.append(f"    ctx_{s} -->|{edge}| ctx_{t}")
-        else:
-            lines.append(f"    ctx_{s} --> ctx_{t}")
-    return "\n".join(lines) + "\n"
-
-
 def _aggregate_overview_mmd(graph: Graph, data: dict, domain: str) -> str:
     lines = [
         *mermaid_header(indent=""),
@@ -269,8 +243,12 @@ def _report_md(graph: Graph, data: dict, domain: str, meta: dict) -> str:
         lines.append("_No bounded contexts assigned in this domain's overlay._")
     lines.append("")
 
-    # Context relationships touching this domain's contexts
+    # Context relationships touching this domain's contexts. The picture is hub-wide by
+    # nature and lives beside this report as `contexts/context-map.mmd` (DD-230); a
+    # per-domain map rendered only the edges the domain's own overlay declared, which
+    # read as "no relationships" for every other domain (#846).
     lines += ["## Context Map", ""]
+    lines += ["_Hub-wide map: `contexts/context-map.mmd`, beside this report._", ""]
     edges = _domain_relationships(data)
     if edges:
         lines += ["| Source | Pattern | Target |", "|--------|---------|--------|"]
@@ -364,8 +342,10 @@ def generate_ddd_artifacts(
 
     domain = ontology_name or "domain"
     meta = ontology_metadata or {}
+    # No per-domain context map any more (DD-230): it rendered only the edges this
+    # domain's overlay declared and so misled every other domain. The hub-wide map is
+    # `contexts/context-map.mmd`, drawn once from every overlay and the strategic file.
     return {
-        f"{domain}-context-map.mmd": _context_map_mmd(merged, data, domain),
         f"{domain}-aggregate-overview.mmd": _aggregate_overview_mmd(merged, data, domain),
         f"{domain}-ddd-report.md": _report_md(merged, data, domain, meta),
     }
