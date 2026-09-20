@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -55,6 +55,10 @@ SCHEMA_VERSION = 2
 #: ``scaffold-binding`` sentinel convention (#450) -- a compile-visible placeholder beats a
 #: plausible-looking guess.
 SENTINEL_JOIN_COLUMN = "<CONFIRM_JOIN_COLUMN>"
+#: Emitted in place of a property when several mutually exclusive ones share one join
+#: and no hierarchy ranks them. Naming any single arm would be a coin flip presented as
+#: a derivation, and a paste that skipped the note would take it (#928).
+SENTINEL_PROPERTY = "<CONFIRM_PROPERTY>"
 SENTINEL_KEY_TYPE = "<CONFIRM_KEY_TYPE>"
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]")
@@ -382,7 +386,10 @@ def _load_hub_ontologies(ontologies_dir: Path):
             continue
         if getattr(result, "semantic_index", None) is None:
             continue
-        yield result
+        # The file stem is the domain name, and each result carries only that domain's
+        # own import closure -- which is what makes a per-domain resolvability check
+        # possible without loading anything twice.
+        yield path.stem, result
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,7 +445,7 @@ def load_class_hierarchy(ontologies_dir: Path) -> ClassHierarchy:
 
     ancestors: dict[str, frozenset[str]] = {}
     namespaces: dict[str, str] = {}
-    for result in _load_hub_ontologies(ontologies_dir):
+    for _domain, result in _load_hub_ontologies(ontologies_dir):
         for record in result.semantic_index.classes:
             ancestors.setdefault(record.uri, frozenset(link.uri for link in record.ancestors))
         for source in result.sources:
@@ -460,7 +467,7 @@ def load_ontology_edges(ontologies_dir: Path) -> tuple[tuple[str, str, str], ...
     surface as a named class, so there is no endpoint to propose (DD-133 s7).
     """
     edges: list[tuple[str, str, str]] = []
-    for result in _load_hub_ontologies(ontologies_dir):
+    for _domain, result in _load_hub_ontologies(ontologies_dir):
         index = result.semantic_index
         for prop in index.properties:
             if prop.property_type != "object":
@@ -539,6 +546,20 @@ class RelationshipProposal:
     #: unresolved. A hint, never a value -- "this child declares FK carriers, none of
     #: which names your key; you pick" (#722).
     join_candidates: tuple[str, ...] = ()
+    #: ``rdfs:subPropertyOf`` descendants of this property that matched the same endpoints
+    #: and the same join. Narrowing to one of them is a modelling decision from the
+    #: source, not something a name match settles, so the generic property is proposed and
+    #: these are listed (#928).
+    narrower_alternatives: tuple[str, ...] = ()
+    #: Sibling properties that matched the same join and stand in no hierarchy with it.
+    #: A genuine either/or -- two directional properties competing for one non-directional
+    #: column, say -- so one entry carries them all rather than N entries each claiming to
+    #: be derived.
+    competing_properties: tuple[str, ...] = ()
+    #: False when the child domain's own import closure cannot resolve ``target_class``.
+    #: An authored relationship like that fails ``compile`` with
+    #: ``safety.relationship-endpoint``; naming the missing import beats discovering it.
+    target_resolvable: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -554,15 +575,25 @@ class RelationshipProposal:
             "join": [{"local": self.local_column, "foreign": self.foreign_column}],
             "join_resolved": self.join_resolved,
             "join_evidence": self.join_evidence,
+            "narrower_alternatives": self.narrower_alternatives,
+            "competing_properties": self.competing_properties,
+            "target_resolvable": self.target_resolvable,
             "join_candidates": list(self.join_candidates),
             "external_reference": self.external_reference,
             "yaml": self.to_yaml(),
         }
 
     def to_yaml(self) -> str:
-        """Render the proposal as a pasteable ``relationships:`` entry."""
+        """Render the proposal as a pasteable ``relationships:`` entry.
+
+        A proposal carrying ``competing_properties`` is deliberately *not* pasteable as
+        written: the arms are mutually exclusive, so the property is sentinelled and every
+        candidate is listed above it as a comment. Emitting one of them would make an
+        arbitrary pick look derived, which is the shape of error this module exists to
+        avoid.
+        """
         entry: dict[str, Any] = {
-            "property": self.property_uri,
+            "property": SENTINEL_PROPERTY if self.competing_properties else self.property_uri,
             "target": self.target_class,
             "join": [{"local": self.local_column, "foreign": self.foreign_column}],
             "cardinality": "many-to-one",
@@ -572,7 +603,29 @@ class RelationshipProposal:
         }
         if self.external_reference is not None:
             entry["externalReference"] = self.external_reference
-        return yaml.safe_dump([entry], sort_keys=False, allow_unicode=True).rstrip()
+        rendered = yaml.safe_dump([entry], sort_keys=False, allow_unicode=True).rstrip()
+        prefix: list[str] = []
+        if self.competing_properties:
+            candidates = [self.property_uri, *self.competing_properties]
+            prefix.append(
+                "# Pick one. These %d properties link the same two classes on the same"
+                % len(candidates)
+            )
+            prefix.append(
+                "# join, and only one can be true of a single column:"
+            )
+            prefix.extend("#   %s" % uri for uri in candidates)
+        if self.narrower_alternatives:
+            prefix.append(
+                "# Narrow only if the source distinguishes the role; the join does not."
+            )
+            prefix.extend("#   %s" % uri for uri in self.narrower_alternatives)
+        if not self.target_resolvable:
+            prefix.append(
+                "# This domain does not import the module declaring the target class."
+            )
+            prefix.append("# Add it to owl:imports first, or the paste will not compile.")
+        return (chr(10).join([*prefix, rendered])) if prefix else rendered
 
 
 @dataclass(frozen=True, slots=True)
@@ -718,6 +771,132 @@ def _external_reference(child: BoundEntity, parent: BoundEntity, foreign: str) -
 _ENDPOINT_MATCH_RANK: dict[str, int] = {"uri": 0, "subclass": 1, "local-name": 2}
 
 
+def load_property_ancestors(ontologies_dir: Path) -> dict[str, frozenset[str]]:
+    """``property URI -> transitive rdfs:subPropertyOf ancestors``.
+
+    Needed because a reference model routinely declares a generic relationship and a set
+    of typed specialisations of it -- a consignment's generic "has party" alongside
+    consignor, consignee, carrier, freight forwarder and notify party. All of them link
+    the same two classes, so every one of them matches the same endpoint pair and the same
+    derived join, and they were emitted as that many independent, equally-confident
+    proposals. They are mutually exclusive: one foreign key cannot be the carrier *and*
+    the consignee. The hierarchy that says so is asserted in the module already being
+    read (#928).
+    """
+    ancestors: dict[str, frozenset[str]] = {}
+    for _domain, result in _load_hub_ontologies(ontologies_dir):
+        for prop in result.semantic_index.properties:
+            if prop.property_type != "object":
+                continue
+            ancestors.setdefault(
+                prop.uri, frozenset(link.uri for link in prop.superproperties)
+            )
+    return ancestors
+
+
+def load_domain_class_closures(ontologies_dir: Path) -> dict[str, frozenset[str]]:
+    """``domain -> the class URIs that domain's own import closure can resolve``.
+
+    A proposal names a target class the *child* must be able to see: an authored
+    relationship whose target is outside the child domain's ``owl:imports`` fails compile
+    with ``safety.relationship-endpoint``, and nothing warned when a proposal was built
+    that way (#928, and the same closure gap as #912/#926 on the anchoring side).
+    """
+    closures: dict[str, frozenset[str]] = {}
+    for domain, result in _load_hub_ontologies(ontologies_dir):
+        closures[domain] = frozenset(
+            record.uri for record in result.semantic_index.classes
+        )
+    return closures
+
+
+def _target_is_resolvable(
+    domain_closures: dict[str, frozenset[str]],
+    child_domain: str,
+    target_class: str,
+    hierarchy: "ClassHierarchy",
+) -> bool:
+    """Can the child domain's own import closure see *target_class*?
+
+    A relationship's target must resolve where the relationship is authored: the child's
+    binding lives in the child's domain, and ``compile`` resolves the target through that
+    domain's ``owl:imports``. A proposal naming a class the child cannot see fails with
+    ``safety.relationship-endpoint`` the moment it is pasted, and nothing said so (#928).
+
+    Unknown domains are treated as resolvable. This adds a warning; it must never be the
+    reason a proposal is withheld on a hub whose ontologies did not load.
+    """
+    closure = domain_closures.get(child_domain)
+    if closure is None:
+        return True
+    resolved = hierarchy.resolve(target_class) or target_class
+    return resolved in closure or target_class in closure
+
+
+def collapse_competing_properties(
+    proposals: list["RelationshipProposal"], property_ancestors: dict[str, frozenset[str]]
+) -> list["RelationshipProposal"]:
+    """Reduce proposals that share one join to one entry per genuine choice.
+
+    Proposals are grouped by ``(child, parent, local, foreign)`` -- the same join. Within a
+    group:
+
+    * a property that is a *descendant* of another in the group is dropped, and recorded
+      on the survivor as a narrower alternative. The generic property is the one the
+      evidence supports: the join says these two rows are related, not which role the
+      related party plays, and narrowing it is a modelling decision an author makes from
+      the source, not something a name match can settle.
+    * whatever remains, if more than one, is a real choice between siblings -- two
+      directional properties competing for one non-directional column, say. One entry
+      survives carrying all of them, marked as a choice rather than as N derivations.
+
+    Measured on one hub: nine proposals with resolved joins were three distinct joins,
+    and accepting them as printed would have asserted that one account reference was
+    simultaneously the carrier, the consignee, the consignor, the freight forwarder and
+    the notify party.
+    """
+    grouped: dict[tuple[str, str, str, str], list[RelationshipProposal]] = {}
+    order: list[tuple[str, str, str, str]] = []
+    for proposal in proposals:
+        key = (
+            proposal.child_binding,
+            proposal.parent_binding,
+            proposal.local_column,
+            proposal.foreign_column,
+        )
+        if key not in grouped:
+            order.append(key)
+        grouped.setdefault(key, []).append(proposal)
+
+    collapsed: list[RelationshipProposal] = []
+    for key in order:
+        group = grouped[key]
+        if len(group) == 1:
+            collapsed.append(group[0])
+            continue
+        uris = {item.property_uri for item in group}
+        survivors = [
+            item
+            for item in group
+            if not (property_ancestors.get(item.property_uri, frozenset()) & uris)
+        ]
+        if not survivors:  # a cycle, or every one a descendant of another: keep them all
+            survivors = list(group)
+        narrower = tuple(
+            sorted(item.property_uri for item in group if item not in survivors)
+        )
+        kept = survivors[0]
+        siblings = tuple(sorted(item.property_uri for item in survivors[1:]))
+        collapsed.append(
+            replace(
+                kept,
+                narrower_alternatives=narrower,
+                competing_properties=siblings,
+            )
+        )
+    return collapsed
+
+
 def build_relationship_proposals(
     *,
     hub_root: Path,
@@ -730,7 +909,10 @@ def build_relationship_proposals(
 
     bindings = index_bindings(Path(hub_root) / "integration" / "bindings")
     fk_evidence = load_fk_evidence(Path(hub_root) / "integration" / "sources")
-    hierarchy = load_class_hierarchy(Path(hub_root) / "model" / "ontologies")
+    ontologies_dir = Path(hub_root) / "model" / "ontologies"
+    hierarchy = load_class_hierarchy(ontologies_dir)
+    property_ancestors = load_property_ancestors(ontologies_dir)
+    domain_closures = load_domain_class_closures(ontologies_dir)
     by_class: dict[str, list[BoundEntity]] = {}
     by_local_name: dict[str, list[BoundEntity]] = {}
     resolved_uri: dict[str, Optional[str]] = {}
@@ -866,8 +1048,16 @@ def build_relationship_proposals(
                         join_candidates=(
                             () if resolved else child.relationship_columns
                         ),
+                        target_resolvable=_target_is_resolvable(
+                            domain_closures, child.domain, parent.target_class, hierarchy
+                        ),
                     )
                 )
+
+    # Collapse before sorting: the ordering is there to put the proposals a human can
+    # accept with least verification first, which is only meaningful once each entry is
+    # one decision rather than one property.
+    proposals = collapse_competing_properties(proposals, property_ancestors)
 
     # Resolved joins first, then blueprint over ontology evidence: the proposals a human
     # can accept with least verification lead.
@@ -891,6 +1081,29 @@ def build_relationship_proposals(
         notes.append(
             f"Join columns could not be matched for some proposals; those carry "
             f"{SENTINEL_JOIN_COLUMN} and must be completed by the author."
+        )
+    narrowed = [p for p in proposals if p.narrower_alternatives]
+    if narrowed:
+        notes.append(
+            f"{len(narrowed)} proposal(s) stand in for typed specialisations that matched "
+            "the same join. The generic property is proposed because the join says the two "
+            "rows are related, not which role the related record plays; narrow it only if "
+            "the source distinguishes the role. See 'narrower_alternatives'."
+        )
+    competing = [p for p in proposals if p.competing_properties]
+    if competing:
+        notes.append(
+            f"{len(competing)} proposal(s) are a choice between properties that share one "
+            "join and stand in no hierarchy — only one can be true of a single column. "
+            "Pick one; see 'competing_properties'."
+        )
+    unresolvable = [p for p in proposals if not p.target_resolvable]
+    if unresolvable:
+        notes.append(
+            f"{len(unresolvable)} proposal(s) name a target class the child domain's "
+            "import closure cannot resolve. Pasted as-is each fails compile with "
+            "safety.relationship-endpoint; add the owning module to that domain's "
+            "owl:imports first."
         )
     if already_authored:
         notes.append(
