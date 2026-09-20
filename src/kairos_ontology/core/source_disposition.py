@@ -67,9 +67,19 @@ DISPOSITIONS: dict[str, str] = {
     # what states it. A table-grain row saying `bound` adds nothing the bindings
     # directory does not already say, and used to silence the table's columns (#881).
     "bound": "An EntityBinding maps this table to a canonical class.",
+    # Grain matters here, and the two answers are different commands (#883):
+    #   table-grain   the table is a concept the archetype catalog lacks -> register it
+    #                 with 'register-concept', which mints a CLASS and rejects a URI the
+    #                 catalog already has.
+    #   column-grain  the column is a fact an existing class has no property for -> the
+    #                 hub declares a property for it (DD-170), drafted from the ledger by
+    #                 'scaffold-extensions'. register-concept cannot serve this case and
+    #                 pointing at it is what left 501 such decisions with no consumer.
     "registered-extension": (
-        "Real business data outside the archetype catalog, registered as an in-scope "
-        "concept with source evidence via 'kairos-ontology register-concept'."
+        "Real business data outside the archetype catalog. At table grain, a concept to "
+        "register with 'kairos-ontology register-concept'; at column grain, a hub-local "
+        "property on an existing class, drafted with 'kairos-ontology "
+        "scaffold-extensions'."
     ),
     "deferred": ("In scope and modelled later; carries a reason and stays visible as a known gap."),
     "not-business-data": (

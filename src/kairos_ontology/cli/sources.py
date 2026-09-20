@@ -4416,10 +4416,22 @@ def generate_bindings_cmd(tables, domain, analysis_opt, catalog_opt, force, dry_
             "resolve in the anchor's module inventory — reported, not guessed"
         )
     if result.secondary_entity_worklist:
+        from_alignment = [
+            item for item in result.secondary_entity_worklist
+            if item.get("source") == "alignment"
+        ]
         click.echo(
             f"   ℹ {len(result.secondary_entity_worklist)} secondary-entity "
-            "candidate(s) on the sheet — separate bindings at their own grain; "
-            "not generated here"
+            "candidate(s) — separate bindings at their own grain; not generated here"
         )
+        if from_alignment:
+            classes = sorted({str(item.get("class") or "") for item in from_alignment} - {""})
+            click.echo(
+                f"     {len(from_alignment)} of them are columns the aligner put on "
+                f"another class ({', '.join(classes[:5])}"
+                + (f", +{len(classes) - 5} more" if len(classes) > 5 else "")
+                + "). Each needs a decision: a secondary entity at its own grain, or a "
+                "hub-local property on the anchor. They are NOT in the binding."
+            )
     if invalid:
         raise SystemExit(1)

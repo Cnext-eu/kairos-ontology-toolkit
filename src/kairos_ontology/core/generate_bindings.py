@@ -226,7 +226,14 @@ def hub_local_properties(
     hub_namespace = _module_of(class_uri)
     found: dict[str, str] = {}
     for prop in index.class_properties(class_uri):
-        uri = str(prop.get("uri") or "")
+        # `property_uri`, not `uri`: SemanticIndex names it that way, and reading the
+        # wrong key silently returned nothing at all -- the pool looked empty however
+        # correctly the hub had authored its properties (#887).
+        uri = str(prop.get("property_uri") or "")
+        # Only datatype properties: an object property needs a relationship entry, not a
+        # scalar field (safety.relationship-endpoint).
+        if str(prop.get("property_type") or "") != "datatype":
+            continue
         # Reference properties already reach the pool via _class_pools; this adds only
         # what the hub authored for itself.
         if not uri or _module_of(uri) == hub_namespace:
@@ -290,6 +297,15 @@ def generate_binding_doc(
         for c in alignment_table.get("columns") or []
         if isinstance(c, dict)
     }
+    # The class the aligner put each column on. When that is not the anchor, a property
+    # it could not resolve is a different problem from a property that does not exist
+    # (#887): the column belongs to another entity in the same table.
+    align_classes = {
+        str(c.get("column") or ""): str(c.get("ref_class") or "")
+        for c in alignment_table.get("columns") or []
+        if isinstance(c, dict)
+    }
+    anchor_local = class_uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
 
     # fields: best column per SCALAR property, module-scoped resolution.
     by_property: dict[str, list[tuple[float, str]]] = {}
@@ -314,10 +330,35 @@ def generate_binding_doc(
         _confidence, column = claims[0]
         uri = scalar_uri.get(prop)
         if not uri:
-            report.unresolved_properties.append(
-                {"system": system, "table": table, "property": prop, "column": column,
-                 "reason": "not a scalar property of the anchor's module inventory"}
-            )
+            on_class = align_classes.get(column, "")
+            if on_class and on_class != anchor_local:
+                # The property resolves -- on another class. Binding it onto the anchor
+                # would put, say, a weight value on a cargo-item row: coverage that is
+                # really a grain error. Whether it becomes a secondary entity (different
+                # grain) or a hub-local property on the anchor (same grain) is a
+                # modelling decision, and DD-190 is explicit that a same-grain cluster is
+                # properties of the primary. So this is surfaced as a decision, not
+                # guessed and not silently counted as a missing property.
+                report.secondary_entity_worklist.append(
+                    {
+                        "system": system,
+                        "table": table,
+                        "class": on_class,
+                        "columns": [column],
+                        "property": prop,
+                        "source": "alignment",
+                        "note": (
+                            f"aligned to {on_class}.{prop}, which is not a property of "
+                            f"the anchor {anchor_local}. Decide: a secondary entity at "
+                            "its own grain, or a hub-local property on the anchor."
+                        ),
+                    }
+                )
+            else:
+                report.unresolved_properties.append(
+                    {"system": system, "table": table, "property": prop, "column": column,
+                     "reason": "not a scalar property of the anchor's module inventory"}
+                )
             continue
         fields.append({"property": uri, "expression": column})
         mapped_cols.add(column)
