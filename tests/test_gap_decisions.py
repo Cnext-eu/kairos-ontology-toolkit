@@ -14,6 +14,8 @@ and a drafting tool that quietly chose them would recreate the silent-omission
 failure the gate exists to prevent.
 """
 
+import json
+
 import pytest
 import yaml
 
@@ -25,12 +27,14 @@ from kairos_ontology.core.alignment_report import (
     UnmappedColumn,
 )
 from kairos_ontology.core.gap_decisions import (
+    MAX_LOOSE_PER_CALL,
     AUTO_DISPOSITIONS,
     apply_auto_dispositions,
     apply_decision_sheet,
     build_decision_sheet,
     propose_for_group,
     suggest_family_dispositions,
+    suggest_loose_dispositions,
     write_decision_sheet,
 )
 from kairos_ontology.core.source_disposition import DISPOSITIONS, load_dispositions
@@ -914,3 +918,145 @@ class TestSuggestOnAFullyDecidedHub:
 
         assert stats["families_described"] == 0
         assert stats["flagged_incoherent"] == 0
+
+
+# ---------------------------------------------------------------------------
+# The singletons get characterised too (issue #880)
+# ---------------------------------------------------------------------------
+
+
+class _CapturingClient:
+    """Captures the prompt and replays a canned answer for every requested key."""
+
+    def __init__(self, answer=None):
+        self.prompts: list[str] = []
+        self.schemas: list[dict] = []
+        self._answer = answer or {"proposed_disposition": "registered-extension",
+                                  "reasoning": "a real business fact"}
+        outer = self
+
+        class _Completions:
+            @staticmethod
+            def create(**kwargs):
+                outer.prompts.append(kwargs["messages"][0]["content"])
+                schema = kwargs["response_format"]["json_schema"]["schema"]
+                outer.schemas.append(schema)
+                keys = schema["properties"]["columns"]["required"]
+                payload = {"columns": {key: dict(outer._answer) for key in keys}}
+
+                class _Message:
+                    content = json.dumps(payload)
+
+                class _Choice:
+                    message = _Message()
+
+                class _Response:
+                    choices = [_Choice()]
+
+                return _Response()
+
+        class _Chat:
+            completions = _Completions()
+
+        self.chat = _Chat()
+
+
+def _loose_sheet(count=3, **overrides):
+    decisions = []
+    for index in range(count):
+        entry = {
+            "column": f"MYSTERY_{index}",
+            "domain": "roro",
+            "decision": "",
+            "proposed_disposition": "",
+            "reasoning": "No rule applies.",
+            "occurrences": 1,
+            "tables": ["src.cargo"],
+            "data_types": ["string"],
+        }
+        entry.update(overrides)
+        decisions.append(entry)
+    return {"families": [], "decisions": decisions}
+
+
+class TestSuggestLooseDispositions:
+    def test_a_name_with_no_proposal_is_characterised(self):
+        sheet = _loose_sheet(2)
+        client = _CapturingClient()
+
+        stats = suggest_loose_dispositions(sheet, client=client, model="m")
+
+        assert stats["names_described"] == 2
+        assert all(e["proposed_disposition"] == "registered-extension" for e in sheet["decisions"])
+        assert all(e["reasoning"] == "a real business fact" for e in sheet["decisions"])
+
+    def test_it_never_fills_the_decision(self):
+        """The same contract the families call honours: propose, never decide."""
+        sheet = _loose_sheet(2)
+
+        suggest_loose_dispositions(sheet, client=_CapturingClient(), model="m")
+
+        assert all(e["decision"] == "" for e in sheet["decisions"])
+
+    def test_a_name_a_rule_already_decided_is_not_re_asked(self):
+        """Re-asking would spend a call to second-guess a deterministic answer."""
+        sheet = _loose_sheet(2, proposed_disposition="not-business-data")
+        client = _CapturingClient()
+
+        stats = suggest_loose_dispositions(sheet, client=client, model="m")
+
+        assert stats["names_described"] == 0
+        assert client.prompts == []
+
+    def test_an_already_decided_name_is_not_re_asked(self):
+        sheet = _loose_sheet(2, decision="deferred")
+
+        stats = suggest_loose_dispositions(sheet, client=_CapturingClient(), model="m")
+
+        assert stats["names_described"] == 0
+
+    def test_an_empty_sheet_makes_no_call(self):
+        client = _CapturingClient()
+
+        stats = suggest_loose_dispositions(
+            {"families": [], "decisions": []}, client=client, model="m"
+        )
+
+        assert stats == {"names_described": 0, "batches": 0}
+        assert client.prompts == []
+
+    def test_large_lists_are_batched_not_truncated(self):
+        """A strict response_format names every key in `required`, so an unbounded list
+        would build a schema no provider accepts — and a name the reviewer never sees is
+        the failure this gate exists to prevent."""
+        sheet = _loose_sheet(MAX_LOOSE_PER_CALL + 5)
+        client = _CapturingClient()
+
+        stats = suggest_loose_dispositions(sheet, client=client, model="m")
+
+        assert stats["batches"] == 2
+        assert stats["names_described"] == MAX_LOOSE_PER_CALL + 5
+        assert len(client.prompts) == 2
+
+    def test_the_drafted_property_is_offered_as_evidence(self):
+        sheet = _loose_sheet(1)
+        sheet["decisions"][0]["suggested_properties"] = [
+            {"name": "vesselClass", "range": "xsd:string", "on_class": "Vessel"}
+        ]
+        client = _CapturingClient()
+
+        suggest_loose_dispositions(sheet, client=client, model="m")
+
+        assert "aligner drafted property: vesselClass" in client.prompts[0]
+
+    def test_an_empty_disposition_is_accepted_as_an_answer(self):
+        """"I cannot read this abbreviation" is a better answer than a guess."""
+        sheet = _loose_sheet(1)
+        client = _CapturingClient(
+            answer={"proposed_disposition": None, "reasoning": "an opaque legacy code"}
+        )
+
+        suggest_loose_dispositions(sheet, client=client, model="m")
+
+        assert sheet["decisions"][0]["proposed_disposition"] == ""
+        assert sheet["decisions"][0]["reasoning"] == "an opaque legacy code"
