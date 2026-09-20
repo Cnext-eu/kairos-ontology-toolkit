@@ -257,6 +257,18 @@ _FAMILY_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
 #: ``ETLLoadDate`` splits to ``ETL``, ``Load``, ``Date`` rather than ``ETLLoad``, ``Date``,
 #: which no vocabulary can match. The substring matcher this replaced caught it by accident.
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+#: The index of a numbered repeating group, where nothing separates it from the stem.
+#:
+#: ``ADDRESS_1``/``ADDRESS_2`` already tokenise as ``address`` + ``1``, so they group;
+#: ``EQUIPMENTTYPE1``..``EQUIPMENTTYPE14`` did not, and became fourteen separate
+#: decisions about one concept. A trailing digit run is an index, and an unseparated
+#: repeating group is the most common denormalisation in a legacy schema (#882).
+#:
+#: Deliberately narrow, because a false family is worse than a missed one. Only a digit
+#: run at the END of a segment counts, so ``CO2EMISSIONS`` keeps its digits; and it must
+#: follow at least four letters, so a standard's number (``ISO6346``) or a short code
+#: (``A1``) is not split into a prefix that would gather unrelated columns.
+_TRAILING_INDEX_RE = re.compile(r"(?<=[A-Za-z]{4})(?=\d+(?:\s|$))")
 
 
 def family_of(column_name: str) -> str:
@@ -338,7 +350,7 @@ def _semantically_coherent(
 
 def _name_tokens(column_name: str) -> list[str]:
     text = _CAMEL_BOUNDARY_RE.sub(" ", _FAMILY_SPLIT_RE.sub(" ", str(column_name or "")))
-    return text.lower().split()
+    return _TRAILING_INDEX_RE.sub(" ", text).lower().split()
 
 
 #: Alignment confidence at or above which a mapped column counts as business data.

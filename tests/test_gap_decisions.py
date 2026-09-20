@@ -771,3 +771,55 @@ class TestDraftedPropertyReachesTheSheet:
         assert drafted.proposed_disposition == "not-business-data"
         # ...and still shows the reviewer what was drafted.
         assert drafted.suggested_properties[0]["name"] == "remarkText"
+
+
+# ---------------------------------------------------------------------------
+# Unseparated numbered repeating groups (issue #882)
+# ---------------------------------------------------------------------------
+
+
+from kairos_ontology.core.gap_decisions import family_of, group_into_families
+
+
+class TestNumberedRepeatingGroups:
+    """`ADDRESS_1` grouped and `ADDRESS1` did not, for one concept either way."""
+
+    def test_a_trailing_index_is_not_part_of_the_stem(self):
+        assert family_of("EQUIPMENTTYPE1") == "equipmenttype"
+        assert family_of("EQUIPMENTTYPE14") == "equipmenttype"
+        assert family_of("ADDRESS2") == "address"
+
+    def test_it_agrees_with_the_separated_spelling(self):
+        assert family_of("EQUIPMENTTYPE1") == family_of("EQUIPMENTTYPE_1")
+
+    def test_an_unseparated_group_now_forms_one_decision(self):
+        members = [
+            propose_for_group(group(f"EQUIPMENTTYPE{n}"), "reference-data")
+            for n in range(1, 15)
+        ]
+
+        families, loose = group_into_families(members)
+
+        assert [f["family"] for f in families] == ["equipmenttype"]
+        assert families[0]["distinct_names"] == 14
+        assert loose == []
+
+    def test_a_standards_number_is_not_a_stem(self):
+        """ISO6346, UN1234: too few letters before the digits to be a repeating group."""
+        assert family_of("ISO6346") == "iso6346"
+        assert family_of("UN1234") == "un1234"
+        assert family_of("A1") == "a1"
+
+    def test_digits_inside_a_name_are_left_alone(self):
+        assert "co2" in family_of("CO2EMISSIONS")
+
+    def test_three_standards_numbers_do_not_become_a_family(self):
+        members = [
+            propose_for_group(group(name), "dangerous-goods")
+            for name in ("ISO6346", "ISO668", "ISO1496")
+        ]
+
+        families, loose = group_into_families(members)
+
+        assert families == []
+        assert len(loose) == 3
