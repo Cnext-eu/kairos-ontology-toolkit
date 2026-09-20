@@ -1033,12 +1033,19 @@ def apply_decision_sheet(
     sheet = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     filled: dict[tuple[str, str], str] = {}
     why: dict[tuple[str, str], str] = {}
+    drafted: dict[tuple[str, str], dict[str, str]] = {}
     for e in sheet.get("decisions") or []:
         if not (isinstance(e, dict) and str(e.get("decision") or "").strip()):
             continue
         key = (str(e.get("domain") or ""), str(e["column"]))
         filled[key] = str(e["decision"]).strip()
         why[key] = str(e.get("reasoning") or "")
+        # One drafted property is carried through; more than one means the aligner read
+        # the name two ways and the reviewer was asked to pick, so carry neither rather
+        # than silently choosing (#883).
+        drafts = [d for d in (e.get("suggested_properties") or []) if isinstance(d, dict)]
+        if len(drafts) == 1:
+            drafted[key] = drafts[0]
     # A family decision expands to each of its member names. An explicit
     # per-name decision wins over its family's, so a reviewer can rule on the
     # family and carve out one exception without unpicking the family.
@@ -1093,6 +1100,7 @@ def apply_decision_sheet(
                 ),
                 decided_by=decided_by,
                 evidence=(f"gap-reason:{occurrence.reason}", f"occurrences:{group.count}"),
+                proposed_property=drafted.get((occurrence.domain, group.column)),
             )
     return {
         "names_applied": len(filled),

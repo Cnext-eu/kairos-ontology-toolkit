@@ -361,8 +361,15 @@ def record_disposition(
     decided_by: str = "user",
     evidence: tuple[str, ...] = (),
     column: str = "",
+    proposed_property: dict[str, str] | None = None,
 ) -> Path:
     """Write or replace one disposition, returning the ledger path.
+
+    *proposed_property* is the hub-local property ``propose-alignment`` drafted for this
+    column (``name``/``range``/``on_class``/``why``). Kept structured rather than only
+    named in the prose rationale: a ``registered-extension`` decision is a commitment to
+    author that property, and the next stage should be able to read it rather than parse
+    an English sentence out of the ledger (#883).
 
     Deliberately append-or-replace on a single YAML file rather than one file per table:
     the ledger's value is that a reviewer can read every skipped table in one place and
@@ -399,6 +406,12 @@ def record_disposition(
         "rationale": rationale,
         "decided_by": decided_by,
     }
+    if proposed_property and proposed_property.get("name"):
+        entry["proposed_property"] = {
+            key: str(proposed_property[key])
+            for key in ("name", "range", "on_class", "why")
+            if proposed_property.get(key)
+        }
     if evidence:
         entry["evidence"] = list(evidence)
 

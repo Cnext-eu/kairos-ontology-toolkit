@@ -253,3 +253,81 @@ class TestColumnGrainIsNotClobbered:
         recorded = load_dispositions(tmp_path)
         assert ("s", "t", "") in recorded
         assert ("s", "t", "c") in recorded
+
+
+# ---------------------------------------------------------------------------
+# The drafted property survives into the ledger, structured (issue #883)
+# ---------------------------------------------------------------------------
+
+
+from kairos_ontology.core.source_disposition import load_dispositions, record_disposition
+
+PROPERTY = {
+    "name": "vesselClass",
+    "range": "xsd:string",
+    "on_class": "Vessel",
+    "why": "Hull class, absent from the reference model.",
+}
+
+
+class TestProposedPropertyReachesTheLedger:
+    """A registered-extension decision commits to authoring a property; say which."""
+
+    def test_the_property_is_recorded_as_structure_not_prose(self, tmp_path):
+        record_disposition(
+            hub_root=tmp_path,
+            system="src",
+            table="ships",
+            column="VESSELCLASS",
+            disposition="registered-extension",
+            rationale="real business data with no reference property",
+            proposed_property=PROPERTY,
+        )
+
+        entry = load_dispositions(tmp_path)[("src", "ships", "VESSELCLASS")]
+
+        assert entry["proposed_property"] == PROPERTY
+
+    def test_absent_when_nothing_was_drafted(self, tmp_path):
+        record_disposition(
+            hub_root=tmp_path,
+            system="src",
+            table="ships",
+            column="MYSTERY",
+            disposition="deferred",
+            rationale="opaque legacy code",
+        )
+
+        entry = load_dispositions(tmp_path)[("src", "ships", "MYSTERY")]
+
+        assert "proposed_property" not in entry
+
+    def test_a_nameless_draft_is_not_recorded(self, tmp_path):
+        record_disposition(
+            hub_root=tmp_path,
+            system="src",
+            table="ships",
+            column="MYSTERY",
+            disposition="deferred",
+            rationale="opaque legacy code",
+            proposed_property={"range": "xsd:string"},
+        )
+
+        entry = load_dispositions(tmp_path)[("src", "ships", "MYSTERY")]
+
+        assert "proposed_property" not in entry
+
+    def test_only_the_four_known_keys_survive(self, tmp_path):
+        record_disposition(
+            hub_root=tmp_path,
+            system="src",
+            table="ships",
+            column="VESSELCLASS",
+            disposition="registered-extension",
+            rationale="real business data",
+            proposed_property={**PROPERTY, "confidence": 0.8, "junk": None},
+        )
+
+        entry = load_dispositions(tmp_path)[("src", "ships", "VESSELCLASS")]
+
+        assert sorted(entry["proposed_property"]) == ["name", "on_class", "range", "why"]
