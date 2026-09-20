@@ -617,6 +617,26 @@ Report the accepted slice and remaining questions. The next step is
 source relation or contracted dbt model and canonical entity. Do not generate
 bindings or dbt artifacts in this skill.
 
+Then regenerate the language the slice produced and hand it to the SMEs and the
+data engineer:
+
+```powershell
+$env:KAIROS_SKILL_CONTEXT = "1"
+uv run kairos-ontology project --target ddd
+```
+
+`ontology-hub-publish/architecture/ddd/concept-guide.md` and
+`ubiquitous-language.ttl` are derived from the classes, labels and comments just
+authored (DD-232); they are the review artifact after a domain design, and they are
+tracked, so commit them with the slice.
+
+A class the architecture needs but no source feeds yet is still authored here — as
+an ordinary class with a label and comment. Say so where it can be seen: record it
+with **kairos-design-architecture** (`kairos-ontology class-disposition set --class
+<prefix:Local> --disposition architecture-only|deferred --rationale "..."`) so it
+never reads as forgotten, and never mint a binding or a `purpose: carried` column to
+make it look bound. Growing the ontology does not grow Silver; only a binding does.
+
 ## Quick amendments
 
 A minor amendment may use a shortened loop only when it changes at most three
@@ -646,6 +666,10 @@ diff review, and ontology integrity still apply.
 - **kairos-design-discovery** — confirm business context and terminology.
 - **kairos-design-source** — import/analyse source vocabularies and redact samples.
 - **kairos-design-mapping** — author v5 YAML entity bindings.
+- **kairos-design-architecture** — bounded contexts, aggregates, invariants and the
+  ubiquitous language over the classes authored here; the class ledger for what
+  is deliberately not in Silver. Documentation only, never a reason to move a
+  class between domains.
 - **kairos-develop-dbt-transformation** — author ordinary contracted dbt models
   for relational or grain-changing logic.
 - **kairos-toolkit-ops** — explicitly update selected reference models.

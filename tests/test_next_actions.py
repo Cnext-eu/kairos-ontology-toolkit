@@ -11,6 +11,7 @@ from kairos_ontology.core.next_actions import (
     ACTION_SKILLS,
     ActionStatus,
     BiConceptMappingObservation,
+    ClassDispositionObservation,
     CompileStatus,
     DiagnosticView,
     DiscoveryConformanceStatus,
@@ -323,7 +324,7 @@ def test_proposal_is_json_serializable_and_stable():
     first = json.dumps(payload, sort_keys=True)
     second = json.dumps(payload, sort_keys=True)
     assert first == second
-    assert '"schema_version": 7' in first
+    assert '"schema_version": 8' in first
 
 
 # ---------------------------------------------------------------------------
@@ -408,12 +409,6 @@ def test_discovery_gate_satisfied_false_when_neither_signal_present():
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
 def test_present_inventory_adds_no_action():
     proposal = propose_next_actions(_hub(inventory_status=InputStatus.PRESENT))
     assert "generate-inventory" not in _kinds(proposal)
@@ -484,3 +479,55 @@ def test_default_no_observation_adds_no_action():
     # start emitting a spurious action.
     proposal = propose_next_actions(_hub())
     assert "triage-concept-mapping" not in _kinds(proposal)
+
+
+# --- DD-229/DD-230/DD-231: the architecture layer (schema v8) ---------------------------
+
+
+def test_no_architecture_input_proposes_no_architecture_action():
+    proposal = propose_next_actions(_hub(domains=(_domain("party"),)))
+    assert "design-architecture" not in _kinds(proposal)
+    assert "record-class-disposition" not in _kinds(proposal)
+
+
+def test_an_overlay_or_the_strategic_file_makes_architecture_review_optional():
+    with_overlay = propose_next_actions(
+        _hub(domains=(_domain("party", ddd_overlay=InputStatus.PRESENT),))
+    )
+    action = next(a for a in with_overlay.actions if a.kind == "design-architecture")
+    assert action.status is ActionStatus.OPTIONAL
+    assert action.skill == "kairos-design-architecture"
+    assert "overlay(s) for party" in action.rationale
+    assert "project --target ddd" in action.command
+
+    with_strategic = propose_next_actions(
+        _hub(domains=(_domain("party"),), ddd_strategic_file=InputStatus.PRESENT)
+    )
+    assert "design-architecture" in _kinds(with_strategic)
+
+
+def test_undecided_classes_are_a_nudge_before_adoption_and_blocking_after():
+    before = propose_next_actions(
+        _hub(
+            domains=(_domain("party"),),
+            class_dispositions=ClassDispositionObservation(classes_total=5, classes_undecided=3),
+        )
+    )
+    action = next(a for a in before.actions if a.kind == "record-class-disposition")
+    assert action.status is ActionStatus.HUMAN_DECISION_REQUIRED
+    assert not action.blocking
+    assert "class-disposition init" in action.rationale
+    assert "class-disposition list --undecided" in action.command
+
+    after = propose_next_actions(
+        _hub(
+            domains=(_domain("party"),),
+            class_dispositions=ClassDispositionObservation(
+                classes_total=5, classes_undecided=3, ledger_present=True
+            ),
+        )
+    )
+    action = next(a for a in after.actions if a.kind == "record-class-disposition")
+    assert action.blocking
+    assert "`validate` fails" in action.rationale
+    assert action.skill == ACTION_SKILLS["record-class-disposition"]

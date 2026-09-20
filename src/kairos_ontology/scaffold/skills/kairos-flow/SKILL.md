@@ -48,6 +48,10 @@ map each action `kind` (and its `skill` field) to the owning skill:
 - **Design:** `design-discovery` → **kairos-design-discovery**; `design-source` →
   **kairos-design-source**; `design-domain` → **kairos-design-domain**;
   `develop-dbt` → **kairos-develop-dbt-transformation**.
+- **Architect:** `design-architecture` (optional, when a DDD overlay or the hub-wide
+  strategic file exists) and `record-class-disposition` (a human call per hub class no
+  binding targets; blocking once the hub adopted the class ledger) →
+  **kairos-design-architecture**.
 - **Bind:** `author-binding` → create or revise a closed `EntityBinding` with
   **kairos-design-mapping**.
 - **Validate:** `run-check`, `fix-diagnostic`, or `validate` →
