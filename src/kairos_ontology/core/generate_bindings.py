@@ -226,7 +226,14 @@ def hub_local_properties(
     hub_namespace = _module_of(class_uri)
     found: dict[str, str] = {}
     for prop in index.class_properties(class_uri):
-        uri = str(prop.get("uri") or "")
+        # `property_uri`, not `uri`: SemanticIndex names it that way, and reading the
+        # wrong key silently returned nothing at all -- the pool looked empty however
+        # correctly the hub had authored its properties (#887).
+        uri = str(prop.get("property_uri") or "")
+        # Only datatype properties: an object property needs a relationship entry, not a
+        # scalar field (safety.relationship-endpoint).
+        if str(prop.get("property_type") or "") != "datatype":
+            continue
         # Reference properties already reach the pool via _class_pools; this adds only
         # what the hub authored for itself.
         if not uri or _module_of(uri) == hub_namespace:

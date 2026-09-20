@@ -335,3 +335,116 @@ class TestColumnsAlignedToAnotherClass:
 
         assert report.secondary_entity_worklist == []
         assert len(report.unresolved_properties) == 1
+
+
+# ---------------------------------------------------------------------------
+# hub_local_properties against a real ontology, not a mock (#887)
+# ---------------------------------------------------------------------------
+
+
+REF_CLASS = "https://ref.example.com/ont/cargo#CargoItem"
+
+REF_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <https://ref.example.com/ont/cargo#> .
+
+<https://ref.example.com/ont/cargo> a owl:Ontology .
+
+:CargoItem a owl:Class ;
+    rdfs:label "Cargo Item"@en ;
+    rdfs:comment "A unit of cargo."@en .
+
+:cargoDescription a owl:DatatypeProperty ;
+    rdfs:label "Cargo description"@en ;
+    rdfs:comment "Free text."@en ;
+    rdfs:domain :CargoItem ;
+    rdfs:range xsd:string .
+"""
+
+DOMAIN_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix : <https://acme.com/ont/roro#> .
+
+<https://acme.com/ont/roro> a owl:Ontology ;
+    owl:imports <https://ref.example.com/ont/cargo> .
+
+:billOfLadingNumber a owl:DatatypeProperty ;
+    rdfs:label "Bill of lading number"@en ;
+    rdfs:comment "The B/L reference."@en ;
+    rdfs:domain <https://ref.example.com/ont/cargo#CargoItem> ;
+    rdfs:range xsd:string .
+
+:carrierOfRecord a owl:ObjectProperty ;
+    rdfs:label "Carrier of record"@en ;
+    rdfs:comment "Who carries it."@en ;
+    rdfs:domain <https://ref.example.com/ont/cargo#CargoItem> ;
+    rdfs:range <https://ref.example.com/ont/cargo#CargoItem> .
+"""
+
+MASTER_TTL = """\
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+<https://acme.com/ont/master> a owl:Ontology ;
+    owl:imports <https://acme.com/ont/roro> .
+"""
+
+CATALOG = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="https://acme.com/ont/roro" uri="model/ontologies/roro.ttl"/>
+  <uri name="https://ref.example.com/ont/cargo" uri="model/ontologies/ref-cargo.ttl"/>
+</catalog>
+"""
+
+
+def _hub(tmp_path):
+    ontologies = tmp_path / "model" / "ontologies"
+    ontologies.mkdir(parents=True)
+    (ontologies / "_master.ttl").write_text(MASTER_TTL, encoding="utf-8")
+    (ontologies / "roro.ttl").write_text(DOMAIN_TTL, encoding="utf-8")
+    (ontologies / "ref-cargo.ttl").write_text(REF_TTL, encoding="utf-8")
+    (tmp_path / "catalog-v001.xml").write_text(CATALOG, encoding="utf-8")
+    return tmp_path
+
+
+class TestHubLocalPropertiesAgainstARealOntology:
+    """Exercised, not mocked.
+
+    Every other test of the binding generator mocks this function, which is precisely
+    how a regression got through: the switch to the DD-103 canonical loader read the
+    property URI under the wrong key, so the pool came back empty however correctly the
+    hub had authored its properties, and the mocks never noticed.
+    """
+
+    def test_a_hub_property_declared_on_a_reference_class_is_found(self, tmp_path):
+        from kairos_ontology.core.generate_bindings import hub_local_properties
+
+        found = hub_local_properties(_hub(tmp_path), REF_CLASS)
+
+        assert "billOfLadingNumber" in found
+        assert found["billOfLadingNumber"] == "https://acme.com/ont/roro#billOfLadingNumber"
+
+    def test_the_reference_models_own_properties_are_not_returned(self, tmp_path):
+        """_class_pools already supplies those; this adds only what the hub authored."""
+        from kairos_ontology.core.generate_bindings import hub_local_properties
+
+        assert "cargoDescription" not in hub_local_properties(_hub(tmp_path), REF_CLASS)
+
+    def test_an_object_property_is_not_offered_as_a_scalar_field(self, tmp_path):
+        from kairos_ontology.core.generate_bindings import hub_local_properties
+
+        assert "carrierOfRecord" not in hub_local_properties(_hub(tmp_path), REF_CLASS)
+
+    def test_a_hub_with_no_master_yields_nothing_rather_than_failing(self, tmp_path):
+        from kairos_ontology.core.generate_bindings import hub_local_properties
+
+        assert hub_local_properties(tmp_path, REF_CLASS) == {}
+
+    def test_no_hub_root_is_not_an_error(self):
+        from kairos_ontology.core.generate_bindings import hub_local_properties
+
+        assert hub_local_properties(None, REF_CLASS) == {}
