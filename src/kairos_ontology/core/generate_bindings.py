@@ -102,6 +102,10 @@ def _canonical_type(arrow_or_sql: str) -> str:
     return _ARROW_TO_CANONICAL.get(lowered, "string")
 
 
+#: OWL namespace, for the property-type check in :func:`hub_local_properties`.
+OWL = "http://www.w3.org/2002/07/owl#"
+
+
 def _module_of(class_uri: str) -> str:
     """The module URI a class IRI belongs to (fragment or last-segment strip)."""
     if "#" in class_uri:
@@ -179,6 +183,53 @@ def _class_pools(
     return scalar, objects
 
 
+def hub_local_properties(hub_root: Path | None, class_uri: str) -> dict[str, str]:
+    """``property local name -> URI`` for hub properties declared on *class_uri* (#887).
+
+    A hub extends a reference class by declaring its own property with
+    ``rdfs:domain`` (or ``schema:domainIncludes``) pointing at that class -- the DD-170
+    pattern that the DD-169 gate's ``registered-extension`` outcome commits a column to.
+    ``_class_pools`` enumerates the reference model only, so those properties could never
+    enter the candidate pool however correctly they were authored, and the whole extension
+    mechanism stopped at the ontology.
+
+    Both domain predicates are read because the compiler already treats them as
+    equivalent domain sources (``effective_domain_classes``, ``class_properties``).
+    Advisory: an unparseable hub ontology yields ``{}`` rather than failing generation.
+    """
+    if hub_root is None or not class_uri:
+        return {}
+    ontologies = Path(hub_root) / "model" / "ontologies"
+    if not ontologies.is_dir():
+        return {}
+    try:
+        from rdflib import RDF, RDFS, Graph, URIRef
+
+        graph = Graph()
+        for path in sorted(ontologies.glob("*.ttl")):
+            if path.name.startswith("_"):
+                continue
+            try:
+                graph.parse(path, format="turtle")
+            except Exception:  # noqa: BLE001 - one broken file must not lose the rest
+                continue
+    except Exception:  # noqa: BLE001 - rdflib unavailable or unusable; advisory only
+        return {}
+
+    target = URIRef(class_uri)
+    domain_includes = URIRef("https://schema.org/domainIncludes")
+    found: dict[str, str] = {}
+    for predicate in (RDFS.domain, domain_includes):
+        for subject in graph.subjects(predicate, target):
+            if (subject, RDF.type, URIRef(f"{OWL}DatatypeProperty")) not in graph:
+                continue
+            uri = str(subject)
+            local = uri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+            if local:
+                found.setdefault(local, uri)
+    return found
+
+
 def _profile_column(profile: dict | None, table: str, column: str) -> dict[str, Any]:
     return (((profile or {}).get("tables") or {}).get(table) or {}).get(
         "columns", {}
@@ -192,6 +243,8 @@ def generate_binding_doc(
     catalog_path: Path,
     profile: dict | None,
     report: GenerateBindingsReport,
+    hub_root: Path | None = None,
+    dispositions: dict[tuple[str, str, str], dict[str, Any]] | None = None,
 ) -> tuple[Optional[dict[str, Any]], str]:
     """Assemble one closed EntityBinding document from sheet + alignment + profile.
 
@@ -219,6 +272,12 @@ def generate_binding_doc(
         return None, "no grain identified on the sheet row"
 
     scalar_uri, object_names = _class_pools(catalog_path, class_uri)
+    # Hub-local extensions on the same class, so a column the DD-169 gate accepted as
+    # `registered-extension` can reach the binding (#887). Reference properties win a
+    # name collision: the canonical term is the one to bind to.
+    extension_uri = hub_local_properties(hub_root, class_uri)
+    for local, uri in extension_uri.items():
+        scalar_uri.setdefault(local, uri)
     align_types = {
         str(c.get("column") or ""): str(c.get("data_type") or "")
         for c in alignment_table.get("columns") or []
@@ -260,6 +319,35 @@ def generate_binding_doc(
                 {"system": system, "table": table, "property": prop,
                  "kept": column, "dropped": dropped}
             )
+
+    # Columns the DD-169 gate accepted as `registered-extension`, whose drafted property
+    # has since been authored on this class. Alignment left them in `custom_columns`
+    # precisely because no reference property fitted; the ledger records which hub
+    # property was accepted for each, and the ontology now declares it. Without this join
+    # every one of them is dropped at the last step and the extension mechanism ends at
+    # the ontology (#887).
+    for col in alignment_table.get("custom_columns") or []:
+        if not isinstance(col, dict):
+            continue
+        column = str(col.get("column") or "")
+        if not column or column in mapped_cols:
+            continue
+        decision = (dispositions or {}).get((system, table, column)) or {}
+        if str(decision.get("disposition") or "") != "registered-extension":
+            continue
+        drafted = str((decision.get("proposed_property") or {}).get("name") or "")
+        uri = extension_uri.get(drafted)
+        if not uri:
+            if drafted:
+                report.unresolved_properties.append(
+                    {"system": system, "table": table, "property": drafted,
+                     "column": column,
+                     "reason": "accepted as registered-extension but not authored on "
+                               "the anchor class in the hub ontology"}
+                )
+            continue
+        fields.append({"property": uri, "expression": column})
+        mapped_cols.add(column)
 
     if not fields:
         # A carrier's presence changes the reason text, never the outcome: this
@@ -374,6 +462,12 @@ def run_generate_bindings(
             "anchor-tables` first; the design sheet is generation's input."
         )
 
+    # The DD-169 ledger: which columns were accepted as hub extensions, and which
+    # property each was accepted as (#887). Read once for the whole run.
+    from .source_disposition import load_dispositions
+
+    dispositions = load_dispositions(hub)
+
     report = GenerateBindingsReport()
     profiles: dict[str, dict | None] = {}
     for (system, table), entry in sorted(anchors.items()):
@@ -400,6 +494,7 @@ def run_generate_bindings(
         doc, skip_reason = generate_binding_doc(
             entry, found[1], catalog_path=catalog,
             profile=profiles[system], report=report,
+            hub_root=hub_root, dispositions=dispositions,
         )
         if doc is None:
             report.generated.append(GeneratedBinding(
