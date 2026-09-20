@@ -4210,7 +4210,10 @@ def draft_gap_decisions_cmd(
             from ..core.ai_preflight import require_ai_provider
             from ..core.ai_provider import ROLE_JUDGMENT, get_ai_client, resolve_role_model
             from ..core.anchor_tables import load_table_anchors
-            from ..core.gap_decisions import suggest_family_dispositions
+            from ..core.gap_decisions import (
+                suggest_family_dispositions,
+                suggest_loose_dispositions,
+            )
 
             model = resolve_role_model(ROLE_JUDGMENT)
             require_ai_provider(ROLE_JUDGMENT, model=model, probe=False)
@@ -4228,8 +4231,22 @@ def draft_gap_decisions_cmd(
                     f"🧠 described {stats['families_described']} family/families "
                     f"({stats.get('flagged_incoherent', 0)} flagged as not one concept)"
                 )
-            else:
-                click.echo("🧠 no families left to describe — every gap column is decided")
+            # Families cover the names that share a leading token; on a real hub that was
+            # 64 of 357, and the other 293 got no proposal from anyone (#880).
+            loose_stats = suggest_loose_dispositions(
+                sheet,
+                client=get_ai_client(model, role=ROLE_JUDGMENT),
+                model=model,
+                anchors=load_table_anchors(hub / "integration" / "sources" / "_analysis"),
+                hub_root=hub,
+            )
+            if loose_stats.get("names_described"):
+                click.echo(
+                    f"🧠 described {loose_stats['names_described']} single name(s) in "
+                    f"{loose_stats['batches']} call(s)"
+                )
+            elif not stats.get("families_described"):
+                click.echo("🧠 nothing left to describe — every gap column is decided")
         s = sheet["summary"]
         if not dry_run:
             path = write_decision_sheet(hub, sheet)

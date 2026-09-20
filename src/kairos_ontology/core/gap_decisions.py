@@ -845,6 +845,191 @@ def build_decision_sheet(hub_root: Path, *, min_occurrences: int = 1) -> dict[st
     }
 
 
+#: Most single names to characterise in one call. The families call is bounded by how
+#: many groups a sheet forms; a loose list is bounded by nothing, and a strict
+#: response_format names every key in `required`, so a 1,000-name hub would build a
+#: schema no provider accepts. Batched instead of truncated -- a name the reviewer never
+#: sees is the failure this whole gate exists to prevent (#880).
+MAX_LOOSE_PER_CALL = 60
+
+
+def suggest_loose_dispositions(
+    sheet: dict[str, Any],
+    *,
+    client: Any,
+    model: str,
+    anchors: dict[tuple[str, str], dict[str, Any]] | None = None,
+    hub_root: Path | None = None,
+) -> dict[str, Any]:
+    """Characterise the single names the deterministic pass could not propose for (#880).
+
+    :func:`suggest_family_dispositions` reads ``sheet["families"]`` and nothing else.
+    Families are formed by shared name tokens, so a column whose name shares no token
+    with another is a singleton forever and no model call ever considered it. On one real
+    hub that was the overwhelming majority: 7 families covering 64 of 357 distinct names,
+    and 293 singletons that got a deterministic ``reasoning`` line and no proposal.
+
+    DD-186's own framing — the reviewer's real question is *"what concept is this, and
+    does the model already have a home for it?"* — applies at least as forcefully to a
+    singleton, and arguably more: token grouping already solved the easy case, so what is
+    left is where naming the concept is hard.
+
+    Only entries with **no** ``proposed_disposition`` are sent. A rule already decided
+    the rest — a JSON blob, a free-text note, a recurring identifier, or a column whose
+    extension property the aligner drafted — and re-asking would spend a call to
+    second-guess a deterministic answer.
+
+    Fills ``proposed_disposition`` and ``reasoning`` only, never ``decision``: the same
+    contract the families call honours.
+    """
+    loose = [
+        entry
+        for entry in (sheet.get("decisions") or [])
+        if isinstance(entry, dict)
+        and not str(entry.get("proposed_disposition") or "").strip()
+        and not str(entry.get("decision") or "").strip()
+    ]
+    if not loose:
+        return {"names_described": 0, "batches": 0}
+
+    def key_of(entry: dict[str, Any]) -> str:
+        return f"{entry.get('domain') or '_'}::{entry['column']}"
+
+    glossary_block = _glossary_prompt_block(hub_root, subject="column")
+    described = 0
+    batches = 0
+    for start in range(0, len(loose), MAX_LOOSE_PER_CALL):
+        batch = loose[start : start + MAX_LOOSE_PER_CALL]
+        batches += 1
+        lines = []
+        for entry in batch:
+            anchor_names = sorted(
+                {
+                    str(record.get("anchor") or "")
+                    for (_system, _table), record in (anchors or {}).items()
+                    if str(record.get("domain") or "") == str(entry.get("domain") or "")
+                }
+                - {""}
+            )[:4]
+            drafted = [
+                p.get("name")
+                for p in (entry.get("suggested_properties") or [])
+                if isinstance(p, dict) and p.get("name")
+            ]
+            lines.append(
+                f"- {key_of(entry)}: appears in {entry.get('occurrences')} table(s) "
+                f"({', '.join((entry.get('tables') or [])[:3])}); "
+                f"types: {', '.join(entry.get('data_types') or []) or 'unknown'}"
+                + (f"; aligner drafted property: {', '.join(drafted)}" if drafted else "")
+                + (f"; domain anchors: {', '.join(anchor_names)}" if anchor_names else "")
+            )
+
+        prompt = f"""These are single source column names with no reference-model property and no
+rule-based proposal. For EACH, propose a disposition from exactly this closed set:
+
+   - blueprint-gap: real business data the accelerator blueprint has no domain for.
+     This asserts a REFERENCE-MODEL DEFECT to file upstream — use it sparingly.
+   - registered-extension: real business data outside the archetype catalog, to be
+     registered as an in-scope client concept.
+   - deferred: in scope, to be modelled later; stays visible as a known gap.
+   - not-business-data: metadata, workflow or scratch with no canonical meaning.
+   Leave it empty when the name genuinely needs a human to look at the data. An opaque
+   legacy abbreviation you cannot read is exactly that case — say so rather than guess.
+
+Give a one-sentence 'reasoning' naming the concept you think the column holds. Where the
+aligner already drafted a property for it, that is strong evidence the column is real
+business data. Prefer 'registered-extension' or 'deferred' over 'blueprint-gap' unless
+the concept is clearly one the reference model ought to have had.
+
+Answer under the exact key shown at the start of each line (domain::column).
+{glossary_block}
+
+COLUMNS ({len(batch)}):
+{chr(10).join(lines)}"""
+
+        schema = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "loose_suggestions",
+                "strict": True,
+                "schema": {
+                    "$defs": {
+                        "S": {
+                            "type": "object",
+                            "properties": {
+                                "proposed_disposition": {
+                                    "type": ["string", "null"],
+                                    "enum": [*sorted(DISPOSITIONS), None],
+                                },
+                                "reasoning": {"type": "string"},
+                            },
+                            "required": ["proposed_disposition", "reasoning"],
+                            "additionalProperties": False,
+                        }
+                    },
+                    "type": "object",
+                    "properties": {
+                        "columns": {
+                            "type": "object",
+                            "properties": {key_of(e): {"$ref": "#/$defs/S"} for e in batch},
+                            "required": [key_of(e) for e in batch],
+                            "additionalProperties": False,
+                        }
+                    },
+                    "required": ["columns"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+        response = create_chat_completion(
+            client,
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            seed=resolve_ai_seed(ROLE_JUDGMENT),
+            reasoning_effort=resolve_reasoning_effort(ROLE_JUDGMENT),
+            response_format=schema,
+            param_fallbacks={"response_format": {"type": "json_object"}},
+            trace_name="suggest-gap-columns",
+            trace_metadata=call_metadata(
+                new_session_id("gapsuggest"), "judgment", columns=len(batch)
+            ),
+        )
+        answers = json.loads(response.choices[0].message.content or "{}").get("columns") or {}
+        for entry in batch:
+            answer = answers.get(key_of(entry)) or {}
+            if not answer:
+                continue
+            described += 1
+            entry["proposed_disposition"] = answer.get("proposed_disposition") or ""
+            entry["reasoning"] = str(answer.get("reasoning") or "") or entry.get("reasoning", "")
+
+    flush_tracing()
+    return {"names_described": described, "batches": batches}
+
+
+def _glossary_prompt_block(hub_root: Path | None, *, subject: str) -> str:
+    """The business vocabulary block, shared by both suggestion calls (#885)."""
+    if hub_root is None:
+        return ""
+    from .propose_alignment import load_glossary_entries
+
+    entries = load_glossary_entries(hub_root)
+    if not entries:
+        return ""
+    rendered = "\n".join(
+        f"- {label}: {definition}" if definition else f"- {label}"
+        for label, definition in entries
+    )
+    return (
+        f"\n\nTHE BUSINESS'S OWN VOCABULARY. Where a {subject} is one of these concepts, "
+        "say so and use their word for it in 'reasoning'. A term here is evidence the "
+        "concept is real and in scope, so prefer 'registered-extension' over 'deferred' "
+        "for it. Do not stretch a term to fit; an unlisted concept is simply unlisted.\n"
+        f"{rendered}"
+    )
+
+
 def suggest_family_dispositions(
     sheet: dict[str, Any],
     *,
@@ -911,24 +1096,7 @@ def suggest_family_dispositions(
             + (f"; anchors: {', '.join(anchor_names)}" if anchor_names else "")
         )
 
-    glossary_block = ""
-    if hub_root is not None:
-        from .propose_alignment import load_glossary_entries
-
-        entries = load_glossary_entries(hub_root)
-        if entries:
-            rendered = "\n".join(
-                f"- {label}: {definition}" if definition else f"- {label}"
-                for label, definition in entries
-            )
-            glossary_block = (
-                "\n\nTHE BUSINESS'S OWN VOCABULARY. Where a family is one of these "
-                "concepts, say so and use their word for it in 'reasoning'. A term here "
-                "is evidence the concept is real and in scope, so prefer "
-                "'registered-extension' over 'deferred' for it. Do not stretch a term to "
-                "fit; an unlisted concept is simply unlisted.\n"
-                f"{rendered}"
-            )
+    glossary_block = _glossary_prompt_block(hub_root, subject="family")
 
     prompt = f"""These groups of source columns share a leading token and have no reference-model
 property. For EACH family decide two things.
