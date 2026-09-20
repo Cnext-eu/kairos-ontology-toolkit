@@ -179,6 +179,7 @@ kairos-ontology anchor-tables [OPTIONS]
 | `--model` |  | Override the anchoring model. |
 | `--no-schema-catalogue-screen` |  | Anchor every profiled table, including ones that look like a catalogue of the source's own schema. Use when the screen has excluded a real business table. |
 | `--quiet`, `-q` |  | Suppress progress output. |
+| `--without-discovery` |  | Anchor even though the hub has no authored business glossary. The anchors will be source-shaped rather than grounded in the business's own vocabulary. |
 
 
 ## apply-gold-connection
@@ -1534,7 +1535,7 @@ kairos-ontology source-disposition set [OPTIONS]
 | `--table` | **required** | Physical table name (source.relation's suffix). |
 | `--column` | `` | Decide one column rather than the whole table. A table-grain decision already covers every column in it. |
 | `--all-tables` |  | With --column: record the same decision for every table where that column is an undecided gap. The same column name recurs because the same business fact does, so it is one decision, not N. |
-| `--disposition` | **required** | What the hub decided to do with this table. |
+| `--disposition` | **required** | What the hub decided to do with this table. A TABLE-grain decision retires every gap column in that table from the DD-169 pre-binding gate, so they are never raised again -- including after the table is bound (#881). That is intended for 'not-business-data' (the table is not business data, so neither are its columns) and defensible for 'blueprint-gap'. It is a trap for 'deferred', which means 'in scope, not modelled yet' -- exactly what the gate exists to keep asking about. Prefer --column, or draft-gap-decisions, when the columns still need deciding. |
 | `--rationale` | `` | Why. Required for a non-obvious disposition. |
 | `--decided-by` | `user` | Who made this call, so a reviewer can weight it. |
 | `--evidence` | `Sentinel.UNSET` | Supporting evidence locator (row counts, a report, a column list). Repeatable. |

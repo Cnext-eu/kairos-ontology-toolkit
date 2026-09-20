@@ -1334,6 +1334,38 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
         raise SystemExit(1)
 
 
+def require_business_discovery(why: str, *, escaped: bool) -> None:
+    """Refuse to spend an expensive ungrounded LLM call, unless told to (#885).
+
+    The business glossary is the client's own vocabulary and the one input the pipeline
+    cannot reconstruct for itself. Blocking with an explicit escape rather than warning,
+    because a warning here is read after the money is spent.
+
+    Shared by ``propose-alignment`` and ``anchor-tables``: anchoring decides what every
+    table *is*, so running it ungrounded is the more consequential of the two, and it
+    previously had no check at all.
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.propose_alignment import load_glossary_terms
+
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        return
+    if not load_glossary_terms(hub_root) and not escaped:
+        raise click.ClickException(
+            "No authored business glossary found under businessdiscovery/*.ttl.\n"
+            f"  {why}\n"
+            "  Run kairos-design-discovery first, or pass --without-discovery to "
+            "proceed deliberately."
+        )
+    if escaped:
+        click.echo(
+            "⚠ Running without a business glossary (--without-discovery): proposed "
+            "terms will be source-shaped.",
+            err=True,
+        )
+
+
 @click.command(name="propose-alignment")
 @click.option(
     "--analysis",
@@ -1566,22 +1598,11 @@ def propose_alignment_cmd(
     # reasoning model — so spending it on ungrounded input and finding out afterwards is
     # the worst available ordering. Blocking with an explicit escape rather than a
     # warning, because a warning here is read after the money is spent.
-    _preflight_hub = find_hub_root(Path.cwd(), require_model=False)
-    if _preflight_hub is not None:
-        if not load_glossary_terms(_preflight_hub) and not without_discovery:
-            raise click.ClickException(
-                "No authored business glossary found under businessdiscovery/*.ttl.\n"
-                "  Alignment uses it to ground proposed terms in the business's own "
-                "vocabulary; without it the proposals mirror source column names.\n"
-                "  Run kairos-design-discovery first, or pass --without-discovery to "
-                "proceed deliberately."
-            )
-        if without_discovery:
-            click.echo(
-                "⚠ Running without a business glossary (--without-discovery): proposed "
-                "terms will be source-shaped.",
-                err=True,
-            )
+    require_business_discovery(
+        "Alignment uses it to ground proposed terms in the business's own vocabulary; "
+        "without it the proposals mirror source column names.",
+        escaped=without_discovery,
+    )
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -3929,8 +3950,22 @@ def _emit_pattern_coverage(root, ledger, output_format):
     "the source's own schema. Use when the screen has excluded a real business table.",
 )
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress progress output.")
+@click.option(
+    "--without-discovery",
+    is_flag=True,
+    default=False,
+    help="Anchor even though the hub has no authored business glossary. The anchors "
+    "will be source-shaped rather than grounded in the business's own vocabulary.",
+)
 def anchor_tables_cmd(
-    sources_opt, analysis_opt, catalog_opt, accelerator, llm_model, no_screen, quiet
+    sources_opt,
+    analysis_opt,
+    catalog_opt,
+    accelerator,
+    llm_model,
+    no_screen,
+    quiet,
+    without_discovery,
 ):
     """Anchor every source table against the full reference class catalog (DD-185).
 
@@ -3995,6 +4030,12 @@ def anchor_tables_cmd(
 
     model = llm_model or resolve_role_model(ROLE_ALIGNMENT)
     require_ai_provider(ROLE_ALIGNMENT, model=model, probe=False)
+    require_business_discovery(
+        "Anchoring decides what every table is, and the glossary's terms carry "
+        "rdfs:seeAlso straight to reference-model classes -- the very question being "
+        "asked; without it the anchors are read from column names alone.",
+        escaped=without_discovery,
+    )
     client = get_ai_client(model, role=ROLE_ALIGNMENT)
 
     def report(message):
