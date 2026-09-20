@@ -1334,6 +1334,38 @@ def audit_column_coverage_cmd(sources, bindings, analysis, fail_on, out_format):
         raise SystemExit(1)
 
 
+def require_business_discovery(why: str, *, escaped: bool) -> None:
+    """Refuse to spend an expensive ungrounded LLM call, unless told to (#885).
+
+    The business glossary is the client's own vocabulary and the one input the pipeline
+    cannot reconstruct for itself. Blocking with an explicit escape rather than warning,
+    because a warning here is read after the money is spent.
+
+    Shared by ``propose-alignment`` and ``anchor-tables``: anchoring decides what every
+    table *is*, so running it ungrounded is the more consequential of the two, and it
+    previously had no check at all.
+    """
+    from ..core.hub_utils import find_hub_root
+    from ..core.propose_alignment import load_glossary_terms
+
+    hub_root = find_hub_root(Path.cwd(), require_model=False)
+    if hub_root is None:
+        return
+    if not load_glossary_terms(hub_root) and not escaped:
+        raise click.ClickException(
+            "No authored business glossary found under businessdiscovery/*.ttl.\n"
+            f"  {why}\n"
+            "  Run kairos-design-discovery first, or pass --without-discovery to "
+            "proceed deliberately."
+        )
+    if escaped:
+        click.echo(
+            "⚠ Running without a business glossary (--without-discovery): proposed "
+            "terms will be source-shaped.",
+            err=True,
+        )
+
+
 @click.command(name="propose-alignment")
 @click.option(
     "--analysis",
@@ -1552,7 +1584,6 @@ def propose_alignment_cmd(
     from ..core.propose_alignment import (
         HIGH_ACCURACY_MODEL,
         AlignmentTotalFailureError,
-        load_glossary_terms,
         run_propose_alignment,
     )
     from ..core.ai_provider import DEFAULT_MODEL, ROLE_ALIGNMENT, resolve_role_model
@@ -1566,22 +1597,11 @@ def propose_alignment_cmd(
     # reasoning model — so spending it on ungrounded input and finding out afterwards is
     # the worst available ordering. Blocking with an explicit escape rather than a
     # warning, because a warning here is read after the money is spent.
-    _preflight_hub = find_hub_root(Path.cwd(), require_model=False)
-    if _preflight_hub is not None:
-        if not load_glossary_terms(_preflight_hub) and not without_discovery:
-            raise click.ClickException(
-                "No authored business glossary found under businessdiscovery/*.ttl.\n"
-                "  Alignment uses it to ground proposed terms in the business's own "
-                "vocabulary; without it the proposals mirror source column names.\n"
-                "  Run kairos-design-discovery first, or pass --without-discovery to "
-                "proceed deliberately."
-            )
-        if without_discovery:
-            click.echo(
-                "⚠ Running without a business glossary (--without-discovery): proposed "
-                "terms will be source-shaped.",
-                err=True,
-            )
+    require_business_discovery(
+        "Alignment uses it to ground proposed terms in the business's own vocabulary; "
+        "without it the proposals mirror source column names.",
+        escaped=without_discovery,
+    )
 
     cwd = Path.cwd()
     hub_root = find_hub_root(cwd)
@@ -3378,6 +3398,97 @@ def source_disposition_group() -> None:
     """
 
 
+#: Table-grain dispositions whose cascade onto the table's columns is the point.
+#: ``deferred`` is deliberately absent: it means "in scope, not modelled yet", which is
+#: the state the DD-169 gate exists to keep raising (#881).
+_INTENTIONAL_CASCADE = frozenset({"not-business-data", "blueprint-gap"})
+
+
+def _cascade_warning(hub_root, system: str, table: str, disposition: str) -> list[str]:
+    """Lines saying what a table-grain disposition just retired from the DD-169 gate.
+
+    The count is real rather than a generic caution: the columns are computable right
+    here. Three outcomes, because they need different words -- alignment never looked at
+    this table (the most dangerous case, and the one the flow walks an operator into),
+    it looked and found no gap columns (nothing to say), or it found some and they have
+    just been decided in bulk.
+    """
+    covered = _gap_columns_for_table(hub_root, system, table)
+    if covered is None:
+        return [
+            "  ⚠ alignment has not covered this table, so nothing yet knows which of its",
+            "    columns carry business data with no canonical home — and this decision",
+            "    already answers for all of them. Consider 'propose-alignment' first.",
+        ]
+    if not covered:
+        return []
+    if disposition in _INTENTIONAL_CASCADE:
+        return [
+            f"  ℹ {len(covered)} gap column(s) retired with the table, which is what",
+            f"    '{disposition}' means.",
+        ]
+    return [
+        f"  ⚠ {len(covered)} gap column(s) in this table now count as DECIDED. The DD-169",
+        "    pre-binding gate will not raise them again — including after you bind this",
+        "    table.",
+        f"    '{disposition}' means \"in scope, not modelled yet\", but the gate cannot",
+        "    tell that apart from \"out of scope\".",
+        "    Keep them in review:  kairos-ontology draft-gap-decisions --suggest",
+        "    Undo:                 kairos-ontology source-disposition clear "
+        f"--system {system} --table {table}",
+    ]
+
+
+def _gap_columns_for_table(hub_root, system: str, table: str):
+    """This table's DD-169 gap columns, or ``None`` if alignment never covered it.
+
+    ``None`` and ``[]`` are different answers and the caller says different things about
+    them: "no alignment has looked here" versus "alignment looked and found nothing
+    outstanding". Advisory throughout — an unreadable report returns ``None`` rather than
+    failing a decision the operator has already made.
+    """
+    try:
+        from ..core.alignment_report import build_alignment_report
+
+        report = build_alignment_report(
+            hub_root / "integration" / "sources" / "_analysis", hub_root=hub_root
+        )
+    except Exception:  # noqa: BLE001 - advisory only
+        return None
+    if not _alignment_covers_table(hub_root, system, table):
+        return None
+    return [
+        column
+        for domain in report.domains
+        for column in domain.gap_columns
+        if column.system == system and column.table == table
+    ]
+
+
+def _alignment_covers_table(hub_root, system: str, table: str) -> bool:
+    """Whether any ``*-alignment.yaml`` carries an entry for this exact relation."""
+    import yaml as _yaml
+
+    analysis = hub_root / "integration" / "sources" / "_analysis"
+    try:
+        paths = sorted(analysis.glob("*-alignment.yaml"))
+    except OSError:
+        return False
+    for path in paths:
+        try:
+            payload = _yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - a malformed file is not an answer
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for entry in payload.get("tables") or []:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("system") or "") == system and str(entry.get("table") or "") == table:
+                return True
+    return False
+
+
 @source_disposition_group.command(name="set")
 @click.option("--system", required=True, help="Source system the table belongs to.")
 @click.option("--table", required=True, help="Physical table name (source.relation's suffix).")
@@ -3399,7 +3510,13 @@ def source_disposition_group() -> None:
     "--disposition",
     required=True,
     type=click.Choice(sorted(_DISPOSITION_CHOICES())),
-    help="What the hub decided to do with this table.",
+    help="What the hub decided to do with this table. A TABLE-grain decision retires "
+    "every gap column in that table from the DD-169 pre-binding gate, so they are never "
+    "raised again -- including after the table is bound (#881). That is intended for "
+    "'not-business-data' (the table is not business data, so neither are its columns) "
+    "and defensible for 'blueprint-gap'. It is a trap for 'deferred', which means 'in "
+    "scope, not modelled yet' -- exactly what the gate exists to keep asking about. "
+    "Prefer --column, or draft-gap-decisions, when the columns still need deciding.",
 )
 @click.option("--rationale", default="", help="Why. Required for a non-obvious disposition.")
 @click.option(
@@ -3479,6 +3596,9 @@ def source_disposition_set_cmd(
             else f"{target_system}.{target_table}"
         )
         click.echo(f"✓ {label} recorded as '{disposition}'")
+        if not column:
+            for line in _cascade_warning(hub_root, target_system, target_table, disposition):
+                click.echo(line)
     click.echo(f"  {len(targets)} entr(y/ies) written to {path}")
 
 
@@ -3829,8 +3949,22 @@ def _emit_pattern_coverage(root, ledger, output_format):
     "the source's own schema. Use when the screen has excluded a real business table.",
 )
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress progress output.")
+@click.option(
+    "--without-discovery",
+    is_flag=True,
+    default=False,
+    help="Anchor even though the hub has no authored business glossary. The anchors "
+    "will be source-shaped rather than grounded in the business's own vocabulary.",
+)
 def anchor_tables_cmd(
-    sources_opt, analysis_opt, catalog_opt, accelerator, llm_model, no_screen, quiet
+    sources_opt,
+    analysis_opt,
+    catalog_opt,
+    accelerator,
+    llm_model,
+    no_screen,
+    quiet,
+    without_discovery,
 ):
     """Anchor every source table against the full reference class catalog (DD-185).
 
@@ -3895,6 +4029,12 @@ def anchor_tables_cmd(
 
     model = llm_model or resolve_role_model(ROLE_ALIGNMENT)
     require_ai_provider(ROLE_ALIGNMENT, model=model, probe=False)
+    require_business_discovery(
+        "Anchoring decides what every table is, and the glossary's terms carry "
+        "rdfs:seeAlso straight to reference-model classes -- the very question being "
+        "asked; without it the anchors are read from column names alone.",
+        escaped=without_discovery,
+    )
     client = get_ai_client(model, role=ROLE_ALIGNMENT)
 
     def report(message):
@@ -4083,11 +4223,15 @@ def draft_gap_decisions_cmd(
                 anchors=load_table_anchors(
                     hub / "integration" / "sources" / "_analysis"
                 ),
+                hub_root=hub,
             )
-            click.echo(
-                f"🧠 described {stats['families_described']} family/families "
-                f"({stats['flagged_incoherent']} flagged as not one concept)"
-            )
+            if stats.get("families_described"):
+                click.echo(
+                    f"🧠 described {stats['families_described']} family/families "
+                    f"({stats.get('flagged_incoherent', 0)} flagged as not one concept)"
+                )
+            else:
+                click.echo("🧠 no families left to describe — every gap column is decided")
         s = sheet["summary"]
         if not dry_run:
             path = write_decision_sheet(hub, sheet)

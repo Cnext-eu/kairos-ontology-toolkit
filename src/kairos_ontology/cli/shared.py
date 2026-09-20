@@ -1150,12 +1150,31 @@ def _managed_files_transaction(root: Path) -> Iterator[_ManagedFilesSnapshot]:
         raise
 
 
+def uv_sync_command(hub_root: Path | None = None) -> list[str]:
+    """``uv sync`` plus the extras this environment is currently running on (#878).
+
+    A bare ``uv sync`` installs the default dependency set and removes everything else,
+    so every upgrade, test-ref pin and restore silently uninstalled the hub's optional
+    extras. For a hub configured against Azure Foundry that is the provider SDK, and the
+    next AI-backed command fails on a package nobody removed on purpose.
+
+    Detection runs before the sync, while the packages are still present. It is
+    over-inclusive by design -- see :func:`~kairos_ontology.core.active_extras.active_extras`.
+    """
+    from ..core.active_extras import active_extras
+
+    command = ["uv", "sync"]
+    for extra in active_extras(hub_root or Path.cwd()):
+        command += ["--extra", extra]
+    return command
+
+
 def _resync_restored_dependency() -> str | None:
     """Best-effort environment repair after restoring dependency files."""
     if sys.platform == "win32":
         return "close the current shell and run `uv sync` to restore the prior environment"
     try:
-        result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
+        result = subprocess.run(uv_sync_command(), capture_output=True, text=True)
     except OSError as exc:
         return f"could not resync the prior dependency source: {exc}"
     if result.returncode != 0:
@@ -1697,6 +1716,11 @@ def _schedule_windows_refresh(check: bool) -> bool:
     failure (callers fall back to printing manual guidance).
     """
     pid = os.getpid()
+    # Computed here, in the process that still has the extras installed: the spawned
+    # shell runs after this one exits and a bare `uv sync` there is what pruned them
+    # (#878). On Windows this is the only sync that runs -- the in-process one is
+    # skipped because the running .exe is locked.
+    sync_cmd = " ".join(uv_sync_command())
     update_cmd = "uv run kairos-ontology update --force-managed"
     if check:
         update_cmd += " --check"
@@ -1713,7 +1737,7 @@ def _schedule_windows_refresh(check: bool) -> bool:
         f"Start-Sleep -Milliseconds 750; "
         "try { Start-Transcript -Path $env:KAIROS_REFRESH_LOG -Force | Out-Null } catch {} ; "
         f"Write-Host 'Refreshing managed files under the upgraded toolkit...'; "
-        f"uv sync; "
+        f"{sync_cmd}; "
         f"{update_cmd}; "
         f"try {{ Stop-Transcript | Out-Null }} catch {{}}"
     )
@@ -1772,7 +1796,7 @@ def _lock_and_sync_dependency() -> None:
         raise RuntimeError(f"uv lock failed:\n{result.stderr.strip()}")
     if sys.platform == "win32":
         return
-    result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
+    result = subprocess.run(uv_sync_command(), capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"uv sync failed:\n{result.stderr.strip()}")
 

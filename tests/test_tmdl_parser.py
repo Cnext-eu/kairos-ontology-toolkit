@@ -7,6 +7,7 @@ from kairos_ontology.core.tmdl_parser import (
     TmdlMeasure,
     TmdlRelationship,
     TmdlTable,
+    parse_model_folder,
     parse_model_tmdl,
     parse_tmdl_content,
 )
@@ -343,3 +344,157 @@ table d_Geography
         table = results[0]
         assert table.description == "Geographic dimension table"
         assert table.columns[0].description == "Country name"
+
+
+# ---------------------------------------------------------------------------
+# Folder layouts (issue #874)
+# ---------------------------------------------------------------------------
+
+
+MODEL_TMDL = "model Model\n\tculture: en-US\n\nref table f_sales\nref table d_date\n"
+
+
+def _table_tmdl(name: str) -> str:
+    return (
+        f"table {name}\n"
+        "\n"
+        "\tcolumn amount\n"
+        "\t\tdataType: double\n"
+        "\t\tsummarizeBy: sum\n"
+        "\t\tsourceColumn: amount\n"
+        "\n"
+        f"\tmeasure 'Total {name}' = SUM({name}[amount])\n"
+    )
+
+
+class TestParseModelFolderLayouts:
+    """A flat export is as real as a definition/tables/ one (issue #874)."""
+
+    def test_canonical_definition_tables_layout(self, tmp_path):
+        definition = tmp_path / "MyModel.SemanticModel" / "definition"
+        (definition / "tables").mkdir(parents=True)
+        (definition / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
+        for name in ("f_sales", "d_date"):
+            (definition / "tables" / f"{name}.tmdl").write_text(
+                _table_tmdl(name), encoding="utf-8"
+            )
+
+        model = parse_model_folder(definition)
+
+        assert model.name == "MyModel"
+        assert sorted(t.name for t in model.tables) == ["d_date", "f_sales"]
+        assert model.unresolved_table_refs == []
+
+    def test_flat_layout_tables_are_found(self, tmp_path):
+        """Tables dropped beside model.tmdl are parsed, not reported absent."""
+        export = tmp_path / "staging" / "MyModel"
+        export.mkdir(parents=True)
+        (export / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
+        (export / "database.tmdl").write_text(
+            "database\n\tcompatibilityLevel: 1550\n", encoding="utf-8"
+        )
+        for name in ("f_sales", "d_date"):
+            (export / f"{name}.tmdl").write_text(_table_tmdl(name), encoding="utf-8")
+
+        model = parse_model_folder(export)
+
+        assert sorted(t.name for t in model.tables) == ["d_date", "f_sales"]
+        assert model.unresolved_table_refs == []
+        assert sum(len(t.measures) for t in model.tables) == 2
+
+    def test_flat_layout_is_named_for_the_model_not_the_staging_dir(self, tmp_path):
+        """Two flat exports staged side by side must not collide on one name."""
+        names = []
+        for model_name in ("ModelA", "ModelB"):
+            export = tmp_path / "staging" / model_name
+            export.mkdir(parents=True)
+            (export / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
+            (export / "f_sales.tmdl").write_text(_table_tmdl("f_sales"), encoding="utf-8")
+            names.append(parse_model_folder(export).name)
+
+        assert names == ["ModelA", "ModelB"]
+
+    def test_genuinely_absent_tables_are_still_reported(self, tmp_path):
+        """The #807 warning must not be silenced by the flat-layout sweep."""
+        export = tmp_path / "staging" / "MyModel"
+        export.mkdir(parents=True)
+        (export / "model.tmdl").write_text(MODEL_TMDL, encoding="utf-8")
+        (export / "f_sales.tmdl").write_text(_table_tmdl("f_sales"), encoding="utf-8")
+
+        model = parse_model_folder(export)
+
+        assert [t.name for t in model.tables] == ["f_sales"]
+        assert model.unresolved_table_refs == ["d_date"]
+
+
+# ---------------------------------------------------------------------------
+# Fenced multi-line DAX (issue #875)
+# ---------------------------------------------------------------------------
+
+
+class TestFencedMeasureExpressions:
+    """The ``` fence is a delimiter, never expression text (issue #875)."""
+
+    def test_fence_is_not_part_of_the_expression(self):
+        content = (
+            "table f_sales\n"
+            "\n"
+            "\tmeasure 'Trailing Average' = ```\n"
+            "\t\t\tVAR _n = SELECTEDVALUE(f_sales[week])\n"
+            "\t\t\tRETURN _n\n"
+            "\t\t\t```\n"
+            "\t\tformatString: #,0\n"
+        )
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+        measure = tables[0].measures[0]
+
+        assert "```" not in measure.expression
+        assert measure.expression.startswith("VAR _n =")
+        assert measure.expression.endswith("RETURN _n")
+        assert measure.format_string == "#,0"
+
+    def test_fenced_expression_keeps_indentation_and_blank_lines(self):
+        content = (
+            "table f_sales\n"
+            "\n"
+            "\tmeasure Total = ```\n"
+            "\t\t\tVAR _a = 1\n"
+            "\n"
+            "\t\t\tVAR _b =\n"
+            "\t\t\t    SWITCH(\n"
+            "\t\t\t        TRUE(),\n"
+            "\t\t\t        _a\n"
+            "\t\t\t    )\n"
+            "\t\t\tRETURN _b\n"
+            "\t\t\t```\n"
+        )
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+        expression = tables[0].measures[0].expression
+
+        assert "        TRUE()," in expression
+        assert "\n\nVAR _b =" in expression
+
+    def test_fence_on_the_line_after_the_equals(self):
+        content = (
+            "table f_sales\n"
+            "\n"
+            "\tmeasure Total =\n"
+            "\t\t```\n"
+            "\t\tSUM(f_sales[amount])\n"
+            "\t\t```\n"
+        )
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+
+        assert tables[0].measures[0].expression == "SUM(f_sales[amount])"
+
+    def test_unterminated_fence_still_yields_the_dax_it_carries(self):
+        content = "table f_sales\n\n\tmeasure Total = ```\n\t\tSUM(f_sales[amount])\n"
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+
+        assert tables[0].measures[0].expression == "SUM(f_sales[amount])"
+
+    def test_single_line_expression_is_unchanged(self):
+        content = "table f_sales\n\n\tmeasure Total = SUM(f_sales[amount])\n"
+        tables = [i for i in parse_tmdl_content(content) if isinstance(i, TmdlTable)]
+
+        assert tables[0].measures[0].expression == "SUM(f_sales[amount])"

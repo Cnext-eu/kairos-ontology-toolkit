@@ -10,6 +10,7 @@ patterns needed for ontology engineering input, not a full TMDL grammar parser.
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -319,6 +320,34 @@ def _parse_column(lines: list[str], start: int, parent_indent: int) -> tuple[Tmd
     return col, i
 
 
+#: TMDL wraps a multi-line DAX expression in a ``` fence: the opening fence follows the
+#: `=`, the body is indented under it, and a bare ``` closes it. The fence is delimiter,
+#: never expression text (issue #875).
+_EXPRESSION_FENCE = "```"
+
+
+def _collect_fenced_expression(lines: list[str], start: int) -> tuple[str, int]:
+    """Collect a ```-fenced expression body, preserving its internal shape.
+
+    ``start`` is the line after the opening fence. Returns the dedented body and the
+    index of the line after the closing fence (or after the last line, if the fence is
+    unterminated -- a truncated export should still yield the DAX it does carry).
+    """
+    body: list[str] = []
+    i = start
+    while i < len(lines):
+        if lines[i].strip() == _EXPRESSION_FENCE:
+            i += 1
+            break
+        body.append(lines[i])
+        i += 1
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    return textwrap.dedent("\n".join(body)).rstrip(), i
+
+
 def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[TmdlMeasure, int]:
     """Parse a measure block, including multiline DAX expressions."""
     header = lines[start].strip()
@@ -339,7 +368,12 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
 
     # If we got an inline expression from the header, start collecting
     if first_expr is not None:
-        if first_expr:
+        if first_expr.startswith(_EXPRESSION_FENCE):
+            # `measure Name = ``` ` -> fenced multi-line DAX. Read to the closing
+            # fence rather than guessing the end from indentation, and keep the
+            # fence out of the expression text (issue #875).
+            measure.expression, i = _collect_fenced_expression(lines, i)
+        elif first_expr:
             # Single-line or start of multiline DAX
             expr_lines = [first_expr]
             while i < len(lines):
@@ -357,9 +391,16 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
                 i += 1
             measure.expression = "\n".join(expr_lines)
         else:
-            # `measure Name =` with empty RHS → multiline DAX follows
-            expr_lines = []
-            while i < len(lines):
+            # `measure Name =` with empty RHS → multiline DAX follows, either
+            # fenced or as a plain indented block.
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            if i < len(lines) and lines[i].strip() == _EXPRESSION_FENCE:
+                measure.expression, i = _collect_fenced_expression(lines, i + 1)
+                expr_lines = None
+            else:
+                expr_lines = []
+            while expr_lines is not None and i < len(lines):
                 next_line = lines[i]
                 next_stripped = next_line.strip()
                 next_indent = _get_indent(next_line)
@@ -372,7 +413,8 @@ def _parse_measure(lines: list[str], start: int, parent_indent: int) -> tuple[Tm
                     break
                 expr_lines.append(next_stripped)
                 i += 1
-            measure.expression = "\n".join(expr_lines)
+            if expr_lines is not None:
+                measure.expression = "\n".join(expr_lines)
 
     # Parse remaining properties
     while i < len(lines):
@@ -566,15 +608,23 @@ def parse_model_folder(definition_dir: Path) -> TmdlModel:
         model.default_mode = meta.get("defaultMode", "")
         declared_tables = parse_model_table_refs(model_text)
 
-    # Parse tables
+    # Parse tables. The canonical PBIP layout puts them under definition/tables/,
+    # but a Power BI export saved without that folder drops every <table>.tmdl flat
+    # beside model.tmdl. Read both, so a flat export is not reported as an export
+    # missing all of its tables (issue #TMDL-FLAT).
+    table_files: list[Path] = []
     tables_dir = definition_dir / "tables"
     if tables_dir.is_dir():
-        for tmdl_file in sorted(tables_dir.glob("*.tmdl")):
-            content = tmdl_file.read_text(encoding="utf-8")
-            items = parse_tmdl_content(content)
-            for item in items:
-                if isinstance(item, TmdlTable):
-                    model.tables.append(item)
+        table_files.extend(sorted(tables_dir.glob("*.tmdl")))
+    table_files.extend(
+        f for f in sorted(definition_dir.glob("*.tmdl")) if f.name.casefold() != "model.tmdl"
+    )
+    for tmdl_file in table_files:
+        content = tmdl_file.read_text(encoding="utf-8")
+        items = parse_tmdl_content(content)
+        for item in items:
+            if isinstance(item, TmdlTable):
+                model.tables.append(item)
 
     # Parse relationships
     rel_file = definition_dir / "relationships.tmdl"
@@ -592,12 +642,19 @@ def parse_model_folder(definition_dir: Path) -> TmdlModel:
         name for name in declared_tables if name.casefold() not in parsed
     ]
 
-    # Derive model name from parent folder
-    # e.g., "MyModel.SemanticModel/definition/" → "MyModel"
+    # Derive the model name from whichever folder actually identifies the model.
+    # "MyModel.SemanticModel/definition/" → "MyModel"; a flat export folder names
+    # itself. Falling through to the parent for a flat layout named every export in
+    # one staging directory after that directory, so a batch import silently
+    # overwrote each artifact with the next (issue #TMDL-FLAT).
     parent = definition_dir.parent
     if parent.name.endswith(".SemanticModel"):
         model.name = parent.name.rsplit(".SemanticModel", 1)[0]
-    else:
+    elif definition_dir.name.casefold() == "definition":
         model.name = parent.name
+    else:
+        model.name = definition_dir.name
+    if model.name.endswith(".SemanticModel"):
+        model.name = model.name.rsplit(".SemanticModel", 1)[0]
 
     return model

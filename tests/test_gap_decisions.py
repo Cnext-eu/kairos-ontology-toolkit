@@ -30,6 +30,7 @@ from kairos_ontology.core.gap_decisions import (
     apply_decision_sheet,
     build_decision_sheet,
     propose_for_group,
+    suggest_family_dispositions,
     write_decision_sheet,
 )
 from kairos_ontology.core.source_disposition import DISPOSITIONS, load_dispositions
@@ -675,3 +676,241 @@ class TestSchemaCatalogueTablesAreHonoured:
         summary = build_decision_sheet(self._hub(tmp_path, excluded=False))["summary"]
         assert summary["schema_catalogue_tables_excluded"] == 0
         assert summary["gap_columns_in_excluded_tables"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Drafted extension properties reach the sheet (issue #880)
+# ---------------------------------------------------------------------------
+
+
+def _unmapped(column: str, table: str, proposal: dict | None = None) -> UnmappedColumn:
+    return UnmappedColumn(
+        system="src",
+        table=table,
+        column=column,
+        domain="roro",
+        data_type="string",
+        reason="no reference property",
+        suggestion="",
+        recommended_disposition="",
+        proposal=proposal or {},
+    )
+
+
+def _group(column: str, *occurrences: UnmappedColumn) -> GapGroup:
+    group = GapGroup(column=column)
+    group.occurrences.extend(occurrences)
+    return group
+
+
+class TestDraftedPropertyReachesTheSheet:
+    """propose-alignment's proposed_local_property must not stop at the gap sheet."""
+
+    def test_drafted_property_is_carried_into_the_entry(self):
+        proposal = {
+            "name": "vesselClass",
+            "range": "xsd:string",
+            "on_class": "Vessel",
+            "why": "Hull class not represented in the reference model.",
+        }
+        group = _group("VESSELCLASS", _unmapped("VESSELCLASS", "ships", proposal))
+
+        drafted = propose_for_group(group, "vessel-maritime")
+
+        assert drafted.suggested_properties == [proposal]
+        assert drafted.to_entry()["suggested_properties"] == [proposal]
+
+    def test_a_drafted_property_proposes_registered_extension(self):
+        group = _group(
+            "VESSELCLASS",
+            _unmapped("VESSELCLASS", "ships", {"name": "vesselClass", "range": "xsd:string",
+                                               "on_class": "Vessel", "why": "..."}),
+        )
+
+        drafted = propose_for_group(group, "vessel-maritime")
+
+        assert drafted.proposed_disposition == "registered-extension"
+        assert "vesselClass" in drafted.reasoning
+        assert "Vessel" in drafted.reasoning
+        # A proposal is never a decision.
+        assert drafted.to_entry()["decision"] == ""
+
+    def test_divergent_proposals_are_shown_not_averaged(self):
+        group = _group(
+            "FLAG",
+            _unmapped("FLAG", "a", {"name": "animalProductIndicator", "range": "xsd:boolean",
+                                    "on_class": "CargoItem", "why": "..."}),
+            _unmapped("FLAG", "b", {"name": "containsAnimalProducts", "range": "xsd:boolean",
+                                    "on_class": "CargoItem", "why": "..."}),
+        )
+
+        drafted = propose_for_group(group, "roro")
+
+        assert len(drafted.suggested_properties) == 2
+        assert "animalProductIndicator" in drafted.reasoning
+        assert "containsAnimalProducts" in drafted.reasoning
+        assert "more than one reading" in drafted.reasoning
+
+    def test_no_drafted_property_still_leaves_the_decision_open(self):
+        group = _group("MYSTERY", _unmapped("MYSTERY", "a"))
+
+        drafted = propose_for_group(group, "roro")
+
+        assert drafted.proposed_disposition == ""
+        assert drafted.suggested_properties == []
+
+    def test_rule_branches_still_win_over_the_extension_proposal(self):
+        """A free-text column keeps its rule disposition even with a drafted property."""
+        group = _group(
+            "CARGO_REMARK",
+            _unmapped("CARGO_REMARK", "a", {"name": "remarkText", "range": "xsd:string",
+                                       "on_class": "CargoItem", "why": "..."}),
+        )
+
+        drafted = propose_for_group(group, "roro")
+
+        assert drafted.proposed_disposition == "not-business-data"
+        # ...and still shows the reviewer what was drafted.
+        assert drafted.suggested_properties[0]["name"] == "remarkText"
+
+
+# ---------------------------------------------------------------------------
+# Unseparated numbered repeating groups (issue #882)
+# ---------------------------------------------------------------------------
+
+
+from kairos_ontology.core.gap_decisions import family_of, group_into_families
+
+
+class TestNumberedRepeatingGroups:
+    """`ADDRESS_1` grouped and `ADDRESS1` did not, for one concept either way."""
+
+    def test_a_trailing_index_is_not_part_of_the_stem(self):
+        assert family_of("EQUIPMENTTYPE1") == "equipmenttype"
+        assert family_of("EQUIPMENTTYPE14") == "equipmenttype"
+        assert family_of("ADDRESS2") == "address"
+
+    def test_it_agrees_with_the_separated_spelling(self):
+        assert family_of("EQUIPMENTTYPE1") == family_of("EQUIPMENTTYPE_1")
+
+    def test_an_unseparated_group_now_forms_one_decision(self):
+        members = [
+            propose_for_group(group(f"EQUIPMENTTYPE{n}"), "reference-data")
+            for n in range(1, 15)
+        ]
+
+        families, loose = group_into_families(members)
+
+        assert [f["family"] for f in families] == ["equipmenttype"]
+        assert families[0]["distinct_names"] == 14
+        assert loose == []
+
+    def test_a_standards_number_is_not_a_stem(self):
+        """ISO6346, UN1234: too few letters before the digits to be a repeating group."""
+        assert family_of("ISO6346") == "iso6346"
+        assert family_of("UN1234") == "un1234"
+        assert family_of("A1") == "a1"
+
+    def test_digits_inside_a_name_are_left_alone(self):
+        assert "co2" in family_of("CO2EMISSIONS")
+
+    def test_three_standards_numbers_do_not_become_a_family(self):
+        members = [
+            propose_for_group(group(name), "dangerous-goods")
+            for name in ("ISO6346", "ISO668", "ISO1496")
+        ]
+
+        families, loose = group_into_families(members)
+
+        assert families == []
+        assert len(loose) == 3
+
+
+# ---------------------------------------------------------------------------
+# The business vocabulary reaches disposition evaluation (issue #885)
+# ---------------------------------------------------------------------------
+
+
+GLOSSARY_TTL = """\
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix glossary: <https://example.com/glossary#> .
+
+glossary:Allocation a skos:Concept ;
+    skos:prefLabel "Allocation"@en ;
+    skos:definition "A verbal agreement giving a customer a set number of places on a ship."@en .
+
+glossary:Berth a skos:Concept ;
+    skos:prefLabel "Berth"@en ;
+    skos:definition "A designated location in a port used for mooring vessels."@en .
+"""
+
+
+class TestGlossaryReachesDispositionEvaluation:
+    """Naming a concept the client has already named needs their vocabulary."""
+
+    def _sheet(self):
+        return {
+            "families": [
+                {
+                    "family": "alloc",
+                    "domain": "booking",
+                    "distinct_names": 3,
+                    "source_columns": 6,
+                    "members": ["ALLOC_QTY", "ALLOC_REF", "ALLOC_STATUS"],
+                    "decision": "",
+                }
+            ],
+            "decisions": [],
+        }
+
+    def _captured_prompt(self, tmp_path, *, with_glossary):
+        if with_glossary:
+            bd = tmp_path / "businessdiscovery"
+            bd.mkdir(parents=True)
+            (bd / "acme-glossary.ttl").write_text(GLOSSARY_TTL, encoding="utf-8")
+
+        captured = {}
+
+        class _Client:
+            class chat:  # noqa: N801 - mirrors the OpenAI client shape
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured["prompt"] = kwargs["messages"][0]["content"]
+                        raise RuntimeError("stop after capture")
+
+        try:
+            suggest_family_dispositions(
+                self._sheet(),
+                client=_Client(),
+                model="test-model",
+                hub_root=tmp_path if with_glossary else None,
+            )
+        except Exception:  # noqa: BLE001 - the capture raises on purpose
+            pass
+        return captured.get("prompt", "")
+
+    def test_terms_and_definitions_are_in_the_prompt(self, tmp_path):
+        prompt = self._captured_prompt(tmp_path, with_glossary=True)
+
+        assert "BUSINESS'S OWN VOCABULARY" in prompt
+        assert "Allocation" in prompt
+        assert "set number of places on a ship" in prompt
+
+    def test_a_hub_without_a_glossary_gets_no_block(self, tmp_path):
+        prompt = self._captured_prompt(tmp_path, with_glossary=False)
+
+        assert prompt
+        assert "BUSINESS'S OWN VOCABULARY" not in prompt
+
+
+class TestSuggestOnAFullyDecidedHub:
+    """An empty sheet is success, not an error state (issue #889)."""
+
+    def test_the_stats_shape_is_complete_when_there_is_nothing_to_describe(self):
+        stats = suggest_family_dispositions(
+            {"families": [], "decisions": []}, client=None, model="unused"
+        )
+
+        assert stats["families_described"] == 0
+        assert stats["flagged_incoherent"] == 0

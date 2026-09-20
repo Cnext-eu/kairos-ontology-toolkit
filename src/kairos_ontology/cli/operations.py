@@ -560,7 +560,9 @@ def update(check, upgrade, test_ref, restore, allow_downgrade, refresh_workflows
             # uv run auto-syncs when the lock file is newer.
             print(f"   ✓ Upgraded to {ref}")
         else:
-            result = subprocess.run(["uv", "sync"], capture_output=True, text=True)
+            from .shared import uv_sync_command
+
+            result = subprocess.run(uv_sync_command(), capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"❌ uv sync failed:\n{result.stderr}")
                 raise SystemExit(1)

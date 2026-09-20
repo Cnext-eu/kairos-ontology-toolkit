@@ -132,7 +132,10 @@ class GapProposal:
     proposed_disposition: str
     confidence: str
     reasoning: str
-    suggested_properties: list[str] = field(default_factory=list)
+    #: The hub-local properties ``propose-alignment`` already drafted for this column
+    #: (``name``/``range``/``on_class``/``why``). More than one means the aligner read
+    #: the same name differently in different tables -- shown, never averaged (#880).
+    suggested_properties: list[dict[str, str]] = field(default_factory=list)
 
     def to_entry(self) -> dict[str, Any]:
         return {
@@ -161,7 +164,11 @@ def propose_for_group(group: GapGroup, domain: str = "") -> GapProposal:
     """
     name = group.column
     types = group.data_types
-    suggested = sorted({p.get("suggested_property", "") for p in group.proposals if p.get("suggested_property")})
+    # ``group.proposals`` holds ``proposed_local_property`` dicts -- keys are
+    # name/range/on_class/why. Reading ``suggested_property`` here (the key of the
+    # *other*, sibling field on the alignment entry) silently produced an empty list
+    # for every group, so the drafted property never reached the sheet (#880).
+    suggested = [p for p in group.proposals if p.get("name")]
 
     if _JSON_BLOB_RE.search(name) or any("json" in t.lower() for t in types):
         return GapProposal(
@@ -197,10 +204,30 @@ def propose_for_group(group: GapGroup, domain: str = "") -> GapProposal:
             "naming by a human before it counts as an upstream defect.",
             suggested,
         )
+    if suggested:
+        drafted = ", ".join(
+            f"{p['name']} ({p.get('range') or 'range unstated'}) on {p.get('on_class') or '?'}"
+            for p in suggested
+        )
+        divergent = (
+            " The aligner proposed more than one reading of this name across tables, so "
+            "pick one or split the column before accepting."
+            if len(suggested) > 1
+            else ""
+        )
+        return GapProposal(
+            name, domain, group.count, group.tables, types, "registered-extension", "low",
+            "Real business data with no reference property, and alignment already "
+            f"drafted a hub-local property for it: {drafted}. Registering it as an "
+            "extension is the proposal; confirm the name, range and owning class, or "
+            f"decide otherwise.{divergent}",
+            suggested,
+        )
     return GapProposal(
         name, domain, group.count, group.tables, types, "", "low",
-        "No rule applies. Decide from the tables and sample evidence: model it, "
-        "register it as an extension, or record why it is out of scope.",
+        "No rule applies, and alignment drafted no property for it. Decide from the "
+        "tables and sample evidence: model it, register it as an extension, or record "
+        "why it is out of scope.",
         suggested,
     )
 
@@ -230,6 +257,18 @@ _FAMILY_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
 #: ``ETLLoadDate`` splits to ``ETL``, ``Load``, ``Date`` rather than ``ETLLoad``, ``Date``,
 #: which no vocabulary can match. The substring matcher this replaced caught it by accident.
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+#: The index of a numbered repeating group, where nothing separates it from the stem.
+#:
+#: ``ADDRESS_1``/``ADDRESS_2`` already tokenise as ``address`` + ``1``, so they group;
+#: ``EQUIPMENTTYPE1``..``EQUIPMENTTYPE14`` did not, and became fourteen separate
+#: decisions about one concept. A trailing digit run is an index, and an unseparated
+#: repeating group is the most common denormalisation in a legacy schema (#882).
+#:
+#: Deliberately narrow, because a false family is worse than a missed one. Only a digit
+#: run at the END of a segment counts, so ``CO2EMISSIONS`` keeps its digits; and it must
+#: follow at least four letters, so a standard's number (``ISO6346``) or a short code
+#: (``A1``) is not split into a prefix that would gather unrelated columns.
+_TRAILING_INDEX_RE = re.compile(r"(?<=[A-Za-z]{4})(?=\d+(?:\s|$))")
 
 
 def family_of(column_name: str) -> str:
@@ -311,7 +350,7 @@ def _semantically_coherent(
 
 def _name_tokens(column_name: str) -> list[str]:
     text = _CAMEL_BOUNDARY_RE.sub(" ", _FAMILY_SPLIT_RE.sub(" ", str(column_name or "")))
-    return text.lower().split()
+    return _TRAILING_INDEX_RE.sub(" ", text).lower().split()
 
 
 #: Alignment confidence at or above which a mapped column counts as business data.
@@ -340,6 +379,33 @@ _AUDIT_NAME_TOKENS = frozenset(
         "ingest", "ingested", "ingestion", "loaded", "etl", "dwh", "dw",
         "rowversion", "version", "tenant", "guid", "uuid", "uid", "hash", "checksum",
         "sys", "system", "sourcesystem", "audit", "batch", "sync", "snapshot",
+    }
+)
+
+#: Adjacent token pairs naming an artifact of the tool that loaded the table.
+#:
+#:   _rescued_data      Databricks/Spark -- rows the reader could not parse
+#:   _corrupt_record    the Spark JSON/CSV reader's equivalent
+#:   ts_ms              Debezium CDC event timestamp
+#:   ttSysStartTime/EndTime   SQL Server system-versioned temporal period bounds
+#:   __index_level_0__  a pandas index that survived a parquet round-trip
+#:
+#: Pairs rather than single tokens because "rescued", "record", "index" and "ts" all
+#: occur in real business names, and a false positive here auto-disposes a column to
+#: not-business-data without review -- the one outcome that removes it from the DD-169
+#: gate instead of deferring it (#880).
+#:
+#: Shared with :func:`~kairos_ontology.core.propose_alignment._is_operational_column`
+#: so the documented invariant holds by construction: every name that predicate calls
+#: operational is also :func:`is_audit_named`, because the #521 cross-check that guards
+#: the write must recognise everything the classification silences.
+FRAMEWORK_ARTIFACT_PAIRS = frozenset(
+    {
+        ("rescued", "data"),
+        ("corrupt", "record"),
+        ("ts", "ms"),
+        ("tt", "sys"),
+        ("index", "level"),
     }
 )
 
@@ -407,9 +473,17 @@ def is_audit_named(column: str) -> bool:
 
     ``created_at``, ``last_ingest_date``, ``row_version``, ``tenant_id`` — yes.
     ``transaction_timestamp``, ``settled_timestamp``, ``owned_by_subco`` — no.
+
+    Also recognises :data:`FRAMEWORK_ARTIFACT_PAIRS`: a column written by the loading
+    tool is an audit artifact by any reading, and this predicate guards the write site
+    for the classification that silences them, so it has to see them too.
     """
     tokens = _name_tokens(column)
-    return bool(set(tokens) & _AUDIT_NAME_TOKENS) or (len(tokens) > 1 and tokens[-1] == "by")
+    if set(tokens) & _AUDIT_NAME_TOKENS:
+        return True
+    if set(zip(tokens, tokens[1:])) & FRAMEWORK_ARTIFACT_PAIRS:
+        return True
+    return len(tokens) > 1 and tokens[-1] == "by"
 
 
 def _is_time_valued(column: str) -> bool:
@@ -777,6 +851,7 @@ def suggest_family_dispositions(
     client: Any,
     model: str,
     anchors: dict[tuple[str, str], dict[str, Any]] | None = None,
+    hub_root: Path | None = None,
 ) -> dict[str, Any]:
     """Characterise each family in one model call, in place (DD-186).
 
@@ -796,10 +871,21 @@ def suggest_family_dispositions(
     Anchors are passed as context because "which class do these tables resolve
     to" is usually the deciding fact — a family whose tables anchor to a class
     that *already exists* is a mapping gap, not a blueprint gap.
+
+    The business glossary is passed for the same reason and carries more weight. This
+    step asks the model to *name the concept a family represents*, and the client has
+    usually already named it: the authored glossary is their own vocabulary, with a
+    definition per term. Without it the model invents a name from column spellings, and
+    a disposition gets argued in toolkit English about a concept the business has a word
+    for — which is the naming failure DD-171 exists to prevent, one stage further on
+    (#885).
     """
     families = sheet.get("families") or []
     if not families:
-        return {"families_described": 0}
+        # A hub that has decided every gap column builds an empty sheet, which is
+        # success, not an error state. Return the full shape so the caller can report
+        # it without a KeyError (#889).
+        return {"families_described": 0, "flagged_incoherent": 0}
 
     # Families are domain-scoped (the same token is a different decision in a
     # different domain), so the response key must carry the domain too. Keying on
@@ -825,6 +911,25 @@ def suggest_family_dispositions(
             + (f"; anchors: {', '.join(anchor_names)}" if anchor_names else "")
         )
 
+    glossary_block = ""
+    if hub_root is not None:
+        from .propose_alignment import load_glossary_entries
+
+        entries = load_glossary_entries(hub_root)
+        if entries:
+            rendered = "\n".join(
+                f"- {label}: {definition}" if definition else f"- {label}"
+                for label, definition in entries
+            )
+            glossary_block = (
+                "\n\nTHE BUSINESS'S OWN VOCABULARY. Where a family is one of these "
+                "concepts, say so and use their word for it in 'reasoning'. A term here "
+                "is evidence the concept is real and in scope, so prefer "
+                "'registered-extension' over 'deferred' for it. Do not stretch a term to "
+                "fit; an unlisted concept is simply unlisted.\n"
+                f"{rendered}"
+            )
+
     prompt = f"""These groups of source columns share a leading token and have no reference-model
 property. For EACH family decide two things.
 
@@ -845,6 +950,7 @@ Prefer 'registered-extension' or 'deferred' over 'blueprint-gap' unless the conc
 clearly one the reference model ought to have had.
 
 Answer under the exact key shown at the start of each line (domain::family).
+{glossary_block}
 
 FAMILIES ({len(families)}):
 {chr(10).join(lines)}"""
@@ -994,12 +1100,19 @@ def apply_decision_sheet(
     sheet = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     filled: dict[tuple[str, str], str] = {}
     why: dict[tuple[str, str], str] = {}
+    drafted: dict[tuple[str, str], dict[str, str]] = {}
     for e in sheet.get("decisions") or []:
         if not (isinstance(e, dict) and str(e.get("decision") or "").strip()):
             continue
         key = (str(e.get("domain") or ""), str(e["column"]))
         filled[key] = str(e["decision"]).strip()
         why[key] = str(e.get("reasoning") or "")
+        # One drafted property is carried through; more than one means the aligner read
+        # the name two ways and the reviewer was asked to pick, so carry neither rather
+        # than silently choosing (#883).
+        drafts = [d for d in (e.get("suggested_properties") or []) if isinstance(d, dict)]
+        if len(drafts) == 1:
+            drafted[key] = drafts[0]
     # A family decision expands to each of its member names. An explicit
     # per-name decision wins over its family's, so a reviewer can rule on the
     # family and carve out one exception without unpicking the family.
@@ -1054,6 +1167,7 @@ def apply_decision_sheet(
                 ),
                 decided_by=decided_by,
                 evidence=(f"gap-reason:{occurrence.reason}", f"occurrences:{group.count}"),
+                proposed_property=drafted.get((occurrence.domain, group.column)),
             )
     return {
         "names_applied": len(filled),

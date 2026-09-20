@@ -466,11 +466,13 @@ def test_non_windows_test_ref_reexecs_forced_refresh(mock_resolve, tmp_path, mon
 
     assert result.exit_code == 0
     commands = [entry.args[0] for entry in mock_run.call_args_list]
-    assert commands == [
-        ["uv", "lock"],
-        ["uv", "sync"],
-        ["uv", "run", "kairos-ontology", "update", "--force-managed"],
-    ]
+    # The sync carries whichever extras this environment has installed (#878), so the
+    # command is asserted by shape: a bare `uv sync` here would be the regression.
+    assert len(commands) == 3
+    assert commands[0] == ["uv", "lock"]
+    assert commands[1][:2] == ["uv", "sync"]
+    assert all(flag == "--extra" for flag in commands[1][2::2])
+    assert commands[2] == ["uv", "run", "kairos-ontology", "update", "--force-managed"]
     assert f"@{SHA}" in pyproject.read_text(encoding="utf-8")
 
 

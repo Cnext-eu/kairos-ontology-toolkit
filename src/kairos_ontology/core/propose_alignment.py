@@ -266,7 +266,7 @@ def _is_operational_column(column: str) -> bool:
     """
     # The same splitter the DD-169 gate uses, so the two stages tokenize a name
     # identically rather than each having its own idea of a word boundary.
-    from .gap_decisions import _name_tokens
+    from .gap_decisions import FRAMEWORK_ARTIFACT_PAIRS, _name_tokens
 
     tokens = _name_tokens(column)
     if not tokens:
@@ -275,7 +275,10 @@ def _is_operational_column(column: str) -> bool:
         return True
     if len(tokens) > 1 and tokens[-1] in _OPERATIONAL_TRAILING_TOKENS:
         return True
-    return any(pair in _OPERATIONAL_TOKEN_PAIRS for pair in zip(tokens, tokens[1:]))
+    pairs = set(zip(tokens, tokens[1:]))
+    if pairs & FRAMEWORK_ARTIFACT_PAIRS:
+        return True
+    return any(pair in _OPERATIONAL_TOKEN_PAIRS for pair in pairs)
 
 
 def is_generic_vendor_slot(column: str) -> bool:
@@ -389,6 +392,50 @@ def flag_risky_proposals(
         )
         flagged += 1
     return flagged
+
+
+def load_glossary_entries(
+    hub_root: Path | None, *, limit: int = 120
+) -> list[tuple[str, str]]:
+    """``(prefLabel, definition)`` from ``businessdiscovery/*.ttl`` (DD-048/DD-171).
+
+    :func:`load_glossary_terms` returns labels alone, which is enough to *reuse* a term
+    and not enough to *recognise* one. A label says the business has a word for
+    something; the definition says what it means -- that this client's "Allocation" is a
+    verbal capacity agreement rather than the generic sense of the word. Any consumer
+    asked to name a concept, rather than to pick a word, needs the second.
+
+    Definitions are collapsed to one line and truncated: this is prompt context, not
+    documentation. Returns ``[]`` when the hub has no authored glossary, which is common
+    early and must never be an error.
+    """
+    if hub_root is None:
+        return []
+    directory = Path(hub_root) / "businessdiscovery"
+    if not directory.is_dir():
+        return []
+    label_re = re.compile(r'skos:prefLabel\s+"([^"]+)"')
+    definition_re = re.compile(r'skos:definition\s+"([^"]+)"')
+    blank_line_re = re.compile(r"\n\s*\n")
+    entries: dict[str, str] = {}
+    for path in sorted(directory.glob("*.ttl")):
+        if path.name.startswith(("glossary-template", "_")):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # One concept per subject block; Turtle separates them with a blank line.
+        for block in blank_line_re.split(text):
+            label_match = label_re.search(block)
+            if not label_match:
+                continue
+            definition_match = definition_re.search(block)
+            raw = definition_match.group(1) if definition_match else ""
+            entries.setdefault(label_match.group(1).strip(), " ".join(raw.split())[:240])
+        if len(entries) >= limit:
+            break
+    return sorted(entries.items())[:limit]
 
 
 def load_glossary_terms(hub_root: Path | None, *, limit: int = 120) -> list[str]:
