@@ -40,19 +40,18 @@ def invoice_ddd_artifacts(invoice_ontology):
 
 
 class TestDddProjectionOutput:
-    def test_three_artifacts(self, client_ddd_artifacts):
+    def test_two_per_domain_artifacts(self, client_ddd_artifacts):
+        """The per-domain context map is retired (DD-230): the hub-wide one under
+        `contexts/` replaces it, drawn by `ddd_context_projector`."""
         assert set(client_ddd_artifacts) == {
-            "client-context-map.mmd",
             "client-aggregate-overview.mmd",
             "client-ddd-report.md",
         }
 
-    def test_context_map_has_contexts_and_edge(self, client_ddd_artifacts):
-        mmd = client_ddd_artifacts["client-context-map.mmd"]
-        assert "graph LR" in mmd
-        assert "Client Management" in mmd
-        assert "Reference Data" in mmd
-        assert "Conformist" in mmd
+    def test_report_points_at_the_hub_wide_map(self, client_ddd_artifacts):
+        md = client_ddd_artifacts["client-ddd-report.md"]
+        assert "contexts/context-map.mmd" in md
+        assert "| Client Management | Conformist | Reference Data |" in md
 
     def test_aggregate_overview_groups_members(self, client_ddd_artifacts):
         mmd = client_ddd_artifacts["client-aggregate-overview.mmd"]
@@ -68,12 +67,6 @@ class TestDddProjectionOutput:
         assert "## Aggregates & Tactical Patterns" in md
         assert "## Design Notes" in md
         assert "Aggregate root guarding client identity" in md
-
-    def test_invoice_customer_supplier(self, invoice_ddd_artifacts):
-        mmd = invoice_ddd_artifacts["invoice-context-map.mmd"]
-        assert "Customer-Supplier" in mmd
-        assert "Billing" in mmd
-        assert "Taxation" in mmd
 
     def test_invoice_report_carries_subdomain_and_invariants(self, invoice_ddd_artifacts):
         md = invoice_ddd_artifacts["invoice-ddd-report.md"]
@@ -97,8 +90,6 @@ class TestDddProjectionOutput:
         assert "Client Management" in md and "Reference Data" in md
         assert "| Billing |" not in md and "| Taxation |" not in md
         assert "2 other bounded context(s) are declared hub-wide" in md
-        mmd = artifacts["client-context-map.mmd"]
-        assert "Billing" not in mmd and "Conformist" in mmd
 
     def test_strategic_file_alone_yields_nothing_for_a_domain(self, client_ontology):
         graph, namespace, _classes = client_ontology

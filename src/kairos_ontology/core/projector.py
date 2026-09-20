@@ -779,6 +779,9 @@ def run_projections(
     # artifacts from one invocation never mix clocks.
     generated_at = resolve_generated_at()
     fatal_target_errors: list[str] = []
+    # Every path the `ddd` target writes this run, per-domain and hub-wide, so the
+    # output directory can be reconciled to exactly this set afterwards (DD-230, #861).
+    ddd_paths_written: list[str] = []
 
     print("🚀 Kairos Ontology Projections")
     print("=" * 50)
@@ -1117,6 +1120,8 @@ def run_projections(
                         )
                     else:
                         total_files += _write_artifacts(artifacts, target_output)
+                        if target_name == "ddd":
+                            ddd_paths_written.extend(artifacts)
                     print(f"  [{onto_name}] ✓ Generated {len(artifacts)} file(s)")
 
                     # Track dbt domains for project config generation
@@ -1327,6 +1332,77 @@ def run_projections(
             print(f"  ✓ {MASTER_CLASS_DIAGRAM_NAME}")
         else:
             print("  ℹ  no per-domain ERDs to merge into a master diagram")
+
+    if "ddd" in targets_to_run:
+        # Hub-wide bounded-context artifacts (DD-230, #846). A context cuts across domain
+        # files, so it is drawn here from every graph the per-domain loop already loaded,
+        # every overlay and the strategic file together. Same output directory as the
+        # per-domain `ddd` files -- one target, one tracked lane, no workflow change.
+        # Wrapped on its own: the per-domain `try` above does not cover this block, and a
+        # malformed contract must not abort the rest of the run (DD-216 relies on `✗`).
+        try:
+            from .ddd import discover_ddd_overlays, find_strategic_file, overlay_domain_name
+            from .hub_config import hub_display_name
+            from .projections.ddd_context_projector import (
+                CONTEXTS_SUBDIR,
+                ContextDomain,
+                generate_context_artifacts,
+            )
+
+            ddd_output = TARGET_REGISTRY["ddd"].output_path(output_path)
+            strategic = find_strategic_file(extensions_dir)
+            overlays = (
+                {overlay_domain_name(path): path for path in discover_ddd_overlays(extensions_dir)}
+                if extensions_dir is not None
+                else {}
+            )
+            context_domains = [
+                ContextDomain(
+                    name=info["name"],
+                    graph=info["graph"],
+                    file=info["file"],
+                    local_graph=_own_source_graph(info["load_result"]),
+                    load_result=info["load_result"],
+                    overlay_path=overlays.get(info["name"]),
+                )
+                for info in ontology_graphs
+            ]
+            context_artifacts = generate_context_artifacts(
+                context_domains,
+                strategic_path=strategic,
+                contracts_dir=contracts_dir,
+                bindings_dir=hub_root / "integration" / "bindings" if hub_root else None,
+                hub_name=hub_display_name(hub_root) if hub_root is not None else "hub",
+            )
+            if context_artifacts:
+                _write_artifacts(context_artifacts, ddd_output)
+                ddd_paths_written.extend(context_artifacts)
+                print(
+                    f"  ✓ {len(context_artifacts)} hub-wide context artifact(s) -> "
+                    f"{ddd_output / CONTEXTS_SUBDIR}"
+                )
+
+            # The per-domain `{domain}-context-map.mmd` is retired (DD-230). No hub has a
+            # manifest under this directory yet, so a manifest diff cannot remove the
+            # files an earlier toolkit wrote; name them explicitly, once.
+            for info in ontology_graphs:
+                retired = ddd_output / f"{info['name']}-context-map.mmd"
+                if retired.is_file():
+                    retired.unlink()
+                    print(f"  ✓ removed retired {retired.name} (hub-wide map replaces it)")
+
+            # Reconcile to exactly this run's files (#861 for `ddd`), but only for a hub that
+            # has DDD output or already carries a manifest: `architecture/ddd` is created
+            # for every hub, and an unconditional manifest would put a tracked dotfile in
+            # the publish lane of hubs that never authored an overlay.
+            manifest = ddd_output / _PROJECTION_MANIFEST_NAME
+            if ddd_paths_written or manifest.is_file():
+                removed = _reconcile_managed_output(ddd_output, ddd_paths_written)
+                if removed:
+                    print(f"  ✓ removed {removed} stale ddd artifact(s)")
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal to the other targets
+            print(f"  ✗ hub-wide DDD context artifacts failed: {exc}")
+            _tb.print_exc()
 
     if "report" in targets_to_run:
         print("📦 Generating report projection...")

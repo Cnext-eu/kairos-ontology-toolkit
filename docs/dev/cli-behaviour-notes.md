@@ -90,6 +90,17 @@ what per-file SHACL cannot see:
 | `ddd.class-in-two-contexts` | error | two files place one class in different contexts |
 | `ddd.tactical-in-strategic-file` | error | `tacticalPattern` / `aggregateRoot` / `invariant` in `ddd-contexts-ext.ttl` |
 
+`project --target ddd` writes, per domain that has an overlay, `{domain}-aggregate-overview.mmd`
+and `{domain}-ddd-report.md`; and once for the hub, under `architecture/ddd/contexts/` (DD-230):
+`context-map.mmd` (every context and edge, whichever file declared it), `all-contexts.mmd` (one
+`classDiagram`, one `namespace` per context), one `{context}.mmd` per non-empty context with
+neighbours drawn as stubs, and `design-notes.md` (subdomain, classes, Silver status, invariants,
+language and design notes per context, then every hub class no context claims). Silver status
+(*in Silver contract* / *bound (no contract)* / *not in Silver*) is read from the authored
+contracts and bindings, never a CompilePlan. The output directory is reconciled to the run's
+files through `.kairos-projection-manifest.json`, written only for a hub that has DDD output.
+The per-domain `{domain}-context-map.mmd` is retired and removed on the first run after upgrade.
+
 The strategic filename deliberately does not match the `*-ddd-ext.ttl` overlay glob, so it is
 never validated as the overlay of a domain called `ddd-contexts` and the #848 orphan check never
 fires on it. A hub that still declares contexts inside each overlay validates as before; the

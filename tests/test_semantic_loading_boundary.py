@@ -46,6 +46,10 @@ ALLOWED_DIRECT_PARSE_SITES = {
     "validator.py": "syntax/content checks, extensions, mappings, and SHACL shapes",
     "projections/a2ui_projector.py": "SHACL shapes",
     "projections/ddd_projector.py": "DDD overlay",
+    "projections/ddd_context_projector.py": (
+        "DDD overlays and the hub-wide strategic file, merged over graphs the run has "
+        "already loaded through ontology_loader"
+    ),
     "projections/erd_projector.py": "ERD overlay",
     "projections/medallion_dbt_projector.py": "sources, mappings, extensions, and templates",
     "projections/medallion_gold_projector.py": "SHACL shapes",
