@@ -81,6 +81,37 @@ and do not auto-degrade.  Print the remediation and escalate to the contact
 (DD-159).  A run that skipped or could not complete an LLM judgment step must
 carry **BLOCKED** in its transparency report — it may never report "complete".
 
+### Stage 0 pre-flight: business discovery
+
+The client's own documents and their Power BI models are the two inputs the pipeline
+cannot re-derive for itself — every other input it can re-read from the warehouse at
+will.  A run that proceeds without them models the hub from source column names, and the
+result looks complete: a large ontology inherited from the accelerator over a silver
+layer far narrower than the source system.  This has happened on a real hub.
+
+Before Stage 1, confirm both:
+
+```powershell
+kairos-ontology discovery-status     # documents staged, and which are unprocessed
+kairos-ontology validate             # DD-233 fails on staged evidence nothing consumed
+```
+
+- **No authored glossary** (`businessdiscovery/*.ttl`) — **STOP**.  `anchor-tables` and
+  `propose-alignment` both refuse without one, and `--without-discovery` is a deliberate
+  human escape, never an autopilot decision.  An autopilot run must not pass that flag.
+- **DD-233 findings** (`unextracted`, `unimported`, `misplaced`) — **STOP** and escalate.
+  `misplaced` in particular means the operator supplied evidence nothing can see, which
+  no amount of downstream work repairs.
+- **Glossary drift** — `kairos-ontology next` reports artifacts grounded in a different
+  version of the glossary than the hub now has (#885).  The glossary is maintained
+  between runs; re-run the stages it names rather than building on the old vocabulary.
+
+A run that proceeded without business discovery, or under `--without-discovery`, carries
+**BLOCKED** in its transparency report for the same reason a skipped LLM judgment step
+does: the deliverable is not what it appears to be.  The artifacts record which glossary
+they were grounded in, so this is checkable afterwards and not only at the terminal that
+produced it.
+
 Each stage completes with its own gate genuinely green (`validate`, `compile --check`,
 etc. — not merely attempted) before the next stage starts. A stage that cannot be
 made to pass within the guardrails below stops the run at that boundary and escalates

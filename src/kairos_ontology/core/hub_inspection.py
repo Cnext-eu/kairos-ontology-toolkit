@@ -92,6 +92,38 @@ def _authored_dbt_transform(path: Path) -> bool:
     return path.suffix.lower() == ".csv" and "seeds" in path.parts
 
 
+def _glossary_stale_artifacts(root: Path) -> tuple[str, ...]:
+    """Generated artifacts grounded in a business glossary the hub no longer has (#885).
+
+    The glossary is the one input to anchoring and alignment that a human maintains
+    between runs, so it is the one most likely to move underneath an artifact built from
+    it — and it was the one input neither artifact recorded.
+
+    Observed here because this module is the layer that reads the filesystem;
+    ``next_actions`` stays a pure function of the snapshot. Advisory throughout: an
+    artifact written before the fingerprint existed records nothing and is not reported,
+    since warning about a difference nobody can see teaches readers to ignore warnings.
+    """
+    from .discovery_currency import detect_glossary_drift
+
+    analysis = root / "integration" / "sources" / "_analysis"
+    if not analysis.is_dir():
+        return ()
+    candidates = list(analysis.glob("*-alignment.yaml"))
+    anchors = analysis / "table-anchors.yaml"
+    if anchors.is_file():
+        candidates.append(anchors)
+    stale: list[str] = []
+    for path in sorted(candidates):
+        try:
+            drift = detect_glossary_drift(path, root)
+        except Exception:  # noqa: BLE001 - advisory; never fail inspection on it
+            continue
+        if drift is not None:
+            stale.append(drift.artifact)
+    return tuple(stale)
+
+
 def _emitted_dbt_status(root: Path) -> InputStatus:
     """Observe the unified emitted dbt project (presence only, never freshness)."""
     from .hub_utils import publish_root
@@ -549,6 +581,7 @@ def gather_hub_input_snapshot(
         adapter=_configured_adapter(root),
         discovery_conformance=_discovery_conformance_status(root),
         source_samples=source_samples,
+        glossary_stale_artifacts=_glossary_stale_artifacts(root),
         bi_concept_mappings=_bi_concept_mapping_status(root),
         source_domain_coverage=_source_domain_coverage_status(root),
         registered_concepts_unbound=_registered_concepts_unbound(root),
