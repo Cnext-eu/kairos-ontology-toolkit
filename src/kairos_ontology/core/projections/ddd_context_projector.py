@@ -131,6 +131,7 @@ class _Model:
     class_domain: dict[URIRef, str]
     silver: dict[URIRef, str]
     unresolved: list[str] = field(default_factory=list)
+    dispositions: dict[URIRef, str] = field(default_factory=dict)
 
     def by_context(self) -> dict[URIRef, list[URIRef]]:
         grouped: dict[URIRef, list[URIRef]] = {ctx: [] for ctx in self.contexts}
@@ -284,6 +285,7 @@ def _collect(
     strategic_path: Optional[Path],
     contracts_dir: Optional[Path],
     bindings_dir: Optional[Path],
+    hub_root: Optional[Path] = None,
 ) -> _Model:
     union = _union_graph(domains, strategic_path)
     hub_classes, hub_properties, class_domain = _hub_declared(domains, union)
@@ -354,6 +356,7 @@ def _collect(
         class_domain=class_domain,
         silver=silver,
         unresolved=unresolved,
+        dispositions=_dispositions(hub_root),
     )
 
 
@@ -380,12 +383,41 @@ def _context_ids(model: _Model, class_ids: dict[URIRef, str]) -> dict[URIRef, st
     return ids
 
 
-def _silver_label(status: str) -> str:
-    return {
+def _silver_label(status: str, disposition: Optional[str] = None) -> str:
+    """The Silver column: what Silver knows, and -- when recorded -- why it is not there.
+
+    An unbound class with a DD-231 disposition reads ``not in Silver (architecture-only)``:
+    the architecture view then says *why* a box is empty, not only that it is.
+    """
+    label = {
         STATUS_CONTRACT: "in Silver contract",
         STATUS_BOUND: "bound (no contract)",
         STATUS_UNBOUND: "not in Silver",
     }[status]
+    if status == STATUS_UNBOUND and disposition:
+        return f"{label} ({disposition})"
+    return label
+
+
+def _dispositions(hub_root: Optional[Path]) -> dict[URIRef, str]:
+    """Recorded DD-231 dispositions, or ``{}`` without a hub root or a readable ledger.
+
+    A ledger that cannot be parsed is `validate`'s error to report; the diagram simply
+    shows no dispositions rather than failing the whole projection over it.
+    """
+    if hub_root is None:
+        return {}
+    from ..class_disposition import ClassDispositionError, load_ledger
+
+    try:
+        _present, entries = load_ledger(Path(hub_root))
+    except ClassDispositionError:
+        return {}
+    return {
+        URIRef(iri): str(entry.get("disposition") or "")
+        for iri, entry in entries.items()
+        if str(entry.get("disposition") or "")
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -613,7 +645,7 @@ def _design_notes_md(model: _Model, hub_name: str) -> str:
                 f"| {_label(graph, cls)} | {model.class_domain.get(cls, '—')} | "
                 f"{extract_local_name(str(pattern)) if pattern is not None else '—'} | "
                 f"{_label(graph, root) if root is not None else '—'} | "
-                f"{_silver_label(model.silver.get(cls, STATUS_UNBOUND))} |"
+                f"{_silver_label(model.silver.get(cls, STATUS_UNBOUND), model.dispositions.get(cls))} |"
             )
         lines.append("")
         invariants = [(cls, text) for cls in classes for text in model.invariants.get(cls, [])]
@@ -655,7 +687,7 @@ def _design_notes_md(model: _Model, hub_name: str) -> str:
         ]
         lines += [
             f"| {_label(graph, cls)} | {model.class_domain.get(cls, '—')} | "
-            f"{_silver_label(model.silver.get(cls, STATUS_UNBOUND))} |"
+            f"{_silver_label(model.silver.get(cls, STATUS_UNBOUND), model.dispositions.get(cls))} |"
             for cls in unassigned
         ]
     else:
@@ -686,6 +718,7 @@ def generate_context_artifacts(
     contracts_dir: Optional[Path] = None,
     bindings_dir: Optional[Path] = None,
     hub_name: str = "hub",
+    hub_root: Optional[Path] = None,
 ) -> dict[str, str]:
     """Return ``{"contexts/<file>": content}`` for the whole hub, or ``{}`` without DDD input.
 
@@ -698,7 +731,7 @@ def generate_context_artifacts(
     )
     if not has_input:
         return {}
-    model = _collect(domains, strategic_path, contracts_dir, bindings_dir)
+    model = _collect(domains, strategic_path, contracts_dir, bindings_dir, hub_root)
     if not model.contexts and not model.context_of:
         return {}
 

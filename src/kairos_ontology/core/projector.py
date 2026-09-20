@@ -1373,6 +1373,7 @@ def run_projections(
                 contracts_dir=contracts_dir,
                 bindings_dir=hub_root / "integration" / "bindings" if hub_root else None,
                 hub_name=hub_display_name(hub_root) if hub_root is not None else "hub",
+                hub_root=hub_root,
             )
             if context_artifacts:
                 _write_artifacts(context_artifacts, ddd_output)

@@ -17,7 +17,7 @@ see [CLI behaviour notes](https://github.com/Cnext-eu/kairos-ontology-toolkit/bl
 not reasoning.
 
 
-89 commands.
+94 commands.
 
 ## Index
 
@@ -33,6 +33,11 @@ not reasoning.
 | [`bump-hub`](#bump-hub) | Pin the hub dbt package in packages.yml to REF's full commit SHA. |
 | [`catalog-test`](#catalog-test) | Test catalog resolution for imports. |
 | [`check-ai-config`](#check-ai-config) | Check AI provider configuration and optional reachability (DD-159). |
+| [`class-disposition`](#class-disposition) | Record why a hub class is deliberately not bound to Silver (DD-231). |
+| [`class-disposition clear`](#class-disposition-clear) | Withdraw recorded dispositions -- as auditable as recording them. |
+| [`class-disposition init`](#class-disposition-init) | Create the ledger, turning undecided classes from warnings into errors. |
+| [`class-disposition list`](#class-disposition-list) | Show every hub class's decision state, and what is still undecided. |
+| [`class-disposition set`](#class-disposition-set) | Record one class's disposition in the hub ledger. |
 | [`compile`](#compile) | Check, explain, or emit one or more v5 DOMAINS from the current hub. |
 | [`coverage-report`](#coverage-report) | Generate ontology-to-reference-model coverage report. |
 | [`decision`](#decision) | Create and inspect hub OKF Decision Log records. |
@@ -288,6 +293,71 @@ kairos-ontology check-ai-config [OPTIONS]
 | `--strict` |  | Exit non-zero on warnings (unprobed) as well as errors. |
 | `--warn-only` |  | Report status but always exit 0. |
 | `--format` | `text` | Output format (default: text -- human-readable). Use --format json for machine-readable output. |
+
+
+## class-disposition
+
+Record why a hub class is deliberately not bound to Silver (DD-231). The ontology may run ahead of the sources: a class no EntityBinding targets never enters the CompilePlan, and that is correct. What was missing is somewhere to say "not bound yet, deliberately, because X" -- so a context engineer's logical model can live in the ontology as a superset of Silver without every unbound class looking forgotten. Until the hub creates the ledger, `validate` reports undecided classes as warnings. `init` (or the first `set`) creates it; from then on an undecided class is an error, degradable with `validate --degraded`.
+
+```
+kairos-ontology class-disposition [OPTIONS] COMMAND [ARGS]...
+```
+
+
+## class-disposition clear
+
+Withdraw recorded dispositions -- as auditable as recording them.
+
+```
+kairos-ontology class-disposition clear [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--class` | `Sentinel.UNSET` | Class IRI or prefix:Local token to withdraw. Repeatable; omit to filter by other options. |
+| `--disposition` |  | Withdraw only entries with this disposition. |
+| `--decided-by` |  | Withdraw only entries recorded by this decider (e.g. every 'ai' blanket answer). |
+| `--dry-run` |  | Report what would be removed. |
+
+
+## class-disposition init
+
+Create the ledger, turning undecided classes from warnings into errors.
+
+```
+kairos-ontology class-disposition init [OPTIONS]
+```
+
+
+## class-disposition list
+
+Show every hub class's decision state, and what is still undecided.
+
+```
+kairos-ontology class-disposition list [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--undecided` |  | Show only the classes that still need a decision. |
+| `--format` | `text` | Text is the default: this surface exists for a human deciding what to do. |
+
+
+## class-disposition set
+
+Record one class's disposition in the hub ledger.  Example: kairos-ontology class-disposition set --class party:PostalAddress \ --disposition architecture-only \ --rationale "Address is its own bounded context; physically it stays in party."
+
+```
+kairos-ontology class-disposition set [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--class` | **required** | Class IRI or prefix:Local token, resolved against the hub's domain files. |
+| `--disposition` | **required** | What the hub decided about this class. |
+| `--rationale` | `` | Why. Required for deferred and architecture-only. |
+| `--decided-by` | `user` | Who made this call, so a reviewer can weight it. |
+| `--evidence` | `Sentinel.UNSET` | Supporting evidence locator (a decision record, a design note, an issue). Repeatable. |
 
 
 ## compile
