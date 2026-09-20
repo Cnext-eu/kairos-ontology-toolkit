@@ -17,6 +17,7 @@ from click.testing import CliRunner
 
 from kairos_ontology.cli.main import cli
 from kairos_ontology.core.propose_relationships import (
+    SENTINEL_JOIN_COLUMN,
     build_relationship_proposals,
     load_blueprint_bridges,
 )
@@ -63,7 +64,22 @@ _AUTHORED_RELATIONSHIP = f"""
 
 
 def _binding(name: str, domain: str, target_class: str, source_key: str, extra: str = "",
-             relationships: str = "[]") -> str:
+             relationships: str = "[]", key_property: str = "") -> str:
+    """One authored binding.
+
+    *key_property* is the ontology property the binding maps its key column to. It matters
+    because ``join.foreign`` names the column the parent *emits*: a key carried through
+    ``fields:`` reaches Silver as ``camel_to_snake`` of the property's local name, not
+    under the source column's name. A parent with no ``fields:`` entry for its key emits a
+    surrogate key and nothing else, so no natural-key join to it is possible at all.
+    """
+    fields = "fields: []\n"
+    if key_property:
+        fields = (
+            "fields:\n"
+            f"  - property: {key_property}\n"
+            f"    expression: {source_key}\n"
+        )
     return (
         "apiVersion: kairos.eu/v5\n"
         "kind: EntityBinding\n"
@@ -81,8 +97,8 @@ def _binding(name: str, domain: str, target_class: str, source_key: str, extra: 
         f"  sourceKey: [{source_key}]\n"
         "load:\n"
         "  mode: full-refresh\n"
-        "fields: []\n"
-        f"relationships: {relationships}\n" + extra
+        + fields
+        + f"relationships: {relationships}\n" + extra
     )
 
 
@@ -109,7 +125,8 @@ def hub(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (bindings / "consignments.binding.yaml").write_text(
-        _binding("consignments", "consignment", _CONSIGNMENT_CLASS, "consignment_id"),
+        _binding("consignments", "consignment", _CONSIGNMENT_CLASS, "consignment_id",
+                 key_property="cons:consignmentReference"),
         encoding="utf-8",
     )
 
@@ -150,26 +167,38 @@ class TestProposals:
         assert proposal.parent_binding == "consignments"
 
     def test_join_columns_are_matched_deterministically(self, hub):
+        """local names the child's source column, foreign the column the parent emits.
+
+        The asymmetry is the emitted SQL's: the child side reads from the raw source CTE
+        (``src.<local>``) while the parent side reads from the built model
+        (``ref(parent).<foreign>``). Naming the parent's *source* column here produced a
+        join against a column the parent model does not have -- it compiled, emitted, and
+        would fail only when dbt ran (#928).
+        """
         proposal = _report(hub).proposals[0]
         assert proposal.join_resolved is True
         assert proposal.local_column == "consignment_id"
-        assert proposal.foreign_column == "consignment_id"
+        assert proposal.foreign_column == "consignment_reference"
 
     def test_cross_domain_target_gets_an_external_reference(self, hub):
         """DD-138: a cross-domain parent is a declared contract, not a discovered peer.
 
-        The key *type* is sentinelled here on purpose: the parent binding declares
-        ``consignment_id`` only as an identity source key, which carries no canonical
-        type, so nothing in the hub states it. Guessing ``string`` would look right and
-        silently break the compiler's key-type compatibility check.
+        The key *type* is sentinelled here on purpose: the parent carries its key through
+        ``fields:``, which states no canonical type, so nothing in the hub states it.
+        Guessing ``string`` would look right and silently break the compiler's key-type
+        compatibility check.
+
+        The key *column* is the emitted one, and must equal ``join.foreign`` exactly --
+        the compiler enforces that, and both name the parent model's column.
         """
         proposal = _report(hub).proposals[0]
         assert proposal.external_reference == {
             # The dbt model name derives from the target class, not the binding/table.
             "name": "consignment",
             "domain": "consignment",
-            "key": [{"column": "consignment_id", "type": "<CONFIRM_KEY_TYPE>"}],
+            "key": [{"column": "consignment_reference", "type": "<CONFIRM_KEY_TYPE>"}],
         }
+        assert proposal.external_reference["key"][0]["column"] == proposal.foreign_column
 
     def test_a_qname_parent_class_slugs_to_the_model_the_compiler_emits(self, hub):
         """#724: the proposal is handed the authored token, the compiler the resolved class.
@@ -182,7 +211,8 @@ class TestProposals:
         and `externalReference` skips model-existence checking, so nothing failed closed.
         """
         (hub / "integration" / "bindings" / "consignments.binding.yaml").write_text(
-            _binding("consignments", "consignment", "cons:Consignment", "consignment_id"),
+            _binding("consignments", "consignment", "cons:Consignment", "consignment_id",
+                     key_property="cons:consignmentReference"),
             encoding="utf-8",
         )
         proposal = _report(hub).proposals[0]
@@ -196,7 +226,8 @@ class TestProposals:
         bridge silently produced no proposal at all.
         """
         (hub / "integration" / "bindings" / "consignments.binding.yaml").write_text(
-            _binding("consignments", "consignment", "cons:Consignment", "consignment_id"),
+            _binding("consignments", "consignment", "cons:Consignment", "consignment_id",
+                     key_property="cons:consignmentReference"),
             encoding="utf-8",
         )
         report = _report(hub)
@@ -319,7 +350,8 @@ class TestSubclassEndpoints:
             encoding="utf-8",
         )
         (hub / "integration" / "bindings" / "consignments.binding.yaml").write_text(
-            _binding("consignments", "consignment", consignments_class, "consignment_id"),
+            _binding("consignments", "consignment", consignments_class, "consignment_id",
+                     key_property="cons:consignmentReference"),
             encoding="utf-8",
         )
 
@@ -570,3 +602,88 @@ class TestCLI:
         result = self._invoke(hub, monkeypatch, ["--no-unresolved", "--format", "json"])
         assert result.exit_code == 0
         assert json.loads(result.output)["proposals"] == []
+
+class TestTheJoinNamesTheColumnTheParentEmits:
+    """#928 -- proposals joined on the parent's *source* column, which it may not emit.
+
+    The emitted SQL reads the child from the raw source CTE and the parent from the built
+    model, so the two sides of a join are not in the same namespace. Every proposal
+    against a parent that renames its key on the way into Silver -- which is the normal
+    case, since a mapped field is emitted under the ontology property's name -- named a
+    column the parent model does not have. It compiled, it emitted, and it would fail
+    only when dbt ran.
+    """
+
+    def _hub(self, tmp_path, key_property, parent_extra=""):
+        hub_root = tmp_path / "hub"
+        bindings = hub_root / "integration" / "bindings"
+        bindings.mkdir(parents=True)
+        (hub_root / "model" / "ontologies").mkdir(parents=True)
+        (hub_root / "kairos.yaml").write_text("adapter: fabric\n", encoding="utf-8")
+        child_extra = (
+            "technicalFields:\n"
+            "  - name: consignment_id\n"
+            "    expression: consignment_id\n"
+            "    type: string\n"
+            "    nullable: false\n"
+            "    purpose: relationship\n"
+        )
+        (bindings / "bookings.binding.yaml").write_text(
+            _binding("bookings", "booking", _BOOKING_CLASS, "booking_id", child_extra),
+            encoding="utf-8",
+        )
+        (bindings / "consignments.binding.yaml").write_text(
+            _binding(
+                "consignments", "consignment", _CONSIGNMENT_CLASS, "consignment_id",
+                parent_extra, key_property=key_property,
+            ),
+            encoding="utf-8",
+        )
+        ref_models = tmp_path / "ontology-reference-models"
+        blueprint = ref_models / "accelerator-packs" / "logistics" / "client-hub-blueprint"
+        blueprint.mkdir(parents=True)
+        (blueprint / "data-domains.yaml").write_text(_DATA_DOMAINS_YAML, encoding="utf-8")
+        return hub_root
+
+    def test_a_renaming_parent_is_joined_on_its_emitted_name(self, tmp_path):
+        hub = self._hub(tmp_path, "cons:consignmentReference")
+        proposal = _report(hub).proposals[0]
+        assert proposal.local_column == "consignment_id", "the child reads its source column"
+        assert proposal.foreign_column == "consignment_reference", (
+            "the parent reads its model column"
+        )
+
+    def test_a_parent_that_does_not_emit_its_key_has_no_join(self, tmp_path):
+        """No column to join to is not a join with a guessed column name."""
+        hub = self._hub(tmp_path, "")
+        proposal = _report(hub).proposals[0]
+        assert proposal.join_resolved is False
+        assert proposal.foreign_column == SENTINEL_JOIN_COLUMN
+        assert "does not emit" in proposal.join_evidence
+        assert proposal.external_reference["key"][0]["column"] == SENTINEL_JOIN_COLUMN
+
+    def test_a_technical_field_still_wins_over_a_mapped_field(self, tmp_path):
+        """An authored technicalField names its own output column; that is authoritative."""
+        parent_extra = (
+            "technicalFields:\n"
+            "  - name: cons_key\n"
+            "    expression: consignment_id\n"
+            "    type: string\n"
+            "    nullable: false\n"
+            "    purpose: identity\n"
+        )
+        hub = self._hub(tmp_path, "cons:consignmentReference", parent_extra)
+        proposal = _report(hub).proposals[0]
+        assert proposal.foreign_column == "cons_key"
+        assert proposal.external_reference["key"][0]["type"] == "string", (
+            "a technicalField states a canonical type, so it is not sentinelled"
+        )
+
+    def test_the_external_key_always_equals_join_foreign(self, tmp_path):
+        """The compiler requires exact equality; a proposal that breaks it cannot compile."""
+        for key_property in ("cons:consignmentReference", ""):
+            hub = self._hub(tmp_path / key_property.replace(":", "_" ) or "none", key_property)
+            proposal = _report(hub).proposals[0]
+            assert (
+                proposal.external_reference["key"][0]["column"] == proposal.foreign_column
+            )
