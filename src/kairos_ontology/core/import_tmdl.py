@@ -206,12 +206,18 @@ def _incomplete_suffix(model: TmdlModel) -> str:
     )
 
 
-def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
+def generate_engineering_pack(
+    model: TmdlModel, source_label: str = "", crosscheck_note: str = ""
+) -> str:
     """Generate an Engineering Pack markdown document from a parsed TMDL model.
 
     Args:
         model: Parsed TMDL model
         source_label: Human-readable source path label
+        crosscheck_note: Markdown warning from the TOM SDK cross-check (issue #879),
+            rendered directly under the title so it is read before the inventory it
+            qualifies rather than after it. Empty when the two readings agree or when
+            no second opinion was available, which keeps an unaffected pack unchanged.
 
     Returns:
         Markdown string
@@ -228,6 +234,8 @@ def generate_engineering_pack(model: TmdlModel, source_label: str = "") -> str:
     if source_label:
         lines.append(f"Source: {source_label}")
     lines.append("")
+    if crosscheck_note:
+        lines.extend(crosscheck_note.splitlines())
 
     # Global inventory
     lines.extend(
@@ -466,6 +474,32 @@ def generate_concept_mapping(
     return header + yaml.dump(data, default_flow_style=False, sort_keys=False, width=100)
 
 
+def _crosscheck_note(model: TmdlModel, definition_dir: Path) -> str:
+    """Ask the TOM SDK what it reads in *definition_dir*, and report any shortfall (#879).
+
+    Runs whenever ``dotnet`` is on PATH and is skipped silently otherwise, matching how
+    the write-path TMDL validation already behaves. Never blocks an import: this is a
+    second opinion on a reading that has already succeeded, and an advisory check that
+    can fail the command it advises would be worse than not having it.
+
+    Returns the Markdown note for the engineering pack, and logs the same findings for
+    whoever is watching the import happen.
+    """
+    from .tmdl_crosscheck import crosscheck_parsed_model, render_crosscheck_note
+
+    try:
+        report = crosscheck_parsed_model(model, definition_dir)
+    except Exception as exc:  # noqa: BLE001 - advisory only, never fatal
+        logger.debug("TMDL cross-check could not run: %s", exc)
+        return ""
+    if not report.disagreed:
+        return ""
+    name = model.name or "unnamed-model"
+    for finding in report.findings:
+        logger.warning("%s: %s", name, finding.detail)
+    return render_crosscheck_note(report, name)
+
+
 def run_import_tmdl(
     source: Path,
     output_dir: Path | None = None,
@@ -520,7 +554,13 @@ def run_import_tmdl(
                 return []
             for def_dir in definition_dirs:
                 model = parse_model_folder(def_dir)
-                files = _write_outputs(model, output_dir, str(source), partial_models)
+                files = _write_outputs(
+                    model,
+                    output_dir,
+                    str(source),
+                    partial_models,
+                    _crosscheck_note(model, def_dir),
+                )
                 generated_files.extend(files)
             generated_files.extend(_write_report_usage(extracted, output_dir, str(source)))
 
@@ -541,7 +581,13 @@ def run_import_tmdl(
             return []
         for def_dir in definition_dirs:
             model = parse_model_folder(def_dir)
-            files = _write_outputs(model, output_dir, str(source), partial_models)
+            files = _write_outputs(
+                model,
+                output_dir,
+                str(source),
+                partial_models,
+                _crosscheck_note(model, def_dir),
+            )
             generated_files.extend(files)
         for folder in artifact_dirs:
             generated_files.extend(_write_report_usage(folder, output_dir, str(source)))
@@ -553,7 +599,13 @@ def run_import_tmdl(
             return []
         for def_dir in definition_dirs:
             model = parse_model_folder(def_dir)
-            files = _write_outputs(model, output_dir, str(source), partial_models)
+            files = _write_outputs(
+                model,
+                output_dir,
+                str(source),
+                partial_models,
+                _crosscheck_note(model, def_dir),
+            )
             generated_files.extend(files)
         generated_files.extend(_write_report_usage(source, output_dir, str(source)))
 
@@ -627,6 +679,7 @@ def _write_outputs(
     output_dir: Path,
     source_label: str,
     partial_models: list[str] | None = None,
+    crosscheck_note: str = "",
 ) -> list[Path]:
     """Write engineering pack and concept mapping for a model."""
     if model.unresolved_table_refs:
@@ -652,7 +705,7 @@ def _write_outputs(
 
     # Engineering Pack
     pack_path = output_dir / f"{slug}-engineering-pack.md"
-    pack_content = generate_engineering_pack(model, source_label)
+    pack_content = generate_engineering_pack(model, source_label, crosscheck_note)
     pack_path.write_text(pack_content, encoding="utf-8")
     generated.append(pack_path)
     logger.info("Generated: %s", pack_path)
