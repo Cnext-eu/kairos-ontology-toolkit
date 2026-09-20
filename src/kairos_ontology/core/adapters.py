@@ -114,7 +114,12 @@ DBT_ADAPTER_PACKAGES: dict[str, str] = {
 #: a property of one hub's offline validation gate. Putting the ceiling in the emitted
 #: `require-dbt-version` would reject a dataplatform running a newer dbt with a
 #: different adapter, which is none of this package's business.
-DBT_CORE_FLOOR = ">=1.10"
+#: Spelled with all three components on purpose. require-dbt-version is parsed by
+#: dbt's own semver, not by pip's: a two-part >=1.10 is a valid pip specifier and an
+#: invalid dbt one, and dbt rejects the whole project file with ">=1.10" is not a valid
+#: semantic version" before it reads anything else. Every emitted project failed
+#: dbt deps on that line (#888).
+DBT_CORE_FLOOR = ">=1.10.0"
 
 #: What a *scaffolded hub* installs: the intersection that satisfies every supported
 #: adapter at once, so a hub and the dataplatform consuming its output can agree on one
