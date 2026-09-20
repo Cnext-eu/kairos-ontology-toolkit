@@ -101,6 +101,17 @@ contracts and bindings, never a CompilePlan. The output directory is reconciled 
 files through `.kairos-projection-manifest.json`, written only for a hub that has DDD output.
 The per-domain `{domain}-context-map.mmd` is retired and removed on the first run after upgrade.
 
+The same target also writes, for **every** hub with a class (DD-232), `architecture/ddd/ubiquitous-language.ttl`
+— one `skos:Concept` per hub class, `skos:exactMatch` to the class IRI, `skos:broadMatch` to
+the industry superclass, labels and definitions from the ontology, synonyms from the DDD overlay
+and the discovery glossary, source names as `skos:hiddenLabel`, Silver status as
+`skos:editorialNote`, one `skos:Collection` per context (else per domain) — and
+`architecture/ddd/concept-guide.md`, the generated "concepts and how they relate" page (three
+names per concept, per-context descriptions, relationship reference, mapping table, stale
+glossary links). Sample values in the guide are off unless `kairos.yaml` says
+`projections.concept_guide.samples: true`; they come from the import step's redacted
+`kairos-bronze:sampleValues` only, capped by `max_samples` (default 3).
+
 The strategic filename deliberately does not match the `*-ddd-ext.ttl` overlay glob, so it is
 never validated as the overlay of a domain called `ddd-contexts` and the #848 orphan check never
 fires on it. A hub that still declares contexts inside each overlay validates as before; the

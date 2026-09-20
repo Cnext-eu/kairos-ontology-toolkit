@@ -1383,6 +1383,37 @@ def run_projections(
                     f"{ddd_output / CONTEXTS_SUBDIR}"
                 )
 
+            # The ubiquitous language and the concept guide (DD-232) are emitted for every
+            # hub, DDD design or not: a domain design already produces a language worth
+            # reading back to the SMEs. Sample values are opt-in (kairos.yaml).
+            from .projections.concept_guide_projector import generate_concept_guide
+            from .projections.ubiquitous_language_projector import (
+                build_language_model,
+                generate_ubiquitous_language,
+                language_inputs,
+            )
+
+            language = build_language_model(
+                context_domains,
+                strategic_path=strategic,
+                contracts_dir=contracts_dir,
+                bindings_dir=hub_root / "integration" / "bindings" if hub_root else None,
+                hub_root=hub_root,
+                hub_name=hub_display_name(hub_root) if hub_root is not None else "hub",
+            )
+            language_artifacts = {
+                **generate_ubiquitous_language(language),
+                **generate_concept_guide(
+                    language,
+                    samples_per_property=language_inputs(hub_root)["samples"],
+                    sources_dir=sources_dir,
+                ),
+            }
+            if language_artifacts:
+                _write_artifacts(language_artifacts, ddd_output)
+                ddd_paths_written.extend(language_artifacts)
+                print(f"  ✓ {', '.join(sorted(language_artifacts))} -> {ddd_output}")
+
             # The per-domain `{domain}-context-map.mmd` is retired (DD-230). No hub has a
             # manifest under this directory yet, so a manifest diff cannot remove the
             # files an earlier toolkit wrote; name them explicitly, once.
@@ -1393,9 +1424,9 @@ def run_projections(
                     print(f"  ✓ removed retired {retired.name} (hub-wide map replaces it)")
 
             # Reconcile to exactly this run's files (#861 for `ddd`), but only for a hub that
-            # has DDD output or already carries a manifest: `architecture/ddd` is created
-            # for every hub, and an unconditional manifest would put a tracked dotfile in
-            # the publish lane of hubs that never authored an overlay.
+            # has ddd output or already carries a manifest. Since DD-232 every hub with a
+            # class gets the language artifacts, so in practice every hub is reconciled; a
+            # hub with no classes at all still gets no manifest.
             manifest = ddd_output / _PROJECTION_MANIFEST_NAME
             if ddd_paths_written or manifest.is_file():
                 removed = _reconcile_managed_output(ddd_output, ddd_paths_written)

@@ -387,11 +387,14 @@ class TestProjectorWiring:
         assert (contexts / "TaxationContext.mmd").is_file()
         assert not (contexts / "TaxContext.mmd").exists()
 
-    def test_a_hub_without_ddd_input_gets_no_contexts_and_no_manifest(self, hub, tmp_path):
+    def test_a_hub_without_ddd_input_gets_no_contexts(self, hub, tmp_path):
+        """No overlay, no strategic file: no `contexts/`. The manifest still exists, because
+        DD-232's language artifacts are written for every hub with a class."""
         for path in (hub / "model" / "extensions").glob("*ddd*"):
             path.unlink()
         output = tmp_path / "publish"
         _project_ddd(hub, output)
         ddd = output / "architecture" / "ddd"
         assert not (ddd / CONTEXTS_SUBDIR).exists()
-        assert not (ddd / _PROJECTION_MANIFEST_NAME).exists()
+        assert (ddd / _PROJECTION_MANIFEST_NAME).is_file()
+        assert (ddd / "ubiquitous-language.ttl").is_file()
