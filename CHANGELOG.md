@@ -5,42 +5,420 @@ All notable changes to the Kairos Ontology Toolkit are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Release status.** **5.18.0** is the latest GA release (2026-09-20), superseding **5.17.0**
-> (2026-09-08). Everything recorded under the `5.18.0rc1`, `rc2` and `rc3` headings below shipped
-> as part of this one release — those headings are the per-change record of how it was built,
-> not separate releases — plus the architecture layer landed since rc3 (DD-229 to DD-232) under
-> the 5.18.0 heading itself. The same holds for `5.15.0rc*`/`5.16.0rc*` under 5.17.0 and for
-> `5.13.0rc1`–`rc31` under 5.14.0.
+> **Release status.** **5.19.0** is the latest GA release (2026-09-20), superseding **5.18.0**
+> (2026-09-20). It is the output of one adversarial dogfood session that built a real client hub
+> from source import through to a validated Silver contract, and it is almost entirely
+> gap-closing: sixteen defects found, fifteen fixed. The headline number from that hub is that
+> the Silver contract went from **29 columns to 81**, and the main cargo binding from **1 field
+> to 74** — not by modelling anything new, but by fixing five places where one stage computed the
+> right answer and the next could not see it.
 >
-> **What to expect on the first run after upgrading from 5.17.0.** Two fail-closed gates can
-> newly fail a hub that compiled green: `relationship.external-reference-key-column-unknown`
-> blocks a binding whose `externalReference.key[].column` the parent domain's contract does not
-> declare (only when that parent *has* a contract), and `dbt-contract.dialect-uncastable-type`
-> fails `validate-dbt-contracts` on a `cast(... as boolean|timestamp|string|…)` in authored SQL.
-> Both reject something that was already broken at run time — fix the defect, do not suppress
-> the gate. **Your first `compile --emit` produces a large diff**: Gold tables no longer carry the
-> DD-109 `_kairos_fk_*_match_count` diagnostics, a relationship that closed an ambiguous filter
-> path or put an unproven key on its "one" side is emitted `isActive: false` (read DD-225,
-> DD-226, DD-227 and the Gold product report's `deactivated_relationships`), and
-> `models/gold/shared/` is rewritten once. **Every tracked Mermaid diagram changes by four
-> lines** (the ELK layout frontmatter, #855) and the master class diagram changes bytes; run
-> `project --target erd` and `project --target ddd`, then **`git add
-> ontology-hub-publish/architecture/ddd`** — it now carries `ubiquitous-language.ttl`,
-> `concept-guide.md` and, for a hub with a DDD overlay, `contexts/**` and a projection manifest,
-> and the drift gate does not see untracked additions. The per-domain `{domain}-context-map.mmd`
-> is removed on that run. `validate` gains a class-disposition section that warns, never fails,
-> until a hub runs `class-disposition init`. `draft-gap-decisions --dry-run` shows columns the
-> operational-column predicate no longer silences.
+> **What to expect on the first run after upgrading from 5.18.0.** This release tightens gates
+> that were passing when they should not have been, so **a hub that compiled green may now
+> block**. Every one of them rejects something that was already wrong; fix the finding rather
+> than suppressing the gate.
 >
-> The rc2 Gold fixes (#790–#794) were found by publishing rc1 to a real Fabric workspace and are
-> not proven by any offline gate; #794 in particular only surfaces at query time. The rc line
-> was cut for exactly that validation.
+> | you will see | why | the fix |
+> |---|---|---|
+> | `alignment.gap-column-undecided` on columns that were quiet | a table-grain `deferred`, `bound` or `registered-extension` used to retire every one of a table's gap columns from the DD-169 gate. On one hub, 40 such records retired **1,643 columns** and the gate never fired | `kairos-ontology draft-gap-decisions --suggest` drafts them in bulk |
+> | `alignment.evidence-missing` | the DD-169 and DD-180 gates now assert their evidence exists before judging it. Deleting `integration/sources/_analysis/` used to take the gate from 661 findings to **a clean pass** (DD-234) | `kairos-ontology propose-alignment` |
+> | `gate.evaluation-failed` | a gate that raised used to be indistinguishable from a gate that passed | read the named gate's input, or report it as a toolkit defect |
+> | `import.evidence-unconsumed` on `validate` | client documents or Power BI exports staged under `.import/` that nothing downstream has read (DD-233). On one hub this was 31 documents in a folder no command looks in | move them under `.import/businessdiscovery/` or `.import/powerbi/` and process them; `--degraded` downgrades it to a warning |
+> | `source-disposition set` rejecting `bound` at table grain | authoring the EntityBinding is what states it; the DD-164 audit reads `integration/bindings/` before the ledger | author the binding. Still recordable for a single column |
+>
+> **Your first `compile --emit` rewrites `dbt_project.yml`.** The `require-dbt-version` floor was
+> spelled `>=1.10`, which dbt's own semver rejects outright, so `dbt deps` failed on every
+> emitted medallion project. It is now `>=1.10.0` — the same range, correctly spelled.
+>
+> **Two new things worth knowing about before you need them.** `kairos-ontology gates` lists
+> every gate in the pipeline, the evidence it reads and the flag that bypasses it; `--mode
+> autopilot` or `KAIROS_MODE=autopilot` refuses the escape flags that downgrade a result, which
+> is what an unattended run should be using (DD-234). Artifacts now record the mode and any
+> escapes they were produced under, so a `*-alignment.yaml` written with `--without-discovery`
+> is no longer indistinguishable afterwards from a grounded one.
+>
+> Everything recorded under the `5.18.0rc1`, `rc2` and `rc3` headings below shipped as part of
+> 5.18.0 — those headings are the per-change record of how it was built, not separate releases.
+> The same holds for `5.15.0rc*`/`5.16.0rc*` under 5.17.0 and for `5.13.0rc1`–`rc31` under
+> 5.14.0.
+>
+> **Upgrading from 5.17.0 or earlier?** Read the 5.18.0 section's own notes as well — its two
+> fail-closed gates (`relationship.external-reference-key-column-unknown` and
+> `dbt-contract.dialect-uncastable-type`), its large first `compile --emit` diff, and its
+> Mermaid and `architecture/ddd` changes all still apply on top of the above.
 >
 > Read **5.11.0** before upgrading: `propose-alignment` now refuses to run without
 > `table-anchors.yaml`, so a hub that never ran `anchor-tables` will stop. `--without-anchors`
 > is the escape hatch and `anchor-tables` is the one-command fix.
 
 ## [Unreleased]
+
+## [5.19.0] — 2026-09-20
+
+The output of one adversarial dogfood session against a real client hub, run end to end from
+source import to a validated Silver contract. Sixteen defects found, fifteen fixed; the one
+left open is a product decision about whether the Microsoft TOM SDK should replace the
+hand-rolled TMDL parser, which would make the .NET SDK a prerequisite for BI import.
+
+The session started from a complaint that a hub's Silver contract was far thinner than its source
+system warranted, despite a large archetype ontology behind it. It was not a modelling failure.
+It was five places where each stage computed the right answer and the next could not see it: the
+BI import produced nothing usable, the gap sheet dropped the drafted property through one wrong
+dictionary key, a table-grain `deferred` silently retired 1,643 columns from the pre-binding
+gate, the disposition ledger flattened structured decisions into prose, and the binding generator
+excluded every hub-local property from its candidate pool.
+
+Measured on that hub after the fixes: **29 → 81 Silver columns**, **1 → 74 binding fields**, 701
+column-grain gate decisions where there had been none, and `dbt deps` passing for the first time.
+
+Two architectural decisions came out of it. **DD-233** makes staged client evidence that nothing
+has consumed a `validate` failure — the input the pipeline cannot re-derive for itself is the one
+it was silently ignoring. **DD-234** states what a gate *is*: it declares the evidence it reads,
+absent evidence fails it rather than satisfying it, a gate that cannot run has not passed, and
+every escape hatch is classified by which enforcement modes may use it and recorded in the
+artifact it produced.
+
+### Added
+- **`anchor-tables` reports what moved since the last run.** Anchoring is not reproducible
+  at the prompt size it operates at — DD-177 recorded that for a 23 KB alignment prompt,
+  and this one is 121 KB. Measured back to back on a real hub, with the prompt
+  byte-identical across processes and the same seed sent and honoured: the anchor class
+  moved on 12 of 39 tables, the natural key on 13, two tables were given entirely disjoint
+  keys, and one was anchored in one run and unanchored in the next. Provider-side
+  determinism is not on offer at that size, so the defect was never the movement — it was
+  that a re-run overwrote every unpinned row in silence. DD-190 built sticky review
+  statuses on the premise that review effort concentrates where it belongs, without ever
+  saying where that is. The diff now names it: which tables moved, in which fields, with
+  both values, and a separate note for `natural_key`, which is not an advisory label but
+  the binding's identity and the silver contract's uniqueness test. Written to the console
+  and into the artifact, so it survives the terminal that produced it. A first run reports
+  nothing; an unchanged re-run says so.
+- **`import-tmdl` cross-checks its reading against the Microsoft TOM SDK.** The toolkit
+  already bundled the real SDK, but only on the write path, where it checks that TMDL the
+  toolkit *generated* will open. It now points the same engine — the one Power BI Desktop
+  and Fabric use — at the export being imported, and reports where the two readings
+  differ: tables the SDK reads and the import did not, measures or columns read short,
+  and exports the SDK rejects outright.
+
+  Advisory and automatic: it runs whenever `dotnet` is on PATH, is silently skipped
+  otherwise, and never blocks an import. A disagreement is written into the engineering
+  pack above the inventory it qualifies, not only logged, because the operator who needs
+  it is the one opening the pack later and wondering why it is thinner than the report
+  they remember.
+
+  Measured against two real Power BI exports: one agreed exactly (7 tables, 48 columns,
+  59 measures, 6 relationships), and one was rejected by the engine as unopenable —
+  where the parser had reported a well-formed model with zero tables and thirty-three
+  relationships, which nothing downstream can distinguish from a model that genuinely
+  has none.
+
+  This is option 3 of the three in the issue. It does not settle whether the SDK should
+  *replace* the hand-rolled parser, which is a product call about making `dotnet` a
+  prerequisite for BI import; it does start producing the evidence that call needs.
+
+- **The bundled TMDL validator reports an inventory, not just a table count.** Table
+  names with their column and measure counts, plus the relationship count, so a
+  disagreement can name what is missing rather than only that something is.
+- **A `registered-extension` decision now records *which* property it commits to.** The
+  hub-local property `propose-alignment` drafts for an unmappable column — its name,
+  range, owning class and rationale — reached the disposition ledger only as a sentence
+  inside `rationale`, so the one stage that could act on it would have had to parse
+  English. Ledger entries now carry a structured `proposed_property` alongside the prose.
+  Where the aligner read one column name two different ways across tables, neither draft
+  is recorded: the reviewer was asked to pick, and guessing on their behalf is the
+  failure this avoids.
+- **`scaffold-extensions` renders the accepted `registered-extension` decisions as draft
+  OWL.** Closing the DD-169 gate honestly is expensive — on one hub, 701 column-grain
+  decisions, 501 of them accepting a hub-local property the aligner had already drafted
+  in full — and nothing consumed them. The disposition's own definition points at
+  `register-concept`, which registers a *class* the archetype catalog lacks, while these
+  are *columns* wanting *properties* on classes that already exist, so the properties had
+  to be re-derived by hand from a second file. The new command writes what the ledger
+  already records: name, range, owning class and rationale, one declaration per property,
+  grouped by class. It makes no judgement of its own. Output is a DRAFT written outside
+  `model/ontologies/` so the validator does not load it, the same contract
+  `suggest-shapes` uses (DD-076). A non-datatype range, a non-camelCase name, or one name
+  accepted with two different class or range readings is reported and skipped rather than
+  guessed, and no source-system, table or column name reaches an `rdfs:comment`, which
+  `validate --syntax` rejects.
+- **Generated artifacts record which business glossary they were grounded in, and a
+  changed glossary is reported.** `*-alignment.yaml` already fingerprinted its affinity
+  input and its resolved import closure so either going stale was visible; the glossary
+  was the one input nothing recorded — and it is the one a human maintains between runs,
+  so it is the one most likely to move underneath an artifact built from it.
+  `table-anchors.yaml` and `*-alignment.yaml` now carry `glossary_sha256`, digested over
+  the `(prefLabel, definition)` pairs that actually reach a prompt, so adding a term or
+  correcting a definition is drift while reformatting the Turtle is not. A literal
+  `"none"` records a run that had no glossary in scope — the `--without-discovery`
+  escape, previously visible only on the terminal that produced it.
+  `kairos-ontology next` reports artifacts grounded in an older vocabulary.
+- **The autopilot has a second Stage 0 pre-flight: business discovery.** It stops on a
+  missing glossary, on DD-233 findings, and on glossary drift, and may never pass
+  `--without-discovery` — that flag is a deliberate human escape. A run that proceeded
+  without business discovery carries **BLOCKED** in its transparency report, for the same
+  reason a skipped LLM judgment step does.
+- **`kairos-ontology gates` lists every gate, the evidence it reads, and the flag that
+  bypasses it (DD-234).** Until now the only way to find out what could block the
+  pipeline, and what could get past it, was to read sixteen `click.option` declarations
+  across eight CLI files. One of them — a fourth `--degraded`, on `resolve-ontology` —
+  had no help text at all, and was found only by the AST scan written for this change.
+- **Enforcement modes: `--mode interactive|autopilot|ci`, or `KAIROS_MODE`.** The modes
+  differ in one thing — whether an escape flag that downgrades the result is accepted —
+  and the difference is about who is watching, not about how important the check is. In
+  `autopilot` and `ci` the flag is refused at parse time, before the command body runs,
+  with a message naming the gate and the human decision it needs. `interactive` is the
+  default and every current behaviour is unchanged.
+- **Artifacts record how they were enforced.** `*-alignment.yaml` and `table-anchors.yaml`
+  produced under an escape carry an `enforcement:` block naming the mode and the flags.
+  A file written with `--without-discovery` was otherwise indistinguishable afterwards
+  from a grounded one — the flag was printed to a terminal and written into nothing. The
+  block is emitted only when there is something to say, so a clean run's output is
+  byte-identical to what the previous version wrote.
+- **`.import/powerbi/` is scaffolded, and staged business evidence nothing consumed now
+  fails `validate` (DD-233).** `.import/` holds the two inputs the pipeline cannot
+  re-derive for itself: the client's own documents and their Power BI models. Nothing
+  checked that any of it was used. `discovery-status` reported on
+  `.import/businessdiscovery/` alone and said "nothing to check" for an empty directory,
+  which reads identically whether the client sent no documents or sent thirty to a
+  directory no command looks in — and there was no scaffolded home for a Power BI export
+  at all, so hubs invented one and every command then failed to find it. `init` and
+  `new-repo` now create `.import/powerbi/` with a README covering both export shapes, and
+  `validate` reports three kinds of unused evidence as blocking errors: a discovery
+  document with no extraction, a Power BI export with no engineering pack, and a business
+  document filed outside every directory a command reads. `--degraded` downgrades them to
+  warnings.
+
+### Changed
+- **`draft-gap-decisions --suggest` now characterises the single names too, not only the
+  families.** It read `sheet["families"]` and nothing else, and families are formed by
+  shared name tokens — so a column whose name shares no token with another was a
+  singleton forever and no model call ever considered it. On one real hub that was the
+  overwhelming majority: 7 families covering 64 of 357 distinct names, and 293 singletons
+  left with a deterministic reasoning line and no proposal. Those are also the harder
+  ones, since token grouping had already solved the easy case. Only names with no
+  rule-based proposal are sent, so a deterministic answer is never second-guessed; the
+  aligner's drafted property is offered as evidence where one exists; large lists are
+  batched rather than truncated; and an empty disposition remains a valid answer, because
+  "this is an opaque legacy abbreviation" beats a guess. As with families, it fills
+  `proposed_disposition` and `reasoning` and never `decision`.
+- **`source-disposition set` now says what a table-grain decision just retired.** A
+  disposition recorded against a whole table removes every one of its gap columns from
+  the DD-169 pre-binding gate, permanently — and the command said only
+  `✓ <table> recorded as 'deferred'`. The cascade appeared in one place, the help text
+  for the `--column` flag, phrased as a convenience rather than a consequence, which
+  nobody recording forty tables ever reads. Recording a disposition now reports the real
+  column count: informational for `not-business-data` and `blueprint-gap`, where
+  retiring the columns is the point, and a warning for the rest — `deferred` means "in
+  scope, not modelled yet", which is precisely the state the gate exists to keep raising,
+  and it had the widest blast radius of any option while sounding the mildest. Disposing
+  of a table alignment has never covered warns too, because that decision answers for
+  columns nothing has yet looked at. The `--disposition` help text spells out which
+  values cascade and why.
+- **`kairos-design-domain` now points at the gap decisions, not only at the alignment
+  files.** The skill sent an author to `*-alignment.yaml` for drafted properties, which
+  holds one for *every* unmappable column — including the ones a reviewer has since ruled
+  out. Which were accepted lives in `gap-decisions.yaml` and the disposition ledger, and
+  the skill never mentioned either, so a column dispositioned `deferred` or
+  `not-business-data` could be modelled anyway, re-opening a decision someone had already
+  made. The skill now names both files, says to design against the ledger, and points at
+  `scaffold-extensions` for rendering the accepted ones as a reviewable diff.
+- **`anchor-tables` now requires an authored business glossary, like `propose-alignment`
+  already did.** Anchoring decides what every source table *is* — its class, domain,
+  grain and natural key — in one global call that everything downstream inherits, and it
+  ran with no business-discovery prerequisite at all. The check `propose-alignment` has
+  carried for some time is now shared by both commands, with the same
+  `--without-discovery` escape and the same warning when it is used: blocking rather than
+  warning, because a warning about ungrounded input is read after the expensive call has
+  already been paid for.
+- **The gap gate's disposition evaluation now sees the business's own vocabulary.**
+  `draft-gap-decisions --suggest` asks the model to name the concept a family of unmapped
+  columns represents, and had no access to the authored glossary — so it named concepts
+  from column spellings while the client's own term for the same thing sat unused in the
+  same hub. The glossary now goes into that prompt with a definition per term, and a term
+  that matches is treated as evidence the concept is real and in scope, favouring
+  `registered-extension` over `deferred`. New `load_glossary_entries()` returns
+  `(prefLabel, definition)` pairs: a label is enough to *reuse* a term, and only the
+  definition is enough to *recognise* one.
+
+### Fixed
+- **`import-tmdl` now reads a flat TMDL export, and names each export after its own model.**
+  A Power BI export saved without the `definition/` wrapper drops every `<table>.tmdl` flat
+  beside `model.tmdl`. The parser only ever looked in `definition/tables/`, so it read zero
+  tables and reported every table the model declares as "absent from this export" — advice
+  that could not be followed, because the files were in the folder it was pointed at. The
+  engineering pack and concept-mapping worksheet came out empty, and `design-landscape`'s
+  `bi_weight` and `draft-model-report` consumed nothing. A second defect compounded it: a
+  flat export was named after its *parent* directory, so every export staged in one folder
+  produced `<staging>-engineering-pack.md` and `<staging>-concept-mapping.yaml` and each
+  import silently overwrote the last. Both layouts are now read, and an export names itself.
+  Exports that genuinely omit table definitions still report them, unchanged.
+- **The Engineering Pack shows what a measure actually computes again.** TMDL wraps a
+  multi-line DAX expression in a ``` fence, and the parser stored the fence markers as
+  part of the expression. The pack previews a measure from the first line of its
+  expression — which was the fence — so every multi-line measure rendered as an empty
+  code fence and nothing else: on one real model, 53 of 59 measures listed a name and no
+  definition. Fenced expressions are now read to their closing delimiter and dedented,
+  so the DAX keeps its indentation and blank lines, and the concept-mapping worksheet no
+  longer carries fence markers inside each `expression:` value. Reading to an explicit
+  delimiter also removes a latent truncation, where a DAX line resembling a measure
+  property would cut the expression short.
+- **A structurally broken Power BI model now fails TMDL validation instead of reporting
+  as unvalidatable.** The bundled TOM validator treated every exception except
+  `TmdlFormatException` as "the SDK could not run here". But `TmdlSerializationException`
+  is raised about the *content* — a relationship endpoint pointing at a table or column
+  the model does not contain — and that is exactly the defect that makes Power BI Desktop
+  refuse to open a PBIP. Because `emit-gold` only fails on `status == "fail"`, such a
+  model emitted green with its diagnostic printed as a parenthetical aside worded
+  identically to "you don't have the .NET SDK installed". Serialization failures are now
+  reported as validation failures; genuine environment problems still report as
+  unavailable.
+- **`update` no longer uninstalls the optional extras the hub runs on.** Every
+  `update --upgrade`, `--test-ref` and `--restore` ran a bare `uv sync`, which installs
+  the default dependency set and removes everything outside it — so a hub configured
+  against Azure Foundry lost its provider SDK on every upgrade and the next
+  `anchor-tables` or `propose-alignment` died on a missing package nobody removed. The
+  extras a hub is actually running on are now detected before the sync (an extra counts
+  as active when every distribution it requires is installed, resolving
+  `kairos-ontology-toolkit[foundry]` through the toolkit's own metadata) and re-passed as
+  `--extra` flags. This covers the Windows path too, where the only sync that runs is the
+  one in the scheduled background refresh.
+- **Ingestion-framework columns are auto-dispositioned instead of reaching the gap gate
+  as business data.** `_rescued_data`, `_corrupt_record`, `ts_ms`, a SQL Server temporal
+  period's `ttSys…` bounds and a stray pandas `__index_level_0__` are written by the tool
+  that loaded the table, never by the business — but nothing recognised them, so they
+  arrived as undecided gap columns and the recurrence heuristic proposed `blueprint-gap`
+  for one of them, the disposition that asserts a reference-model defect to file
+  upstream. They are matched as adjacent token pairs, because "rescued", "record",
+  "index" and "ts" all occur in real business names and this classification silences a
+  column without review. The pairs are shared between the classification and the
+  cross-check that guards it, so the invariant that every operational name is also
+  audit-named now holds by construction.
+- **The gap decision sheet now shows the extension property alignment already drafted,
+  and proposes registering it.** `propose-alignment` drafts a full hub-local property —
+  name, range, owning class and rationale — for every column it cannot map.
+  `draft-gap-decisions` read those proposals under the wrong key (`suggested_property`,
+  which belongs to a sibling field, rather than `name`), so the list came back empty for
+  every group and the drafted property never reached the sheet. A reviewer therefore
+  faced a blank `decision:` with no proposal, while the answer sat in the alignment file
+  next door. On a five-domain hub slice that was 371 of 373 entries with no proposal at
+  all; it is now 188, with 183 drafted as `registered-extension` and the property spelled
+  out in the reasoning. Where the aligner read the same column name differently in
+  different tables, both readings are shown and the entry says to pick one — never
+  averaged. A proposal is still never a decision: `decision` stays empty, and the
+  existing rule branches (JSON blob, free text, recurring identifier) keep precedence
+  over the extension proposal while still showing what was drafted.
+- **The gap gate groups `ADDRESS1..3` the way it already grouped `ADDRESS_1..3`.** Family
+  grouping split column names on separators and camel boundaries but not on a
+  letter-to-digit boundary, so a numbered repeating group collapsed into one decision
+  only when the legacy schema happened to separate the index. On one hub that meant a
+  14-slot repeating group arrived as fourteen separate decisions about one concept while
+  an underscore-separated pair beside it arrived as one. A trailing digit run is now read
+  as an index — narrowly, so that a standard's number (`ISO6346`), a short code (`A1`)
+  and digits inside a name (`CO2EMISSIONS`) are left alone, and the existing coherence
+  guards still apply.
+- **A glossary term now reaches the prompts where it is relevant, not only where it
+  happens to share a word.** Terms were filtered to those sharing a token with the
+  table's own name or columns. That is self-defeating on the schemas that need it most: a
+  glossary is written in business English and a legacy schema's columns are
+  abbreviations, so the two share no tokens *by construction* — which is exactly the gap
+  the glossary exists to bridge. Measured on one hub, 39 of 52 authored terms never
+  reached a single prompt. A concept's `rdfs:seeAlso` names the reference class the
+  business's term corresponds to, so a term whose class is in the table's candidate pool
+  is now relevant however it is spelled; reach went from 13 to 35 of 52 terms, and a
+  cargo table from 4 to 8. The audited noise case still holds — a vessel term stays out
+  of a companies-table prompt, because its class is not in that pool.
+- **`anchor-tables` sees the vocabulary at all.** It decides what every table *is* and
+  everything downstream inherits that, while the one input naming which class each
+  business concept corresponds to was never in its prompt. The 43 concepts carrying an
+  `rdfs:seeAlso` are now rendered as evidence, explicitly not as an instruction. Terms
+  with no class attached are left out: they are vocabulary for naming, not evidence for
+  anchoring.
+- **`discovery-status` no longer answers "nothing to check" when there is.** It read
+  `.import/businessdiscovery/` alone, so on a hub holding thirty client documents filed
+  one directory across it printed `(no discovery documents found — nothing to check)` —
+  a sentence that sounded like an answer and stopped anyone looking further. When that
+  directory is empty it now scans the rest of `.import/`, names the business documents
+  staged where nothing reads them, and says where to move them. The DD-233 gate already
+  blocked `validate` on this; the command a human runs to ask *what evidence do I have*
+  should not have been the one saying "none".
+- **`compile` no longer passes the DD-169 and DD-180 gates on evidence it could not
+  read.** Both are built on `build_alignment_report`, which degrades gracefully by
+  design — an unreadable file is skipped, an absent directory yields nothing — so "no
+  findings" and "nothing was read" reached the gate indistinguishable. Measured on a real
+  hub, varying only the readability of the input: healthy, 661 undecided columns; one
+  `*-alignment.yaml` malformed, 405, with 256 columns silently gone; `_analysis/`
+  deleted, **0, and the gate passed clean**. No exception was raised in any of the three.
+  `compile` now reports `alignment.evidence-missing` and blocks. Scoped to hubs that have
+  imported sources, so a hub with nothing to align is unaffected.
+- **A gate that crashes no longer reports as a gate that passed.** The DD-169 and DD-180
+  guards were wrapped in `except Exception: ... = []` so a broken guard could not break an
+  unrelated compile. The intent was sound; the effect was that a gate whose failure mode
+  is *pass* is an advisory with a strict-sounding name. Both now return
+  `gate.evaluation-failed`, naming the gate and carrying the exception so a toolkit defect
+  is distinguishable from a malformed hub file.
+- **`resolve-ontology --degraded` is documented.** It had no help text, so the one
+  undocumented escape in the CLI is now described where an operator meets it.
+- **Hub-local extension properties reach the binding candidate pool again.**
+  `hub_local_properties` read the property IRI from a `uri` key; `SemanticIndex` names it
+  `property_uri`. The lookup therefore returned nothing at all, however correctly a hub
+  had authored its properties — a 155-column table dropped from 74 mapped fields back to
+  1, silently. Introduced when the function moved onto the DD-103 canonical loader, and
+  invisible because every other test of the binding generator mocks it. Object properties
+  are now excluded too: they need a relationship entry, not a scalar field.
+- **A column the aligner put on another class is now reported as a decision, not counted
+  as a missing property.** `generate-bindings` resolves properties against the anchor
+  class's own inventory, so a column mapped to `Weight.weightValue` on a table anchored
+  to `CargoItem` failed that lookup and was counted under "did not resolve in the anchor's
+  module inventory" — the same bucket as a property that does not exist anywhere. On one
+  real hub that was 18 of 25 mapped columns, silently absent from the binding and
+  indistinguishable from a lookup failure. Binding them onto the anchor would have been
+  worse: putting a weight value on a cargo-item row is a grain error dressed as coverage,
+  and DD-190 is explicit that a same-grain cluster is properties of the primary. They now
+  land on the secondary-entity worklist with the decision spelled out — a secondary entity
+  at its own grain, or a hub-local property on the anchor — and the command says they are
+  not in the binding.
+- **`registered-extension`'s own documentation no longer points at a command that cannot
+  serve it.** It named `register-concept`, which mints a *class* and rejects a URI the
+  catalog already has; at column grain the decision is a hub-local *property* on an
+  existing class, drafted by `scaffold-extensions`. Pointing at the wrong command is what
+  left 501 such decisions with no consumer.
+- **The emitted dbt project parses again.** `dbt_project.yml` carried
+  `require-dbt-version: '>=1.10'`, which dbt's own semver rejects — it requires all three
+  version components, so dbt refused the whole project file with `">=1.10" is not a valid
+  semantic version` before reading anything else, and `dbt deps` failed on every emitted
+  medallion project. A two-part specifier is valid for pip and not for dbt; the floor is
+  now spelled `>=1.10.0`, which is the same range. Regression tests assert three-part
+  spelling for both the emitted floor and the scaffolded requirement, and check them
+  against dbt's parser where dbt is installed.
+- **`draft-gap-decisions --suggest` no longer crashes on a hub whose gap gate is fully
+  closed.** Its early-exit path returned a narrower dict than its success path, and the
+  CLI read both keys, so the command raised `KeyError: 'flagged_incoherent'` exactly when
+  there was nothing left to suggest — that is, when every gap column had been decided and
+  the DD-169 gate was satisfied. It now reports "nothing left to describe — every gap
+  column is decided".
+
+### Fixed (BREAKING for hubs that used table-grain `deferred`)
+- **A table-grain disposition now answers for the table's columns only when it says
+  something about them.** Recording any disposition against a whole table used to retire
+  every one of its gap columns from the DD-169 pre-binding gate, whatever the disposition
+  said. That reasoning holds for `not-business-data` (the table is not business data, so
+  neither are its columns) and `blueprint-gap` (a claim about the reference model is a
+  claim about what the columns needed). It does not hold for the other three, and those
+  were the damaging omissions: `deferred` means "in scope, not modelled yet" — precisely
+  the state the gate exists to keep raising — while `bound` and `registered-extension`
+  assert the table *is* being modelled, which is when the gate matters most. On one real
+  hub, 40 table-grain `deferred` records retired 1,643 columns and the gate never fired.
+- **`bound` is no longer recordable as a table-grain disposition.** The DD-164 audit
+  reads it from `integration/bindings/` before it consults the ledger, so authoring the
+  EntityBinding is what states it; a ledger row claiming it satisfied the audit with no
+  binding anywhere. Still recordable for a single column.
+- `next` no longer suggests "bound to a domain" as a ledger value — it says to author the
+  binding, which satisfies DD-164 on its own.
+
+  **Upgrading:** a hub that cleared the gate with table-grain `deferred`, `bound` or
+  `registered-extension` will see those columns re-enter the DD-169 gate and `compile`
+  will block until each is decided. That is the omission the gate existed to catch.
+  `kairos-ontology draft-gap-decisions --suggest` drafts them in bulk.
 
 ## [5.18.0] — 2026-09-20
 
