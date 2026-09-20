@@ -211,3 +211,74 @@ class TestLocalNameResolution:
         report = collect_extension_properties(_ledger(tmp_path, [entry]))
 
         assert report.properties == []
+
+
+# ---------------------------------------------------------------------------
+# A range the compiler cannot emit is refused at render time (#920)
+# ---------------------------------------------------------------------------
+
+
+class TestCompilableRanges:
+    """The allow-list was hand-maintained beside the compiler's own XSD table and drifted
+    from it: it permitted `xsd:duration`, which has no canonical output type, and omitted
+    four types the compiler does support. A property proposed with that range was accepted
+    into the ledger, rendered into the ontology, passed `validate` clean, and failed three
+    stages later with `mapping.invalid-output-type`.
+    """
+
+    def test_the_set_is_derived_from_the_compiler_not_restated(self):
+        """Derived, so the two cannot drift apart again."""
+        from kairos_ontology.core.extension_stubs import _compilable_xsd_ranges
+        from kairos_ontology.core.projections.dbt.policy_normalize import _XSD_TYPE_KINDS
+
+        prefix = "http://www.w3.org/2001/XMLSchema#"
+        expected = {f"xsd:{uri[len(prefix):]}" for uri in _XSD_TYPE_KINDS}
+
+        assert _compilable_xsd_ranges() == expected
+
+    def test_duration_is_not_permitted(self):
+        """The exact range that reached a real hub's ontology and failed its compile."""
+        from kairos_ontology.core.extension_stubs import _compilable_xsd_ranges
+
+        assert "xsd:duration" not in _compilable_xsd_ranges()
+
+    def test_the_ordinary_types_are_permitted(self):
+        from kairos_ontology.core.extension_stubs import _compilable_xsd_ranges
+
+        permitted = _compilable_xsd_ranges()
+        for value in ("xsd:string", "xsd:integer", "xsd:decimal", "xsd:boolean",
+                      "xsd:date", "xsd:dateTime"):
+            assert value in permitted
+
+    def test_types_the_old_hand_list_omitted_are_now_permitted(self):
+        from kairos_ontology.core.extension_stubs import _compilable_xsd_ranges
+
+        permitted = _compilable_xsd_ranges()
+        for value in ("xsd:int", "xsd:short", "xsd:token", "xsd:normalizedString"):
+            assert value in permitted
+
+    def test_every_permitted_range_resolves_to_an_output_type(self):
+        """The property that matters: the set is not merely derived, it is correct.
+
+        Asserted against `_target_type`, which is what the compiler resolves an XSD range
+        through. `_canonical_type` is a different entry point that lower-cases its input
+        before lookup, so it is the wrong thing to assert against here -- a first version
+        of this test used it and failed every camel-cased type.
+        """
+        from kairos_ontology.core.extension_stubs import _compilable_xsd_ranges
+        from kairos_ontology.core.projections.dbt.policy_normalize import _target_type
+
+        prefix = "http://www.w3.org/2001/XMLSchema#"
+        unresolved = [
+            value
+            for value in sorted(_compilable_xsd_ranges())
+            if _target_type(prefix + value.split(":", 1)[1]) is None
+        ]
+
+        assert not unresolved, f"permitted but not resolvable: {unresolved}"
+
+    def test_duration_does_not_resolve_to_an_output_type(self):
+        """The converse, so the exclusion is justified rather than assumed."""
+        from kairos_ontology.core.projections.dbt.policy_normalize import _target_type
+
+        assert _target_type("http://www.w3.org/2001/XMLSchema#duration") is None

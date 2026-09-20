@@ -2169,6 +2169,12 @@ Instructions:
   ref_property; it is a proposal for a human to accept or reject at design time.
   Give {{"name": "<lowerCamelCase>", "range": "<xsd type or class name>",
   "on_class": "<the class this property belongs on>", "why": "<one line>"}}.
+  For a datatype range use exactly one of: xsd:string, xsd:normalizedString, xsd:token,
+  xsd:boolean, xsd:integer, xsd:int, xsd:short, xsd:long, xsd:decimal, xsd:double,
+  xsd:float, xsd:date, xsd:dateTime, xsd:time, xsd:anyURI. These are the only ones the
+  compiler can emit a column for; anything else (xsd:duration, xsd:gYear, xsd:hexBinary)
+  is rejected several stages later, after a human has already accepted it. Express a
+  duration as xsd:decimal or xsd:integer and say the unit in "why".
   Omit it (null) for an audit stamp, a surrogate key, a vendor placeholder, or anything
   whose meaning you cannot state — an unnecessary proposal costs a reviewer more than a
   missing one. Never emit an IRI here; the hub mints that itself.

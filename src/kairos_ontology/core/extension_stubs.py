@@ -41,16 +41,31 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-#: Datatype ranges a generated property may carry. An `owl:ObjectProperty` needs a target
-#: class and a relationship decision, which is modelling rather than rendering, so a
-#: non-datatype range is reported and skipped instead of guessed.
-XSD_RANGES: frozenset[str] = frozenset(
-    {
-        "xsd:string", "xsd:integer", "xsd:decimal", "xsd:boolean", "xsd:date",
-        "xsd:dateTime", "xsd:time", "xsd:long", "xsd:double", "xsd:float",
-        "xsd:duration", "xsd:anyURI",
-    }
-)
+def _compilable_xsd_ranges() -> frozenset[str]:
+    """The ``xsd:`` ranges the compiler can actually emit a Silver column for (#920).
+
+    Derived from the compiler's own XSD table rather than restated here, so the two cannot
+    disagree. They did: this set was hand-maintained and listed ``xsd:duration``, which the
+    compiler has no canonical output type for. A property proposed with that range was
+    accepted into the ledger, rendered into the ontology, passed ``validate`` clean, and
+    failed three stages later with ``mapping.invalid-output-type``. The hand list also
+    omitted four types the compiler does support.
+
+    Lazily imported and memoised: this module is read by the design-time path, and the
+    projection package it borrows from is otherwise not on that path.
+    """
+    global _XSD_RANGES_CACHE
+    if _XSD_RANGES_CACHE is None:
+        from .projections.dbt.policy_normalize import _XSD_TYPE_KINDS
+
+        prefix = "http://www.w3.org/2001/XMLSchema#"
+        _XSD_RANGES_CACHE = frozenset(
+            f"xsd:{uri[len(prefix):]}" for uri in _XSD_TYPE_KINDS if uri.startswith(prefix)
+        )
+    return _XSD_RANGES_CACHE
+
+
+_XSD_RANGES_CACHE: frozenset[str] | None = None
 
 #: camelCase, per the naming gate `validate --syntax` applies to every property.
 _CAMEL_CASE = re.compile(r"^[a-z][A-Za-z0-9]*$")
@@ -150,12 +165,23 @@ def collect_extension_properties(
         if not prop.on_class:
             _skip(report, name, "no owning class recorded")
             continue
-        if prop.range not in XSD_RANGES:
+        if not str(prop.range or "").startswith("xsd:"):
             _skip(
                 report,
                 name,
                 f"range {prop.range!r} is not a datatype; an object property needs a "
                 "target class and a relationship decision",
+            )
+            continue
+        if prop.range not in _compilable_xsd_ranges():
+            # A datatype the compiler has no output type for. Distinct from the case
+            # above and differently actionable: the modelling is fine, the type is not
+            # buildable, and the fix is to restate it as one that is (#920).
+            _skip(
+                report,
+                name,
+                f"range {prop.range!r} is a datatype the compiler cannot emit; "
+                f"use one of: {', '.join(sorted(_compilable_xsd_ranges()))}",
             )
             continue
         if len(divergent[name]) > 1:
